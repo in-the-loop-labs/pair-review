@@ -1,0 +1,367 @@
+:root {
+    /* Light theme colors */
+    --color-bg-primary: #ffffff;
+    --color-bg-secondary: #f6f8fa;
+    --color-bg-tertiary: #f3f4f6;
+    --color-bg-overlay: rgba(0, 0, 0, 0.5);
+    
+    --color-text-primary: #24292f;
+    --color-text-secondary: #57606a;
+    --color-text-tertiary: #656d76;
+    --color-text-link: #0969da;
+    
+    --color-border-primary: #d1d9e0;
+    --color-border-secondary: #e1e4e8;
+    
+    --color-accent-primary: #0969da;
+    --color-accent-hover: #0860ca;
+    --color-accent-emphasis: #1a8754;
+    --color-accent-emphasis-hover: #157347;
+    --color-accent-light: rgba(9, 105, 218, 0.1);
+    --color-accent-lighter: rgba(9, 105, 218, 0.05);
+    
+    --color-danger: #d1242f;
+    --color-danger-hover: #b91c1c;
+    
+    --color-diff-addition: #e6ffec;
+    --color-diff-deletion: #ffebe9;
+    --color-diff-addition-num: #ccffd8;
+    --color-diff-deletion-num: #ffd7d5;
+    
+    --color-warning-bg: #fffae6;
+    --color-warning-border: #ffc552;
+    --color-warning-text: #7d4e00;
+    
+    --color-selection: #fff5b1;
+    --color-selection-num: #ffeb3b;
+    
+    --color-shadow: rgba(27, 31, 36, 0.04);
+    --color-shadow-large: rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="dark"] {
+    /* Dark theme colors */
+    --color-bg-primary: #0d1117;
+    --color-bg-secondary: #161b22;
+    --color-bg-tertiary: #1c2128;
+    --color-bg-overlay: rgba(0, 0, 0, 0.7);
+    
+    --color-text-primary: #c9d1d9;
+    --color-text-secondary: #8b949e;
+    --color-text-tertiary: #6e7681;
+    --color-text-link: #58a6ff;
+    
+    --color-border-primary: #30363d;
+    --color-border-secondary: #21262d;
+    
+    --color-accent-primary: #58a6ff;
+    --color-accent-hover: #1f6feb;
+    --color-accent-emphasis: #238636;
+    --color-accent-emphasis-hover: #2ea043;
+    --color-accent-light: rgba(88, 166, 255, 0.15);
+    --color-accent-lighter: rgba(88, 166, 255, 0.08);
+    
+    --color-danger: #f85149;
+    --color-danger-hover: #da3633;
+    
+    --color-diff-addition: #1c2e20;
+    --color-diff-deletion: #3d1e1e;
+    --color-diff-addition-num: #1e3a23;
+    --color-diff-deletion-num: #4d1e1e;
+    
+    --color-warning-bg: #3d2e00;
+    --color-warning-border: #9e6a03;
+    --color-warning-text: #e3b341;
+    
+    --color-selection: #3d3300;
+    --color-selection-num: #4d4000;
+    
+    --color-shadow: rgba(0, 0, 0, 0.3);
+    --color-shadow-large: rgba(0, 0, 0, 0.5);
+}
+
+/* Diff2html overrides and custom styles */
+.d2h-wrapper {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+}
+
+.d2h-file-header {
+    background: var(--color-bg-secondary);
+    padding: 10px 16px;
+    font-size: 14px;
+}
+
+.d2h-code-line {
+    position: relative;
+}
+
+.d2h-code-linenumber {
+    position: relative;
+}
+
+/* Clean, minimal diff2html styling */
+
+/* Simple green for additions - entire line only */
+.d2h-ins, 
+.d2h-ins .d2h-code-line-ctn,
+.d2h-ins .d2h-code-line,
+tr.d2h-ins,
+tr.d2h-ins td {
+    background: var(--color-diff-addition) !important;
+}
+
+/* Simple red for deletions - entire line only */
+.d2h-del,
+.d2h-del .d2h-code-line-ctn,
+.d2h-del .d2h-code-line,
+tr.d2h-del,
+tr.d2h-del td {
+    background: var(--color-diff-deletion) !important;
+}
+
+/* Context lines (unchanged code) - pure white */
+.d2h-cntx,
+.d2h-cntx .d2h-code-line-ctn,
+.d2h-code-line:not(.d2h-ins):not(.d2h-del) {
+    background: var(--color-bg-primary) !important;
+}
+
+/* Remove ALL inline highlighting and character-level changes */
+.d2h-code-line ins,
+.d2h-code-line del,
+.d2h-ins ins,
+.d2h-del ins,
+.d2h-code-line-ctn ins,
+.d2h-code-line-ctn del,
+.d2h-change-inner,
+.d2h-change-inner-highlight,
+mark.d2h-code-line-prefix,
+mark.d2h-code-line-ctn {
+    background: transparent !important;
+    background-color: transparent !important;
+    text-decoration: none !important;
+    font-weight: normal !important;
+    color: inherit !important;
+    border: none !important;
+    display: inline !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Ensure the line backgrounds stay consistent */
+.d2h-ins .d2h-code-line-ctn * {
+    background: transparent !important;
+}
+
+.d2h-del .d2h-code-line-ctn * {
+    background: transparent !important;
+}
+
+/* Remove all borders and shadows for cleaner look */
+.d2h-file-wrapper {
+    border: none !important;
+    box-shadow: none !important;
+}
+
+.d2h-diff-table {
+    border: none !important;
+}
+
+.d2h-file-wrapper .d2h-diff-tbody tr {
+    border: none !important;
+}
+
+/* Clean file headers */
+.d2h-file-header {
+    background: var(--color-bg-secondary) !important;
+    border-bottom: 1px solid var(--color-border-secondary) !important;
+    padding: 12px 16px !important;
+    font-weight: 600 !important;
+    border-radius: 6px 6px 0 0 !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+    overflow: visible !important;
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+}
+
+.d2h-file-name {
+    display: inline-block !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important;
+    font-size: 14px !important;
+    max-width: calc(100% - 50px) !important;
+    width: auto !important;
+    white-space: normal !important;
+    line-height: 1.4 !important;
+}
+
+/* Ensure diff2html containers don't have unwanted borders */
+.d2h-file-wrapper {
+    border: none;
+    width: 100%;
+    overflow: visible !important;
+}
+
+.d2h-file-side-diff {
+    border: none;
+}
+
+/* Remove line borders and fix spacing */
+.d2h-code-line-prefix,
+.d2h-code-line-ctn {
+    border: none !important;
+}
+
+/* Fix table cell spacing - remove ALL padding first */
+.d2h-diff-table td {
+    padding: 0 !important;
+}
+
+/* Then add back minimal spacing where needed */
+.d2h-code-line-ctn {
+    padding-left: 10px !important;  /* Small buffer between line numbers and code */
+    padding-right: 10px !important;
+    white-space: pre !important;  /* Preserve all whitespace and indentation */
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace !important;
+    font-size: 12px !important;
+    tab-size: 4 !important;  /* Ensure tabs display correctly */
+}
+
+/* Compact line number display */
+.d2h-code-linenumber {
+    padding: 0 8px !important;
+    border-right: 1px solid var(--color-border-secondary) !important;
+}
+
+/* Remove any empty table cells */
+.d2h-diff-table td:empty {
+    display: none !important;
+}
+
+/* Collapse borders and spacing */
+.d2h-diff-table {
+    border-collapse: collapse !important;
+    border-spacing: 0 !important;
+}
+
+/* Clean unified diff table structure */
+.d2h-diff-table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace !important;
+    font-size: 12px !important;
+    table-layout: fixed !important;
+}
+
+.d2h-diff-tbody td.d2h-code-linenumber,
+.d2h-diff-tbody td:first-child {
+    width: 80px !important;
+    min-width: 80px !important;
+    max-width: 80px !important;
+}
+
+.d2h-diff-tbody td.d2h-code-line-ctn {
+    width: auto !important;
+    overflow-wrap: break-word !important;
+    word-wrap: break-word !important;
+}
+
+/* Simplified line numbers for unified view */
+.d2h-code-linenumber {
+    background: var(--color-bg-secondary) !important;
+    color: var(--color-text-tertiary) !important;
+    border-right: 1px solid var(--color-border-secondary) !important;
+    font-size: 12px;
+    padding: 0 4px !important;
+    text-align: center !important;
+    white-space: nowrap !important;
+    cursor: pointer !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+}
+
+.d2h-code-linenumber .line-num1,
+.d2h-code-linenumber .line-num2 {
+    display: inline-block;
+    width: 32px;
+    text-align: right;
+    padding: 0 2px;
+    font-size: 11px !important;
+}
+
+.d2h-code-linenumber .line-num2 {
+    padding-right: 8px;
+}
+
+/* Style info/hunk headers (@@ lines) */
+.d2h-info {
+    background: var(--color-bg-secondary) !important;
+    color: var(--color-accent-primary) !important;
+    font-family: 'SF Mono', Monaco, monospace !important;
+    font-size: 12px !important;
+    padding: 4px 10px !important;
+}
+
+/* Remove any yellow/changed line styling */
+.d2h-change {
+    background: var(--color-bg-primary) !important;
+}
+
+.d2h-change .d2h-change-inner {
+    background: transparent !important;
+    font-weight: normal !important;
+}
+
+.d2h-file-diff {
+    overflow: visible !important;
+}
+
+/* Ensure no prefix characters are shown */
+.d2h-code-line-prefix {
+    display: none !important;
+}
+
+/* Hide any inline diff markers */
+.d2h-code-line-ctn::before {
+    content: none !important;
+    display: none !important;
+}
+
+/* Ensure proper table layout */
+.d2h-diff-table {
+    table-layout: auto !important;
+    overflow: visible !important;
+}
+
+.d2h-diff-tbody {
+    display: table-row-group !important;
+}
+
+.d2h-diff-tbody tr {
+    display: table-row !important;
+}
+
+.d2h-diff-tbody td {
+    display: table-cell !important;
+}
+
+/* Special styling for new/untracked files - now same as regular additions */
+.d2h-file-wrapper[data-new-file="true"] .d2h-file-header,
+.d2h-file-addition .d2h-file-header {
+    background: var(--color-bg-secondary) !important;  /* Use same header as regular files */
+    border-bottom: 1px solid var(--color-border-secondary) !important;
+}
+
+/* For new files, use the same green background as regular additions */
+.d2h-file-addition .d2h-ins,
+.d2h-file-addition .d2h-ins .d2h-code-line-ctn,
+.d2h-file-addition .d2h-ins .d2h-code-line,
+.d2h-file-addition tr.d2h-ins,
+.d2h-file-addition tr.d2h-ins td,
+.d2h-file-addition .d2h-code-line {
+    background: var(--color-diff-addition) !important;  /* Same green as regular additions */
+}

@@ -341,20 +341,116 @@ class PRManager {
   }
 
   /**
-   * Display diff content
+   * Display diff content using diff2html rendering
    * @param {string} diff - Unified diff content
    */
-  displayDiff(diff) {
-    const diffTab = document.getElementById('diff-tab');
+  displayDiff(diffText) {
+    console.log('displayDiff called with:', { hasDiff: !!diffText });
+    const container = document.getElementById('diff-tab');
+    container.innerHTML = '';
     
-    if (!diff || diff.trim() === '') {
-      diffTab.innerHTML = '<div class="empty-state">No diff available</div>';
+    if (!diffText) {
+      container.innerHTML = '<div class="empty-state">No diff available</div>';
       return;
     }
+    
+    // Check if diff2html is available
+    if (typeof Diff2Html === 'undefined') {
+      console.error('Diff2Html library not loaded!');
+      container.innerHTML = '<div class="empty-state">Error: Diff2Html library not loaded</div>';
+      return;
+    }
+    
+    // Use diff2html to parse the diff
+    const diffJson = Diff2Html.parse(diffText);
+    console.log('Parsed diff files:', diffJson.length, diffJson);
+    
+    // Create our own simple unified diff display
+    container.innerHTML = '';
+    
+    try {
+      diffJson.forEach(file => {
+        const fileWrapper = document.createElement('div');
+        fileWrapper.className = 'd2h-file-wrapper';
+        fileWrapper.dataset.fileName = file.newName || file.oldName;
+        fileWrapper.setAttribute('data-file-name', file.newName || file.oldName);
+        
+        // File header
+        const fileHeader = document.createElement('div');
+        fileHeader.className = 'd2h-file-header';
+        const fileName = document.createElement('span');
+        fileName.className = 'd2h-file-name';
+        fileName.textContent = file.newName || file.oldName;
+        fileHeader.appendChild(fileName);
+        
+        fileWrapper.appendChild(fileHeader);
+        
+        // Create simple table for diff
+        const table = document.createElement('table');
+        table.className = 'd2h-diff-table';
+        const tbody = document.createElement('tbody');
+        tbody.className = 'd2h-diff-tbody';
+        
+        // Add file class for styling new files
+        if (file.isNew) {
+          fileWrapper.classList.add('d2h-file-addition');
+        }
+        
+        // Process blocks
+        file.blocks.forEach((block) => {
+          // Add block header
+          const headerRow = document.createElement('tr');
+          headerRow.className = 'd2h-info';
+          headerRow.innerHTML = `<td colspan="2" class="d2h-info">${block.header}</td>`;
+          tbody.appendChild(headerRow);
+          
+          // Process lines within block
+          block.lines.forEach((line) => {
+            this.renderDiffLine(tbody, line);
+          });
+        });
+        
+        table.appendChild(tbody);
+        fileWrapper.appendChild(table);
+        container.appendChild(fileWrapper);
+      });
+    } catch (error) {
+      console.error('Error rendering diff:', error);
+      container.innerHTML = '<div class="empty-state">Error rendering diff</div>';
+    }
+  }
 
-    // Simple diff display (can be enhanced with syntax highlighting later)
-    const escapedDiff = this.escapeHtml(diff);
-    diffTab.innerHTML = `<pre class="diff-content"><code>${escapedDiff}</code></pre>`;
+  /**
+   * Render a single diff line
+   * @param {HTMLElement} tbody - Table body element
+   * @param {Object} line - Diff line data
+   */
+  renderDiffLine(tbody, line) {
+    const row = document.createElement('tr');
+    row.className = line.type === 'insert' ? 'd2h-ins' : 
+                   line.type === 'delete' ? 'd2h-del' : 
+                   'd2h-cntx';
+    
+    // Line numbers
+    const lineNumCell = document.createElement('td');
+    lineNumCell.className = 'd2h-code-linenumber';
+    lineNumCell.innerHTML = `<span class="line-num1">${line.oldNumber || ''}</span><span class="line-num2">${line.newNumber || ''}</span>`;
+    
+    // Content - remove ONLY the first +/- prefix from the raw diff, preserve all other whitespace
+    const contentCell = document.createElement('td');
+    contentCell.className = 'd2h-code-line-ctn';
+    let content = line.content || '';
+    // Strip only the first character if it's a diff marker (+, -, or space)
+    // This preserves the actual indentation of the code
+    if (content.length > 0 && (content[0] === '+' || content[0] === '-' || content[0] === ' ')) {
+      content = content.substring(1);
+    }
+    contentCell.textContent = content;
+    
+    row.appendChild(lineNumCell);
+    row.appendChild(contentCell);
+    tbody.appendChild(row);
+    return row;
   }
 
   /**

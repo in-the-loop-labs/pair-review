@@ -46,6 +46,16 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - **GET /api/pr/:owner/:repo/:number/diff**: Diff content and changed files
 - **GET /api/pr/:owner/:repo/:number/comments**: Review comments (future AI suggestions)
 
+### 7. GitHub-like Diff Viewer (`public/js/pr.js` + `public/css/styles.css`)
+- **Role**: Rich diff display using Diff2Html library for GitHub-like appearance
+- **Key Features**:
+  - **Unified Diff View**: Single-column diff display matching GitHub's style
+  - **Line Number Display**: Dual line numbers (old/new) with "8 8" format
+  - **Color-coded Changes**: Green for additions, red for deletions, white for context
+  - **File Headers**: Clean file name headers with proper styling
+  - **DOM Generation**: Manual DOM creation for precise control over structure
+- **Implementation**: Copied from local-review project with adaptations for pair-review
+
 ## Data Flow
 
 ### PR Processing Flow
@@ -102,6 +112,9 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - ✅ Web server with API endpoints
 - ✅ Automatic browser opening
 - ✅ Port conflict resolution
+- ✅ GitHub-like diff viewer with Diff2Html integration
+- ✅ Color-coded line changes (additions/deletions/context)
+- ✅ Proper line numbering and file headers
 
 ### API Endpoints Verified
 - ✅ `/api/pr/owner/repo/number` - Returns full PR data
@@ -133,7 +146,9 @@ comments: Will store AI suggestions and user comments
 - AI integration for generating review suggestions
 - Comment management (adopt/discard AI suggestions)  
 - GitHub review submission functionality
-- Web interface improvements (currently basic HTML/JS)
+- Context expansion controls for diff viewer
+- Inline commenting functionality
+- File navigator/tree sidebar
 
 ## Troubleshooting
 
