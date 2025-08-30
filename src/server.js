@@ -8,6 +8,7 @@ let server = null;
 
 /**
  * Request logging middleware
+ * Enhanced with performance metrics tracking
  */
 function requestLogger(req, res, next) {
   const timestamp = new Date().toISOString();
