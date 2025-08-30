@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="AI-powered GitHub pull request review assistant">
     <title>Pair Review</title>
+    
+    <!-- PR Display Styles -->
+    <link rel="stylesheet" href="/css/pr.css">
+    
     <style>
         * {
             box-sizing: border-box;
@@ -27,18 +31,105 @@
             text-align: center;
         }
         
-        h1 {
+        .welcome-section {
+            display: block;
+        }
+        
+        .welcome-section h1 {
             font-size: 32px;
             font-weight: 600;
             margin-bottom: 16px;
             color: #24292f;
         }
         
+        .welcome-section p {
+            font-size: 16px;
+            color: #656d76;
+            margin-bottom: 20px;
+        }
+        
+        .usage-info {
+            background-color: #f6f8fa;
+            border: 1px solid #d1d9e0;
+            border-radius: 6px;
+            padding: 20px;
+            margin-top: 20px;
+            text-align: left;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        .usage-info h3 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: #24292f;
+        }
+        
+        .usage-info code {
+            background-color: #afb8c133;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+            font-size: 13px;
+        }
+        
+        .usage-info pre {
+            background-color: #24292f;
+            color: #f6f8fa;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 8px 0;
+            overflow-x: auto;
+        }
+        
+        .usage-info pre code {
+            background: none;
+            padding: 0;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Pair Review - Coming Soon</h1>
+    <!-- Welcome section - shown when no PR is loaded -->
+    <div class="container welcome-section" id="welcome-section">
+        <h1>Pair Review</h1>
+        <p>AI-powered GitHub pull request review assistant</p>
+        
+        <div class="usage-info">
+            <h3>Usage</h3>
+            <p>To review a pull request, use one of these commands:</p>
+            
+            <pre><code># Review by PR number (from repository directory)
+npx pair-review 123
+
+# Review by full GitHub URL  
+npx pair-review https://github.com/owner/repo/pull/123</code></pre>
+            
+            <p><strong>Configuration:</strong></p>
+            <p>Set your GitHub token in <code>~/.pair-review/config.json</code>:</p>
+            <pre><code>{
+  "github_token": "your_github_token_here",
+  "port": 3000,
+  "theme": "light"
+}</code></pre>
+        </div>
     </div>
+
+    <!-- PR container - shown when PR is loaded -->
+    <div id="pr-container">
+        <!-- PR content will be loaded here by JavaScript -->
+    </div>
+
+    <!-- PR JavaScript -->
+    <script src="/js/pr.js"></script>
+    
+    <script>
+        // Hide welcome section if PR parameter is present
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get('pr')) {
+            document.getElementById('welcome-section').style.display = 'none';
+        }
+    </script>
 </body>
 </html>

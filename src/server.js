@@ -130,6 +130,13 @@ async function startServer() {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
     
+    // Store database instance for routes
+    app.set('db', db);
+    
+    // PR API routes
+    const prRoutes = require('./routes/pr');
+    app.use('/', prRoutes);
+    
     // Error handling middleware
     app.use((error, req, res, next) => {
       console.error('Server error:', error);

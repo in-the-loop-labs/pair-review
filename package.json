@@ -24,6 +24,9 @@
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "sqlite3": "^5.1.6"
+    "sqlite3": "^5.1.6",
+    "@octokit/rest": "^19.0.11",
+    "simple-git": "^3.19.1",
+    "open": "^9.1.0"
   }
 }

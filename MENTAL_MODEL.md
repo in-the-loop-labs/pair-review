@@ -2,14 +2,16 @@
 
 ## High-Level Overview
 
-Pair Review is a local web application that assists human reviewers with GitHub pull request reviews using AI-powered suggestions. The system follows a client-server architecture with local data persistence.
+Pair Review is a local web application that assists human reviewers with GitHub pull request reviews using AI-powered suggestions. The system follows a client-server architecture with local data persistence, GitHub API integration, and git worktree management for PR code analysis.
 
 ## Architecture Components
 
 ### 1. Entry Point & Distribution
-- **Binary Script**: `bin/pair-review.js` - Executable entry point for `npx pair-review` command
+- **Binary Script**: `bin/pair-review.js` - Spawns main application with command line arguments
+- **Main Application**: `src/main.js` - Orchestrates PR processing workflow
 - **Package**: Distributed as npm package with bin entry for global/npx execution
 - **Node.js Requirements**: >=16.0.0
+- **CLI Argument Handling**: Supports PR numbers and full GitHub URLs
 
 ### 2. Server Layer (`src/server.js`)
 - **Framework**: Express.js web server
@@ -52,18 +54,56 @@ Pair Review is a local web application that assists human reviewers with GitHub 
 - **Performance**: Comprehensive indexes for common queries
 - **API**: Promise-based query/run/queryOne functions
 
-### 5. Frontend Layer (`public/`)
+### 5. GitHub Integration Layer
+- **GitHub API Client**: `src/github/client.js` - Octokit wrapper with error handling and rate limiting
+- **Argument Parser**: `src/github/parser.js` - Parses CLI arguments and git remotes
+- **Authentication**: GitHub Personal Access Token (PAT) from config
+- **Rate Limiting**: Exponential backoff with 1s, 2s, 4s delays
+- **Error Handling**: Specific error messages for auth, not found, rate limits, network issues
+
+### 6. Git Integration Layer
+- **Worktree Manager**: `src/git/worktree.js` - Creates isolated worktrees for PR branches
+- **Worktree Location**: `~/.pair-review/worktrees/[owner]-[repo]-[pr-number]/`
+- **Branch Management**: Fetches PR head branch and checks out to specific commit
+- **Diff Generation**: Creates unified diff between base and head branches
+- **Cleanup**: Automatic worktree cleanup on failure and between reviews
+
+### 7. API Layer
+- **PR Routes**: `src/routes/pr.js` - Express routes for PR data access
+- **Endpoints**:
+  - `GET /api/pr/:owner/:repo/:number` - PR metadata and review status
+  - `GET /api/pr/:owner/:repo/:number/diff` - PR diff and changed files
+  - `GET /api/pr/:owner/:repo/:number/comments` - PR comments
+  - `GET /api/prs` - List of cached PRs
+  - `GET /api/pr/health` - API health check
+
+### 8. Frontend Layer (`public/`)
 - **Technology**: Vanilla HTML/CSS/JavaScript (no frameworks)
 - **Design**: GitHub-like UI patterns and styling
-- **Theme**: White background (#ffffff), dark gray text (#24292f)
-- **Typography**: System font stack matching GitHub
-- **Current State**: Minimal landing page with only centered h1 "Pair Review - Coming Soon"
+- **PR Manager**: `public/js/pr.js` - Single-page PR display and management
+- **Styling**: `public/css/pr.css` - GitHub-style responsive design
+- **Features**:
+  - PR information display with metadata, stats, and description
+  - Tabbed interface: Files Changed, Diff View, Comments
+  - Loading states with spinners and error handling
+  - Responsive design for mobile/desktop
 
 ## Data Flow Architecture
 
+### PR Processing Workflow
+1. **CLI Invocation**: User runs `npx pair-review <PR-number-or-URL>`
+2. **Argument Parsing**: `PRArgumentParser` extracts owner/repo/number
+3. **Configuration Check**: Validate GitHub PAT exists
+4. **GitHub API**: Fetch PR metadata, validate access
+5. **Worktree Setup**: Create isolated git worktree with PR branch
+6. **Diff Generation**: Generate unified diff and file change stats
+7. **Data Storage**: Store PR data and diff in SQLite
+8. **Server Launch**: Start Express server with PR context
+9. **Browser Opening**: Auto-open to PR review interface
+
 ### Configuration Flow
 1. Application starts → Load/create `~/.pair-review/config.json`
-2. Validate configuration values (especially port)
+2. Validate GitHub token and configuration values
 3. Use configuration throughout application lifecycle
 
 ### Database Initialization Flow
@@ -74,42 +114,53 @@ Pair Review is a local web application that assists human reviewers with GitHub 
 5. Provide promise-based query interface
 
 ### Server Startup Flow
-1. Load configuration
-2. Initialize database
-3. Create Express app with middleware
+1. Load configuration and initialize database
+2. Create Express app with middleware stack
+3. Register PR API routes with database context
 4. Find available port (with fallbacks)
-5. Start server and log startup message
-6. Set up graceful shutdown handlers
+5. Start server and setup graceful shutdown handlers
 
-### Request Flow (Currently)
-1. Client requests → Express middleware chain
-2. Static files served from `public/` with cache headers
-3. Root route (`/`) serves `index.html`
-4. Health check available at `/health`
-5. 404 handling for unknown routes
+### Frontend Request Flow
+1. **Welcome Page**: Default landing page with usage instructions
+2. **PR Loading**: URL parameter triggers PR data fetch
+3. **API Requests**: Frontend fetches PR data via REST endpoints
+4. **Dynamic Display**: PR information rendered with GitHub-style UI
+5. **Tab Navigation**: Files, diff, and comments loaded on demand
+6. **Error Handling**: User-friendly error messages and retry options
 
 ## Key Architectural Decisions
 
 ### Local-First Design
 - All data stored locally in SQLite
 - Configuration in user home directory
+- Git worktrees created locally for isolation
 - No external service dependencies for core functionality
 
 ### Error Handling Strategy
-- Strict error handling with process.exit(1) for critical failures:
-  - Invalid configuration files
-  - Invalid port numbers
-  - Missing write permissions
-  - Missing public directory
-- Port conflict resolution with logging and fallback attempts
+- Strict error handling with process.exit(1) for critical failures
+- GitHub API specific error messages for auth, rate limits, not found
+- Git operation error handling with cleanup
+- Port conflict resolution with fallback attempts
 - Database corruption recovery with table recreation
-- Comprehensive error logging with exact required messages
+- User-friendly error messages throughout UI
 
-### Future Extension Points
-- Database schema supports draft/submitted review states
-- Comment system ready for AI suggestion integration
-- Configuration system ready for GitHub token integration
-- Server architecture ready for API endpoint expansion
+### GitHub Integration Architecture
+- **Authentication**: PAT-based with validation
+- **Rate Limiting**: Exponential backoff with retry logic
+- **Data Caching**: Store PR data locally to reduce API calls
+- **Isolation**: Each PR gets dedicated worktree to avoid conflicts
+
+### Git Worktree Strategy
+- **Isolation**: Each PR review in separate worktree directory
+- **Cleanup**: Automatic removal on failure or completion
+- **Branch Management**: Fetch PR-specific branches dynamically
+- **Path Convention**: `~/.pair-review/worktrees/[owner]-[repo]-[pr-number]/`
+
+### Frontend Architecture
+- **No Framework**: Pure HTML/CSS/JavaScript for simplicity
+- **Single Page**: Dynamic content loading without page refreshes
+- **GitHub Styling**: Match familiar GitHub UI patterns
+- **Progressive Enhancement**: Features load incrementally
 
 ## Development State
 
@@ -122,23 +173,48 @@ Pair Review is a local web application that assists human reviewers with GitHub 
 - ✅ Basic HTML frontend
 - ✅ Static file serving
 
-### Next Development Areas (Phase 2+)
-- GitHub API integration using Octokit
+### Completed (Phase 2)
+- ✅ GitHub API integration using Octokit
+- ✅ CLI argument parsing (PR numbers and URLs)
+- ✅ Git worktree management for PR isolation
+- ✅ PR data fetching and storage
+- ✅ REST API endpoints for PR data
+- ✅ Frontend PR display with GitHub-style UI
+- ✅ Diff viewer and file change display
+- ✅ Loading states and error handling
+- ✅ Responsive design and tabbed interface
+- ✅ Auto-browser opening with PR context
+
+### Next Development Areas (Phase 3+)
 - Claude CLI wrapper for AI suggestions
-- Frontend diff viewer and commenting UI
-- Review workflow management
-- Comment persistence and state management
+- AI suggestion display and management
+- Comment creation and editing UI
+- Review submission to GitHub
+- Expandable diff context
+- Dark/light theme support
 
 ## Integration Points
 
-### External Services (Future)
-- **GitHub API**: PR data fetching, comment submission
-- **Claude CLI**: AI-powered review suggestions via `claude -p`
+### External Services
+- **GitHub API**: PR data fetching, repository access validation, authentication
+- **Git Operations**: Worktree creation, branch fetching, diff generation
+- **Claude CLI**: AI-powered review suggestions via `claude -p` (Phase 3)
 
 ### Internal Module Communication
-- Configuration → Server (port settings)
-- Configuration → Database (file locations)
-- Database → Server (data persistence)
-- Server → Frontend (static files, API endpoints)
+- **CLI → Main**: Command line arguments and process orchestration
+- **Main → Parser**: Argument parsing and repository detection
+- **Main → GitHub Client**: API authentication and PR data fetching
+- **Main → Worktree Manager**: Git operations and diff generation
+- **Main → Database**: PR data storage and retrieval
+- **Main → Server**: Web server startup with database context
+- **Server → Routes**: API endpoint handling with database access
+- **Frontend → API**: PR data fetching and display
+- **Configuration**: Used by all modules for GitHub tokens and settings
 
-This mental model represents the current foundation state and provides clear extension points for upcoming features.
+### Data Storage Flow
+- **PR Metadata**: GitHub API → SQLite pr_metadata table
+- **Diff Data**: Git worktree → JSON in pr_metadata.pr_data
+- **Review State**: UI interactions → SQLite reviews table
+- **Comments**: User input → SQLite comments table (Phase 3)
+
+This mental model represents the system architecture after completing Phase 2: GitHub Integration. The foundation now includes complete PR processing workflow, GitHub API integration, git worktree management, and a functional web interface for PR review. The system is ready for Phase 3: AI Integration and comment management features.
