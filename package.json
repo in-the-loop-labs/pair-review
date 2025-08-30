@@ -1,0 +1,29 @@
+{
+  "name": "pair-review",
+  "version": "1.0.0",
+  "description": "AI-powered GitHub pull request review assistant",
+  "main": "src/server.js",
+  "bin": {
+    "pair-review": "./bin/pair-review.js"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node bin/pair-review.js"
+  },
+  "keywords": [
+    "github",
+    "pull-request",
+    "code-review",
+    "ai",
+    "claude"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "sqlite3": "^5.1.6"
+  }
+}
