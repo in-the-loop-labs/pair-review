@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('path');
 const { loadConfig } = require('./config');
-const { initializeDatabase } = require('./database');
+const { initializeDatabase, getDatabaseStatus } = require('./database');
 
 let db = null;
 let server = null;
@@ -77,8 +77,9 @@ function findAvailablePort(app, startPort, maxAttempts = 5) {
 
 /**
  * Start the Express server
+ * @param {sqlite3.Database} [sharedDb] - Optional shared database instance
  */
-async function startServer() {
+async function startServer(sharedDb = null) {
   try {
     // Load configuration
     const config = await loadConfig();
@@ -88,9 +89,29 @@ async function startServer() {
       console.warn('Warning: No GitHub token configured. GitHub API functionality will be limited.');
     }
     
-    // Initialize database
-    console.log('Initializing database...');
-    db = await initializeDatabase();
+    // Use shared database or initialize new one
+    if (sharedDb) {
+      console.log('Using shared database instance...');
+      db = sharedDb;
+    } else {
+      console.log('Initializing new database instance...');
+      db = await initializeDatabase();
+    }
+    
+    // Log database status
+    try {
+      const dbStatus = await getDatabaseStatus(db);
+      if (dbStatus.total_records > 0) {
+        console.log(`Database contains ${dbStatus.total_records} total records:`);
+        Object.entries(dbStatus.tables).forEach(([table, count]) => {
+          if (count > 0) console.log(`  - ${table}: ${count} records`);
+        });
+      } else {
+        console.log('Database is empty (no stored PRs)');
+      }
+    } catch (error) {
+      console.log('Could not check database status:', error.message);
+    }
     
     // Check if public directory exists
     const publicDir = path.join(__dirname, '..', 'public');

@@ -4,7 +4,7 @@ const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
-const open = require('open');
+const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
 
@@ -117,7 +117,7 @@ async function handlePullRequest(args, config, db) {
  * @param {Object} config - Application configuration
  */
 async function startServerOnly(config) {
-  await startServer();
+  await startServer(db);
 }
 
 /**
@@ -131,7 +131,7 @@ async function startServerWithPRContext(config, prInfo) {
   process.env.PAIR_REVIEW_PR = JSON.stringify(prInfo);
   
   const { startServer } = require('./server');
-  await startServer();
+  await startServer(db);
   
   // Return port from config (server will find available port)
   return config.port;

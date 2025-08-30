@@ -1,220 +1,158 @@
-# Pair Review - System Architecture Mental Model
+# Mental Model: Pair-Review System Architecture
 
-## High-Level Overview
+## Overview
+Pair-Review is a local web application that helps human reviewers analyze GitHub pull requests with AI assistance. The system fetches PR data, creates local git worktrees for analysis, stores data in SQLite, and provides a web interface for review.
 
-Pair Review is a local web application that assists human reviewers with GitHub pull request reviews using AI-powered suggestions. The system follows a client-server architecture with local data persistence, GitHub API integration, and git worktree management for PR code analysis.
+## Core Components
 
-## Architecture Components
+### 1. Entry Point (`src/main.js`)
+- **Role**: Application orchestrator and entry point
+- **Key Functions**:
+  - Parses command line arguments for PR information
+  - Initializes shared database instance
+  - Coordinates PR fetching, worktree setup, and data storage
+  - Passes shared database to server to ensure data persistence
 
-### 1. Entry Point & Distribution
-- **Binary Script**: `bin/pair-review.js` - Spawns main application with command line arguments
-- **Main Application**: `src/main.js` - Orchestrates PR processing workflow
-- **Package**: Distributed as npm package with bin entry for global/npx execution
-- **Node.js Requirements**: >=16.0.0
-- **CLI Argument Handling**: Supports PR numbers and full GitHub URLs
+### 2. Database Layer (`src/database.js`)
+- **Role**: SQLite database management and schema
+- **Key Features**:
+  - **Persistent Schema**: Uses `CREATE TABLE IF NOT EXISTS` to preserve existing data
+  - **Three Core Tables**: `pr_metadata`, `reviews`, `comments`
+  - **Database Status**: Provides diagnostic information about stored data
+- **Critical Fix**: Removed table dropping to ensure data persists between server restarts
 
-### 2. Server Layer (`src/server.js`)
-- **Framework**: Express.js web server
-- **Port Management**: Configurable port (default 3000) with automatic fallback if in use (logs "Port [PORT] is already in use" when incrementing)
-- **Public Directory Check**: Validates public directory exists at startup, exits with "Public directory not found" if missing
-- **Middleware Stack**:
-  - Request logging with timestamps
-  - JSON body parsing
-  - Static file serving with cache headers
-  - Error handling and 404 responses
-- **Graceful Shutdown**: Handles SIGINT/SIGTERM with proper cleanup
-- **Health Check**: `/health` endpoint for monitoring
+### 3. Server (`src/server.js`)
+- **Role**: Express web server with API endpoints
+- **Key Features**:
+  - **Shared Database**: Accepts database instance from main.js instead of creating new one
+  - **Port Management**: Automatically finds available ports
+  - **Status Logging**: Reports database contents on startup
+  - **Static Files**: Serves web interface from `/public`
 
-### 3. Configuration Management (`src/config.js`)
-- **Location**: `~/.pair-review/config.json`
-- **Auto-creation**: Creates directory and default config if missing
-- **Schema**:
-  ```json
-  {
-    "github_token": "",
-    "port": 3000,
-    "theme": "light"
-  }
-  ```
-- **Validation**: Port range validation (1024-65535) - exits with error code 1 on invalid port
-- **Error Handling**: 
-  - Malformed config.json: logs "Invalid configuration file at ~/.pair-review/config.json" and exits with code 1
-  - Missing write permissions: logs "Cannot create configuration directory at ~/.pair-review/" and exits with code 1
+### 4. GitHub Integration (`src/github/`)
+- **Parser** (`parser.js`): Extracts owner/repo/number from various PR URL formats
+- **Client** (`client.js`): GitHub API wrapper using Octokit for fetching PR data
 
-### 4. Database Layer (`src/database.js`)
-- **Technology**: SQLite with sqlite3 package
-- **Location**: `~/.pair-review/database.db`
-- **Schema Design**:
-  - **reviews**: Core review tracking (PR metadata, status with CHECK constraint for 'draft'|'submitted'|'pending', timestamps)
-  - **comments**: Individual comments with file/line associations (comment_type with CHECK constraint for 'user'|'ai'|'system', status with CHECK constraint for 'draft'|'adopted'|'discarded')
-  - **pr_metadata**: GitHub PR data caching with unique constraint
-- **Indexes**: Exact names - idx_reviews_pr, idx_comments_review, idx_comments_file, idx_pr_metadata_unique (UNIQUE)
-- **Transaction Safety**: All schema operations wrapped in transactions
-- **Corruption Recovery**: Detects and recreates corrupted databases
-- **Performance**: Comprehensive indexes for common queries
-- **API**: Promise-based query/run/queryOne functions
+### 5. Git Worktree Management (`src/git/worktree.js`)
+- **Role**: Manages local git worktrees for PR analysis
+- **Key Features**:
+  - **Stale Cleanup**: Prunes registered but missing worktrees
+  - **Force Creation**: Uses `--force` flag to override existing registrations
+  - **Diff Generation**: Creates unified diffs between base and head branches
+  - **File Analysis**: Extracts changed files with statistics
 
-### 5. GitHub Integration Layer
-- **GitHub API Client**: `src/github/client.js` - Octokit wrapper with error handling and rate limiting
-- **Argument Parser**: `src/github/parser.js` - Parses CLI arguments and git remotes
-- **Authentication**: GitHub Personal Access Token (PAT) from config
-- **Rate Limiting**: Exponential backoff with 1s, 2s, 4s delays
-- **Error Handling**: Specific error messages for auth, not found, rate limits, network issues
+### 6. API Endpoints (`src/routes/pr.js`)
+- **GET /api/pr/:owner/:repo/:number**: Full PR metadata and basic info
+- **GET /api/pr/:owner/:repo/:number/diff**: Diff content and changed files
+- **GET /api/pr/:owner/:repo/:number/comments**: Review comments (future AI suggestions)
 
-### 6. Git Integration Layer
-- **Worktree Manager**: `src/git/worktree.js` - Creates isolated worktrees for PR branches
-- **Worktree Location**: `~/.pair-review/worktrees/[owner]-[repo]-[pr-number]/`
-- **Branch Management**: Fetches PR head branch and checks out to specific commit
-- **Diff Generation**: Creates unified diff between base and head branches
-- **Cleanup**: Automatic worktree cleanup on failure and between reviews
+## Data Flow
 
-### 7. API Layer
-- **PR Routes**: `src/routes/pr.js` - Express routes for PR data access
-- **Endpoints**:
-  - `GET /api/pr/:owner/:repo/:number` - PR metadata and review status
-  - `GET /api/pr/:owner/:repo/:number/diff` - PR diff and changed files
-  - `GET /api/pr/:owner/:repo/:number/comments` - PR comments
-  - `GET /api/prs` - List of cached PRs
-  - `GET /api/pr/health` - API health check
+### PR Processing Flow
+1. **User runs**: `npx pair-review <PR-URL-or-number>`
+2. **main.js**: Initializes database, parses arguments
+3. **GitHub API**: Fetches PR metadata and commit information
+4. **Worktree Setup**: Creates local checkout of PR branch
+5. **Diff Generation**: Generates unified diff between base and head
+6. **Data Storage**: Stores all data in SQLite database
+7. **Server Start**: Launches web server with shared database instance
+8. **Browser Opens**: Automatically opens to PR review interface
 
-### 8. Frontend Layer (`public/`)
-- **Technology**: Vanilla HTML/CSS/JavaScript (no frameworks)
-- **Design**: GitHub-like UI patterns and styling
-- **PR Manager**: `public/js/pr.js` - Single-page PR display and management
-- **Styling**: `public/css/pr.css` - GitHub-style responsive design
-- **Features**:
-  - PR information display with metadata, stats, and description
-  - Tabbed interface: Files Changed, Diff View, Comments
-  - Loading states with spinners and error handling
-  - Responsive design for mobile/desktop
+### Database Persistence Architecture
+- **Single Instance**: Main.js creates database, passes to server
+- **Persistent Storage**: Database preserves data between application runs
+- **Schema Evolution**: Uses `CREATE IF NOT EXISTS` for safe schema updates
 
-## Data Flow Architecture
+## Key Fixes Implemented
 
-### PR Processing Workflow
-1. **CLI Invocation**: User runs `npx pair-review <PR-number-or-URL>`
-2. **Argument Parsing**: `PRArgumentParser` extracts owner/repo/number
-3. **Configuration Check**: Validate GitHub PAT exists
-4. **GitHub API**: Fetch PR metadata, validate access
-5. **Worktree Setup**: Create isolated git worktree with PR branch
-6. **Diff Generation**: Generate unified diff and file change stats
-7. **Data Storage**: Store PR data and diff in SQLite
-8. **Server Launch**: Start Express server with PR context
-9. **Browser Opening**: Auto-open to PR review interface
+### 1. Database Instance Sharing (Critical)
+**Problem**: main.js and server.js created separate database instances
+- Main stored data in one database
+- Server queried different database (always empty)
 
-### Configuration Flow
-1. Application starts → Load/create `~/.pair-review/config.json`
-2. Validate GitHub token and configuration values
-3. Use configuration throughout application lifecycle
+**Solution**: Modified `startServer()` to accept shared database parameter
+- `startServer(sharedDb)` uses passed instance instead of creating new one
+- Ensures single source of truth for data
 
-### Database Initialization Flow
-1. Connect to SQLite database at `~/.pair-review/database.db`
-2. If corrupted → Recreate with fresh schema
-3. Execute schema creation in transaction
-4. Create performance indexes
-5. Provide promise-based query interface
+### 2. Worktree Registration Cleanup
+**Problem**: Git worktrees became "orphaned" - registered but directory missing
+- Caused `already registered worktree` errors
 
-### Server Startup Flow
-1. Load configuration and initialize database
-2. Create Express app with middleware stack
-3. Register PR API routes with database context
-4. Find available port (with fallbacks)
-5. Start server and setup graceful shutdown handlers
+**Solution**: Enhanced cleanup process
+- Added `pruneWorktrees()` to clean stale registrations
+- Uses `--force` flag for worktree creation when conflicts exist
+- Graceful fallback handling for various failure modes
 
-### Frontend Request Flow
-1. **Welcome Page**: Default landing page with usage instructions
-2. **PR Loading**: URL parameter triggers PR data fetch
-3. **API Requests**: Frontend fetches PR data via REST endpoints
-4. **Dynamic Display**: PR information rendered with GitHub-style UI
-5. **Tab Navigation**: Files, diff, and comments loaded on demand
-6. **Error Handling**: User-friendly error messages and retry options
+### 3. Database Schema Persistence
+**Problem**: Database dropped all tables on every initialization
+- Lost all stored PR data between runs
 
-## Key Architectural Decisions
+**Solution**: Changed to preservation-first approach
+- Removed `DROP TABLE` statements
+- Uses `CREATE TABLE IF NOT EXISTS` for safe initialization
+- Added database status logging for visibility
 
-### Local-First Design
-- All data stored locally in SQLite
-- Configuration in user home directory
-- Git worktrees created locally for isolation
-- No external service dependencies for core functionality
+## Current System State
 
-### Error Handling Strategy
-- Strict error handling with process.exit(1) for critical failures
-- GitHub API specific error messages for auth, rate limits, not found
-- Git operation error handling with cleanup
-- Port conflict resolution with fallback attempts
-- Database corruption recovery with table recreation
-- User-friendly error messages throughout UI
+### Working Features
+- ✅ PR fetching from GitHub API
+- ✅ Local git worktree creation and management  
+- ✅ Unified diff generation
+- ✅ SQLite data persistence across runs
+- ✅ Web server with API endpoints
+- ✅ Automatic browser opening
+- ✅ Port conflict resolution
 
-### GitHub Integration Architecture
-- **Authentication**: PAT-based with validation
-- **Rate Limiting**: Exponential backoff with retry logic
-- **Data Caching**: Store PR data locally to reduce API calls
-- **Isolation**: Each PR gets dedicated worktree to avoid conflicts
+### API Endpoints Verified
+- ✅ `/api/pr/owner/repo/number` - Returns full PR data
+- ✅ `/api/pr/owner/repo/number/diff` - Returns diff and file changes
+- ✅ `/api/pr/owner/repo/number/comments` - Returns comments (empty for now)
 
-### Git Worktree Strategy
-- **Isolation**: Each PR review in separate worktree directory
-- **Cleanup**: Automatic removal on failure or completion
-- **Branch Management**: Fetch PR-specific branches dynamically
-- **Path Convention**: `~/.pair-review/worktrees/[owner]-[repo]-[pr-number]/`
+### Database Schema
+```sql
+pr_metadata: Stores PR basic info and GitHub data blob
+reviews: Tracks review status and metadata  
+comments: Will store AI suggestions and user comments
+```
 
-### Frontend Architecture
-- **No Framework**: Pure HTML/CSS/JavaScript for simplicity
-- **Single Page**: Dynamic content loading without page refreshes
-- **GitHub Styling**: Match familiar GitHub UI patterns
-- **Progressive Enhancement**: Features load incrementally
+## Development Notes
 
-## Development State
+### Testing the System
+- **Demo PR**: Use `npm run dev -- 1` to test with PR #1 from in-the-loop-labs/pair-review
+- **Data Verification**: Check database status in server logs
+- **API Testing**: Use curl to verify endpoints return data
+- **Persistence Testing**: Restart server and confirm data remains
 
-### Completed (Phase 1)
-- ✅ Project structure and packaging
-- ✅ Configuration management with validation
-- ✅ SQLite database with complete schema
-- ✅ Express server with middleware
-- ✅ Error handling and graceful shutdown
-- ✅ Basic HTML frontend
-- ✅ Static file serving
+### Key Architecture Decisions
+- **Local-First**: All processing happens locally, no cloud dependencies
+- **SQLite Choice**: Simple, file-based database for local storage
+- **Shared Database Pattern**: Single instance passed between components
+- **Graceful Port Handling**: Automatically finds available ports for development
 
-### Completed (Phase 2)
-- ✅ GitHub API integration using Octokit
-- ✅ CLI argument parsing (PR numbers and URLs)
-- ✅ Git worktree management for PR isolation
-- ✅ PR data fetching and storage
-- ✅ REST API endpoints for PR data
-- ✅ Frontend PR display with GitHub-style UI
-- ✅ Diff viewer and file change display
-- ✅ Loading states and error handling
-- ✅ Responsive design and tabbed interface
-- ✅ Auto-browser opening with PR context
+### Future Enhancements
+- AI integration for generating review suggestions
+- Comment management (adopt/discard AI suggestions)  
+- GitHub review submission functionality
+- Web interface improvements (currently basic HTML/JS)
 
-### Next Development Areas (Phase 3+)
-- Claude CLI wrapper for AI suggestions
-- AI suggestion display and management
-- Comment creation and editing UI
-- Review submission to GitHub
-- Expandable diff context
-- Dark/light theme support
+## Troubleshooting
 
-## Integration Points
+### Common Issues
+1. **"Pull request not found"**: Database instance not shared - check server logs for "Using shared database"
+2. **Worktree creation fails**: Run `git worktree prune` manually or restart application
+3. **Port conflicts**: Application automatically finds available ports
+4. **GitHub API errors**: Check GitHub token configuration in `~/.pair-review/config.json`
 
-### External Services
-- **GitHub API**: PR data fetching, repository access validation, authentication
-- **Git Operations**: Worktree creation, branch fetching, diff generation
-- **Claude CLI**: AI-powered review suggestions via `claude -p` (Phase 3)
+### Diagnostic Commands
+```bash
+# Check database contents
+sqlite3 ~/.pair-review/database.db "SELECT COUNT(*) FROM pr_metadata;"
 
-### Internal Module Communication
-- **CLI → Main**: Command line arguments and process orchestration
-- **Main → Parser**: Argument parsing and repository detection
-- **Main → GitHub Client**: API authentication and PR data fetching
-- **Main → Worktree Manager**: Git operations and diff generation
-- **Main → Database**: PR data storage and retrieval
-- **Main → Server**: Web server startup with database context
-- **Server → Routes**: API endpoint handling with database access
-- **Frontend → API**: PR data fetching and display
-- **Configuration**: Used by all modules for GitHub tokens and settings
+# List current worktrees  
+git worktree list
 
-### Data Storage Flow
-- **PR Metadata**: GitHub API → SQLite pr_metadata table
-- **Diff Data**: Git worktree → JSON in pr_metadata.pr_data
-- **Review State**: UI interactions → SQLite reviews table
-- **Comments**: User input → SQLite comments table (Phase 3)
+# Clean stale worktrees
+git worktree prune
+```
 
-This mental model represents the system architecture after completing Phase 2: GitHub Integration. The foundation now includes complete PR processing workflow, GitHub API integration, git worktree management, and a functional web interface for PR review. The system is ready for Phase 3: AI Integration and comment management features.
+This mental model reflects the current working state after fixing the critical database persistence and worktree management issues.

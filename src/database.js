@@ -112,25 +112,7 @@ function setupSchema(db, resolve, reject) {
     // Begin transaction
     db.run('BEGIN TRANSACTION');
     
-    // Drop existing tables to ensure clean schema with new constraints
-    const dropTables = [
-      'DROP TABLE IF EXISTS comments',
-      'DROP TABLE IF EXISTS reviews', 
-      'DROP TABLE IF EXISTS pr_metadata'
-    ];
-    
-    dropTables.forEach(sql => {
-      db.run(sql, (error) => {
-        if (error) {
-          console.error('Error dropping table:', error.message);
-          db.run('ROLLBACK');
-          reject(error);
-          return;
-        }
-      });
-    });
-    
-    // Create tables
+    // Create tables (only if they don't exist)
     Object.values(SCHEMA_SQL).forEach(sql => {
       db.run(sql, (error) => {
         if (error) {
@@ -142,7 +124,7 @@ function setupSchema(db, resolve, reject) {
       });
     });
     
-    // Create indexes
+    // Create indexes (only if they don't exist)
     INDEX_SQL.forEach(sql => {
       db.run(sql, (error) => {
         if (error) {
@@ -256,11 +238,37 @@ function run(db, sql, params = []) {
   });
 }
 
+/**
+ * Check database status and table counts (for debugging)
+ * @param {sqlite3.Database} db - Database instance
+ * @returns {Promise<Object>} Database status information
+ */
+async function getDatabaseStatus(db) {
+  try {
+    const tables = await query(db, `
+      SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'
+    `);
+    
+    const status = { tables: {}, total_records: 0 };
+    
+    for (const table of tables) {
+      const count = await queryOne(db, `SELECT COUNT(*) as count FROM ${table.name}`);
+      status.tables[table.name] = count.count;
+      status.total_records += count.count;
+    }
+    
+    return status;
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
 module.exports = {
   initializeDatabase,
   closeDatabase,
   query,
   queryOne,
   run,
+  getDatabaseStatus,
   DB_PATH
 };

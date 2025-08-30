@@ -22,6 +22,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     // Get PR metadata from database
     const prMetadata = await queryOne(req.app.get('db'), `
       SELECT 
+        id,
         pr_number,
         repository,
         title,

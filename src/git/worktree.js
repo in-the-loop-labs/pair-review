@@ -40,7 +40,17 @@ class GitWorktreeManager {
       
       // Create worktree and checkout to base branch
       console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch}...`);
-      await git.raw(['worktree', 'add', worktreePath, `origin/${prData.base_branch}`]);
+      try {
+        await git.raw(['worktree', 'add', worktreePath, `origin/${prData.base_branch}`]);
+      } catch (worktreeError) {
+        // If worktree creation fails due to existing registration, try with --force
+        if (worktreeError.message.includes('already registered')) {
+          console.log('Worktree already registered, trying with --force...');
+          await git.raw(['worktree', 'add', '--force', worktreePath, `origin/${prData.base_branch}`]);
+        } else {
+          throw worktreeError;
+        }
+      }
       
       // Create git instance for the worktree
       const worktreeGit = simpleGit(worktreePath);
@@ -162,25 +172,27 @@ class GitWorktreeManager {
    */
   async cleanupWorktree(worktreePath) {
     try {
+      // First try to prune any stale worktree registrations
+      await this.pruneWorktrees();
+      
       // Check if worktree exists
       const exists = await this.pathExists(worktreePath);
-      if (!exists) {
-        return;
-      }
-
-      // Try to remove via git worktree remove first (cleaner)
+      
+      // Try to remove via git worktree remove first (handles both directory and registration)
       try {
         const parentGit = simpleGit(path.dirname(worktreePath));
         await parentGit.raw(['worktree', 'remove', '--force', worktreePath]);
         console.log(`Removed worktree via git: ${worktreePath}`);
         return;
       } catch (gitError) {
-        console.log('Git worktree remove failed, trying filesystem removal...');
+        console.log('Git worktree remove failed, trying manual cleanup...');
       }
 
-      // Fallback: remove directory manually
-      await this.removeDirectory(worktreePath);
-      console.log(`Removed worktree directory: ${worktreePath}`);
+      // If directory exists, remove it manually
+      if (exists) {
+        await this.removeDirectory(worktreePath);
+        console.log(`Removed worktree directory: ${worktreePath}`);
+      }
       
     } catch (error) {
       console.warn(`Warning: Could not cleanup worktree at ${worktreePath}: ${error.message}`);
@@ -275,6 +287,22 @@ class GitWorktreeManager {
     } catch (error) {
       console.warn(`Warning: Could not find worktrees by pattern: ${error.message}`);
       return [];
+    }
+  }
+
+  /**
+   * Prune stale worktree registrations
+   * @returns {Promise<void>}
+   */
+  async pruneWorktrees() {
+    try {
+      // Find the parent git repository to prune from
+      // We need to find any git repo to run the prune command
+      const git = simpleGit(process.cwd());
+      await git.raw(['worktree', 'prune']);
+      console.log('Pruned stale worktree registrations');
+    } catch (error) {
+      console.log('Could not prune worktrees (this is normal if not in a git repo):', error.message);
     }
   }
 
