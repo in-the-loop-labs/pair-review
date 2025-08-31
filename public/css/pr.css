@@ -1681,7 +1681,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   position: fixed;
   right: 0;
   top: 60px;
-  width: 280px;
+  width: min(320px, 25vw);
+  min-width: 240px;
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-primary);
   border-radius: 6px 0 0 6px;
@@ -1929,7 +1930,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 /* Adjust main content when navigator is visible */
 .main-content.navigator-visible {
-  margin-right: 296px;
+  margin-right: min(328px, calc(25vw + 8px));
 }
 
 .main-content.navigator-collapsed {
@@ -1937,13 +1938,23 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 /* Responsive design for navigator */
+@media (max-width: 1400px) {
+  .suggestion-navigator {
+    width: min(280px, 30vw);
+  }
+  
+  .main-content.navigator-visible {
+    margin-right: min(288px, calc(30vw + 8px));
+  }
+}
+
 @media (max-width: 1200px) {
   .suggestion-navigator {
     width: 240px;
   }
   
   .main-content.navigator-visible {
-    margin-right: 256px;
+    margin-right: 248px;
   }
 }
 
