@@ -578,11 +578,20 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
     }
 
     // Update suggestion status
-    await run(db, `
-      UPDATE comments 
-      SET status = ?, adopted_as_id = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [status, adoptedAsId, id]);
+    // When restoring to active, we need to clear adopted_as_id
+    if (status === 'active') {
+      await run(db, `
+        UPDATE comments 
+        SET status = ?, adopted_as_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [status, id]);
+    } else {
+      await run(db, `
+        UPDATE comments 
+        SET status = ?, adopted_as_id = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [status, adoptedAsId, id]);
+    }
 
     res.json({ 
       success: true,

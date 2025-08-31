@@ -94,7 +94,7 @@ async function startServer(sharedDb = null) {
       console.log('Using shared database instance...');
       db = sharedDb;
     } else {
-      console.log('Initializing new database instance...');
+      console.log('Connecting to database...');
       db = await initializeDatabase();
     }
     

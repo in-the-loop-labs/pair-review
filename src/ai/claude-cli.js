@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 const path = require('path');
+const logger = require('../utils/logger');
 
 class ClaudeCLI {
   constructor() {
@@ -17,11 +18,14 @@ class ClaudeCLI {
     return new Promise((resolve, reject) => {
       const { cwd = process.cwd(), timeout = 300000 } = options; // 5 minute default timeout
       
-      console.log('[AI] Executing Claude CLI...');
+      logger.info('Executing Claude CLI...');
       
       const claude = spawn(this.command, this.args, {
         cwd,
-        env: { ...process.env },
+        env: { 
+          ...process.env,
+          PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin'
+        },
         shell: false
       });
 
@@ -52,7 +56,7 @@ class ClaudeCLI {
         if (timeoutId) clearTimeout(timeoutId);
         
         if (code !== 0) {
-          console.error('[AI] Claude CLI error:', stderr);
+          logger.error(`Claude CLI error: ${stderr}`);
           reject(new Error(`Claude CLI exited with code ${code}: ${stderr}`));
           return;
         }
@@ -62,15 +66,15 @@ class ClaudeCLI {
           const jsonMatch = stdout.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0]);
-            console.log('[AI] Successfully parsed JSON response');
+            logger.success('Successfully parsed JSON response');
             resolve(parsed);
           } else {
             // Return raw text if no JSON found
-            console.log('[AI] Returning raw text response');
+            logger.info('Returning raw text response');
             resolve({ raw: stdout, parsed: false });
           }
         } catch (error) {
-          console.warn('[AI] Failed to parse JSON, returning raw text:', error.message);
+          logger.warn(`Failed to parse JSON, returning raw text: ${error.message}`);
           resolve({ raw: stdout, parsed: false });
         }
       });
@@ -80,10 +84,10 @@ class ClaudeCLI {
         if (timeoutId) clearTimeout(timeoutId);
         
         if (error.code === 'ENOENT') {
-          console.error('[AI] Claude CLI not found. Please ensure Claude CLI is installed.');
+          logger.error('Claude CLI not found. Please ensure Claude CLI is installed.');
           reject(new Error('Claude CLI not found. Please install it and ensure it\'s in your PATH.'));
         } else {
-          console.error('[AI] Claude process error:', error);
+          logger.error(`Claude process error: ${error}`);
           reject(error);
         }
       });
@@ -103,7 +107,7 @@ class ClaudeCLI {
       const result = await this.execute('Respond with just: {"status": "ok"}', { timeout: 10000 });
       return result.status === 'ok' || result.raw?.includes('ok');
     } catch (error) {
-      console.error('[AI] Claude CLI not available:', error.message);
+      logger.warn(`Claude CLI not available: ${error.message}`);
       return false;
     }
   }
