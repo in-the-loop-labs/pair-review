@@ -53,12 +53,15 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - **File Tree**: Hierarchical folder structure with expand/collapse functionality
   - **Diff Viewer**: GitHub-styled diff display using Diff2Html with custom enhancements
   - **Context Expansion**: Expandable sections for hidden lines between diff blocks
+  - **Progress Modal**: AI analysis progress display with 3-level structure
+  - **Status Indicator**: Background analysis status in toolbar
   - **Responsive Design**: Auto-collapses sidebar on mobile, maintains usability
 - **Architecture**:
-  - **No Tabs**: Replaced tab-based layout with sidebar + main content layout
+  - **Component-Based**: Modular JavaScript components for modal and status indicator
   - **Single-View**: All files displayed in single scrollable diff with file navigation
   - **CSS Variables**: Theme support with light/dark mode capabilities
   - **Event-Driven**: File tree clicks scroll to corresponding diff sections
+  - **Real-time Updates**: SSE connection for live progress updates
 
 ## Data Flow
 
@@ -76,6 +79,16 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - **Single Instance**: Main.js creates database, passes to server
 - **Persistent Storage**: Database preserves data between application runs
 - **Schema Evolution**: Uses `CREATE IF NOT EXISTS` for safe schema updates
+
+### AI Analysis Progress Architecture (Phase 4.2)
+- **Modal-Based UI**: Progress modal shows 3-level analysis structure
+  - Level 1: Analyzing diff (implemented)
+  - Level 2: File context (placeholder)
+  - Level 3: Codebase context (placeholder)
+- **Background Execution**: Modal can be dismissed to run in background
+- **Status Indicator**: Toolbar indicator shows progress when in background
+- **Real-time Updates**: Server-Sent Events (SSE) for live progress streaming
+- **Progress Broadcasting**: Server broadcasts status changes to connected clients
 
 ## Key Fixes Implemented
 
@@ -124,11 +137,18 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - ✅ Color-coded line changes (additions/deletions/context)
 - ✅ Proper line numbering and file headers
 - ✅ Theme support (CSS variables for light/dark modes)
+- ✅ AI analysis progress modal with 3-level structure
+- ✅ Background execution with status indicator
+- ✅ Real-time progress updates via SSE
+- ✅ AI suggestion display and management (adopt/dismiss)
 
 ### API Endpoints Verified
 - ✅ `/api/pr/owner/repo/number` - Returns full PR data
 - ✅ `/api/pr/owner/repo/number/diff` - Returns diff and file changes
 - ✅ `/api/pr/owner/repo/number/comments` - Returns comments (empty for now)
+- ✅ `/api/analyze/owner/repo/number` - Start AI analysis (POST)
+- ✅ `/api/analyze/status/id` - Get analysis status
+- ✅ `/api/pr/id/ai-suggestions/status` - SSE endpoint for real-time progress
 
 ### Database Schema
 ```sql

@@ -222,6 +222,13 @@ class PRManager {
     // Load files and display them in sidebar and main content
     this.loadAndDisplayFiles();
     
+    // Ensure status indicator is properly positioned in the header
+    setTimeout(() => {
+      if (window.statusIndicator) {
+        window.statusIndicator.repositionInHeader();
+      }
+    }, 100);
+    
     // Check if there are existing AI suggestions and load them
     setTimeout(async () => {
       console.log('[UI] Checking for existing AI suggestions...');
@@ -1021,7 +1028,7 @@ class PRManager {
       const btn = document.querySelector('button[onclick*="triggerAIAnalysis"]');
       if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+        btn.innerHTML = '<span class="spinner"></span> Starting...';
       }
 
       // Start AI analysis
@@ -1036,8 +1043,16 @@ class PRManager {
 
       const result = await response.json();
       
-      // Poll for analysis status
-      this.pollAnalysisStatus(result.analysisId, btn);
+      // Show progress modal
+      if (window.progressModal) {
+        window.progressModal.show(result.analysisId);
+      }
+      
+      // Reset button
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = 'Analyze with AI';
+      }
       
     } catch (error) {
       console.error('Error triggering AI analysis:', error);
@@ -1052,56 +1067,6 @@ class PRManager {
     }
   }
 
-  /**
-   * Poll for analysis status
-   */
-  async pollAnalysisStatus(analysisId, button) {
-    const checkStatus = async () => {
-      try {
-        const response = await fetch(`/api/analyze/status/${analysisId}`);
-        const status = await response.json();
-
-        if (status.status === 'completed') {
-          console.log('[UI] Analysis completed, loading suggestions...');
-          
-          // Analysis complete, load suggestions
-          // Add a small delay to ensure DOM is ready
-          setTimeout(async () => {
-            await this.loadAISuggestions();
-          }, 500);
-          
-          if (button) {
-            button.disabled = false;
-            button.innerHTML = '✓ Analysis Complete';
-            setTimeout(() => {
-              button.innerHTML = 'Analyze with AI';
-            }, 3000);
-          }
-        } else if (status.status === 'failed') {
-          throw new Error(status.error || 'Analysis failed');
-        } else {
-          // Still running, check again
-          setTimeout(checkStatus, 2000);
-          
-          if (button && status.progress) {
-            button.innerHTML = `<span class="spinner"></span> ${status.progress}`;
-          }
-        }
-      } catch (error) {
-        console.error('Error checking analysis status:', error);
-        
-        if (button) {
-          button.disabled = false;
-          button.innerHTML = 'Analyze with AI';
-        }
-        
-        this.showError('Failed to check analysis status: ' + error.message);
-      }
-    };
-
-    // Start polling
-    checkStatus();
-  }
 
   /**
    * Load and display AI suggestions

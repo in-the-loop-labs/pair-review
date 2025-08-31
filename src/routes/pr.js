@@ -12,6 +12,9 @@ const router = express.Router();
 // Store active analysis runs in memory for status tracking
 const activeAnalyses = new Map();
 
+// Store SSE clients for real-time progress updates
+const progressClients = new Map();
+
 /**
  * Get pull request data by owner, repo, and number
  */
@@ -370,15 +373,21 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     const analysisId = uuidv4();
     
     // Store analysis status
-    activeAnalyses.set(analysisId, {
+    const initialStatus = {
       id: analysisId,
       prNumber,
       repository,
-      status: 'running',
+      status: 'started',
       level: 1,
       startedAt: new Date().toISOString(),
-      progress: 'Starting Level 1 analysis...'
-    });
+      progress: 'Starting Level 1 analysis...',
+      filesAnalyzed: 0,
+      filesRemaining: 0
+    };
+    activeAnalyses.set(analysisId, initialStatus);
+    
+    // Broadcast initial status
+    broadcastProgress(analysisId, initialStatus);
 
     // Create analyzer instance
     const analyzer = new Analyzer(req.app.get('db'));
@@ -389,6 +398,17 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
     
+    // Update status to running and broadcast
+    setTimeout(() => {
+      const runningStatus = {
+        ...activeAnalyses.get(analysisId),
+        status: 'running',
+        progress: 'Analyzing diff hunks...'
+      };
+      activeAnalyses.set(analysisId, runningStatus);
+      broadcastProgress(analysisId, runningStatus);
+    }, 1000);
+
     // Start analysis asynchronously
     analyzer.analyzeLevel1(prMetadata.id, worktreePath)
       .then(result => {
@@ -404,23 +424,36 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           logger.log('Result', `${icon} ${s.type}: ${s.title} (${s.file}:${s.line_start})`, 'green');
         });
         
-        activeAnalyses.set(analysisId, {
+        const completedStatus = {
           ...activeAnalyses.get(analysisId),
           status: 'completed',
+          level: 1,
+          completedLevel: 1,
           completedAt: new Date().toISOString(),
           result,
-          progress: `Analysis complete: ${result.suggestions.length} suggestions found`
-        });
+          progress: `Analysis complete: ${result.suggestions.length} suggestions found`,
+          filesAnalyzed: result.suggestions.length,
+          filesRemaining: 0
+        };
+        activeAnalyses.set(analysisId, completedStatus);
+        
+        // Broadcast completion status
+        broadcastProgress(analysisId, completedStatus);
       })
       .catch(error => {
         logger.error(`Analysis failed for PR #${prNumber}: ${error.message}`);
-        activeAnalyses.set(analysisId, {
+        const failedStatus = {
           ...activeAnalyses.get(analysisId),
           status: 'failed',
+          level: 1,
           completedAt: new Date().toISOString(),
           error: error.message,
           progress: 'Analysis failed'
-        });
+        };
+        activeAnalyses.set(analysisId, failedStatus);
+        
+        // Broadcast failure status
+        broadcastProgress(analysisId, failedStatus);
       });
 
     // Return analysis ID immediately
@@ -606,6 +639,91 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
     });
   }
 });
+
+/**
+ * Server-Sent Events endpoint for AI analysis progress
+ */
+router.get('/api/pr/:id/ai-suggestions/status', (req, res) => {
+  const analysisId = req.params.id;
+  
+  // Set up SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Cache-Control'
+  });
+
+  // Send initial connection message
+  res.write('data: {"type":"connected","message":"Connected to progress stream"}\n\n');
+
+  // Store client for this analysis
+  if (!progressClients.has(analysisId)) {
+    progressClients.set(analysisId, new Set());
+  }
+  progressClients.get(analysisId).add(res);
+
+  // Send current status if analysis exists
+  const currentStatus = activeAnalyses.get(analysisId);
+  if (currentStatus) {
+    res.write(`data: ${JSON.stringify({
+      type: 'progress',
+      ...currentStatus
+    })}\n\n`);
+  }
+
+  // Handle client disconnect
+  req.on('close', () => {
+    const clients = progressClients.get(analysisId);
+    if (clients) {
+      clients.delete(res);
+      if (clients.size === 0) {
+        progressClients.delete(analysisId);
+      }
+    }
+  });
+
+  req.on('error', () => {
+    const clients = progressClients.get(analysisId);
+    if (clients) {
+      clients.delete(res);
+      if (clients.size === 0) {
+        progressClients.delete(analysisId);
+      }
+    }
+  });
+});
+
+/**
+ * Broadcast progress update to all connected SSE clients
+ * @param {string} analysisId - Analysis ID
+ * @param {Object} progressData - Progress data to broadcast
+ */
+function broadcastProgress(analysisId, progressData) {
+  const clients = progressClients.get(analysisId);
+  if (clients && clients.size > 0) {
+    const message = `data: ${JSON.stringify({
+      type: 'progress',
+      ...progressData
+    })}\n\n`;
+    
+    // Send to all connected clients
+    clients.forEach(client => {
+      try {
+        client.write(message);
+      } catch (error) {
+        // Remove dead clients
+        clients.delete(client);
+      }
+    });
+    
+    // Clean up if no clients left
+    if (clients.size === 0) {
+      progressClients.delete(analysisId);
+    }
+  }
+}
 
 /**
  * Health check for PR API

@@ -138,6 +138,7 @@
 .pr-actions {
   display: flex;
   gap: 8px;
+  position: relative;
 }
 
 /* PR Stats */
@@ -1337,4 +1338,271 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 [data-theme="dark"] .btn-restore:hover {
   background-color: var(--color-bg-secondary);
+}
+
+/* Progress Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+.modal-container {
+  position: relative;
+  width: 480px;
+  height: 320px;
+  background: var(--color-bg-primary, #ffffff);
+  border-radius: 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default, #d1d9e0);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 24px 16px 24px;
+  border-bottom: 1px solid var(--color-border-default, #d1d9e0);
+}
+
+.modal-header h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-primary, #24292f);
+  margin: 0;
+}
+
+.modal-close-btn {
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--color-text-secondary, #656d76);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-close-btn:hover {
+  background: var(--color-bg-tertiary, #f6f8fa);
+  color: var(--color-text-primary, #24292f);
+}
+
+.modal-body {
+  padding: 16px 24px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.progress-levels {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.progress-level {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.level-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.level-icon .icon {
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.level-icon .icon.pending {
+  color: #656d76;
+}
+
+.level-icon .icon.active {
+  color: #1a7f37;
+}
+
+.level-icon .icon.completed {
+  color: #1a7f37;
+}
+
+.level-icon .icon.error {
+  color: #cf222e;
+}
+
+.level-content {
+  flex: 1;
+}
+
+.level-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary, #24292f);
+  margin-bottom: 4px;
+}
+
+.level-status {
+  font-size: 13px;
+  color: var(--color-text-secondary, #656d76);
+  margin-bottom: 6px;
+}
+
+.level-files {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+}
+
+.files-analyzed {
+  color: #1a7f37;
+}
+
+.files-remaining {
+  color: #656d76;
+}
+
+.modal-footer {
+  padding: 16px 24px 24px 24px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--color-border-default, #d1d9e0);
+}
+
+.modal-footer .btn {
+  padding: 8px 16px;
+  font-size: 14px;
+}
+
+/* Status Indicator Styles */
+.status-indicator {
+  display: none;
+  align-items: center;
+  background: var(--color-bg-secondary, #f6f8fa);
+  border: 1px solid var(--color-border-secondary, #d1d9e0);
+  border-radius: 6px;
+  padding: 6px 8px;
+  position: absolute;
+  right: 16px;
+  font-size: 13px;
+  color: var(--color-text-secondary, #656d76);
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.status-indicator:hover {
+  background: var(--color-bg-tertiary, #f0f3f6);
+  border-color: var(--color-border-default, #d1d9e0);
+}
+
+.status-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.status-icon.spinning .spinner {
+  animation: spin 1s linear infinite;
+}
+
+.status-icon.success {
+  color: #1a7f37;
+}
+
+.status-icon.error {
+  color: #cf222e;
+}
+
+.status-text {
+  white-space: nowrap;
+}
+
+.status-close {
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  border-radius: 3px;
+  color: var(--color-text-tertiary, #8c959f);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.status-close:hover {
+  background: var(--color-bg-tertiary, #f0f3f6);
+  color: var(--color-text-secondary, #656d76);
+}
+
+/* Dark theme adjustments for modal */
+[data-theme="dark"] .modal-container {
+  background: var(--color-bg-primary);
+  border-color: var(--color-border-default);
+}
+
+[data-theme="dark"] .modal-header {
+  border-color: var(--color-border-default);
+}
+
+[data-theme="dark"] .modal-footer {
+  border-color: var(--color-border-default);
+}
+
+[data-theme="dark"] .modal-close-btn:hover {
+  background: var(--color-bg-secondary);
+}
+
+[data-theme="dark"] .status-indicator {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-secondary);
+}
+
+[data-theme="dark"] .status-indicator:hover {
+  background: var(--color-bg-tertiary);
+}
+
+[data-theme="dark"] .status-close:hover {
+  background: var(--color-bg-tertiary);
 }
