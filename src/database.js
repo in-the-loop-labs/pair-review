@@ -23,8 +23,8 @@ const SCHEMA_SQL = {
     )
   `,
   
-  comments: `
-    CREATE TABLE IF NOT EXISTS comments (
+  comments_old: `
+    CREATE TABLE IF NOT EXISTS comments_old (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       review_id INTEGER NOT NULL,
       file_path TEXT NOT NULL,
@@ -34,6 +34,36 @@ const SCHEMA_SQL = {
       status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'adopted', 'discarded')),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (review_id) REFERENCES reviews (id) ON DELETE CASCADE
+    )
+  `,
+  
+  comments: `
+    CREATE TABLE IF NOT EXISTS comments (
+      id INTEGER PRIMARY KEY,
+      pr_id INTEGER,
+      source TEXT,
+      author TEXT,
+      
+      ai_run_id TEXT,
+      ai_level INTEGER,
+      ai_confidence REAL,
+      
+      file TEXT,
+      line_start INTEGER,
+      line_end INTEGER,
+      type TEXT,
+      title TEXT,
+      body TEXT,
+      
+      status TEXT DEFAULT 'active',
+      adopted_as_id INTEGER,
+      parent_id INTEGER,
+      
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      
+      FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
+      FOREIGN KEY (parent_id) REFERENCES comments(id)
     )
   `,
   
@@ -60,8 +90,9 @@ const SCHEMA_SQL = {
  */
 const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
-  'CREATE INDEX IF NOT EXISTS idx_comments_review ON comments(review_id)',
-  'CREATE INDEX IF NOT EXISTS idx_comments_file ON comments(file_path, line_number)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)'
 ];
 

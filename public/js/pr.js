@@ -1000,11 +1000,263 @@ class PRManager {
 
 
   /**
-   * Trigger AI analysis (placeholder)
+   * Trigger AI analysis
    */
   async triggerAIAnalysis() {
-    // TODO: Implement AI analysis trigger
-    alert('AI Analysis will be implemented in the next phase');
+    if (!this.currentPR) {
+      this.showError('No PR loaded');
+      return;
+    }
+
+    const { owner, repo, number } = this.currentPR;
+    
+    try {
+      // Update button to show loading state
+      const btn = document.querySelector('button[onclick*="triggerAIAnalysis"]');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+      }
+
+      // Start AI analysis
+      const response = await fetch(`/api/analyze/${owner}/${repo}/${number}`, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to start AI analysis');
+      }
+
+      const result = await response.json();
+      
+      // Poll for analysis status
+      this.pollAnalysisStatus(result.analysisId, btn);
+      
+    } catch (error) {
+      console.error('Error triggering AI analysis:', error);
+      this.showError('Failed to start AI analysis: ' + error.message);
+      
+      // Reset button
+      const btn = document.querySelector('button[onclick*="triggerAIAnalysis"]');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = 'Analyze with AI';
+      }
+    }
+  }
+
+  /**
+   * Poll for analysis status
+   */
+  async pollAnalysisStatus(analysisId, button) {
+    const checkStatus = async () => {
+      try {
+        const response = await fetch(`/api/analyze/status/${analysisId}`);
+        const status = await response.json();
+
+        if (status.status === 'completed') {
+          // Analysis complete, load suggestions
+          await this.loadAISuggestions();
+          
+          if (button) {
+            button.disabled = false;
+            button.innerHTML = '✓ Analysis Complete';
+            setTimeout(() => {
+              button.innerHTML = 'Analyze with AI';
+            }, 3000);
+          }
+        } else if (status.status === 'failed') {
+          throw new Error(status.error || 'Analysis failed');
+        } else {
+          // Still running, check again
+          setTimeout(checkStatus, 2000);
+          
+          if (button && status.progress) {
+            button.innerHTML = `<span class="spinner"></span> ${status.progress}`;
+          }
+        }
+      } catch (error) {
+        console.error('Error checking analysis status:', error);
+        
+        if (button) {
+          button.disabled = false;
+          button.innerHTML = 'Analyze with AI';
+        }
+        
+        this.showError('Failed to check analysis status: ' + error.message);
+      }
+    };
+
+    // Start polling
+    checkStatus();
+  }
+
+  /**
+   * Load and display AI suggestions
+   */
+  async loadAISuggestions() {
+    if (!this.currentPR) return;
+
+    const { owner, repo, number } = this.currentPR;
+
+    try {
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/ai-suggestions`);
+      
+      if (!response.ok) {
+        throw new Error('Failed to load AI suggestions');
+      }
+
+      const data = await response.json();
+      const suggestions = data.suggestions || [];
+
+      console.log(`Loaded ${suggestions.length} AI suggestions`);
+
+      // Display suggestions inline with the diff
+      this.displayAISuggestions(suggestions);
+
+    } catch (error) {
+      console.error('Error loading AI suggestions:', error);
+    }
+  }
+
+  /**
+   * Display AI suggestions inline with diff
+   */
+  displayAISuggestions(suggestions) {
+    // Group suggestions by file and line
+    const suggestionsByLocation = {};
+    
+    suggestions.forEach(suggestion => {
+      const key = `${suggestion.file}:${suggestion.line_start}`;
+      if (!suggestionsByLocation[key]) {
+        suggestionsByLocation[key] = [];
+      }
+      suggestionsByLocation[key].push(suggestion);
+    });
+
+    // Find diff rows and insert suggestions
+    Object.entries(suggestionsByLocation).forEach(([location, locationSuggestions]) => {
+      const [file, lineStr] = location.split(':');
+      const line = parseInt(lineStr);
+      
+      // Find the diff row for this file and line
+      const fileElement = document.querySelector(`[data-file-path="${file}"]`);
+      if (!fileElement) return;
+
+      // Find the line in the diff
+      const lineRows = fileElement.querySelectorAll('tr');
+      lineRows.forEach(row => {
+        const lineNum = row.querySelector('.line-num-new')?.textContent?.trim();
+        if (lineNum && parseInt(lineNum) === line) {
+          // Insert suggestion after this row
+          const suggestionRow = this.createSuggestionRow(locationSuggestions);
+          row.parentNode.insertBefore(suggestionRow, row.nextSibling);
+        }
+      });
+    });
+  }
+
+  /**
+   * Create a suggestion row for display
+   */
+  createSuggestionRow(suggestions) {
+    const tr = document.createElement('tr');
+    tr.className = 'ai-suggestion-row';
+    
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'ai-suggestion-cell';
+    
+    suggestions.forEach(suggestion => {
+      const suggestionDiv = document.createElement('div');
+      suggestionDiv.className = `ai-suggestion ai-type-${suggestion.type}`;
+      suggestionDiv.dataset.suggestionId = suggestion.id;
+      
+      suggestionDiv.innerHTML = `
+        <div class="ai-suggestion-header">
+          <span class="ai-badge">AI</span>
+          <span class="type-badge type-${suggestion.type}">${suggestion.type}</span>
+          <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
+          ${suggestion.ai_confidence ? `<span class="confidence">${Math.round(suggestion.ai_confidence * 100)}% confident</span>` : ''}
+        </div>
+        <div class="ai-suggestion-body">
+          ${this.escapeHtml(suggestion.body || '')}
+        </div>
+        <div class="ai-suggestion-actions">
+          <button class="btn btn-sm btn-primary" onclick="prManager.adoptSuggestion(${suggestion.id})">
+            Adopt
+          </button>
+          <button class="btn btn-sm btn-secondary" onclick="prManager.dismissSuggestion(${suggestion.id})">
+            Dismiss
+          </button>
+        </div>
+      `;
+      
+      td.appendChild(suggestionDiv);
+    });
+    
+    tr.appendChild(td);
+    return tr;
+  }
+
+  /**
+   * Adopt an AI suggestion
+   */
+  async adoptSuggestion(suggestionId) {
+    try {
+      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ status: 'adopted' })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to adopt suggestion');
+      }
+
+      // Hide the suggestion and show as adopted
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      if (suggestionDiv) {
+        suggestionDiv.classList.add('adopted');
+        suggestionDiv.querySelector('.ai-suggestion-actions').innerHTML = '<span class="adopted-label">✓ Adopted</span>';
+      }
+
+    } catch (error) {
+      console.error('Error adopting suggestion:', error);
+      alert('Failed to adopt suggestion');
+    }
+  }
+
+  /**
+   * Dismiss an AI suggestion
+   */
+  async dismissSuggestion(suggestionId) {
+    try {
+      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ status: 'dismissed' })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to dismiss suggestion');
+      }
+
+      // Hide the suggestion
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      if (suggestionDiv) {
+        suggestionDiv.style.display = 'none';
+      }
+
+    } catch (error) {
+      console.error('Error dismissing suggestion:', error);
+      alert('Failed to dismiss suggestion');
+    }
   }
 
   /**
