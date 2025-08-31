@@ -524,20 +524,20 @@
 .container {
   display: flex;
   width: 100%;
-  padding: 16px;
-  gap: 16px;
+  padding: 8px 8px 16px 8px;
+  gap: 8px;
 }
 
 /* Files Sidebar */
 .files-sidebar {
-  width: 260px;
+  width: 240px;
   flex-shrink: 0;
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-primary);
   border-radius: 6px;
   height: fit-content;
   position: sticky;
-  top: 88px;
+  top: 80px;
   transition: all 0.2s ease;
 }
 
@@ -730,13 +730,11 @@
 .main-content {
   flex: 1;
   min-width: 0;
-  max-width: calc(100vw - 292px);
   transition: max-width 0.2s ease, margin-left 0.2s ease;
 }
 
 .main-content.sidebar-collapsed {
-  max-width: calc(100vw - 80px);
-  margin-left: 48px;
+  margin-left: 40px;
 }
 
 .diff-header {
@@ -972,13 +970,9 @@
 }
 
 /* Responsive Design */
-.main-content {
-  max-width: calc(100vw - 32px);
-}
 
 .main-content.sidebar-collapsed {
-  max-width: calc(100vw - 80px);
-  margin-left: 48px;
+  margin-left: 40px;
 }
 
 /* Hide sidebar by default on small screens */
@@ -992,8 +986,7 @@
   }
   
   .main-content {
-    max-width: calc(100vw - 80px) !important;
-    margin-left: 48px !important;
+    margin-left: 40px !important;
   }
 
   #pr-container {
