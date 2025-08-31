@@ -315,7 +315,7 @@ class SuggestionNavigator {
         mainContent.classList.add('navigator-collapsed');
       }
     } else {
-      this.element.style.display = 'block';
+      this.element.style.display = 'flex';
       this.collapseToggle.style.display = 'none';
       
       // Adjust main content
@@ -331,7 +331,7 @@ class SuggestionNavigator {
    */
   show() {
     if (!this.isCollapsed) {
-      this.element.style.display = 'block';
+      this.element.style.display = 'flex';
     }
     this.collapseToggle.style.display = this.isCollapsed ? 'flex' : 'none';
   }

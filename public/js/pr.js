@@ -1112,6 +1112,11 @@ class PRManager {
   displayAISuggestions(suggestions) {
     console.log(`[UI] Displaying ${suggestions.length} AI suggestions`);
     
+    // Clear existing AI suggestion rows before displaying new ones
+    const existingSuggestionRows = document.querySelectorAll('.ai-suggestion-row');
+    existingSuggestionRows.forEach(row => row.remove());
+    console.log(`[UI] Removed ${existingSuggestionRows.length} existing suggestion rows`);
+    
     // Create suggestion navigator if not already created
     if (!this.suggestionNavigator && window.SuggestionNavigator) {
       console.log('[UI] Creating SuggestionNavigator instance');
@@ -1335,14 +1340,23 @@ class PRManager {
         throw new Error('Failed to dismiss suggestion');
       }
 
-      // Add collapsed class to the suggestion instead of hiding it
+      // Completely remove the AI suggestion row from DOM
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (suggestionDiv) {
-        suggestionDiv.classList.add('collapsed');
+        // Find the closest .ai-suggestion-row parent and remove it
+        const suggestionRow = suggestionDiv.closest('.ai-suggestion-row');
+        if (suggestionRow) {
+          suggestionRow.remove();
+          console.log(`[UI] Removed suggestion row for suggestion ${suggestionId}`);
+        }
       }
 
-      // Refresh the navigator
-      await this.loadAISuggestions();
+      // Update the suggestion navigator by filtering out the dismissed suggestion
+      if (this.suggestionNavigator && this.suggestionNavigator.suggestions) {
+        const updatedSuggestions = this.suggestionNavigator.suggestions.filter(s => s.id !== suggestionId);
+        this.suggestionNavigator.updateSuggestions(updatedSuggestions);
+        console.log(`[UI] Updated navigator with ${updatedSuggestions.length} remaining suggestions`);
+      }
 
     } catch (error) {
       console.error('Error dismissing suggestion:', error);
@@ -1367,13 +1381,8 @@ class PRManager {
         throw new Error('Failed to restore suggestion');
       }
 
-      // Remove collapsed class from the suggestion
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-      if (suggestionDiv) {
-        suggestionDiv.classList.remove('collapsed');
-      }
-
-      // Refresh the navigator
+      // Since we removed the DOM element completely in dismissSuggestion,
+      // we need to reload all suggestions to properly restore this one
       await this.loadAISuggestions();
 
     } catch (error) {
