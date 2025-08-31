@@ -1174,12 +1174,12 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .ai-type-security .type-badge,
 .type-security { 
-  background: #ffeef0;
-  color: #d73a49;
+  background: #fff5e1;
+  color: #fb8500;
 }
 
 .ai-type-security {
-  border-left-color: #d73a49;
+  border-left-color: #fb8500;
 }
 
 .ai-title {
@@ -1862,7 +1862,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .suggestion-item[data-type="security"] .suggestion-type-icon svg {
-  fill: #d73a49;
+  fill: #fb8500;
 }
 
 .suggestion-item[data-type="improvement"] .suggestion-type-icon svg {
