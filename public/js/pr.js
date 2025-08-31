@@ -1167,10 +1167,13 @@ class PRManager {
           lineNum = row.querySelector('.line-num-new')?.textContent?.trim();
         }
         if (!lineNum) {
-          // For custom diff rendering, check the new line cell
-          const cells = row.querySelectorAll('td');
-          if (cells.length >= 2) {
-            lineNum = cells[1]?.textContent?.trim();
+          // For custom diff rendering, check the line number cell
+          const lineNumCell = row.querySelector('.d2h-code-linenumber');
+          if (lineNumCell) {
+            const lineNum2 = lineNumCell.querySelector('.line-num2');
+            if (lineNum2) {
+              lineNum = lineNum2.textContent?.trim();
+            }
           }
         }
         

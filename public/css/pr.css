@@ -1641,23 +1641,23 @@ tr.newly-expanded .d2h-code-line-ctn {
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(
+  background: repeating-linear-gradient(
     45deg,
     #2563eb 0px,
-    #2563eb 12px,
-    #3b82f6 12px,
-    #3b82f6 24px
+    #2563eb 10px,
+    #3b82f6 10px,
+    #3b82f6 20px
   );
-  background-size: 24px 24px;
-  animation: barbershop-move 1.5s linear infinite;
+  background-size: 28px 28px; /* sqrt(20^2 + 20^2) for 45deg */
+  animation: barbershop-move 1s linear infinite;
 }
 
 @keyframes barbershop-move {
-  0% {
-    transform: translateX(0);
+  from {
+    background-position: 0 0;
   }
-  100% {
-    transform: translateX(24px);
+  to {
+    background-position: 28px 28px;
   }
 }
 
