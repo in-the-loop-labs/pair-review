@@ -1852,6 +1852,8 @@ tr.newly-expanded .d2h-code-line-ctn {
 .suggestion-type-icon svg {
   width: 16px;
   height: 16px;
+  stroke: none;
+  stroke-width: 0;
 }
 
 /* Type-specific colors for icons */
