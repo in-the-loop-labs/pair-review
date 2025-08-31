@@ -8,8 +8,10 @@ class PRManager {
     this.expandedFolders = new Set();
     this.expandedSections = new Set();
     this.currentTheme = localStorage.getItem('theme') || 'light';
+    this.suggestionNavigator = null;
     this.init();
     this.initTheme();
+    this.initSuggestionNavigator();
   }
 
   /**
@@ -1110,6 +1112,28 @@ class PRManager {
   displayAISuggestions(suggestions) {
     console.log(`[UI] Displaying ${suggestions.length} AI suggestions`);
     
+    // Create suggestion navigator if not already created
+    if (!this.suggestionNavigator && window.SuggestionNavigator) {
+      console.log('[UI] Creating SuggestionNavigator instance');
+      this.suggestionNavigator = new window.SuggestionNavigator();
+    }
+    
+    // Update the suggestion navigator
+    if (this.suggestionNavigator) {
+      this.suggestionNavigator.updateSuggestions(suggestions);
+    }
+
+    // Adjust main content layout when navigator is visible
+    const mainContent = document.querySelector('.main-content');
+    if (mainContent) {
+      const visibleSuggestions = suggestions.filter(s => s.status !== 'dismissed');
+      if (visibleSuggestions.length > 0) {
+        mainContent.classList.add('navigator-visible');
+      } else {
+        mainContent.classList.remove('navigator-visible');
+      }
+    }
+    
     // Group suggestions by file and line
     const suggestionsByLocation = {};
     
@@ -1216,13 +1240,22 @@ class PRManager {
       suggestionDiv.innerHTML = `
         <div class="ai-suggestion-header">
           <div class="ai-suggestion-header-left">
-            <span class="ai-badge">AI</span>
+            <span class="ai-indicator">
+              <svg viewBox="0 0 16 16">
+                <path d="M8.457 2.293a1 1 0 0 0-1.914 0l-.318 1.057a5.751 5.751 0 0 0-.271.425l-1.028.385a1 1 0 0 0-.518 1.524l.686.83a5.657 5.657 0 0 0 0 .533l-.686.829a1 1 0 0 0 .518 1.524l1.028.385c.076.147.167.287.271.425l.318 1.057a1 1 0 0 0 1.914 0l.318-1.057c.104-.138.195-.278.271-.425l1.028-.385a1 1 0 0 0 .518-1.524l-.686-.829a5.657 5.657 0 0 0 0-.533l.686-.83a1 1 0 0 0-.518-1.524l-1.028-.385a5.751 5.751 0 0 0-.271-.425l-.318-1.057Z"/>
+              </svg>
+            </span>
             <span class="type-badge type-${suggestion.type}">${suggestion.type}</span>
             <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
             ${suggestion.ai_confidence ? `<span class="confidence">${Math.round(suggestion.ai_confidence * 100)}% confident</span>` : ''}
           </div>
         </div>
         <div class="ai-suggestion-collapsed-content">
+          <span class="ai-indicator">
+            <svg viewBox="0 0 16 16">
+              <path d="M8.457 2.293a1 1 0 0 0-1.914 0l-.318 1.057a5.751 5.751 0 0 0-.271.425l-1.028.385a1 1 0 0 0-.518 1.524l.686.83a5.657 5.657 0 0 0 0 .533l-.686.829a1 1 0 0 0 .518 1.524l1.028.385c.076.147.167.287.271.425l.318 1.057a1 1 0 0 0 1.914 0l.318-1.057c.104-.138.195-.278.271-.425l1.028-.385a1 1 0 0 0 .518-1.524l-.686-.829a5.657 5.657 0 0 0 0-.533l.686-.83a1 1 0 0 0-.518-1.524l-1.028-.385a5.751 5.751 0 0 0-.271-.425l-.318-1.057Z"/>
+            </svg>
+          </span>
           <span class="collapsed-text">Hidden AI suggestion</span>
           <span class="type-badge type-${suggestion.type}">${suggestion.type}</span>
           <span class="collapsed-title">${this.escapeHtml(suggestion.title || '')}</span>
@@ -1276,6 +1309,9 @@ class PRManager {
         suggestionDiv.querySelector('.ai-suggestion-actions').innerHTML = '<span class="adopted-label">✓ Adopted</span>';
       }
 
+      // Refresh the navigator
+      await this.loadAISuggestions();
+
     } catch (error) {
       console.error('Error adopting suggestion:', error);
       alert('Failed to adopt suggestion');
@@ -1305,6 +1341,9 @@ class PRManager {
         suggestionDiv.classList.add('collapsed');
       }
 
+      // Refresh the navigator
+      await this.loadAISuggestions();
+
     } catch (error) {
       console.error('Error dismissing suggestion:', error);
       alert('Failed to dismiss suggestion');
@@ -1333,6 +1372,9 @@ class PRManager {
       if (suggestionDiv) {
         suggestionDiv.classList.remove('collapsed');
       }
+
+      // Refresh the navigator
+      await this.loadAISuggestions();
 
     } catch (error) {
       console.error('Error restoring suggestion:', error);
@@ -1391,6 +1433,23 @@ class PRManager {
       .replace(/\n/g, '<br>')
       .replace(/^/, '<p>')
       .replace(/$/, '</p>');
+  }
+
+  /**
+   * Initialize the suggestion navigator
+   */
+  initSuggestionNavigator() {
+    // Initialize when SuggestionNavigator is available
+    if (window.SuggestionNavigator) {
+      this.suggestionNavigator = new window.SuggestionNavigator();
+    } else {
+      // Wait for component to load
+      document.addEventListener('DOMContentLoaded', () => {
+        if (window.SuggestionNavigator) {
+          this.suggestionNavigator = new window.SuggestionNavigator();
+        }
+      });
+    }
   }
 
   /**
