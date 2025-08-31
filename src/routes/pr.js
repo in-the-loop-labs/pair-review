@@ -1,10 +1,15 @@
 const express = require('express');
-const { query, queryOne } = require('../database');
+const { query, queryOne, run } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
+const Analyzer = require('../ai/analyzer');
 const fs = require('fs').promises;
 const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();
+
+// Store active analysis runs in memory for status tracking
+const activeAnalyses = new Map();
 
 /**
  * Get pull request data by owner, repo, and number
@@ -317,6 +322,259 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
     console.error('Error retrieving file content:', error);
     res.status(500).json({ 
       error: 'Internal server error while retrieving file content' 
+    });
+  }
+});
+
+/**
+ * Trigger AI analysis for a PR
+ */
+router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
+  try {
+    const { owner, repo, pr } = req.params;
+    const prNumber = parseInt(pr);
+    
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid pull request number' 
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    
+    // Check if PR exists in database
+    const prMetadata = await queryOne(req.app.get('db'), `
+      SELECT id FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({ 
+        error: `Pull request #${prNumber} not found. Please load the PR first.` 
+      });
+    }
+
+    // Get worktree path
+    const worktreeManager = new GitWorktreeManager();
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    
+    // Check if worktree exists
+    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+      return res.status(404).json({ 
+        error: 'Worktree not found for this PR. Please reload the PR.' 
+      });
+    }
+
+    // Create analysis ID
+    const analysisId = uuidv4();
+    
+    // Store analysis status
+    activeAnalyses.set(analysisId, {
+      id: analysisId,
+      prNumber,
+      repository,
+      status: 'running',
+      level: 1,
+      startedAt: new Date().toISOString(),
+      progress: 'Starting Level 1 analysis...'
+    });
+
+    // Create analyzer instance
+    const analyzer = new Analyzer(req.app.get('db'));
+    
+    // Start analysis asynchronously
+    analyzer.analyzeLevel1(prMetadata.id, worktreePath)
+      .then(result => {
+        activeAnalyses.set(analysisId, {
+          ...activeAnalyses.get(analysisId),
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+          result,
+          progress: `Analysis complete: ${result.suggestions.length} suggestions found`
+        });
+      })
+      .catch(error => {
+        console.error('Analysis failed:', error);
+        activeAnalyses.set(analysisId, {
+          ...activeAnalyses.get(analysisId),
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          error: error.message,
+          progress: 'Analysis failed'
+        });
+      });
+
+    // Return analysis ID immediately
+    res.json({
+      analysisId,
+      status: 'started',
+      message: 'AI analysis started in background'
+    });
+    
+  } catch (error) {
+    console.error('Error starting AI analysis:', error);
+    res.status(500).json({ 
+      error: 'Failed to start AI analysis' 
+    });
+  }
+});
+
+/**
+ * Get AI analysis status
+ */
+router.get('/api/analyze/status/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const analysis = activeAnalyses.get(id);
+    
+    if (!analysis) {
+      return res.status(404).json({ 
+        error: 'Analysis not found' 
+      });
+    }
+
+    res.json(analysis);
+    
+  } catch (error) {
+    console.error('Error fetching analysis status:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch analysis status' 
+    });
+  }
+});
+
+/**
+ * Get AI suggestions for a PR
+ */
+router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+    
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid pull request number' 
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    
+    // Get PR ID
+    const prMetadata = await queryOne(req.app.get('db'), `
+      SELECT id FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({ 
+        error: `Pull request #${prNumber} not found` 
+      });
+    }
+
+    // Get AI suggestions from the new comments table
+    const suggestions = await query(req.app.get('db'), `
+      SELECT 
+        id,
+        source,
+        author,
+        ai_run_id,
+        ai_level,
+        ai_confidence,
+        file,
+        line_start,
+        line_end,
+        type,
+        title,
+        body,
+        status,
+        created_at,
+        updated_at
+      FROM comments
+      WHERE pr_id = ? AND source = 'ai' AND status = 'active'
+      ORDER BY file, line_start
+    `, [prMetadata.id]);
+
+    res.json({ suggestions });
+    
+  } catch (error) {
+    console.error('Error fetching AI suggestions:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch AI suggestions' 
+    });
+  }
+});
+
+/**
+ * Update AI suggestion status (adopt/dismiss)
+ */
+router.post('/api/ai-suggestion/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, userComment } = req.body;
+    
+    if (!['adopted', 'dismissed'].includes(status)) {
+      return res.status(400).json({ 
+        error: 'Invalid status. Must be "adopted" or "dismissed"' 
+      });
+    }
+
+    const db = req.app.get('db');
+    
+    // Get the suggestion
+    const suggestion = await queryOne(db, `
+      SELECT * FROM comments WHERE id = ? AND source = 'ai'
+    `, [id]);
+
+    if (!suggestion) {
+      return res.status(404).json({ 
+        error: 'AI suggestion not found' 
+      });
+    }
+
+    let adoptedAsId = null;
+    
+    // If adopting, create a user comment
+    if (status === 'adopted') {
+      const commentBody = userComment || suggestion.body;
+      const result = await run(db, `
+        INSERT INTO comments (
+          pr_id, source, author, file, line_start, line_end, 
+          type, title, body, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        suggestion.pr_id,
+        'user',
+        'Current User', // TODO: Get actual user from session/config
+        suggestion.file,
+        suggestion.line_start,
+        suggestion.line_end,
+        'comment',
+        suggestion.title,
+        commentBody,
+        'active'
+      ]);
+      
+      adoptedAsId = result.lastID;
+    }
+
+    // Update suggestion status
+    await run(db, `
+      UPDATE comments 
+      SET status = ?, adopted_as_id = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [status, adoptedAsId, id]);
+
+    res.json({ 
+      success: true,
+      status,
+      adoptedAsId 
+    });
+    
+  } catch (error) {
+    console.error('Error updating suggestion status:', error);
+    res.status(500).json({ 
+      error: 'Failed to update suggestion status' 
     });
   }
 });
