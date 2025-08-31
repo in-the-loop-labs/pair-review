@@ -51,6 +51,12 @@ class ProgressModal {
               <div class="level-content">
                 <div class="level-title">Level 1: Analyzing diff</div>
                 <div class="level-status">Preparing to start...</div>
+                <div class="progress-bar-container" style="display: none;">
+                  <div class="barbershop-progress-bar">
+                    <div class="barbershop-stripes"></div>
+                  </div>
+                  <div class="progress-file-text">Analyzing file 1 of 5</div>
+                </div>
                 <div class="level-files">
                   <span class="files-analyzed">✓ 0 files analyzed</span>
                   <span class="files-remaining">⏳ 0 files remaining</span>
@@ -65,6 +71,12 @@ class ProgressModal {
               <div class="level-content">
                 <div class="level-title">Level 2: File context</div>
                 <div class="level-status">Pending</div>
+                <div class="progress-bar-container" style="display: none;">
+                  <div class="barbershop-progress-bar">
+                    <div class="barbershop-stripes"></div>
+                  </div>
+                  <div class="progress-file-text">Analyzing file 1 of 5</div>
+                </div>
                 <div class="level-files">
                   <span class="files-analyzed">✓ 0 files analyzed</span>
                   <span class="files-remaining">⏳ 0 files remaining</span>
@@ -79,6 +91,12 @@ class ProgressModal {
               <div class="level-content">
                 <div class="level-title">Level 3: Codebase context</div>
                 <div class="level-status">Pending</div>
+                <div class="progress-bar-container" style="display: none;">
+                  <div class="barbershop-progress-bar">
+                    <div class="barbershop-stripes"></div>
+                  </div>
+                  <div class="progress-file-text">Analyzing file 1 of 5</div>
+                </div>
                 <div class="level-files">
                   <span class="files-analyzed">✓ 0 files analyzed</span>
                   <span class="files-remaining">⏳ 0 files remaining</span>
@@ -347,18 +365,39 @@ class ProgressModal {
     const statusText = levelElement.querySelector('.level-status');
     const analyzed = levelElement.querySelector('.files-analyzed');
     const remaining = levelElement.querySelector('.files-remaining');
+    const progressContainer = levelElement.querySelector('.progress-bar-container');
+    const progressFileText = levelElement.querySelector('.progress-file-text');
     
     // Update icon and status based on current state
     if (status.status === 'running' || status.status === 'started') {
       icon.className = 'icon active';
       icon.textContent = '▶';
-      statusText.textContent = 'In progress...';
+      
+      // Show progress bar for the current level
+      if (status.level === level && progressContainer) {
+        statusText.style.display = 'none';
+        progressContainer.style.display = 'block';
+        
+        // Update file progress text
+        if (progressFileText && status.currentFile && status.totalFiles) {
+          progressFileText.textContent = `Analyzing file ${status.currentFile} of ${status.totalFiles}`;
+        } else {
+          progressFileText.textContent = 'Analyzing files...';
+        }
+      } else {
+        // For non-current levels, show status text
+        statusText.textContent = 'In progress...';
+        if (progressContainer) {
+          progressContainer.style.display = 'none';
+        }
+        statusText.style.display = 'block';
+      }
       
       // Update file counts if available
-      if (status.filesAnalyzed !== undefined) {
+      if (status.filesAnalyzed !== undefined && status.level === level) {
         analyzed.textContent = `✓ ${status.filesAnalyzed} files analyzed`;
       }
-      if (status.filesRemaining !== undefined) {
+      if (status.filesRemaining !== undefined && status.level === level) {
         remaining.textContent = `⏳ ${status.filesRemaining} files remaining`;
       }
       
@@ -366,6 +405,18 @@ class ProgressModal {
       icon.className = 'icon completed';
       icon.textContent = '✓';
       statusText.textContent = 'Completed';
+      statusText.style.display = 'block';
+      
+      // Hide progress bar when completed
+      if (progressContainer) {
+        progressContainer.style.display = 'none';
+      }
+    } else {
+      // For pending or other states, hide progress bar
+      if (progressContainer) {
+        progressContainer.style.display = 'none';
+      }
+      statusText.style.display = 'block';
     }
     
     // Mark previous levels as complete
@@ -374,10 +425,17 @@ class ProgressModal {
       if (prevLevel) {
         const prevIcon = prevLevel.querySelector('.icon');
         const prevStatus = prevLevel.querySelector('.level-status');
+        const prevProgressContainer = prevLevel.querySelector('.progress-bar-container');
         
         prevIcon.className = 'icon completed';
         prevIcon.textContent = '✓';
         prevStatus.textContent = 'Completed';
+        prevStatus.style.display = 'block';
+        
+        // Hide progress bar for completed levels
+        if (prevProgressContainer) {
+          prevProgressContainer.style.display = 'none';
+        }
       }
     }
   }

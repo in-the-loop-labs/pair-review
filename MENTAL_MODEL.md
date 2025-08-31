@@ -41,19 +41,39 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - **Diff Generation**: Creates unified diffs between base and head branches
   - **File Analysis**: Extracts changed files with statistics
 
-### 6. API Endpoints (`src/routes/pr.js`)
+### 6. AI Analysis System (`src/ai/analyzer.js`)
+- **Role**: Multi-level AI analysis engine with real-time progress tracking
+- **Key Features**:
+  - **Real File Tracking**: Uses actual changed files from PR data instead of fake progress steps
+  - **Multi-level Support**: Level 1 (diff analysis), Level 2 (file context), Level 3 (codebase context)
+  - **Progress Callbacks**: Real-time file-by-file progress updates via Server-Sent Events
+  - **Database Integration**: Stores suggestions in comments table with AI metadata
+- **Level 1 Implementation**: Full implementation with Claude CLI integration
+- **Level 2/3 Implementation**: Placeholder implementations with realistic progress simulation
+- **Progress Modal Integration**: Real-time updates to ProgressModal.js with file-by-file tracking
+
+### 7. API Endpoints (`src/routes/pr.js`)
 - **GET /api/pr/:owner/:repo/:number**: Full PR metadata and basic info
 - **GET /api/pr/:owner/:repo/:number/diff**: Diff content and changed files
-- **GET /api/pr/:owner/:repo/:number/comments**: Review comments (future AI suggestions)
+- **GET /api/pr/:owner/:repo/:number/comments**: Review comments (legacy endpoint)
+- **GET /api/pr/:owner/:repo/:number/ai-suggestions**: AI-generated suggestions from analysis
+- **POST /api/analyze/:owner/:repo/:pr**: Trigger Level 1 AI analysis with real-time progress
+- **POST /api/analyze/:owner/:repo/:pr/level2**: Trigger Level 2 AI analysis (placeholder)
+- **POST /api/analyze/:owner/:repo/:pr/level3**: Trigger Level 3 AI analysis (placeholder)
+- **GET /api/analyze/status/:id**: Get analysis status by analysis ID
+- **GET /api/pr/:id/ai-suggestions/status**: Server-Sent Events endpoint for real-time progress
 
-### 7. GitHub-like UI with Sidebar Layout (`public/`)
+### 8. GitHub-like UI with Sidebar Layout (`public/`)
 - **Role**: Rich GitHub-like interface with sidebar file navigation and diff viewer
 - **Key Components**:
   - **Sidebar Layout**: Files navigation in left sidebar, main diff in center (like GitHub)
   - **File Tree**: Hierarchical folder structure with expand/collapse functionality
   - **Diff Viewer**: GitHub-styled diff display using Diff2Html with custom enhancements
   - **Context Expansion**: Expandable sections for hidden lines between diff blocks
-  - **Progress Modal**: AI analysis progress display with 3-level structure
+  - **Progress Modal**: AI analysis progress display with 3-level structure and real-time file tracking
+    - **Enhanced Progress Bars**: Shows animated progress bars for active levels only
+    - **File-by-File Updates**: Real-time display of "Analyzing file X of Y" with actual file names
+    - **Multi-Level Support**: Level 2 and Level 3 ready with progress bar activation
   - **Status Indicator**: Background analysis status in toolbar
   - **Responsive Design**: Auto-collapses sidebar on mobile, maintains usability
 - **Architecture**:

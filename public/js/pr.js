@@ -16,7 +16,15 @@ class PRManager {
    * Initialize PR manager
    */
   init() {
-    // Check if we have PR context from URL parameters
+    // Check if we have PR context from URL path (e.g., /pr/owner/repo/number)
+    const pathMatch = window.location.pathname.match(/^\/pr\/([^\/]+)\/([^\/]+)\/(\d+)$/);
+    if (pathMatch) {
+      const [, owner, repo, number] = pathMatch;
+      this.loadPR(owner, repo, parseInt(number));
+      return;
+    }
+    
+    // Fallback: Check if we have PR context from URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const prParam = urlParams.get('pr');
     

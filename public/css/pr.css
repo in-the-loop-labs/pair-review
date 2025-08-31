@@ -1508,22 +1508,25 @@ tr.newly-expanded .d2h-code-line-ctn {
 .status-indicator {
   display: none;
   align-items: center;
-  background: var(--color-bg-secondary, #f6f8fa);
-  border: 1px solid var(--color-border-secondary, #d1d9e0);
+  background: var(--color-bg-primary, #ffffff);
+  border: 1px solid var(--color-border-primary, #d1d9e0);
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 8px 12px;
   position: absolute;
   right: 16px;
   font-size: 13px;
-  color: var(--color-text-secondary, #656d76);
-  gap: 6px;
+  color: var(--color-text-primary, #24292f);
+  gap: 8px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  min-height: 32px;
 }
 
 .status-indicator:hover {
-  background: var(--color-bg-tertiary, #f0f3f6);
-  border-color: var(--color-border-default, #d1d9e0);
+  background: var(--color-bg-secondary, #f6f8fa);
+  border-color: var(--color-border-secondary, #d1d9e0);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
 }
 
 .status-content {
@@ -1555,6 +1558,8 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .status-text {
   white-space: nowrap;
+  font-weight: 500;
+  color: var(--color-text-primary, #24292f);
 }
 
 .status-close {
@@ -1595,14 +1600,80 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 [data-theme="dark"] .status-indicator {
-  background: var(--color-bg-secondary);
-  border-color: var(--color-border-secondary);
+  background: var(--color-bg-primary);
+  border-color: var(--color-border-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 [data-theme="dark"] .status-indicator:hover {
-  background: var(--color-bg-tertiary);
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-secondary);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .status-text {
+  color: var(--color-text-primary);
 }
 
 [data-theme="dark"] .status-close:hover {
   background: var(--color-bg-tertiary);
+}
+
+/* Barbershop Pole Progress Bar */
+.progress-bar-container {
+  margin: 8px 0;
+}
+
+.barbershop-progress-bar {
+  width: 300px;
+  height: 24px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #e5e7eb;
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.barbershop-stripes {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    45deg,
+    #2563eb 0px,
+    #2563eb 12px,
+    #3b82f6 12px,
+    #3b82f6 24px
+  );
+  background-size: 24px 24px;
+  animation: barbershop-move 1.5s linear infinite;
+}
+
+@keyframes barbershop-move {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(24px);
+  }
+}
+
+.progress-file-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+  margin: 0;
+}
+
+/* Dark theme adjustments for barbershop pole */
+[data-theme="dark"] .barbershop-progress-bar {
+  border-color: var(--color-border-primary);
+  background: var(--color-bg-tertiary);
+}
+
+[data-theme="dark"] .progress-file-text {
+  color: var(--color-text-primary);
 }

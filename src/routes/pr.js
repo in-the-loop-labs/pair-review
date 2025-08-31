@@ -331,7 +331,7 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
 });
 
 /**
- * Trigger AI analysis for a PR
+ * Trigger AI analysis for a PR (Level 1)
  */
 router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
   try {
@@ -409,8 +409,19 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       broadcastProgress(analysisId, runningStatus);
     }, 1000);
 
-    // Start analysis asynchronously
-    analyzer.analyzeLevel1(prMetadata.id, worktreePath)
+    // Create progress callback function
+    const progressCallback = (progressUpdate) => {
+      const updatedStatus = {
+        ...activeAnalyses.get(analysisId),
+        ...progressUpdate,
+        level: 1
+      };
+      activeAnalyses.set(analysisId, updatedStatus);
+      broadcastProgress(analysisId, updatedStatus);
+    };
+    
+    // Start analysis asynchronously with progress callback
+    analyzer.analyzeLevel1(prMetadata.id, worktreePath, progressCallback)
       .then(result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -433,7 +444,9 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           result,
           progress: `Analysis complete: ${result.suggestions.length} suggestions found`,
           filesAnalyzed: result.suggestions.length,
-          filesRemaining: 0
+          filesRemaining: 0,
+          currentFile: result.suggestions.length,
+          totalFiles: result.suggestions.length
         };
         activeAnalyses.set(analysisId, completedStatus);
         
@@ -467,6 +480,246 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     console.error('Error starting AI analysis:', error);
     res.status(500).json({ 
       error: 'Failed to start AI analysis' 
+    });
+  }
+});
+
+/**
+ * Trigger Level 2 AI analysis for a PR
+ */
+router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
+  try {
+    const { owner, repo, pr } = req.params;
+    const prNumber = parseInt(pr);
+    
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid pull request number' 
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    
+    // Check if PR exists in database
+    const prMetadata = await queryOne(req.app.get('db'), `
+      SELECT id FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({ 
+        error: `Pull request #${prNumber} not found. Please load the PR first.` 
+      });
+    }
+
+    // Get worktree path
+    const worktreeManager = new GitWorktreeManager();
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    
+    // Check if worktree exists
+    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+      return res.status(404).json({ 
+        error: 'Worktree not found for this PR. Please reload the PR.' 
+      });
+    }
+
+    // Create analysis ID
+    const analysisId = uuidv4();
+    
+    // Store analysis status
+    const initialStatus = {
+      id: analysisId,
+      prNumber,
+      repository,
+      status: 'started',
+      level: 2,
+      startedAt: new Date().toISOString(),
+      progress: 'Starting Level 2 analysis...',
+      filesAnalyzed: 0,
+      filesRemaining: 0
+    };
+    activeAnalyses.set(analysisId, initialStatus);
+    
+    // Broadcast initial status
+    broadcastProgress(analysisId, initialStatus);
+
+    // Create analyzer instance
+    const analyzer = new Analyzer(req.app.get('db'));
+    
+    logger.section(`Level 2 AI Analysis Request - PR #${prNumber}`);
+    logger.log('API', `Repository: ${repository}`, 'magenta');
+    logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+
+    // Create progress callback function
+    const progressCallback = (progressUpdate) => {
+      const updatedStatus = {
+        ...activeAnalyses.get(analysisId),
+        ...progressUpdate,
+        level: 2
+      };
+      activeAnalyses.set(analysisId, updatedStatus);
+      broadcastProgress(analysisId, updatedStatus);
+    };
+    
+    // Start Level 2 analysis asynchronously
+    analyzer.analyzeLevel2(prMetadata.id, worktreePath, progressCallback)
+      .then(result => {
+        const completedStatus = {
+          ...activeAnalyses.get(analysisId),
+          status: 'completed',
+          level: 2,
+          completedLevel: 2,
+          completedAt: new Date().toISOString(),
+          result,
+          progress: `Level 2 analysis complete: ${result.suggestions.length} suggestions found`
+        };
+        activeAnalyses.set(analysisId, completedStatus);
+        broadcastProgress(analysisId, completedStatus);
+      })
+      .catch(error => {
+        const failedStatus = {
+          ...activeAnalyses.get(analysisId),
+          status: 'failed',
+          level: 2,
+          completedAt: new Date().toISOString(),
+          error: error.message,
+          progress: 'Level 2 analysis failed'
+        };
+        activeAnalyses.set(analysisId, failedStatus);
+        broadcastProgress(analysisId, failedStatus);
+      });
+
+    res.json({
+      analysisId,
+      status: 'started',
+      level: 2,
+      message: 'Level 2 AI analysis started in background'
+    });
+    
+  } catch (error) {
+    console.error('Error starting Level 2 AI analysis:', error);
+    res.status(500).json({ 
+      error: 'Failed to start Level 2 AI analysis' 
+    });
+  }
+});
+
+/**
+ * Trigger Level 3 AI analysis for a PR
+ */
+router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
+  try {
+    const { owner, repo, pr } = req.params;
+    const prNumber = parseInt(pr);
+    
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid pull request number' 
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    
+    // Check if PR exists in database
+    const prMetadata = await queryOne(req.app.get('db'), `
+      SELECT id FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({ 
+        error: `Pull request #${prNumber} not found. Please load the PR first.` 
+      });
+    }
+
+    // Get worktree path
+    const worktreeManager = new GitWorktreeManager();
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    
+    // Check if worktree exists
+    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+      return res.status(404).json({ 
+        error: 'Worktree not found for this PR. Please reload the PR.' 
+      });
+    }
+
+    // Create analysis ID
+    const analysisId = uuidv4();
+    
+    // Store analysis status
+    const initialStatus = {
+      id: analysisId,
+      prNumber,
+      repository,
+      status: 'started',
+      level: 3,
+      startedAt: new Date().toISOString(),
+      progress: 'Starting Level 3 analysis...',
+      filesAnalyzed: 0,
+      filesRemaining: 0
+    };
+    activeAnalyses.set(analysisId, initialStatus);
+    
+    // Broadcast initial status
+    broadcastProgress(analysisId, initialStatus);
+
+    // Create analyzer instance
+    const analyzer = new Analyzer(req.app.get('db'));
+    
+    logger.section(`Level 3 AI Analysis Request - PR #${prNumber}`);
+    logger.log('API', `Repository: ${repository}`, 'magenta');
+    logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+
+    // Create progress callback function
+    const progressCallback = (progressUpdate) => {
+      const updatedStatus = {
+        ...activeAnalyses.get(analysisId),
+        ...progressUpdate,
+        level: 3
+      };
+      activeAnalyses.set(analysisId, updatedStatus);
+      broadcastProgress(analysisId, updatedStatus);
+    };
+    
+    // Start Level 3 analysis asynchronously
+    analyzer.analyzeLevel3(prMetadata.id, worktreePath, progressCallback)
+      .then(result => {
+        const completedStatus = {
+          ...activeAnalyses.get(analysisId),
+          status: 'completed',
+          level: 3,
+          completedLevel: 3,
+          completedAt: new Date().toISOString(),
+          result,
+          progress: `Level 3 analysis complete: ${result.suggestions.length} suggestions found`
+        };
+        activeAnalyses.set(analysisId, completedStatus);
+        broadcastProgress(analysisId, completedStatus);
+      })
+      .catch(error => {
+        const failedStatus = {
+          ...activeAnalyses.get(analysisId),
+          status: 'failed',
+          level: 3,
+          completedAt: new Date().toISOString(),
+          error: error.message,
+          progress: 'Level 3 analysis failed'
+        };
+        activeAnalyses.set(analysisId, failedStatus);
+        broadcastProgress(analysisId, failedStatus);
+      });
+
+    res.json({
+      analysisId,
+      status: 'started',
+      level: 3,
+      message: 'Level 3 AI analysis started in background'
+    });
+    
+  } catch (error) {
+    console.error('Error starting Level 3 AI analysis:', error);
+    res.status(500).json({ 
+      error: 'Failed to start Level 3 AI analysis' 
     });
   }
 });

@@ -146,6 +146,11 @@ async function startServer(sharedDb = null) {
       res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
     });
     
+    // PR display route - serves index.html with PR context
+    app.get('/pr/:owner/:repo/:number', (req, res) => {
+      res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+    });
+    
     // Health check endpoint
     app.get('/health', (req, res) => {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
