@@ -85,17 +85,34 @@ class PRManager {
   showLoadingState() {
     this.loadingState = true;
     
-    const container = document.getElementById('pr-container');
-    if (!container) return;
-
-    container.innerHTML = `
-      <div class="loading-container">
-        <div class="loading-spinner"></div>
-        <div class="loading-text">Fetching pull request...</div>
-      </div>
-    `;
+    // Show loading in the main content area if it exists, otherwise in pr-container
+    const mainContent = document.querySelector('.main-content');
+    const diffContainer = document.getElementById('diff-container');
     
-    container.style.display = 'flex';
+    if (diffContainer) {
+      // If diff container exists, show loading there
+      diffContainer.innerHTML = '<div class="loading">Fetching pull request...</div>';
+    } else if (mainContent) {
+      // If main content exists but no diff container, create loading in main content
+      mainContent.innerHTML = `
+        <div class="loading-container">
+          <div class="loading-spinner"></div>
+          <div class="loading-text">Fetching pull request...</div>
+        </div>
+      `;
+    } else {
+      // Fallback: show loading in pr-container (initial load)
+      const container = document.getElementById('pr-container');
+      if (container) {
+        container.innerHTML = `
+          <div class="loading-container">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">Fetching pull request...</div>
+          </div>
+        `;
+        container.style.display = 'flex';
+      }
+    }
   }
 
   /**
@@ -124,6 +141,43 @@ class PRManager {
     
     // Create stats display
     const stats = this.createStatsDisplay(pr);
+    
+    // First, ensure the container has the proper structure
+    if (!document.getElementById('pr-header-container')) {
+      // Create the full structure if it doesn't exist
+      container.innerHTML = `
+        <div id="pr-header-container"></div>
+        <div class="container">
+          <div class="files-sidebar" id="files-sidebar">
+            <div class="sidebar-header">
+              <h3>Files Changed</h3>
+              <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M6.823 7.823a.25.25 0 0 1 0 .354l-2.396 2.396A.25.25 0 0 1 4 10.396V5.604a.25.25 0 0 1 .427-.177Z"></path>
+                  <path d="M1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25V1.75C0 .784.784 0 1.75 0ZM1.5 1.75v12.5c0 .138.112.25.25.25H9.5v-13H1.75a.25.25 0 0 0-.25.25ZM11 14.5h3.25a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11Z"></path>
+                </svg>
+              </button>
+            </div>
+            <div id="file-list" class="file-list"></div>
+          </div>
+          <button class="sidebar-toggle-collapsed" id="sidebar-toggle-collapsed" title="Show sidebar" style="display: none;">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="m4.177 7.823 2.396-2.396A.25.25 0 0 1 7 5.604v4.792a.25.25 0 0 1-.427.177L4.177 8.177a.25.25 0 0 1 0-.354Z"></path>
+              <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25H9.5v-13Zm12.5 13a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11v13Z"></path>
+            </svg>
+          </button>
+          <div class="main-content">
+            <div class="diff-header">
+              <h2>Changes</h2>
+              <div class="diff-stats" id="diff-stats"></div>
+            </div>
+            <div id="diff-container" class="diff-container">
+              <div class="loading">Loading changes...</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
     
     // Update the header container
     const headerContainer = document.getElementById('pr-header-container');
