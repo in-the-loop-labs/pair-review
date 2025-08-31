@@ -1273,6 +1273,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 .collapsed-text {
   color: var(--color-text-tertiary);
   font-style: italic;
+  font-size: 12px;
 }
 
 .collapsed-title {
@@ -1282,6 +1283,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   white-space: nowrap;
   color: var(--color-text-secondary);
   max-width: 400px;
+  font-size: 13px;
 }
 
 .ai-suggestion-header-left {
