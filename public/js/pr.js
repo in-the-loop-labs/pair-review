@@ -1252,6 +1252,7 @@ class PRManager {
               </svg>
             </span>
             <span class="type-badge type-${suggestion.type}">${suggestion.type}</span>
+            ${suggestion.ai_level === 2 ? '<span class="level-badge level-2">File Context</span>' : ''}
             <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
             ${suggestion.ai_confidence ? `<span class="confidence">${Math.round(suggestion.ai_confidence * 100)}% confident</span>` : ''}
           </div>

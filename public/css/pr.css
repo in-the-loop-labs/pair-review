@@ -1104,6 +1104,23 @@ tr.newly-expanded .d2h-code-line-ctn {
   text-transform: uppercase;
 }
 
+.level-badge {
+  padding: 2px 6px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  margin-right: 6px;
+  border: 1px solid;
+}
+
+.level-badge.level-2 {
+  background: #f0f9ff;
+  color: #0284c7;
+  border-color: #7dd3fc;
+}
+
 /* Type-specific colors */
 .ai-type-bug .type-badge,
 .type-bug { 

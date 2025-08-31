@@ -87,17 +87,83 @@ class Analyzer {
       
       logger.success(`Level 1 analysis complete: ${suggestions.length} suggestions found`);
       
+      // After Level 1 completes, automatically start Level 2
+      let level2Result = null;
+      try {
+        logger.info('Starting Level 2 analysis automatically...');
+        
+        // Create separate progress callback for Level 2 that properly reports level
+        const level2ProgressCallback = progressCallback ? (progressUpdate) => {
+          progressCallback({
+            ...progressUpdate,
+            level: 2
+          });
+        } : null;
+        
+        level2Result = await this.analyzeLevel2(prId, worktreePath, level2ProgressCallback);
+        logger.success(`Level 2 analysis complete: ${level2Result.suggestions.length} additional suggestions found`);
+      } catch (level2Error) {
+        logger.warn(`Level 2 analysis failed, but Level 1 results are still available: ${level2Error.message}`);
+      }
+      
       return {
         runId,
         level: 1,
         suggestions,
-        summary: response.summary || `Found ${suggestions.length} suggestions`
+        summary: response.summary || `Found ${suggestions.length} suggestions`,
+        level2Result
       };
     } catch (error) {
       logger.error(`Level 1 analysis failed: ${error.message}`);
       logger.error(`Error stack: ${error.stack}`);
       throw error;
     }
+  }
+
+  /**
+   * Build the Level 2 prompt for file context analysis
+   * @param {number} prId - Pull request ID
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} fileInfo - File information including content
+   */
+  buildLevel2Prompt(prId, worktreePath, fileInfo) {
+    return `You are performing Level 2 review (File Context) for pull request #${prId}.
+
+File being analyzed: ${fileInfo.fileName}
+File path: ${fileInfo.filePath}
+File size: ${fileInfo.lineCount} lines
+
+Full file content:
+\`\`\`
+${fileInfo.content}
+\`\`\`
+
+Level 2 Focus - File Context Analysis:
+- Look for inconsistencies within this single file (naming conventions, patterns, error handling)
+- Identify missing related changes within this file (if one part changed, what else should change?)
+- Check for style violations or deviations from patterns established in this file
+- Find opportunities for improvement based on the full context of this file
+- Highlight good practices worth praising in this file's context
+
+IMPORTANT: Only suggest issues that require understanding the full file context.
+Do NOT duplicate Level 1 findings that could be found just by looking at the diff.
+
+Output JSON with this structure:
+{
+  "level": 2,
+  "suggestions": [{
+    "file": "${fileInfo.fileName}",
+    "line": 42,
+    "type": "bug|improvement|praise|suggestion|design|performance|security|style",
+    "title": "Brief title",
+    "description": "Detailed explanation mentioning why full file context was needed",
+    "suggestion": "How to fix/improve based on file context",
+    "confidence": 0.0-1.0
+  }],
+  "summary": "Brief summary of file context findings"
+}
+
+Focus on file-level consistency and context that wasn't visible in just the diff.`;
   }
 
   /**
@@ -281,36 +347,157 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
   }
 
   /**
-   * Perform Level 2 analysis (placeholder for now with real file tracking)
+   * Perform Level 2 analysis - File Context
+   * @param {number} prId - Pull request ID
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Function} progressCallback - Callback for progress updates
+   * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel2(prId, worktreePath, progressCallback = null) {
-    const changedFiles = await this.getChangedFiles(prId);
-    const totalFiles = Math.max(changedFiles.length, 3); // Minimum 3 files for demo
+    const runId = uuidv4();
     
-    // Simulate Level 2 analysis with file-by-file progress
-    for (let i = 0; i < totalFiles; i++) {
-      const fileName = changedFiles[i]?.file || `Context analysis ${i + 1}`;
+    logger.section('Level 2 Analysis Starting');
+    logger.info(`PR ID: ${prId}`);
+    logger.info(`Analysis run ID: ${runId}`);
+    logger.info(`Worktree path: ${worktreePath}`);
+    
+    try {
+      // Get changed files from PR data
+      const changedFiles = await this.getChangedFiles(prId);
+      const totalFiles = changedFiles.length;
+      let currentFileIndex = 0;
       
-      if (progressCallback) {
-        progressCallback({
-          currentFile: i + 1,
-          totalFiles: totalFiles,
-          status: 'running',
-          progress: `Analyzing context for ${fileName}...`,
-          level: 2
-        });
+      logger.info(`Found ${totalFiles} changed files to analyze at file level`);
+      
+      const updateProgress = (step, fileName = null) => {
+        const progress = fileName 
+          ? `Level 2: Analyzing file context for ${fileName} (${currentFileIndex + 1}/${totalFiles})...`
+          : `Level 2: ${step}...`;
+        
+        if (progressCallback) {
+          progressCallback({
+            currentFile: fileName ? currentFileIndex + 1 : 0,
+            totalFiles: totalFiles,
+            status: 'running',
+            progress,
+            level: 2
+          });
+        }
+        logger.info(progress);
+      };
+      
+      // Step 1: Prepare Level 2 analysis
+      updateProgress('Preparing file context analysis');
+      
+      // Filter out files that are too large (>10,000 lines)
+      const analyzeableFiles = [];
+      let suggestions = [];
+      
+      for (let i = 0; i < changedFiles.length; i++) {
+        currentFileIndex = i;
+        const fileInfo = changedFiles[i];
+        const fileName = fileInfo.file || fileInfo.fileName || `File ${i + 1}`;
+        
+        updateProgress('Checking file size', fileName);
+        
+        try {
+          const filePath = require('path').join(worktreePath, fileName);
+          const fs = require('fs').promises;
+          
+          // Check if file exists and get its content
+          const stats = await fs.stat(filePath).catch(() => null);
+          if (!stats || stats.isDirectory()) {
+            logger.warn(`Skipping ${fileName}: not a regular file`);
+            continue;
+          }
+          
+          const content = await fs.readFile(filePath, 'utf8');
+          const lines = content.split('\n');
+          
+          if (lines.length > 10000) {
+            logger.info(`Skipping ${fileName}: too large (${lines.length} lines > 10,000 limit)`);
+            continue;
+          }
+          
+          analyzeableFiles.push({
+            ...fileInfo,
+            fileName,
+            filePath,
+            content,
+            lineCount: lines.length
+          });
+          
+        } catch (error) {
+          logger.warn(`Error checking file ${fileName}: ${error.message}`);
+        }
       }
       
-      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate work
+      logger.info(`${analyzeableFiles.length} files eligible for Level 2 analysis`);
+      
+      if (analyzeableFiles.length === 0) {
+        logger.info('No files eligible for Level 2 analysis');
+        return {
+          runId,
+          level: 2,
+          suggestions: [],
+          summary: 'Level 2 analysis complete: No files eligible for analysis'
+        };
+      }
+      
+      // Step 2: Analyze each file with context
+      for (let i = 0; i < analyzeableFiles.length; i++) {
+        currentFileIndex = i;
+        const fileInfo = analyzeableFiles[i];
+        
+        updateProgress('Analyzing file context', fileInfo.fileName);
+        
+        try {
+          // Build Level 2 prompt for this file
+          const prompt = this.buildLevel2Prompt(prId, worktreePath, fileInfo);
+          
+          // Execute Claude CLI for this file
+          const response = await this.claude.execute(prompt, {
+            cwd: worktreePath,
+            timeout: 90000 // 1.5 minutes per file
+          });
+          
+          // Parse the response for this file
+          const fileSuggestions = this.parseResponse(response, 2);
+          suggestions = suggestions.concat(fileSuggestions);
+          
+          logger.info(`Found ${fileSuggestions.length} Level 2 suggestions for ${fileInfo.fileName}`);
+          
+          // Add small delay between files to show progress
+          if (i < analyzeableFiles.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+          
+        } catch (error) {
+          logger.warn(`Level 2 analysis failed for ${fileInfo.fileName}: ${error.message}`);
+          // Continue with other files even if one fails
+        }
+      }
+      
+      logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
+      
+      // Step 3: Store Level 2 suggestions in database
+      updateProgress('Storing Level 2 suggestions in database');
+      await this.storeSuggestions(prId, runId, suggestions, 2);
+      
+      logger.success(`Level 2 analysis complete: ${suggestions.length} suggestions found`);
+      
+      return {
+        runId,
+        level: 2,
+        suggestions,
+        summary: `Level 2 analysis complete: Found ${suggestions.length} file context suggestions`
+      };
+      
+    } catch (error) {
+      logger.error(`Level 2 analysis failed: ${error.message}`);
+      logger.error(`Error stack: ${error.stack}`);
+      throw error;
     }
-    
-    // Return placeholder result
-    return {
-      runId: uuidv4(),
-      level: 2,
-      suggestions: [],
-      summary: 'Level 2 analysis complete (placeholder)'
-    };
   }
 
   /**

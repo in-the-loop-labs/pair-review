@@ -435,18 +435,22 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           logger.log('Result', `${icon} ${s.type}: ${s.title} (${s.file}:${s.line_start})`, 'green');
         });
         
+        // Determine completed levels based on result
+        const completedLevel = result.level2Result ? 2 : 1;
+        const totalSuggestions = result.suggestions.length + (result.level2Result?.suggestions?.length || 0);
+        
         const completedStatus = {
           ...activeAnalyses.get(analysisId),
           status: 'completed',
-          level: 1,
-          completedLevel: 1,
+          level: completedLevel,
+          completedLevel: completedLevel,
           completedAt: new Date().toISOString(),
           result,
-          progress: `Analysis complete: ${result.suggestions.length} suggestions found`,
-          filesAnalyzed: result.suggestions.length,
+          progress: `Analysis complete: ${totalSuggestions} suggestions found (Level 1: ${result.suggestions.length}${result.level2Result ? `, Level 2: ${result.level2Result.suggestions.length}` : ''})`,
+          filesAnalyzed: totalSuggestions,
           filesRemaining: 0,
-          currentFile: result.suggestions.length,
-          totalFiles: result.suggestions.length
+          currentFile: totalSuggestions,
+          totalFiles: totalSuggestions
         };
         activeAnalyses.set(analysisId, completedStatus);
         

@@ -319,6 +319,11 @@ class ProgressModal {
   updateProgress(status) {
     const currentLevel = status.level || 1;
     
+    // Mark previous levels as completed when we move to a new level
+    for (let i = 1; i < currentLevel; i++) {
+      this.markLevelAsCompleted(i);
+    }
+    
     // Update current level status
     this.updateLevelProgress(currentLevel, status);
     
@@ -330,6 +335,29 @@ class ProgressModal {
       this.handleCompletion(status);
     } else if (status.status === 'failed') {
       this.handleFailure(status);
+    }
+  }
+
+  /**
+   * Mark a level as completed
+   * @param {number} level - Level number to mark as completed
+   */
+  markLevelAsCompleted(level) {
+    const levelElement = document.getElementById(`level-${level}`);
+    if (!levelElement) return;
+    
+    const icon = levelElement.querySelector('.icon');
+    const statusText = levelElement.querySelector('.level-status');
+    const progressContainer = levelElement.querySelector('.progress-bar-container');
+    
+    icon.className = 'icon completed';
+    icon.textContent = '✓';
+    statusText.textContent = 'Completed';
+    statusText.style.display = 'block';
+    
+    // Hide progress bar for completed levels
+    if (progressContainer) {
+      progressContainer.style.display = 'none';
     }
   }
 
@@ -351,55 +379,29 @@ class ProgressModal {
       icon.className = 'icon active';
       icon.textContent = '▶';
       
-      // Show progress bar for the current level
-      if (status.level === level && progressContainer) {
+      // Show progress bar for the current level and update status
+      if (progressContainer && status.level === level) {
         statusText.style.display = 'none';
         progressContainer.style.display = 'block';
-        
       } else {
-        // For non-current levels, show status text
-        statusText.textContent = 'In progress...';
+        statusText.textContent = status.progress || 'In progress...';
+        statusText.style.display = 'block';
         if (progressContainer) {
           progressContainer.style.display = 'none';
         }
-        statusText.style.display = 'block';
       }
       
     } else if (status.status === 'completed' && status.completedLevel >= level) {
-      icon.className = 'icon completed';
-      icon.textContent = '✓';
-      statusText.textContent = 'Completed';
-      statusText.style.display = 'block';
-      
-      // Hide progress bar when completed
-      if (progressContainer) {
-        progressContainer.style.display = 'none';
-      }
+      this.markLevelAsCompleted(level);
     } else {
       // For pending or other states, hide progress bar
       if (progressContainer) {
         progressContainer.style.display = 'none';
       }
       statusText.style.display = 'block';
-    }
-    
-    // Mark previous levels as complete
-    for (let i = 1; i < level; i++) {
-      const prevLevel = document.getElementById(`level-${i}`);
-      if (prevLevel) {
-        const prevIcon = prevLevel.querySelector('.icon');
-        const prevStatus = prevLevel.querySelector('.level-status');
-        const prevProgressContainer = prevLevel.querySelector('.progress-bar-container');
-        
-        prevIcon.className = 'icon completed';
-        prevIcon.textContent = '✓';
-        prevStatus.textContent = 'Completed';
-        prevStatus.style.display = 'block';
-        
-        // Hide progress bar for completed levels
-        if (prevProgressContainer) {
-          prevProgressContainer.style.display = 'none';
-        }
+      
+      if (status.status === 'pending') {
+        statusText.textContent = 'Pending';
       }
     }
   }
@@ -418,19 +420,23 @@ class ProgressModal {
    * @param {Object} status - Final status object
    */
   handleCompletion(status) {
-    // Mark all levels as complete (Level 1 only for now)
-    this.updateLevelProgress(1, { 
-      status: 'completed', 
-      completedLevel: 1,
-      filesAnalyzed: status.result?.suggestions?.length || 0
-    });
+    // Mark levels as complete based on which level completed
+    const completedLevel = status.completedLevel || status.level || 1;
+    
+    for (let i = 1; i <= completedLevel; i++) {
+      this.updateLevelProgress(i, { 
+        status: 'completed', 
+        completedLevel: i,
+        filesAnalyzed: status.result?.suggestions?.length || 0
+      });
+    }
     
     // Update button to show completion
     const runBackgroundBtn = document.getElementById('run-background-btn');
     const cancelBtn = document.getElementById('cancel-btn');
     
     if (runBackgroundBtn) {
-      runBackgroundBtn.textContent = 'Analysis Complete';
+      runBackgroundBtn.textContent = `Level ${completedLevel} Analysis Complete`;
       runBackgroundBtn.disabled = true;
     }
     if (cancelBtn) {
@@ -439,7 +445,7 @@ class ProgressModal {
     
     // Update status indicator if in background
     if (this.isRunningInBackground && window.statusIndicator) {
-      window.statusIndicator.showComplete('Analysis complete');
+      window.statusIndicator.showComplete(`Level ${completedLevel} analysis complete`);
     }
     
     // Auto-close after 3 seconds if in foreground
