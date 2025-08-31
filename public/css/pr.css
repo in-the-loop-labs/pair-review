@@ -1818,11 +1818,14 @@ tr.newly-expanded .d2h-code-line-ctn {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px;
-  border-radius: 4px;
+  padding: 10px 8px;
   cursor: pointer;
   transition: background 0.2s;
-  margin-bottom: 4px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.suggestion-item:last-child {
+  border-bottom: none;
 }
 
 .suggestion-item:hover {
@@ -1831,7 +1834,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .suggestion-item.current {
   background: var(--color-accent-light);
-  border: 1px solid var(--color-accent-primary);
+  box-shadow: inset 3px 0 0 var(--color-accent-primary);
 }
 
 .suggestion-type-icon {
@@ -1845,32 +1848,37 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .suggestion-type-icon svg {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 
 /* Type-specific colors for icons */
-.suggestion-item .suggestion-type-icon svg {
-  fill: var(--color-text-secondary);
-}
-
-/* Color icons based on suggestion type */
-.suggestion-item[data-index] .suggestion-type-icon svg {
-  fill: var(--color-text-secondary);
-}
-
 .suggestion-item[data-type="praise"] .suggestion-type-icon svg {
   fill: #1a7f37;
 }
 
-.suggestion-item[data-type="bug"] .suggestion-type-icon svg,
-.suggestion-item[data-type="security"] .suggestion-type-icon svg {
+.suggestion-item[data-type="bug"] .suggestion-type-icon svg {
   fill: #cf222e;
 }
 
-.suggestion-item[data-type="improvement"] .suggestion-type-icon svg,
-.suggestion-item[data-type="performance"] .suggestion-type-icon svg {
+.suggestion-item[data-type="security"] .suggestion-type-icon svg {
+  fill: #d73a49;
+}
+
+.suggestion-item[data-type="improvement"] .suggestion-type-icon svg {
   fill: #0969da;
+}
+
+.suggestion-item[data-type="performance"] .suggestion-type-icon svg {
+  fill: #0366d6;
+}
+
+.suggestion-item[data-type="design"] .suggestion-type-icon svg {
+  fill: #9a6700;
+}
+
+.suggestion-item[data-type="suggestion"] .suggestion-type-icon svg {
+  fill: #6f42c1;
 }
 
 .suggestion-content {
@@ -1889,11 +1897,10 @@ tr.newly-expanded .d2h-code-line-ctn {
   word-break: break-word;
 }
 
-.suggestion-type-label {
-  font-size: 11px;
-  color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  font-weight: 600;
+/* Pills in sidebar should match main view */
+.suggestions-list .type-badge {
+  margin-top: 4px;
+  display: inline-block;
 }
 
 .no-suggestions {
