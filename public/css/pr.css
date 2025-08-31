@@ -384,14 +384,34 @@
 }
 
 .btn-secondary {
-  color: #24292f;
-  background-color: #f6f8fa;
-  border-color: #d1d9e0;
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-secondary);
+  border-color: var(--color-border-primary);
 }
 
 .btn-secondary:hover {
-  background-color: #f3f4f6;
-  border-color: #d1d9e0;
+  background-color: var(--color-bg-tertiary);
+  border-color: var(--color-border-primary);
+}
+
+/* Theme toggle button specific styling */
+#theme-toggle {
+  background-color: transparent;
+  border: 1px solid var(--color-border-primary);
+  color: var(--color-text-primary);
+  padding: 6px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#theme-toggle:hover {
+  background-color: var(--color-bg-secondary);
+}
+
+#theme-toggle svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* Empty States */
@@ -581,6 +601,7 @@
   max-height: calc(100vh - 200px);
   overflow-y: auto;
   padding: 8px;
+  text-align: left;
 }
 
 /* Tree view styles */
@@ -596,6 +617,7 @@
   padding: 4px 8px;
   border-radius: 6px;
   transition: background 0.1s;
+  text-align: left;
 }
 
 .tree-item-content:hover {
@@ -667,7 +689,13 @@
   display: block;
 }
 
+/* Hide child container when folder is not expanded */
 .tree-folder:not(.expanded) + .tree-child {
+  display: none;
+}
+
+/* Also handle the case where tree-child is not immediately adjacent */
+.tree-folder:not(.expanded) ~ .tree-child[data-parent-path] {
   display: none;
 }
 
@@ -990,4 +1018,36 @@
     align-items: flex-start;
     gap: 4px;
   }
+}
+
+/* Context expansion animations and styles */
+.newly-expanded {
+  animation: expandHighlight 0.8s ease-out;
+}
+
+@keyframes expandHighlight {
+  0% { 
+    background-color: rgba(255, 223, 93, 0.4);
+  }
+  100% { 
+    background-color: transparent;
+  }
+}
+
+.expand-error {
+  background-color: var(--color-attention-subtle);
+  color: var(--color-attention-fg);
+  padding: 8px 12px;
+  text-align: center;
+  font-weight: 500;
+  border: 1px solid var(--color-attention-muted);
+}
+
+/* Ensure context lines have proper styling */
+tr.newly-expanded .d2h-code-linenumber {
+  animation: expandHighlight 0.8s ease-out;
+}
+
+tr.newly-expanded .d2h-code-line-ctn {
+  animation: expandHighlight 0.8s ease-out;
 }

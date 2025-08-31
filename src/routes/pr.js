@@ -1,5 +1,8 @@
 const express = require('express');
 const { query, queryOne } = require('../database');
+const { GitWorktreeManager } = require('../git/worktree');
+const fs = require('fs').promises;
+const path = require('path');
 
 const router = express.Router();
 
@@ -238,6 +241,82 @@ router.get('/api/pr/:owner/:repo/:number/comments', async (req, res) => {
     console.error('Error fetching PR comments:', error);
     res.status(500).json({ 
       error: 'Internal server error while fetching comments' 
+    });
+  }
+});
+
+/**
+ * Get original file content from worktree for context expansion
+ */
+router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
+  try {
+    const fileName = decodeURIComponent(req.params.fileName);
+    
+    // Get PR info from query parameters
+    const { owner, repo, number } = req.query;
+    
+    if (!owner || !repo || !number) {
+      return res.status(400).json({ 
+        error: 'Missing required parameters: owner, repo, number' 
+      });
+    }
+    
+    const prNumber = parseInt(number);
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid pull request number' 
+      });
+    }
+
+    const worktreeManager = new GitWorktreeManager();
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    
+    // Check if worktree exists
+    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+      return res.status(404).json({ 
+        error: 'Worktree not found for this PR. The PR may need to be reloaded.' 
+      });
+    }
+    
+    // Construct file path in worktree (use base branch version)
+    const filePath = path.join(worktreePath, fileName);
+    
+    // Security check - ensure file is within worktree
+    if (!filePath.startsWith(worktreePath)) {
+      return res.status(400).json({ 
+        error: 'Invalid file path' 
+      });
+    }
+    
+    try {
+      // Read file content and split into lines
+      const content = await fs.readFile(filePath, 'utf8');
+      const lines = content.split('\n');
+      
+      res.json({ 
+        fileName,
+        lines,
+        totalLines: lines.length 
+      });
+      
+    } catch (fileError) {
+      if (fileError.code === 'ENOENT') {
+        return res.status(404).json({ 
+          error: 'File not found in worktree' 
+        });
+      } else if (fileError.code === 'EISDIR') {
+        return res.status(400).json({ 
+          error: 'Path is a directory, not a file' 
+        });
+      } else {
+        throw fileError;
+      }
+    }
+    
+  } catch (error) {
+    console.error('Error retrieving file content:', error);
+    res.status(500).json({ 
+      error: 'Internal server error while retrieving file content' 
     });
   }
 });

@@ -228,12 +228,14 @@ mark.d2h-code-line-ctn {
     font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace !important;
     font-size: 12px !important;
     tab-size: 4 !important;  /* Ensure tabs display correctly */
+    text-align: left !important;  /* Force left alignment for code content */
 }
 
 /* Compact line number display */
 .d2h-code-linenumber {
     padding: 0 8px !important;
     border-right: 1px solid var(--color-border-secondary) !important;
+    text-align: right !important;  /* Ensure line numbers are right-aligned */
 }
 
 /* Remove any empty table cells */
@@ -254,6 +256,7 @@ mark.d2h-code-line-ctn {
     font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace !important;
     font-size: 12px !important;
     table-layout: fixed !important;
+    text-align: left !important;  /* Ensure table content is left-aligned */
 }
 
 .d2h-diff-tbody td.d2h-code-linenumber,

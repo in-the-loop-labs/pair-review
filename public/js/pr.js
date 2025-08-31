@@ -7,7 +7,9 @@ class PRManager {
     this.loadingState = false;
     this.expandedFolders = new Set();
     this.expandedSections = new Set();
+    this.currentTheme = localStorage.getItem('theme') || 'light';
     this.init();
+    this.initTheme();
   }
 
   /**
@@ -195,6 +197,11 @@ class PRManager {
             </div>
           </div>
           <div class="pr-actions">
+            <button class="btn btn-secondary" id="theme-toggle" onclick="prManager.toggleTheme()" title="Toggle theme">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
+              </svg>
+            </button>
             <button class="btn btn-primary" onclick="prManager.triggerAIAnalysis()">
               Analyze with AI
             </button>
@@ -270,6 +277,9 @@ class PRManager {
         
         // Update diff stats
         this.updateDiffStats(files);
+        
+        // Update theme icon after rendering new content
+        this.updateThemeIcon();
         
         // Display diff in main content
         this.displayDiff(data.diff || '');
@@ -532,18 +542,19 @@ class PRManager {
     contentWrapper.appendChild(expandAll);
     contentCell.appendChild(contentWrapper);
     
-    // Add event listeners (placeholder - would need actual expand logic)
+    // Add event listeners for gap expansion
     expandAbove.addEventListener('click', (e) => {
-      console.log('Expand up clicked');
-      // TODO: Implement expand up logic
+      const row = e.currentTarget.closest('tr');
+      this.expandGapContext(row.expandControls, 'up', 20);
     });
     expandAll.addEventListener('click', (e) => {
-      console.log('Expand all clicked');  
-      // TODO: Implement expand all logic
+      const row = e.currentTarget.closest('tr');
+      const hiddenCount = parseInt(expandControls.dataset.hiddenCount) || gapSize;
+      this.expandGapContext(row.expandControls, 'all', hiddenCount);
     });
     expandBelow.addEventListener('click', (e) => {
-      console.log('Expand down clicked');
-      // TODO: Implement expand down logic  
+      const row = e.currentTarget.closest('tr');
+      this.expandGapContext(row.expandControls, 'down', 20);
     });
     
     // Store expand controls reference on row
@@ -679,18 +690,19 @@ class PRManager {
     // Store the hidden lines data for expansion
     expandControls.hiddenLines = allLines.slice(startIdx, endIdx);
     
-    // Add click handlers (placeholder - would need actual expand logic)
+    // Add click handlers for collapsed section expansion
     expandAbove?.addEventListener('click', (e) => {
-      console.log('Expand up clicked (collapsed section)');
-      // TODO: Implement expand up logic
+      const row = e.currentTarget.closest('tr');
+      this.expandContext(row.expandControls, 'up', 20);
     });
     expandAll.addEventListener('click', (e) => {
-      console.log('Expand all clicked (collapsed section)');
-      // TODO: Implement expand all logic
+      const row = e.currentTarget.closest('tr');
+      const hiddenCountValue = parseInt(expandControls.dataset.hiddenCount) || hiddenCount;
+      this.expandContext(row.expandControls, 'all', hiddenCountValue);
     });
     expandBelow?.addEventListener('click', (e) => {
-      console.log('Expand down clicked (collapsed section)');
-      // TODO: Implement expand down logic
+      const row = e.currentTarget.closest('tr');
+      this.expandContext(row.expandControls, 'down', 20);
     });
     
     // Store expand controls reference on row
@@ -711,6 +723,279 @@ class PRManager {
    */
   getExpandedSectionKey(fileName, startLine, endLine) {
     return `${fileName}:${startLine}-${endLine}`;
+  }
+
+  /**
+   * Expand context for a regular collapsed section (hiddenLines)
+   * @param {HTMLElement} controlsElement - Expand controls element
+   * @param {string} direction - Direction: 'up', 'down', or 'all'
+   * @param {number} lineCount - Number of lines to expand
+   */
+  async expandContext(controlsElement, direction, lineCount) {
+    // Find the row by searching for the one with this expandControls
+    let row = null;
+    let tbody = null;
+    const allRows = document.querySelectorAll('tr.context-expand-row');
+    for (const r of allRows) {
+      if (r.expandControls === controlsElement) {
+        row = r;
+        tbody = r.closest('tbody');
+        break;
+      }
+    }
+    
+    if (!row || !tbody) {
+      console.error('Could not find row for expand controls');
+      return;
+    }
+    
+    const hiddenLines = controlsElement.hiddenLines;
+    const sectionKey = controlsElement.dataset.sectionKey;
+    
+    if (!hiddenLines || hiddenLines.length === 0) {
+      console.warn('No hidden lines to expand');
+      return;
+    }
+
+    let linesToShow = [];
+    let remainingLines = [];
+    
+    if (direction === 'all') {
+      // Show all hidden lines
+      linesToShow = hiddenLines;
+      // Track that this section is now fully expanded
+      if (sectionKey) {
+        this.expandedSections.add(sectionKey);
+      }
+    } else if (direction === 'up') {
+      // Show first N lines
+      linesToShow = hiddenLines.slice(0, Math.min(lineCount, hiddenLines.length));
+      remainingLines = hiddenLines.slice(lineCount);
+    } else if (direction === 'down') {
+      // Show last N lines
+      const startIdx = Math.max(0, hiddenLines.length - lineCount);
+      linesToShow = hiddenLines.slice(startIdx);
+      remainingLines = hiddenLines.slice(0, startIdx);
+    }
+    
+    // Create rows for the lines to show
+    const fragment = document.createDocumentFragment();
+    linesToShow.forEach(line => {
+      const lineRow = this.renderDiffLine(fragment, line);
+      // Add data attributes for selection
+      const fileName = controlsElement.dataset.fileName;
+      if (lineRow && fileName && line.newNumber) {
+        lineRow.dataset.file = fileName;
+        lineRow.dataset.lineNumber = line.newNumber;
+      }
+      // Add animation class for newly expanded lines
+      lineRow.classList.add('newly-expanded');
+      // Remove animation class after animation completes
+      setTimeout(() => {
+        if (lineRow && lineRow.classList) {
+          lineRow.classList.remove('newly-expanded');
+        }
+      }, 800);
+    });
+    
+    if (direction === 'all') {
+      // Insert all lines where the expand controls were
+      if (row && row.parentNode) {
+        row.parentNode.insertBefore(fragment, row);
+        row.remove();
+      }
+    } else {
+      // Update the expand controls with remaining lines
+      if (remainingLines.length > 0) {
+        controlsElement.hiddenLines = remainingLines;
+        controlsElement.dataset.hiddenCount = remainingLines.length;
+        
+        // Update the info text in the row
+        const infoSpan = row.querySelector('.expand-info');
+        if (infoSpan) {
+          infoSpan.textContent = `${remainingLines.length} hidden lines`;
+        }
+        
+        // Update the expand-all button tooltip
+        const expandAllBtn = row.querySelector('.expand-all');
+        if (expandAllBtn) {
+          expandAllBtn.title = `Expand all ${remainingLines.length} lines`;
+        }
+        
+        // Insert the expanded lines
+        if (row && row.parentNode) {
+          if (direction === 'up') {
+            row.parentNode.insertBefore(fragment, row);
+          } else {
+            row.parentNode.insertBefore(fragment, row.nextSibling);
+          }
+        }
+      } else {
+        // No more hidden lines, remove the expand controls
+        if (row && row.parentNode) {
+          row.parentNode.insertBefore(fragment, row);
+          row.remove();
+        }
+      }
+    }
+  }
+
+  /**
+   * Expand gap context between diff blocks (fetches from API)
+   * @param {HTMLElement} controlsElement - Expand controls element
+   * @param {string} direction - Direction: 'up', 'down', or 'all'
+   * @param {number} lineCount - Number of lines to expand
+   */
+  async expandGapContext(controlsElement, direction, lineCount) {
+    // Special handler for expanding gaps between diff blocks
+    const fileName = controlsElement.dataset.fileName;
+    const startLine = parseInt(controlsElement.dataset.startLine);
+    const endLine = parseInt(controlsElement.dataset.endLine);
+    
+    // Find the row by searching for the one with this expandControls
+    let row = null;
+    let tbody = null;
+    const allRows = document.querySelectorAll('tr.context-expand-row');
+    for (const r of allRows) {
+      if (r.expandControls === controlsElement) {
+        row = r;
+        tbody = r.closest('tbody');
+        break;
+      }
+    }
+    
+    if (!row || !tbody) {
+      console.error('Could not find row for expand controls');
+      return;
+    }
+    
+    try {
+      if (!this.currentPR) {
+        throw new Error('No current PR data');
+      }
+      
+      // Fetch the original file content
+      const owner = this.currentPR.owner;
+      const repo = this.currentPR.repo;
+      const number = this.currentPR.number;
+      
+      const response = await fetch(`/api/file-content-original/${encodeURIComponent(fileName)}?owner=${owner}&repo=${repo}&number=${number}`);
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch file content');
+      }
+      
+      if (!data.lines || data.lines.length === 0) {
+        console.error('Could not fetch file content');
+        return;
+      }
+      
+      // Get the lines we need (adjust for 0-based indexing)
+      const allGapLines = data.lines.slice(startLine - 1, endLine);
+      
+      let linesToShow = [];
+      let remainingStartLine = startLine;
+      let remainingEndLine = endLine;
+      
+      if (direction === 'all') {
+        // Show all hidden lines
+        linesToShow = allGapLines;
+      } else if (direction === 'up') {
+        // "Up" means expand upward from bottom - show LAST N lines of the gap
+        const showFromLine = Math.max(startLine, endLine - lineCount + 1);
+        linesToShow = data.lines.slice(showFromLine - 1, endLine);
+        remainingEndLine = showFromLine - 1;
+      } else if (direction === 'down') {
+        // "Down" means expand downward from top - show FIRST N lines of the gap
+        const showToLine = Math.min(endLine, startLine + lineCount - 1);
+        linesToShow = data.lines.slice(startLine - 1, showToLine);
+        remainingStartLine = showToLine + 1;
+      }
+      
+      // Create diff-formatted lines
+      const fragment = document.createDocumentFragment();
+      linesToShow.forEach((content, idx) => {
+        const lineNumber = direction === 'down' ? 
+          startLine + idx : 
+          direction === 'up' ? 
+          (endLine - linesToShow.length + 1 + idx) : 
+          startLine + idx;
+          
+        const lineData = {
+          type: 'context',
+          oldNumber: lineNumber,
+          newNumber: lineNumber,
+          content: content || ''
+        };
+        
+        const lineRow = this.renderDiffLine(fragment, lineData);
+        if (lineRow) {
+          lineRow.classList.add('newly-expanded');
+          setTimeout(() => {
+            if (lineRow && lineRow.classList) {
+              lineRow.classList.remove('newly-expanded');
+            }
+          }, 800);
+        }
+      });
+      
+      if (direction === 'all') {
+        // Replace the expand controls with all lines
+        if (row && row.parentNode) {
+          row.parentNode.insertBefore(fragment, row);
+          row.remove();
+        }
+      } else {
+        // Update remaining gap info
+        const remainingGapSize = remainingEndLine - remainingStartLine + 1;
+        
+        if (remainingGapSize > 0) {
+          // Update the controls
+          controlsElement.dataset.startLine = remainingStartLine;
+          controlsElement.dataset.endLine = remainingEndLine;
+          controlsElement.dataset.hiddenCount = remainingGapSize;
+          
+          // Update the info text in the row
+          const infoSpan = row.querySelector('.expand-info');
+          if (infoSpan) {
+            infoSpan.textContent = `${remainingGapSize} hidden lines`;
+          }
+          
+          // Update the expand-all button tooltip
+          const expandAllBtn = row.querySelector('.expand-all');
+          if (expandAllBtn) {
+            expandAllBtn.title = `Expand all ${remainingGapSize} lines`;
+          }
+          
+          // Insert the expanded lines in the correct position
+          if (row && row.parentNode) {
+            if (direction === 'down') {
+              // Expanding downward from top of gap - insert BEFORE divider
+              row.parentNode.insertBefore(fragment, row);
+            } else if (direction === 'up') {
+              // Expanding upward from bottom of gap - insert AFTER divider
+              row.parentNode.insertBefore(fragment, row.nextSibling);
+            }
+          }
+        } else {
+          // No more hidden lines, remove the expand controls
+          if (row && row.parentNode) {
+            row.parentNode.insertBefore(fragment, row);
+            row.remove();
+          }
+        }
+      }
+      
+    } catch (error) {
+      console.error('Error expanding gap context:', error);
+      // Show error in UI
+      const errorRow = document.createElement('tr');
+      errorRow.innerHTML = `<td colspan="2" class="expand-error">Error loading context: ${error.message}</td>`;
+      if (row && row.parentNode) {
+        row.parentNode.insertBefore(errorRow, row);
+      }
+    }
   }
 
 
@@ -914,57 +1199,124 @@ class PRManager {
         elements.push(folderDiv);
       }
       
-      // Render child folders first
-      Object.keys(node).forEach(key => {
-        if (key !== '_files') {
-          const childPath = fullPath ? `${fullPath}/${key}` : key;
-          const childElements = this.renderTreeNode(key, node[key], childPath, level + 1);
-          elements.push(...childElements);
-        }
-      });
+      // Create a container for child elements if folder has children
+      const hasChildFolders = Object.keys(node).some(key => key !== '_files');
+      const hasFiles = node._files && node._files.length > 0;
       
-      // Render files in this folder
-      if (node._files) {
-        node._files.forEach(file => {
-          const fileDiv = document.createElement('div');
-          fileDiv.className = 'tree-item tree-file';
-          fileDiv.style.paddingLeft = `${(level + 1) * 16}px`;
-          fileDiv.dataset.path = file.fullPath;
-          
-          const fileContent = document.createElement('div');
-          fileContent.className = 'tree-item-content';
-          
-          // File icon
-          const fileIcon = document.createElement('span');
-          fileIcon.className = 'tree-icon file-icon';
-          fileIcon.innerHTML = `
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
-            </svg>
-          `;
-          
-          const fileName = document.createElement('span');
-          fileName.className = 'tree-name';
-          fileName.textContent = file.name;
-          
-          // File status indicator
-          const statusIndicator = document.createElement('span');
-          statusIndicator.className = `file-status ${file.status}`;
-          
-          fileContent.appendChild(fileIcon);
-          fileContent.appendChild(fileName);
-          fileContent.appendChild(statusIndicator);
-          fileDiv.appendChild(fileContent);
-          
-          // Add click handler to scroll to file
-          fileContent.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.scrollToFile(file.fullPath);
-            this.setActiveFile(file.fullPath);
-          });
-          
-          elements.push(fileDiv);
+      if ((hasChildFolders || hasFiles) && name) {
+        // For folders with children, wrap them in a tree-child container
+        const childContainer = document.createElement('div');
+        childContainer.className = 'tree-child';
+        childContainer.dataset.parentPath = fullPath;
+        
+        // Render child folders first
+        Object.keys(node).forEach(key => {
+          if (key !== '_files') {
+            const childPath = fullPath ? `${fullPath}/${key}` : key;
+            const childElements = this.renderTreeNode(key, node[key], childPath, level + 1);
+            childElements.forEach(el => childContainer.appendChild(el));
+          }
         });
+        
+        // Render files in this folder
+        if (node._files) {
+          node._files.forEach(file => {
+            const fileDiv = document.createElement('div');
+            fileDiv.className = 'tree-item tree-file';
+            fileDiv.style.paddingLeft = `${(level + 1) * 16}px`;
+            fileDiv.dataset.path = file.fullPath;
+            
+            const fileContent = document.createElement('div');
+            fileContent.className = 'tree-item-content';
+            
+            // File icon
+            const fileIcon = document.createElement('span');
+            fileIcon.className = 'tree-icon file-icon';
+            fileIcon.innerHTML = `
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
+              </svg>
+            `;
+            
+            const fileName = document.createElement('span');
+            fileName.className = 'tree-name';
+            fileName.textContent = file.name;
+            
+            // File status indicator
+            const statusIndicator = document.createElement('span');
+            statusIndicator.className = `file-status ${file.status}`;
+            
+            fileContent.appendChild(fileIcon);
+            fileContent.appendChild(fileName);
+            fileContent.appendChild(statusIndicator);
+            fileDiv.appendChild(fileContent);
+            
+            // Add click handler to scroll to file
+            fileContent.addEventListener('click', (e) => {
+              e.stopPropagation();
+              this.scrollToFile(file.fullPath);
+              this.setActiveFile(file.fullPath);
+            });
+            
+            childContainer.appendChild(fileDiv);
+          });
+        }
+        
+        // Add the child container to elements
+        elements.push(childContainer);
+      } else if (!name) {
+        // For root level, render children without wrapping
+        Object.keys(node).forEach(key => {
+          if (key !== '_files') {
+            const childPath = key;
+            const childElements = this.renderTreeNode(key, node[key], childPath, level + 1);
+            elements.push(...childElements);
+          }
+        });
+        
+        // Render root level files
+        if (node._files) {
+          node._files.forEach(file => {
+            const fileDiv = document.createElement('div');
+            fileDiv.className = 'tree-item tree-file';
+            fileDiv.style.paddingLeft = `${(level + 1) * 16}px`;
+            fileDiv.dataset.path = file.fullPath;
+            
+            const fileContent = document.createElement('div');
+            fileContent.className = 'tree-item-content';
+            
+            // File icon
+            const fileIcon = document.createElement('span');
+            fileIcon.className = 'tree-icon file-icon';
+            fileIcon.innerHTML = `
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
+              </svg>
+            `;
+            
+            const fileName = document.createElement('span');
+            fileName.className = 'tree-name';
+            fileName.textContent = file.name;
+            
+            // File status indicator
+            const statusIndicator = document.createElement('span');
+            statusIndicator.className = `file-status ${file.status}`;
+            
+            fileContent.appendChild(fileIcon);
+            fileContent.appendChild(fileName);
+            fileContent.appendChild(statusIndicator);
+            fileDiv.appendChild(fileContent);
+            
+            // Add click handler to scroll to file
+            fileContent.addEventListener('click', (e) => {
+              e.stopPropagation();
+              this.scrollToFile(file.fullPath);
+              this.setActiveFile(file.fullPath);
+            });
+            
+            elements.push(fileDiv);
+          });
+        }
       }
     }
     
@@ -1046,6 +1398,45 @@ class PRManager {
     const fileElement = document.querySelector(`.tree-file[data-path="${filePath}"]`);
     if (fileElement) {
       fileElement.classList.add('active');
+    }
+  }
+
+  /**
+   * Initialize theme based on saved preference
+   */
+  initTheme() {
+    document.documentElement.setAttribute('data-theme', this.currentTheme);
+    this.updateThemeIcon();
+  }
+
+  /**
+   * Toggle between light and dark theme
+   */
+  toggleTheme() {
+    this.currentTheme = this.currentTheme === 'light' ? 'dark' : 'light';
+    localStorage.setItem('theme', this.currentTheme);
+    document.documentElement.setAttribute('data-theme', this.currentTheme);
+    this.updateThemeIcon();
+  }
+
+  /**
+   * Update theme toggle button icon
+   */
+  updateThemeIcon() {
+    const themeButton = document.getElementById('theme-toggle');
+    if (themeButton) {
+      const icon = this.currentTheme === 'light' ? 
+        // Sun icon for light mode
+        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
+        </svg>` :
+        // Moon icon for dark mode
+        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M9.598 1.591a.749.749 0 0 1 .785-.175 7.001 7.001 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Zm1.616 1.945a7 7 0 0 1-7.678 7.678 5.499 5.499 0 1 0 7.678-7.678Z"/>
+        </svg>`;
+      
+      themeButton.innerHTML = icon;
+      themeButton.title = `Switch to ${this.currentTheme === 'light' ? 'dark' : 'light'} mode`;
     }
   }
 }
