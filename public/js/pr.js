@@ -1771,16 +1771,26 @@ class PRManager {
     
     if (!sidebar || !mainContent || !toggleBtn || !collapsedBtn) return;
     
+    // Load saved state
+    const isCollapsed = localStorage.getItem('file-sidebar-collapsed') === 'true';
+    if (isCollapsed) {
+      sidebar.style.display = 'none';
+      collapsedBtn.style.display = 'flex';
+      mainContent.classList.add('sidebar-collapsed');
+    }
+    
     toggleBtn.addEventListener('click', () => {
       sidebar.style.display = 'none';
       collapsedBtn.style.display = 'flex';
       mainContent.classList.add('sidebar-collapsed');
+      localStorage.setItem('file-sidebar-collapsed', 'true');
     });
     
     collapsedBtn.addEventListener('click', () => {
       sidebar.style.display = 'block';
       collapsedBtn.style.display = 'none';
       mainContent.classList.remove('sidebar-collapsed');
+      localStorage.setItem('file-sidebar-collapsed', 'false');
     });
   }
 

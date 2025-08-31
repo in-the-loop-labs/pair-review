@@ -6,7 +6,7 @@ class SuggestionNavigator {
   constructor() {
     this.suggestions = [];
     this.currentSuggestionIndex = -1;
-    this.isCollapsed = false;
+    this.isCollapsed = this.loadCollapsedState();
     this.element = null;
     this.collapseToggle = null;
     
@@ -29,6 +29,7 @@ class SuggestionNavigator {
     // Main sidebar container
     this.element = document.createElement('div');
     this.element.className = 'suggestion-navigator';
+    this.element.style.display = this.isCollapsed ? 'none' : 'flex';
     this.element.innerHTML = `
       <div class="navigator-header">
         <h3>AI Suggestions</h3>
@@ -60,14 +61,14 @@ class SuggestionNavigator {
       </div>
     `;
 
-    // Collapsed toggle button
+    // Collapsed toggle button with larger blue sparkles icon
     this.collapseToggle = document.createElement('button');
     this.collapseToggle.className = 'navigator-toggle-collapsed';
-    this.collapseToggle.style.display = 'none';
+    this.collapseToggle.style.display = this.isCollapsed ? 'flex' : 'none';
     this.collapseToggle.title = 'Show AI suggestions sidebar';
     this.collapseToggle.innerHTML = `
-      <svg viewBox="0 0 16 16">
-        <path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 14H1.75A1.75 1.75 0 010 12.25v-8.5zm1.75-.25a.25.25 0 00-.25.25v8.5c0 .138.112.25.25.25H9.5v-9H1.75zm9.25 9h3.25a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25H11v9z"/>
+      <svg viewBox="0 0 16 16" class="sparkles-icon">
+        <path fill-rule="evenodd" d="M7.53 1.282a.5.5 0 01.94 0l.478 1.306a7.492 7.492 0 002.119 2.119l1.306.478a.5.5 0 010 .94l-1.306.478a7.492 7.492 0 00-2.119 2.119l-.478 1.306a.5.5 0 01-.94 0l-.478-1.306a7.492 7.492 0 00-2.119-2.119l-1.306-.478a.5.5 0 010-.94l1.306-.478a7.492 7.492 0 002.119-2.119l.478-1.306zM2.783 5.595a.5.5 0 01.94 0l.167.457a3.49 3.49 0 00.987.987l.457.167a.5.5 0 010 .94l-.457.167a3.49 3.49 0 00-.987.987l-.167.457a.5.5 0 01-.94 0l-.167-.457a3.49 3.49 0 00-.987-.987l-.457-.167a.5.5 0 010-.94l.457-.167a3.49 3.49 0 00.987-.987l.167-.457zm8.509 2.507a.5.5 0 01.94 0l.167.457a3.49 3.49 0 00.987.987l.457.167a.5.5 0 010 .94l-.457.167a3.49 3.49 0 00-.987.987l-.167.457a.5.5 0 01-.94 0l-.167-.457a3.49 3.49 0 00-.987-.987l-.457-.167a.5.5 0 010-.94l.457-.167a3.49 3.49 0 00.987-.987l.167-.457z"/>
       </svg>
     `;
 
@@ -147,8 +148,9 @@ class SuggestionNavigator {
       const typeIcon = this.getTypeIcon(suggestion.type);
       const preview = this.truncateText(suggestion.title || suggestion.body || '', 60);
       
+      const isDismissed = suggestion.status === 'dismissed';
       return `
-        <div class="suggestion-item" data-index="${index}" data-id="${suggestion.id}" data-type="${suggestion.type}">
+        <div class="suggestion-item ${isDismissed ? 'dismissed' : ''}" data-index="${index}" data-id="${suggestion.id}" data-type="${suggestion.type}" data-status="${suggestion.status || 'active'}">
           <div class="suggestion-type-icon">${typeIcon}</div>
           <div class="suggestion-content">
             <div class="suggestion-preview">${this.escapeHtml(preview)}</div>
@@ -201,7 +203,15 @@ class SuggestionNavigator {
   goToNext() {
     if (this.suggestions.length === 0) return;
     
-    const nextIndex = (this.currentSuggestionIndex + 1) % this.suggestions.length;
+    // Find next non-dismissed suggestion
+    let nextIndex = this.currentSuggestionIndex;
+    let attempts = 0;
+    do {
+      nextIndex = (nextIndex + 1) % this.suggestions.length;
+      attempts++;
+      if (attempts > this.suggestions.length) return; // All dismissed
+    } while (this.suggestions[nextIndex]?.status === 'dismissed');
+    
     this.goToSuggestion(nextIndex);
   }
 
@@ -211,9 +221,17 @@ class SuggestionNavigator {
   goToPrevious() {
     if (this.suggestions.length === 0) return;
     
-    const prevIndex = this.currentSuggestionIndex <= 0 
-      ? this.suggestions.length - 1 
-      : this.currentSuggestionIndex - 1;
+    // Find previous non-dismissed suggestion
+    let prevIndex = this.currentSuggestionIndex;
+    let attempts = 0;
+    do {
+      prevIndex = prevIndex <= 0 
+        ? this.suggestions.length - 1 
+        : prevIndex - 1;
+      attempts++;
+      if (attempts > this.suggestions.length) return; // All dismissed
+    } while (this.suggestions[prevIndex]?.status === 'dismissed');
+    
     this.goToSuggestion(prevIndex);
   }
 
@@ -307,6 +325,7 @@ class SuggestionNavigator {
    */
   toggleCollapse() {
     this.isCollapsed = !this.isCollapsed;
+    this.saveCollapsedState();
     
     if (this.isCollapsed) {
       this.element.style.display = 'none';
@@ -327,6 +346,21 @@ class SuggestionNavigator {
         mainContent.classList.remove('navigator-collapsed');
       }
     }
+  }
+
+  /**
+   * Load collapsed state from localStorage
+   */
+  loadCollapsedState() {
+    const state = localStorage.getItem('ai-sidebar-collapsed');
+    return state === 'true' || state === null; // Default to collapsed
+  }
+
+  /**
+   * Save collapsed state to localStorage
+   */
+  saveCollapsedState() {
+    localStorage.setItem('ai-sidebar-collapsed', this.isCollapsed.toString());
   }
 
   /**

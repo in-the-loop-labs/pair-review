@@ -1734,9 +1734,9 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-primary);
   border-radius: 6px;
-  padding: 8px;
+  padding: 10px;
   cursor: pointer;
-  color: var(--color-text-secondary);
+  color: #0969da;
   z-index: 100;
   transition: all 0.2s;
   display: flex;
@@ -1745,8 +1745,13 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .navigator-toggle-collapsed svg {
-  width: 16px;
-  height: 16px;
+  width: 24px;
+  height: 24px;
+}
+
+.navigator-toggle-collapsed svg.sparkles-icon {
+  fill: #0969da;
+  stroke: none;
 }
 
 .navigator-toggle-collapsed:hover {
@@ -1816,16 +1821,30 @@ tr.newly-expanded .d2h-code-line-ctn {
   gap: 8px;
   padding: 10px 8px;
   cursor: pointer;
-  transition: background 0.2s;
-  border-bottom: 1px solid var(--color-border-subtle);
+  transition: background 0.2s, opacity 0.2s;
+  border-bottom: 1px solid rgba(139, 148, 158, 0.15);
 }
 
 .suggestion-item:last-child {
   border-bottom: none;
 }
 
-.suggestion-item:hover {
+.suggestion-item:hover:not(.dismissed) {
   background: var(--color-bg-secondary);
+}
+
+.suggestion-item.dismissed {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.suggestion-item.dismissed .suggestion-preview,
+.suggestion-item.dismissed .type-badge {
+  opacity: 0.6;
+}
+
+.suggestion-item.dismissed .suggestion-type-icon svg {
+  opacity: 0.4;
 }
 
 .suggestion-item.current {
