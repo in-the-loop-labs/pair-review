@@ -1130,9 +1130,10 @@ class PRManager {
 
     // Adjust main content layout when navigator is visible
     const mainContent = document.querySelector('.main-content');
-    if (mainContent) {
+    if (mainContent && this.suggestionNavigator) {
       const visibleSuggestions = suggestions.filter(s => s.status !== 'dismissed');
-      if (visibleSuggestions.length > 0) {
+      // Only add navigator-visible if we have suggestions AND the navigator is not collapsed
+      if (visibleSuggestions.length > 0 && !this.suggestionNavigator.isCollapsed) {
         mainContent.classList.add('navigator-visible');
       } else {
         mainContent.classList.remove('navigator-visible');

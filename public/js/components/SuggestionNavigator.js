@@ -20,6 +20,13 @@ class SuggestionNavigator {
   init() {
     this.createElement();
     this.setupKeyboardShortcuts();
+    
+    // Set initial main content classes based on collapsed state
+    const mainContent = document.querySelector('.main-content');
+    if (mainContent && this.isCollapsed) {
+      mainContent.classList.add('navigator-collapsed');
+      mainContent.classList.remove('navigator-visible');
+    }
   }
 
   /**
@@ -68,7 +75,7 @@ class SuggestionNavigator {
     this.collapseToggle.title = 'Show AI suggestions sidebar';
     this.collapseToggle.innerHTML = `
       <svg viewBox="0 0 16 16" class="sparkles-icon">
-        <path d="M8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
+        <path d="M7.53 1.282a.5.5 0 0 1 .94 0l.478 1.306a7.492 7.492 0 0 0 4.464 4.464l1.305.478a.5.5 0 0 1 0 .94l-1.305.478a7.492 7.492 0 0 0-4.464 4.464l-.478 1.305a.5.5 0 0 1-.94 0l-.478-1.305a7.492 7.492 0 0 0-4.464-4.464L1.282 8.47a.5.5 0 0 1 0-.94l1.306-.478a7.492 7.492 0 0 0 4.464-4.464Z"/>
       </svg>
     `;
 
@@ -331,19 +338,24 @@ class SuggestionNavigator {
       this.element.style.display = 'none';
       this.collapseToggle.style.display = 'flex';
       
-      // Adjust main content
+      // Adjust main content - remove navigator-visible and add navigator-collapsed
       const mainContent = document.querySelector('.main-content');
       if (mainContent) {
+        mainContent.classList.remove('navigator-visible');
         mainContent.classList.add('navigator-collapsed');
       }
     } else {
       this.element.style.display = 'flex';
       this.collapseToggle.style.display = 'none';
       
-      // Adjust main content
+      // Adjust main content - remove navigator-collapsed and potentially add navigator-visible
       const mainContent = document.querySelector('.main-content');
       if (mainContent) {
         mainContent.classList.remove('navigator-collapsed');
+        // Only add navigator-visible if we have suggestions
+        if (this.suggestions && this.suggestions.length > 0) {
+          mainContent.classList.add('navigator-visible');
+        }
       }
     }
   }
