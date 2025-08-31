@@ -222,6 +222,12 @@ class PRManager {
     // Load files and display them in sidebar and main content
     this.loadAndDisplayFiles();
     
+    // Check if there are existing AI suggestions and load them
+    setTimeout(async () => {
+      console.log('[UI] Checking for existing AI suggestions...');
+      await this.loadAISuggestions();
+    }, 1500);
+    
     container.style.display = 'block';
   }
 
@@ -1056,8 +1062,13 @@ class PRManager {
         const status = await response.json();
 
         if (status.status === 'completed') {
+          console.log('[UI] Analysis completed, loading suggestions...');
+          
           // Analysis complete, load suggestions
-          await this.loadAISuggestions();
+          // Add a small delay to ensure DOM is ready
+          setTimeout(async () => {
+            await this.loadAISuggestions();
+          }, 500);
           
           if (button) {
             button.disabled = false;
@@ -1124,6 +1135,8 @@ class PRManager {
    * Display AI suggestions inline with diff
    */
   displayAISuggestions(suggestions) {
+    console.log(`[UI] Displaying ${suggestions.length} AI suggestions`);
+    
     // Group suggestions by file and line
     const suggestionsByLocation = {};
     
@@ -1135,25 +1148,71 @@ class PRManager {
       suggestionsByLocation[key].push(suggestion);
     });
 
+    console.log('[UI] Grouped suggestions by location:', Object.keys(suggestionsByLocation));
+
     // Find diff rows and insert suggestions
     Object.entries(suggestionsByLocation).forEach(([location, locationSuggestions]) => {
       const [file, lineStr] = location.split(':');
       const line = parseInt(lineStr);
       
-      // Find the diff row for this file and line
-      const fileElement = document.querySelector(`[data-file-path="${file}"]`);
-      if (!fileElement) return;
+      console.log(`[UI] Looking for file: ${file}, line: ${line}`);
+      
+      // Find the diff wrapper for this file - try multiple selectors
+      let fileElement = document.querySelector(`[data-file-name="${file}"]`);
+      if (!fileElement) {
+        fileElement = document.querySelector(`[data-file-path="${file}"]`);
+      }
+      if (!fileElement) {
+        // Try to find by partial match in the file wrapper
+        const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
+        for (const wrapper of allFileWrappers) {
+          const fileName = wrapper.dataset.fileName;
+          if (fileName && (fileName === file || fileName.endsWith('/' + file))) {
+            fileElement = wrapper;
+            break;
+          }
+        }
+      }
+      
+      if (!fileElement) {
+        console.warn(`[UI] Could not find file element for: ${file}`);
+        return;
+      }
 
-      // Find the line in the diff
+      console.log(`[UI] Found file element for: ${file}`);
+
+      // Find the line in the diff - check both line-num2 and line-num-new
       const lineRows = fileElement.querySelectorAll('tr');
+      let suggestionInserted = false;
+      
       lineRows.forEach(row => {
-        const lineNum = row.querySelector('.line-num-new')?.textContent?.trim();
+        if (suggestionInserted) return;
+        
+        // Try different selectors for line numbers
+        let lineNum = row.querySelector('.line-num2')?.textContent?.trim();
+        if (!lineNum) {
+          lineNum = row.querySelector('.line-num-new')?.textContent?.trim();
+        }
+        if (!lineNum) {
+          // For custom diff rendering, check the new line cell
+          const cells = row.querySelectorAll('td');
+          if (cells.length >= 2) {
+            lineNum = cells[1]?.textContent?.trim();
+          }
+        }
+        
         if (lineNum && parseInt(lineNum) === line) {
+          console.log(`[UI] Found line ${line} in file ${file}, inserting suggestion`);
           // Insert suggestion after this row
           const suggestionRow = this.createSuggestionRow(locationSuggestions);
           row.parentNode.insertBefore(suggestionRow, row.nextSibling);
+          suggestionInserted = true;
         }
       });
+      
+      if (!suggestionInserted) {
+        console.warn(`[UI] Could not find line ${line} in file ${file}`);
+      }
     });
   }
 
@@ -1173,12 +1232,25 @@ class PRManager {
       suggestionDiv.className = `ai-suggestion ai-type-${suggestion.type}`;
       suggestionDiv.dataset.suggestionId = suggestion.id;
       
+      // Apply collapsed class if the suggestion is dismissed
+      if (suggestion.status === 'dismissed') {
+        suggestionDiv.classList.add('collapsed');
+      }
+      
       suggestionDiv.innerHTML = `
         <div class="ai-suggestion-header">
-          <span class="ai-badge">AI</span>
-          <span class="type-badge type-${suggestion.type}">${suggestion.type}</span>
-          <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
-          ${suggestion.ai_confidence ? `<span class="confidence">${Math.round(suggestion.ai_confidence * 100)}% confident</span>` : ''}
+          <div class="ai-suggestion-header-left">
+            <span class="ai-badge">AI</span>
+            <span class="type-badge type-${suggestion.type}">${suggestion.type}</span>
+            <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
+            ${suggestion.ai_confidence ? `<span class="confidence">${Math.round(suggestion.ai_confidence * 100)}% confident</span>` : ''}
+          </div>
+          <div class="ai-suggestion-collapsed-content" style="display: none;">
+            🔽 Hidden AI suggestion
+            <button class="btn btn-sm btn-restore" onclick="prManager.restoreSuggestion(${suggestion.id})" title="Restore suggestion">
+              ↻
+            </button>
+          </div>
         </div>
         <div class="ai-suggestion-body">
           ${this.escapeHtml(suggestion.body || '')}
@@ -1247,15 +1319,44 @@ class PRManager {
         throw new Error('Failed to dismiss suggestion');
       }
 
-      // Hide the suggestion
+      // Add collapsed class to the suggestion instead of hiding it
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (suggestionDiv) {
-        suggestionDiv.style.display = 'none';
+        suggestionDiv.classList.add('collapsed');
       }
 
     } catch (error) {
       console.error('Error dismissing suggestion:', error);
       alert('Failed to dismiss suggestion');
+    }
+  }
+
+  /**
+   * Restore a dismissed AI suggestion
+   */
+  async restoreSuggestion(suggestionId) {
+    try {
+      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ status: 'active' })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to restore suggestion');
+      }
+
+      // Remove collapsed class from the suggestion
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      if (suggestionDiv) {
+        suggestionDiv.classList.remove('collapsed');
+      }
+
+    } catch (error) {
+      console.error('Error restoring suggestion:', error);
+      alert('Failed to restore suggestion');
     }
   }
 

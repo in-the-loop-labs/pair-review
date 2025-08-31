@@ -376,6 +376,10 @@
   color: #ffffff;
   background-color: #1f883d;
   border-color: #1f883d;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .btn-primary:hover {
@@ -1212,8 +1216,88 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-radius: 50%;
   border-top-color: white;
   animation: spin 0.8s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
 }
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* Collapsed AI Suggestion Styles */
+.ai-suggestion.collapsed {
+  background: var(--color-bg-secondary);
+  opacity: 0.7;
+  border-left-color: var(--color-text-tertiary);
+  padding: 8px 12px;
+}
+
+.ai-suggestion.collapsed .ai-suggestion-body {
+  display: none;
+}
+
+.ai-suggestion.collapsed .ai-suggestion-actions {
+  display: none;
+}
+
+.ai-suggestion.collapsed .ai-suggestion-collapsed-content {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.ai-suggestion-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-suggestion.collapsed .ai-suggestion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-bottom: 0;
+}
+
+.ai-suggestion.collapsed .ai-suggestion-header-left .confidence {
+  display: none;
+}
+
+.ai-suggestion.collapsed .ai-suggestion-header-left .ai-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.btn-restore {
+  color: var(--color-text-secondary);
+  background-color: transparent;
+  border-color: var(--color-border-primary);
+  padding: 4px 8px;
+  font-size: 12px;
+  min-width: auto;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  margin-left: 8px;
+}
+
+.btn-restore:hover {
+  background-color: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-secondary);
+}
+
+/* Dark theme adjustments for collapsed suggestions */
+[data-theme="dark"] .ai-suggestion.collapsed {
+  background: var(--color-bg-tertiary);
+  border-left-color: var(--color-text-tertiary);
+}
+
+[data-theme="dark"] .ai-suggestion.collapsed .ai-suggestion-collapsed-content {
+  color: var(--color-text-secondary);
 }

@@ -5,6 +5,7 @@ const Analyzer = require('../ai/analyzer');
 const fs = require('fs').promises;
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const logger = require('../utils/logger');
 
 const router = express.Router();
 
@@ -382,9 +383,27 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Create analyzer instance
     const analyzer = new Analyzer(req.app.get('db'));
     
+    // Log analysis start with colorful output
+    logger.section(`AI Analysis Request - PR #${prNumber}`);
+    logger.log('API', `Repository: ${repository}`, 'magenta');
+    logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
+    logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    
     // Start analysis asynchronously
     analyzer.analyzeLevel1(prMetadata.id, worktreePath)
       .then(result => {
+        logger.section('Analysis Results');
+        logger.success(`Analysis complete for PR #${prNumber}`);
+        logger.success(`Found ${result.suggestions.length} suggestions:`);
+        result.suggestions.forEach(s => {
+          const icon = s.type === 'bug' ? '🐛' : 
+                       s.type === 'praise' ? '👍' :
+                       s.type === 'improvement' ? '💡' :
+                       s.type === 'security' ? '🔒' :
+                       s.type === 'performance' ? '⚡' : '📝';
+          logger.log('Result', `${icon} ${s.type}: ${s.title} (${s.file}:${s.line_start})`, 'green');
+        });
+        
         activeAnalyses.set(analysisId, {
           ...activeAnalyses.get(analysisId),
           status: 'completed',
@@ -394,7 +413,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         });
       })
       .catch(error => {
-        console.error('Analysis failed:', error);
+        logger.error(`Analysis failed for PR #${prNumber}: ${error.message}`);
         activeAnalyses.set(analysisId, {
           ...activeAnalyses.get(analysisId),
           status: 'failed',
@@ -472,7 +491,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
       });
     }
 
-    // Get AI suggestions from the new comments table
+    // Get AI suggestions from the new comments table (include dismissed ones too)
     const suggestions = await query(req.app.get('db'), `
       SELECT 
         id,
@@ -491,7 +510,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'ai' AND status = 'active'
+      WHERE pr_id = ? AND source = 'ai' AND status IN ('active', 'dismissed')
       ORDER BY file, line_start
     `, [prMetadata.id]);
 
@@ -513,9 +532,9 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
     const { id } = req.params;
     const { status, userComment } = req.body;
     
-    if (!['adopted', 'dismissed'].includes(status)) {
+    if (!['adopted', 'dismissed', 'active'].includes(status)) {
       return res.status(400).json({ 
-        error: 'Invalid status. Must be "adopted" or "dismissed"' 
+        error: 'Invalid status. Must be "adopted", "dismissed", or "active"' 
       });
     }
 
