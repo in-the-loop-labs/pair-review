@@ -1638,35 +1638,29 @@ tr.newly-expanded .d2h-code-line-ctn {
 .barbershop-stripes {
   position: absolute;
   top: 0;
-  left: 0;
+  left: -28px;
   right: 0;
   bottom: 0;
+  width: calc(100% + 56px);
   background: repeating-linear-gradient(
     45deg,
     #2563eb 0px,
     #2563eb 10px,
-    #3b82f6 10px,
-    #3b82f6 20px
+    #ffffff 10px,
+    #ffffff 20px
   );
-  background-size: 28px 28px; /* sqrt(20^2 + 20^2) for 45deg */
   animation: barbershop-move 1s linear infinite;
 }
 
 @keyframes barbershop-move {
   from {
-    background-position: 0 0;
+    transform: translateX(0);
   }
   to {
-    background-position: 28px 28px;
+    transform: translateX(28px);
   }
 }
 
-.progress-file-text {
-  font-size: 14px;
-  font-weight: 500;
-  color: #374151;
-  margin: 0;
-}
 
 /* Dark theme adjustments for barbershop pole */
 [data-theme="dark"] .barbershop-progress-bar {
@@ -1674,6 +1668,3 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: var(--color-bg-tertiary);
 }
 
-[data-theme="dark"] .progress-file-text {
-  color: var(--color-text-primary);
-}
