@@ -173,7 +173,8 @@ function setupSchema(db, resolve, reject) {
         console.error('Error committing schema setup:', error.message);
         reject(error);
       } else {
-        console.log(`Database initialized at: ${DB_PATH}`);
+        const isNew = !require('fs').existsSync(DB_PATH) || require('fs').statSync(DB_PATH).size === 0;
+        console.log(isNew ? `Created new database at: ${DB_PATH}` : `Connected to existing database at: ${DB_PATH}`);
         resolve(db);
       }
     });

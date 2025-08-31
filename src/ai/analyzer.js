@@ -1,6 +1,7 @@
 const ClaudeCLI = require('./claude-cli');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
+const logger = require('../utils/logger');
 
 class Analyzer {
   constructor(database) {
@@ -16,25 +17,34 @@ class Analyzer {
    */
   async analyzeLevel1(prId, worktreePath) {
     const runId = uuidv4();
-    console.log(`[AI] Starting Level 1 analysis for PR #${prId} (run: ${runId})`);
+    
+    logger.section('Level 1 Analysis Starting');
+    logger.info(`PR ID: ${prId}`);
+    logger.info(`Analysis run ID: ${runId}`);
+    logger.info(`Worktree path: ${worktreePath}`);
     
     try {
       // Build the Level 1 prompt
+      logger.info('Building Level 1 prompt...');
       const prompt = this.buildLevel1Prompt(prId, worktreePath);
       
       // Execute Claude CLI in the worktree directory
+      logger.info('Executing Claude CLI (timeout: 120s)...');
       const response = await this.claude.execute(prompt, {
         cwd: worktreePath,
         timeout: 120000 // 2 minutes for Level 1
       });
 
       // Parse and validate the response
+      logger.info('Parsing Claude response...');
       const suggestions = this.parseResponse(response, 1);
+      logger.success(`Parsed ${suggestions.length} valid suggestions`);
       
       // Store suggestions in database
+      logger.info('Storing suggestions in database...');
       await this.storeSuggestions(prId, runId, suggestions, 1);
       
-      console.log(`[AI] Level 1 analysis complete: ${suggestions.length} suggestions found`);
+      logger.success(`Level 1 analysis complete: ${suggestions.length} suggestions found`);
       
       return {
         runId,
@@ -43,7 +53,8 @@ class Analyzer {
         summary: response.summary || `Found ${suggestions.length} suggestions`
       };
     } catch (error) {
-      console.error('[AI] Level 1 analysis failed:', error);
+      logger.error(`Level 1 analysis failed: ${error.message}`);
+      logger.error(`Error stack: ${error.stack}`);
       throw error;
     }
   }
@@ -99,12 +110,12 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
           }
         }
       } catch (error) {
-        console.warn('[AI] Failed to extract suggestions from raw response');
+        logger.warn('Failed to extract suggestions from raw response');
       }
     }
 
     // Fallback to empty array
-    console.warn('[AI] No valid suggestions found in response');
+    logger.warn('No valid suggestions found in response');
     return [];
   }
 
@@ -116,13 +127,13 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
       .filter(s => {
         // Ensure required fields exist
         if (!s.file || !s.line || !s.type || !s.title) {
-          console.warn('[AI] Skipping invalid suggestion:', s);
+          logger.warn(`Skipping invalid suggestion: ${JSON.stringify(s)}`);
           return false;
         }
         
         // Filter out low confidence suggestions
         if (s.confidence && s.confidence < 0.3) {
-          console.log(`[AI] Filtering low confidence suggestion: ${s.title} (${s.confidence})`);
+          logger.info(`Filtering low confidence suggestion: ${s.title} (${s.confidence})`);
           return false;
         }
         
@@ -144,18 +155,18 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
    * Store suggestions in the database
    */
   async storeSuggestions(prId, runId, suggestions, level) {
-    const stmt = this.db.prepare(`
-      INSERT INTO comments (
-        pr_id, source, author, ai_run_id, ai_level, ai_confidence,
-        file, line_start, line_end, type, title, body, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
+    const { run } = require('../database');
+    
     for (const suggestion of suggestions) {
       const body = suggestion.description + 
         (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
       
-      stmt.run(
+      await run(this.db, `
+        INSERT INTO comments (
+          pr_id, source, author, ai_run_id, ai_level, ai_confidence,
+          file, line_start, line_end, type, title, body, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
         prId,
         'ai',
         'AI Assistant',
@@ -169,36 +180,32 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
         suggestion.title,
         body,
         'active'
-      );
+      ]);
     }
-
-    stmt.finalize();
-    console.log(`[AI] Stored ${suggestions.length} suggestions in database`);
+    
+    logger.success(`Stored ${suggestions.length} suggestions in database`);
   }
 
   /**
    * Get AI suggestions for a PR
    */
   async getSuggestions(prId, runId = null) {
-    let query = `
+    const { query } = require('../database');
+    
+    let sql = `
       SELECT * FROM comments 
       WHERE pr_id = ? AND source = 'ai'
     `;
     const params = [prId];
 
     if (runId) {
-      query += ' AND ai_run_id = ?';
+      sql += ' AND ai_run_id = ?';
       params.push(runId);
     }
 
-    query += ' ORDER BY file, line_start';
+    sql += ' ORDER BY file, line_start';
 
-    return new Promise((resolve, reject) => {
-      this.db.all(query, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
+    return await query(this.db, sql, params);
   }
 
   /**

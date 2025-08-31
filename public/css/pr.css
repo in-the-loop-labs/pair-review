@@ -1230,6 +1230,11 @@ tr.newly-expanded .d2h-code-line-ctn {
   opacity: 0.7;
   border-left-color: var(--color-text-tertiary);
   padding: 8px 12px;
+  margin: 6px 16px;
+  min-height: 36px;
+  border: 1px solid var(--color-border-primary);
+  display: flex;
+  align-items: center;
 }
 
 .ai-suggestion.collapsed .ai-suggestion-body {
@@ -1240,13 +1245,36 @@ tr.newly-expanded .d2h-code-line-ctn {
   display: none;
 }
 
+/* Hide collapsed content by default */
+.ai-suggestion-collapsed-content {
+  display: none;
+}
+
+/* Show collapsed content when collapsed */
 .ai-suggestion.collapsed .ai-suggestion-collapsed-content {
-  display: inline-flex !important;
+  display: flex !important;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  min-height: 20px;
+  width: 100%;
+  flex: 1;
+}
+
+.collapsed-text {
   color: var(--color-text-tertiary);
-  font-size: 12px;
   font-style: italic;
+}
+
+.collapsed-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  max-width: 400px;
 }
 
 .ai-suggestion-header-left {
@@ -1256,34 +1284,30 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .ai-suggestion.collapsed .ai-suggestion-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  margin-bottom: 0;
-}
-
-.ai-suggestion.collapsed .ai-suggestion-header-left .confidence {
   display: none;
-}
-
-.ai-suggestion.collapsed .ai-suggestion-header-left .ai-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 200px;
 }
 
 .btn-restore {
   color: var(--color-text-secondary);
   background-color: transparent;
-  border-color: var(--color-border-primary);
+  border: 1px solid var(--color-border-primary);
   padding: 4px 8px;
   font-size: 12px;
   min-width: auto;
   border-radius: 4px;
   transition: all 0.2s ease;
-  margin-left: 8px;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  min-height: 24px;
+  width: 24px;
+}
+
+.btn-restore .octicon {
+  fill: currentColor;
+  vertical-align: text-bottom;
 }
 
 .btn-restore:hover {
@@ -1292,12 +1316,25 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-color: var(--color-border-secondary);
 }
 
+.btn-restore:hover .octicon {
+  fill: var(--color-text-primary);
+}
+
 /* Dark theme adjustments for collapsed suggestions */
 [data-theme="dark"] .ai-suggestion.collapsed {
   background: var(--color-bg-tertiary);
   border-left-color: var(--color-text-tertiary);
+  border-color: var(--color-border-secondary);
 }
 
 [data-theme="dark"] .ai-suggestion.collapsed .ai-suggestion-collapsed-content {
   color: var(--color-text-secondary);
+}
+
+[data-theme="dark"] .btn-restore {
+  border-color: var(--color-border-secondary);
+}
+
+[data-theme="dark"] .btn-restore:hover {
+  background-color: var(--color-bg-secondary);
 }
