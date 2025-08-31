@@ -1340,22 +1340,20 @@ class PRManager {
         throw new Error('Failed to dismiss suggestion');
       }
 
-      // Completely remove the AI suggestion row from DOM
+      // Add collapsed class to the suggestion to show it as hidden
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (suggestionDiv) {
-        // Find the closest .ai-suggestion-row parent and remove it
-        const suggestionRow = suggestionDiv.closest('.ai-suggestion-row');
-        if (suggestionRow) {
-          suggestionRow.remove();
-          console.log(`[UI] Removed suggestion row for suggestion ${suggestionId}`);
-        }
+        suggestionDiv.classList.add('collapsed');
+        console.log(`[UI] Collapsed suggestion ${suggestionId}`);
       }
 
-      // Update the suggestion navigator by filtering out the dismissed suggestion
+      // Update the suggestion navigator to mark as dismissed
       if (this.suggestionNavigator && this.suggestionNavigator.suggestions) {
-        const updatedSuggestions = this.suggestionNavigator.suggestions.filter(s => s.id !== suggestionId);
+        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s => 
+          s.id === suggestionId ? { ...s, status: 'dismissed' } : s
+        );
         this.suggestionNavigator.updateSuggestions(updatedSuggestions);
-        console.log(`[UI] Updated navigator with ${updatedSuggestions.length} remaining suggestions`);
+        console.log(`[UI] Updated navigator with suggestion marked as dismissed`);
       }
 
     } catch (error) {
@@ -1381,9 +1379,21 @@ class PRManager {
         throw new Error('Failed to restore suggestion');
       }
 
-      // Since we removed the DOM element completely in dismissSuggestion,
-      // we need to reload all suggestions to properly restore this one
-      await this.loadAISuggestions();
+      // Remove the collapsed class to show the suggestion again
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      if (suggestionDiv) {
+        suggestionDiv.classList.remove('collapsed');
+        console.log(`[UI] Restored suggestion ${suggestionId}`);
+      }
+
+      // Update the suggestion navigator to mark as active
+      if (this.suggestionNavigator && this.suggestionNavigator.suggestions) {
+        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s => 
+          s.id === suggestionId ? { ...s, status: 'active' } : s
+        );
+        this.suggestionNavigator.updateSuggestions(updatedSuggestions);
+        console.log(`[UI] Updated navigator with suggestion marked as active`);
+      }
 
     } catch (error) {
       console.error('Error restoring suggestion:', error);
