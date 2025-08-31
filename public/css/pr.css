@@ -579,7 +579,7 @@
 
 .sidebar-toggle-collapsed {
   position: fixed;
-  left: 8px;
+  left: 24px;
   top: 80px;
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-primary);
@@ -587,7 +587,7 @@
   padding: 8px;
   cursor: pointer;
   color: var(--color-text-secondary);
-  z-index: 50;
+  z-index: 1000;
   transition: all 0.2s;
   display: flex;
   align-items: center;
@@ -1295,7 +1295,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .btn-restore {
-  color: var(--color-text-secondary);
+  color: var(--color-text-primary);
   background-color: transparent;
   border: 1px solid var(--color-border-primary);
   padding: 4px 8px;
