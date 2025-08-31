@@ -46,15 +46,19 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - **GET /api/pr/:owner/:repo/:number/diff**: Diff content and changed files
 - **GET /api/pr/:owner/:repo/:number/comments**: Review comments (future AI suggestions)
 
-### 7. GitHub-like Diff Viewer (`public/js/pr.js` + `public/css/styles.css`)
-- **Role**: Rich diff display using Diff2Html library for GitHub-like appearance
-- **Key Features**:
-  - **Unified Diff View**: Single-column diff display matching GitHub's style
-  - **Line Number Display**: Dual line numbers (old/new) with "8 8" format
-  - **Color-coded Changes**: Green for additions, red for deletions, white for context
-  - **File Headers**: Clean file name headers with proper styling
-  - **DOM Generation**: Manual DOM creation for precise control over structure
-- **Implementation**: Copied from local-review project with adaptations for pair-review
+### 7. GitHub-like UI with Sidebar Layout (`public/`)
+- **Role**: Rich GitHub-like interface with sidebar file navigation and diff viewer
+- **Key Components**:
+  - **Sidebar Layout**: Files navigation in left sidebar, main diff in center (like GitHub)
+  - **File Tree**: Hierarchical folder structure with expand/collapse functionality
+  - **Diff Viewer**: GitHub-styled diff display using Diff2Html with custom enhancements
+  - **Context Expansion**: Expandable sections for hidden lines between diff blocks
+  - **Responsive Design**: Auto-collapses sidebar on mobile, maintains usability
+- **Architecture**:
+  - **No Tabs**: Replaced tab-based layout with sidebar + main content layout
+  - **Single-View**: All files displayed in single scrollable diff with file navigation
+  - **CSS Variables**: Theme support with light/dark mode capabilities
+  - **Event-Driven**: File tree clicks scroll to corresponding diff sections
 
 ## Data Flow
 
@@ -112,9 +116,14 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - ✅ Web server with API endpoints
 - ✅ Automatic browser opening
 - ✅ Port conflict resolution
-- ✅ GitHub-like diff viewer with Diff2Html integration
+- ✅ GitHub-like UI with sidebar file navigation
+- ✅ Hierarchical file tree with expand/collapse folders
+- ✅ File navigation with click-to-scroll functionality
+- ✅ Sidebar toggle with responsive collapse/expand
+- ✅ Enhanced diff viewer with context expansion UI
 - ✅ Color-coded line changes (additions/deletions/context)
 - ✅ Proper line numbering and file headers
+- ✅ Theme support (CSS variables for light/dark modes)
 
 ### API Endpoints Verified
 - ✅ `/api/pr/owner/repo/number` - Returns full PR data
@@ -146,9 +155,11 @@ comments: Will store AI suggestions and user comments
 - AI integration for generating review suggestions
 - Comment management (adopt/discard AI suggestions)  
 - GitHub review submission functionality
-- Context expansion controls for diff viewer
+- Full context expansion functionality (requires API endpoints for file content)
 - Inline commenting functionality
-- File navigator/tree sidebar
+- Syntax highlighting for diff content
+- Comment persistence and draft management
+- Keyboard shortcuts for navigation
 
 ## Troubleshooting
 
