@@ -1,6 +1,7 @@
 const express = require('express');
 const { query, queryOne, run } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
+const { GitHubClient } = require('../github/client');
 const Analyzer = require('../ai/analyzer');
 const fs = require('fs').promises;
 const path = require('path');
@@ -1358,9 +1359,20 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     const repository = `${owner}/${repo}`;
     const db = req.app.get('db');
     
-    // Get PR metadata
+    // Get GitHub token from app context (set during app initialization)
+    const githubToken = req.app.get('githubToken');
+    if (!githubToken) {
+      return res.status(500).json({ 
+        error: 'GitHub token not configured. Please check your ~/.pair-review/config.json' 
+      });
+    }
+
+    // Initialize GitHub client
+    const githubClient = new GitHubClient(githubToken);
+    
+    // Get PR metadata and worktree path
     const prMetadata = await queryOne(db, `
-      SELECT id FROM pr_metadata
+      SELECT id, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
@@ -1370,9 +1382,12 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       });
     }
 
+    const prData = JSON.parse(prMetadata.pr_data);
+
     // Get all active user comments for this PR
     const comments = await query(db, `
       SELECT 
+        id,
         file,
         line_start,
         body
@@ -1381,31 +1396,118 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       ORDER BY file, line_start
     `, [prMetadata.id]);
 
-    // TODO: Initialize GitHub client and submit review
-    // This requires adding GitHub client integration
-    const reviewData = {
-      event,
-      body: body || '',
-      comments: comments.map(comment => ({
-        path: comment.file,
-        line: comment.line_start,
-        body: comment.body
-      }))
-    };
+    // Check if there are too many comments (GitHub API limit is ~50)
+    if (comments.length > 50) {
+      return res.status(400).json({
+        error: `Too many comments (${comments.length}). GitHub API supports up to 50 inline comments per review. Please reduce the number of comments.`
+      });
+    }
 
-    // For now, just return success with the data that would be submitted
-    res.json({ 
-      success: true,
-      message: `Review would be submitted to GitHub with ${event} status`,
-      reviewData,
-      commentCount: comments.length
-    });
+    // Get worktree path and generate diff for position calculation
+    const worktreeManager = new GitWorktreeManager();
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    
+    let diffContent = '';
+    try {
+      diffContent = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
+    } catch (diffError) {
+      console.warn('Could not generate diff for position calculation:', diffError.message);
+      // Continue without diff - GitHub client will handle missing positions
+    }
+
+    // Format comments for GitHub API
+    const githubComments = comments.map(comment => ({
+      path: comment.file,
+      line: comment.line_start,
+      body: comment.body
+    }));
+
+    // Begin database transaction for submission tracking
+    await run(db, 'BEGIN TRANSACTION');
+    
+    try {
+      // Submit review to GitHub
+      console.log(`Submitting review for PR #${prNumber} with ${comments.length} comments`);
+      const githubReview = await githubClient.createReview(
+        owner, 
+        repo, 
+        prNumber, 
+        event, 
+        body || '', 
+        githubComments, 
+        diffContent
+      );
+
+      // Update reviews table with submission status
+      const now = new Date().toISOString();
+      await run(db, `
+        INSERT OR REPLACE INTO reviews (pr_number, repository, status, updated_at, submitted_at, review_data)
+        VALUES (?, ?, 'submitted', ?, ?, ?)
+      `, [prNumber, repository, now, now, JSON.stringify({
+        github_review_id: githubReview.id,
+        github_url: githubReview.html_url,
+        event: event,
+        body: body || '',
+        comments_count: githubReview.comments_count,
+        submitted_at: githubReview.submitted_at
+      })]);
+
+      // Update comments table to mark submitted comments
+      // Note: Since comments table doesn't have github-specific columns in current schema,
+      // we'll update the status to indicate submission
+      for (const comment of comments) {
+        await run(db, `
+          UPDATE comments 
+          SET status = 'submitted', updated_at = ?
+          WHERE id = ?
+        `, [now, comment.id]);
+      }
+
+      // Commit transaction
+      await run(db, 'COMMIT');
+
+      console.log(`Review submitted successfully: ${githubReview.html_url}`);
+
+      res.json({ 
+        success: true,
+        message: `Review submitted successfully to GitHub`,
+        github_url: githubReview.html_url,
+        github_review_id: githubReview.id,
+        comments_submitted: githubReview.comments_count,
+        event: event
+      });
+      
+    } catch (submitError) {
+      // Rollback transaction on error
+      await run(db, 'ROLLBACK');
+      throw submitError;
+    }
     
   } catch (error) {
     console.error('Error submitting review:', error);
-    res.status(500).json({ 
-      error: 'Failed to submit review' 
-    });
+    
+    // Handle different types of errors with appropriate messages
+    if (error.message.includes('GitHub authentication failed')) {
+      return res.status(401).json({ 
+        error: 'GitHub authentication failed. Please check your token in ~/.pair-review/config.json' 
+      });
+    } else if (error.message.includes('Insufficient permissions')) {
+      return res.status(403).json({ 
+        error: 'Insufficient permissions to submit review. Your GitHub token may need additional scopes.' 
+      });
+    } else if (error.message.includes('not found')) {
+      return res.status(404).json({ 
+        error: error.message 
+      });
+    } else if (error.message.includes('rate limit')) {
+      return res.status(429).json({ 
+        error: error.message 
+      });
+    } else {
+      return res.status(500).json({ 
+        error: `Failed to submit review: ${error.message}` 
+      });
+    }
   }
 });
 

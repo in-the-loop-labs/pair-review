@@ -3001,3 +3001,157 @@ body {
   border-top-color: #30363d;
 }
 
+/* Toast Notification Styles */
+.toast-container {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20000;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  padding: 12px 16px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  font-size: 14px;
+  font-weight: 500;
+  opacity: 0;
+  transform: translateY(-20px);
+  transition: all 0.3s ease;
+  pointer-events: auto;
+  max-width: 500px;
+}
+
+.toast-show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast-fade-out {
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: all 0.3s ease;
+}
+
+.toast-success {
+  background-color: #1f883d;
+  color: white;
+  border: 1px solid #1a7f37;
+}
+
+.toast-error {
+  background-color: #d1242f;
+  color: white;
+  border: 1px solid #cf222e;
+}
+
+.toast-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toast-icon {
+  flex-shrink: 0;
+}
+
+.toast-message {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.toast-link {
+  color: white;
+  text-decoration: underline;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+.toast-link:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* Dark theme toast styles */
+[data-theme="dark"] .toast-success {
+  background-color: #238636;
+  border-color: #2ea043;
+}
+
+[data-theme="dark"] .toast-error {
+  background-color: #da3633;
+  border-color: #f85149;
+}
+
+/* Loading spinner for buttons */
+.loading-spinner-small {
+  width: 16px;
+  height: 16px;
+  border: 2px solid transparent;
+  border-top: 2px solid currentColor;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-right: 8px;
+}
+
+/* Error message styles in modal */
+.modal-error-message {
+  color: #d1242f;
+  font-size: 16px;
+  margin: 16px 0;
+  padding: 12px 16px;
+  background-color: #fff5f5;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  border-left: 4px solid #d1242f;
+}
+
+[data-theme="dark"] .modal-error-message {
+  color: #f85149;
+  background-color: rgba(248, 81, 73, 0.1);
+  border-color: rgba(248, 81, 73, 0.3);
+}
+
+/* Warning dialog styles */
+.warning-dialog {
+  background: #fff8e1;
+  border: 1px solid #fbc02d;
+  border-left: 4px solid #f57c00;
+  border-radius: 6px;
+  padding: 16px;
+  margin: 16px 0;
+}
+
+.warning-dialog-title {
+  font-weight: 600;
+  color: #e65100;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.warning-dialog-content {
+  color: #bf360c;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+[data-theme="dark"] .warning-dialog {
+  background: rgba(255, 193, 7, 0.1);
+  border-color: #ffc107;
+  border-left-color: #ff8f00;
+}
+
+[data-theme="dark"] .warning-dialog-title {
+  color: #ffc107;
+}
+
+[data-theme="dark"] .warning-dialog-content {
+  color: #ffca28;
+}
+

@@ -6,6 +6,7 @@ class ReviewModal {
   constructor() {
     this.modal = null;
     this.isVisible = false;
+    this.isSubmitting = false;
     this.createModal();
     this.setupEventListeners();
   }
@@ -27,11 +28,11 @@ class ReviewModal {
     modalContainer.style.display = 'none';
     
     modalContainer.innerHTML = `
-      <div class="modal-backdrop" onclick="reviewModal.hide()"></div>
+      <div class="modal-backdrop" onclick="reviewModal.handleBackdropClick()"></div>
       <div class="modal-container review-modal-container">
         <div class="modal-header">
           <h3>Submit Review</h3>
-          <button class="modal-close-btn" onclick="reviewModal.hide()" title="Close">
+          <button class="modal-close-btn" onclick="reviewModal.handleCloseClick()" title="Close" id="close-review-btn">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
             </svg>
@@ -76,11 +77,27 @@ class ReviewModal {
             <div class="review-comment-summary">
               <div class="review-comment-count"></div>
             </div>
+            
+            <!-- Warning dialog for large reviews -->
+            <div class="warning-dialog" id="large-review-warning" style="display: none;">
+              <div class="warning-dialog-title">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/>
+                </svg>
+                Large Review Warning
+              </div>
+              <div class="warning-dialog-content">
+                This review contains more than 50 comments. Large reviews may take longer to submit and could be harder for reviewers to process. Consider breaking down your feedback into smaller, more focused reviews.
+              </div>
+            </div>
+            
+            <!-- Error display -->
+            <div class="modal-error-message" id="review-error-message" style="display: none;"></div>
           </div>
         </div>
         
         <div class="modal-footer review-modal-footer">
-          <button class="btn btn-secondary" onclick="reviewModal.hide()">Cancel</button>
+          <button class="btn btn-secondary" onclick="reviewModal.handleCloseClick()" id="cancel-review-btn">Cancel</button>
           <button class="btn btn-primary" id="submit-review-btn-modal" onclick="reviewModal.submitReview()">
             Submit review
           </button>
@@ -99,15 +116,9 @@ class ReviewModal {
    * Setup event listeners
    */
   setupEventListeners() {
-    // Handle backdrop clicks
-    const backdrop = this.modal.querySelector('.modal-backdrop');
-    if (backdrop) {
-      backdrop.addEventListener('click', () => this.hide());
-    }
-    
     // Handle escape key
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.isVisible) {
+      if (e.key === 'Escape' && this.isVisible && !this.isSubmitting) {
         this.hide();
       }
     });
@@ -135,6 +146,10 @@ class ReviewModal {
       }
     });
     
+    // Clear any errors or warnings
+    this.hideError();
+    this.updateLargeReviewWarning(0);
+    
     // Show modal
     this.modal.style.display = 'flex';
     this.isVisible = true;
@@ -148,10 +163,28 @@ class ReviewModal {
   }
 
   /**
+   * Handle backdrop click - only close if not submitting
+   */
+  handleBackdropClick() {
+    if (!this.isSubmitting) {
+      this.hide();
+    }
+  }
+
+  /**
+   * Handle close button click - only close if not submitting
+   */
+  handleCloseClick() {
+    if (!this.isSubmitting) {
+      this.hide();
+    }
+  }
+
+  /**
    * Hide the modal
    */
   hide() {
-    if (!this.modal) return;
+    if (!this.modal || this.isSubmitting) return;
     
     this.modal.style.display = 'none';
     this.isVisible = false;
@@ -177,27 +210,97 @@ class ReviewModal {
         countElement.style.display = 'none';
       }
     }
+    
+    // Update large review warning
+    this.updateLargeReviewWarning(userComments);
+  }
+
+  /**
+   * Show error message in modal
+   */
+  showError(message) {
+    const errorElement = this.modal.querySelector('#review-error-message');
+    if (errorElement) {
+      errorElement.textContent = message;
+      errorElement.style.display = 'block';
+    }
+  }
+
+  /**
+   * Hide error message
+   */
+  hideError() {
+    const errorElement = this.modal.querySelector('#review-error-message');
+    if (errorElement) {
+      errorElement.style.display = 'none';
+    }
+  }
+
+  /**
+   * Show/hide large review warning
+   */
+  updateLargeReviewWarning(commentCount) {
+    const warningElement = this.modal.querySelector('#large-review-warning');
+    if (warningElement) {
+      warningElement.style.display = commentCount > 50 ? 'block' : 'none';
+    }
+  }
+
+  /**
+   * Set modal submitting state
+   */
+  setSubmittingState(isSubmitting) {
+    this.isSubmitting = isSubmitting;
+    
+    // Update UI elements
+    const submitBtn = this.modal.querySelector('#submit-review-btn-modal');
+    const cancelBtn = this.modal.querySelector('#cancel-review-btn');
+    const closeBtn = this.modal.querySelector('#close-review-btn');
+    
+    if (isSubmitting) {
+      // Show loading state
+      submitBtn.innerHTML = `
+        <div class="loading-spinner-small"></div>
+        Submitting review...
+      `;
+      submitBtn.disabled = true;
+      cancelBtn.style.display = 'none';
+      closeBtn.style.display = 'none';
+    } else {
+      // Restore normal state
+      submitBtn.innerHTML = 'Submit review';
+      submitBtn.disabled = false;
+      cancelBtn.style.display = 'inline-block';
+      closeBtn.style.display = 'inline-block';
+    }
   }
 
   /**
    * Submit the review
    */
   async submitReview() {
+    if (this.isSubmitting) return;
+    
     const reviewBody = this.modal.querySelector('#review-body-modal').value.trim();
     const selectedOption = this.modal.querySelector('input[name="review-event"]:checked');
     const reviewEvent = selectedOption ? selectedOption.value : 'COMMENT';
-    const submitBtn = this.modal.querySelector('#submit-review-btn-modal');
+    const userComments = document.querySelectorAll('.user-comment-row');
+    const commentCount = userComments.length;
+    
+    // Hide any previous errors
+    this.hideError();
     
     // Validate
-    if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && document.querySelectorAll('.user-comment-row').length === 0) {
-      alert('Please add comments or a review summary when requesting changes.');
+    if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && commentCount === 0) {
+      this.showError('Please add comments or a review summary when requesting changes.');
       return;
     }
     
-    // Show loading state
-    const originalText = submitBtn.textContent;
-    submitBtn.textContent = 'Submitting...';
-    submitBtn.disabled = true;
+    // Show large review warning if needed but still allow submission
+    this.updateLargeReviewWarning(commentCount);
+    
+    // Set submitting state
+    this.setSubmittingState(true);
     
     try {
       // Get current PR from prManager
@@ -224,8 +327,18 @@ class ReviewModal {
       
       const result = await response.json();
       
-      // Show success message
-      alert(`Review submitted successfully! ${result.message}`);
+      // Show success toast with GitHub link
+      if (window.toast) {
+        const reviewUrl = result.reviewUrl || result.html_url;
+        window.toast.showSuccess(
+          'Review submitted successfully!',
+          {
+            link: reviewUrl,
+            linkText: 'View on GitHub',
+            duration: 5000
+          }
+        );
+      }
       
       // Hide modal
       this.hide();
@@ -236,15 +349,16 @@ class ReviewModal {
       if (commentRadio) {
         commentRadio.checked = true;
       }
+      this.hideError();
+      this.updateLargeReviewWarning(0);
       
     } catch (error) {
       console.error('Error submitting review:', error);
-      alert(`Failed to submit review: ${error.message}`);
+      this.showError(error.message);
       
     } finally {
-      // Restore button
-      submitBtn.textContent = originalText;
-      submitBtn.disabled = false;
+      // Restore normal state
+      this.setSubmittingState(false);
     }
   }
 }

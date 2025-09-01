@@ -137,6 +137,203 @@ class GitHubClient {
   }
 
   /**
+   * Submit a review to GitHub with inline comments
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} pullNumber - Pull request number
+   * @param {string} event - Review event (APPROVE, REQUEST_CHANGES, or COMMENT)
+   * @param {string} body - Overall review body/summary
+   * @param {Array} comments - Array of inline comments with path, line, body
+   * @param {string} diffContent - The PR diff for position calculation
+   * @returns {Promise<Object>} Review submission result with GitHub URL
+   */
+  async createReview(owner, repo, pullNumber, event, body, comments = [], diffContent = '') {
+    try {
+      console.log(`Submitting review for PR #${pullNumber} in ${owner}/${repo}`);
+      
+      // Validate GitHub token before attempting submission
+      const isValidToken = await this.validateToken();
+      if (!isValidToken) {
+        throw new Error('Invalid or expired GitHub token. Please check your token in ~/.pair-review/config.json');
+      }
+
+      // Validate event type
+      const validEvents = ['APPROVE', 'REQUEST_CHANGES', 'COMMENT'];
+      if (!validEvents.includes(event)) {
+        throw new Error(`Invalid review event: ${event}. Must be one of: ${validEvents.join(', ')}`);
+      }
+
+      // Convert comments to GitHub API format with position calculation
+      const formattedComments = [];
+      for (const comment of comments) {
+        if (!comment.path || !comment.body) {
+          throw new Error('Each comment must have a path and body');
+        }
+
+        const position = this.calculateDiffPosition(diffContent, comment.path, comment.line);
+        if (position === -1) {
+          console.warn(`Could not calculate position for comment on ${comment.path}:${comment.line}, skipping`);
+          continue;
+        }
+
+        formattedComments.push({
+          path: comment.path,
+          position: position,
+          body: comment.body,
+          side: 'RIGHT' // Comments on the new version (head) of the file
+        });
+      }
+
+      console.log(`Formatted ${formattedComments.length} comments for submission`);
+
+      // Submit review to GitHub
+      const { data } = await this.octokit.rest.pulls.createReview({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        event,
+        body: body || '',
+        comments: formattedComments
+      });
+
+      console.log(`Review submitted successfully: ${data.html_url}`);
+
+      return {
+        id: data.id,
+        html_url: data.html_url,
+        state: data.state,
+        submitted_at: data.submitted_at,
+        comments_count: formattedComments.length
+      };
+
+    } catch (error) {
+      await this.handleReviewError(error, owner, repo, pullNumber);
+    }
+  }
+
+  /**
+   * Calculate diff position for a given file path and line number
+   * Position is counted from the first @@ hunk header, where position 1 = first line after @@
+   * @param {string} diffContent - The unified diff content
+   * @param {string} filePath - File path to find in diff
+   * @param {number} lineNumber - Line number in the new file
+   * @returns {number} Diff position or -1 if not found
+   */
+  calculateDiffPosition(diffContent, filePath, lineNumber) {
+    if (!diffContent || !filePath || lineNumber === undefined) {
+      return -1;
+    }
+
+    const lines = diffContent.split('\n');
+    let inFile = false;
+    let currentFile = '';
+    let position = 0;
+    let newLineNumber = 0;
+    let foundHunk = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Check for file header (diff --git a/path b/path)
+      if (line.startsWith('diff --git')) {
+        const match = line.match(/diff --git a\/(.+) b\/(.+)/);
+        if (match) {
+          currentFile = match[2]; // Use the "b/" path (new file)
+          inFile = currentFile === filePath;
+          position = 0;
+          newLineNumber = 0;
+          foundHunk = false;
+        }
+        continue;
+      }
+
+      // Skip if not in the target file
+      if (!inFile) continue;
+
+      // Check for hunk header (@@ -oldstart,oldcount +newstart,newcount @@)
+      if (line.startsWith('@@')) {
+        const match = line.match(/@@ -\d+,?\d* \+(\d+),?\d* @@/);
+        if (match) {
+          newLineNumber = parseInt(match[1]) - 1; // Start counting from the line before
+          position = 0; // Reset position counter for this hunk
+          foundHunk = true;
+        }
+        continue;
+      }
+
+      // Only process lines after we've found a hunk in our target file
+      if (!foundHunk) continue;
+
+      // Count position for all diff lines (context, additions, deletions)
+      position++;
+
+      // Track line numbers for additions and context lines
+      if (line.startsWith('+')) {
+        newLineNumber++;
+        if (newLineNumber === lineNumber) {
+          return position;
+        }
+      } else if (line.startsWith(' ')) { // Context line
+        newLineNumber++;
+        if (newLineNumber === lineNumber) {
+          return position;
+        }
+      }
+      // Deletion lines don't increment newLineNumber but do increment position
+    }
+
+    return -1; // Position not found
+  }
+
+  /**
+   * Handle errors specific to review submission
+   * @param {Error} error - The API error
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} pullNumber - Pull request number
+   * @throws {Error} Reformatted error with user-friendly message
+   */
+  async handleReviewError(error, owner, repo, pullNumber) {
+    console.error('GitHub review submission error:', error);
+
+    // Handle authentication errors
+    if (error.status === 401) {
+      throw new Error('GitHub authentication failed. Your token may be invalid or expired. Check ~/.pair-review/config.json');
+    }
+
+    // Handle forbidden errors (insufficient permissions)
+    if (error.status === 403) {
+      throw new Error(`Insufficient permissions to review PR #${pullNumber} in ${owner}/${repo}. Your GitHub token may need additional scopes.`);
+    }
+
+    // Handle not found errors
+    if (error.status === 404) {
+      throw new Error(`Pull request #${pullNumber} not found in repository ${owner}/${repo}`);
+    }
+
+    // Handle validation errors
+    if (error.status === 422) {
+      const message = error.response?.data?.message || 'Validation error';
+      throw new Error(`GitHub API validation error: ${message}`);
+    }
+
+    // Handle network errors
+    if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+      throw new Error(`Network error during review submission: ${error.message}. Please check your internet connection.`);
+    }
+
+    // Handle rate limiting
+    if (error.status === 403 && error.response?.headers?.['x-ratelimit-remaining'] === '0') {
+      const resetTime = parseInt(error.response.headers['x-ratelimit-reset']) * 1000;
+      const waitTime = Math.max(resetTime - Date.now(), 1000);
+      throw new Error(`GitHub API rate limit exceeded. Review submission failed. Please wait ${Math.ceil(waitTime / 1000)} seconds and try again.`);
+    }
+
+    // Generic error
+    throw new Error(`Failed to submit review: ${error.message}`);
+  }
+
+  /**
    * Retry API calls with exponential backoff
    * @param {Function} apiCall - The API call function
    * @param {number} maxRetries - Maximum number of retries

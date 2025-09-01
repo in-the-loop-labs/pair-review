@@ -157,8 +157,9 @@ async function startServer(sharedDb = null) {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
     
-    // Store database instance for routes
+    // Store database instance and GitHub token for routes
     app.set('db', db);
+    app.set('githubToken', config.github_token);
     
     // PR API routes
     const prRoutes = require('./routes/pr');
