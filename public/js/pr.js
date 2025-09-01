@@ -1084,7 +1084,11 @@ class PRManager {
   async loadAISuggestions() {
     if (!this.currentPR) return;
 
-    const { owner, repo, number } = this.currentPR;
+    // Get PR details from URL or currentPR object
+    const urlParts = window.location.pathname.split('/');
+    const owner = this.currentPR.owner || urlParts[2] || 'owner';
+    const repo = this.currentPR.repo || urlParts[3] || 'repo';
+    const number = this.currentPR.number || urlParts[4] || '1';
 
     try {
       const response = await fetch(`/api/pr/${owner}/${repo}/${number}/ai-suggestions`);
@@ -1160,6 +1164,10 @@ class PRManager {
       
       console.log(`[UI] Looking for file: ${file}, line: ${line}`);
       
+      // Debug: Log all available file wrappers
+      const allWrappers = document.querySelectorAll('.d2h-file-wrapper');
+      console.log(`[UI] Available file wrappers:`, Array.from(allWrappers).map(w => w.dataset.fileName));
+      
       // Find the diff wrapper for this file - try multiple selectors
       let fileElement = document.querySelector(`[data-file-name="${file}"]`);
       if (!fileElement) {
@@ -1170,7 +1178,7 @@ class PRManager {
         const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
         for (const wrapper of allFileWrappers) {
           const fileName = wrapper.dataset.fileName;
-          if (fileName && (fileName === file || fileName.endsWith('/' + file))) {
+          if (fileName && (fileName === file || fileName.endsWith('/' + file) || file.endsWith('/' + fileName))) {
             fileElement = wrapper;
             break;
           }
@@ -1178,7 +1186,7 @@ class PRManager {
       }
       
       if (!fileElement) {
-        console.warn(`[UI] Could not find file element for: ${file}`);
+        console.warn(`[UI] Could not find file element for: ${file}. Available files:`, Array.from(allWrappers).map(w => w.dataset.fileName));
         return;
       }
 
