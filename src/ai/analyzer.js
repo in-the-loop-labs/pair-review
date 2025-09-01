@@ -73,7 +73,7 @@ class Analyzer {
       updateProgress('Processing with AI');
       const response = await this.claude.execute(prompt, {
         cwd: worktreePath,
-        timeout: 120000 // 2 minutes for Level 1
+        timeout: 600000 // 10 minutes for Level 1 - let Claude be thorough
       });
 
       // Step 5: Parse and validate the response
@@ -435,8 +435,9 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
           const content = await fs.readFile(filePath, 'utf8');
           const lines = content.split('\n');
           
-          if (lines.length > 10000) {
-            logger.info(`Skipping ${fileName}: too large (${lines.length} lines > 10,000 limit)`);
+          // Only skip truly impractical files
+          if (lines.length > 100000) {
+            logger.info(`Skipping ${fileName}: extremely large (${lines.length} lines)`);
             continue;
           }
           
@@ -479,7 +480,7 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
           // Execute Claude CLI for this file
           const response = await this.claude.execute(prompt, {
             cwd: worktreePath,
-            timeout: 90000 // 1.5 minutes per file
+            timeout: 300000 // 5 minutes per file - allow thorough analysis
           });
           
           // Parse the response for this file
@@ -561,7 +562,7 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
       updateProgress('Preparing codebase context analysis');
       
       // Step 2: Discover related files
-      updateProgress('Discovering related files');
+      updateProgress(`Discovering related files - scanning for imports, tests, configs, and dependencies across the codebase`);
       const relatedFiles = await this.discoverRelatedFiles(worktreePath, changedFiles);
       
       logger.info(`Found ${relatedFiles.length} related files for Level 3 analysis`);
@@ -584,7 +585,7 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
       updateProgress('Analyzing codebase context with AI', null, 1, 1);
       const response = await this.claude.execute(prompt, {
         cwd: worktreePath,
-        timeout: 180000 // 3 minutes for Level 3
+        timeout: 900000 // 15 minutes for Level 3 - full codebase exploration
       });
       
       // Step 5: Parse and validate the response
@@ -622,9 +623,9 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
     const fs = require('fs').promises;
     const path = require('path');
     const relatedFiles = new Set();
-    const maxRelatedFiles = 10; // Limit to prevent excessive analysis
+    // No artificial limit on related files - analyze what's relevant
     
-    logger.info(`Discovering related files for ${changedFiles.length} changed files`);
+    logger.info(`Discovering all related files for ${changedFiles.length} changed files - no artificial limits`);
     
     try {
       // For each changed file, find related files
@@ -678,7 +679,7 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
       }
       
       // Convert Set to Array and read file contents
-      const relatedFilesArray = Array.from(relatedFiles).slice(0, maxRelatedFiles);
+      const relatedFilesArray = Array.from(relatedFiles);
       const relatedFilesWithContent = [];
       
       for (const relatedFile of relatedFilesArray) {
@@ -689,9 +690,9 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
           const content = await fs.readFile(relatedFile, 'utf8');
           const lines = content.split('\n');
           
-          // Skip very large files
-          if (lines.length > 5000) {
-            logger.info(`Skipping large related file ${relatedFile}: ${lines.length} lines`);
+          // Only skip extremely large files that would be impractical
+          if (lines.length > 100000) {
+            logger.info(`Skipping extremely large file ${relatedFile}: ${lines.length} lines`);
             continue;
           }
           
@@ -848,7 +849,7 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
       // Search through JS files in the worktree
       const jsFiles = await this.findJSFiles(worktreePath);
       
-      for (const jsFile of jsFiles.slice(0, 50)) { // Limit search scope
+      for (const jsFile of jsFiles) { // Search all JS files for comprehensive analysis
         try {
           const content = await fs.readFile(jsFile, 'utf8');
           
