@@ -113,6 +113,20 @@ class StatusIndicator {
     this.showCheckmark();
     this.stopDotsAnimation();
     
+    // CRITICAL FIX: Automatically reload AI suggestions when background analysis completes
+    console.log('Background analysis completed, reloading AI suggestions...');
+    if (window.prManager && typeof window.prManager.loadAISuggestions === 'function') {
+      window.prManager.loadAISuggestions()
+        .then(() => {
+          console.log('AI suggestions reloaded successfully after background analysis');
+        })
+        .catch(error => {
+          console.error('Error reloading AI suggestions after background analysis:', error);
+        });
+    } else {
+      console.warn('PRManager not available for automatic suggestion reload after background analysis');
+    }
+    
     // Auto-hide after 5 seconds
     setTimeout(() => {
       this.hide();

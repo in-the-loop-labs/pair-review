@@ -448,6 +448,20 @@ class ProgressModal {
       window.statusIndicator.showComplete(`Level ${completedLevel} analysis complete`);
     }
     
+    // CRITICAL FIX: Automatically reload AI suggestions when analysis completes
+    console.log('Analysis completed, reloading AI suggestions...');
+    if (window.prManager && typeof window.prManager.loadAISuggestions === 'function') {
+      window.prManager.loadAISuggestions()
+        .then(() => {
+          console.log('AI suggestions reloaded successfully');
+        })
+        .catch(error => {
+          console.error('Error reloading AI suggestions:', error);
+        });
+    } else {
+      console.warn('PRManager not available for automatic suggestion reload');
+    }
+    
     // Auto-close after 3 seconds if in foreground
     if (this.isVisible) {
       setTimeout(() => {

@@ -1,5 +1,5 @@
 const { loadConfig } = require('./config');
-const { initializeDatabase, run } = require('./database');
+const { initializeDatabase, run, queryOne } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
@@ -159,35 +159,83 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
       fetched_at: new Date().toISOString()
     };
 
-    // Insert or update PR metadata
-    await run(db, `
-      INSERT OR REPLACE INTO pr_metadata 
-      (pr_number, repository, title, description, author, base_branch, head_branch, pr_data, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `, [
-      prInfo.number,
-      repository,
-      prData.title,
-      prData.body,
-      prData.author,
-      prData.base_branch,
-      prData.head_branch,
-      JSON.stringify(extendedPRData)
-    ]);
+    // First check if PR metadata exists
+    const existingPR = await queryOne(db, `
+      SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?
+    `, [prInfo.number, repository]);
+    
+    if (existingPR) {
+      // Update existing PR metadata (preserves ID)
+      await run(db, `
+        UPDATE pr_metadata 
+        SET title = ?, description = ?, author = ?, 
+            base_branch = ?, head_branch = ?, pr_data = ?, 
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [
+        prData.title,
+        prData.body,
+        prData.author,
+        prData.base_branch,
+        prData.head_branch,
+        JSON.stringify(extendedPRData),
+        existingPR.id
+      ]);
+      console.log(`Updated existing PR metadata (ID: ${existingPR.id})`);
+    } else {
+      // Insert new PR metadata
+      const result = await run(db, `
+        INSERT INTO pr_metadata 
+        (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        prInfo.number,
+        repository,
+        prData.title,
+        prData.body,
+        prData.author,
+        prData.base_branch,
+        prData.head_branch,
+        JSON.stringify(extendedPRData)
+      ]);
+      console.log(`Created new PR metadata (ID: ${result.lastID})`);
+    }
 
     // Create or update review record
-    await run(db, `
-      INSERT OR REPLACE INTO reviews
-      (pr_number, repository, status, review_data, updated_at)
-      VALUES (?, ?, 'draft', ?, CURRENT_TIMESTAMP)
-    `, [
-      prInfo.number,
-      repository,
-      JSON.stringify({
-        worktree_path: worktreePath,
-        created_at: new Date().toISOString()
-      })
-    ]);
+    const existingReview = await queryOne(db, `
+      SELECT id FROM reviews WHERE pr_number = ? AND repository = ?
+    `, [prInfo.number, repository]);
+    
+    if (existingReview) {
+      // Update existing review (preserves ID)
+      await run(db, `
+        UPDATE reviews 
+        SET review_data = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [
+        JSON.stringify({
+          worktree_path: worktreePath,
+          created_at: new Date().toISOString()
+        }),
+        existingReview.id
+      ]);
+      console.log(`Updated existing review (ID: ${existingReview.id})`);
+    } else {
+      // Insert new review
+      const result = await run(db, `
+        INSERT INTO reviews
+        (pr_number, repository, status, review_data)
+        VALUES (?, ?, 'draft', ?)
+      `, [
+        prInfo.number,
+        repository,
+        JSON.stringify({
+          worktree_path: worktreePath,
+          created_at: new Date().toISOString()
+        })
+      ]);
+      console.log(`Created new review (ID: ${result.lastID})`);
+    }
 
     console.log(`Stored PR data for ${repository} #${prInfo.number}`);
     

@@ -1084,7 +1084,7 @@ function broadcastProgress(analysisId, progressData) {
  */
 router.post('/api/user-comment', async (req, res) => {
   try {
-    const { pr_id, file, line_start, line_end, body } = req.body;
+    const { pr_id, file, line_start, line_end, body, parent_id, type, title } = req.body;
     
     if (!pr_id || !file || !line_start || !body) {
       return res.status(400).json({ 
@@ -1105,12 +1105,12 @@ router.post('/api/user-comment', async (req, res) => {
       });
     }
 
-    // Create user comment
+    // Create user comment with optional parent_id and metadata
     const result = await run(db, `
       INSERT INTO comments (
         pr_id, source, author, file, line_start, line_end, 
-        type, body, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        type, title, body, status, parent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       pr_id,
       'user',
@@ -1118,9 +1118,11 @@ router.post('/api/user-comment', async (req, res) => {
       file,
       line_start,
       line_end || line_start,
-      'comment',
+      type || 'comment',  // Use provided type or default to 'comment'
+      title || null,       // Optional title from AI suggestion
       body.trim(),
-      'active'
+      'active',
+      parent_id || null    // Link to parent AI suggestion if adopted
     ]);
     
     res.json({ 
@@ -1138,7 +1140,69 @@ router.post('/api/user-comment', async (req, res) => {
 });
 
 /**
- * Get user comments for a PR
+ * Get user comments for a PR (by owner/repo/number format for consistency)
+ */
+router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+    
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid pull request number' 
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    
+    // Get PR ID first
+    const prMetadata = await queryOne(req.app.get('db'), `
+      SELECT id FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.json({
+        success: true,
+        comments: []
+      });
+    }
+
+    const comments = await query(req.app.get('db'), `
+      SELECT 
+        id,
+        source,
+        author,
+        file,
+        line_start,
+        line_end,
+        type,
+        title,
+        body,
+        status,
+        parent_id,
+        created_at,
+        updated_at
+      FROM comments
+      WHERE pr_id = ? AND source = 'user' AND status = 'active'
+      ORDER BY file, line_start, created_at
+    `, [prMetadata.id]);
+
+    res.json({
+      success: true,
+      comments: comments || []
+    });
+
+  } catch (error) {
+    console.error('Error fetching user comments:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch user comments' 
+    });
+  }
+});
+
+/**
+ * Get user comments for a PR (legacy endpoint by ID)
  */
 router.get('/api/pr/:id/user-comments', async (req, res) => {
   try {
@@ -1158,8 +1222,11 @@ router.get('/api/pr/:id/user-comments', async (req, res) => {
         file,
         line_start,
         line_end,
+        type,
+        title,
         body,
         status,
+        parent_id,
         created_at,
         updated_at
       FROM comments

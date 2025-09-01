@@ -1120,14 +1120,24 @@ class PRManager {
     try {
       let response;
       
-      // Use currentPR data if available
+      // Use currentPR data if available (preferred approach)
       if (this.currentPR.owner && this.currentPR.repo && this.currentPR.number) {
-        response = await fetch(`/api/pr/${this.currentPR.id}/user-comments`);
+        response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`);
       } else if (this.currentPR.id) {
+        // Fallback to legacy endpoint
         response = await fetch(`/api/pr/${this.currentPR.id}/user-comments`);
       } else {
-        console.warn('Unable to determine PR ID for loading user comments');
-        return;
+        // Fallback: parse from URL if currentPR data is incomplete
+        const urlParts = window.location.pathname.split('/');
+        if (urlParts.length >= 4 && urlParts[1] === 'pr') {
+          const owner = urlParts[2];
+          const repo = urlParts[3];
+          const number = urlParts[4];
+          response = await fetch(`/api/pr/${owner}/${repo}/${number}/user-comments`);
+        } else {
+          console.warn('Unable to determine PR information for loading user comments');
+          return;
+        }
       }
       
       if (!response.ok) {
@@ -1474,6 +1484,12 @@ class PRManager {
       const suggestionBody = suggestionDiv.querySelector('.ai-suggestion-body');
       const suggestionText = suggestionBody ? suggestionBody.textContent.trim() : '';
       
+      // Extract AI suggestion metadata from the DOM
+      const typeElement = suggestionDiv.querySelector('.type-badge');
+      const titleElement = suggestionDiv.querySelector('.ai-title');
+      const suggestionType = typeElement ? typeElement.textContent.trim() : '';
+      const suggestionTitle = titleElement ? titleElement.textContent.trim() : '';
+      
       // Get file and line information from the parent row
       const suggestionRow = suggestionDiv.closest('tr');
       let targetRow = suggestionRow ? suggestionRow.previousElementSibling : null;
@@ -1508,10 +1524,13 @@ class PRManager {
         throw new Error('Failed to dismiss suggestion');
       }
 
-      // Collapse the AI suggestion
-      suggestionDiv.classList.add('collapsed');
+      // Hide the AI suggestion completely (not just collapse)
+      if (suggestionRow) {
+        suggestionRow.style.display = 'none';
+        suggestionRow.dataset.hiddenForAdoption = 'true';
+      }
       
-      // Create user comment with the AI suggestion's text
+      // Create user comment with the AI suggestion's text and metadata
       const createResponse = await fetch('/api/user-comment', {
         method: 'POST',
         headers: {
@@ -1522,7 +1541,10 @@ class PRManager {
           file: fileName,
           line_start: parseInt(lineNumber),
           line_end: parseInt(lineNumber),
-          body: suggestionText
+          body: suggestionText,
+          parent_id: suggestionId,  // Link to original AI suggestion
+          type: suggestionType,     // Preserve the type
+          title: suggestionTitle    // Preserve the title
         })
       });
       
@@ -1531,14 +1553,17 @@ class PRManager {
       }
       
       const result = await createResponse.json();
-      const commentId = result.commentId;
+      const newCommentId = result.commentId;
       
       // Display the new user comment in edit mode BELOW the suggestion row
       this.displayUserCommentInEditMode({
-        id: commentId,
+        id: newCommentId,
         file: fileName,
         line_start: parseInt(lineNumber),
         body: suggestionText,
+        type: suggestionType,
+        title: suggestionTitle,
+        parent_id: suggestionId,
         created_at: new Date().toISOString()
       }, suggestionRow); // Pass suggestion row instead of target row
       
@@ -1877,8 +1902,22 @@ class PRManager {
       ? `Lines ${comment.line_start}-${comment.line_end}`
       : `Line ${comment.line_start}`;
     
+    // Build metadata display for adopted comments
+    let metadataHTML = '';
+    if (comment.parent_id && comment.type && comment.type !== 'comment') {
+      metadataHTML = `
+        <button class="btn-toggle-original" onclick="prManager.toggleOriginalSuggestion(${comment.parent_id}, ${comment.id})" title="Show/hide original AI suggestion">
+          <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="20" height="20">
+            <path fill-rule="evenodd" d="M1.679 7.932c.412-.621 1.242-1.75 2.366-2.717C5.175 4.242 6.527 3.5 8 3.5c1.473 0 2.824.742 3.955 1.715 1.124.967 1.954 2.096 2.366 2.717a.119.119 0 010 .136c-.412.621-1.242 1.75-2.366 2.717C10.825 11.758 9.473 12.5 8 12.5c-1.473 0-2.824-.742-3.955-1.715C2.92 9.818 2.09 8.69 1.679 8.068a.119.119 0 010-.136zM8 2c-1.981 0-3.67.992-4.933 2.078C1.797 5.169.88 6.423.43 7.1a1.619 1.619 0 000 1.798c.45.678 1.367 1.932 2.637 3.024C4.329 13.008 6.019 14 8 14c1.981 0 3.67-.992 4.933-2.078 1.27-1.091 2.187-2.345 2.637-3.023a1.619 1.619 0 000-1.798c-.45-.678-1.367-1.932-2.637-3.023C11.671 2.992 9.981 2 8 2zm0 8a2 2 0 100-4 2 2 0 000 4z"></path>
+          </svg>
+        </button>
+        <span class="adopted-type-badge type-${comment.type}">${comment.type}</span>
+        ${comment.title ? `<span class="adopted-title">${this.escapeHtml(comment.title)}</span>` : ''}
+      `;
+    }
+    
     const commentHTML = `
-      <div class="user-comment">
+      <div class="user-comment ${comment.parent_id ? 'adopted-comment' : ''}">
         <div class="user-comment-header">
           <span class="comment-icon">
             <svg class="octicon octicon-comment" viewBox="0 0 16 16" width="16" height="16">
@@ -1886,6 +1925,7 @@ class PRManager {
             </svg>
           </span>
           <span class="user-comment-line-info">${lineInfo}</span>
+          ${metadataHTML}
           <span class="user-comment-timestamp">${new Date(comment.created_at).toLocaleString()}</span>
           <div class="user-comment-actions">
             <button class="btn-edit-comment" onclick="prManager.editUserComment(${comment.id})" title="Edit comment">
@@ -1924,7 +1964,7 @@ class PRManager {
     td.className = 'user-comment-cell';
     
     const commentHTML = `
-      <div class="user-comment editing-mode">
+      <div class="user-comment editing-mode ${comment.parent_id ? 'adopted-comment' : ''}">
         <div class="user-comment-header">
           <span class="comment-icon">
             <svg class="octicon octicon-comment" viewBox="0 0 16 16" width="16" height="16">
@@ -1932,7 +1972,28 @@ class PRManager {
             </svg>
           </span>
           <span class="user-comment-line-info">Line ${comment.line_start}</span>
+          ${comment.type && comment.type !== 'comment' ? `
+            <button class="btn-toggle-original" onclick="prManager.toggleOriginalSuggestion(${comment.parent_id}, ${comment.id})" title="Show/hide original AI suggestion">
+              <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="20" height="20">
+                <path fill-rule="evenodd" d="M1.679 7.932c.412-.621 1.242-1.75 2.366-2.717C5.175 4.242 6.527 3.5 8 3.5c1.473 0 2.824.742 3.955 1.715 1.124.967 1.954 2.096 2.366 2.717a.119.119 0 010 .136c-.412.621-1.242 1.75-2.366 2.717C10.825 11.758 9.473 12.5 8 12.5c-1.473 0-2.824-.742-3.955-1.715C2.92 9.818 2.09 8.69 1.679 8.068a.119.119 0 010-.136zM8 2c-1.981 0-3.67.992-4.933 2.078C1.797 5.169.88 6.423.43 7.1a1.619 1.619 0 000 1.798c.45.678 1.367 1.932 2.637 3.024C4.329 13.008 6.019 14 8 14c1.981 0 3.67-.992 4.933-2.078 1.27-1.091 2.187-2.345 2.637-3.023a1.619 1.619 0 000-1.798c-.45-.678-1.367-1.932-2.637-3.023C11.671 2.992 9.981 2 8 2zm0 8a2 2 0 100-4 2 2 0 000 4z"></path>
+              </svg>
+            </button>
+            <span class="adopted-type-badge type-${comment.type}">${comment.type}</span>
+            ${comment.title ? `<span class="adopted-title">${this.escapeHtml(comment.title)}</span>` : ''}
+          ` : ''}
           <span class="user-comment-timestamp">Editing comment...</span>
+          <div class="user-comment-actions">
+            <button class="btn-edit-comment" onclick="prManager.editUserComment(${comment.id})" title="Edit comment">
+              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
+                <path fill-rule="evenodd" d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"></path>
+              </svg>
+            </button>
+            <button class="btn-delete-comment" onclick="prManager.deleteUserComment(${comment.id})" title="Delete comment">
+              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
+                <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19c.9 0 1.652-.681 1.741-1.576l.66-6.6a.75.75 0 00-1.492-.149l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"></path>
+              </svg>
+            </button>
+          </div>
         </div>
         <!-- Hidden body div for saving -->
         <div class="user-comment-body" style="display: none;"></div>
@@ -2158,6 +2219,51 @@ class PRManager {
     } catch (error) {
       console.error('Error deleting comment:', error);
       alert('Failed to delete comment');
+    }
+  }
+  
+  /**
+   * Toggle visibility of original AI suggestion for adopted comments
+   */
+  toggleOriginalSuggestion(parentId, commentId) {
+    try {
+      // Find the original AI suggestion row
+      const suggestionRow = document.querySelector(`[data-suggestion-id="${parentId}"]`);
+      if (!suggestionRow) {
+        console.warn('Original suggestion row not found');
+        return;
+      }
+      
+      // Toggle visibility
+      if (suggestionRow.style.display === 'none') {
+        // Show the suggestion
+        suggestionRow.style.display = '';
+        
+        // Update eye icon to indicate it's open
+        const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+        if (commentRow) {
+          const eyeButton = commentRow.querySelector('.btn-toggle-original');
+          if (eyeButton) {
+            eyeButton.classList.add('showing-original');
+            eyeButton.title = 'Hide original AI suggestion';
+          }
+        }
+      } else {
+        // Hide the suggestion
+        suggestionRow.style.display = 'none';
+        
+        // Update eye icon to indicate it's closed
+        const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+        if (commentRow) {
+          const eyeButton = commentRow.querySelector('.btn-toggle-original');
+          if (eyeButton) {
+            eyeButton.classList.remove('showing-original');
+            eyeButton.title = 'Show original AI suggestion';
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error toggling original suggestion:', error);
     }
   }
   

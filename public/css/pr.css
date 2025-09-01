@@ -2360,6 +2360,102 @@ tr:hover .add-comment-btn {
   color: #8b949e;
 }
 
+/* Adopted comment badges */
+.adopted-type-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-left: 8px;
+  background: rgba(139, 92, 246, 0.1);
+  color: #8b5cf6;
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+/* Type-specific colors for adopted badges */
+.adopted-type-badge.type-bug {
+  background: rgba(207, 34, 46, 0.1);
+  color: #cf222e;
+  border-color: rgba(207, 34, 46, 0.2);
+}
+
+.adopted-type-badge.type-improvement {
+  background: rgba(9, 105, 218, 0.1);
+  color: #0969da;
+  border-color: rgba(9, 105, 218, 0.2);
+}
+
+.adopted-type-badge.type-praise {
+  background: rgba(26, 127, 55, 0.1);
+  color: #1a7f37;
+  border-color: rgba(26, 127, 55, 0.2);
+}
+
+.adopted-type-badge.type-security {
+  background: rgba(251, 133, 0, 0.1);
+  color: #fb8500;
+  border-color: rgba(251, 133, 0, 0.2);
+}
+
+.adopted-type-badge.type-performance {
+  background: rgba(3, 102, 214, 0.1);
+  color: #0366d6;
+  border-color: rgba(3, 102, 214, 0.2);
+}
+
+.adopted-title {
+  color: #656d76;
+  font-size: 12px;
+  font-style: italic;
+  margin-left: 6px;
+}
+
+/* Eye icon toggle button */
+.btn-toggle-original {
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  cursor: pointer;
+  color: #656d76;
+  transition: color 0.2s, transform 0.2s;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.btn-toggle-original:hover {
+  color: #0969da;
+  transform: scale(1.1);
+}
+
+.btn-toggle-original.showing-original {
+  color: #0969da;
+}
+
+.btn-toggle-original svg {
+  vertical-align: middle;
+}
+
+[data-theme="dark"] .btn-toggle-original {
+  color: #8b949e;
+}
+
+[data-theme="dark"] .btn-toggle-original:hover,
+[data-theme="dark"] .btn-toggle-original.showing-original {
+  color: #58a6ff;
+}
+
+[data-theme="dark"] .adopted-type-badge {
+  background: rgba(167, 139, 250, 0.15);
+  color: #a78bfa;
+  border-color: rgba(167, 139, 250, 0.3);
+}
+
+[data-theme="dark"] .adopted-title {
+  color: #8b949e;
+}
+
 .comment-icon {
   display: inline-flex;
   align-items: center;
