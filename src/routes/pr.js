@@ -414,7 +414,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       const updatedStatus = {
         ...activeAnalyses.get(analysisId),
         ...progressUpdate,
-        level: 1
+        // Don't override the level if it's already set in progressUpdate
+        level: progressUpdate.level || 1
       };
       activeAnalyses.set(analysisId, updatedStatus);
       broadcastProgress(analysisId, updatedStatus);
@@ -559,7 +560,8 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
       const updatedStatus = {
         ...activeAnalyses.get(analysisId),
         ...progressUpdate,
-        level: 2
+        // Don't override the level if it's already set in progressUpdate
+        level: progressUpdate.level || 2
       };
       activeAnalyses.set(analysisId, updatedStatus);
       broadcastProgress(analysisId, updatedStatus);
@@ -679,7 +681,8 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
       const updatedStatus = {
         ...activeAnalyses.get(analysisId),
         ...progressUpdate,
-        level: 3
+        // Don't override the level if it's already set in progressUpdate
+        level: progressUpdate.level || 3
       };
       activeAnalyses.set(analysisId, updatedStatus);
       broadcastProgress(analysisId, updatedStatus);

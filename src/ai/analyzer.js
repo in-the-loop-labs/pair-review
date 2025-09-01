@@ -667,15 +667,13 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
           logger.warn(`Error analyzing file ${fileName}: ${error.message}`);
         }
         
-        // Stop if we've found enough related files
-        if (relatedFiles.size >= maxRelatedFiles) break;
+        // No artificial limit on related files - analyze what's relevant
       }
       
       // 4. Add configuration files
       const configFiles = await this.findConfigFiles(worktreePath);
       for (const configFile of configFiles) {
         relatedFiles.add(configFile);
-        if (relatedFiles.size >= maxRelatedFiles) break;
       }
       
       // Convert Set to Array and read file contents
