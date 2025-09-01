@@ -310,6 +310,9 @@ class PRManager {
         // Display diff in main content
         this.displayDiff(data.diff || '');
         
+        // Load user comments after displaying diff
+        await this.loadUserComments();
+        
       } else {
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
@@ -1109,6 +1112,122 @@ class PRManager {
 
 
   /**
+   * Load and display user comments
+   */
+  async loadUserComments() {
+    if (!this.currentPR) return;
+
+    try {
+      let response;
+      
+      // Use currentPR data if available
+      if (this.currentPR.owner && this.currentPR.repo && this.currentPR.number) {
+        response = await fetch(`/api/pr/${this.currentPR.id}/user-comments`);
+      } else if (this.currentPR.id) {
+        response = await fetch(`/api/pr/${this.currentPR.id}/user-comments`);
+      } else {
+        console.warn('Unable to determine PR ID for loading user comments');
+        return;
+      }
+      
+      if (!response.ok) {
+        console.error('Failed to load user comments');
+        return;
+      }
+
+      const data = await response.json();
+      const comments = data.comments || [];
+
+      console.log(`Loaded ${comments.length} user comments`);
+
+      // Display comments inline with the diff
+      this.displayUserComments(comments);
+
+    } catch (error) {
+      console.error('Error loading user comments:', error);
+    }
+  }
+  
+  /**
+   * Display user comments inline with diff
+   */
+  displayUserComments(comments) {
+    console.log(`[UI] Displaying ${comments.length} user comments`);
+    
+    // Clear existing user comment rows before displaying new ones
+    const existingCommentRows = document.querySelectorAll('.user-comment-row');
+    existingCommentRows.forEach(row => row.remove());
+    
+    // Group comments by file and line
+    const commentsByLocation = {};
+    
+    comments.forEach(comment => {
+      const key = `${comment.file}:${comment.line_start}`;
+      if (!commentsByLocation[key]) {
+        commentsByLocation[key] = [];
+      }
+      commentsByLocation[key].push(comment);
+    });
+
+    // Find diff rows and insert comments
+    Object.entries(commentsByLocation).forEach(([location, locationComments]) => {
+      const [file, lineStr] = location.split(':');
+      const line = parseInt(lineStr);
+      
+      // Find the diff wrapper for this file
+      let fileElement = document.querySelector(`[data-file-name="${file}"]`);
+      if (!fileElement) {
+        // Try to find by partial match
+        const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
+        for (const wrapper of allFileWrappers) {
+          const fileName = wrapper.dataset.fileName;
+          if (fileName && (fileName === file || fileName.endsWith('/' + file) || file.endsWith('/' + fileName))) {
+            fileElement = wrapper;
+            break;
+          }
+        }
+      }
+      
+      if (!fileElement) {
+        console.warn(`[UI] Could not find file element for user comment: ${file}`);
+        return;
+      }
+
+      // Find the line in the diff
+      const lineRows = fileElement.querySelectorAll('tr');
+      let commentInserted = false;
+      
+      lineRows.forEach(row => {
+        if (commentInserted) return;
+        
+        // Try different selectors for line numbers
+        let lineNum = row.querySelector('.line-num2')?.textContent?.trim();
+        if (!lineNum) {
+          const lineNumCell = row.querySelector('.d2h-code-linenumber');
+          if (lineNumCell) {
+            const lineNum2 = lineNumCell.querySelector('.line-num2');
+            if (lineNum2) {
+              lineNum = lineNum2.textContent?.trim();
+            }
+          }
+        }
+        
+        if (lineNum && parseInt(lineNum) === line) {
+          // Insert comments after this row
+          locationComments.forEach(comment => {
+            this.displayUserComment(comment, row);
+          });
+          commentInserted = true;
+        }
+      });
+      
+      if (!commentInserted) {
+        console.warn(`[UI] Could not find line ${line} in file ${file} for user comment`);
+      }
+    });
+  }
+
+  /**
    * Load and display AI suggestions
    */
   async loadAISuggestions() {
@@ -1328,9 +1447,6 @@ class PRManager {
           <button class="btn btn-sm btn-primary" onclick="prManager.adoptSuggestion(${suggestion.id})">
             Adopt
           </button>
-          <button class="btn btn-sm btn-secondary-outline" onclick="prManager.editSuggestion(${suggestion.id})">
-            Edit
-          </button>
           <button class="btn btn-sm btn-secondary" onclick="prManager.dismissSuggestion(${suggestion.id})">
             Dismiss
           </button>
@@ -1349,31 +1465,97 @@ class PRManager {
    */
   async adoptSuggestion(suggestionId) {
     try {
-      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+      // Get the suggestion element and its content
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      if (!suggestionDiv) {
+        throw new Error('Suggestion element not found');
+      }
+
+      const suggestionBody = suggestionDiv.querySelector('.ai-suggestion-body');
+      const suggestionText = suggestionBody ? suggestionBody.textContent.trim() : '';
+      
+      // Get file and line information from the parent row
+      const suggestionRow = suggestionDiv.closest('tr');
+      let targetRow = suggestionRow ? suggestionRow.previousElementSibling : null;
+      
+      // Find the actual diff line row (skip other suggestion/comment rows)
+      while (targetRow && (targetRow.classList.contains('ai-suggestion-row') || targetRow.classList.contains('user-comment-row'))) {
+        targetRow = targetRow.previousElementSibling;
+      }
+      
+      if (!targetRow) {
+        throw new Error('Could not find target line for comment');
+      }
+      
+      const lineNumber = targetRow.querySelector('.line-num2')?.textContent?.trim();
+      const fileWrapper = targetRow.closest('.d2h-file-wrapper');
+      const fileName = fileWrapper ? fileWrapper.dataset.fileName : '';
+      
+      if (!lineNumber || !fileName) {
+        throw new Error('Could not determine file and line information');
+      }
+
+      // First, dismiss the AI suggestion
+      const dismissResponse = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ status: 'adopted' })
+        body: JSON.stringify({ status: 'dismissed' })
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to adopt suggestion');
+      if (!dismissResponse.ok) {
+        throw new Error('Failed to dismiss suggestion');
       }
 
-      // Hide the suggestion and show as adopted
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-      if (suggestionDiv) {
-        suggestionDiv.classList.add('adopted');
-        suggestionDiv.querySelector('.ai-suggestion-actions').innerHTML = '<span class="adopted-label">✓ Adopted</span>';
+      // Collapse the AI suggestion
+      suggestionDiv.classList.add('collapsed');
+      
+      // Create user comment with the AI suggestion's text
+      const createResponse = await fetch('/api/user-comment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          pr_id: this.currentPR.id,
+          file: fileName,
+          line_start: parseInt(lineNumber),
+          line_end: parseInt(lineNumber),
+          body: suggestionText
+        })
+      });
+      
+      if (!createResponse.ok) {
+        throw new Error('Failed to create user comment');
       }
-
-      // Refresh the navigator
-      await this.loadAISuggestions();
+      
+      const result = await createResponse.json();
+      const commentId = result.commentId;
+      
+      // Display the new user comment in edit mode BELOW the suggestion row
+      this.displayUserCommentInEditMode({
+        id: commentId,
+        file: fileName,
+        line_start: parseInt(lineNumber),
+        body: suggestionText,
+        created_at: new Date().toISOString()
+      }, suggestionRow); // Pass suggestion row instead of target row
+      
+      // Update the suggestion navigator
+      if (this.suggestionNavigator && this.suggestionNavigator.suggestions) {
+        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s => 
+          s.id === suggestionId ? { ...s, status: 'dismissed' } : s
+        );
+        this.suggestionNavigator.updateSuggestions(updatedSuggestions);
+      }
+      
+      // Update comment count
+      this.updateCommentCount();
 
     } catch (error) {
       console.error('Error adopting suggestion:', error);
-      alert('Failed to adopt suggestion');
+      alert('Failed to adopt suggestion: ' + error.message);
     }
   }
 
@@ -1455,202 +1637,7 @@ class PRManager {
     }
   }
 
-  /**
-   * Edit an AI suggestion
-   */
-  async editSuggestion(suggestionId) {
-    try {
-      // Cancel any other edit modes
-      this.cancelAllEditModes();
 
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-      if (!suggestionDiv) {
-        console.error('Suggestion element not found');
-        return;
-      }
-
-      // Add editing-mode class to hide body and actions
-      suggestionDiv.classList.add('editing-mode');
-
-      const suggestionBody = suggestionDiv.querySelector('.ai-suggestion-body');
-      const originalText = suggestionBody.textContent.trim();
-
-      // Create edit form
-      const editForm = document.createElement('div');
-      editForm.className = 'suggestion-edit-form';
-      editForm.innerHTML = `
-        <textarea 
-          id="edit-textarea-${suggestionId}" 
-          class="suggestion-edit-textarea"
-          placeholder="Enter your comment..."
-        >${this.escapeHtml(originalText)}</textarea>
-        <div id="edit-error-${suggestionId}" class="suggestion-edit-error" style="display: none;">Comment cannot be empty</div>
-        <div class="suggestion-edit-actions">
-          <button class="btn btn-sm btn-primary" onclick="prManager.saveEditedSuggestion(${suggestionId})">
-            Save as my comment
-          </button>
-          <button class="btn btn-sm btn-secondary" onclick="prManager.cancelEditSuggestion(${suggestionId})">
-            Cancel
-          </button>
-        </div>
-      `;
-
-      // Insert edit form after the header
-      const header = suggestionDiv.querySelector('.ai-suggestion-header');
-      header.parentNode.insertBefore(editForm, header.nextSibling);
-
-      // Focus the textarea and setup keyboard shortcuts
-      const textarea = document.getElementById(`edit-textarea-${suggestionId}`);
-      textarea.focus();
-      textarea.select();
-
-      // Add keyboard event listeners
-      textarea.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          this.cancelEditSuggestion(suggestionId);
-        } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-          e.preventDefault();
-          this.saveEditedSuggestion(suggestionId);
-        }
-      });
-
-    } catch (error) {
-      console.error('Error entering edit mode:', error);
-      alert('Failed to enter edit mode');
-    }
-  }
-
-  /**
-   * Cancel edit mode for a specific suggestion
-   */
-  cancelEditSuggestion(suggestionId) {
-    const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-    if (!suggestionDiv) return;
-
-    // Remove editing-mode class to restore body and actions
-    suggestionDiv.classList.remove('editing-mode');
-
-    // Remove the edit form
-    const editForm = suggestionDiv.querySelector('.suggestion-edit-form');
-    if (editForm) {
-      editForm.remove();
-    }
-  }
-
-  /**
-   * Cancel edit mode for all suggestions (only one can be in edit mode at a time)
-   */
-  cancelAllEditModes() {
-    const editingSuggestions = document.querySelectorAll('.ai-suggestion.editing-mode');
-    editingSuggestions.forEach(suggestionDiv => {
-      const suggestionId = suggestionDiv.dataset.suggestionId;
-      if (suggestionId) {
-        this.cancelEditSuggestion(parseInt(suggestionId));
-      }
-    });
-  }
-
-  /**
-   * Save edited suggestion as user comment
-   */
-  async saveEditedSuggestion(suggestionId) {
-    try {
-      const textarea = document.getElementById(`edit-textarea-${suggestionId}`);
-      const errorDiv = document.getElementById(`edit-error-${suggestionId}`);
-      const editedText = textarea.value.trim();
-
-      // Clear previous errors
-      errorDiv.style.display = 'none';
-
-      // Validate that text is not empty
-      if (!editedText) {
-        errorDiv.style.display = 'block';
-        textarea.focus();
-        return;
-      }
-
-      // Get buttons to show loading state
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-      const saveBtn = suggestionDiv.querySelector('.suggestion-edit-actions .btn-primary');
-      const cancelBtn = suggestionDiv.querySelector('.suggestion-edit-actions .btn-secondary');
-
-      // Disable buttons and show loading state
-      saveBtn.disabled = true;
-      cancelBtn.disabled = true;
-      const originalText = saveBtn.textContent;
-      saveBtn.innerHTML = '<span class="spinner"></span> Saving...';
-
-      // Make API call
-      const response = await fetch(`/api/ai-suggestion/${suggestionId}/edit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ 
-          editedText: editedText, 
-          action: 'adopt_edited' 
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Failed to save edited suggestion');
-      }
-
-      const result = await response.json();
-
-      if (!result.success) {
-        throw new Error(result.message || 'Failed to save edited suggestion');
-      }
-
-      // Update the suggestion display
-      suggestionDiv.classList.remove('editing-mode');
-      suggestionDiv.classList.add('adopted');
-
-      // Update the body with edited text
-      const suggestionBody = suggestionDiv.querySelector('.ai-suggestion-body');
-      suggestionBody.textContent = editedText;
-
-      // Replace actions with adopted label
-      const actionsDiv = suggestionDiv.querySelector('.ai-suggestion-actions');
-      actionsDiv.innerHTML = '<span class="adopted-label">✓ Adopted as your comment</span>';
-
-      // Remove the edit form
-      const editForm = suggestionDiv.querySelector('.suggestion-edit-form');
-      if (editForm) {
-        editForm.remove();
-      }
-
-      // Refresh the navigator
-      await this.loadAISuggestions();
-
-    } catch (error) {
-      console.error('Error saving edited suggestion:', error);
-      
-      // Show error to user
-      const errorDiv = document.getElementById(`edit-error-${suggestionId}`);
-      if (errorDiv) {
-        errorDiv.textContent = error.message;
-        errorDiv.style.display = 'block';
-      } else {
-        alert('Failed to save edited suggestion: ' + error.message);
-      }
-
-      // Re-enable buttons
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-      const saveBtn = suggestionDiv.querySelector('.suggestion-edit-actions .btn-primary');
-      const cancelBtn = suggestionDiv.querySelector('.suggestion-edit-actions .btn-secondary');
-      
-      if (saveBtn) {
-        saveBtn.disabled = false;
-        saveBtn.textContent = 'Save as my comment';
-      }
-      if (cancelBtn) {
-        cancelBtn.disabled = false;
-      }
-    }
-  }
 
   /**
    * Show error message
@@ -1885,11 +1872,20 @@ class PRManager {
     td.colSpan = 4;
     td.className = 'user-comment-cell';
     
+    // Format line info
+    const lineInfo = comment.line_end && comment.line_end !== comment.line_start 
+      ? `Lines ${comment.line_start}-${comment.line_end}`
+      : `Line ${comment.line_start}`;
+    
     const commentHTML = `
       <div class="user-comment">
         <div class="user-comment-header">
-          <span class="user-icon">👤</span>
-          <span class="user-comment-author">Current User</span>
+          <span class="comment-icon">
+            <svg class="octicon octicon-comment" viewBox="0 0 16 16" width="16" height="16">
+              <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"></path>
+            </svg>
+          </span>
+          <span class="user-comment-line-info">${lineInfo}</span>
           <span class="user-comment-timestamp">${new Date(comment.created_at).toLocaleString()}</span>
           <div class="user-comment-actions">
             <button class="btn-edit-comment" onclick="prManager.editUserComment(${comment.id})" title="Edit comment">
@@ -1904,9 +1900,7 @@ class PRManager {
             </button>
           </div>
         </div>
-        <div class="user-comment-body">
-          ${this.escapeHtml(comment.body)}
-        </div>
+        <div class="user-comment-body">${this.escapeHtml(comment.body)}</div>
       </div>
     `;
     
@@ -1918,11 +1912,222 @@ class PRManager {
   }
   
   /**
+   * Display a user comment in edit mode (for adopted suggestions)
+   */
+  displayUserCommentInEditMode(comment, targetRow) {
+    const commentRow = document.createElement('tr');
+    commentRow.className = 'user-comment-row';
+    commentRow.dataset.commentId = comment.id;
+    
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'user-comment-cell';
+    
+    const commentHTML = `
+      <div class="user-comment editing-mode">
+        <div class="user-comment-header">
+          <span class="comment-icon">
+            <svg class="octicon octicon-comment" viewBox="0 0 16 16" width="16" height="16">
+              <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"></path>
+            </svg>
+          </span>
+          <span class="user-comment-line-info">Line ${comment.line_start}</span>
+          <span class="user-comment-timestamp">Editing comment...</span>
+        </div>
+        <!-- Hidden body div for saving -->
+        <div class="user-comment-body" style="display: none;"></div>
+        <div class="user-comment-edit-form">
+          <textarea 
+            id="edit-comment-${comment.id}" 
+            class="comment-edit-textarea"
+            placeholder="Enter your comment..."
+            rows="3">${this.escapeHtml(comment.body)}</textarea>
+          <div class="comment-edit-actions">
+            <button class="btn btn-sm btn-primary" onclick="prManager.saveEditedUserComment(${comment.id})">
+              Save comment
+            </button>
+            <button class="btn btn-sm btn-secondary" onclick="prManager.cancelEditUserComment(${comment.id})">
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    td.innerHTML = commentHTML;
+    commentRow.appendChild(td);
+    
+    // Insert comment after the target row (not before)
+    if (targetRow.nextSibling) {
+      targetRow.parentNode.insertBefore(commentRow, targetRow.nextSibling.nextSibling);
+    } else {
+      targetRow.parentNode.appendChild(commentRow);
+    }
+    
+    // Focus and select the textarea
+    const textarea = document.getElementById(`edit-comment-${comment.id}`);
+    if (textarea) {
+      textarea.focus();
+      textarea.select();
+      
+      // Add keyboard shortcuts
+      textarea.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this.cancelEditUserComment(comment.id);
+        } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          this.saveEditedUserComment(comment.id);
+        }
+      });
+    }
+  }
+  
+  /**
    * Edit user comment
    */
   async editUserComment(commentId) {
-    // Implementation for editing comments
-    console.log('Edit comment:', commentId);
+    try {
+      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      if (!commentRow) {
+        console.error('Comment row not found');
+        return;
+      }
+      
+      const commentDiv = commentRow.querySelector('.user-comment');
+      const bodyDiv = commentDiv.querySelector('.user-comment-body');
+      const currentText = bodyDiv.textContent.trim();
+      
+      // Add editing mode
+      commentDiv.classList.add('editing-mode');
+      
+      // Replace body with edit form
+      const editFormHTML = `
+        <div class="user-comment-edit-form">
+          <textarea 
+            id="edit-comment-${commentId}" 
+            class="comment-edit-textarea"
+            placeholder="Enter your comment..."
+            rows="3">${this.escapeHtml(currentText)}</textarea>
+          <div class="comment-edit-actions">
+            <button class="btn btn-sm btn-primary" onclick="prManager.saveEditedUserComment(${commentId})">
+              Save comment
+            </button>
+            <button class="btn btn-sm btn-secondary" onclick="prManager.cancelEditUserComment(${commentId})">
+              Cancel
+            </button>
+          </div>
+        </div>
+      `;
+      
+      // Hide body and insert edit form
+      bodyDiv.style.display = 'none';
+      bodyDiv.insertAdjacentHTML('afterend', editFormHTML);
+      
+      // Focus textarea
+      const textarea = document.getElementById(`edit-comment-${commentId}`);
+      if (textarea) {
+        textarea.focus();
+        textarea.select();
+        
+        // Add keyboard shortcuts
+        textarea.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            this.cancelEditUserComment(commentId);
+          } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            this.saveEditedUserComment(commentId);
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error editing comment:', error);
+      alert('Failed to edit comment');
+    }
+  }
+  
+  /**
+   * Save edited user comment
+   */
+  async saveEditedUserComment(commentId) {
+    try {
+      const textarea = document.getElementById(`edit-comment-${commentId}`);
+      const editedText = textarea.value.trim();
+      
+      if (!editedText) {
+        alert('Comment cannot be empty');
+        textarea.focus();
+        return;
+      }
+      
+      // Update via API
+      const response = await fetch(`/api/user-comment/${commentId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ body: editedText })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to update comment');
+      }
+      
+      // Update the UI
+      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      const commentDiv = commentRow.querySelector('.user-comment');
+      let bodyDiv = commentDiv.querySelector('.user-comment-body');
+      const editForm = commentDiv.querySelector('.user-comment-edit-form');
+      
+      // If no body div exists (new comment), create one
+      if (!bodyDiv) {
+        bodyDiv = document.createElement('div');
+        bodyDiv.className = 'user-comment-body';
+        commentDiv.appendChild(bodyDiv);
+      }
+      
+      // Update body text and show it (ensure no extra whitespace)
+      bodyDiv.textContent = editedText.trim();
+      bodyDiv.style.display = '';
+      
+      // Remove edit form and editing class
+      if (editForm) {
+        editForm.remove();
+      }
+      commentDiv.classList.remove('editing-mode');
+      
+      // Update timestamp
+      const timestamp = commentDiv.querySelector('.user-comment-timestamp');
+      if (timestamp) {
+        timestamp.textContent = new Date().toLocaleString();
+      }
+      
+    } catch (error) {
+      console.error('Error saving comment:', error);
+      alert('Failed to save comment');
+    }
+  }
+  
+  /**
+   * Cancel editing user comment
+   */
+  cancelEditUserComment(commentId) {
+    const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+    if (!commentRow) return;
+    
+    const commentDiv = commentRow.querySelector('.user-comment');
+    const bodyDiv = commentDiv.querySelector('.user-comment-body');
+    const editForm = commentDiv.querySelector('.user-comment-edit-form');
+    
+    // Show body and remove edit form
+    bodyDiv.style.display = '';
+    if (editForm) {
+      editForm.remove();
+    }
+    
+    // Remove editing class
+    commentDiv.classList.remove('editing-mode');
   }
   
   /**

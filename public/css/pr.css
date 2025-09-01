@@ -1057,17 +1057,19 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .ai-suggestion-cell {
-  padding: 0;
+  padding: 4px 0;
   border: none;
 }
 
 .ai-suggestion {
-  background: linear-gradient(135deg, #f0f8ff 0%, #e6f3ff 100%);
-  border-left: 3px solid #0969da;
-  margin: 8px 16px;
-  padding: 12px;
+  background: linear-gradient(to right, #e7f7ff 0%, #ffffff 100%);
+  border: 1px solid #0969da;
+  border-left: 4px solid #0969da;
+  margin: 6px 16px;
+  padding: 8px 10px;
   border-radius: 6px;
   position: relative;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
 .ai-suggestion.adopted {
@@ -1212,8 +1214,9 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .ai-suggestion-body {
   color: var(--color-text-primary);
-  line-height: 1.5;
-  margin-bottom: 12px;
+  line-height: 1.4;
+  margin-bottom: 8px;
+  font-size: 13px;
 }
 
 .ai-suggestion-actions {
@@ -1347,6 +1350,12 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 /* Dark theme adjustments for collapsed suggestions */
+[data-theme="dark"] .ai-suggestion {
+  background: linear-gradient(to right, rgba(88, 166, 255, 0.1) 0%, #0d1117 100%);
+  border-color: #58a6ff;
+  border-left-color: #58a6ff;
+}
+
 [data-theme="dark"] .ai-suggestion.collapsed {
   background: var(--color-bg-tertiary);
   border-left-color: var(--color-text-tertiary);
@@ -2306,21 +2315,28 @@ tr:hover .add-comment-btn {
 }
 
 .user-comment-cell {
-  padding: 8px 16px;
+  padding: 4px 0;
+  background: transparent;
 }
 
 .user-comment {
-  background: #f6f8fa;
-  border: 1px solid #d1d9e0;
-  border-radius: 8px;
-  padding: 16px;
+  background: linear-gradient(to right, #f5f0ff 0%, #ffffff 100%);
+  border: 1px solid #8b5cf6;
+  border-left: 4px solid #8b5cf6;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 6px 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  position: relative;
 }
 
 .user-comment-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(139, 92, 246, 0.1);
 }
 
 .user-comment-header-left {
@@ -2329,18 +2345,50 @@ tr:hover .add-comment-btn {
   gap: 8px;
 }
 
-.user-icon {
-  font-size: 16px;
+.user-comment-line-info {
+  color: #656d76;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 6px;
+  background: rgba(139, 92, 246, 0.05);
+  border-radius: 4px;
+  margin-left: 4px;
 }
 
-.user-comment-author {
-  font-weight: 600;
-  color: #1f2328;
+[data-theme="dark"] .user-comment-line-info {
+  background: rgba(167, 139, 250, 0.1);
+  color: #8b949e;
 }
+
+.comment-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #8b5cf6;
+  margin-right: 8px;
+  background: rgba(139, 92, 246, 0.1);
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.comment-icon svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
 
 .user-comment-timestamp {
   color: #656d76;
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(139, 92, 246, 0.05);
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: auto;
+  margin-right: 6px;
 }
 
 .user-comment-actions {
@@ -2351,24 +2399,87 @@ tr:hover .add-comment-btn {
 
 .btn-edit-comment,
 .btn-delete-comment {
-  background: none;
-  border: none;
-  padding: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 4px 6px;
   border-radius: 4px;
   cursor: pointer;
   color: #656d76;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
 }
 
-.btn-edit-comment:hover,
+.btn-edit-comment:hover {
+  background: rgba(139, 92, 246, 0.1);
+  border-color: #8b5cf6;
+  color: #8b5cf6;
+}
+
 .btn-delete-comment:hover {
-  background: #f3f4f6;
-  color: #1f2328;
+  background: rgba(207, 34, 46, 0.1);
+  border-color: #cf222e;
+  color: #cf222e;
 }
 
 .user-comment-body {
   color: #1f2328;
-  line-height: 1.6;
-  white-space: pre-wrap;
+  line-height: 1.4;
+  white-space: pre-line;
+  font-size: 13px;
+  padding: 0;
+  margin: 0;
+  word-break: break-word;
+}
+
+.user-comment.editing-mode .user-comment-body {
+  display: none;
+}
+
+.user-comment-edit-form,
+.comment-edit-textarea {
+  width: 100%;
+}
+
+.comment-edit-textarea {
+  min-height: 60px;
+  padding: 8px;
+  border: 2px solid #8b5cf6;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  background: white;
+  transition: border-color 0.2s;
+}
+
+.comment-edit-textarea:focus {
+  outline: none;
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+}
+
+[data-theme="dark"] .comment-edit-textarea {
+  background: #0d1117;
+  border-color: #a78bfa;
+  color: #e6edf3;
+}
+
+[data-theme="dark"] .comment-edit-textarea:focus {
+  border-color: #c4b5fd;
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2);
+}
+
+[data-theme="dark"] .btn-edit-comment:hover {
+  background: rgba(167, 139, 250, 0.15);
+  border-color: #a78bfa;
+  color: #a78bfa;
+}
+
+.comment-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 /* Review Submission Panel */
@@ -2494,12 +2605,24 @@ body {
 }
 
 [data-theme="dark"] .user-comment {
-  background: #21262d;
-  border-color: #30363d;
+  background: linear-gradient(to right, rgba(139, 92, 246, 0.15) 0%, #0d1117 100%);
+  border-color: #a78bfa;
+  border-left-color: #a78bfa;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
-[data-theme="dark"] .user-comment-author {
-  color: #e6edf3;
+[data-theme="dark"] .comment-icon {
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.15);
+}
+
+[data-theme="dark"] .user-comment-header {
+  border-bottom-color: rgba(167, 139, 250, 0.1);
+}
+
+[data-theme="dark"] .user-comment-timestamp {
+  background: rgba(167, 139, 250, 0.1);
+  color: #8b949e;
 }
 
 [data-theme="dark"] .user-comment-body {
