@@ -10,6 +10,30 @@ class Analyzer {
   }
 
   /**
+   * Delete old AI suggestions for a PR
+   * @param {number} prId - Pull request ID
+   */
+  async deleteOldAISuggestions(prId) {
+    const { run } = require('../database');
+    
+    try {
+      const result = await run(this.db, `
+        DELETE FROM comments 
+        WHERE pr_id = ? AND source = 'ai'
+      `, [prId]);
+      
+      if (result.changes > 0) {
+        logger.info(`Deleted ${result.changes} old AI suggestions for PR ${prId}`);
+      }
+      
+      return result.changes;
+    } catch (error) {
+      logger.error(`Error deleting old AI suggestions: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
    * Perform Level 1 analysis on a PR
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
@@ -25,22 +49,11 @@ class Analyzer {
     logger.info(`Worktree path: ${worktreePath}`);
     
     try {
-      // Get changed files from PR data for real progress tracking
-      const changedFiles = await this.getChangedFiles(prId);
-      const totalFiles = changedFiles.length;
-      let currentFileIndex = 0;
-      
-      logger.info(`Found ${totalFiles} changed files to analyze`);
-      
-      const updateProgress = (step, fileName = null) => {
-        const progress = fileName 
-          ? `Analyzing ${fileName} (${currentFileIndex + 1}/${totalFiles})...`
-          : `${step}...`;
+      const updateProgress = (step) => {
+        const progress = `Level 1: ${step}...`;
         
         if (progressCallback) {
           progressCallback({
-            currentFile: fileName ? currentFileIndex + 1 : 0,
-            totalFiles: totalFiles,
             status: 'running',
             progress,
             level: 1
@@ -49,39 +62,27 @@ class Analyzer {
         logger.info(progress);
       };
       
-      // Step 1: Prepare analysis
-      updateProgress('Preparing analysis');
+      // Step 1: Delete old AI suggestions before starting new analysis
+      updateProgress('Clearing previous AI suggestions');
+      await this.deleteOldAISuggestions(prId);
       
       // Step 2: Build the Level 1 prompt
-      updateProgress('Building Level 1 prompt');
+      updateProgress('Building Level 1 prompt for Claude to analyze changes');
       const prompt = this.buildLevel1Prompt(prId, worktreePath);
       
-      // Step 3: Simulate analyzing files one by one
-      // Since we're doing a single AI call, we'll simulate progress through files
-      for (let i = 0; i < changedFiles.length; i++) {
-        currentFileIndex = i;
-        const fileName = changedFiles[i].file || changedFiles[i].fileName || `File ${i + 1}`;
-        updateProgress('Analyzing file', fileName);
-        
-        // Add a small delay to show progress
-        if (i < changedFiles.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 200));
-        }
-      }
-      
-      // Step 4: Execute Claude CLI in the worktree directory
-      updateProgress('Processing with AI');
+      // Step 3: Execute Claude CLI in the worktree directory
+      updateProgress('Running Claude to analyze changes in isolation');
       const response = await this.claude.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000 // 10 minutes for Level 1 - let Claude be thorough
       });
 
-      // Step 5: Parse and validate the response
+      // Step 4: Parse and validate the response
       updateProgress('Processing AI results');
       const suggestions = this.parseResponse(response, 1);
       logger.success(`Parsed ${suggestions.length} valid suggestions`);
       
-      // Step 6: Store suggestions in database
+      // Step 5: Store suggestions in database
       updateProgress('Storing suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 1);
       
@@ -145,47 +146,38 @@ class Analyzer {
    * Build the Level 2 prompt for file context analysis
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
-   * @param {Object} fileInfo - File information including content
    */
-  buildLevel2Prompt(prId, worktreePath, fileInfo) {
-    // Get the changed line numbers from the diff
-    const changedLines = fileInfo.changedLines || this.extractChangedLines(fileInfo);
-    const changedLinesStr = changedLines.length > 0 
-      ? `Changed lines in this file: ${changedLines.join(', ')}`
-      : 'Unable to determine changed lines';
+  buildLevel2Prompt(prId, worktreePath) {
+    return `You are reviewing pull request #${prId} in the current working directory.
 
-    return `You are performing Level 2 review (File Context) for pull request #${prId}.
+Perform a Level 2 review - analyze file context:
 
-File being analyzed: ${fileInfo.fileName}
-File path: ${fileInfo.filePath}
-File size: ${fileInfo.lineCount} lines
-${changedLinesStr}
+1. Run 'git diff HEAD~1 --name-only' to identify changed files
+2. For each changed file:
+   - Read the full file content to understand context
+   - Run 'git diff HEAD~1 <file>' to see what changed
+   - Analyze how changes fit within the file's overall structure
+3. Look for:
+   - Inconsistencies within files (naming conventions, patterns, error handling)
+   - Missing related changes within files (if one part changed, what else should change?)
+   - Style violations or deviations from patterns established in the file
+   - Opportunities for improvement based on full file context
+   - Good practices worth praising in the file's context
 
-Full file content:
-\`\`\`
-${fileInfo.content}
-\`\`\`
+You have full access to the codebase and can run commands like:
+- git diff HEAD~1 --name-only
+- git diff HEAD~1 <file>
+- cat <file> or any file reading command
+- grep, find, ls commands as needed
 
-Level 2 Focus - File Context Analysis:
-- Look for inconsistencies within this single file (naming conventions, patterns, error handling)
-- Identify missing related changes within this file (if one part changed, what else should change?)
-- Check for style violations or deviations from patterns established in this file
-- Find opportunities for improvement based on the full context of this file
-- Highlight good practices worth praising in this file's context
-
-CRITICAL REQUIREMENT: Only attach suggestions to lines that were ADDED or MODIFIED in this PR.
-The changed lines are listed above. You MUST only use line numbers from that list in your suggestions.
-If you find an issue on an unchanged line, mention it in the description but attach the suggestion to the nearest changed line.
-
-IMPORTANT: Only suggest issues that require understanding the full file context.
-Do NOT duplicate Level 1 findings that could be found just by looking at the diff.
+Note: You may optionally use parallel read-only Tasks to examine multiple files simultaneously if that would be helpful.
 
 Output JSON with this structure:
 {
   "level": 2,
   "suggestions": [{
-    "file": "${fileInfo.fileName}",
-    "line": <MUST be a line number from the changed lines list>,
+    "file": "path/to/file",
+    "line": 42,
     "type": "bug|improvement|praise|suggestion|design|performance|security|style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why full file context was needed",
@@ -195,66 +187,13 @@ Output JSON with this structure:
   "summary": "Brief summary of file context findings"
 }
 
-Focus on file-level consistency and context that wasn't visible in just the diff.
-Remember: Only use line numbers that were actually changed in this PR.`;
+Important:
+- Only attach suggestions to lines that were ADDED or MODIFIED in this PR
+- Focus on issues that require understanding the full file context
+- Do NOT duplicate Level 1 findings that could be found just by looking at the diff
+- If you find an issue on an unchanged line, mention it but attach to the nearest changed line`;
   }
 
-  /**
-   * Extract changed line numbers from file info
-   * @param {Object} fileInfo - File information
-   * @returns {Array<number>} Array of changed line numbers
-   */
-  extractChangedLines(fileInfo) {
-    const changedLines = [];
-    
-    // Try to get from git diff
-    try {
-      const { execSync } = require('child_process');
-      const fileName = fileInfo.fileName;
-      
-      // Get the diff for this specific file to extract line numbers
-      const diff = execSync(`git diff HEAD~1 HEAD -- "${fileName}" 2>/dev/null || true`, {
-        cwd: fileInfo.filePath ? require('path').dirname(fileInfo.filePath) : process.cwd(),
-        encoding: 'utf8',
-        maxBuffer: 10 * 1024 * 1024
-      });
-      
-      // Parse diff to extract added/modified line numbers
-      const lines = diff.split('\n');
-      let currentLine = 0;
-      
-      for (const line of lines) {
-        // Look for hunk headers like @@ -1,3 +1,5 @@
-        if (line.startsWith('@@')) {
-          const match = line.match(/@@ -\d+,?\d* \+(\d+),?(\d*) @@/);
-          if (match) {
-            currentLine = parseInt(match[1]) - 1;
-          }
-        } else if (line.startsWith('+') && !line.startsWith('+++')) {
-          // This is an added line
-          currentLine++;
-          changedLines.push(currentLine);
-        } else if (!line.startsWith('-')) {
-          // Context line
-          currentLine++;
-        }
-      }
-    } catch (error) {
-      logger.warn(`Could not extract changed lines for ${fileInfo.fileName}: ${error.message}`);
-    }
-    
-    // If we couldn't get from diff, estimate from additions/deletions
-    if (changedLines.length === 0 && fileInfo.insertions > 0) {
-      // As a fallback, assume all lines are potentially changed
-      // This is not accurate but better than nothing
-      logger.info(`Using fallback: marking first ${fileInfo.insertions} lines as changed`);
-      for (let i = 1; i <= Math.min(fileInfo.insertions, fileInfo.lineCount || 100); i++) {
-        changedLines.push(i);
-      }
-    }
-    
-    return changedLines;
-  }
 
   /**
    * Build the Level 1 prompt
@@ -262,14 +201,27 @@ Remember: Only use line numbers that were actually changed in this PR.`;
    * @param {string} worktreePath - Path to the git worktree
    */
   buildLevel1Prompt(prId, worktreePath) {
-    return `You are reviewing pull request #${prId} in the worktree at ${worktreePath}.
+    return `You are reviewing pull request #${prId} in the current working directory.
 
-Perform a Level 1 review focusing ONLY on the changes in the diff:
-- Review the git diff to understand what changed
-- Identify bugs or errors in the modified code
-- Find logic issues in the changes
-- Highlight security concerns
-- Recognize good practices worth praising
+Perform a Level 1 review - analyze changes in isolation:
+
+1. Run 'git diff HEAD~1' to see what changed in this PR
+2. Focus ONLY on the changed lines in the diff
+3. Identify:
+   - Bugs or errors in the modified code
+   - Logic issues in the changes
+   - Security concerns
+   - Good practices worth praising
+   - Performance issues
+   - Style inconsistencies
+
+You have full access to the codebase and can run commands like:
+- git diff HEAD~1
+- git diff --stat
+- git show HEAD
+- ls, find, grep commands as needed
+
+Note: You may optionally use parallel Tasks to analyze different parts of the changes if that would be helpful.
 
 Output JSON with this structure:
 {
@@ -277,7 +229,7 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|style",
     "title": "Brief title",
     "description": "Detailed explanation",
     "suggestion": "How to fix/improve",
@@ -286,7 +238,10 @@ Output JSON with this structure:
   "summary": "Brief summary of findings"
 }
 
-Focus only on the changed lines. Do not review unchanged code or missing tests (that's for Level 3).`;
+Important: 
+- Only comment on lines that were actually changed in this PR
+- Focus on issues visible in the diff itself
+- Do not review unchanged code or missing tests (that's for Level 3)`;
   }
 
   /**
@@ -407,34 +362,6 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
     return await query(this.db, sql, params);
   }
 
-  /**
-   * Get changed files for a PR from database
-   * @param {number} prId - Pull request ID
-   * @returns {Promise<Array>} Changed files array
-   */
-  async getChangedFiles(prId) {
-    const { queryOne } = require('../database');
-    
-    try {
-      const prMetadata = await queryOne(this.db, `
-        SELECT pr_data FROM pr_metadata WHERE id = ?
-      `, [prId]);
-      
-      if (!prMetadata || !prMetadata.pr_data) {
-        logger.warn(`No PR data found for PR ID ${prId}`);
-        return [];
-      }
-      
-      const prData = JSON.parse(prMetadata.pr_data);
-      const changedFiles = prData.changed_files || [];
-      
-      logger.info(`Found ${changedFiles.length} changed files in PR data`);
-      return changedFiles;
-    } catch (error) {
-      logger.error(`Error getting changed files: ${error.message}`);
-      return [];
-    }
-  }
 
   /**
    * Perform Level 2 analysis - File Context
@@ -452,22 +379,11 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
     logger.info(`Worktree path: ${worktreePath}`);
     
     try {
-      // Get changed files from PR data
-      const changedFiles = await this.getChangedFiles(prId);
-      const totalFiles = changedFiles.length;
-      let currentFileIndex = 0;
-      
-      logger.info(`Found ${totalFiles} changed files to analyze at file level`);
-      
-      const updateProgress = (step, fileName = null) => {
-        const progress = fileName 
-          ? `Level 2: Analyzing file context for ${fileName} (${currentFileIndex + 1}/${totalFiles})...`
-          : `Level 2: ${step}...`;
+      const updateProgress = (step) => {
+        const progress = `Level 2: ${step}...`;
         
         if (progressCallback) {
           progressCallback({
-            currentFile: fileName ? currentFileIndex + 1 : 0,
-            totalFiles: totalFiles,
             status: 'running',
             progress,
             level: 2
@@ -476,102 +392,23 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
         logger.info(progress);
       };
       
-      // Step 1: Prepare Level 2 analysis
-      updateProgress('Preparing file context analysis');
+      // Step 1: Build the Level 2 prompt
+      updateProgress('Building Level 2 prompt for Claude to analyze changes at file level');
+      const prompt = this.buildLevel2Prompt(prId, worktreePath);
       
-      // Filter out files that are too large (>10,000 lines)
-      const analyzeableFiles = [];
-      let suggestions = [];
+      // Step 2: Execute Claude CLI in the worktree directory (single invocation)
+      updateProgress('Running Claude to analyze all changed files in context');
+      const response = await this.claude.execute(prompt, {
+        cwd: worktreePath,
+        timeout: 600000 // 10 minutes for Level 2 - analyze all files in one go
+      });
       
-      for (let i = 0; i < changedFiles.length; i++) {
-        currentFileIndex = i;
-        const fileInfo = changedFiles[i];
-        const fileName = fileInfo.file || fileInfo.fileName || `File ${i + 1}`;
-        
-        updateProgress('Checking file size', fileName);
-        
-        try {
-          const filePath = require('path').join(worktreePath, fileName);
-          const fs = require('fs').promises;
-          
-          // Check if file exists and get its content
-          const stats = await fs.stat(filePath).catch(() => null);
-          if (!stats || stats.isDirectory()) {
-            logger.warn(`Skipping ${fileName}: not a regular file`);
-            continue;
-          }
-          
-          const content = await fs.readFile(filePath, 'utf8');
-          const lines = content.split('\n');
-          
-          // Only skip truly impractical files
-          if (lines.length > 100000) {
-            logger.info(`Skipping ${fileName}: extremely large (${lines.length} lines)`);
-            continue;
-          }
-          
-          analyzeableFiles.push({
-            ...fileInfo,
-            fileName,
-            filePath,
-            content,
-            lineCount: lines.length
-          });
-          
-        } catch (error) {
-          logger.warn(`Error checking file ${fileName}: ${error.message}`);
-        }
-      }
-      
-      logger.info(`${analyzeableFiles.length} files eligible for Level 2 analysis`);
-      
-      if (analyzeableFiles.length === 0) {
-        logger.info('No files eligible for Level 2 analysis');
-        return {
-          runId,
-          level: 2,
-          suggestions: [],
-          summary: 'Level 2 analysis complete: No files eligible for analysis'
-        };
-      }
-      
-      // Step 2: Analyze each file with context
-      for (let i = 0; i < analyzeableFiles.length; i++) {
-        currentFileIndex = i;
-        const fileInfo = analyzeableFiles[i];
-        
-        updateProgress('Analyzing file context', fileInfo.fileName);
-        
-        try {
-          // Build Level 2 prompt for this file
-          const prompt = this.buildLevel2Prompt(prId, worktreePath, fileInfo);
-          
-          // Execute Claude CLI for this file
-          const response = await this.claude.execute(prompt, {
-            cwd: worktreePath,
-            timeout: 300000 // 5 minutes per file - allow thorough analysis
-          });
-          
-          // Parse the response for this file
-          const fileSuggestions = this.parseResponse(response, 2);
-          suggestions = suggestions.concat(fileSuggestions);
-          
-          logger.info(`Found ${fileSuggestions.length} Level 2 suggestions for ${fileInfo.fileName}`);
-          
-          // Add small delay between files to show progress
-          if (i < analyzeableFiles.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 200));
-          }
-          
-        } catch (error) {
-          logger.warn(`Level 2 analysis failed for ${fileInfo.fileName}: ${error.message}`);
-          // Continue with other files even if one fails
-        }
-      }
-      
+      // Step 3: Parse and validate the response
+      updateProgress('Processing AI results');
+      const suggestions = this.parseResponse(response, 2);
       logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
       
-      // Step 3: Store Level 2 suggestions in database
+      // Step 4: Store Level 2 suggestions in database
       updateProgress('Storing Level 2 suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 2);
       
@@ -581,7 +418,7 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
         runId,
         level: 2,
         suggestions,
-        summary: `Level 2 analysis complete: Found ${suggestions.length} file context suggestions`
+        summary: response.summary || `Level 2 analysis complete: Found ${suggestions.length} file context suggestions`
       };
       
     } catch (error) {
@@ -607,18 +444,11 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
     logger.info(`Worktree path: ${worktreePath}`);
     
     try {
-      // Get changed files from PR data
-      const changedFiles = await this.getChangedFiles(prId);
-      
-      const updateProgress = (step, fileName = null, currentIdx = 0, totalFiles = 0) => {
-        const progress = fileName 
-          ? `Level 3: Analyzing codebase context for ${fileName} (${currentIdx}/${totalFiles})...`
-          : `Level 3: ${step}...`;
+      const updateProgress = (step) => {
+        const progress = `Level 3: ${step}...`;
         
         if (progressCallback) {
           progressCallback({
-            currentFile: currentIdx,
-            totalFiles: totalFiles,
             status: 'running',
             progress,
             level: 3
@@ -627,42 +457,23 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
         logger.info(progress);
       };
       
-      // Step 1: Prepare Level 3 analysis
-      updateProgress('Preparing codebase context analysis');
+      // Step 1: Build the Level 3 prompt
+      updateProgress('Building Level 3 prompt for Claude to analyze codebase impact');
+      const prompt = this.buildLevel3Prompt(prId, worktreePath);
       
-      // Step 2: Discover related files
-      updateProgress(`Discovering related files - scanning for imports, tests, configs, and dependencies across the codebase`);
-      const relatedFiles = await this.discoverRelatedFiles(worktreePath, changedFiles);
-      
-      logger.info(`Found ${relatedFiles.length} related files for Level 3 analysis`);
-      
-      if (relatedFiles.length === 0) {
-        logger.info('No related files found for Level 3 analysis');
-        return {
-          runId,
-          level: 3,
-          suggestions: [],
-          summary: 'Level 3 analysis complete: No related files to analyze'
-        };
-      }
-      
-      // Step 3: Build Level 3 prompt with related files context
-      updateProgress('Building codebase context prompt');
-      const prompt = await this.buildLevel3Prompt(prId, worktreePath, changedFiles, relatedFiles);
-      
-      // Step 4: Execute Claude CLI for Level 3 analysis
-      updateProgress('Analyzing codebase context with AI', null, 1, 1);
+      // Step 2: Execute Claude CLI for Level 3 analysis
+      updateProgress('Running Claude to analyze codebase-wide implications');
       const response = await this.claude.execute(prompt, {
         cwd: worktreePath,
         timeout: 900000 // 15 minutes for Level 3 - full codebase exploration
       });
       
-      // Step 5: Parse and validate the response
+      // Step 3: Parse and validate the response
       updateProgress('Processing codebase context results');
       const suggestions = this.parseResponse(response, 3);
       logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
       
-      // Step 6: Store Level 3 suggestions in database
+      // Step 4: Store Level 3 suggestions in database
       updateProgress('Storing Level 3 suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 3);
       
@@ -672,7 +483,7 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
         runId,
         level: 3,
         suggestions,
-        summary: `Level 3 analysis complete: Found ${suggestions.length} codebase context suggestions`
+        summary: response.summary || `Level 3 analysis complete: Found ${suggestions.length} codebase context suggestions`
       };
       
     } catch (error) {
@@ -683,389 +494,44 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
   }
 
   /**
-   * Discover related files for Level 3 codebase context analysis
-   * @param {string} worktreePath - Path to the git worktree
-   * @param {Array} changedFiles - Array of changed files from PR
-   * @returns {Promise<Array>} Array of related files with content
-   */
-  async discoverRelatedFiles(worktreePath, changedFiles) {
-    const fs = require('fs').promises;
-    const path = require('path');
-    const relatedFiles = new Set();
-    // No artificial limit on related files - analyze what's relevant
-    
-    logger.info(`Discovering all related files for ${changedFiles.length} changed files - no artificial limits`);
-    
-    try {
-      // For each changed file, find related files
-      for (const fileInfo of changedFiles) {
-        const fileName = fileInfo.file || fileInfo.fileName;
-        if (!fileName) continue;
-        
-        const filePath = path.join(worktreePath, fileName);
-        
-        try {
-          // Check if file exists and is readable
-          const stats = await fs.stat(filePath).catch(() => null);
-          if (!stats || stats.isDirectory()) continue;
-          
-          const content = await fs.readFile(filePath, 'utf8');
-          
-          // 1. Find imported/required modules
-          const imports = this.extractImports(content, fileName);
-          for (const importPath of imports) {
-            const resolvedPath = this.resolveImportPath(importPath, fileName, worktreePath);
-            if (resolvedPath) {
-              relatedFiles.add(resolvedPath);
-            }
-          }
-          
-          // 2. Find test files
-          const testFiles = this.findTestFiles(fileName, worktreePath);
-          for (const testFile of testFiles) {
-            relatedFiles.add(testFile);
-          }
-          
-          // 3. Find files that import this file
-          const importingFiles = await this.findImportingFiles(fileName, worktreePath);
-          for (const importingFile of importingFiles) {
-            relatedFiles.add(importingFile);
-          }
-          
-        } catch (error) {
-          logger.warn(`Error analyzing file ${fileName}: ${error.message}`);
-        }
-        
-        // No artificial limit on related files - analyze what's relevant
-      }
-      
-      // 4. Add configuration files
-      const configFiles = await this.findConfigFiles(worktreePath);
-      for (const configFile of configFiles) {
-        relatedFiles.add(configFile);
-      }
-      
-      // Convert Set to Array and read file contents
-      const relatedFilesArray = Array.from(relatedFiles);
-      const relatedFilesWithContent = [];
-      
-      for (const relatedFile of relatedFilesArray) {
-        try {
-          const stats = await fs.stat(relatedFile).catch(() => null);
-          if (!stats || stats.isDirectory()) continue;
-          
-          const content = await fs.readFile(relatedFile, 'utf8');
-          const lines = content.split('\n');
-          
-          // Only skip extremely large files that would be impractical
-          if (lines.length > 100000) {
-            logger.info(`Skipping extremely large file ${relatedFile}: ${lines.length} lines`);
-            continue;
-          }
-          
-          const relativePath = path.relative(worktreePath, relatedFile);
-          relatedFilesWithContent.push({
-            path: relatedFile,
-            relativePath,
-            content,
-            lineCount: lines.length
-          });
-          
-        } catch (error) {
-          logger.warn(`Error reading related file ${relatedFile}: ${error.message}`);
-        }
-      }
-      
-      logger.info(`Successfully loaded ${relatedFilesWithContent.length} related files`);
-      return relatedFilesWithContent;
-      
-    } catch (error) {
-      logger.error(`Error discovering related files: ${error.message}`);
-      return [];
-    }
-  }
-  
-  /**
-   * Extract import/require statements from file content
-   */
-  extractImports(content, fileName) {
-    const imports = [];
-    const lines = content.split('\n');
-    
-    for (const line of lines) {
-      // JavaScript/Node.js requires
-      const requireMatch = line.match(/require\s*\(\s*['""]([^'"'"]+)['"]\s*\)/);
-      if (requireMatch) {
-        imports.push(requireMatch[1]);
-      }
-      
-      // ES6 imports
-      const importMatch = line.match(/import.*from\s+['""]([^'"'"]+)["']/);
-      if (importMatch) {
-        imports.push(importMatch[1]);
-      }
-      
-      // Dynamic imports
-      const dynamicImportMatch = line.match(/import\s*\(\s*['""]([^'"'"]+)['"]\s*\)/);
-      if (dynamicImportMatch) {
-        imports.push(dynamicImportMatch[1]);
-      }
-    }
-    
-    return imports.filter(imp => {
-      // Filter out external modules (those that don't start with . or /)
-      return imp.startsWith('.') || imp.startsWith('/');
-    });
-  }
-  
-  /**
-   * Resolve import path to actual file path
-   */
-  resolveImportPath(importPath, fromFile, worktreePath) {
-    const path = require('path');
-    
-    try {
-      const fromDir = path.dirname(path.join(worktreePath, fromFile));
-      let resolvedPath;
-      
-      if (importPath.startsWith('.')) {
-        // Relative import
-        resolvedPath = path.resolve(fromDir, importPath);
-      } else if (importPath.startsWith('/')) {
-        // Absolute import (relative to worktree)
-        resolvedPath = path.join(worktreePath, importPath);
-      } else {
-        // Module import - skip external modules
-        return null;
-      }
-      
-      // Try different extensions
-      const extensions = ['', '.js', '.json', '/index.js'];
-      for (const ext of extensions) {
-        const fullPath = resolvedPath + ext;
-        const fs = require('fs');
-        if (fs.existsSync(fullPath)) {
-          return fullPath;
-        }
-      }
-      
-      return null;
-    } catch (error) {
-      return null;
-    }
-  }
-  
-  /**
-   * Find test files related to a given file
-   */
-  findTestFiles(fileName, worktreePath) {
-    const path = require('path');
-    const fs = require('fs');
-    const testFiles = [];
-    
-    const baseName = path.basename(fileName, path.extname(fileName));
-    const dirName = path.dirname(fileName);
-    
-    // Common test file patterns
-    const testPatterns = [
-      `${baseName}.test.js`,
-      `${baseName}.spec.js`,
-      `${baseName}.test.json`,
-      `${baseName}.spec.json`,
-      `test/${baseName}.js`,
-      `tests/${baseName}.js`,
-      `__tests__/${baseName}.js`,
-      `__tests__/${baseName}.test.js`
-    ];
-    
-    for (const pattern of testPatterns) {
-      const testPath = path.join(worktreePath, dirName, pattern);
-      const altTestPath = path.join(worktreePath, pattern);
-      
-      if (fs.existsSync(testPath)) {
-        testFiles.push(testPath);
-      } else if (fs.existsSync(altTestPath)) {
-        testFiles.push(altTestPath);
-      }
-    }
-    
-    return testFiles;
-  }
-  
-  /**
-   * Find files that import the given file
-   */
-  async findImportingFiles(fileName, worktreePath) {
-    const path = require('path');
-    const fs = require('fs').promises;
-    const importingFiles = [];
-    
-    try {
-      // Use a simple grep-like approach to find files that import this one
-      // This is a simplified implementation - could be enhanced with more sophisticated parsing
-      const relativePath = path.relative(worktreePath, path.join(worktreePath, fileName));
-      const baseNameWithoutExt = path.basename(fileName, path.extname(fileName));
-      
-      const searchPatterns = [
-        `require.*['"]\\\./.*${baseNameWithoutExt}`,
-        `require.*['"]\\\.\\\.*${baseNameWithoutExt}`,
-        `import.*from.*['"]\\\./.*${baseNameWithoutExt}`,
-        `import.*from.*['"]\\\.\\\.*${baseNameWithoutExt}`
-      ];
-      
-      // Search through JS files in the worktree
-      const jsFiles = await this.findJSFiles(worktreePath);
-      
-      for (const jsFile of jsFiles) { // Search all JS files for comprehensive analysis
-        try {
-          const content = await fs.readFile(jsFile, 'utf8');
-          
-          for (const pattern of searchPatterns) {
-            const regex = new RegExp(pattern);
-            if (regex.test(content)) {
-              importingFiles.push(jsFile);
-              break; // Found one match, no need to check other patterns
-            }
-          }
-        } catch (error) {
-          // Skip files that can't be read
-        }
-        
-        if (importingFiles.length >= 3) break; // Limit to prevent excessive search
-      }
-      
-    } catch (error) {
-      logger.warn(`Error finding importing files for ${fileName}: ${error.message}`);
-    }
-    
-    return importingFiles;
-  }
-  
-  /**
-   * Find JavaScript files in the worktree
-   */
-  async findJSFiles(worktreePath) {
-    const path = require('path');
-    const fs = require('fs').promises;
-    const jsFiles = [];
-    
-    async function walkDir(dir, depth = 0) {
-      if (depth > 3) return; // Limit depth to prevent deep recursion
-      
-      try {
-        const entries = await fs.readdir(dir, { withFileTypes: true });
-        
-        for (const entry of entries) {
-          if (entry.name.startsWith('.')) continue; // Skip hidden files/dirs
-          if (entry.name === 'node_modules') continue; // Skip node_modules
-          
-          const fullPath = path.join(dir, entry.name);
-          
-          if (entry.isDirectory()) {
-            await walkDir(fullPath, depth + 1);
-          } else if (entry.isFile() && entry.name.endsWith('.js')) {
-            jsFiles.push(fullPath);
-          }
-        }
-      } catch (error) {
-        // Skip directories that can't be read
-      }
-    }
-    
-    await walkDir(worktreePath);
-    return jsFiles;
-  }
-  
-  /**
-   * Find configuration files relevant to the project
-   */
-  async findConfigFiles(worktreePath) {
-    const path = require('path');
-    const fs = require('fs');
-    const configFiles = [];
-    
-    const configFileNames = [
-      'package.json',
-      'package-lock.json',
-      '.eslintrc.js',
-      '.eslintrc.json',
-      '.prettierrc',
-      '.prettierrc.json',
-      'jest.config.js',
-      'webpack.config.js',
-      'babel.config.js',
-      '.babelrc',
-      'tsconfig.json'
-    ];
-    
-    for (const configFileName of configFileNames) {
-      const configPath = path.join(worktreePath, configFileName);
-      if (fs.existsSync(configPath)) {
-        configFiles.push(configPath);
-      }
-    }
-    
-    return configFiles;
-  }
-  
-  /**
    * Build the Level 3 prompt for codebase context analysis
+   * @param {number} prId - Pull request ID
+   * @param {string} worktreePath - Path to the git worktree
    */
-  async buildLevel3Prompt(prId, worktreePath, changedFiles, relatedFiles) {
-    const changedFilesList = changedFiles.map(f => f.file || f.fileName).join(', ');
-    const relatedFilesList = relatedFiles.map(f => f.relativePath).join(', ');
-    
-    // Extract changed lines for each file
-    let changedLinesInfo = '\n\nChanged lines by file:\n';
-    for (const file of changedFiles) {
-      const fileName = file.file || file.fileName;
-      const changedLines = this.extractChangedLines(file);
-      if (changedLines.length > 0) {
-        changedLinesInfo += `- ${fileName}: lines ${changedLines.join(', ')}\n`;
-      } else {
-        changedLinesInfo += `- ${fileName}: all new file or unable to determine specific lines\n`;
-      }
-    }
-    
-    let relatedFilesContent = '';
-    for (const relatedFile of relatedFiles) {
-      relatedFilesContent += `\n\n## Related File: ${relatedFile.relativePath}\n`;
-      relatedFilesContent += `Lines: ${relatedFile.lineCount}\n`;
-      relatedFilesContent += '```\n';
-      relatedFilesContent += relatedFile.content;
-      relatedFilesContent += '\n```';
-    }
-    
-    return `You are performing Level 3 review (Codebase Context) for pull request #${prId}.
+  buildLevel3Prompt(prId, worktreePath) {
+    return `You are reviewing pull request #${prId} in the current working directory.
 
-Changed files in this PR: ${changedFilesList}
-${changedLinesInfo}
+Perform a Level 3 review - analyze codebase context:
 
-Level 3 Focus - Codebase Context Analysis:
-- Analyze architectural consistency across the codebase
-- Identify missing tests for the changed functionality
-- Find missing documentation or outdated documentation
-- Look for pattern violations or inconsistencies with established patterns
-- Examine cross-file dependencies and potential impact
-- Check for configuration changes needed
-- Identify potential breaking changes or compatibility issues
+1. Run 'git diff HEAD~1 --name-only' to see what files changed
+2. Explore the codebase to understand architectural context:
+   - Find and examine related files (imports, tests, configs)
+   - Look for similar patterns elsewhere in the codebase
+   - Check for related documentation
+3. Analyze:
+   - Architectural consistency across the codebase
+   - Missing tests for the changed functionality
+   - Missing or outdated documentation
+   - Pattern violations or inconsistencies with established patterns
+   - Cross-file dependencies and potential impact
+   - Configuration changes needed
+   - Potential breaking changes or compatibility issues
 
-Related files discovered: ${relatedFilesList}
-${relatedFilesContent}
+You have full access to the codebase and can run commands like:
+- git diff HEAD~1
+- find . -name "*.test.js" or similar to find test files
+- grep -r "pattern" to search for patterns
+- cat, ls, tree commands to explore structure
+- Any other commands needed to understand the codebase
 
-CRITICAL REQUIREMENT: Only attach suggestions to lines that were ADDED or MODIFIED in the PR.
-You MUST only use line numbers from the "Changed lines by file" list above.
-If you find an issue related to unchanged code, mention it in the description but attach the suggestion to the nearest changed line in the relevant file.
-
-IMPORTANT: Focus on codebase-wide concerns that require understanding multiple files.
-Do NOT duplicate Level 1 (diff-only) or Level 2 (single-file) findings.
+Note: You may optionally use parallel Tasks to explore different areas of the codebase if that would be helpful.
 
 Output JSON with this structure:
 {
   "level": 3,
   "suggestions": [{
     "file": "path/to/file",
-    "line": <MUST be a line number from the changed lines list for that file>,
+    "line": 42,
     "type": "bug|improvement|praise|suggestion|design|performance|security|style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why codebase context was needed",
@@ -1075,8 +541,11 @@ Output JSON with this structure:
   "summary": "Brief summary of codebase context findings"
 }
 
-Focus on architectural, testing, documentation, and cross-cutting concerns.
-Remember: Only use line numbers that were actually changed in this PR.`;
+Important:
+- Only attach suggestions to lines that were ADDED or MODIFIED in this PR
+- Focus on codebase-wide concerns that require understanding multiple files
+- Do NOT duplicate Level 1 (diff-only) or Level 2 (single-file) findings
+- Look especially for missing tests, documentation, and architectural issues`;
   }
 
   /**
