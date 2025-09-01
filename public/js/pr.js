@@ -201,6 +201,13 @@ class PRManager {
             <div class="pr-meta">
               <span class="pr-number">#${pr.number}</span>
               ${stateBadge}
+              ${pr.html_url ? `
+                <a href="${pr.html_url}" target="_blank" class="github-link" title="View on GitHub">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                  </svg>
+                </a>
+              ` : ''}
               <span class="pr-author">opened by <strong>${this.escapeHtml(pr.author)}</strong></span>
               <span class="pr-dates">on ${createdDate}</span>
               ${updatedDate !== createdDate ? `<span class="pr-updated">• updated ${updatedDate}</span>` : ''}
@@ -214,6 +221,9 @@ class PRManager {
             </button>
             <button class="btn btn-primary" onclick="prManager.triggerAIAnalysis()">
               Analyze with AI
+            </button>
+            <button class="btn review-button" id="review-button" onclick="prManager.openReviewModal()">
+              <span class="review-button-text">0 comments</span>
             </button>
           </div>
         </div>
@@ -245,8 +255,10 @@ class PRManager {
       await this.loadAISuggestions();
     }, 1500);
     
-    // Create review submission panel
-    this.createReviewPanel();
+    // Initialize review modal (but don't show it)
+    if (!this.reviewModal) {
+      this.reviewModal = new ReviewModal();
+    }
     
     container.style.display = 'block';
   }
@@ -1235,6 +1247,9 @@ class PRManager {
         console.warn(`[UI] Could not find line ${line} in file ${file} for user comment`);
       }
     });
+    
+    // Update the comment count in the review button
+    this.updateCommentCount();
   }
 
   /**
@@ -2268,67 +2283,33 @@ class PRManager {
   }
   
   /**
-   * Create review submission panel
+   * Open review submission modal
    */
-  createReviewPanel() {
-    // Remove existing panel if it exists
-    const existingPanel = document.getElementById('review-panel');
-    if (existingPanel) {
-      existingPanel.remove();
+  openReviewModal() {
+    if (!this.reviewModal) {
+      this.reviewModal = new ReviewModal();
     }
-    
-    const panel = document.createElement('div');
-    panel.id = 'review-panel';
-    panel.className = 'review-panel';
-    
-    const panelHTML = `
-      <div class="review-panel-content">
-        <div class="review-panel-left">
-          <div class="comment-count">
-            <span class="comment-count-number">0</span> comments
-          </div>
-        </div>
-        <div class="review-panel-right">
-          <select class="review-event-select" id="review-event">
-            <option value="COMMENT">Comment</option>
-            <option value="APPROVE">Approve</option>
-            <option value="REQUEST_CHANGES">Request changes</option>
-          </select>
-          <textarea 
-            class="review-body-textarea" 
-            id="review-body" 
-            placeholder="Leave a review summary (optional)..."
-            rows="2"
-          ></textarea>
-          <button class="btn btn-primary submit-review-btn" id="submit-review-btn">
-            Submit review
-          </button>
-        </div>
-      </div>
-    `;
-    
-    panel.innerHTML = panelHTML;
-    document.body.appendChild(panel);
-    
-    // Add event listeners
-    const submitBtn = panel.querySelector('#submit-review-btn');
-    submitBtn.addEventListener('click', () => this.submitReview());
-    
-    // Update comment count
-    this.updateCommentCount();
+    this.reviewModal.show();
   }
   
   /**
-   * Update comment count in review panel
+   * Update comment count in review button
    */
   updateCommentCount() {
     const userComments = document.querySelectorAll('.user-comment-row').length;
-    const countElement = document.querySelector('.comment-count-number');
-    if (countElement) {
-      countElement.textContent = userComments;
-      const countText = document.querySelector('.comment-count');
-      if (countText) {
-        countText.innerHTML = `<span class="comment-count-number">${userComments}</span> ${userComments === 1 ? 'comment' : 'comments'}`;
+    const reviewButton = document.getElementById('review-button');
+    
+    if (reviewButton) {
+      const buttonText = reviewButton.querySelector('.review-button-text');
+      if (buttonText) {
+        buttonText.textContent = `${userComments} ${userComments === 1 ? 'comment' : 'comments'}`;
+      }
+      
+      // Update button styling based on comment count
+      if (userComments > 0) {
+        reviewButton.classList.add('has-comments');
+      } else {
+        reviewButton.classList.remove('has-comments');
       }
     }
   }
