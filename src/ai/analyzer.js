@@ -102,6 +102,27 @@ class Analyzer {
         
         level2Result = await this.analyzeLevel2(prId, worktreePath, level2ProgressCallback);
         logger.success(`Level 2 analysis complete: ${level2Result.suggestions.length} additional suggestions found`);
+        
+        // After Level 2 completes, automatically start Level 3
+        try {
+          logger.info('Starting Level 3 analysis automatically...');
+          
+          // Create separate progress callback for Level 3 that properly reports level
+          const level3ProgressCallback = progressCallback ? (progressUpdate) => {
+            progressCallback({
+              ...progressUpdate,
+              level: 3
+            });
+          } : null;
+          
+          const level3Result = await this.analyzeLevel3(prId, worktreePath, level3ProgressCallback);
+          logger.success(`Level 3 analysis complete: ${level3Result.suggestions.length} additional suggestions found`);
+          
+          // Add level 3 result to the return object
+          level2Result.level3Result = level3Result;
+        } catch (level3Error) {
+          logger.warn(`Level 3 analysis failed, but Level 1 and Level 2 results are still available: ${level3Error.message}`);
+        }
       } catch (level2Error) {
         logger.warn(`Level 2 analysis failed, but Level 1 results are still available: ${level2Error.message}`);
       }
@@ -501,38 +522,475 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
   }
 
   /**
-   * Perform Level 3 analysis (placeholder for now with real file tracking)
+   * Perform Level 3 analysis - Codebase Context
+   * @param {number} prId - Pull request ID
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Function} progressCallback - Callback for progress updates
+   * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel3(prId, worktreePath, progressCallback = null) {
-    const changedFiles = await this.getChangedFiles(prId);
-    const totalFiles = Math.max(changedFiles.length * 2, 5); // More files for architecture analysis
+    const runId = uuidv4();
     
-    // Simulate Level 3 analysis with file-by-file progress
-    for (let i = 0; i < totalFiles; i++) {
-      const fileName = i < changedFiles.length 
-        ? changedFiles[i].file 
-        : `Architecture check ${i + 1 - changedFiles.length}`;
+    logger.section('Level 3 Analysis Starting');
+    logger.info(`PR ID: ${prId}`);
+    logger.info(`Analysis run ID: ${runId}`);
+    logger.info(`Worktree path: ${worktreePath}`);
+    
+    try {
+      // Get changed files from PR data
+      const changedFiles = await this.getChangedFiles(prId);
       
-      if (progressCallback) {
-        progressCallback({
-          currentFile: i + 1,
-          totalFiles: totalFiles,
-          status: 'running',
-          progress: `Analyzing architecture impact for ${fileName}...`,
-          level: 3
-        });
+      const updateProgress = (step, fileName = null, currentIdx = 0, totalFiles = 0) => {
+        const progress = fileName 
+          ? `Level 3: Analyzing codebase context for ${fileName} (${currentIdx}/${totalFiles})...`
+          : `Level 3: ${step}...`;
+        
+        if (progressCallback) {
+          progressCallback({
+            currentFile: currentIdx,
+            totalFiles: totalFiles,
+            status: 'running',
+            progress,
+            level: 3
+          });
+        }
+        logger.info(progress);
+      };
+      
+      // Step 1: Prepare Level 3 analysis
+      updateProgress('Preparing codebase context analysis');
+      
+      // Step 2: Discover related files
+      updateProgress('Discovering related files');
+      const relatedFiles = await this.discoverRelatedFiles(worktreePath, changedFiles);
+      
+      logger.info(`Found ${relatedFiles.length} related files for Level 3 analysis`);
+      
+      if (relatedFiles.length === 0) {
+        logger.info('No related files found for Level 3 analysis');
+        return {
+          runId,
+          level: 3,
+          suggestions: [],
+          summary: 'Level 3 analysis complete: No related files to analyze'
+        };
       }
       
-      await new Promise(resolve => setTimeout(resolve, 300)); // Simulate work
+      // Step 3: Build Level 3 prompt with related files context
+      updateProgress('Building codebase context prompt');
+      const prompt = await this.buildLevel3Prompt(prId, worktreePath, changedFiles, relatedFiles);
+      
+      // Step 4: Execute Claude CLI for Level 3 analysis
+      updateProgress('Analyzing codebase context with AI', null, 1, 1);
+      const response = await this.claude.execute(prompt, {
+        cwd: worktreePath,
+        timeout: 180000 // 3 minutes for Level 3
+      });
+      
+      // Step 5: Parse and validate the response
+      updateProgress('Processing codebase context results');
+      const suggestions = this.parseResponse(response, 3);
+      logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
+      
+      // Step 6: Store Level 3 suggestions in database
+      updateProgress('Storing Level 3 suggestions in database');
+      await this.storeSuggestions(prId, runId, suggestions, 3);
+      
+      logger.success(`Level 3 analysis complete: ${suggestions.length} suggestions found`);
+      
+      return {
+        runId,
+        level: 3,
+        suggestions,
+        summary: `Level 3 analysis complete: Found ${suggestions.length} codebase context suggestions`
+      };
+      
+    } catch (error) {
+      logger.error(`Level 3 analysis failed: ${error.message}`);
+      logger.error(`Error stack: ${error.stack}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Discover related files for Level 3 codebase context analysis
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Array} changedFiles - Array of changed files from PR
+   * @returns {Promise<Array>} Array of related files with content
+   */
+  async discoverRelatedFiles(worktreePath, changedFiles) {
+    const fs = require('fs').promises;
+    const path = require('path');
+    const relatedFiles = new Set();
+    const maxRelatedFiles = 10; // Limit to prevent excessive analysis
+    
+    logger.info(`Discovering related files for ${changedFiles.length} changed files`);
+    
+    try {
+      // For each changed file, find related files
+      for (const fileInfo of changedFiles) {
+        const fileName = fileInfo.file || fileInfo.fileName;
+        if (!fileName) continue;
+        
+        const filePath = path.join(worktreePath, fileName);
+        
+        try {
+          // Check if file exists and is readable
+          const stats = await fs.stat(filePath).catch(() => null);
+          if (!stats || stats.isDirectory()) continue;
+          
+          const content = await fs.readFile(filePath, 'utf8');
+          
+          // 1. Find imported/required modules
+          const imports = this.extractImports(content, fileName);
+          for (const importPath of imports) {
+            const resolvedPath = this.resolveImportPath(importPath, fileName, worktreePath);
+            if (resolvedPath) {
+              relatedFiles.add(resolvedPath);
+            }
+          }
+          
+          // 2. Find test files
+          const testFiles = this.findTestFiles(fileName, worktreePath);
+          for (const testFile of testFiles) {
+            relatedFiles.add(testFile);
+          }
+          
+          // 3. Find files that import this file
+          const importingFiles = await this.findImportingFiles(fileName, worktreePath);
+          for (const importingFile of importingFiles) {
+            relatedFiles.add(importingFile);
+          }
+          
+        } catch (error) {
+          logger.warn(`Error analyzing file ${fileName}: ${error.message}`);
+        }
+        
+        // Stop if we've found enough related files
+        if (relatedFiles.size >= maxRelatedFiles) break;
+      }
+      
+      // 4. Add configuration files
+      const configFiles = await this.findConfigFiles(worktreePath);
+      for (const configFile of configFiles) {
+        relatedFiles.add(configFile);
+        if (relatedFiles.size >= maxRelatedFiles) break;
+      }
+      
+      // Convert Set to Array and read file contents
+      const relatedFilesArray = Array.from(relatedFiles).slice(0, maxRelatedFiles);
+      const relatedFilesWithContent = [];
+      
+      for (const relatedFile of relatedFilesArray) {
+        try {
+          const stats = await fs.stat(relatedFile).catch(() => null);
+          if (!stats || stats.isDirectory()) continue;
+          
+          const content = await fs.readFile(relatedFile, 'utf8');
+          const lines = content.split('\n');
+          
+          // Skip very large files
+          if (lines.length > 5000) {
+            logger.info(`Skipping large related file ${relatedFile}: ${lines.length} lines`);
+            continue;
+          }
+          
+          const relativePath = path.relative(worktreePath, relatedFile);
+          relatedFilesWithContent.push({
+            path: relatedFile,
+            relativePath,
+            content,
+            lineCount: lines.length
+          });
+          
+        } catch (error) {
+          logger.warn(`Error reading related file ${relatedFile}: ${error.message}`);
+        }
+      }
+      
+      logger.info(`Successfully loaded ${relatedFilesWithContent.length} related files`);
+      return relatedFilesWithContent;
+      
+    } catch (error) {
+      logger.error(`Error discovering related files: ${error.message}`);
+      return [];
+    }
+  }
+  
+  /**
+   * Extract import/require statements from file content
+   */
+  extractImports(content, fileName) {
+    const imports = [];
+    const lines = content.split('\n');
+    
+    for (const line of lines) {
+      // JavaScript/Node.js requires
+      const requireMatch = line.match(/require\s*\(\s*['""]([^'"'"]+)['"]\s*\)/);
+      if (requireMatch) {
+        imports.push(requireMatch[1]);
+      }
+      
+      // ES6 imports
+      const importMatch = line.match(/import.*from\s+['""]([^'"'"]+)["']/);
+      if (importMatch) {
+        imports.push(importMatch[1]);
+      }
+      
+      // Dynamic imports
+      const dynamicImportMatch = line.match(/import\s*\(\s*['""]([^'"'"]+)['"]\s*\)/);
+      if (dynamicImportMatch) {
+        imports.push(dynamicImportMatch[1]);
+      }
     }
     
-    // Return placeholder result
-    return {
-      runId: uuidv4(),
-      level: 3,
-      suggestions: [],
-      summary: 'Level 3 analysis complete (placeholder)'
-    };
+    return imports.filter(imp => {
+      // Filter out external modules (those that don't start with . or /)
+      return imp.startsWith('.') || imp.startsWith('/');
+    });
+  }
+  
+  /**
+   * Resolve import path to actual file path
+   */
+  resolveImportPath(importPath, fromFile, worktreePath) {
+    const path = require('path');
+    
+    try {
+      const fromDir = path.dirname(path.join(worktreePath, fromFile));
+      let resolvedPath;
+      
+      if (importPath.startsWith('.')) {
+        // Relative import
+        resolvedPath = path.resolve(fromDir, importPath);
+      } else if (importPath.startsWith('/')) {
+        // Absolute import (relative to worktree)
+        resolvedPath = path.join(worktreePath, importPath);
+      } else {
+        // Module import - skip external modules
+        return null;
+      }
+      
+      // Try different extensions
+      const extensions = ['', '.js', '.json', '/index.js'];
+      for (const ext of extensions) {
+        const fullPath = resolvedPath + ext;
+        const fs = require('fs');
+        if (fs.existsSync(fullPath)) {
+          return fullPath;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+  
+  /**
+   * Find test files related to a given file
+   */
+  findTestFiles(fileName, worktreePath) {
+    const path = require('path');
+    const fs = require('fs');
+    const testFiles = [];
+    
+    const baseName = path.basename(fileName, path.extname(fileName));
+    const dirName = path.dirname(fileName);
+    
+    // Common test file patterns
+    const testPatterns = [
+      `${baseName}.test.js`,
+      `${baseName}.spec.js`,
+      `${baseName}.test.json`,
+      `${baseName}.spec.json`,
+      `test/${baseName}.js`,
+      `tests/${baseName}.js`,
+      `__tests__/${baseName}.js`,
+      `__tests__/${baseName}.test.js`
+    ];
+    
+    for (const pattern of testPatterns) {
+      const testPath = path.join(worktreePath, dirName, pattern);
+      const altTestPath = path.join(worktreePath, pattern);
+      
+      if (fs.existsSync(testPath)) {
+        testFiles.push(testPath);
+      } else if (fs.existsSync(altTestPath)) {
+        testFiles.push(altTestPath);
+      }
+    }
+    
+    return testFiles;
+  }
+  
+  /**
+   * Find files that import the given file
+   */
+  async findImportingFiles(fileName, worktreePath) {
+    const path = require('path');
+    const fs = require('fs').promises;
+    const importingFiles = [];
+    
+    try {
+      // Use a simple grep-like approach to find files that import this one
+      // This is a simplified implementation - could be enhanced with more sophisticated parsing
+      const relativePath = path.relative(worktreePath, path.join(worktreePath, fileName));
+      const baseNameWithoutExt = path.basename(fileName, path.extname(fileName));
+      
+      const searchPatterns = [
+        `require.*['"]\\\./.*${baseNameWithoutExt}`,
+        `require.*['"]\\\.\\\.*${baseNameWithoutExt}`,
+        `import.*from.*['"]\\\./.*${baseNameWithoutExt}`,
+        `import.*from.*['"]\\\.\\\.*${baseNameWithoutExt}`
+      ];
+      
+      // Search through JS files in the worktree
+      const jsFiles = await this.findJSFiles(worktreePath);
+      
+      for (const jsFile of jsFiles.slice(0, 50)) { // Limit search scope
+        try {
+          const content = await fs.readFile(jsFile, 'utf8');
+          
+          for (const pattern of searchPatterns) {
+            const regex = new RegExp(pattern);
+            if (regex.test(content)) {
+              importingFiles.push(jsFile);
+              break; // Found one match, no need to check other patterns
+            }
+          }
+        } catch (error) {
+          // Skip files that can't be read
+        }
+        
+        if (importingFiles.length >= 3) break; // Limit to prevent excessive search
+      }
+      
+    } catch (error) {
+      logger.warn(`Error finding importing files for ${fileName}: ${error.message}`);
+    }
+    
+    return importingFiles;
+  }
+  
+  /**
+   * Find JavaScript files in the worktree
+   */
+  async findJSFiles(worktreePath) {
+    const path = require('path');
+    const fs = require('fs').promises;
+    const jsFiles = [];
+    
+    async function walkDir(dir, depth = 0) {
+      if (depth > 3) return; // Limit depth to prevent deep recursion
+      
+      try {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        
+        for (const entry of entries) {
+          if (entry.name.startsWith('.')) continue; // Skip hidden files/dirs
+          if (entry.name === 'node_modules') continue; // Skip node_modules
+          
+          const fullPath = path.join(dir, entry.name);
+          
+          if (entry.isDirectory()) {
+            await walkDir(fullPath, depth + 1);
+          } else if (entry.isFile() && entry.name.endsWith('.js')) {
+            jsFiles.push(fullPath);
+          }
+        }
+      } catch (error) {
+        // Skip directories that can't be read
+      }
+    }
+    
+    await walkDir(worktreePath);
+    return jsFiles;
+  }
+  
+  /**
+   * Find configuration files relevant to the project
+   */
+  async findConfigFiles(worktreePath) {
+    const path = require('path');
+    const fs = require('fs');
+    const configFiles = [];
+    
+    const configFileNames = [
+      'package.json',
+      'package-lock.json',
+      '.eslintrc.js',
+      '.eslintrc.json',
+      '.prettierrc',
+      '.prettierrc.json',
+      'jest.config.js',
+      'webpack.config.js',
+      'babel.config.js',
+      '.babelrc',
+      'tsconfig.json'
+    ];
+    
+    for (const configFileName of configFileNames) {
+      const configPath = path.join(worktreePath, configFileName);
+      if (fs.existsSync(configPath)) {
+        configFiles.push(configPath);
+      }
+    }
+    
+    return configFiles;
+  }
+  
+  /**
+   * Build the Level 3 prompt for codebase context analysis
+   */
+  async buildLevel3Prompt(prId, worktreePath, changedFiles, relatedFiles) {
+    const changedFilesList = changedFiles.map(f => f.file || f.fileName).join(', ');
+    const relatedFilesList = relatedFiles.map(f => f.relativePath).join(', ');
+    
+    let relatedFilesContent = '';
+    for (const relatedFile of relatedFiles) {
+      relatedFilesContent += `\n\n## Related File: ${relatedFile.relativePath}\n`;
+      relatedFilesContent += `Lines: ${relatedFile.lineCount}\n`;
+      relatedFilesContent += '```\n';
+      relatedFilesContent += relatedFile.content;
+      relatedFilesContent += '\n```';
+    }
+    
+    return `You are performing Level 3 review (Codebase Context) for pull request #${prId}.
+
+Changed files in this PR: ${changedFilesList}
+
+Level 3 Focus - Codebase Context Analysis:
+- Analyze architectural consistency across the codebase
+- Identify missing tests for the changed functionality
+- Find missing documentation or outdated documentation
+- Look for pattern violations or inconsistencies with established patterns
+- Examine cross-file dependencies and potential impact
+- Check for configuration changes needed
+- Identify potential breaking changes or compatibility issues
+
+Related files discovered: ${relatedFilesList}
+${relatedFilesContent}
+
+IMPORTANT: Focus on codebase-wide concerns that require understanding multiple files.
+Do NOT duplicate Level 1 (diff-only) or Level 2 (single-file) findings.
+
+Output JSON with this structure:
+{
+  "level": 3,
+  "suggestions": [{
+    "file": "path/to/file",
+    "line": 42,
+    "type": "bug|improvement|praise|suggestion|design|performance|security|style",
+    "title": "Brief title",
+    "description": "Detailed explanation mentioning why codebase context was needed",
+    "suggestion": "How to fix/improve based on codebase context",
+    "confidence": 0.0-1.0
+  }],
+  "summary": "Brief summary of codebase context findings"
+}
+
+Focus on architectural, testing, documentation, and cross-cutting concerns.`;
   }
 
   /**

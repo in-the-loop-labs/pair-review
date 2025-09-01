@@ -1121,6 +1121,13 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-color: #7dd3fc;
 }
 
+.level-badge.level-3,
+.level-badge.ai-level-3 {
+  background: #fef7ed;
+  color: #7c2d12;
+  border-color: #fed7aa;
+}
+
 /* Type-specific colors */
 .ai-type-bug .type-badge,
 .type-bug { 

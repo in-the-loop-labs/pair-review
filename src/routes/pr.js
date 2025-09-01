@@ -446,7 +446,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           completedLevel: completedLevel,
           completedAt: new Date().toISOString(),
           result,
-          progress: `Analysis complete: ${totalSuggestions} suggestions found (Level 1: ${result.suggestions.length}${result.level2Result ? `, Level 2: ${result.level2Result.suggestions.length}` : ''})`,
+          progress: `Analysis complete: ${totalSuggestions} suggestions found (Level 1: ${result.suggestions.length}${result.level2Result ? `, Level 2: ${result.level2Result.suggestions.length}` : ''}${result.level2Result && result.level2Result.level3Result ? `, Level 3: ${result.level2Result.level3Result.suggestions.length}` : ''})`,
           filesAnalyzed: totalSuggestions,
           filesRemaining: 0,
           currentFile: totalSuggestions,
