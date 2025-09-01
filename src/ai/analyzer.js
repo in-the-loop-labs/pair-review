@@ -148,11 +148,18 @@ class Analyzer {
    * @param {Object} fileInfo - File information including content
    */
   buildLevel2Prompt(prId, worktreePath, fileInfo) {
+    // Get the changed line numbers from the diff
+    const changedLines = fileInfo.changedLines || this.extractChangedLines(fileInfo);
+    const changedLinesStr = changedLines.length > 0 
+      ? `Changed lines in this file: ${changedLines.join(', ')}`
+      : 'Unable to determine changed lines';
+
     return `You are performing Level 2 review (File Context) for pull request #${prId}.
 
 File being analyzed: ${fileInfo.fileName}
 File path: ${fileInfo.filePath}
 File size: ${fileInfo.lineCount} lines
+${changedLinesStr}
 
 Full file content:
 \`\`\`
@@ -166,6 +173,10 @@ Level 2 Focus - File Context Analysis:
 - Find opportunities for improvement based on the full context of this file
 - Highlight good practices worth praising in this file's context
 
+CRITICAL REQUIREMENT: Only attach suggestions to lines that were ADDED or MODIFIED in this PR.
+The changed lines are listed above. You MUST only use line numbers from that list in your suggestions.
+If you find an issue on an unchanged line, mention it in the description but attach the suggestion to the nearest changed line.
+
 IMPORTANT: Only suggest issues that require understanding the full file context.
 Do NOT duplicate Level 1 findings that could be found just by looking at the diff.
 
@@ -174,7 +185,7 @@ Output JSON with this structure:
   "level": 2,
   "suggestions": [{
     "file": "${fileInfo.fileName}",
-    "line": 42,
+    "line": <MUST be a line number from the changed lines list>,
     "type": "bug|improvement|praise|suggestion|design|performance|security|style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why full file context was needed",
@@ -184,7 +195,65 @@ Output JSON with this structure:
   "summary": "Brief summary of file context findings"
 }
 
-Focus on file-level consistency and context that wasn't visible in just the diff.`;
+Focus on file-level consistency and context that wasn't visible in just the diff.
+Remember: Only use line numbers that were actually changed in this PR.`;
+  }
+
+  /**
+   * Extract changed line numbers from file info
+   * @param {Object} fileInfo - File information
+   * @returns {Array<number>} Array of changed line numbers
+   */
+  extractChangedLines(fileInfo) {
+    const changedLines = [];
+    
+    // Try to get from git diff
+    try {
+      const { execSync } = require('child_process');
+      const fileName = fileInfo.fileName;
+      
+      // Get the diff for this specific file to extract line numbers
+      const diff = execSync(`git diff HEAD~1 HEAD -- "${fileName}" 2>/dev/null || true`, {
+        cwd: fileInfo.filePath ? require('path').dirname(fileInfo.filePath) : process.cwd(),
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024
+      });
+      
+      // Parse diff to extract added/modified line numbers
+      const lines = diff.split('\n');
+      let currentLine = 0;
+      
+      for (const line of lines) {
+        // Look for hunk headers like @@ -1,3 +1,5 @@
+        if (line.startsWith('@@')) {
+          const match = line.match(/@@ -\d+,?\d* \+(\d+),?(\d*) @@/);
+          if (match) {
+            currentLine = parseInt(match[1]) - 1;
+          }
+        } else if (line.startsWith('+') && !line.startsWith('+++')) {
+          // This is an added line
+          currentLine++;
+          changedLines.push(currentLine);
+        } else if (!line.startsWith('-')) {
+          // Context line
+          currentLine++;
+        }
+      }
+    } catch (error) {
+      logger.warn(`Could not extract changed lines for ${fileInfo.fileName}: ${error.message}`);
+    }
+    
+    // If we couldn't get from diff, estimate from additions/deletions
+    if (changedLines.length === 0 && fileInfo.insertions > 0) {
+      // As a fallback, assume all lines are potentially changed
+      // This is not accurate but better than nothing
+      logger.info(`Using fallback: marking first ${fileInfo.insertions} lines as changed`);
+      for (let i = 1; i <= Math.min(fileInfo.insertions, fileInfo.lineCount || 100); i++) {
+        changedLines.push(i);
+      }
+    }
+    
+    return changedLines;
   }
 
   /**
@@ -946,6 +1015,18 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
     const changedFilesList = changedFiles.map(f => f.file || f.fileName).join(', ');
     const relatedFilesList = relatedFiles.map(f => f.relativePath).join(', ');
     
+    // Extract changed lines for each file
+    let changedLinesInfo = '\n\nChanged lines by file:\n';
+    for (const file of changedFiles) {
+      const fileName = file.file || file.fileName;
+      const changedLines = this.extractChangedLines(file);
+      if (changedLines.length > 0) {
+        changedLinesInfo += `- ${fileName}: lines ${changedLines.join(', ')}\n`;
+      } else {
+        changedLinesInfo += `- ${fileName}: all new file or unable to determine specific lines\n`;
+      }
+    }
+    
     let relatedFilesContent = '';
     for (const relatedFile of relatedFiles) {
       relatedFilesContent += `\n\n## Related File: ${relatedFile.relativePath}\n`;
@@ -958,6 +1039,7 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
     return `You are performing Level 3 review (Codebase Context) for pull request #${prId}.
 
 Changed files in this PR: ${changedFilesList}
+${changedLinesInfo}
 
 Level 3 Focus - Codebase Context Analysis:
 - Analyze architectural consistency across the codebase
@@ -971,6 +1053,10 @@ Level 3 Focus - Codebase Context Analysis:
 Related files discovered: ${relatedFilesList}
 ${relatedFilesContent}
 
+CRITICAL REQUIREMENT: Only attach suggestions to lines that were ADDED or MODIFIED in the PR.
+You MUST only use line numbers from the "Changed lines by file" list above.
+If you find an issue related to unchanged code, mention it in the description but attach the suggestion to the nearest changed line in the relevant file.
+
 IMPORTANT: Focus on codebase-wide concerns that require understanding multiple files.
 Do NOT duplicate Level 1 (diff-only) or Level 2 (single-file) findings.
 
@@ -979,7 +1065,7 @@ Output JSON with this structure:
   "level": 3,
   "suggestions": [{
     "file": "path/to/file",
-    "line": 42,
+    "line": <MUST be a line number from the changed lines list for that file>,
     "type": "bug|improvement|praise|suggestion|design|performance|security|style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why codebase context was needed",
@@ -989,7 +1075,8 @@ Output JSON with this structure:
   "summary": "Brief summary of codebase context findings"
 }
 
-Focus on architectural, testing, documentation, and cross-cutting concerns.`;
+Focus on architectural, testing, documentation, and cross-cutting concerns.
+Remember: Only use line numbers that were actually changed in this PR.`;
   }
 
   /**
