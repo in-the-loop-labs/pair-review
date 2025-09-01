@@ -757,7 +757,58 @@ router.get('/api/analyze/status/:id', async (req, res) => {
 });
 
 /**
- * Get AI suggestions for a PR
+ * Get AI suggestions for a PR by ID (simpler endpoint)
+ */
+router.get('/api/pr/:id/suggestions', async (req, res) => {
+  try {
+    const prId = parseInt(req.params.id);
+    
+    if (isNaN(prId) || prId <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid PR ID' 
+      });
+    }
+
+    // Get AI suggestions directly by PR ID
+    const suggestions = await query(req.app.get('db'), `
+      SELECT 
+        id,
+        source,
+        author,
+        file,
+        line_start,
+        line_end,
+        type,
+        title,
+        body,
+        status,
+        ai_level,
+        ai_confidence,
+        created_at,
+        updated_at
+      FROM comments
+      WHERE pr_id = ? AND source = 'ai'
+      ORDER BY file, line_start
+    `, [prId]);
+
+    logger.info(`Found ${suggestions.length} AI suggestions for PR ${prId}`);
+
+    res.json({
+      success: true,
+      suggestions: suggestions || []
+    });
+
+  } catch (error) {
+    logger.error('Error fetching AI suggestions:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch AI suggestions',
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * Get AI suggestions for a PR (compatibility endpoint with owner/repo/number)
  */
 router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
   try {

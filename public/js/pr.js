@@ -1084,14 +1084,20 @@ class PRManager {
   async loadAISuggestions() {
     if (!this.currentPR) return;
 
-    // Get PR details from URL or currentPR object
+    // Get PR details - use the simpler endpoint that just needs PR number
     const urlParts = window.location.pathname.split('/');
-    const owner = this.currentPR.owner || urlParts[2] || 'owner';
-    const repo = this.currentPR.repo || urlParts[3] || 'repo';
-    const number = this.currentPR.number || urlParts[4] || '1';
+    const number = this.currentPR.number || urlParts[urlParts.length - 1] || '1';
 
     try {
-      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/ai-suggestions`);
+      // First try the direct endpoint for this PR number
+      let response = await fetch(`/api/pr/${number}/suggestions`);
+      
+      // If that fails, try with owner/repo (for compatibility)
+      if (!response.ok && urlParts.length >= 4) {
+        const owner = urlParts[2] || 'in-the-loop-labs';
+        const repo = urlParts[3] || 'pair-review';
+        response = await fetch(`/api/pr/${owner}/${repo}/${number}/ai-suggestions`);
+      }
       
       if (!response.ok) {
         throw new Error('Failed to load AI suggestions');
