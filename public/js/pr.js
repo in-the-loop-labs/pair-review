@@ -1114,19 +1114,23 @@ class PRManager {
   async loadAISuggestions() {
     if (!this.currentPR) return;
 
-    // Get PR details - use the simpler endpoint that just needs PR number
-    const urlParts = window.location.pathname.split('/');
-    const number = this.currentPR.number || urlParts[urlParts.length - 1] || '1';
-
     try {
-      // First try the direct endpoint for this PR number
-      let response = await fetch(`/api/pr/${number}/suggestions`);
+      let response;
       
-      // If that fails, try with owner/repo (for compatibility)
-      if (!response.ok && urlParts.length >= 4) {
-        const owner = urlParts[2] || 'in-the-loop-labs';
-        const repo = urlParts[3] || 'pair-review';
-        response = await fetch(`/api/pr/${owner}/${repo}/${number}/ai-suggestions`);
+      // Use currentPR data if available (preferred approach)
+      if (this.currentPR.owner && this.currentPR.repo && this.currentPR.number) {
+        response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/ai-suggestions`);
+      } else {
+        // Fallback: parse from URL if currentPR data is incomplete
+        const urlParts = window.location.pathname.split('/');
+        if (urlParts.length >= 4 && urlParts[1] === 'pr') {
+          const owner = urlParts[2];
+          const repo = urlParts[3];
+          const number = urlParts[4];
+          response = await fetch(`/api/pr/${owner}/${repo}/${number}/ai-suggestions`);
+        } else {
+          throw new Error('Unable to determine PR repository information');
+        }
       }
       
       if (!response.ok) {
