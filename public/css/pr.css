@@ -2022,3 +2022,509 @@ tr.newly-expanded .d2h-code-line-ctn {
   box-shadow: -2px 2px 8px rgba(0, 0, 0, 0.3);
 }
 
+/* Edit Suggestion Styles */
+.ai-suggestion.editing-mode .ai-suggestion-body {
+  display: none;
+}
+
+.ai-suggestion.editing-mode .ai-suggestion-actions {
+  display: none;
+}
+
+.suggestion-edit-form {
+  margin: 8px 0;
+}
+
+.suggestion-edit-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 12px;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  box-sizing: border-box;
+}
+
+.suggestion-edit-textarea:focus {
+  outline: none;
+  border-color: #0969da;
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+}
+
+.suggestion-edit-error {
+  color: #d1242f;
+  font-size: 12px;
+  margin: 4px 0 8px 0;
+  font-weight: 500;
+}
+
+.suggestion-edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.suggestion-edit-actions .btn-primary {
+  background-color: #0969da;
+  color: white;
+  padding: 6px 12px;
+  margin-right: 0;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid #0969da;
+}
+
+.suggestion-edit-actions .btn-primary:hover:not(:disabled) {
+  background-color: #0860ca;
+  border-color: #0860ca;
+}
+
+.suggestion-edit-actions .btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.suggestion-edit-actions .btn-secondary {
+  background-color: transparent;
+  color: #656d76;
+  border: 1px solid #d1d9e0;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.suggestion-edit-actions .btn-secondary:hover:not(:disabled) {
+  background-color: var(--color-bg-secondary);
+  border-color: #d1d9e0;
+}
+
+.suggestion-edit-actions .btn-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Edit button styling */
+.btn-secondary-outline {
+  color: #656d76;
+  background-color: transparent;
+  border: 1px solid #e1e4e8;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 12px;
+  min-height: 16px;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary-outline:hover {
+  background-color: #f6f8fa;
+  border-color: #d1d9e0;
+  color: #24292f;
+}
+
+/* Dark theme adjustments for edit styles */
+[data-theme="dark"] .suggestion-edit-textarea {
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-primary);
+}
+
+[data-theme="dark"] .suggestion-edit-textarea:focus {
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+}
+
+[data-theme="dark"] .suggestion-edit-actions .btn-primary {
+  background-color: #58a6ff;
+  border-color: #58a6ff;
+}
+
+[data-theme="dark"] .suggestion-edit-actions .btn-primary:hover:not(:disabled) {
+  background-color: #1f6feb;
+  border-color: #1f6feb;
+}
+
+[data-theme="dark"] .suggestion-edit-actions .btn-secondary {
+  color: var(--color-text-secondary);
+  border-color: var(--color-border-primary);
+}
+
+[data-theme="dark"] .suggestion-edit-actions .btn-secondary:hover:not(:disabled) {
+  background-color: var(--color-bg-tertiary);
+  border-color: var(--color-border-secondary);
+}
+
+[data-theme="dark"] .btn-secondary-outline {
+  color: var(--color-text-tertiary);
+  border-color: var(--color-border-secondary);
+}
+
+[data-theme="dark"] .btn-secondary-outline:hover {
+  background-color: var(--color-bg-tertiary);
+  border-color: var(--color-border-primary);
+}
+
+/* User Comment Functionality */
+.line-number-content {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.add-comment-btn {
+  display: none;
+  position: absolute;
+  right: -16px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  height: 12px;
+  background: #0969da;
+  color: white;
+  border: none;
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  z-index: 10;
+}
+
+.add-comment-btn:hover {
+  background: #0860ca;
+}
+
+/* Show comment button on hover */
+tr:hover .add-comment-btn {
+  display: block;
+}
+
+/* Comment Form */
+.comment-form-row {
+  border: none;
+}
+
+.comment-form-cell {
+  padding: 8px 16px;
+  background: #f6f8fa;
+  border: 1px solid #d1d9e0;
+  border-radius: 8px;
+  margin: 4px 0;
+}
+
+.user-comment-form {
+  background: white;
+  border: 1px solid #d1d9e0;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.comment-form-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.comment-icon {
+  font-size: 16px;
+}
+
+.comment-textarea {
+  width: 100%;
+  min-height: 60px;
+  padding: 8px 12px;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.comment-textarea:focus {
+  outline: none;
+  border-color: #0969da;
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+}
+
+.comment-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.save-comment-btn {
+  background: #238636;
+  color: white;
+  border: none;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.save-comment-btn:hover {
+  background: #1f7a2e;
+}
+
+.cancel-comment-btn {
+  background: #f6f8fa;
+  color: #656d76;
+  border: 1px solid #d1d9e0;
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cancel-comment-btn:hover {
+  background: #f3f4f6;
+  border-color: #c7ced6;
+}
+
+.draft-indicator {
+  display: none;
+  color: #656d76;
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* User Comments Display */
+.user-comment-row {
+  border: none;
+}
+
+.user-comment-cell {
+  padding: 8px 16px;
+}
+
+.user-comment {
+  background: #f6f8fa;
+  border: 1px solid #d1d9e0;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.user-comment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.user-comment-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-icon {
+  font-size: 16px;
+}
+
+.user-comment-author {
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.user-comment-timestamp {
+  color: #656d76;
+  font-size: 12px;
+}
+
+.user-comment-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-edit-comment,
+.btn-delete-comment {
+  background: none;
+  border: none;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #656d76;
+}
+
+.btn-edit-comment:hover,
+.btn-delete-comment:hover {
+  background: #f3f4f6;
+  color: #1f2328;
+}
+
+.user-comment-body {
+  color: #1f2328;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* Review Submission Panel */
+.review-panel {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 80px;
+  background: white;
+  border-top: 1px solid #d1d9e0;
+  box-shadow: 0 -4px 8px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+}
+
+.review-panel-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.review-panel-left {
+  display: flex;
+  align-items: center;
+}
+
+.comment-count {
+  font-size: 14px;
+  color: #656d76;
+  font-weight: 500;
+}
+
+.comment-count-number {
+  color: #1f2328;
+  font-weight: 600;
+}
+
+.review-panel-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.review-event-select {
+  padding: 6px 12px;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  background: white;
+  font-size: 14px;
+  color: #1f2328;
+  cursor: pointer;
+}
+
+.review-body-textarea {
+  width: 300px;
+  padding: 6px 12px;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  resize: none;
+}
+
+.review-body-textarea:focus {
+  outline: none;
+  border-color: #0969da;
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
+}
+
+.submit-review-btn {
+  background: #0969da;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.submit-review-btn:hover {
+  background: #0860ca;
+}
+
+.submit-review-btn:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+/* Add bottom padding to main content to account for fixed panel */
+body {
+  padding-bottom: 100px;
+}
+
+/* Dark theme support for user comments */
+[data-theme="dark"] .comment-form-cell {
+  background: #21262d;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .user-comment-form {
+  background: #161b22;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .comment-form-header {
+  color: #e6edf3;
+}
+
+[data-theme="dark"] .comment-textarea {
+  background: #0d1117;
+  color: #e6edf3;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .comment-textarea:focus {
+  border-color: #2f81f7;
+  box-shadow: 0 0 0 3px rgba(47, 129, 247, 0.1);
+}
+
+[data-theme="dark"] .user-comment {
+  background: #21262d;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .user-comment-author {
+  color: #e6edf3;
+}
+
+[data-theme="dark"] .user-comment-body {
+  color: #e6edf3;
+}
+
+[data-theme="dark"] .review-panel {
+  background: #161b22;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .review-event-select {
+  background: #21262d;
+  color: #e6edf3;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .review-body-textarea {
+  background: #0d1117;
+  color: #e6edf3;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .review-body-textarea:focus {
+  border-color: #2f81f7;
+  box-shadow: 0 0 0 3px rgba(47, 129, 247, 0.1);
+}
+

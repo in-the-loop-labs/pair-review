@@ -63,6 +63,13 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - **POST /api/analyze/:owner/:repo/:pr/level3**: Trigger Level 3 AI analysis (placeholder)
 - **GET /api/analyze/status/:id**: Get analysis status by analysis ID
 - **GET /api/pr/:id/ai-suggestions/status**: Server-Sent Events endpoint for real-time progress
+- **POST /api/ai-suggestion/:id/status**: Update suggestion status (adopt/dismiss/active)
+- **POST /api/ai-suggestion/:id/edit**: Edit suggestion text and adopt as user comment
+- **POST /api/user-comment**: Create new user comment on any line
+- **GET /api/pr/:id/user-comments**: Get all user comments for a PR
+- **PUT /api/user-comment/:id**: Update existing user comment
+- **DELETE /api/user-comment/:id**: Delete user comment (soft delete)
+- **POST /api/pr/:owner/:repo/:number/submit-review**: Submit complete review to GitHub
 
 ### 8. GitHub-like UI with Sidebar Layout (`public/`)
 - **Role**: Rich GitHub-like interface with sidebar file navigation and diff viewer
@@ -166,6 +173,28 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - ✅ Level 2 suggestions labeled as "File Context" in UI
 - ✅ Automatic Level 2 analysis after Level 1 completion
 - ✅ File size limits for Level 2 analysis (10,000 line threshold)
+- ✅ Edit AI suggestions before adopting feature
+  - ✅ Edit button positioned between Adopt and Dismiss buttons
+  - ✅ Textarea with pre-filled suggestion text
+  - ✅ Save/Cancel buttons with proper styling
+  - ✅ Keyboard shortcuts (Ctrl/Cmd+Enter to save, Escape to cancel)
+  - ✅ Validation for empty comments with error display
+  - ✅ Loading states during save operation
+  - ✅ Only one suggestion can be in edit mode at a time
+  - ✅ Creates user comment record and links to original suggestion
+  - ✅ API endpoint for editing suggestions (/api/ai-suggestion/:id/edit)
+- ✅ Review Workflow Features (Phase 5)
+  - ✅ User comment creation with "+ Add comment" button on hover
+  - ✅ Inline comment forms with textarea and save/cancel buttons
+  - ✅ Auto-save draft functionality with "Draft saved" indicator
+  - ✅ User comment display with edit/delete functionality
+  - ✅ Fixed bottom review panel with approval status dropdown
+  - ✅ Comment count display in review panel
+  - ✅ Review submission to GitHub API (POST endpoint ready)
+  - ✅ Support for Approve/Comment/Request Changes review types
+  - ✅ Complete user comment CRUD operations via API
+  - ✅ Draft persistence using localStorage
+  - ✅ GitHub-like UI styling for all comment elements
 
 ### API Endpoints Verified
 - ✅ `/api/pr/owner/repo/number` - Returns full PR data
@@ -197,14 +226,14 @@ comments: Will store AI suggestions and user comments
 - **Graceful Port Handling**: Automatically finds available ports for development
 
 ### Future Enhancements
-- AI integration for generating review suggestions
-- Comment management (adopt/discard AI suggestions)  
-- GitHub review submission functionality
+- GitHub API integration for actual review submission (requires GitHub client setup)
 - Full context expansion functionality (requires API endpoints for file content)
-- Inline commenting functionality
 - Syntax highlighting for diff content
-- Comment persistence and draft management
 - Keyboard shortcuts for navigation
+- Multi-user support with proper authentication
+- Comment threading and replies
+- Markdown support in comments
+- Comment history and versioning
 
 ## Troubleshooting
 

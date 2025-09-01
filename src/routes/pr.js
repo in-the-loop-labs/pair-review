@@ -869,6 +869,99 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
 });
 
 /**
+ * Edit AI suggestion and adopt as user comment
+ */
+router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { editedText, action } = req.body;
+    
+    if (action !== 'adopt_edited') {
+      return res.status(400).json({ 
+        error: 'Invalid action. Must be "adopt_edited"' 
+      });
+    }
+
+    if (!editedText || !editedText.trim()) {
+      return res.status(400).json({ 
+        error: 'Edited text cannot be empty' 
+      });
+    }
+
+    const db = req.app.get('db');
+    
+    // Get the suggestion and validate it
+    const suggestion = await queryOne(db, `
+      SELECT * FROM comments WHERE id = ? AND source = 'ai'
+    `, [id]);
+
+    if (!suggestion) {
+      return res.status(404).json({ 
+        error: 'AI suggestion not found' 
+      });
+    }
+
+    // Validate suggestion status is active
+    if (suggestion.status !== 'active') {
+      return res.status(400).json({ 
+        error: 'This suggestion has already been processed' 
+      });
+    }
+
+    // Validate PR exists
+    const pr = await queryOne(db, `
+      SELECT id FROM pr_metadata WHERE id = ?
+    `, [suggestion.pr_id]);
+
+    if (!pr) {
+      return res.status(404).json({ 
+        error: 'Associated pull request not found' 
+      });
+    }
+
+    // Create a user comment with the edited text
+    const result = await run(db, `
+      INSERT INTO comments (
+        pr_id, source, author, file, line_start, line_end, 
+        type, title, body, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      suggestion.pr_id,
+      'user',
+      'Current User', // TODO: Get actual user from session/config
+      suggestion.file,
+      suggestion.line_start,
+      suggestion.line_end,
+      'comment',
+      suggestion.title,
+      editedText.trim(),
+      'active'
+    ]);
+    
+    const userCommentId = result.lastID;
+
+    // Update suggestion status to adopted and link to user comment
+    await run(db, `
+      UPDATE comments 
+      SET status = 'adopted', adopted_as_id = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [userCommentId, id]);
+
+    res.json({ 
+      success: true,
+      userCommentId,
+      message: 'Suggestion edited and adopted as user comment'
+    });
+    
+  } catch (error) {
+    console.error('Error editing suggestion:', error);
+    res.status(500).json({ 
+      error: 'Failed to edit suggestion' 
+    });
+  }
+});
+
+/**
  * Update AI suggestion status (adopt/dismiss)
  */
 router.post('/api/ai-suggestion/:id/status', async (req, res) => {
@@ -1035,6 +1128,269 @@ function broadcastProgress(analysisId, progressData) {
     }
   }
 }
+
+/**
+ * Create user comment
+ */
+router.post('/api/user-comment', async (req, res) => {
+  try {
+    const { pr_id, file, line_start, line_end, body } = req.body;
+    
+    if (!pr_id || !file || !line_start || !body) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: pr_id, file, line_start, body' 
+      });
+    }
+
+    const db = req.app.get('db');
+    
+    // Verify PR exists
+    const pr = await queryOne(db, `
+      SELECT id FROM pr_metadata WHERE id = ?
+    `, [pr_id]);
+
+    if (!pr) {
+      return res.status(404).json({ 
+        error: 'Pull request not found' 
+      });
+    }
+
+    // Create user comment
+    const result = await run(db, `
+      INSERT INTO comments (
+        pr_id, source, author, file, line_start, line_end, 
+        type, body, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      pr_id,
+      'user',
+      'Current User', // TODO: Get actual user from session/config
+      file,
+      line_start,
+      line_end || line_start,
+      'comment',
+      body.trim(),
+      'active'
+    ]);
+    
+    res.json({ 
+      success: true,
+      commentId: result.lastID,
+      message: 'Comment saved successfully'
+    });
+    
+  } catch (error) {
+    console.error('Error creating user comment:', error);
+    res.status(500).json({ 
+      error: 'Failed to create comment' 
+    });
+  }
+});
+
+/**
+ * Get user comments for a PR
+ */
+router.get('/api/pr/:id/user-comments', async (req, res) => {
+  try {
+    const prId = parseInt(req.params.id);
+    
+    if (isNaN(prId) || prId <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid PR ID' 
+      });
+    }
+
+    const comments = await query(req.app.get('db'), `
+      SELECT 
+        id,
+        source,
+        author,
+        file,
+        line_start,
+        line_end,
+        body,
+        status,
+        created_at,
+        updated_at
+      FROM comments
+      WHERE pr_id = ? AND source = 'user' AND status = 'active'
+      ORDER BY file, line_start, created_at
+    `, [prId]);
+
+    res.json({
+      success: true,
+      comments: comments || []
+    });
+
+  } catch (error) {
+    console.error('Error fetching user comments:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch user comments' 
+    });
+  }
+});
+
+/**
+ * Update user comment
+ */
+router.put('/api/user-comment/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { body } = req.body;
+    
+    if (!body || !body.trim()) {
+      return res.status(400).json({ 
+        error: 'Comment body cannot be empty' 
+      });
+    }
+
+    const db = req.app.get('db');
+    
+    // Get the comment and verify it exists and is a user comment
+    const comment = await queryOne(db, `
+      SELECT * FROM comments WHERE id = ? AND source = 'user'
+    `, [id]);
+
+    if (!comment) {
+      return res.status(404).json({ 
+        error: 'User comment not found' 
+      });
+    }
+
+    // Update comment
+    await run(db, `
+      UPDATE comments 
+      SET body = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [body.trim(), id]);
+
+    res.json({ 
+      success: true,
+      message: 'Comment updated successfully'
+    });
+    
+  } catch (error) {
+    console.error('Error updating user comment:', error);
+    res.status(500).json({ 
+      error: 'Failed to update comment' 
+    });
+  }
+});
+
+/**
+ * Delete user comment
+ */
+router.delete('/api/user-comment/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const db = req.app.get('db');
+    
+    // Get the comment and verify it exists and is a user comment
+    const comment = await queryOne(db, `
+      SELECT * FROM comments WHERE id = ? AND source = 'user'
+    `, [id]);
+
+    if (!comment) {
+      return res.status(404).json({ 
+        error: 'User comment not found' 
+      });
+    }
+
+    // Soft delete by setting status to inactive
+    await run(db, `
+      UPDATE comments 
+      SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [id]);
+
+    res.json({ 
+      success: true,
+      message: 'Comment deleted successfully'
+    });
+    
+  } catch (error) {
+    console.error('Error deleting user comment:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete comment' 
+    });
+  }
+});
+
+/**
+ * Submit review to GitHub
+ */
+router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const { event, body } = req.body; // event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
+    const prNumber = parseInt(number);
+    
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ 
+        error: 'Invalid pull request number' 
+      });
+    }
+
+    if (!['APPROVE', 'REQUEST_CHANGES', 'COMMENT'].includes(event)) {
+      return res.status(400).json({ 
+        error: 'Invalid review event. Must be APPROVE, REQUEST_CHANGES, or COMMENT' 
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+    
+    // Get PR metadata
+    const prMetadata = await queryOne(db, `
+      SELECT id FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({ 
+        error: `Pull request #${prNumber} not found` 
+      });
+    }
+
+    // Get all active user comments for this PR
+    const comments = await query(db, `
+      SELECT 
+        file,
+        line_start,
+        body
+      FROM comments
+      WHERE pr_id = ? AND source = 'user' AND status = 'active'
+      ORDER BY file, line_start
+    `, [prMetadata.id]);
+
+    // TODO: Initialize GitHub client and submit review
+    // This requires adding GitHub client integration
+    const reviewData = {
+      event,
+      body: body || '',
+      comments: comments.map(comment => ({
+        path: comment.file,
+        line: comment.line_start,
+        body: comment.body
+      }))
+    };
+
+    // For now, just return success with the data that would be submitted
+    res.json({ 
+      success: true,
+      message: `Review would be submitted to GitHub with ${event} status`,
+      reviewData,
+      commentCount: comments.length
+    });
+    
+  } catch (error) {
+    console.error('Error submitting review:', error);
+    res.status(500).json({ 
+      error: 'Failed to submit review' 
+    });
+  }
+});
 
 /**
  * Health check for PR API

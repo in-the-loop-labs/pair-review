@@ -245,6 +245,9 @@ class PRManager {
       await this.loadAISuggestions();
     }, 1500);
     
+    // Create review submission panel
+    this.createReviewPanel();
+    
     container.style.display = 'block';
   }
 
@@ -414,7 +417,7 @@ class PRManager {
           
           // Process lines within block
           block.lines.forEach((line) => {
-            this.renderDiffLine(tbody, line);
+            this.renderDiffLine(tbody, line, file.newName || file.oldName);
           });
           
           // Add expandable context between blocks
@@ -448,17 +451,44 @@ class PRManager {
    * Render a single diff line
    * @param {HTMLElement} tbody - Table body element
    * @param {Object} line - Diff line data
+   * @param {string} fileName - The file name for this diff
    */
-  renderDiffLine(tbody, line) {
+  renderDiffLine(tbody, line, fileName) {
     const row = document.createElement('tr');
     row.className = line.type === 'insert' ? 'd2h-ins' : 
                    line.type === 'delete' ? 'd2h-del' : 
                    'd2h-cntx';
     
+    // Add data attributes for comment functionality
+    if (line.newNumber) {
+      row.dataset.lineNumber = line.newNumber;
+      row.dataset.fileName = fileName;
+    }
+    
     // Line numbers
     const lineNumCell = document.createElement('td');
     lineNumCell.className = 'd2h-code-linenumber';
-    lineNumCell.innerHTML = `<span class="line-num1">${line.oldNumber || ''}</span><span class="line-num2">${line.newNumber || ''}</span>`;
+    
+    // Add comment button container to line number cell
+    const lineNumContent = document.createElement('div');
+    lineNumContent.className = 'line-number-content';
+    lineNumContent.innerHTML = `<span class="line-num1">${line.oldNumber || ''}</span><span class="line-num2">${line.newNumber || ''}</span>`;
+    
+    // Add comment button (only for insert and context lines)
+    if (line.type === 'insert' || line.type === 'context') {
+      const commentButton = document.createElement('button');
+      commentButton.className = 'add-comment-btn';
+      commentButton.innerHTML = '+';
+      commentButton.title = 'Add comment';
+      commentButton.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.showCommentForm(row, line.newNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName);
+      };
+      lineNumContent.appendChild(commentButton);
+    }
+    
+    lineNumCell.appendChild(lineNumContent);
     
     // Content - remove ONLY the first +/- prefix from the raw diff, preserve all other whitespace
     const contentCell = document.createElement('td');
@@ -611,7 +641,7 @@ class PRManager {
     if (this.expandedSections.has(sectionKey)) {
       // This section was previously expanded, show all lines
       allLines.slice(startIdx, endIdx).forEach(line => {
-        this.renderDiffLine(tbody, line);
+        this.renderDiffLine(tbody, line, fileName);
       });
       return; // Don't create collapsed section
     }
@@ -803,10 +833,10 @@ class PRManager {
     
     // Create rows for the lines to show
     const fragment = document.createDocumentFragment();
+    const fileName = controlsElement.dataset.fileName;
     linesToShow.forEach(line => {
-      const lineRow = this.renderDiffLine(fragment, line);
+      const lineRow = this.renderDiffLine(fragment, line, fileName);
       // Add data attributes for selection
-      const fileName = controlsElement.dataset.fileName;
       if (lineRow && fileName && line.newNumber) {
         lineRow.dataset.file = fileName;
         lineRow.dataset.lineNumber = line.newNumber;
@@ -952,7 +982,7 @@ class PRManager {
           content: content || ''
         };
         
-        const lineRow = this.renderDiffLine(fragment, lineData);
+        const lineRow = this.renderDiffLine(fragment, lineData, fileName);
         if (lineRow) {
           lineRow.classList.add('newly-expanded');
           setTimeout(() => {
@@ -1294,6 +1324,9 @@ class PRManager {
           <button class="btn btn-sm btn-primary" onclick="prManager.adoptSuggestion(${suggestion.id})">
             Adopt
           </button>
+          <button class="btn btn-sm btn-secondary-outline" onclick="prManager.editSuggestion(${suggestion.id})">
+            Edit
+          </button>
           <button class="btn btn-sm btn-secondary" onclick="prManager.dismissSuggestion(${suggestion.id})">
             Dismiss
           </button>
@@ -1419,6 +1452,203 @@ class PRManager {
   }
 
   /**
+   * Edit an AI suggestion
+   */
+  async editSuggestion(suggestionId) {
+    try {
+      // Cancel any other edit modes
+      this.cancelAllEditModes();
+
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      if (!suggestionDiv) {
+        console.error('Suggestion element not found');
+        return;
+      }
+
+      // Add editing-mode class to hide body and actions
+      suggestionDiv.classList.add('editing-mode');
+
+      const suggestionBody = suggestionDiv.querySelector('.ai-suggestion-body');
+      const originalText = suggestionBody.textContent.trim();
+
+      // Create edit form
+      const editForm = document.createElement('div');
+      editForm.className = 'suggestion-edit-form';
+      editForm.innerHTML = `
+        <textarea 
+          id="edit-textarea-${suggestionId}" 
+          class="suggestion-edit-textarea"
+          placeholder="Enter your comment..."
+        >${this.escapeHtml(originalText)}</textarea>
+        <div id="edit-error-${suggestionId}" class="suggestion-edit-error" style="display: none;">Comment cannot be empty</div>
+        <div class="suggestion-edit-actions">
+          <button class="btn btn-sm btn-primary" onclick="prManager.saveEditedSuggestion(${suggestionId})">
+            Save as my comment
+          </button>
+          <button class="btn btn-sm btn-secondary" onclick="prManager.cancelEditSuggestion(${suggestionId})">
+            Cancel
+          </button>
+        </div>
+      `;
+
+      // Insert edit form after the header
+      const header = suggestionDiv.querySelector('.ai-suggestion-header');
+      header.parentNode.insertBefore(editForm, header.nextSibling);
+
+      // Focus the textarea and setup keyboard shortcuts
+      const textarea = document.getElementById(`edit-textarea-${suggestionId}`);
+      textarea.focus();
+      textarea.select();
+
+      // Add keyboard event listeners
+      textarea.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this.cancelEditSuggestion(suggestionId);
+        } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          this.saveEditedSuggestion(suggestionId);
+        }
+      });
+
+    } catch (error) {
+      console.error('Error entering edit mode:', error);
+      alert('Failed to enter edit mode');
+    }
+  }
+
+  /**
+   * Cancel edit mode for a specific suggestion
+   */
+  cancelEditSuggestion(suggestionId) {
+    const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+    if (!suggestionDiv) return;
+
+    // Remove editing-mode class to restore body and actions
+    suggestionDiv.classList.remove('editing-mode');
+
+    // Remove the edit form
+    const editForm = suggestionDiv.querySelector('.suggestion-edit-form');
+    if (editForm) {
+      editForm.remove();
+    }
+  }
+
+  /**
+   * Cancel edit mode for all suggestions (only one can be in edit mode at a time)
+   */
+  cancelAllEditModes() {
+    const editingSuggestions = document.querySelectorAll('.ai-suggestion.editing-mode');
+    editingSuggestions.forEach(suggestionDiv => {
+      const suggestionId = suggestionDiv.dataset.suggestionId;
+      if (suggestionId) {
+        this.cancelEditSuggestion(parseInt(suggestionId));
+      }
+    });
+  }
+
+  /**
+   * Save edited suggestion as user comment
+   */
+  async saveEditedSuggestion(suggestionId) {
+    try {
+      const textarea = document.getElementById(`edit-textarea-${suggestionId}`);
+      const errorDiv = document.getElementById(`edit-error-${suggestionId}`);
+      const editedText = textarea.value.trim();
+
+      // Clear previous errors
+      errorDiv.style.display = 'none';
+
+      // Validate that text is not empty
+      if (!editedText) {
+        errorDiv.style.display = 'block';
+        textarea.focus();
+        return;
+      }
+
+      // Get buttons to show loading state
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      const saveBtn = suggestionDiv.querySelector('.suggestion-edit-actions .btn-primary');
+      const cancelBtn = suggestionDiv.querySelector('.suggestion-edit-actions .btn-secondary');
+
+      // Disable buttons and show loading state
+      saveBtn.disabled = true;
+      cancelBtn.disabled = true;
+      const originalText = saveBtn.textContent;
+      saveBtn.innerHTML = '<span class="spinner"></span> Saving...';
+
+      // Make API call
+      const response = await fetch(`/api/ai-suggestion/${suggestionId}/edit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ 
+          editedText: editedText, 
+          action: 'adopt_edited' 
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to save edited suggestion');
+      }
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.message || 'Failed to save edited suggestion');
+      }
+
+      // Update the suggestion display
+      suggestionDiv.classList.remove('editing-mode');
+      suggestionDiv.classList.add('adopted');
+
+      // Update the body with edited text
+      const suggestionBody = suggestionDiv.querySelector('.ai-suggestion-body');
+      suggestionBody.textContent = editedText;
+
+      // Replace actions with adopted label
+      const actionsDiv = suggestionDiv.querySelector('.ai-suggestion-actions');
+      actionsDiv.innerHTML = '<span class="adopted-label">✓ Adopted as your comment</span>';
+
+      // Remove the edit form
+      const editForm = suggestionDiv.querySelector('.suggestion-edit-form');
+      if (editForm) {
+        editForm.remove();
+      }
+
+      // Refresh the navigator
+      await this.loadAISuggestions();
+
+    } catch (error) {
+      console.error('Error saving edited suggestion:', error);
+      
+      // Show error to user
+      const errorDiv = document.getElementById(`edit-error-${suggestionId}`);
+      if (errorDiv) {
+        errorDiv.textContent = error.message;
+        errorDiv.style.display = 'block';
+      } else {
+        alert('Failed to save edited suggestion: ' + error.message);
+      }
+
+      // Re-enable buttons
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      const saveBtn = suggestionDiv.querySelector('.suggestion-edit-actions .btn-primary');
+      const cancelBtn = suggestionDiv.querySelector('.suggestion-edit-actions .btn-secondary');
+      
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save as my comment';
+      }
+      if (cancelBtn) {
+        cancelBtn.disabled = false;
+      }
+    }
+  }
+
+  /**
    * Show error message
    * @param {string} message - Error message
    */
@@ -1485,6 +1715,362 @@ class PRManager {
           this.suggestionNavigator = new window.SuggestionNavigator();
         }
       });
+    }
+  }
+
+  /**
+   * Show comment form inline
+   */
+  showCommentForm(targetRow, lineNumber, fileName) {
+    // Close any existing comment forms
+    this.hideCommentForm();
+    
+    // Create comment form row
+    const formRow = document.createElement('tr');
+    formRow.className = 'comment-form-row';
+    
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'comment-form-cell';
+    
+    const formHTML = `
+      <div class="user-comment-form">
+        <div class="comment-form-header">
+          <span class="comment-icon">💬</span>
+          <span class="comment-title">Add comment</span>
+        </div>
+        <textarea 
+          class="comment-textarea" 
+          placeholder="Leave a comment..."
+          rows="3"
+          data-line="${lineNumber}"
+          data-file="${fileName}"
+        ></textarea>
+        <div class="comment-form-actions">
+          <button class="btn btn-sm btn-primary save-comment-btn">Save</button>
+          <button class="btn btn-sm btn-secondary cancel-comment-btn">Cancel</button>
+          <span class="draft-indicator">Draft saved</span>
+        </div>
+      </div>
+    `;
+    
+    td.innerHTML = formHTML;
+    formRow.appendChild(td);
+    
+    // Insert form after the target row
+    targetRow.parentNode.insertBefore(formRow, targetRow.nextSibling);
+    
+    // Focus on textarea
+    const textarea = td.querySelector('.comment-textarea');
+    textarea.focus();
+    
+    // Add event listeners
+    const saveBtn = td.querySelector('.save-comment-btn');
+    const cancelBtn = td.querySelector('.cancel-comment-btn');
+    
+    saveBtn.addEventListener('click', () => this.saveUserComment(textarea, formRow));
+    cancelBtn.addEventListener('click', () => this.hideCommentForm());
+    
+    // Auto-save on input
+    textarea.addEventListener('input', () => this.autoSaveComment(textarea));
+    
+    // Store reference for cleanup
+    this.currentCommentForm = formRow;
+  }
+  
+  /**
+   * Hide any open comment form
+   */
+  hideCommentForm() {
+    if (this.currentCommentForm) {
+      this.currentCommentForm.remove();
+      this.currentCommentForm = null;
+    }
+  }
+  
+  /**
+   * Auto-save comment draft
+   */
+  autoSaveComment(textarea) {
+    const fileName = textarea.dataset.file;
+    const lineNumber = textarea.dataset.line;
+    const content = textarea.value.trim();
+    
+    if (!content) return;
+    
+    // Save to localStorage as draft
+    const draftKey = `draft_${this.currentPR?.number}_${fileName}_${lineNumber}`;
+    localStorage.setItem(draftKey, content);
+    
+    // Show draft indicator
+    const indicator = textarea.closest('.user-comment-form').querySelector('.draft-indicator');
+    indicator.style.display = 'inline';
+    setTimeout(() => {
+      indicator.style.display = 'none';
+    }, 2000);
+  }
+  
+  /**
+   * Save user comment
+   */
+  async saveUserComment(textarea, formRow) {
+    const fileName = textarea.dataset.file;
+    const lineNumber = parseInt(textarea.dataset.line);
+    const content = textarea.value.trim();
+    
+    if (!content) {
+      alert('Please enter a comment');
+      return;
+    }
+    
+    try {
+      const response = await fetch('/api/user-comment', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          pr_id: this.currentPR.id,
+          file: fileName,
+          line_start: lineNumber,
+          line_end: lineNumber,
+          body: content
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to save comment');
+      }
+      
+      const result = await response.json();
+      
+      // Clear draft
+      const draftKey = `draft_${this.currentPR?.number}_${fileName}_${lineNumber}`;
+      localStorage.removeItem(draftKey);
+      
+      // Create comment display row
+      this.displayUserComment({
+        id: result.commentId,
+        file: fileName,
+        line_start: lineNumber,
+        body: content,
+        created_at: new Date().toISOString()
+      }, formRow.previousElementSibling);
+      
+      // Hide form
+      this.hideCommentForm();
+      
+      // Update comment count
+      this.updateCommentCount();
+      
+    } catch (error) {
+      console.error('Error saving comment:', error);
+      alert('Failed to save comment');
+    }
+  }
+  
+  /**
+   * Display a user comment inline
+   */
+  displayUserComment(comment, targetRow) {
+    const commentRow = document.createElement('tr');
+    commentRow.className = 'user-comment-row';
+    commentRow.dataset.commentId = comment.id;
+    
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'user-comment-cell';
+    
+    const commentHTML = `
+      <div class="user-comment">
+        <div class="user-comment-header">
+          <span class="user-icon">👤</span>
+          <span class="user-comment-author">Current User</span>
+          <span class="user-comment-timestamp">${new Date(comment.created_at).toLocaleString()}</span>
+          <div class="user-comment-actions">
+            <button class="btn-edit-comment" onclick="prManager.editUserComment(${comment.id})" title="Edit comment">
+              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
+                <path fill-rule="evenodd" d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"></path>
+              </svg>
+            </button>
+            <button class="btn-delete-comment" onclick="prManager.deleteUserComment(${comment.id})" title="Delete comment">
+              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
+                <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19c.9 0 1.652-.681 1.741-1.576l.66-6.6a.75.75 0 00-1.492-.149l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="user-comment-body">
+          ${this.escapeHtml(comment.body)}
+        </div>
+      </div>
+    `;
+    
+    td.innerHTML = commentHTML;
+    commentRow.appendChild(td);
+    
+    // Insert comment after the target row
+    targetRow.parentNode.insertBefore(commentRow, targetRow.nextSibling);
+  }
+  
+  /**
+   * Edit user comment
+   */
+  async editUserComment(commentId) {
+    // Implementation for editing comments
+    console.log('Edit comment:', commentId);
+  }
+  
+  /**
+   * Delete user comment
+   */
+  async deleteUserComment(commentId) {
+    if (!confirm('Are you sure you want to delete this comment?')) {
+      return;
+    }
+    
+    try {
+      const response = await fetch(`/api/user-comment/${commentId}`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to delete comment');
+      }
+      
+      // Remove comment from UI
+      const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+      if (commentRow) {
+        commentRow.remove();
+        // Update comment count
+        this.updateCommentCount();
+      }
+      
+    } catch (error) {
+      console.error('Error deleting comment:', error);
+      alert('Failed to delete comment');
+    }
+  }
+  
+  /**
+   * Create review submission panel
+   */
+  createReviewPanel() {
+    // Remove existing panel if it exists
+    const existingPanel = document.getElementById('review-panel');
+    if (existingPanel) {
+      existingPanel.remove();
+    }
+    
+    const panel = document.createElement('div');
+    panel.id = 'review-panel';
+    panel.className = 'review-panel';
+    
+    const panelHTML = `
+      <div class="review-panel-content">
+        <div class="review-panel-left">
+          <div class="comment-count">
+            <span class="comment-count-number">0</span> comments
+          </div>
+        </div>
+        <div class="review-panel-right">
+          <select class="review-event-select" id="review-event">
+            <option value="COMMENT">Comment</option>
+            <option value="APPROVE">Approve</option>
+            <option value="REQUEST_CHANGES">Request changes</option>
+          </select>
+          <textarea 
+            class="review-body-textarea" 
+            id="review-body" 
+            placeholder="Leave a review summary (optional)..."
+            rows="2"
+          ></textarea>
+          <button class="btn btn-primary submit-review-btn" id="submit-review-btn">
+            Submit review
+          </button>
+        </div>
+      </div>
+    `;
+    
+    panel.innerHTML = panelHTML;
+    document.body.appendChild(panel);
+    
+    // Add event listeners
+    const submitBtn = panel.querySelector('#submit-review-btn');
+    submitBtn.addEventListener('click', () => this.submitReview());
+    
+    // Update comment count
+    this.updateCommentCount();
+  }
+  
+  /**
+   * Update comment count in review panel
+   */
+  updateCommentCount() {
+    const userComments = document.querySelectorAll('.user-comment-row').length;
+    const countElement = document.querySelector('.comment-count-number');
+    if (countElement) {
+      countElement.textContent = userComments;
+      const countText = document.querySelector('.comment-count');
+      if (countText) {
+        countText.innerHTML = `<span class="comment-count-number">${userComments}</span> ${userComments === 1 ? 'comment' : 'comments'}`;
+      }
+    }
+  }
+  
+  /**
+   * Submit review to GitHub
+   */
+  async submitReview() {
+    const reviewEvent = document.getElementById('review-event').value;
+    const reviewBody = document.getElementById('review-body').value.trim();
+    const submitBtn = document.getElementById('submit-review-btn');
+    
+    // Validate
+    if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && document.querySelectorAll('.user-comment-row').length === 0) {
+      alert('Please add comments or a review summary when requesting changes.');
+      return;
+    }
+    
+    // Show loading state
+    const originalText = submitBtn.textContent;
+    submitBtn.textContent = 'Submitting...';
+    submitBtn.disabled = true;
+    
+    try {
+      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/submit-review`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          event: reviewEvent,
+          body: reviewBody
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to submit review');
+      }
+      
+      const result = await response.json();
+      
+      // Show success message
+      alert(`Review submitted successfully! ${result.message}`);
+      
+      // Reset form
+      document.getElementById('review-body').value = '';
+      document.getElementById('review-event').value = 'COMMENT';
+      
+    } catch (error) {
+      console.error('Error submitting review:', error);
+      alert(`Failed to submit review: ${error.message}`);
+      
+    } finally {
+      // Restore button
+      submitBtn.textContent = originalText;
+      submitBtn.disabled = false;
     }
   }
 
