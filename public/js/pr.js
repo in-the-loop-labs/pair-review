@@ -2784,4 +2784,6 @@ class PRManager {
 let prManager;
 document.addEventListener('DOMContentLoaded', () => {
   prManager = new PRManager();
+  // CRITICAL FIX: Make prManager available globally for component access
+  window.prManager = prManager;
 });

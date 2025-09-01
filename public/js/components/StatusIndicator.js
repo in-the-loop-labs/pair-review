@@ -119,18 +119,25 @@ class StatusIndicator {
       window.prManager.loadAISuggestions()
         .then(() => {
           console.log('AI suggestions reloaded successfully after background analysis');
+          // Auto-hide after suggestions have loaded successfully (shorter delay)
+          setTimeout(() => {
+            this.hide();
+          }, 3000);
         })
         .catch(error => {
           console.error('Error reloading AI suggestions after background analysis:', error);
+          // Auto-hide with longer delay if loading failed
+          setTimeout(() => {
+            this.hide();
+          }, 7000);
         });
     } else {
       console.warn('PRManager not available for automatic suggestion reload after background analysis');
+      // Auto-hide after 5 seconds if no PR manager available
+      setTimeout(() => {
+        this.hide();
+      }, 5000);
     }
-    
-    // Auto-hide after 5 seconds
-    setTimeout(() => {
-      this.hide();
-    }, 5000);
   }
 
   /**

@@ -454,19 +454,30 @@ class ProgressModal {
       window.prManager.loadAISuggestions()
         .then(() => {
           console.log('AI suggestions reloaded successfully');
+          // Only auto-close after suggestions have loaded successfully
+          if (this.isVisible) {
+            setTimeout(() => {
+              this.hide();
+            }, 2000); // Reduced to 2 seconds since loading is complete
+          }
         })
         .catch(error => {
           console.error('Error reloading AI suggestions:', error);
+          // Still auto-close even if loading failed, but give more time for user to see error
+          if (this.isVisible) {
+            setTimeout(() => {
+              this.hide();
+            }, 5000);
+          }
         });
     } else {
       console.warn('PRManager not available for automatic suggestion reload');
-    }
-    
-    // Auto-close after 3 seconds if in foreground
-    if (this.isVisible) {
-      setTimeout(() => {
-        this.hide();
-      }, 3000);
+      // Auto-close after 3 seconds if no PR manager available
+      if (this.isVisible) {
+        setTimeout(() => {
+          this.hide();
+        }, 3000);
+      }
     }
   }
 
