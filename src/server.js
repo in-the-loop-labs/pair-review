@@ -7,14 +7,15 @@ let db = null;
 let server = null;
 
 /**
- * Request logging middleware
+ * Request logging middleware (disabled for cleaner output)
  */
 function requestLogger(req, res, next) {
-  const timestamp = new Date().toISOString();
-  
-  res.on('finish', () => {
-    console.log(`${req.method} ${req.path} - ${res.statusCode} - [${timestamp}]`);
-  });
+  // Disabled: Too noisy for normal operation
+  // Uncomment the lines below if you need to debug HTTP requests
+  // const timestamp = new Date().toISOString();
+  // res.on('finish', () => {
+  //   console.log(`${req.method} ${req.path} - ${res.statusCode} - [${timestamp}]`);
+  // });
   
   next();
 }
