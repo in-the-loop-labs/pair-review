@@ -2,6 +2,7 @@ const ClaudeCLI = require('./claude-cli');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const logger = require('../utils/logger');
+const { PathContext } = require('../utils/path-context');
 
 class Analyzer {
   constructor(database) {
@@ -36,17 +37,20 @@ class Analyzer {
   /**
    * Perform Level 1 analysis on a PR
    * @param {number} prId - Pull request ID
-   * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} workingContext - Working context with paths and mode
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel1(prId, worktreePath, progressCallback = null) {
+  async analyzeLevel1(prId, workingContext, progressCallback = null) {
     const runId = uuidv4();
+    const pathContext = new PathContext(workingContext);
+    const analysisDir = pathContext.getAnalysisDirectory();
     
     logger.section('Level 1 Analysis Starting');
     logger.info(`PR ID: ${prId}`);
     logger.info(`Analysis run ID: ${runId}`);
-    logger.info(`Worktree path: ${worktreePath}`);
+    logger.info(`Working mode: ${workingContext.mode}`);
+    logger.info(`Analysis directory: ${analysisDir}`);
     
     try {
       const updateProgress = (step) => {
@@ -68,12 +72,12 @@ class Analyzer {
       
       // Step 2: Build the Level 1 prompt
       updateProgress('Building Level 1 prompt for Claude to analyze changes');
-      const prompt = this.buildLevel1Prompt(prId, worktreePath);
+      const prompt = this.buildLevel1Prompt(prId, analysisDir, pathContext);
       
-      // Step 3: Execute Claude CLI in the worktree directory
+      // Step 3: Execute Claude CLI in the analysis directory
       updateProgress('Running Claude to analyze changes in isolation');
       const response = await this.claude.execute(prompt, {
-        cwd: worktreePath,
+        cwd: analysisDir,
         timeout: 600000 // 10 minutes for Level 1 - let Claude be thorough
       });
 
@@ -101,7 +105,7 @@ class Analyzer {
           });
         } : null;
         
-        level2Result = await this.analyzeLevel2(prId, worktreePath, level2ProgressCallback);
+        level2Result = await this.analyzeLevel2(prId, workingContext, level2ProgressCallback);
         logger.success(`Level 2 analysis complete: ${level2Result.suggestions.length} additional suggestions found`);
         
         // After Level 2 completes, automatically start Level 3
@@ -116,7 +120,7 @@ class Analyzer {
             });
           } : null;
           
-          const level3Result = await this.analyzeLevel3(prId, worktreePath, level3ProgressCallback);
+          const level3Result = await this.analyzeLevel3(prId, workingContext, level3ProgressCallback);
           logger.success(`Level 3 analysis complete: ${level3Result.suggestions.length} additional suggestions found`);
           
           // Add level 3 result to the return object
@@ -145,10 +149,15 @@ class Analyzer {
   /**
    * Build the Level 2 prompt for file context analysis
    * @param {number} prId - Pull request ID
-   * @param {string} worktreePath - Path to the git worktree
+   * @param {string} analysisDir - Directory for analysis
+   * @param {PathContext} pathContext - Path context for the review
    */
-  buildLevel2Prompt(prId, worktreePath) {
-    return `You are reviewing pull request #${prId} in the current working directory.
+  buildLevel2Prompt(prId, analysisDir, pathContext) {
+    const contextInfo = pathContext.relativeDirectory 
+      ? `\n\nNote: You are analyzing changes within the subdirectory '${pathContext.relativeDirectory}' of the repository.`
+      : '';
+    
+    return `You are reviewing pull request #${prId} in the current working directory.${contextInfo}
 
 Perform a Level 2 review - analyze file context:
 
@@ -198,10 +207,15 @@ Important:
   /**
    * Build the Level 1 prompt
    * @param {number} prId - Pull request ID
-   * @param {string} worktreePath - Path to the git worktree
+   * @param {string} analysisDir - Directory for analysis
+   * @param {PathContext} pathContext - Path context for the review
    */
-  buildLevel1Prompt(prId, worktreePath) {
-    return `You are reviewing pull request #${prId} in the current working directory.
+  buildLevel1Prompt(prId, analysisDir, pathContext) {
+    const contextInfo = pathContext.relativeDirectory 
+      ? `\n\nNote: You are analyzing changes within the subdirectory '${pathContext.relativeDirectory}' of the repository.`
+      : '';
+    
+    return `You are reviewing pull request #${prId} in the current working directory.${contextInfo}
 
 Perform a Level 1 review - analyze changes in isolation:
 
@@ -376,11 +390,11 @@ Important:
   /**
    * Perform Level 2 analysis - File Context
    * @param {number} prId - Pull request ID
-   * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} workingContext - Working context with paths and mode
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel2(prId, worktreePath, progressCallback = null) {
+  async analyzeLevel2(prId, workingContext, progressCallback = null) {
     const runId = uuidv4();
     
     logger.section('Level 2 Analysis Starting');
@@ -404,12 +418,12 @@ Important:
       
       // Step 1: Build the Level 2 prompt
       updateProgress('Building Level 2 prompt for Claude to analyze changes at file level');
-      const prompt = this.buildLevel2Prompt(prId, worktreePath);
+      const prompt = this.buildLevel2Prompt(prId, analysisDir, pathContext);
       
-      // Step 2: Execute Claude CLI in the worktree directory (single invocation)
+      // Step 2: Execute Claude CLI in the analysis directory (single invocation)
       updateProgress('Running Claude to analyze all changed files in context');
       const response = await this.claude.execute(prompt, {
-        cwd: worktreePath,
+        cwd: analysisDir,
         timeout: 600000 // 10 minutes for Level 2 - analyze all files in one go
       });
       
@@ -445,7 +459,7 @@ Important:
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel3(prId, worktreePath, progressCallback = null) {
+  async analyzeLevel3(prId, workingContext, progressCallback = null) {
     const runId = uuidv4();
     
     logger.section('Level 3 Analysis Starting');
@@ -469,12 +483,12 @@ Important:
       
       // Step 1: Build the Level 3 prompt
       updateProgress('Building Level 3 prompt for Claude to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath);
+      const prompt = this.buildLevel3Prompt(prId, analysisDir, pathContext);
       
       // Step 2: Execute Claude CLI for Level 3 analysis
       updateProgress('Running Claude to analyze codebase-wide implications');
       const response = await this.claude.execute(prompt, {
-        cwd: worktreePath,
+        cwd: analysisDir,
         timeout: 900000 // 15 minutes for Level 3 - full codebase exploration
       });
       
@@ -506,10 +520,15 @@ Important:
   /**
    * Build the Level 3 prompt for codebase context analysis
    * @param {number} prId - Pull request ID
-   * @param {string} worktreePath - Path to the git worktree
+   * @param {string} analysisDir - Directory for analysis
+   * @param {PathContext} pathContext - Path context for the review
    */
-  buildLevel3Prompt(prId, worktreePath) {
-    return `You are reviewing pull request #${prId} in the current working directory.
+  buildLevel3Prompt(prId, analysisDir, pathContext) {
+    const contextInfo = pathContext.relativeDirectory 
+      ? `\n\nNote: You are analyzing changes within the subdirectory '${pathContext.relativeDirectory}' of the repository.`
+      : '';
+    
+    return `You are reviewing pull request #${prId} in the current working directory.${contextInfo}
 
 Perform a Level 3 review - analyze codebase context:
 

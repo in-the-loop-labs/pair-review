@@ -4,6 +4,7 @@ const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
+const path = require('path');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
@@ -22,6 +23,10 @@ async function main() {
       process.exit(0);
     }
 
+    // Check for in-place mode flag
+    const inPlaceMode = args.includes('--in-place') || args.includes('-i');
+    const filteredArgs = args.filter(arg => arg !== '--in-place' && arg !== '-i');
+
     // Load configuration
     const config = await loadConfig();
     
@@ -30,8 +35,8 @@ async function main() {
     db = await initializeDatabase();
 
     // Check if PR arguments were provided
-    if (args.length > 0) {
-      await handlePullRequest(args, config, db);
+    if (filteredArgs.length > 0) {
+      await handlePullRequest(filteredArgs, config, db, inPlaceMode);
     } else {
       // No PR arguments - just start the server
       console.log('No pull request specified. Starting server...');
@@ -49,8 +54,9 @@ async function main() {
  * @param {Array<string>} args - Command line arguments
  * @param {Object} config - Application configuration
  * @param {Object} db - Database instance
+ * @param {boolean} inPlaceMode - Whether to use in-place mode
  */
-async function handlePullRequest(args, config, db) {
+async function handlePullRequest(args, config, db, inPlaceMode = false) {
   let prInfo = null; // Declare prInfo outside try block for error handling
   
   try {
@@ -82,13 +88,30 @@ async function handlePullRequest(args, config, db) {
     console.log('Fetching pull request data from GitHub...');
     const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
 
-    // Get current repository path
+    // Get repository context
     const currentDir = parser.getCurrentDirectory();
+    const repoRoot = await parser.getRepositoryRoot();
+    const relativeDir = path.relative(repoRoot, currentDir);
     
-    // Setup git worktree
-    console.log('Setting up git worktree...');
+    // Setup git worktree or use in-place directory
     const worktreeManager = new GitWorktreeManager();
-    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
+    let worktreePath;
+    let workingContext;
+    
+    if (inPlaceMode) {
+      console.log('Using in-place mode (current directory)...');
+      workingContext = await worktreeManager.useInPlaceDirectory(prInfo, prData, currentDir, repoRoot);
+      worktreePath = workingContext.worktreePath;
+    } else {
+      console.log('Setting up git worktree...');
+      worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repoRoot);
+      workingContext = {
+        worktreePath,
+        repositoryRoot: repoRoot,
+        relativeDirectory: relativeDir,
+        mode: 'worktree'
+      };
+    }
 
     // Generate unified diff
     console.log('Generating unified diff...');
@@ -97,7 +120,7 @@ async function handlePullRequest(args, config, db) {
 
     // Store PR data in database
     console.log('Storing pull request data...');
-    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
+    await storePRData(db, prInfo, prData, diff, changedFiles, workingContext);
 
     // Start server with PR context
     console.log('Starting server...');
@@ -166,9 +189,9 @@ async function startServerWithPRContext(config, prInfo) {
  * @param {Object} prData - PR data from GitHub
  * @param {string} diff - Unified diff content
  * @param {Array} changedFiles - Changed files information
- * @param {string} worktreePath - Worktree path
+ * @param {Object} workingContext - Working context with paths and mode
  */
-async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath) {
+async function storePRData(db, prInfo, prData, diff, changedFiles, workingContext) {
   try {
     const repository = `${prInfo.owner}/${prInfo.repo}`;
     
@@ -177,7 +200,10 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
       ...prData,
       diff: diff,
       changed_files: changedFiles,
-      worktree_path: worktreePath,
+      worktree_path: workingContext.worktreePath,
+      repository_root: workingContext.repositoryRoot,
+      relative_directory: workingContext.relativeDirectory,
+      working_mode: workingContext.mode,
       fetched_at: new Date().toISOString()
     };
 
@@ -236,7 +262,8 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
         WHERE id = ?
       `, [
         JSON.stringify({
-          worktree_path: worktreePath,
+          worktree_path: workingContext.worktreePath,
+          working_context: workingContext,
           created_at: new Date().toISOString()
         }),
         existingReview.id
@@ -252,7 +279,8 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
         prInfo.number,
         repository,
         JSON.stringify({
-          worktree_path: worktreePath,
+          worktree_path: workingContext.worktreePath,
+          working_context: workingContext,
           created_at: new Date().toISOString()
         })
       ]);

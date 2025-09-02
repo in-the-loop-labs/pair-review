@@ -13,6 +13,76 @@ class GitWorktreeManager {
   }
 
   /**
+   * Use current directory for in-place review
+   * @param {Object} prInfo - PR information { owner, repo, number }
+   * @param {Object} prData - PR data from GitHub API
+   * @param {string} currentDir - Current working directory
+   * @param {string} repositoryRoot - Repository root path
+   * @returns {Promise<Object>} Working context with paths and mode
+   */
+  async useInPlaceDirectory(prInfo, prData, currentDir, repositoryRoot) {
+    try {
+      console.log(`Checking in-place directory for PR #${prInfo.number}`);
+      
+      const git = simpleGit(currentDir);
+      const relativeDir = path.relative(repositoryRoot, currentDir);
+      
+      // Check if we're in a git repository
+      const isRepo = await git.checkIsRepo();
+      if (!isRepo) {
+        throw new Error('Current directory is not a git repository');
+      }
+      
+      // Get current commit
+      const currentCommit = await git.revparse(['HEAD']);
+      const targetCommit = prData.head_sha;
+      
+      // Check if we're already on the correct commit
+      if (currentCommit.trim() === targetCommit) {
+        console.log(`Already on PR head commit ${targetCommit}`);
+        return {
+          worktreePath: currentDir,
+          repositoryRoot,
+          relativeDirectory: relativeDir,
+          mode: 'in-place'
+        };
+      }
+      
+      // Check if working tree is clean
+      const status = await git.status();
+      if (!status.isClean()) {
+        throw new Error('Working tree has uncommitted changes. Please commit or stash changes before using in-place mode.');
+      }
+      
+      // Fetch the PR head
+      console.log(`Fetching PR #${prInfo.number} head...`);
+      await git.fetch(['origin', `+refs/pull/${prInfo.number}/head:refs/remotes/origin/pr-${prInfo.number}`]);
+      
+      // Checkout to PR head
+      console.log(`Checking out to PR head commit ${targetCommit}...`);
+      await git.checkout([`origin/pr-${prInfo.number}`]);
+      
+      // Verify we're at the correct commit
+      const newCommit = await git.revparse(['HEAD']);
+      if (newCommit.trim() !== targetCommit) {
+        console.warn(`Warning: Expected commit ${targetCommit}, but got ${newCommit.trim()}`);
+      }
+      
+      console.log(`In-place checkout successful at ${currentDir}`);
+      return {
+        worktreePath: currentDir,
+        repositoryRoot,
+        relativeDirectory: relativeDir,
+        mode: 'in-place'
+      };
+      
+    } catch (error) {
+      console.error('Error using in-place directory:', error);
+      throw new Error(`Failed to use in-place directory: ${error.message}`);
+    }
+  }
+
+  /**
    * Create a git worktree for a PR and checkout to the PR head commit
    * @param {Object} prInfo - PR information { owner, repo, number }
    * @param {Object} prData - PR data from GitHub API

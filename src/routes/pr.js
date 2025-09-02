@@ -349,7 +349,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id FROM pr_metadata
+      SELECT id, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
@@ -359,15 +359,44 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       });
     }
 
-    // Get worktree path
+    // Parse PR data to get working context
+    let prData;
+    try {
+      prData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    } catch (error) {
+      console.warn('Error parsing PR data JSON:', error);
+      prData = {};
+    }
+
+    // Get working context from stored data
+    const workingContext = {
+      worktreePath: prData.worktree_path,
+      repositoryRoot: prData.repository_root || prData.worktree_path,
+      relativeDirectory: prData.relative_directory || '',
+      mode: prData.working_mode || 'worktree'
+    };
+
+    // Check if worktree/working directory exists
     const worktreeManager = new GitWorktreeManager();
-    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    const worktreePath = workingContext.worktreePath;
     
-    // Check if worktree exists
-    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
-      return res.status(404).json({ 
-        error: 'Worktree not found for this PR. Please reload the PR.' 
-      });
+    // For in-place mode, just check if directory exists; for worktree mode, check if worktree exists
+    if (workingContext.mode === 'worktree') {
+      if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+        return res.status(404).json({ 
+          error: 'Worktree not found for this PR. Please reload the PR.' 
+        });
+      }
+    } else {
+      // For in-place mode, check if directory exists
+      const fs = require('fs').promises;
+      try {
+        await fs.access(worktreePath);
+      } catch {
+        return res.status(404).json({ 
+          error: 'Working directory not found for this PR. Please reload the PR.' 
+        });
+      }
     }
 
     // Create analysis ID
@@ -423,7 +452,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     };
     
     // Start analysis asynchronously with progress callback
-    analyzer.analyzeLevel1(prMetadata.id, worktreePath, progressCallback)
+    analyzer.analyzeLevel1(prMetadata.id, workingContext, progressCallback)
       .then(result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
