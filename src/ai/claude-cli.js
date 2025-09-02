@@ -8,6 +8,10 @@ class ClaudeCLI {
     // Use PAIR_REVIEW_CLAUDE_CMD environment variable if set, otherwise default to 'claude'
     const claudeCmd = process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
     
+    // Store the original working directory where pair-review was launched
+    // This is important for resolving commands that might be relative paths
+    this.originalCwd = process.cwd();
+    
     // For multi-word commands like "devx claude", we need to use shell mode
     this.useShell = claudeCmd.includes(' ');
     
@@ -33,15 +37,24 @@ class ClaudeCLI {
       const { cwd = process.cwd(), timeout = 300000 } = options; // 5 minute default timeout
       
       logger.info('Executing Claude CLI...');
+      logger.info(`Command: ${this.command}`);
+      logger.info(`Args: ${JSON.stringify(this.args)}`);
+      logger.info(`Working directory: ${cwd}`);
+      logger.info(`Shell mode: ${this.useShell}`);
       
-      const claude = spawn(this.command, this.args, {
+      // When using shell mode, we need to ensure the command can be found
+      // This is especially important in in-place mode where cwd changes
+      let spawnOptions = {
         cwd,
         env: { 
           ...process.env,
           PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin'
         },
         shell: this.useShell
-      });
+      };
+      
+      // Spawn the claude process
+      const claude = spawn(this.command, this.args, spawnOptions);
 
       let stdout = '';
       let stderr = '';
