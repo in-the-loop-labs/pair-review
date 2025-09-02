@@ -8,10 +8,18 @@ class ClaudeCLI {
     // Use PAIR_REVIEW_CLAUDE_CMD environment variable if set, otherwise default to 'claude'
     const claudeCmd = process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
     
-    // Split command to handle cases like "devx claude"
-    const cmdParts = claudeCmd.split(' ');
-    this.command = cmdParts[0];
-    this.args = [...cmdParts.slice(1), '-p']; // Add remaining parts plus '-p' flag
+    // For multi-word commands like "devx claude", we need to use shell mode
+    this.useShell = claudeCmd.includes(' ');
+    
+    if (this.useShell) {
+      // Use the full command string with -p appended
+      this.command = `${claudeCmd} -p`;
+      this.args = [];
+    } else {
+      // Single command, use normal spawn mode
+      this.command = claudeCmd;
+      this.args = ['-p'];
+    }
   }
 
   /**
@@ -32,7 +40,7 @@ class ClaudeCLI {
           ...process.env,
           PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin'
         },
-        shell: false
+        shell: this.useShell
       });
 
       let stdout = '';
