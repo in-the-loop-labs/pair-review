@@ -105,7 +105,10 @@ class GitHubClient {
    * @throws {Error} Reformatted error with user-friendly message
    */
   async handleApiError(error, owner, repo, pullNumber) {
-    console.error('GitHub API error:', error);
+    // Only log detailed errors for debugging if verbose mode is enabled
+    if (process.env.VERBOSE || process.env.DEBUG) {
+      console.error('GitHub API error:', error);
+    }
 
     // Handle rate limiting with exponential backoff
     if (error.status === 403 && error.response?.headers?.['x-ratelimit-remaining'] === '0') {

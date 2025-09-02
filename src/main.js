@@ -39,7 +39,7 @@ async function main() {
     }
     
   } catch (error) {
-    console.error('Error:', error.message);
+    console.error(`\n❌ Error: ${error.message}\n`);
     process.exit(1);
   }
 }
@@ -51,6 +51,8 @@ async function main() {
  * @param {Object} db - Database instance
  */
 async function handlePullRequest(args, config, db) {
+  let prInfo = null; // Declare prInfo outside try block for error handling
+  
   try {
     // Validate GitHub token
     if (!config.github_token) {
@@ -59,7 +61,7 @@ async function handlePullRequest(args, config, db) {
 
     // Parse PR arguments
     const parser = new PRArgumentParser();
-    const prInfo = await parser.parsePRArguments(args);
+    prInfo = await parser.parsePRArguments(args);
     
     console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo}`);
 
@@ -107,7 +109,27 @@ async function handlePullRequest(args, config, db) {
     await open(url);
 
   } catch (error) {
-    console.error('Error processing pull request:', error.message);
+    // Provide cleaner error messages for common issues
+    if (error.message && error.message.includes('not found in repository')) {
+      if (prInfo) {
+        console.error(`\n❌ Pull request #${prInfo.number} does not exist in ${prInfo.owner}/${prInfo.repo}`);
+      } else {
+        console.error(`\n❌ ${error.message}`);
+      }
+      console.error('Please check the PR number and try again.\n');
+    } else if (error.message && error.message.includes('authentication failed')) {
+      console.error('\n❌ GitHub authentication failed');
+      console.error('Please check your token in ~/.pair-review/config.json\n');
+    } else if (error.message && error.message.includes('Repository') && error.message.includes('not found')) {
+      console.error(`\n❌ ${error.message}`);
+      console.error('Please check the repository name and your access permissions.\n');
+    } else if (error.message && error.message.includes('Network error')) {
+      console.error('\n❌ Network connection error');
+      console.error('Please check your internet connection and try again.\n');
+    } else {
+      // For other errors, show a clean message without stack trace
+      console.error(`\n❌ Error: ${error.message}\n`);
+    }
     process.exit(1);
   }
 }
