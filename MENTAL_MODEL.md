@@ -31,7 +31,11 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 
 ### 4. GitHub Integration (`src/github/`)
 - **Parser** (`parser.js`): Extracts owner/repo/number from various PR URL formats
-- **Client** (`client.js`): GitHub API wrapper using Octokit for fetching PR data
+- **Client** (`client.js`): GitHub API wrapper using Octokit for fetching PR data and submitting reviews
+  - **Review Submission**: `createReview()` method submits complete reviews with inline comments
+  - **Position Calculation**: `calculateDiffPosition()` converts line numbers to GitHub API diff positions
+  - **Enhanced Error Handling**: Specialized error handling for review submission failures
+  - **Token Validation**: Validates GitHub tokens before attempting review submission
 
 ### 5. Git Worktree Management (`src/git/worktree.js`)
 - **Role**: Manages local git worktrees for PR analysis
@@ -69,7 +73,7 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - **GET /api/pr/:id/user-comments**: Get all user comments for a PR
 - **PUT /api/user-comment/:id**: Update existing user comment
 - **DELETE /api/user-comment/:id**: Delete user comment (soft delete)
-- **POST /api/pr/:owner/:repo/:number/submit-review**: Submit complete review to GitHub
+- **POST /api/pr/:owner/:repo/:number/submit-review**: Submit complete review to GitHub (IMPLEMENTED with full functionality)
 
 ### 8. GitHub-like UI with Sidebar Layout (`public/`)
 - **Role**: Rich GitHub-like interface with sidebar file navigation and diff viewer
@@ -190,11 +194,35 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - ✅ User comment display with edit/delete functionality
   - ✅ Fixed bottom review panel with approval status dropdown
   - ✅ Comment count display in review panel
-  - ✅ Review submission to GitHub API (POST endpoint ready)
+  - ✅ Review submission to GitHub API (FULLY IMPLEMENTED)
   - ✅ Support for Approve/Comment/Request Changes review types
   - ✅ Complete user comment CRUD operations via API
   - ✅ Draft persistence using localStorage
   - ✅ GitHub-like UI styling for all comment elements
+- ✅ GitHub Review Submission (Phase 6)
+  - ✅ Complete review submission functionality in GitHubClient
+  - ✅ Position calculation for inline comments in diffs
+  - ✅ Token validation before submission attempts
+  - ✅ Comprehensive error handling for all submission failure scenarios
+  - ✅ Support for APPROVE/REQUEST_CHANGES/COMMENT review events
+  - ✅ Automatic comment formatting for GitHub API compatibility
+  - ✅ Real GitHub submission via submit-review API endpoint
+  - ✅ Database transaction handling for submission tracking
+  - ✅ Comment limit validation (50 comments per review)
+  - ✅ GitHub token availability through app context
+  - ✅ Response includes GitHub review URL and review ID
+  - ✅ Proper error status codes and messages for all failure scenarios
+- ✅ Enhanced Review Modal UI (Phase 6.1)
+  - ✅ Toast notification component for success/error feedback
+  - ✅ Loading spinner with "Submitting review..." text during submission
+  - ✅ Success toast with GitHub review link (green #1f883d background)
+  - ✅ Detailed error messages displayed inline in modal (red #d1242f)
+  - ✅ Modal non-dismissible during submission (no close button, no backdrop click)
+  - ✅ Large review warning for >50 comments with warning dialog
+  - ✅ Toast auto-dismiss after 5000ms with 300ms fade-out animation
+  - ✅ Dark theme support for all toast and modal elements
+  - ✅ 16px spinner positioned left of "Submitting review..." text
+  - ✅ Error messages at 16px below submit button with proper styling
 
 ### API Endpoints Verified
 - ✅ `/api/pr/owner/repo/number` - Returns full PR data
@@ -226,7 +254,6 @@ comments: Will store AI suggestions and user comments
 - **Graceful Port Handling**: Automatically finds available ports for development
 
 ### Future Enhancements
-- GitHub API integration for actual review submission (requires GitHub client setup)
 - Full context expansion functionality (requires API endpoints for file content)
 - Syntax highlighting for diff content
 - Keyboard shortcuts for navigation
@@ -234,6 +261,9 @@ comments: Will store AI suggestions and user comments
 - Comment threading and replies
 - Markdown support in comments
 - Comment history and versioning
+- Retry logic for failed review submissions
+- Review draft saving before submission
+- Multiple AI provider support beyond Claude
 
 ## Troubleshooting
 

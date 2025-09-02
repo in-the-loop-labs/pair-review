@@ -168,26 +168,61 @@ class GitHubClient {
 
       // Convert comments to GitHub API format with position calculation
       const formattedComments = [];
+      
+      // Binary file extensions that GitHub doesn't allow comments on
+      const binaryExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.svg', 
+                               '.pdf', '.zip', '.tar', '.gz', '.exe', '.dll', '.so', 
+                               '.dylib', '.bin', '.dat', '.db', '.sqlite'];
+      
       for (const comment of comments) {
         if (!comment.path || !comment.body) {
           throw new Error('Each comment must have a path and body');
         }
-
-        const position = this.calculateDiffPosition(diffContent, comment.path, comment.line);
-        if (position === -1) {
-          console.warn(`Could not calculate position for comment on ${comment.path}:${comment.line}, skipping`);
+        
+        // Skip binary files - GitHub doesn't allow comments on them
+        const isBinary = binaryExtensions.some(ext => comment.path.toLowerCase().endsWith(ext));
+        if (isBinary) {
+          console.warn(`Skipping comment on binary file: ${comment.path} (GitHub doesn't support comments on binary files)`);
           continue;
         }
 
-        formattedComments.push({
-          path: comment.path,
-          position: position,
-          body: comment.body,
-          side: 'RIGHT' // Comments on the new version (head) of the file
-        });
+        const position = this.calculateDiffPosition(diffContent, comment.path, comment.line);
+        
+        if (position === -1) {
+          // If we can't calculate position, try using line-based comment
+          // This requires the PR to be based on a commit that's in the base branch
+          console.warn(`Could not calculate diff position for ${comment.path}:${comment.line}, using line-based comment`);
+          formattedComments.push({
+            path: comment.path,
+            line: comment.line,
+            side: 'RIGHT',
+            body: comment.body
+          });
+        } else {
+          // Use position-based comment (preferred for PR reviews)
+          formattedComments.push({
+            path: comment.path,
+            position: position,
+            body: comment.body
+          });
+        }
       }
 
       console.log(`Formatted ${formattedComments.length} comments for submission`);
+      
+      // Check if we have any comments after filtering
+      if (comments.length > 0 && formattedComments.length === 0) {
+        console.warn('All comments were on binary files and were skipped');
+        // Allow review to proceed without inline comments if there's a review body
+        if (!body || body.trim() === '') {
+          throw new Error('Cannot submit review: all comments are on binary files (GitHub does not support comments on binary files) and no review summary was provided');
+        }
+      }
+      
+      // Debug: Log what we're sending
+      if (formattedComments.length > 0) {
+        console.log('Review comments being sent:', JSON.stringify(formattedComments, null, 2));
+      }
 
       // Submit review to GitHub
       const { data } = await this.octokit.rest.pulls.createReview({
@@ -317,6 +352,11 @@ class GitHubClient {
     // Handle validation errors
     if (error.status === 422) {
       const message = error.response?.data?.message || 'Validation error';
+      const errors = error.response?.data?.errors;
+      if (errors && Array.isArray(errors)) {
+        const errorDetails = errors.map(e => e.message || e.code).join(', ');
+        throw new Error(`GitHub API validation error: ${message}. Details: ${errorDetails}`);
+      }
       throw new Error(`GitHub API validation error: ${message}`);
     }
 

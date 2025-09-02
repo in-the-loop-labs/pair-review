@@ -1416,10 +1416,11 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     }
 
     // Format comments for GitHub API
+    // GitHubClient expects: path, line, body
     const githubComments = comments.map(comment => ({
-      path: comment.file,
-      line: comment.line_start,
-      body: comment.body
+      path: comment.file,      // file path
+      line: comment.line_start, // line number in the file
+      body: comment.body        // comment text
     }));
 
     // Begin database transaction for submission tracking
