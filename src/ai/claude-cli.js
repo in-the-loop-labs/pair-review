@@ -12,13 +12,15 @@ class ClaudeCLI {
     // This is important for resolving commands that might be relative paths
     this.originalCwd = process.cwd();
     
-    // For multi-word commands like "devx claude", we need to use shell mode
+    // For multi-word commands like "/opt/dev/bin/devx claude", we need to use shell mode
+    // Shell mode allows the shell to properly parse the command string
     this.useShell = claudeCmd.includes(' ');
     
     if (this.useShell) {
-      // Use the full command string with -p appended
+      // In shell mode, we pass the entire command string with -p appended
+      // The shell will parse this correctly
       this.command = `${claudeCmd} -p`;
-      this.args = [];
+      this.args = [];  // No separate args in shell mode - everything is in the command
     } else {
       // Single command, use normal spawn mode
       this.command = claudeCmd;
@@ -48,7 +50,7 @@ class ClaudeCLI {
         cwd,
         env: { 
           ...process.env,
-          PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin'
+          PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin:/opt/dev/bin'
         },
         shell: this.useShell
       };
@@ -111,8 +113,11 @@ class ClaudeCLI {
         if (timeoutId) clearTimeout(timeoutId);
         
         if (error.code === 'ENOENT') {
+          logger.error(`Command not found: ${this.command}`);
+          logger.error(`Working directory was: ${cwd}`);
+          logger.error(`Shell mode: ${this.useShell}`);
           logger.error('Claude CLI not found. Please ensure Claude CLI is installed.');
-          reject(new Error('Claude CLI not found. Please install it and ensure it\'s in your PATH.'));
+          reject(new Error(`Claude CLI not found. Command: "${this.command}" in directory: "${cwd}"`));
         } else {
           logger.error(`Claude process error: ${error}`);
           reject(error);
