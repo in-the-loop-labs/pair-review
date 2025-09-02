@@ -340,6 +340,9 @@ class ReviewModal {
         );
       }
       
+      // Clear submitting state before hiding modal
+      this.setSubmittingState(false);
+      
       // Hide modal
       this.hide();
       
@@ -355,9 +358,7 @@ class ReviewModal {
     } catch (error) {
       console.error('Error submitting review:', error);
       this.showError(error.message);
-      
-    } finally {
-      // Restore normal state
+      // Restore normal state on error
       this.setSubmittingState(false);
     }
   }
