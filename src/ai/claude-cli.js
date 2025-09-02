@@ -50,7 +50,7 @@ class ClaudeCLI {
         cwd,
         env: { 
           ...process.env,
-          PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin:/opt/dev/bin'
+          PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin'
         },
         shell: this.useShell
       };
