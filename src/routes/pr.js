@@ -430,10 +430,13 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         logger.success(`Found ${result.suggestions.length} suggestions:`);
         result.suggestions.forEach(s => {
           const icon = s.type === 'bug' ? '🐛' : 
-                       s.type === 'praise' ? '👍' :
+                       s.type === 'praise' ? '⭐' :
                        s.type === 'improvement' ? '💡' :
                        s.type === 'security' ? '🔒' :
-                       s.type === 'performance' ? '⚡' : '📝';
+                       s.type === 'performance' ? '⚡' :
+                       s.type === 'design' ? '🎨' :
+                       s.type === 'suggestion' ? '💬' :
+                       s.type === 'code-style' || s.type === 'style' ? '📐' : '📝';
           logger.log('Result', `${icon} ${s.type}: ${s.title} (${s.file}:${s.line_start})`, 'green');
         });
         

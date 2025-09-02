@@ -1443,7 +1443,7 @@ class PRManager {
                 <path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901l-.203.556a.213.213 0 0 1-.4 0l-.203-.556a3.2 3.2 0 0 0-1.901-1.901l-.556-.203a.213.213 0 0 1 0-.4l.556-.203a3.2 3.2 0 0 0 1.901-1.901L2.8.14Z"/>
               </svg>
             </span>
-            <span class="type-badge type-${suggestion.type}">${suggestion.type}</span>
+            <span class="type-badge type-${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">${suggestion.type}</span>
             ${suggestion.ai_level === 2 ? '<span class="level-badge level-2">File Context</span>' : ''}
             ${suggestion.ai_level === 3 ? '<span class="level-badge level-3">Codebase Context</span>' : ''}
             <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
@@ -1457,7 +1457,7 @@ class PRManager {
             </svg>
           </span>
           <span class="collapsed-text">Hidden AI suggestion</span>
-          <span class="type-badge type-${suggestion.type}">${suggestion.type}</span>
+          <span class="type-badge type-${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">${suggestion.type}</span>
           <span class="collapsed-title">${this.escapeHtml(suggestion.title || '')}</span>
           <button class="btn-restore" onclick="prManager.restoreSuggestion(${suggestion.id})" title="Show suggestion">
             <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="20" height="20">
@@ -2380,6 +2380,25 @@ class PRManager {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  /**
+   * Get description for suggestion type
+   */
+  getTypeDescription(type) {
+    const descriptions = {
+      bug: "Errors, crashes, or incorrect behavior",
+      improvement: "Enhancements to make code better",
+      praise: "Good practices worth highlighting",
+      suggestion: "General recommendations to consider",
+      design: "Architecture and structural concerns",
+      performance: "Speed and efficiency optimizations",
+      security: "Vulnerabilities or safety issues",
+      "code-style": "Formatting, naming, and conventions",
+      style: "Formatting, naming, and conventions" // backward compatibility
+    };
+    
+    return descriptions[type] || "General feedback";
   }
 
   /**

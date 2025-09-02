@@ -160,7 +160,7 @@ Perform a Level 2 review - analyze file context:
 3. Look for:
    - Inconsistencies within files (naming conventions, patterns, error handling)
    - Missing related changes within files (if one part changed, what else should change?)
-   - Style violations or deviations from patterns established in the file
+   - Code style violations or deviations from patterns established in the file
    - Opportunities for improvement based on full file context
    - Good practices worth praising in the file's context
 
@@ -178,7 +178,7 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security|style",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why full file context was needed",
     "suggestion": "How to fix/improve based on file context",
@@ -213,7 +213,7 @@ Perform a Level 1 review - analyze changes in isolation:
    - Security concerns
    - Good practices worth praising
    - Performance issues
-   - Style inconsistencies
+   - Code style and formatting issues
 
 You have full access to the codebase and can run commands like:
 - git diff HEAD~1
@@ -229,7 +229,7 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security|style",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation",
     "suggestion": "How to fix/improve",
@@ -237,6 +237,16 @@ Output JSON with this structure:
   }],
   "summary": "Brief summary of findings"
 }
+
+Category definitions:
+- bug: Errors, crashes, or incorrect behavior
+- improvement: Enhancements to make existing code better
+- praise: Good practices worth highlighting
+- suggestion: General recommendations to consider
+- design: Architecture and structural concerns
+- performance: Speed and efficiency optimizations
+- security: Vulnerabilities or safety issues
+- code-style: Formatting, naming conventions, and code style
 
 Important: 
 - Only comment on lines that were actually changed in this PR
@@ -532,7 +542,7 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security|style",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why codebase context was needed",
     "suggestion": "How to fix/improve based on codebase context",
