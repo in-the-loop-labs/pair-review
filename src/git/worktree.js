@@ -34,9 +34,21 @@ class GitWorktreeManager {
       // Create git instance for the source repository
       const git = simpleGit(repositoryPath);
       
-      // Fetch the latest changes from origin
-      console.log('Fetching latest changes from origin...');
-      await git.fetch(['origin']);
+      // Fetch only the specific base branch we need, with error handling for ref conflicts
+      console.log(`Fetching base branch ${prData.base_branch} from origin...`);
+      try {
+        await git.fetch(['origin', `+refs/heads/${prData.base_branch}:refs/remotes/origin/${prData.base_branch}`]);
+      } catch (fetchError) {
+        // If fetch fails due to ref conflicts, try alternative approaches
+        console.log(`Standard fetch failed, trying alternative: ${fetchError.message}`);
+        try {
+          // Try fetching with force flag to overwrite conflicting refs
+          await git.raw(['fetch', 'origin', `+refs/heads/${prData.base_branch}:refs/remotes/origin/${prData.base_branch}`, '--force']);
+        } catch (altFetchError) {
+          console.warn(`Could not fetch base branch ${prData.base_branch}, will try to use existing ref`);
+          // Continue anyway - the branch might already be available locally
+        }
+      }
       
       // Create worktree and checkout to base branch
       console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch}...`);
@@ -55,13 +67,13 @@ class GitWorktreeManager {
       // Create git instance for the worktree
       const worktreeGit = simpleGit(worktreePath);
       
-      // Fetch the PR head branch
-      console.log(`Fetching PR branch ${prData.head_branch}...`);
-      await worktreeGit.fetch(['origin', `pull/${prInfo.number}/head:pr-${prInfo.number}`]);
+      // Fetch the PR head using GitHub's pull request refs (more reliable than branch names)
+      console.log(`Fetching PR #${prInfo.number} head...`);
+      await worktreeGit.fetch(['origin', `+refs/pull/${prInfo.number}/head:refs/remotes/origin/pr-${prInfo.number}`]);
       
       // Checkout to PR head commit
       console.log(`Checking out to PR head commit ${prData.head_sha}...`);
-      await worktreeGit.checkout([`pr-${prInfo.number}`]);
+      await worktreeGit.checkout([`origin/pr-${prInfo.number}`]);
       
       // Verify we're at the correct commit
       const currentCommit = await worktreeGit.revparse(['HEAD']);
