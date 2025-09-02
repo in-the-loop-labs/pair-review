@@ -218,11 +218,6 @@ class GitHubClient {
           throw new Error('Cannot submit review: all comments are on binary files (GitHub does not support comments on binary files) and no review summary was provided');
         }
       }
-      
-      // Debug: Log what we're sending
-      if (formattedComments.length > 0) {
-        console.log('Review comments being sent:', JSON.stringify(formattedComments, null, 2));
-      }
 
       // Submit review to GitHub
       const { data } = await this.octokit.rest.pulls.createReview({
