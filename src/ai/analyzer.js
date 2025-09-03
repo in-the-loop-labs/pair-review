@@ -181,7 +181,7 @@ Output JSON with this structure:
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why full file context was needed",
-    "suggestion": "How to fix/improve based on file context",
+    "suggestion": "How to fix/improve based on file context (omit for praise items)",
     "confidence": 0.0-1.0
   }],
   "summary": "Brief summary of file context findings"
@@ -191,7 +191,9 @@ Important:
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
 - Focus on issues that require understanding the full file context
 - Do NOT duplicate Level 1 findings that could be found just by looking at the diff
-- If you find an issue on an unchanged line, mention it but attach to the nearest changed line`;
+- If you find an issue on an unchanged line, mention it but attach to the nearest changed line
+- For "praise" type: Omit the suggestion field entirely to save tokens
+- For other types: Include specific, actionable suggestions`;
   }
 
 
@@ -232,7 +234,7 @@ Output JSON with this structure:
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation",
-    "suggestion": "How to fix/improve",
+    "suggestion": "How to fix/improve (omit this field for praise items - no action needed)",
     "confidence": 0.0-1.0
   }],
   "summary": "Brief summary of findings"
@@ -251,7 +253,10 @@ Category definitions:
 Important: 
 - Only comment on lines that were actually changed in this PR
 - Focus on issues visible in the diff itself
-- Do not review unchanged code or missing tests (that's for Level 3)`;
+- Do not review unchanged code or missing tests (that's for Level 3)
+- For "praise" type suggestions: Omit the suggestion field entirely (no action needed)
+- For other types: Include specific, actionable suggestions
+- This saves tokens and prevents empty suggestion sections`;
   }
 
   /**
@@ -545,7 +550,7 @@ Output JSON with this structure:
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why codebase context was needed",
-    "suggestion": "How to fix/improve based on codebase context",
+    "suggestion": "How to fix/improve based on codebase context (omit for praise items)",
     "confidence": 0.0-1.0
   }],
   "summary": "Brief summary of codebase context findings"
@@ -555,7 +560,9 @@ Important:
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
 - Focus on codebase-wide concerns that require understanding multiple files
 - Do NOT duplicate Level 1 (diff-only) or Level 2 (single-file) findings
-- Look especially for missing tests, documentation, and architectural issues`;
+- Look especially for missing tests, documentation, and architectural issues
+- For "praise" type: Omit the suggestion field entirely to save tokens
+- For other types: Include specific, actionable suggestions`;
   }
 
   /**

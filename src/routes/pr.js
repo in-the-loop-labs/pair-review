@@ -1252,6 +1252,34 @@ router.get('/api/pr/:id/user-comments', async (req, res) => {
 });
 
 /**
+ * Get single user comment
+ */
+router.get('/api/user-comment/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = req.app.get('db');
+    
+    const comment = await queryOne(db, `
+      SELECT * FROM comments WHERE id = ? AND source = 'user'
+    `, [id]);
+
+    if (!comment) {
+      return res.status(404).json({ 
+        error: 'User comment not found' 
+      });
+    }
+
+    res.json(comment);
+    
+  } catch (error) {
+    console.error('Error fetching user comment:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch comment' 
+    });
+  }
+});
+
+/**
  * Update user comment
  */
 router.put('/api/user-comment/:id', async (req, res) => {

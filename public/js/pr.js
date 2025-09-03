@@ -1429,6 +1429,9 @@ class PRManager {
       const suggestionDiv = document.createElement('div');
       suggestionDiv.className = `ai-suggestion ai-type-${suggestion.type}`;
       suggestionDiv.dataset.suggestionId = suggestion.id;
+      // Store original markdown body for adopt functionality
+      // Use JSON.stringify to preserve newlines and special characters
+      suggestionDiv.dataset.originalBody = JSON.stringify(suggestion.body || '');
       
       // Apply collapsed class if the suggestion is dismissed
       if (suggestion.status === 'dismissed') {
@@ -1466,7 +1469,12 @@ class PRManager {
           </button>
         </div>
         <div class="ai-suggestion-body">
-          ${this.escapeHtml(suggestion.body || '')}
+          ${(() => {
+            const body = suggestion.body || '';
+            // Debug: Log what we're rendering
+            console.log('Rendering AI suggestion body:', body.substring(0, 200));
+            return window.renderMarkdown ? window.renderMarkdown(body) : this.escapeHtml(body);
+          })()}
         </div>
         <div class="ai-suggestion-actions">
           <button class="btn btn-sm btn-primary" onclick="prManager.adoptSuggestion(${suggestion.id})">
@@ -1496,8 +1504,11 @@ class PRManager {
         throw new Error('Suggestion element not found');
       }
 
-      const suggestionBody = suggestionDiv.querySelector('.ai-suggestion-body');
-      const suggestionText = suggestionBody ? suggestionBody.textContent.trim() : '';
+      // Get the original markdown text from the data attribute
+      // We need the original markdown, not the rendered HTML text content
+      // Parse the JSON-encoded string to get proper newlines
+      const suggestionText = suggestionDiv.dataset.originalBody ? 
+        JSON.parse(suggestionDiv.dataset.originalBody) : '';
       
       // Extract AI suggestion metadata from the DOM
       const typeElement = suggestionDiv.querySelector('.type-badge');
@@ -1955,7 +1966,7 @@ class PRManager {
             </button>
           </div>
         </div>
-        <div class="user-comment-body">${this.escapeHtml(comment.body)}</div>
+        <div class="user-comment-body" data-original-markdown="${this.escapeHtml(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : this.escapeHtml(comment.body)}</div>
       </div>
     `;
     
@@ -2010,8 +2021,8 @@ class PRManager {
             </button>
           </div>
         </div>
-        <!-- Hidden body div for saving -->
-        <div class="user-comment-body" style="display: none;"></div>
+        <!-- Hidden body div for saving - pre-populate with markdown rendered content and store original -->
+        <div class="user-comment-body" style="display: none;" data-original-markdown="${this.escapeHtml(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : this.escapeHtml(comment.body)}</div>
         <div class="user-comment-edit-form">
           <textarea 
             id="edit-comment-${comment.id}" 
@@ -2072,7 +2083,20 @@ class PRManager {
       
       const commentDiv = commentRow.querySelector('.user-comment');
       const bodyDiv = commentDiv.querySelector('.user-comment-body');
-      const currentText = bodyDiv.textContent.trim();
+      // Get the original markdown text from data attribute, or fetch from server
+      let currentText = bodyDiv.dataset.originalMarkdown || '';
+      
+      if (!currentText) {
+        // If we don't have the original markdown, fetch it from the server
+        const response = await fetch(`/api/user-comment/${commentId}`);
+        if (response.ok) {
+          const data = await response.json();
+          currentText = data.body || bodyDiv.textContent.trim();
+        } else {
+          // Fallback to text content if we can't get the original
+          currentText = bodyDiv.textContent.trim();
+        }
+      }
       
       // Add editing mode
       commentDiv.classList.add('editing-mode');
@@ -2163,8 +2187,11 @@ class PRManager {
         commentDiv.appendChild(bodyDiv);
       }
       
-      // Update body text and show it (ensure no extra whitespace)
-      bodyDiv.textContent = editedText.trim();
+      // Update body text with markdown rendering and show it
+      const trimmedText = editedText.trim();
+      bodyDiv.innerHTML = window.renderMarkdown ? window.renderMarkdown(trimmedText) : this.escapeHtml(trimmedText);
+      // Store the original markdown for future edits
+      bodyDiv.dataset.originalMarkdown = trimmedText;
       bodyDiv.style.display = '';
       
       // Remove edit form and editing class

@@ -1229,7 +1229,76 @@ tr.newly-expanded .d2h-code-line-ctn {
   color: var(--color-text-primary);
   line-height: 1.4;
   margin-bottom: 8px;
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+}
+
+/* Markdown content styles for AI suggestions and user comments */
+.ai-suggestion-body p,
+.user-comment-body p {
+  margin: 0 0 8px 0;
+}
+
+.ai-suggestion-body p:last-child,
+.user-comment-body p:last-child {
+  margin-bottom: 0;
+}
+
+.ai-suggestion-body strong,
+.user-comment-body strong {
+  font-weight: bold;
+}
+
+.ai-suggestion-body em,
+.user-comment-body em {
+  font-style: italic;
+}
+
+.ai-suggestion-body code,
+.user-comment-body code {
+  background: var(--color-code-bg, rgba(175, 184, 193, 0.2));
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+  font-size: 85%;
+}
+
+.ai-suggestion-body pre,
+.user-comment-body pre {
+  background: var(--color-code-block-bg, #f6f8fa);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.ai-suggestion-body pre code,
+.user-comment-body pre code {
+  background: none;
+  padding: 0;
   font-size: 13px;
+}
+
+.ai-suggestion-body ul,
+.user-comment-body ul,
+.ai-suggestion-body ol,
+.user-comment-body ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.ai-suggestion-body li,
+.user-comment-body li {
+  margin: 4px 0;
+}
+
+.ai-suggestion-body blockquote,
+.user-comment-body blockquote {
+  border-left: 4px solid var(--color-border-primary);
+  padding-left: 16px;
+  margin: 8px 0;
+  color: var(--color-text-secondary);
 }
 
 .ai-suggestion-actions {
@@ -2539,8 +2608,8 @@ tr:hover .add-comment-btn {
 .user-comment-body {
   color: #1f2328;
   line-height: 1.4;
-  white-space: pre-line;
-  font-size: 13px;
+  font-size: 14px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   padding: 0;
   margin: 0;
   word-break: break-word;
@@ -2741,6 +2810,24 @@ body {
 
 [data-theme="dark"] .user-comment-body {
   color: #e6edf3;
+}
+
+/* Dark theme markdown styles */
+[data-theme="dark"] .ai-suggestion-body code,
+[data-theme="dark"] .user-comment-body code {
+  background: rgba(110, 118, 129, 0.4);
+}
+
+[data-theme="dark"] .ai-suggestion-body pre,
+[data-theme="dark"] .user-comment-body pre {
+  background: #161b22;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .ai-suggestion-body blockquote,
+[data-theme="dark"] .user-comment-body blockquote {
+  border-left-color: #30363d;
+  color: #8b949e;
 }
 
 [data-theme="dark"] .review-panel {
