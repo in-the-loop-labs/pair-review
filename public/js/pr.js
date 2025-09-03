@@ -1162,6 +1162,10 @@ class PRManager {
 
       console.log(`Loaded ${comments.length} user comments`);
 
+      // Store comments for later use (to detect adopted suggestions)
+      this.userComments = comments;
+      console.log(`[UI] Stored user comments for adoption detection:`, comments.filter(c => c.parent_id));
+
       // Display comments inline with the diff
       this.displayUserComments(comments);
 
@@ -1433,8 +1437,31 @@ class PRManager {
       // Use JSON.stringify to preserve newlines and special characters
       suggestionDiv.dataset.originalBody = JSON.stringify(suggestion.body || '');
       
-      // Apply collapsed class if the suggestion is dismissed
-      if (suggestion.status === 'dismissed') {
+      // Convert suggestion.id to number for comparison since parent_id might be a number
+      const suggestionIdNum = parseInt(suggestion.id);
+      
+      // Check if this suggestion was adopted by looking for user comments with matching parent_id
+      const wasAdopted = this.userComments && this.userComments.some(comment => 
+        comment.parent_id && (comment.parent_id === suggestion.id || comment.parent_id === suggestionIdNum)
+      );
+      
+      // Log when a suggestion is detected as adopted
+      if (wasAdopted) {
+        console.log(`[UI] Suggestion ${suggestion.id} was adopted - showing as collapsed`);
+      }
+
+      // Apply collapsed class if the suggestion is dismissed or was adopted
+      // Priority: adopted > dismissed
+      if (wasAdopted) {
+        suggestionDiv.classList.add('collapsed');
+        // Mark the row as adopted after it's created
+        setTimeout(() => {
+          const suggestionRow = suggestionDiv.closest('tr');
+          if (suggestionRow) {
+            suggestionRow.dataset.hiddenForAdoption = 'true';
+          }
+        }, 0);
+      } else if (suggestion.status === 'dismissed') {
         suggestionDiv.classList.add('collapsed');
       }
       
@@ -1459,13 +1486,14 @@ class PRManager {
               <path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901l-.203.556a.213.213 0 0 1-.4 0l-.203-.556a3.2 3.2 0 0 0-1.901-1.901l-.556-.203a.213.213 0 0 1 0-.4l.556-.203a3.2 3.2 0 0 0 1.901-1.901L2.8.14Z"/>
             </svg>
           </span>
-          <span class="collapsed-text">Hidden AI suggestion</span>
+          <span class="collapsed-text">${wasAdopted ? 'Suggestion adopted' : 'Hidden AI suggestion'}</span>
           <span class="type-badge type-${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">${suggestion.type}</span>
           <span class="collapsed-title">${this.escapeHtml(suggestion.title || '')}</span>
-          <button class="btn-restore" onclick="prManager.restoreSuggestion(${suggestion.id})" title="Show suggestion">
-            <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="20" height="20">
+          <button class="btn-restore" onclick="prManager.restoreSuggestion(${suggestion.id})" title="${wasAdopted ? 'Hide suggestion' : 'Show suggestion'}">
+            <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="16" height="16">
               <path fill-rule="evenodd" d="M1.679 7.932c.412-.621 1.242-1.75 2.366-2.717C5.175 4.242 6.527 3.5 8 3.5c1.473 0 2.824.742 3.955 1.715 1.124.967 1.954 2.096 2.366 2.717a.119.119 0 010 .136c-.412.621-1.242 1.75-2.366 2.717C10.825 11.758 9.473 12.5 8 12.5c-1.473 0-2.824-.742-3.955-1.715C2.92 9.818 2.09 8.69 1.679 8.068a.119.119 0 010-.136zM8 2c-1.981 0-3.67.992-4.933 2.078C1.797 5.169.88 6.423.43 7.1a1.619 1.619 0 000 1.798c.45.678 1.367 1.932 2.637 3.024C4.329 13.008 6.019 14 8 14c1.981 0 3.67-.992 4.933-2.078 1.27-1.091 2.187-2.345 2.637-3.023a1.619 1.619 0 000-1.798c-.45-.678-1.367-1.932-2.637-3.023C11.671 2.992 9.981 2 8 2zm0 8a2 2 0 100-4 2 2 0 000 4z"></path>
             </svg>
+            <span class="btn-text">${wasAdopted ? 'Hide' : 'Show'}</span>
           </button>
         </div>
         <div class="ai-suggestion-body">
@@ -1550,9 +1578,26 @@ class PRManager {
         throw new Error('Failed to dismiss suggestion');
       }
 
-      // Hide the AI suggestion completely (not just collapse)
+      // Collapse the AI suggestion instead of hiding it completely
       if (suggestionRow) {
-        suggestionRow.style.display = 'none';
+        const suggestionDiv = suggestionRow.querySelector('.ai-suggestion');
+        if (suggestionDiv) {
+          suggestionDiv.classList.add('collapsed');
+          // Update collapsed content to show "Suggestion adopted"
+          const collapsedContent = suggestionDiv.querySelector('.collapsed-text');
+          if (collapsedContent) {
+            collapsedContent.textContent = 'Suggestion adopted';
+          }
+          // Update restore button title and text for adopted suggestions
+          const restoreButton = suggestionDiv.querySelector('.btn-restore');
+          if (restoreButton) {
+            restoreButton.title = 'Hide suggestion';
+            const btnText = restoreButton.querySelector('.btn-text');
+            if (btnText) {
+              btnText.textContent = 'Hide';
+            }
+          }
+        }
         suggestionRow.dataset.hiddenForAdoption = 'true';
       }
       
@@ -1654,6 +1699,37 @@ class PRManager {
    */
   async restoreSuggestion(suggestionId) {
     try {
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      const suggestionRow = suggestionDiv?.closest('tr');
+      
+      // Check if this suggestion was adopted (hiddenForAdoption flag)
+      if (suggestionRow?.dataset.hiddenForAdoption === 'true') {
+        // For adopted suggestions, toggle between collapsed and expanded states
+        const suggestionDiv = suggestionRow.querySelector('.ai-suggestion');
+        if (suggestionDiv) {
+          const isCollapsed = suggestionDiv.classList.contains('collapsed');
+          
+          if (isCollapsed) {
+            // Expand the suggestion
+            suggestionDiv.classList.remove('collapsed');
+            console.log(`[UI] Expanded adopted suggestion ${suggestionId}`);
+          } else {
+            // Collapse the suggestion
+            suggestionDiv.classList.add('collapsed');
+            console.log(`[UI] Collapsed adopted suggestion ${suggestionId}`);
+          }
+          
+          // Update button text
+          const button = suggestionRow.querySelector('.btn-restore');
+          if (button) {
+            const isNowCollapsed = suggestionDiv.classList.contains('collapsed');
+            button.title = isNowCollapsed ? 'Show suggestion' : 'Hide suggestion';
+            button.querySelector('.btn-text').textContent = isNowCollapsed ? 'Show' : 'Hide';
+          }
+        }
+        return;
+      }
+
       const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
         method: 'POST',
         headers: {
@@ -1667,7 +1743,6 @@ class PRManager {
       }
 
       // Remove the collapsed class to show the suggestion again
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (suggestionDiv) {
         suggestionDiv.classList.remove('collapsed');
         console.log(`[UI] Restored suggestion ${suggestionId}`);

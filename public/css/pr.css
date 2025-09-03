@@ -1070,6 +1070,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-radius: 6px;
   position: relative;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.2s ease;
 }
 
 .ai-suggestion.adopted {
@@ -1413,7 +1414,13 @@ tr.newly-expanded .d2h-code-line-ctn {
   justify-content: center;
   cursor: pointer;
   min-height: 24px;
-  width: 24px;
+  width: auto;
+  gap: 4px;
+}
+
+.btn-restore .btn-text {
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .btn-restore .octicon {
