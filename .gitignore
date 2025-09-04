@@ -10,3 +10,4 @@ coverage/
 
 test-*.js
 debug*
+.playwright-mcp/*
