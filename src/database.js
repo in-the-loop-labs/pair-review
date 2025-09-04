@@ -51,6 +51,7 @@ const SCHEMA_SQL = {
       file TEXT,
       line_start INTEGER,
       line_end INTEGER,
+      diff_position INTEGER,
       type TEXT,
       title TEXT,
       body TEXT,
@@ -133,6 +134,38 @@ function initializeDatabase() {
 }
 
 /**
+ * Run database migrations for existing databases
+ * @param {sqlite3.Database} db - Database instance
+ * @param {Function} callback - Callback function
+ */
+function runMigrations(db, callback) {
+  // Check if diff_position column exists in comments table
+  db.all(`PRAGMA table_info(comments)`, (error, columns) => {
+    if (error) {
+      return callback(error);
+    }
+    
+    // Check if diff_position column exists
+    const hasDiffPosition = columns && columns.some(col => col.name === 'diff_position');
+    
+    if (!hasDiffPosition) {
+      console.log('Adding diff_position column to comments table...');
+      db.run(`ALTER TABLE comments ADD COLUMN diff_position INTEGER`, (alterError) => {
+        if (alterError && !alterError.message.includes('duplicate column name')) {
+          console.error('Error adding diff_position column:', alterError.message);
+          return callback(alterError);
+        }
+        console.log('Successfully added diff_position column');
+        callback(null);
+      });
+    } else {
+      // No migrations needed
+      callback(null);
+    }
+  });
+}
+
+/**
  * Setup database schema and indexes
  * @param {sqlite3.Database} db - Database instance
  * @param {Function} resolve - Promise resolve function
@@ -155,28 +188,38 @@ function setupSchema(db, resolve, reject) {
       });
     });
     
-    // Create indexes (only if they don't exist)
-    INDEX_SQL.forEach(sql => {
-      db.run(sql, (error) => {
+    // Run migrations for existing databases
+    runMigrations(db, (migrationError) => {
+      if (migrationError) {
+        console.error('Error running migrations:', migrationError.message);
+        db.run('ROLLBACK');
+        reject(migrationError);
+        return;
+      }
+      
+      // Create indexes (only if they don't exist)
+      INDEX_SQL.forEach(sql => {
+        db.run(sql, (error) => {
+          if (error) {
+            console.error('Error creating index:', error.message);
+            db.run('ROLLBACK');
+            reject(error);
+            return;
+          }
+        });
+      });
+      
+      // Commit transaction
+      db.run('COMMIT', (error) => {
         if (error) {
-          console.error('Error creating index:', error.message);
-          db.run('ROLLBACK');
+          console.error('Error committing schema setup:', error.message);
           reject(error);
-          return;
+        } else {
+          const isNew = !require('fs').existsSync(DB_PATH) || require('fs').statSync(DB_PATH).size === 0;
+          console.log(isNew ? `Created new database at: ${DB_PATH}` : `Connected to existing database at: ${DB_PATH}`);
+          resolve(db);
         }
       });
-    });
-    
-    // Commit transaction
-    db.run('COMMIT', (error) => {
-      if (error) {
-        console.error('Error committing schema setup:', error.message);
-        reject(error);
-      } else {
-        const isNew = !require('fs').existsSync(DB_PATH) || require('fs').statSync(DB_PATH).size === 0;
-        console.log(isNew ? `Created new database at: ${DB_PATH}` : `Connected to existing database at: ${DB_PATH}`);
-        resolve(db);
-      }
     });
   });
 }

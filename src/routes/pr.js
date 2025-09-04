@@ -1088,7 +1088,7 @@ function broadcastProgress(analysisId, progressData) {
  */
 router.post('/api/user-comment', async (req, res) => {
   try {
-    const { pr_id, file, line_start, line_end, body, parent_id, type, title } = req.body;
+    const { pr_id, file, line_start, line_end, diff_position, body, parent_id, type, title } = req.body;
     
     if (!pr_id || !file || !line_start || !body) {
       return res.status(400).json({ 
@@ -1112,9 +1112,9 @@ router.post('/api/user-comment', async (req, res) => {
     // Create user comment with optional parent_id and metadata
     const result = await run(db, `
       INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end, 
+        pr_id, source, author, file, line_start, line_end, diff_position,
         type, title, body, status, parent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       pr_id,
       'user',
@@ -1122,6 +1122,7 @@ router.post('/api/user-comment', async (req, res) => {
       file,
       line_start,
       line_end || line_start,
+      diff_position || null,  // Store diff position for GitHub API
       type || 'comment',  // Use provided type or default to 'comment'
       title || null,       // Optional title from AI suggestion
       body.trim(),
@@ -1421,7 +1422,8 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         id,
         file,
         line_start,
-        body
+        body,
+        diff_position
       FROM comments
       WHERE pr_id = ? AND source = 'user' AND status = 'active'
       ORDER BY file, line_start
@@ -1447,11 +1449,12 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     }
 
     // Format comments for GitHub API
-    // GitHubClient expects: path, line, body
+    // GitHubClient expects: path, line, body, and optionally diff_position
     const githubComments = comments.map(comment => ({
       path: comment.file,      // file path
-      line: comment.line_start, // line number in the file
-      body: comment.body        // comment text
+      line: comment.line_start, // line number in the file (fallback)
+      body: comment.body,       // comment text
+      diff_position: comment.diff_position  // stored diff position from UI
     }));
 
     // Begin database transaction for submission tracking

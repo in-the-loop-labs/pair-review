@@ -186,10 +186,14 @@ class GitHubClient {
           continue;
         }
 
-        const position = this.calculateDiffPosition(diffContent, comment.path, comment.line);
+        // Use stored diff position if available, otherwise calculate it
+        let position = comment.diff_position;
+        if (!position || position === null) {
+          position = this.calculateDiffPosition(diffContent, comment.path, comment.line);
+        }
         
-        if (position === -1) {
-          // If we can't calculate position, try using line-based comment
+        if (position === -1 || position === null) {
+          // If we can't calculate position and don't have a stored one, try using line-based comment
           // This requires the PR to be based on a commit that's in the base branch
           console.warn(`Could not calculate diff position for ${comment.path}:${comment.line}, using line-based comment`);
           formattedComments.push({
@@ -200,6 +204,7 @@ class GitHubClient {
           });
         } else {
           // Use position-based comment (preferred for PR reviews)
+          console.log(`Using ${comment.diff_position ? 'stored' : 'calculated'} diff position ${position} for ${comment.path}:${comment.line}`);
           formattedComments.push({
             path: comment.path,
             position: position,
