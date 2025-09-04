@@ -387,6 +387,9 @@ class PRManager {
     container.innerHTML = '';
     
     try {
+      // Track global diff position across all files
+      let globalDiffPosition = 0;
+      
       diffJson.forEach(file => {
         const fileWrapper = document.createElement('div');
         fileWrapper.className = 'd2h-file-wrapper';
@@ -430,9 +433,10 @@ class PRManager {
             }
           }
           
-          // Process lines within block
+          // Process lines within block and track positions
           block.lines.forEach((line) => {
-            this.renderDiffLine(tbody, line, file.newName || file.oldName);
+            globalDiffPosition++; // Increment position for each diff line
+            this.renderDiffLine(tbody, line, file.newName || file.oldName, globalDiffPosition);
           });
           
           // Add expandable context between blocks
@@ -467,8 +471,9 @@ class PRManager {
    * @param {HTMLElement} tbody - Table body element
    * @param {Object} line - Diff line data
    * @param {string} fileName - The file name for this diff
+   * @param {number} diffPosition - The diff position for GitHub API
    */
-  renderDiffLine(tbody, line, fileName) {
+  renderDiffLine(tbody, line, fileName, diffPosition) {
     const row = document.createElement('tr');
     row.className = line.type === 'insert' ? 'd2h-ins' : 
                    line.type === 'delete' ? 'd2h-del' : 
@@ -478,6 +483,10 @@ class PRManager {
     if (line.newNumber) {
       row.dataset.lineNumber = line.newNumber;
       row.dataset.fileName = fileName;
+      // Add diff position for GitHub API positioning
+      if (diffPosition !== undefined) {
+        row.dataset.diffPosition = diffPosition;
+      }
     }
     
     // Line numbers
@@ -498,7 +507,8 @@ class PRManager {
       commentButton.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        this.showCommentForm(row, line.newNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName);
+        const diffPos = row.dataset.diffPosition;
+        this.showCommentForm(row, line.newNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos);
       };
       lineNumContent.appendChild(commentButton);
     }
@@ -656,7 +666,8 @@ class PRManager {
     if (this.expandedSections.has(sectionKey)) {
       // This section was previously expanded, show all lines
       allLines.slice(startIdx, endIdx).forEach(line => {
-        this.renderDiffLine(tbody, line, fileName);
+        // Context expansion lines don't have a specific diff position since they weren't in the original diff
+        this.renderDiffLine(tbody, line, fileName, null);
       });
       return; // Don't create collapsed section
     }
@@ -850,7 +861,7 @@ class PRManager {
     const fragment = document.createDocumentFragment();
     const fileName = controlsElement.dataset.fileName;
     linesToShow.forEach(line => {
-      const lineRow = this.renderDiffLine(fragment, line, fileName);
+      const lineRow = this.renderDiffLine(fragment, line, fileName, null);
       // Add data attributes for selection
       if (lineRow && fileName && line.newNumber) {
         lineRow.dataset.file = fileName;
@@ -997,7 +1008,7 @@ class PRManager {
           content: content || ''
         };
         
-        const lineRow = this.renderDiffLine(fragment, lineData, fileName);
+        const lineRow = this.renderDiffLine(fragment, lineData, fileName, null);
         if (lineRow) {
           lineRow.classList.add('newly-expanded');
           setTimeout(() => {
@@ -1838,7 +1849,7 @@ class PRManager {
   /**
    * Show comment form inline
    */
-  showCommentForm(targetRow, lineNumber, fileName) {
+  showCommentForm(targetRow, lineNumber, fileName, diffPosition) {
     // Close any existing comment forms
     this.hideCommentForm();
     
@@ -1862,6 +1873,7 @@ class PRManager {
           rows="3"
           data-line="${lineNumber}"
           data-file="${fileName}"
+          data-diff-position="${diffPosition || ''}"
         ></textarea>
         <div class="comment-form-actions">
           <button class="btn btn-sm btn-primary save-comment-btn">Save</button>
@@ -1933,6 +1945,7 @@ class PRManager {
   async saveUserComment(textarea, formRow) {
     const fileName = textarea.dataset.file;
     const lineNumber = parseInt(textarea.dataset.line);
+    const diffPosition = textarea.dataset.diffPosition ? parseInt(textarea.dataset.diffPosition) : null;
     const content = textarea.value.trim();
     
     if (!content) {
@@ -1951,6 +1964,7 @@ class PRManager {
           file: fileName,
           line_start: lineNumber,
           line_end: lineNumber,
+          diff_position: diffPosition,
           body: content
         })
       });
