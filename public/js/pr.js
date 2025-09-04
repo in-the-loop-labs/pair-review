@@ -387,10 +387,10 @@ class PRManager {
     container.innerHTML = '';
     
     try {
-      // Track global diff position across all files
-      let globalDiffPosition = 0;
-      
       diffJson.forEach(file => {
+        // Track diff position per file (resets for each file, matches GitHub behavior)
+        let fileDiffPosition = 0;
+        let foundFirstHunk = false;
         const fileWrapper = document.createElement('div');
         fileWrapper.className = 'd2h-file-wrapper';
         fileWrapper.dataset.fileName = file.newName || file.oldName;
@@ -425,6 +425,15 @@ class PRManager {
           headerRow.innerHTML = `<td colspan="2" class="d2h-info">${block.header}</td>`;
           tbody.appendChild(headerRow);
           
+          // Reset position counter for the first hunk in the file only
+          if (!foundFirstHunk) {
+            fileDiffPosition = 0;
+            foundFirstHunk = true;
+          } else {
+            // Subsequent block headers (@@) count as positions according to GitHub spec
+            fileDiffPosition++;
+          }
+          
           // Add expandable context at the beginning of first block if not starting at line 1
           if (blockIndex === 0 && block.lines.length > 0 && (block.lines[0].oldNumber > 1 || block.lines[0].newNumber > 1)) {
             const startLine = Math.min(block.lines[0].oldNumber || 1, block.lines[0].newNumber || 1);
@@ -435,8 +444,8 @@ class PRManager {
           
           // Process lines within block and track positions
           block.lines.forEach((line) => {
-            globalDiffPosition++; // Increment position for each diff line
-            this.renderDiffLine(tbody, line, file.newName || file.oldName, globalDiffPosition);
+            fileDiffPosition++; // Increment position for each diff line within this file
+            this.renderDiffLine(tbody, line, file.newName || file.oldName, fileDiffPosition);
           });
           
           // Add expandable context between blocks
