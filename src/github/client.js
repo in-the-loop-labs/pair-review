@@ -259,6 +259,11 @@ class GitHubClient {
    */
   calculateDiffPosition(diffContent, filePath, lineNumber) {
     if (!diffContent || !filePath || lineNumber === undefined) {
+      console.warn('calculateDiffPosition: Missing required parameters', { 
+        filePath, 
+        lineNumber, 
+        hasDiffContent: !!diffContent 
+      });
       return -1;
     }
 
@@ -293,8 +298,15 @@ class GitHubClient {
         const match = line.match(/@@ -\d+,?\d* \+(\d+),?\d* @@/);
         if (match) {
           newLineNumber = parseInt(match[1]) - 1; // Start counting from the line before
-          position = 0; // Reset position counter for this hunk
-          foundHunk = true;
+          
+          if (!foundHunk) {
+            // First hunk header - NOT counted as a position (per GitHub spec)
+            position = 0;
+            foundHunk = true;
+          } else {
+            // Subsequent hunk headers ARE counted as positions (per GitHub spec)
+            position++;
+          }
         }
         continue;
       }
@@ -302,16 +314,21 @@ class GitHubClient {
       // Only process lines after we've found a hunk in our target file
       if (!foundHunk) continue;
 
-      // Count position for all diff lines (context, additions, deletions)
+      // Check if this is a diff content line (addition, deletion, context, or empty context)
+      const isDiffContentLine = line.startsWith('+') || line.startsWith('-') || line.startsWith(' ') || (line === '' && foundHunk);
+      
+      if (!isDiffContentLine) continue;
+      
+      // Count position for all diff lines (context, additions, deletions, empty context)
       position++;
 
-      // Track line numbers for additions and context lines
+      // Track line numbers for additions, context lines, and empty context lines  
       if (line.startsWith('+')) {
         newLineNumber++;
         if (newLineNumber === lineNumber) {
           return position;
         }
-      } else if (line.startsWith(' ')) { // Context line
+      } else if (line.startsWith(' ') || (line === '' && foundHunk)) { // Context line (including empty context)
         newLineNumber++;
         if (newLineNumber === lineNumber) {
           return position;
@@ -320,6 +337,13 @@ class GitHubClient {
       // Deletion lines don't increment newLineNumber but do increment position
     }
 
+    console.warn('calculateDiffPosition: Position not found', { 
+      filePath, 
+      lineNumber, 
+      inFile, 
+      foundHunk, 
+      finalNewLineNumber: newLineNumber 
+    });
     return -1; // Position not found
   }
 
