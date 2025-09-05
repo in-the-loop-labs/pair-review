@@ -223,6 +223,28 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - ✅ Dark theme support for all toast and modal elements
   - ✅ 16px spinner positioned left of "Submitting review..." text
   - ✅ Error messages at 16px below submit button with proper styling
+- ✅ Draft Review Functionality (Phase 6.2)
+  - ✅ Database schema updated with review_id column in reviews table
+  - ✅ Database migration for existing installations
+  - ✅ GitHub client createDraftReview() method for draft submissions
+  - ✅ API endpoint support for DRAFT event type in submit-review
+  - ✅ Draft review storage in database with GitHub review ID tracking
+  - ✅ Draft vs submitted review handling in backend
+  - ✅ Comment status tracking for draft submissions (status='draft')
+  - ✅ Proper transaction handling for draft review operations
+  - ✅ Error handling specific to draft review creation
+  - ✅ Frontend UI for Draft Review Submission (Phase 6.3)
+    - ✅ "Submit as Draft" button in review modal with gray styling (#f6f8fa background)
+    - ✅ Button positioned between Cancel and Submit review with proper spacing
+    - ✅ Hover/focus states with smooth transitions and accessibility outlines
+    - ✅ Loading state with "Submitting Draft..." text and 16px spinner
+    - ✅ Success toast notification with specific draft message
+    - ✅ Browser confirmation dialog during submission to prevent navigation
+    - ✅ Multiple submission prevention via button disabling
+    - ✅ 2-second delay before opening GitHub PR page automatically
+    - ✅ Dark theme support for all draft UI elements
+    - ✅ Proper setSubmittingState handling for both draft and regular submissions
+    - ✅ Integration with existing reviewModal.submitDraftReview() method
 
 ### API Endpoints Verified
 - ✅ `/api/pr/owner/repo/number` - Returns full PR data
@@ -235,8 +257,8 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 ### Database Schema
 ```sql
 pr_metadata: Stores PR basic info and GitHub data blob
-reviews: Tracks review status and metadata  
-comments: Will store AI suggestions and user comments
+reviews: Tracks review status, metadata, and GitHub review IDs (with review_id column)
+comments: Stores AI suggestions and user comments (supports draft status)
 ```
 
 ## Development Notes

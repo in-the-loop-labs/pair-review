@@ -140,6 +140,109 @@ class GitHubClient {
   }
 
   /**
+   * Create a draft review on GitHub with inline comments
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} pullNumber - Pull request number
+   * @param {string} body - Overall review body/summary
+   * @param {Array} comments - Array of inline comments with path, line, body
+   * @param {string} diffContent - The PR diff for position calculation
+   * @returns {Promise<Object>} Draft review creation result with GitHub URL and review ID
+   */
+  async createDraftReview(owner, repo, pullNumber, body, comments = [], diffContent = '') {
+    try {
+      console.log(`Creating draft review for PR #${pullNumber} in ${owner}/${repo}`);
+      
+      // Validate GitHub token before attempting submission
+      const isValidToken = await this.validateToken();
+      if (!isValidToken) {
+        throw new Error('Invalid or expired GitHub token. Please check your token in ~/.pair-review/config.json');
+      }
+
+      // Convert comments to GitHub API format with position calculation
+      const formattedComments = [];
+      
+      // Binary file extensions that GitHub doesn't allow comments on
+      const binaryExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.svg', 
+                               '.pdf', '.zip', '.tar', '.gz', '.exe', '.dll', '.so', 
+                               '.dylib', '.bin', '.dat', '.db', '.sqlite'];
+      
+      for (const comment of comments) {
+        if (!comment.path || !comment.body) {
+          throw new Error('Each comment must have a path and body');
+        }
+        
+        // Skip binary files - GitHub doesn't allow comments on them
+        const isBinary = binaryExtensions.some(ext => comment.path.toLowerCase().endsWith(ext));
+        if (isBinary) {
+          console.warn(`Skipping comment on binary file: ${comment.path} (GitHub doesn't support comments on binary files)`);
+          continue;
+        }
+
+        // Use stored diff position if available, otherwise calculate it
+        let position = comment.diff_position;
+        if (!position || position === null) {
+          position = this.calculateDiffPosition(diffContent, comment.path, comment.line);
+        }
+        
+        if (position === -1 || position === null) {
+          // If we can't calculate position and don't have a stored one, try using line-based comment
+          // This requires the PR to be based on a commit that's in the base branch
+          console.warn(`Could not calculate diff position for ${comment.path}:${comment.line}, using line-based comment`);
+          formattedComments.push({
+            path: comment.path,
+            line: comment.line,
+            side: 'RIGHT',
+            body: comment.body
+          });
+        } else {
+          // Use position-based comment (preferred for PR reviews)
+          console.log(`Using ${comment.diff_position ? 'stored' : 'calculated'} diff position ${position} for ${comment.path}:${comment.line}`);
+          formattedComments.push({
+            path: comment.path,
+            position: position,
+            body: comment.body
+          });
+        }
+      }
+
+      console.log(`Formatted ${formattedComments.length} comments for draft review`);
+      
+      // Check if we have any comments after filtering
+      if (comments.length > 0 && formattedComments.length === 0) {
+        console.warn('All comments were on binary files and were skipped');
+        // Allow review to proceed without inline comments if there's a review body
+        if (!body || body.trim() === '') {
+          throw new Error('Cannot create draft review: all comments are on binary files (GitHub does not support comments on binary files) and no review summary was provided');
+        }
+      }
+
+      // Create draft review on GitHub (without event parameter - this creates a PENDING review)
+      const { data } = await this.octokit.rest.pulls.createReview({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        // Note: no 'event' parameter - this creates a PENDING/draft review
+        body: body || '',
+        comments: formattedComments
+      });
+
+      console.log(`Draft review created successfully: ${data.html_url} (Review ID: ${data.id})`);
+
+      return {
+        id: data.id,
+        html_url: data.html_url,
+        state: data.state, // Should be 'PENDING'
+        submitted_at: data.submitted_at,
+        comments_count: formattedComments.length
+      };
+
+    } catch (error) {
+      await this.handleReviewError(error, owner, repo, pullNumber);
+    }
+  }
+
+  /**
    * Submit a review to GitHub with inline comments
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name

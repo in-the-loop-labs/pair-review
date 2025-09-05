@@ -15,6 +15,7 @@ const SCHEMA_SQL = {
       pr_number INTEGER NOT NULL,
       repository TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'submitted', 'pending')),
+      review_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       submitted_at DATETIME,
@@ -56,7 +57,7 @@ const SCHEMA_SQL = {
       title TEXT,
       body TEXT,
       
-      status TEXT DEFAULT 'active',
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
       adopted_as_id INTEGER,
       parent_id INTEGER,
       
@@ -156,10 +157,44 @@ function runMigrations(db, callback) {
           return callback(alterError);
         }
         console.log('Successfully added diff_position column');
+        
+        // Continue to check reviews table
+        checkReviewsTableMigrations(db, callback);
+      });
+    } else {
+      // Check reviews table migrations
+      checkReviewsTableMigrations(db, callback);
+    }
+  });
+}
+
+/**
+ * Check and run migrations for reviews table
+ * @param {sqlite3.Database} db - Database instance
+ * @param {Function} callback - Callback function
+ */
+function checkReviewsTableMigrations(db, callback) {
+  // Check if review_id column exists in reviews table
+  db.all(`PRAGMA table_info(reviews)`, (error, columns) => {
+    if (error) {
+      return callback(error);
+    }
+    
+    // Check if review_id column exists
+    const hasReviewId = columns && columns.some(col => col.name === 'review_id');
+    
+    if (!hasReviewId) {
+      console.log('Adding review_id column to reviews table...');
+      db.run(`ALTER TABLE reviews ADD COLUMN review_id INTEGER`, (alterError) => {
+        if (alterError && !alterError.message.includes('duplicate column name')) {
+          console.error('Error adding review_id column:', alterError.message);
+          return callback(alterError);
+        }
+        console.log('Successfully added review_id column');
         callback(null);
       });
     } else {
-      // No migrations needed
+      // No more migrations needed
       callback(null);
     }
   });

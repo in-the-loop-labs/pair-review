@@ -1373,7 +1373,7 @@ router.delete('/api/user-comment/:id', async (req, res) => {
 router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
   try {
     const { owner, repo, number } = req.params;
-    const { event, body } = req.body; // event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
+    const { event, body } = req.body; // event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT' | 'DRAFT'
     const prNumber = parseInt(number);
     
     if (isNaN(prNumber) || prNumber <= 0) {
@@ -1382,9 +1382,9 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       });
     }
 
-    if (!['APPROVE', 'REQUEST_CHANGES', 'COMMENT'].includes(event)) {
+    if (!['APPROVE', 'REQUEST_CHANGES', 'COMMENT', 'DRAFT'].includes(event)) {
       return res.status(400).json({ 
-        error: 'Invalid review event. Must be APPROVE, REQUEST_CHANGES, or COMMENT' 
+        error: 'Invalid review event. Must be APPROVE, REQUEST_CHANGES, COMMENT, or DRAFT' 
       });
     }
 
@@ -1461,56 +1461,101 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     await run(db, 'BEGIN TRANSACTION');
     
     try {
-      // Submit review to GitHub
-      console.log(`Submitting review for PR #${prNumber} with ${comments.length} comments`);
-      const githubReview = await githubClient.createReview(
-        owner, 
-        repo, 
-        prNumber, 
-        event, 
-        body || '', 
-        githubComments, 
-        diffContent
-      );
+      let githubReview;
+      
+      // Handle draft vs submitted review
+      if (event === 'DRAFT') {
+        // Create draft review (without event parameter)
+        console.log(`Creating draft review for PR #${prNumber} with ${comments.length} comments`);
+        githubReview = await githubClient.createDraftReview(
+          owner, 
+          repo, 
+          prNumber, 
+          body || '', 
+          githubComments, 
+          diffContent
+        );
+        
+        // Update reviews table with draft status and store review_id
+        const now = new Date().toISOString();
+        await run(db, `
+          INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, review_data)
+          VALUES (?, ?, 'draft', ?, ?, ?)
+        `, [prNumber, repository, githubReview.id, now, JSON.stringify({
+          github_review_id: githubReview.id,
+          github_url: githubReview.html_url,
+          event: 'DRAFT',
+          body: body || '',
+          comments_count: githubReview.comments_count,
+          created_at: new Date().toISOString()
+        })]);
 
-      // Update reviews table with submission status
-      const now = new Date().toISOString();
-      await run(db, `
-        INSERT OR REPLACE INTO reviews (pr_number, repository, status, updated_at, submitted_at, review_data)
-        VALUES (?, ?, 'submitted', ?, ?, ?)
-      `, [prNumber, repository, now, now, JSON.stringify({
-        github_review_id: githubReview.id,
-        github_url: githubReview.html_url,
-        event: event,
-        body: body || '',
-        comments_count: githubReview.comments_count,
-        submitted_at: githubReview.submitted_at
-      })]);
+        console.log(`Draft review created successfully: ${githubReview.html_url} (Review ID: ${githubReview.id})`);
+
+        res.json({ 
+          success: true,
+          message: `Draft review created successfully on GitHub`,
+          github_url: githubReview.html_url,
+          github_review_id: githubReview.id,
+          comments_submitted: githubReview.comments_count,
+          event: 'DRAFT',
+          status: githubReview.state // Should be 'PENDING'
+        });
+        
+      } else {
+        // Submit final review with event
+        console.log(`Submitting review for PR #${prNumber} with ${comments.length} comments`);
+        githubReview = await githubClient.createReview(
+          owner, 
+          repo, 
+          prNumber, 
+          event, 
+          body || '', 
+          githubComments, 
+          diffContent
+        );
+
+        // Update reviews table with submission status
+        const now = new Date().toISOString();
+        await run(db, `
+          INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, submitted_at, review_data)
+          VALUES (?, ?, 'submitted', ?, ?, ?, ?)
+        `, [prNumber, repository, githubReview.id, now, now, JSON.stringify({
+          github_review_id: githubReview.id,
+          github_url: githubReview.html_url,
+          event: event,
+          body: body || '',
+          comments_count: githubReview.comments_count,
+          submitted_at: githubReview.submitted_at
+        })]);
+
+        console.log(`Review submitted successfully: ${githubReview.html_url}`);
+
+        res.json({ 
+          success: true,
+          message: `Review submitted successfully to GitHub`,
+          github_url: githubReview.html_url,
+          github_review_id: githubReview.id,
+          comments_submitted: githubReview.comments_count,
+          event: event
+        });
+      }
 
       // Update comments table to mark submitted comments
       // Note: Since comments table doesn't have github-specific columns in current schema,
       // we'll update the status to indicate submission
+      const commentStatus = event === 'DRAFT' ? 'draft' : 'submitted';
+      const now = new Date().toISOString();
       for (const comment of comments) {
         await run(db, `
           UPDATE comments 
-          SET status = 'submitted', updated_at = ?
+          SET status = ?, updated_at = ?
           WHERE id = ?
-        `, [now, comment.id]);
+        `, [commentStatus, now, comment.id]);
       }
 
       // Commit transaction
       await run(db, 'COMMIT');
-
-      console.log(`Review submitted successfully: ${githubReview.html_url}`);
-
-      res.json({ 
-        success: true,
-        message: `Review submitted successfully to GitHub`,
-        github_url: githubReview.html_url,
-        github_review_id: githubReview.id,
-        comments_submitted: githubReview.comments_count,
-        event: event
-      });
       
     } catch (submitError) {
       // Rollback transaction on error
