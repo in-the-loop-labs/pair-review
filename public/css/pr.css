@@ -400,35 +400,6 @@
   border-color: var(--color-border-primary);
 }
 
-.btn-draft {
-  color: #24292f;
-  background-color: #f6f8fa;
-  border: 1px solid #d1d9e0;
-  padding: 8px 16px;
-  font-size: 14px;
-  border-radius: 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  cursor: pointer;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
-}
-
-.btn-draft:hover {
-  background-color: #f3f4f6;
-  border-color: #d1d9e0;
-}
-
-.btn-draft:focus {
-  outline: 2px solid #0969da;
-  outline-offset: 2px;
-}
-
-.btn-draft:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
 
 /* Theme toggle button specific styling */
 #theme-toggle {
@@ -2302,16 +2273,6 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-color: var(--color-border-primary);
 }
 
-[data-theme="dark"] .btn-draft {
-  color: var(--color-text-primary);
-  background-color: var(--color-bg-secondary);
-  border-color: var(--color-border-primary);
-}
-
-[data-theme="dark"] .btn-draft:hover {
-  background-color: var(--color-bg-tertiary);
-  border-color: var(--color-border-primary);
-}
 
 /* User Comment Functionality */
 .line-number-content {

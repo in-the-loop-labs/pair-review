@@ -1461,97 +1461,73 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     await run(db, 'BEGIN TRANSACTION');
     
     try {
-      let githubReview;
+      // Submit review using single method that handles both drafts and final reviews
+      console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
+      const githubReview = await githubClient.createReview(
+        owner, 
+        repo, 
+        prNumber, 
+        event, 
+        body || '', 
+        githubComments, 
+        diffContent
+      );
       
-      // Handle draft vs submitted review
+      // Update reviews table with appropriate status
+      const reviewStatus = event === 'DRAFT' ? 'draft' : 'submitted';
+      const now = new Date().toISOString();
+      
+      const reviewData = {
+        github_review_id: githubReview.id,
+        github_url: githubReview.html_url,
+        event: event,
+        body: body || '',
+        comments_count: githubReview.comments_count
+      };
+      
+      // Add timestamps based on review type
       if (event === 'DRAFT') {
-        // Create draft review (without event parameter)
-        console.log(`Creating draft review for PR #${prNumber} with ${comments.length} comments`);
-        githubReview = await githubClient.createDraftReview(
-          owner, 
-          repo, 
-          prNumber, 
-          body || '', 
-          githubComments, 
-          diffContent
-        );
-        
-        // Update reviews table with draft status and store review_id
-        const now = new Date().toISOString();
+        reviewData.created_at = new Date().toISOString();
+      } else {
+        reviewData.submitted_at = githubReview.submitted_at;
+      }
+      
+      // Insert or replace review record
+      if (event === 'DRAFT') {
         await run(db, `
           INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, review_data)
-          VALUES (?, ?, 'draft', ?, ?, ?)
-        `, [prNumber, repository, githubReview.id, now, JSON.stringify({
-          github_review_id: githubReview.id,
-          github_url: githubReview.html_url,
-          event: 'DRAFT',
-          body: body || '',
-          comments_count: githubReview.comments_count,
-          created_at: new Date().toISOString()
-        })]);
-
-        console.log(`Draft review created successfully: ${githubReview.html_url} (Review ID: ${githubReview.id})`);
-
-        res.json({ 
-          success: true,
-          message: `Draft review created successfully on GitHub`,
-          github_url: githubReview.html_url,
-          github_review_id: githubReview.id,
-          comments_submitted: githubReview.comments_count,
-          event: 'DRAFT',
-          status: githubReview.state // Should be 'PENDING'
-        });
-        
+          VALUES (?, ?, ?, ?, ?, ?)
+        `, [prNumber, repository, reviewStatus, githubReview.id, now, JSON.stringify(reviewData)]);
       } else {
-        // Submit final review with event
-        console.log(`Submitting review for PR #${prNumber} with ${comments.length} comments`);
-        githubReview = await githubClient.createReview(
-          owner, 
-          repo, 
-          prNumber, 
-          event, 
-          body || '', 
-          githubComments, 
-          diffContent
-        );
-
-        // Update reviews table with submission status
-        const now = new Date().toISOString();
         await run(db, `
           INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, submitted_at, review_data)
-          VALUES (?, ?, 'submitted', ?, ?, ?, ?)
-        `, [prNumber, repository, githubReview.id, now, now, JSON.stringify({
-          github_review_id: githubReview.id,
-          github_url: githubReview.html_url,
-          event: event,
-          body: body || '',
-          comments_count: githubReview.comments_count,
-          submitted_at: githubReview.submitted_at
-        })]);
-
-        console.log(`Review submitted successfully: ${githubReview.html_url}`);
-
-        res.json({ 
-          success: true,
-          message: `Review submitted successfully to GitHub`,
-          github_url: githubReview.html_url,
-          github_review_id: githubReview.id,
-          comments_submitted: githubReview.comments_count,
-          event: event
-        });
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `, [prNumber, repository, reviewStatus, githubReview.id, now, now, JSON.stringify(reviewData)]);
       }
+
+      console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
+
+      res.json({ 
+        success: true,
+        message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} GitHub`,
+        github_url: githubReview.html_url,
+        github_review_id: githubReview.id,
+        comments_submitted: githubReview.comments_count,
+        event: event,
+        status: event === 'DRAFT' ? githubReview.state : undefined // Include status for drafts
+      });
 
       // Update comments table to mark submitted comments
       // Note: Since comments table doesn't have github-specific columns in current schema,
       // we'll update the status to indicate submission
       const commentStatus = event === 'DRAFT' ? 'draft' : 'submitted';
-      const now = new Date().toISOString();
+      const commentUpdateTime = new Date().toISOString();
       for (const comment of comments) {
         await run(db, `
           UPDATE comments 
           SET status = ?, updated_at = ?
           WHERE id = ?
-        `, [commentStatus, now, comment.id]);
+        `, [commentStatus, commentUpdateTime, comment.id]);
       }
 
       // Commit transaction
