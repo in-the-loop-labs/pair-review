@@ -71,6 +71,12 @@ class ReviewModal {
                   <span class="review-type-label">Request changes</span>
                   <span class="review-type-desc">Submit feedback suggesting changes.</span>
                 </label>
+                
+                <label class="review-type-option">
+                  <input type="radio" name="review-event" value="DRAFT">
+                  <span class="review-type-label">Save as Draft</span>
+                  <span class="review-type-desc">Save your review as a draft on GitHub to finish later</span>
+                </label>
               </div>
             </div>
             
@@ -98,9 +104,6 @@ class ReviewModal {
         
         <div class="modal-footer review-modal-footer">
           <button class="btn btn-secondary" onclick="reviewModal.handleCloseClick()" id="cancel-review-btn">Cancel</button>
-          <button class="btn btn-draft" id="submit-draft-btn-modal" onclick="reviewModal.submitDraftReview()">
-            Submit as Draft
-          </button>
           <button class="btn btn-primary" id="submit-review-btn-modal" onclick="reviewModal.submitReview()">
             Submit review
           </button>
@@ -252,40 +255,28 @@ class ReviewModal {
   /**
    * Set modal submitting state
    */
-  setSubmittingState(isSubmitting, isDraft = false) {
+  setSubmittingState(isSubmitting, reviewEvent = null) {
     this.isSubmitting = isSubmitting;
     
     // Update UI elements
     const submitBtn = this.modal.querySelector('#submit-review-btn-modal');
-    const draftBtn = this.modal.querySelector('#submit-draft-btn-modal');
     const cancelBtn = this.modal.querySelector('#cancel-review-btn');
     const closeBtn = this.modal.querySelector('#close-review-btn');
     
     if (isSubmitting) {
-      // Show loading state on the appropriate button
-      if (isDraft) {
-        draftBtn.innerHTML = `
-          <div class="loading-spinner-small"></div>
-          Submitting Draft...
-        `;
-        draftBtn.disabled = true;
-        submitBtn.disabled = true;
-      } else {
-        submitBtn.innerHTML = `
-          <div class="loading-spinner-small"></div>
-          Submitting review...
-        `;
-        submitBtn.disabled = true;
-        draftBtn.disabled = true;
-      }
+      // Show loading state based on review type
+      const isDraft = reviewEvent === 'DRAFT';
+      submitBtn.innerHTML = `
+        <div class="loading-spinner-small"></div>
+        ${isDraft ? 'Submitting Draft...' : 'Submitting review...'}
+      `;
+      submitBtn.disabled = true;
       cancelBtn.style.display = 'none';
       closeBtn.style.display = 'none';
     } else {
       // Restore normal state
       submitBtn.innerHTML = 'Submit review';
       submitBtn.disabled = false;
-      draftBtn.innerHTML = 'Submit as Draft';
-      draftBtn.disabled = false;
       cancelBtn.style.display = 'inline-block';
       closeBtn.style.display = 'inline-block';
     }
@@ -316,7 +307,19 @@ class ReviewModal {
     this.updateLargeReviewWarning(commentCount);
     
     // Set submitting state
-    this.setSubmittingState(true);
+    this.setSubmittingState(true, reviewEvent);
+    
+    // Prevent navigation during submission for drafts
+    const isDraft = reviewEvent === 'DRAFT';
+    let handleBeforeUnload;
+    if (isDraft) {
+      handleBeforeUnload = (e) => {
+        e.preventDefault();
+        e.returnValue = 'Review submission in progress. Are you sure you want to leave?';
+        return e.returnValue;
+      };
+      window.addEventListener('beforeunload', handleBeforeUnload);
+    }
     
     try {
       // Get current PR from prManager
@@ -338,22 +341,31 @@ class ReviewModal {
       
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to submit review');
+        throw new Error(errorData.error || `Failed to ${isDraft ? 'submit draft' : 'submit'} review`);
       }
       
       const result = await response.json();
       
-      // Show success toast with GitHub link
+      // Show appropriate success message
       if (window.toast) {
-        const reviewUrl = result.reviewUrl || result.html_url;
-        window.toast.showSuccess(
-          'Review submitted successfully!',
-          {
-            link: reviewUrl,
-            linkText: 'View on GitHub',
-            duration: 5000
-          }
-        );
+        const reviewUrl = result.reviewUrl || result.github_url;
+        if (isDraft) {
+          window.toast.showSuccess(
+            'Draft review submitted to GitHub successfully!',
+            {
+              duration: 5000
+            }
+          );
+        } else {
+          window.toast.showSuccess(
+            'Review submitted successfully!',
+            {
+              link: reviewUrl,
+              linkText: 'View on GitHub',
+              duration: 5000
+            }
+          );
+        }
       }
       
       // Clear submitting state before hiding modal
@@ -371,106 +383,29 @@ class ReviewModal {
       this.hideError();
       this.updateLargeReviewWarning(0);
       
+      // Remove beforeunload handler if it was added
+      if (isDraft && handleBeforeUnload) {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        
+        // After 2 seconds, open GitHub PR page for drafts
+        setTimeout(() => {
+          const githubUrl = result.github_url || `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
+          window.open(githubUrl, '_blank');
+        }, 2000);
+      }
+      
     } catch (error) {
-      console.error('Error submitting review:', error);
+      console.error(`Error ${isDraft ? 'submitting draft' : 'submitting'} review:`, error);
       this.showError(error.message);
       // Restore normal state on error
       this.setSubmittingState(false);
+      // Remove beforeunload handler on error
+      if (isDraft && handleBeforeUnload) {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+      }
     }
   }
 
-  /**
-   * Submit the review as draft
-   */
-  async submitDraftReview() {
-    if (this.isSubmitting) return;
-    
-    const reviewBody = this.modal.querySelector('#review-body-modal').value.trim();
-    const userComments = document.querySelectorAll('.user-comment-row');
-    const commentCount = userComments.length;
-    
-    // Hide any previous errors
-    this.hideError();
-    
-    // Set submitting state for draft
-    this.setSubmittingState(true, true);
-    
-    // Prevent navigation during submission
-    const handleBeforeUnload = (e) => {
-      e.preventDefault();
-      e.returnValue = 'Review submission in progress. Are you sure you want to leave?';
-      return e.returnValue;
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    
-    try {
-      // Get current PR from prManager
-      const pr = window.prManager?.currentPR;
-      if (!pr) {
-        throw new Error('No PR loaded');
-      }
-      
-      const response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/submit-review`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          event: 'DRAFT',
-          body: reviewBody
-        })
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to submit draft review');
-      }
-      
-      const result = await response.json();
-      
-      // Show success toast with specific draft message
-      if (window.toast) {
-        window.toast.showSuccess(
-          'Draft review submitted to GitHub successfully!',
-          {
-            duration: 5000
-          }
-        );
-      }
-      
-      // Clear submitting state before hiding modal
-      this.setSubmittingState(false);
-      
-      // Hide modal
-      this.hide();
-      
-      // Reset form
-      this.modal.querySelector('#review-body-modal').value = '';
-      const commentRadio = this.modal.querySelector('input[value="COMMENT"]');
-      if (commentRadio) {
-        commentRadio.checked = true;
-      }
-      this.hideError();
-      this.updateLargeReviewWarning(0);
-      
-      // Remove beforeunload handler
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      
-      // After 2 seconds, open GitHub PR page
-      setTimeout(() => {
-        const githubUrl = result.github_url || `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
-        window.open(githubUrl, '_blank');
-      }, 2000);
-      
-    } catch (error) {
-      console.error('Error submitting draft review:', error);
-      this.showError(error.message);
-      // Restore normal state on error
-      this.setSubmittingState(false);
-      // Remove beforeunload handler
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    }
-  }
 }
 
 // Initialize when DOM is ready if not already initialized
