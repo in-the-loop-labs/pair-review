@@ -46,6 +46,42 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - **File Analysis**: Extracts changed files with statistics
 
 ### 6. AI Analysis System (`src/ai/analyzer.js`)
+#### Enhanced Prompt Structure (Updated)
+- **Improved Organization**: All three analysis levels now have structured prompts with clear sections
+- **Customization Markers**: Added `// USER_CUSTOMIZABLE:` markers throughout prompts for future user preference injection
+  - **Architecture Patterns**: Customizable architecture and design pattern checking
+  - **Performance Analysis**: Performance optimization focus areas
+  - **Security Checks**: Security vulnerability analysis preferences 
+  - **Code Style Preferences**: User-specific coding style and formatting rules
+  - **Test Coverage Analysis**: Configurable test coverage requirements
+  - **Documentation Standards**: Documentation completeness preferences
+- **Cross-Level Context**: Enhanced context sharing between levels to avoid duplication
+  - **Level 2**: Shows count and types of Level 1 findings at start
+  - **Level 3**: Shows combined count from Level 1 and 2, emphasizes building on previous work
+- **Level 3 Optimization**: Removed redundant git diff step (already done in previous levels)
+  - **Focus Directive**: Added explicit instruction to focus on architectural/cross-file concerns
+  - **Efficiency**: Skip exploration of unchanged areas unless directly impacted
+
+#### Test Detection System
+- **Purpose**: Intelligently determine when to include test coverage analysis in Level 3 AI review
+- **Architecture**:
+  - **Language Detection**: Analyzes changed file extensions to identify primary programming languages
+  - **Test Pattern Recognition**: Uses language-specific patterns to find test files in codebase
+  - **Framework Identification**: Detects test frameworks (Jest, PyTest, JUnit, RSpec, etc.)
+  - **Context Caching**: Caches test detection results per worktree to avoid redundant scans
+  - **Performance Optimization**: Limits find commands with head -20 to avoid slow scans
+- **Decision Logic**:
+  - **Enable test checking** when: codebase has test files OR PR modifies test files
+  - **Disable test checking** when: no test framework detected and PR doesn't touch tests
+  - **USER_CUSTOMIZABLE markers**: Allow future user preference overrides
+- **Supported Languages & Patterns**:
+  - **JavaScript/TypeScript**: `*.test.js`, `*.spec.ts`, `__tests__/` folders
+  - **Python**: `test_*.py`, `*_test.py`, `tests/` folder, `pytest.ini`
+  - **Java**: `src/test/`, `*Test.java`, `*Tests.java`
+  - **Go**: `*_test.go` files
+  - **Ruby**: `spec/`, `*_spec.rb`, `test/` folders
+  - **Rust**: `tests/` folder, `#[test]` attributes
+  - **Others**: PHP, C#, C/C++ with appropriate patterns
 - **Role**: Multi-level AI analysis engine with real-time progress tracking
 - **Key Features**:
   - **Real File Tracking**: Uses actual changed files from PR data instead of fake progress steps
@@ -57,7 +93,14 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - **Cross-Level Context**: Passes previous level suggestions to avoid duplication
 - **Level 1 Implementation**: Full implementation with Claude CLI integration analyzing diff changes
 - **Level 2 Implementation**: Full implementation with file context analysis for complete files under 10,000 lines
-- **Level 3 Implementation**: Placeholder implementation with realistic progress simulation
+- **Level 3 Implementation**: Full implementation with language-aware test detection heuristics
+  - **Test Detection System**: Automatically detects test frameworks and context
+  - **Language-Aware Analysis**: Identifies primary languages from changed files  
+  - **Framework Detection**: Supports Jest, PyTest, JUnit, Go testing, RSpec, Cargo, and more
+  - **Smart Test Checking**: Only includes test analysis when tests are present or PR modifies test files
+  - **Customizable Sections**: USER_CUSTOMIZABLE markers for future user preferences
+  - **Performance Optimized**: Caches detection results and limits file searches
+  - **Multi-Language Support**: JavaScript/TypeScript, Python, Java, Go, Ruby, Rust, PHP, C#, C/C++
 - **Progress Modal Integration**: Real-time updates to ProgressModal.js with file-by-file tracking
 - **Deduplication System**: 
   - **Text Similarity**: Uses Levenshtein distance to calculate 80% similarity threshold

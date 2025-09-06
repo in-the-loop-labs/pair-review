@@ -1,12 +1,17 @@
 const ClaudeCLI = require('./claude-cli');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
+const fs = require('fs').promises;
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
 const logger = require('../utils/logger');
 
 class Analyzer {
   constructor(database) {
     this.claude = new ClaudeCLI();
     this.db = database;
+    this.testContextCache = new Map(); // Cache test detection results per worktree
   }
 
   /**
@@ -153,20 +158,37 @@ class Analyzer {
   buildLevel2Prompt(prId, worktreePath, prMetadata, previousSuggestions = []) {
     return `You are reviewing pull request #${prId} in the current working directory.
 
-Perform a Level 2 review - analyze file context:
+# Level 2 Review - Analyze File Context
 
+## Previous Analysis Context
+Level 1 analysis found ${previousSuggestions.length} suggestions:
+${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_start})`).join('\n')}
+
+## Analysis Process
 1. Run 'git diff origin/${prMetadata.base_branch}...HEAD --name-only' to identify changed files
 2. For each changed file:
    - Read the full file content to understand context
    - Run 'git diff origin/${prMetadata.base_branch}...HEAD <file>' to see what changed
    - Analyze how changes fit within the file's overall structure
-3. Look for:
+
+## Focus Areas (Building on Level 1 findings)
+// USER_CUSTOMIZABLE: File Consistency Patterns
+Look for:
    - Inconsistencies within files (naming conventions, patterns, error handling)
    - Missing related changes within files (if one part changed, what else should change?)
+   
+// USER_CUSTOMIZABLE: Code Style Preferences
    - Code style violations or deviations from patterns established in the file
+   - Consistent formatting and structure within files
+   
+// USER_CUSTOMIZABLE: Architecture Patterns  
    - Opportunities for improvement based on full file context
+   - Design pattern consistency within file scope
+   
+// USER_CUSTOMIZABLE: Best Practices Recognition
    - Good practices worth praising in the file's context
 
+## Available Commands
 You have full access to the codebase and can run commands like:
 - git diff origin/${prMetadata.base_branch}...HEAD --name-only
 - git diff origin/${prMetadata.base_branch}...HEAD <file>
@@ -175,6 +197,7 @@ You have full access to the codebase and can run commands like:
 
 Note: You may optionally use parallel read-only Tasks to examine multiple files simultaneously if that would be helpful.
 
+## Output Format
 Output JSON with this structure:
 {
   "level": 2,
@@ -190,10 +213,7 @@ Output JSON with this structure:
   "summary": "Brief summary of file context findings"
 }
 
-Previous findings from earlier analysis levels:
-${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_start})`).join('\n')}
-
-Important:
+## Important Guidelines
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
 - Focus on issues that require understanding the full file context
 - Do NOT duplicate findings from earlier levels - avoid duplicating the suggestions listed above
@@ -212,18 +232,35 @@ Important:
   buildLevel1Prompt(prId, worktreePath, prMetadata) {
     return `You are reviewing pull request #${prId} in the current working directory.
 
-Perform a Level 1 review - analyze changes in isolation:
+# Level 1 Review - Analyze Changes in Isolation
 
+## Initial Setup
 1. Run 'git diff origin/${prMetadata.base_branch}...HEAD' to see what changed in this PR
 2. Focus ONLY on the changed lines in the diff
-3. Identify:
+
+## Analysis Focus Areas
+// USER_CUSTOMIZABLE: Code Quality Checks
+Identify the following in changed code:
    - Bugs or errors in the modified code
    - Logic issues in the changes
-   - Security concerns
-   - Good practices worth praising
-   - Performance issues
+   
+// USER_CUSTOMIZABLE: Security Analysis
+   - Security concerns and vulnerabilities
+   
+// USER_CUSTOMIZABLE: Performance Analysis  
+   - Performance issues and optimizations
+   
+// USER_CUSTOMIZABLE: Code Style Preferences
    - Code style and formatting issues
+   - Naming convention violations
+   
+// USER_CUSTOMIZABLE: Architecture Patterns
+   - Design pattern violations visible in isolation
+   
+// USER_CUSTOMIZABLE: Best Practices Recognition
+   - Good practices worth praising
 
+## Available Commands
 You have full access to the codebase and can run commands like:
 - git diff origin/${prMetadata.base_branch}...HEAD
 - git diff --stat
@@ -232,6 +269,7 @@ You have full access to the codebase and can run commands like:
 
 Note: You may optionally use parallel Tasks to analyze different parts of the changes if that would be helpful.
 
+## Output Format
 Output JSON with this structure:
 {
   "level": 1,
@@ -247,7 +285,7 @@ Output JSON with this structure:
   "summary": "Brief summary of findings"
 }
 
-Category definitions:
+## Category Definitions
 - bug: Errors, crashes, or incorrect behavior
 - improvement: Enhancements to make existing code better
 - praise: Good practices worth highlighting
@@ -257,7 +295,7 @@ Category definitions:
 - security: Vulnerabilities or safety issues
 - code-style: Formatting, naming conventions, and code style
 
-Important: 
+## Important Guidelines
 - Only comment on lines that were actually changed in this PR
 - Focus on issues visible in the diff itself
 - Do not review unchanged code or missing tests (that's for Level 3)
@@ -563,6 +601,274 @@ Important:
   }
 
   /**
+   * Detect testing context for the codebase
+   * @param {string} worktreePath - Path to the git worktree
+   * @returns {Promise<Object>} Testing context information
+   */
+  async detectTestingContext(worktreePath) {
+    // Check cache first
+    if (this.testContextCache.has(worktreePath)) {
+      return this.testContextCache.get(worktreePath);
+    }
+
+    logger.info('Detecting testing context for codebase');
+    
+    try {
+      // Step 1: Detect primary language(s) from changed files
+      const { stdout: changedFiles } = await execPromise('git diff origin/HEAD...HEAD --name-only', { cwd: worktreePath });
+      const files = changedFiles.trim().split('\n').filter(f => f.length > 0);
+      
+      const languages = this.detectLanguages(files);
+      logger.info(`Detected languages: ${languages.join(', ')}`);
+      
+      // Step 2: Check for language-specific test patterns
+      let hasTests = false;
+      let testFramework = null;
+      const testFiles = [];
+      
+      // Check for test files based on detected languages
+      for (const lang of languages) {
+        const patterns = this.getTestPatterns(lang);
+        
+        for (const pattern of patterns) {
+          try {
+            const { stdout: foundFiles } = await execPromise(
+              `find . -name "${pattern}" -type f | head -20`, 
+              { cwd: worktreePath }
+            );
+            
+            if (foundFiles.trim()) {
+              hasTests = true;
+              testFiles.push(...foundFiles.trim().split('\n').filter(f => f.length > 0));
+              
+              // Determine test framework
+              if (!testFramework) {
+                testFramework = this.determineTestFramework(lang, foundFiles, worktreePath);
+              }
+            }
+          } catch (error) {
+            // Continue if pattern search fails
+            logger.debug(`Test pattern search failed for ${pattern}: ${error.message}`);
+          }
+        }
+      }
+      
+      // Step 3: Check if PR itself modifies test files
+      const prModifiesTests = files.some(file => 
+        this.isTestFile(file) || testFiles.some(testFile => testFile.includes(file))
+      );
+      
+      // Step 4: Determine if we should check for tests
+      const shouldCheckTests = hasTests || prModifiesTests;
+      
+      const result = {
+        hasTests,
+        testFramework,
+        shouldCheckTests,
+        testFiles: testFiles.slice(0, 10), // Limit to first 10 for logging
+        languages,
+        prModifiesTests
+      };
+      
+      logger.info(`Test detection result: hasTests=${hasTests}, framework=${testFramework}, shouldCheck=${shouldCheckTests}`);
+      
+      // Cache the result
+      this.testContextCache.set(worktreePath, result);
+      
+      return result;
+    } catch (error) {
+      logger.warn(`Test detection failed: ${error.message}`);
+      // Fallback - assume we should check tests
+      const fallbackResult = {
+        hasTests: true,
+        testFramework: null,
+        shouldCheckTests: true,
+        testFiles: [],
+        languages: ['javascript'], // Safe default
+        prModifiesTests: false
+      };
+      
+      this.testContextCache.set(worktreePath, fallbackResult);
+      return fallbackResult;
+    }
+  }
+  
+  /**
+   * Detect primary languages from file extensions
+   * @param {Array<string>} files - List of file paths
+   * @returns {Array<string>} Detected languages
+   */
+  detectLanguages(files) {
+    const extensionMap = {
+      '.js': 'javascript',
+      '.jsx': 'javascript',
+      '.ts': 'typescript',
+      '.tsx': 'typescript',
+      '.py': 'python',
+      '.java': 'java',
+      '.go': 'go',
+      '.rb': 'ruby',
+      '.rs': 'rust',
+      '.php': 'php',
+      '.cs': 'csharp',
+      '.cpp': 'cpp',
+      '.c': 'c',
+      '.h': 'c'
+    };
+    
+    const languageCount = {};
+    
+    files.forEach(file => {
+      const ext = path.extname(file).toLowerCase();
+      const lang = extensionMap[ext];
+      if (lang) {
+        languageCount[lang] = (languageCount[lang] || 0) + 1;
+      }
+    });
+    
+    // Return languages sorted by frequency
+    return Object.entries(languageCount)
+      .sort(([,a], [,b]) => b - a)
+      .map(([lang]) => lang);
+  }
+  
+  /**
+   * Get test file patterns for a language
+   * @param {string} language - Programming language
+   * @returns {Array<string>} Test file patterns
+   */
+  getTestPatterns(language) {
+    const patterns = {
+      javascript: ['*.test.js', '*.spec.js', '__tests__/*.js'],
+      typescript: ['*.test.ts', '*.spec.ts', '*.test.tsx', '*.spec.tsx', '__tests__/*.ts', '__tests__/*.tsx'],
+      python: ['test_*.py', '*_test.py', 'test*.py'],
+      java: ['*Test.java', '*Tests.java'],
+      go: ['*_test.go'],
+      ruby: ['*_spec.rb', '*_test.rb'],
+      rust: ['**/tests/*.rs'],
+      php: ['*Test.php', '*_test.php'],
+      csharp: ['*Test.cs', '*Tests.cs'],
+      cpp: ['*_test.cpp', '*Test.cpp'],
+      c: ['*_test.c', '*Test.c']
+    };
+    
+    return patterns[language] || [];
+  }
+  
+  /**
+   * Determine test framework based on found files and codebase inspection
+   * @param {string} language - Programming language
+   * @param {string} foundFiles - Found test files
+   * @param {string} worktreePath - Path to worktree
+   * @returns {string|null} Test framework name
+   */
+  determineTestFramework(language, foundFiles, worktreePath) {
+    // Framework detection based on common patterns
+    const frameworkIndicators = {
+      javascript: {
+        jest: ['jest.config.js', 'package.json'],
+        mocha: ['mocha.opts', '.mocharc'],
+        jasmine: ['jasmine.json'],
+        vitest: ['vitest.config'],
+        cypress: ['cypress.json', 'cypress/'],
+        playwright: ['playwright.config']
+      },
+      python: {
+        pytest: ['pytest.ini', 'pyproject.toml'],
+        unittest: ['unittest'],
+        nose: ['.noserc'],
+        tox: ['tox.ini']
+      },
+      java: {
+        junit: ['pom.xml', 'build.gradle'],
+        testng: ['testng.xml']
+      },
+      go: {
+        testing: ['go.mod'] // Go's built-in testing
+      },
+      ruby: {
+        rspec: ['spec/', '.rspec'],
+        minitest: ['test/']
+      },
+      rust: {
+        cargo: ['Cargo.toml']
+      }
+    };
+    
+    const indicators = frameworkIndicators[language];
+    if (!indicators) return null;
+    
+    // Check for framework indicator files (simplified check)
+    for (const [framework, files] of Object.entries(indicators)) {
+      for (const file of files) {
+        try {
+          // Simple heuristic - if the indicator mentions the framework or common patterns
+          if (foundFiles.includes(file) || foundFiles.includes(framework)) {
+            return framework;
+          }
+        } catch (error) {
+          // Continue checking other indicators
+        }
+      }
+    }
+    
+    // Default frameworks for each language
+    const defaults = {
+      javascript: 'jest',
+      typescript: 'jest', 
+      python: 'pytest',
+      java: 'junit',
+      go: 'testing',
+      ruby: 'rspec',
+      rust: 'cargo'
+    };
+    
+    return defaults[language] || null;
+  }
+  
+  /**
+   * Check if a file is a test file based on common patterns
+   * @param {string} filePath - Path to the file
+   * @returns {boolean} True if the file appears to be a test file
+   */
+  isTestFile(filePath) {
+    const fileName = path.basename(filePath).toLowerCase();
+    const fullPath = filePath.toLowerCase();
+    
+    // Common test file patterns
+    const testPatterns = [
+      /\.test\./,
+      /\.spec\./,
+      /_test\./,
+      /test_.*\./,
+      /.*test\./, 
+      /.*tests\./
+    ];
+    
+    // Test directory patterns (check full path)
+    const testDirPatterns = [
+      /\/test\//,
+      /\/tests\//,
+      /\/spec\//,
+      /\/specs\//,
+      /\/__tests__\//,
+      /\/cypress\//,
+      /\/playwright\//,
+      // Handle paths without leading slash
+      /^test\//,
+      /^tests\//,
+      /^spec\//,
+      /^specs\//,
+      /^__tests__\//,
+      /^cypress\//,
+      /^playwright\//
+    ];
+    
+    return testPatterns.some(pattern => pattern.test(fileName)) ||
+           testDirPatterns.some(pattern => pattern.test(fullPath));
+  }
+
+  /**
    * Perform Level 3 analysis - Codebase Context
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
@@ -593,9 +899,13 @@ Important:
         logger.info(progress);
       };
       
-      // Step 1: Build the Level 3 prompt
+      // Step 1: Detect testing context
+      updateProgress('Detecting testing context for codebase');
+      const testingContext = await this.detectTestingContext(worktreePath);
+      
+      // Step 2: Build the Level 3 prompt with test context
       updateProgress('Building Level 3 prompt for Claude to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, previousSuggestions);
+      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, previousSuggestions, testingContext);
       
       // Step 2: Execute Claude CLI for Level 3 analysis
       updateProgress('Running Claude to analyze codebase-wide implications');
@@ -635,28 +945,81 @@ Important:
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Array} previousSuggestions - Previous level suggestions to avoid duplicating
+   * @param {Object} testingContext - Testing context information
    */
-  buildLevel3Prompt(prId, worktreePath, prMetadata, previousSuggestions = []) {
+  /**
+   * Build the test analysis section for Level 3 prompt
+   * @param {Object} testingContext - Testing context information
+   * @returns {string} Test analysis section
+   */
+  buildTestAnalysisSection(testingContext) {
+    if (!testingContext) {
+      return `- Missing tests for the changed functionality (checking enabled by default)`;
+    }
+    
+    if (testingContext.shouldCheckTests) {
+      const frameworkNote = testingContext.testFramework 
+        ? ` (detected framework: ${testingContext.testFramework})`
+        : '';
+      
+      return `- Missing tests for the changed functionality${frameworkNote}
+   // Test checking: enabled based on codebase analysis - found test files: ${testingContext.hasTests}`;
+    } else {
+      return `// Test checking: disabled based on codebase analysis - no test framework detected
+   // Skipping test coverage analysis as no test framework detected in codebase`;
+    }
+  }
+
+  buildLevel3Prompt(prId, worktreePath, prMetadata, previousSuggestions = [], testingContext = null) {
     return `You are reviewing pull request #${prId} in the current working directory.
 
-Perform a Level 3 review - analyze codebase context:
+# Level 3 Review - Analyze Codebase Context
 
-1. Run 'git diff origin/${prMetadata.base_branch}...HEAD --name-only' to see what files changed
-2. Explore the codebase to understand architectural context:
+## Previous Analysis Context
+Previous levels found ${previousSuggestions.length} suggestions:
+${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_start || s.line})`).join('\n')}
+
+## Analysis Process
+Focus on architectural and cross-file concerns not visible in single-file context.
+Skip exploration of unchanged areas unless directly impacted by the changes.
+
+Based on the changed files identified in previous levels, explore the codebase to understand architectural context:
    - Find and examine related files (imports, tests, configs)
    - Look for similar patterns elsewhere in the codebase
    - Check for related documentation
-3. Analyze:
+
+## Focus Areas (Building on Previous Findings)
+// USER_CUSTOMIZABLE: Architecture Patterns
+Analyze:
    - Architectural consistency across the codebase
-   - Missing tests for the changed functionality
-   - Missing or outdated documentation
    - Pattern violations or inconsistencies with established patterns
    - Cross-file dependencies and potential impact
+   
+// USER_CUSTOMIZABLE: Test Coverage Analysis
+   ${this.buildTestAnalysisSection(testingContext)}
+   
+// USER_CUSTOMIZABLE: Documentation Standards
+   - Missing or outdated documentation
+   - API documentation consistency
+   
+// USER_CUSTOMIZABLE: Configuration Management  
    - Configuration changes needed
+   - Environment-specific considerations
+   
+// USER_CUSTOMIZABLE: Compatibility Analysis
    - Potential breaking changes or compatibility issues
+   - Backward compatibility concerns
+   
+// USER_CUSTOMIZABLE: Performance Analysis
+   - Cross-component performance implications
+   - Scalability considerations
+   
+// USER_CUSTOMIZABLE: Security Checks
+   - Cross-system security implications
+   - Data flow security analysis
 
+## Available Commands
 You have full access to the codebase and can run commands like:
-- git diff origin/${prMetadata.base_branch}...HEAD
 - find . -name "*.test.js" or similar to find test files
 - grep -r "pattern" to search for patterns
 - cat, ls, tree commands to explore structure
@@ -664,6 +1027,7 @@ You have full access to the codebase and can run commands like:
 
 Note: You may optionally use parallel Tasks to explore different areas of the codebase if that would be helpful.
 
+## Output Format
 Output JSON with this structure:
 {
   "level": 3,
@@ -679,14 +1043,11 @@ Output JSON with this structure:
   "summary": "Brief summary of codebase context findings"
 }
 
-Previous findings from earlier analysis levels:
-${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_start || s.line})`).join('\n')}
-
-Important:
+## Important Guidelines
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
 - Focus on codebase-wide concerns that require understanding multiple files
 - Do NOT duplicate findings from earlier levels - avoid duplicating the suggestions listed above
-- Look especially for missing tests, documentation, and architectural issues
+- Look especially for ${testingContext?.shouldCheckTests ? 'missing tests,' : ''} documentation, and architectural issues
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
   }
