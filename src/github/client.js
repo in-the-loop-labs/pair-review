@@ -243,6 +243,11 @@ class GitHubClient {
         payload.event = event;
       }
 
+      console.log(`Submitting review to GitHub with payload:`, JSON.stringify({
+        ...payload,
+        comments: payload.comments.length + ' comments'
+      }, null, 2));
+
       // Submit review to GitHub
       const { data } = await this.octokit.rest.pulls.createReview(payload);
 
@@ -390,10 +395,20 @@ class GitHubClient {
 
     // Handle validation errors
     if (error.status === 422) {
+      console.error('GitHub 422 validation error response:', JSON.stringify(error.response?.data, null, 2));
       const message = error.response?.data?.message || 'Validation error';
       const errors = error.response?.data?.errors;
+      
+      // Check for pending review error specifically
       if (errors && Array.isArray(errors)) {
-        const errorDetails = errors.map(e => e.message || e.code).join(', ');
+        const errorMessages = errors.map(e => e.message || e.code || e);
+        const errorDetails = errorMessages.join(', ');
+        
+        // Special handling for pending review error
+        if (errorMessages.some(msg => msg.includes('pending review'))) {
+          throw new Error(`You already have a pending (draft) review on this PR. Please submit or dismiss it on GitHub before creating a new draft review.`);
+        }
+        
         throw new Error(`GitHub API validation error: ${message}. Details: ${errorDetails}`);
       }
       throw new Error(`GitHub API validation error: ${message}`);
