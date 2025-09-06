@@ -285,7 +285,7 @@ Important:
         if (jsonMatch) {
           const parsed = JSON.parse(jsonMatch[0]);
           if (parsed.suggestions) {
-            return this.validateSuggestions(parsed.suggestions);
+            return this.validateSuggestions(parsed.suggestions, previousSuggestions);
           }
         }
       } catch (error) {
@@ -300,9 +300,11 @@ Important:
 
   /**
    * Validate and filter suggestions
+   * @param {Array} suggestions - Raw suggestions from AI
+   * @param {Array} previousSuggestions - Previous suggestions to check for duplicates
    */
-  validateSuggestions(suggestions) {
-    return suggestions
+  validateSuggestions(suggestions, previousSuggestions = []) {
+    const validSuggestions = suggestions
       .filter(s => {
         // Ensure required fields exist
         if (!s.file || !s.line || !s.type || !s.title) {
@@ -317,7 +319,12 @@ Important:
         }
         
         return true;
-      })
+      });
+    
+    // Deduplicate against previous suggestions
+    const deduplicatedSuggestions = this.deduplicateSuggestions(validSuggestions, previousSuggestions);
+    
+    return deduplicatedSuggestions
       .map(s => ({
         file: s.file,
         line_start: s.line,
@@ -328,6 +335,106 @@ Important:
         suggestion: s.suggestion || '',
         confidence: s.confidence || 0.7
       }));
+  }
+
+  /**
+   * Deduplicate suggestions against previous suggestions
+   * @param {Array} newSuggestions - New suggestions to check
+   * @param {Array} previousSuggestions - Previous suggestions to compare against
+   * @returns {Array} Filtered suggestions with duplicates removed
+   */
+  deduplicateSuggestions(newSuggestions, previousSuggestions) {
+    if (!previousSuggestions || previousSuggestions.length === 0) {
+      return newSuggestions;
+    }
+    
+    return newSuggestions.filter(newSugg => {
+      // Check for exact duplicates based on file, line, and type
+      const hasExactMatch = previousSuggestions.some(prevSugg => 
+        prevSugg.file === newSugg.file && 
+        prevSugg.line_start === newSugg.line &&
+        prevSugg.type === newSugg.type
+      );
+      
+      if (hasExactMatch) {
+        // Check text similarity for final deduplication
+        const hasSimilarText = previousSuggestions.some(prevSugg => {
+          if (prevSugg.file === newSugg.file && 
+              prevSugg.line_start === newSugg.line &&
+              prevSugg.type === newSugg.type) {
+            const similarity = this.calculateTextSimilarity(
+              prevSugg.title + ' ' + prevSugg.description,
+              newSugg.title + ' ' + (newSugg.description || '')
+            );
+            return similarity > 0.8; // 80% similarity threshold
+          }
+          return false;
+        });
+        
+        if (hasSimilarText) {
+          logger.info(`Filtering duplicate suggestion: ${newSugg.title} (${newSugg.file}:${newSugg.line})`);
+          return false;
+        }
+      }
+      
+      return true;
+    });
+  }
+
+  /**
+   * Calculate text similarity between two strings using Levenshtein distance
+   * @param {string} str1 - First string
+   * @param {string} str2 - Second string
+   * @returns {number} Similarity ratio between 0 and 1
+   */
+  calculateTextSimilarity(str1, str2) {
+    if (!str1 || !str2) return 0;
+    
+    // Normalize strings (lowercase, trim)
+    const s1 = str1.toLowerCase().trim();
+    const s2 = str2.toLowerCase().trim();
+    
+    if (s1 === s2) return 1;
+    
+    const maxLength = Math.max(s1.length, s2.length);
+    if (maxLength === 0) return 1;
+    
+    const distance = this.levenshteinDistance(s1, s2);
+    return (maxLength - distance) / maxLength;
+  }
+
+  /**
+   * Calculate Levenshtein distance between two strings
+   * @param {string} str1 - First string
+   * @param {string} str2 - Second string
+   * @returns {number} Edit distance
+   */
+  levenshteinDistance(str1, str2) {
+    const matrix = [];
+    
+    for (let i = 0; i <= str2.length; i++) {
+      matrix[i] = [i];
+    }
+    
+    for (let j = 0; j <= str1.length; j++) {
+      matrix[0][j] = j;
+    }
+    
+    for (let i = 1; i <= str2.length; i++) {
+      for (let j = 1; j <= str1.length; j++) {
+        if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1, // substitution
+            matrix[i][j - 1] + 1,     // insertion
+            matrix[i - 1][j] + 1      // deletion
+          );
+        }
+      }
+    }
+    
+    return matrix[str2.length][str1.length];
   }
 
   /**

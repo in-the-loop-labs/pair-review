@@ -349,7 +349,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id FROM pr_metadata
+      SELECT id, base_branch FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
@@ -423,7 +423,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     };
     
     // Start analysis asynchronously with progress callback
-    analyzer.analyzeLevel1(prMetadata.id, worktreePath, progressCallback)
+    analyzer.analyzeLevel1(prMetadata.id, worktreePath, prMetadata, progressCallback)
       .then(result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -511,7 +511,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
     
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id FROM pr_metadata
+      SELECT id, base_branch FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
@@ -572,7 +572,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
     };
     
     // Start Level 2 analysis asynchronously
-    analyzer.analyzeLevel2(prMetadata.id, worktreePath, progressCallback)
+    analyzer.analyzeLevel2(prMetadata.id, worktreePath, prMetadata, [], progressCallback)
       .then(result => {
         const completedStatus = {
           ...activeAnalyses.get(analysisId),
@@ -632,7 +632,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
     
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id FROM pr_metadata
+      SELECT id, base_branch FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
@@ -693,7 +693,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
     };
     
     // Start Level 3 analysis asynchronously
-    analyzer.analyzeLevel3(prMetadata.id, worktreePath, progressCallback)
+    analyzer.analyzeLevel3(prMetadata.id, worktreePath, prMetadata, [], progressCallback)
       .then(result => {
         const completedStatus = {
           ...activeAnalyses.get(analysisId),

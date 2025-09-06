@@ -52,10 +52,17 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - **Multi-level Support**: Level 1 (diff analysis), Level 2 (file context), Level 3 (codebase context)
   - **Progress Callbacks**: Real-time file-by-file progress updates via Server-Sent Events
   - **Database Integration**: Stores suggestions in comments table with AI metadata
+  - **Correct Git Diff Commands**: Uses `origin/${base_branch}...HEAD` instead of `HEAD~1` for accurate PR comparisons
+  - **Deduplication Logic**: Prevents duplicate suggestions between analysis levels using text similarity
+  - **Cross-Level Context**: Passes previous level suggestions to avoid duplication
 - **Level 1 Implementation**: Full implementation with Claude CLI integration analyzing diff changes
 - **Level 2 Implementation**: Full implementation with file context analysis for complete files under 10,000 lines
 - **Level 3 Implementation**: Placeholder implementation with realistic progress simulation
 - **Progress Modal Integration**: Real-time updates to ProgressModal.js with file-by-file tracking
+- **Deduplication System**: 
+  - **Text Similarity**: Uses Levenshtein distance to calculate 80% similarity threshold
+  - **Multi-criteria Matching**: Compares file, line, type, and text content
+  - **Cross-level Prevention**: Level 2 avoids Level 1 duplicates, Level 3 avoids both
 
 ### 7. API Endpoints (`src/routes/pr.js`)
 - **GET /api/pr/:owner/:repo/:number**: Full PR metadata and basic info
