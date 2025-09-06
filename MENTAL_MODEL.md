@@ -66,13 +66,11 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 
 #### Enhanced Prompt Structure (Updated)
 - **Improved Organization**: All three analysis levels now have structured prompts with clear sections
-- **Customization Markers**: Added `// USER_CUSTOMIZABLE:` markers throughout prompts for future user preference injection
-  - **Architecture Patterns**: Customizable architecture and design pattern checking
-  - **Performance Analysis**: Performance optimization focus areas
-  - **Security Checks**: Security vulnerability analysis preferences 
-  - **Code Style Preferences**: User-specific coding style and formatting rules
-  - **Test Coverage Analysis**: Configurable test coverage requirements
-  - **Documentation Standards**: Documentation completeness preferences
+- **Clean Prompt Architecture**: Removed USER_CUSTOMIZABLE markers from all AI prompts for better Claude interaction
+  - **Natural Flow**: Consolidated fragmented sections back into clean, continuous bullet point lists
+  - **No Functionality Changes**: Preserved all analysis points, JSON output format, and important guidelines
+  - **Cleaner Instructions**: Removed comment-style markers that were causing prompt fragmentation
+  - **YAGNI Principle**: Eliminated complexity for features that don't exist yet (user preference injection)
 - **Cross-Level Context**: Enhanced context sharing between levels to avoid duplication
   - **Level 2**: Shows count and types of Level 1 findings at start
   - **Level 3**: Shows combined count from Level 1 and 2, emphasizes building on previous work

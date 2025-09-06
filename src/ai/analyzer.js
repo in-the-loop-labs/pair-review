@@ -226,28 +226,17 @@ Level 1 already identified the changed files. For each file with changes:
    - Skip files where no file-level issues are found (efficiency focus)
 
 ## Focus Areas (Building on Level 1 findings)
-// USER_CUSTOMIZABLE: File Consistency Patterns
 Look for:
    - Inconsistencies within files (naming conventions, patterns, error handling)
    - Missing related changes within files (if one part changed, what else should change?)
-   
-// USER_CUSTOMIZABLE: Security Analysis
    - File-level security patterns and vulnerabilities
    - Security consistency within the file scope
-   
-// USER_CUSTOMIZABLE: Code Style Preferences
    - Code style violations or deviations from patterns established in the file
    - Consistent formatting and structure within files
-   
-// USER_CUSTOMIZABLE: Architecture Patterns  
    - Opportunities for improvement based on full file context
    - Design pattern consistency within file scope
-   
-// USER_CUSTOMIZABLE: Documentation Standards
    - File-level documentation completeness and consistency
    - Missing documentation for file-level changes
-   
-// USER_CUSTOMIZABLE: Best Practices Recognition
    - Good practices worth praising in the file's context
 
 ## Available Commands
@@ -305,28 +294,15 @@ Output JSON with this structure:
 3. Do not analyze file context or surrounding unchanged code - that's for Level 2
 
 ## Analysis Focus Areas
-// USER_CUSTOMIZABLE: Code Quality Checks
 Identify the following in changed code:
    - Bugs or errors in the modified code
    - Logic issues in the changes
-   
-// USER_CUSTOMIZABLE: Security Analysis
    - Security concerns and vulnerabilities in the changed lines
-   
-// USER_CUSTOMIZABLE: Performance Analysis  
    - Performance issues and optimizations visible in the diff
-   
-// USER_CUSTOMIZABLE: Code Style Preferences
    - Code style and formatting issues
    - Naming convention violations
-   
-// USER_CUSTOMIZABLE: Architecture Patterns
    - Design pattern violations visible in isolation
-   
-// USER_CUSTOMIZABLE: Documentation Standards
    - Documentation issues visible in the changed lines
-   
-// USER_CUSTOMIZABLE: Best Practices Recognition
    - Good practices worth praising
 
 ## Available Commands
@@ -1058,32 +1034,19 @@ Based on the changed files identified in previous levels, explore the codebase t
    - Check for related documentation
 
 ## Focus Areas (Building on Previous Findings)
-// USER_CUSTOMIZABLE: Architecture Patterns
 Analyze:
    - Architectural consistency across the codebase
    - Pattern violations or inconsistencies with established patterns
    - Cross-file dependencies and potential impact
-   
-// USER_CUSTOMIZABLE: Test Coverage Analysis
-   ${this.buildTestAnalysisSection(testingContext)}
-   
-// USER_CUSTOMIZABLE: Documentation Standards
+   - ${this.buildTestAnalysisSection(testingContext)}
    - Missing or outdated documentation
    - API documentation consistency
-   
-// USER_CUSTOMIZABLE: Configuration Management  
    - Configuration changes needed
    - Environment-specific considerations
-   
-// USER_CUSTOMIZABLE: Compatibility Analysis
    - Potential breaking changes or compatibility issues
    - Backward compatibility concerns
-   
-// USER_CUSTOMIZABLE: Performance Analysis
    - Cross-component performance implications
    - Scalability considerations
-   
-// USER_CUSTOMIZABLE: Security Checks
    - Cross-system security implications
    - Data flow security analysis
 
