@@ -101,6 +101,7 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - **Customizable Sections**: USER_CUSTOMIZABLE markers for future user preferences
   - **Performance Optimized**: Caches detection results and limits file searches
   - **Multi-Language Support**: JavaScript/TypeScript, Python, Java, Go, Ruby, Rust, PHP, C#, C/C++
+  - **Critical Bug Fix**: Fixed git diff command in detectTestingContext() to use correct base branch
 - **Progress Modal Integration**: Real-time updates to ProgressModal.js with file-by-file tracking
 - **Deduplication System**: 
   - **Text Similarity**: Uses Levenshtein distance to calculate 80% similarity threshold
@@ -200,6 +201,17 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - Removed `DROP TABLE` statements
 - Uses `CREATE TABLE IF NOT EXISTS` for safe initialization
 - Added database status logging for visibility
+
+### 4. Test Detection Git Command Fix (Critical)
+**Problem**: Level 3 analysis failed with "fatal: ambiguous argument 'origin/HEAD...HEAD'"
+- `detectTestingContext()` used hardcoded `origin/HEAD` instead of PR base branch
+- origin/HEAD is often not set in worktrees, causing test detection to fail completely
+
+**Solution**: Fixed git diff command to use correct base branch
+- Updated method signature: `detectTestingContext(worktreePath, prMetadata)`
+- Changed git command: `git diff origin/${prMetadata.base_branch}...HEAD --name-only`
+- Updated analyzeLevel3() to pass prMetadata parameter
+- Maintained error handling and fallback functionality
 
 ## Current System State
 

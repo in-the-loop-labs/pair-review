@@ -603,9 +603,10 @@ Output JSON with this structure:
   /**
    * Detect testing context for the codebase
    * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
    * @returns {Promise<Object>} Testing context information
    */
-  async detectTestingContext(worktreePath) {
+  async detectTestingContext(worktreePath, prMetadata) {
     // Check cache first
     if (this.testContextCache.has(worktreePath)) {
       return this.testContextCache.get(worktreePath);
@@ -615,7 +616,7 @@ Output JSON with this structure:
     
     try {
       // Step 1: Detect primary language(s) from changed files
-      const { stdout: changedFiles } = await execPromise('git diff origin/HEAD...HEAD --name-only', { cwd: worktreePath });
+      const { stdout: changedFiles } = await execPromise(`git diff origin/${prMetadata.base_branch}...HEAD --name-only`, { cwd: worktreePath });
       const files = changedFiles.trim().split('\n').filter(f => f.length > 0);
       
       const languages = this.detectLanguages(files);
@@ -901,7 +902,7 @@ Output JSON with this structure:
       
       // Step 1: Detect testing context
       updateProgress('Detecting testing context for codebase');
-      const testingContext = await this.detectTestingContext(worktreePath);
+      const testingContext = await this.detectTestingContext(worktreePath, prMetadata);
       
       // Step 2: Build the Level 3 prompt with test context
       updateProgress('Building Level 3 prompt for Claude to analyze codebase impact');
