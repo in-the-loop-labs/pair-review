@@ -86,12 +86,9 @@ class Analyzer {
       // Step 4: Parse and validate the response
       updateProgress('Processing AI results');
       const suggestions = this.parseResponse(response, 1);
-      logger.success(`Parsed ${suggestions.length} valid suggestions`);
+      logger.success(`Parsed ${suggestions.length} valid Level 1 suggestions`);
       
-      // Step 5: Store suggestions in database
-      updateProgress('Storing suggestions in database');
-      await this.storeSuggestions(prId, runId, suggestions, 1);
-      
+      // Keep suggestions in memory - do not store yet
       logger.success(`Level 1 analysis complete: ${suggestions.length} suggestions found`);
       
       // After Level 1 completes, automatically start Level 2
@@ -111,6 +108,7 @@ class Analyzer {
         logger.success(`Level 2 analysis complete: ${level2Result.suggestions.length} additional suggestions found`);
         
         // After Level 2 completes, automatically start Level 3
+        let level3Result = null;
         try {
           logger.info('Starting Level 3 analysis automatically...');
           
@@ -122,16 +120,71 @@ class Analyzer {
             });
           } : null;
           
-          const level3Result = await this.analyzeLevel3(prId, worktreePath, prMetadata, [...suggestions, ...level2Result.suggestions], level3ProgressCallback);
+          level3Result = await this.analyzeLevel3(prId, worktreePath, prMetadata, [...suggestions, ...level2Result.suggestions], level3ProgressCallback);
           logger.success(`Level 3 analysis complete: ${level3Result.suggestions.length} additional suggestions found`);
-          
-          // Add level 3 result to the return object
-          level2Result.level3Result = level3Result;
         } catch (level3Error) {
           logger.warn(`Level 3 analysis failed, but Level 1 and Level 2 results are still available: ${level3Error.message}`);
         }
+        
+        // Now orchestrate all suggestions before storing
+        updateProgress('Orchestrating AI suggestions for intelligent curation');
+        try {
+          const allSuggestions = {
+            level1: suggestions,
+            level2: level2Result.suggestions,
+            level3: level3Result?.suggestions || []
+          };
+          
+          const orchestratedSuggestions = await this.orchestrateWithAI(allSuggestions, prMetadata);
+          
+          // Store only the orchestrated results
+          updateProgress('Storing orchestrated suggestions in database');
+          await this.storeSuggestions(prId, runId, orchestratedSuggestions, 'orchestrated');
+          
+          // Update the return object with orchestrated results
+          level2Result.level3Result = level3Result;
+          level2Result.orchestratedSuggestions = orchestratedSuggestions;
+          
+        } catch (orchestrationError) {
+          logger.error(`Orchestration failed: ${orchestrationError.message}`);
+          logger.warn('Falling back to storing all original suggestions');
+          
+          // Store all original suggestions with level labels as fallback
+          updateProgress('Storing fallback suggestions in database');
+          const fallbackSuggestions = [];
+          
+          suggestions.forEach(s => {
+            s.description = `[Level 1: Diff Analysis] ${s.description}`;
+            fallbackSuggestions.push(s);
+          });
+          
+          if (level2Result?.suggestions) {
+            level2Result.suggestions.forEach(s => {
+              s.description = `[Level 2: File Context] ${s.description}`;
+              fallbackSuggestions.push(s);
+            });
+          }
+          
+          if (level3Result?.suggestions) {
+            level3Result.suggestions.forEach(s => {
+              s.description = `[Level 3: Codebase Context] ${s.description}`;
+              fallbackSuggestions.push(s);
+            });
+          }
+          
+          await this.storeSuggestions(prId, runId, fallbackSuggestions, 'fallback');
+          level2Result.orchestratedSuggestions = fallbackSuggestions;
+        }
+        
       } catch (level2Error) {
-        logger.warn(`Level 2 analysis failed, but Level 1 results are still available: ${level2Error.message}`);
+        logger.warn(`Level 2 analysis failed, storing Level 1 results only: ${level2Error.message}`);
+        
+        // Store only Level 1 suggestions if Level 2 fails
+        updateProgress('Storing Level 1 suggestions in database');
+        suggestions.forEach(s => {
+          s.description = `[Level 1: Diff Analysis] ${s.description}`;
+        });
+        await this.storeSuggestions(prId, runId, suggestions, 1);
       }
       
       return {
@@ -165,17 +218,22 @@ Level 1 analysis found ${previousSuggestions.length} suggestions:
 ${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_start})`).join('\n')}
 
 ## Analysis Process
-1. Run 'git diff origin/${prMetadata.base_branch}...HEAD --name-only' to identify changed files
-2. For each changed file:
+Level 1 already identified the changed files. For each file with changes:
    - Read the full file content to understand context
    - Run 'git diff origin/${prMetadata.base_branch}...HEAD <file>' to see what changed
    - Analyze how changes fit within the file's overall structure
+   - Focus on file-level patterns and consistency, not re-analyzing the specific line changes from Level 1
+   - Skip files where no file-level issues are found (efficiency focus)
 
 ## Focus Areas (Building on Level 1 findings)
 // USER_CUSTOMIZABLE: File Consistency Patterns
 Look for:
    - Inconsistencies within files (naming conventions, patterns, error handling)
    - Missing related changes within files (if one part changed, what else should change?)
+   
+// USER_CUSTOMIZABLE: Security Analysis
+   - File-level security patterns and vulnerabilities
+   - Security consistency within the file scope
    
 // USER_CUSTOMIZABLE: Code Style Preferences
    - Code style violations or deviations from patterns established in the file
@@ -185,12 +243,15 @@ Look for:
    - Opportunities for improvement based on full file context
    - Design pattern consistency within file scope
    
+// USER_CUSTOMIZABLE: Documentation Standards
+   - File-level documentation completeness and consistency
+   - Missing documentation for file-level changes
+   
 // USER_CUSTOMIZABLE: Best Practices Recognition
    - Good practices worth praising in the file's context
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
-- git diff origin/${prMetadata.base_branch}...HEAD --name-only
 - git diff origin/${prMetadata.base_branch}...HEAD <file>
 - cat <file> or any file reading command
 - grep, find, ls commands as needed
@@ -217,6 +278,7 @@ Output JSON with this structure:
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
 - Focus on issues that require understanding the full file context
 - Do NOT duplicate findings from earlier levels - avoid duplicating the suggestions listed above
+- Do not re-analyze the specific line changes from Level 1 - focus on file-level patterns
 - If you find an issue on an unchanged line, mention it but attach to the nearest changed line
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
@@ -234,9 +296,13 @@ Output JSON with this structure:
 
 # Level 1 Review - Analyze Changes in Isolation
 
+## Speed and Scope Expectations
+**This level should be fast** - focusing only on the diff itself without exploring file context or surrounding unchanged code. That analysis is reserved for Level 2.
+
 ## Initial Setup
 1. Run 'git diff origin/${prMetadata.base_branch}...HEAD' to see what changed in this PR
 2. Focus ONLY on the changed lines in the diff
+3. Do not analyze file context or surrounding unchanged code - that's for Level 2
 
 ## Analysis Focus Areas
 // USER_CUSTOMIZABLE: Code Quality Checks
@@ -245,10 +311,10 @@ Identify the following in changed code:
    - Logic issues in the changes
    
 // USER_CUSTOMIZABLE: Security Analysis
-   - Security concerns and vulnerabilities
+   - Security concerns and vulnerabilities in the changed lines
    
 // USER_CUSTOMIZABLE: Performance Analysis  
-   - Performance issues and optimizations
+   - Performance issues and optimizations visible in the diff
    
 // USER_CUSTOMIZABLE: Code Style Preferences
    - Code style and formatting issues
@@ -257,6 +323,9 @@ Identify the following in changed code:
 // USER_CUSTOMIZABLE: Architecture Patterns
    - Design pattern violations visible in isolation
    
+// USER_CUSTOMIZABLE: Documentation Standards
+   - Documentation issues visible in the changed lines
+   
 // USER_CUSTOMIZABLE: Best Practices Recognition
    - Good practices worth praising
 
@@ -264,7 +333,6 @@ Identify the following in changed code:
 You have full access to the codebase and can run commands like:
 - git diff origin/${prMetadata.base_branch}...HEAD
 - git diff --stat
-- git show HEAD
 - ls, find, grep commands as needed
 
 Note: You may optionally use parallel Tasks to analyze different parts of the changes if that would be helpful.
@@ -297,8 +365,9 @@ Output JSON with this structure:
 
 ## Important Guidelines
 - Only comment on lines that were actually changed in this PR
-- Focus on issues visible in the diff itself
+- Focus on issues visible in the diff itself - do not analyze file context
 - Do not review unchanged code or missing tests (that's for Level 3)
+- Do not analyze file-level patterns or consistency (that's for Level 2)
 - For "praise" type suggestions: Omit the suggestion field entirely (no action needed)
 - For other types: Include specific, actionable suggestions
 - This saves tokens and prevents empty suggestion sections`;
@@ -485,6 +554,9 @@ Output JSON with this structure:
       const body = suggestion.description + 
         (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
       
+      // Handle different level types including orchestrated
+      const aiLevel = typeof level === 'string' ? level : level;
+      
       await run(this.db, `
         INSERT INTO comments (
           pr_id, source, author, ai_run_id, ai_level, ai_confidence,
@@ -495,7 +567,7 @@ Output JSON with this structure:
         'ai',
         'AI Assistant',
         runId,
-        level,
+        aiLevel,
         suggestion.confidence,
         suggestion.file,
         suggestion.line_start,
@@ -580,9 +652,7 @@ Output JSON with this structure:
       const suggestions = this.parseResponse(response, 2, level1Suggestions);
       logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
       
-      // Step 4: Store Level 2 suggestions in database
-      updateProgress('Storing Level 2 suggestions in database');
-      await this.storeSuggestions(prId, runId, suggestions, 2);
+      // Keep suggestions in memory - do not store yet (orchestration will handle storage)
       
       logger.success(`Level 2 analysis complete: ${suggestions.length} suggestions found`);
       
@@ -920,9 +990,7 @@ Output JSON with this structure:
       const suggestions = this.parseResponse(response, 3, previousSuggestions);
       logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
       
-      // Step 4: Store Level 3 suggestions in database
-      updateProgress('Storing Level 3 suggestions in database');
-      await this.storeSuggestions(prId, runId, suggestions, 3);
+      // Keep suggestions in memory - do not store yet (orchestration will handle storage)
       
       logger.success(`Level 3 analysis complete: ${suggestions.length} suggestions found`);
       
@@ -1051,6 +1119,155 @@ Output JSON with this structure:
 - Look especially for ${testingContext?.shouldCheckTests ? 'missing tests,' : ''} documentation, and architectural issues
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
+  }
+
+  /**
+   * Orchestrate all suggestions using AI to provide intelligent curation and merging
+   * @param {Object} allSuggestions - Object containing suggestions from all levels: {level1: [...], level2: [...], level3: [...]}
+   * @param {Object} prMetadata - PR metadata for context
+   * @returns {Promise<Array>} Curated suggestions array
+   */
+  async orchestrateWithAI(allSuggestions, prMetadata) {
+    logger.section('AI Orchestration Starting');
+    
+    const totalSuggestions = (allSuggestions.level1?.length || 0) + 
+                           (allSuggestions.level2?.length || 0) + 
+                           (allSuggestions.level3?.length || 0);
+    
+    logger.info(`Orchestrating ${totalSuggestions} total suggestions across all levels`);
+    
+    try {
+      // Build the orchestration prompt
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata);
+      
+      // Execute Claude CLI for orchestration
+      logger.info('Running AI orchestration to curate and merge suggestions...');
+      const response = await this.claude.execute(prompt, {
+        timeout: 300000 // 5 minutes for orchestration
+      });
+      
+      // Parse the orchestrated response
+      const orchestratedSuggestions = this.parseResponse(response, 'orchestrated');
+      logger.success(`AI orchestration complete: ${orchestratedSuggestions.length} curated suggestions`);
+      
+      return orchestratedSuggestions;
+      
+    } catch (error) {
+      logger.warn(`AI orchestration failed: ${error.message}`);
+      logger.warn('Falling back to storing all original suggestions');
+      
+      // Fallback: combine all suggestions with level labels
+      const fallbackSuggestions = [];
+      
+      if (allSuggestions.level1) {
+        allSuggestions.level1.forEach(s => {
+          s.description = `[Level 1: Diff Analysis] ${s.description}`;
+          fallbackSuggestions.push(s);
+        });
+      }
+      
+      if (allSuggestions.level2) {
+        allSuggestions.level2.forEach(s => {
+          s.description = `[Level 2: File Context] ${s.description}`;
+          fallbackSuggestions.push(s);
+        });
+      }
+      
+      if (allSuggestions.level3) {
+        allSuggestions.level3.forEach(s => {
+          s.description = `[Level 3: Codebase Context] ${s.description}`;
+          fallbackSuggestions.push(s);
+        });
+      }
+      
+      return fallbackSuggestions;
+    }
+  }
+
+  /**
+   * Build orchestration prompt for intelligent suggestion curation
+   * @param {Object} allSuggestions - Suggestions from all levels
+   * @param {Object} prMetadata - PR metadata for context
+   * @returns {string} Orchestration prompt
+   */
+  buildOrchestrationPrompt(allSuggestions, prMetadata) {
+    const level1Count = allSuggestions.level1?.length || 0;
+    const level2Count = allSuggestions.level2?.length || 0; 
+    const level3Count = allSuggestions.level3?.length || 0;
+    
+    return `You are orchestrating AI-powered code review suggestions for pull request #${prMetadata.number}.
+
+# AI Suggestion Orchestration Task
+
+## Your Role
+You are helping a human reviewer by intelligently curating and merging suggestions from a 3-level analysis system. Your goal is to provide the most valuable, non-redundant guidance to accelerate the human review process.
+
+## Input: Multi-Level Analysis Results
+**Level 1 - Diff Analysis (${level1Count} suggestions):**
+${allSuggestions.level1 ? allSuggestions.level1.map(s => 
+  `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
+).join('\n') : 'No Level 1 suggestions'}
+
+**Level 2 - File Context (${level2Count} suggestions):**
+${allSuggestions.level2 ? allSuggestions.level2.map(s => 
+  `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
+).join('\n') : 'No Level 2 suggestions'}
+
+**Level 3 - Codebase Context (${level3Count} suggestions):**
+${allSuggestions.level3 ? allSuggestions.level3.map(s => 
+  `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
+).join('\n') : 'No Level 3 suggestions'}
+
+## Orchestration Guidelines
+
+### 1. Intelligent Merging
+- **Combine related suggestions** across levels into comprehensive insights
+- **Merge overlapping concerns** (e.g., same security issue found in multiple levels)
+- **Preserve unique insights** that only one level discovered
+- **Note level sources** in merged descriptions (e.g., "Building on diff analysis and file context...")
+
+### 2. Priority-Based Curation
+Prioritize suggestions in this order:
+1. **Security vulnerabilities** - Critical safety issues
+2. **Bugs and errors** - Functional correctness issues  
+3. **Architecture concerns** - Design and structural issues
+4. **Performance optimizations** - Efficiency improvements
+5. **Code style** - Formatting and convention issues
+
+### 3. Balanced Output
+- **Limit praise suggestions** to 2-3 most noteworthy items
+- **Focus on actionable items** that provide clear value to reviewer
+- **Avoid suggestion overload** - aim for quality over quantity
+- **Include confidence scores** based on cross-level agreement
+
+### 4. Human-Centric Framing
+- Frame suggestions as **considerations and guidance**, not mandates
+- Use language like "Consider...", "You might want to review...", "Worth noting..."
+- **Preserve reviewer autonomy** - you're a pair programming partner, not an enforcer
+- **Provide context** for why each suggestion matters to the reviewer
+
+## Output Format
+Output JSON with this structure:
+{
+  "level": "orchestrated",
+  "suggestions": [{
+    "file": "path/to/file",
+    "line": 42,
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "title": "Brief title describing the curated insight",
+    "description": "Comprehensive explanation mentioning which levels contributed and why this guidance matters to the human reviewer",
+    "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
+    "confidence": 0.0-1.0
+  }],
+  "summary": "Brief summary of orchestration results and key patterns found"
+}
+
+## Important Notes
+- **Quality over quantity** - Better to have 8 excellent suggestions than 20 mediocre ones
+- **Cross-level validation** - Higher confidence for issues found in multiple levels
+- **Preserve actionability** - Every suggestion should give clear next steps
+- **Maintain context** - Don't lose important details when merging
+- **Only comment on changed lines** - Attach suggestions only to lines modified in this PR`;
   }
 
   /**

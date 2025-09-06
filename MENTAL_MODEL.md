@@ -46,6 +46,24 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - **File Analysis**: Extracts changed files with statistics
 
 ### 6. AI Analysis System (`src/ai/analyzer.js`)
+#### AI Orchestration Layer (NEW)
+- **Intelligent Suggestion Management**: Revolutionary orchestration system that transforms multi-level analysis from simple aggregation into intelligent curation
+- **Core Architecture**:
+  - **Memory-First Storage**: All levels keep suggestions in memory until orchestration completes
+  - **Single Database Write**: Only orchestrated final results are stored, eliminating noise and redundancy
+  - **Orchestration Methods**: 
+    - `orchestrateWithAI()`: Main orchestration engine that calls Claude with curated prompt
+    - `buildOrchestrationPrompt()`: Intelligent prompt builder for suggestion curation
+- **Human-Centric Approach**: 
+  - **Pair Programming Partner**: Frames suggestions as considerations and guidance, not mandates
+  - **Intelligent Merging**: Combines related suggestions across levels into comprehensive insights
+  - **Priority-Based Curation**: Security > bugs > architecture > performance > style
+  - **Balanced Output**: Limits praise to 2-3 items, focuses on actionable guidance
+- **Robust Error Handling**:
+  - **Graceful Fallback**: If orchestration fails, stores all original suggestions with level labels
+  - **Timeout Protection**: 300-second timeout with proper error recovery
+  - **Context Preservation**: Maintains which levels contributed to merged suggestions
+
 #### Enhanced Prompt Structure (Updated)
 - **Improved Organization**: All three analysis levels now have structured prompts with clear sections
 - **Customization Markers**: Added `// USER_CUSTOMIZABLE:` markers throughout prompts for future user preference injection
@@ -163,14 +181,17 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - **Persistent Storage**: Database preserves data between application runs
 - **Schema Evolution**: Uses `CREATE IF NOT EXISTS` for safe schema updates
 
-### AI Analysis Progress Architecture (Phase 4.2)
-- **Modal-Based UI**: Progress modal shows 3-level analysis structure
+### AI Analysis Progress Architecture (Phase 4.2 + Orchestration)
+- **Modal-Based UI**: Progress modal shows 4-phase analysis structure
   - Level 1: Analyzing diff (implemented)
   - Level 2: File context (implemented - runs automatically after Level 1)
-  - Level 3: Codebase context (placeholder)
+  - Level 3: Codebase context (implemented - runs automatically after Level 2)
+  - Orchestration: AI-powered suggestion curation (NEW - runs automatically after Level 3)
+- **Memory-First Processing**: All suggestions kept in memory until orchestration completes
+- **Intelligent Storage**: Only orchestrated/curated suggestions stored in database
 - **Background Execution**: Modal can be dismissed to run in background
 - **Status Indicator**: Toolbar indicator shows progress when in background
-- **Real-time Updates**: Server-Sent Events (SSE) for live progress streaming
+- **Real-time Updates**: Server-Sent Events (SSE) for live progress streaming including orchestration phase
 - **Progress Broadcasting**: Server broadcasts status changes to connected clients
 
 ## Key Fixes Implemented
@@ -213,6 +234,28 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - Updated analyzeLevel3() to pass prMetadata parameter
 - Maintained error handling and fallback functionality
 
+### 5. AI Orchestration Layer (Major Enhancement)
+**Problem**: Suggestions were stored immediately after each level, causing:
+- Duplicate suggestions across levels despite deduplication attempts
+- No intelligent merging of related insights
+- Too many praise items overwhelming the review
+- Database pollution with redundant entries
+
+**Solution**: Implemented AI-powered orchestration layer
+- **Memory-first approach**: All three levels keep suggestions in memory
+- **AI orchestration**: Fourth Claude call intelligently curates all suggestions
+- **Intelligent merging**: Combines related suggestions into comprehensive insights
+- **Balanced output**: Limits praise to 2-3 items, prioritizes by importance
+- **Human-centric framing**: Suggestions as guidance, not mandates
+- **Fallback handling**: If orchestration fails, stores all suggestions with level labels
+
+**Architecture**:
+```
+Level 1 → Memory → 
+Level 2 → Memory → AI Orchestrator → Curated Set → Database
+Level 3 → Memory →
+```
+
 ## Current System State
 
 ### Working Features
@@ -226,6 +269,7 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - ✅ GitHub-like UI with sidebar file navigation
 - ✅ Hierarchical file tree with expand/collapse folders
 - ✅ File navigation with click-to-scroll functionality
+- ✅ AI-powered orchestration for intelligent suggestion curation
 - ✅ Sidebar toggle with responsive collapse/expand
 - ✅ Enhanced diff viewer with context expansion UI
 - ✅ Color-coded line changes (additions/deletions/context)
@@ -274,6 +318,18 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - ✅ GitHub token availability through app context
   - ✅ Response includes GitHub review URL and review ID
   - ✅ Proper error status codes and messages for all failure scenarios
+- ✅ AI Orchestration System (NEW MAJOR FEATURE)
+  - ✅ Revolutionary suggestion management with intelligent curation and merging
+  - ✅ Memory-first processing that keeps suggestions in memory until orchestration completes
+  - ✅ Single database write pattern - only stores final orchestrated results
+  - ✅ Human-centric approach with pair programming partner framing
+  - ✅ Intelligent merging of related suggestions across all three analysis levels
+  - ✅ Priority-based curation: security > bugs > architecture > performance > style  
+  - ✅ Balanced output with limited praise (2-3 items) and focus on actionable guidance
+  - ✅ Robust error handling with graceful fallback to original suggestions
+  - ✅ 300-second timeout protection with proper error recovery
+  - ✅ Context preservation showing which levels contributed to merged suggestions
+  - ✅ Quality over quantity approach - curated suggestions provide better reviewer guidance
 - ✅ Enhanced Review Modal UI (Phase 6.1)
   - ✅ Toast notification component for success/error feedback
   - ✅ Loading spinner with "Submitting review..." text during submission
