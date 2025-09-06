@@ -47,7 +47,7 @@ class ReviewModal {
                 class="review-body-textarea" 
                 id="review-body-modal" 
                 placeholder="Leave a comment about this pull request..."
-                rows="6"
+                rows="4"
               ></textarea>
             </div>
             

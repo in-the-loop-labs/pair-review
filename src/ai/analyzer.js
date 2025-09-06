@@ -37,10 +37,11 @@ class Analyzer {
    * Perform Level 1 analysis on a PR
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel1(prId, worktreePath, progressCallback = null) {
+  async analyzeLevel1(prId, worktreePath, prMetadata, progressCallback = null) {
     const runId = uuidv4();
     
     logger.section('Level 1 Analysis Starting');
@@ -68,7 +69,7 @@ class Analyzer {
       
       // Step 2: Build the Level 1 prompt
       updateProgress('Building Level 1 prompt for Claude to analyze changes');
-      const prompt = this.buildLevel1Prompt(prId, worktreePath);
+      const prompt = this.buildLevel1Prompt(prId, worktreePath, prMetadata);
       
       // Step 3: Execute Claude CLI in the worktree directory
       updateProgress('Running Claude to analyze changes in isolation');
@@ -101,7 +102,7 @@ class Analyzer {
           });
         } : null;
         
-        level2Result = await this.analyzeLevel2(prId, worktreePath, level2ProgressCallback);
+        level2Result = await this.analyzeLevel2(prId, worktreePath, prMetadata, suggestions, level2ProgressCallback);
         logger.success(`Level 2 analysis complete: ${level2Result.suggestions.length} additional suggestions found`);
         
         // After Level 2 completes, automatically start Level 3
@@ -116,7 +117,7 @@ class Analyzer {
             });
           } : null;
           
-          const level3Result = await this.analyzeLevel3(prId, worktreePath, level3ProgressCallback);
+          const level3Result = await this.analyzeLevel3(prId, worktreePath, prMetadata, [...suggestions, ...level2Result.suggestions], level3ProgressCallback);
           logger.success(`Level 3 analysis complete: ${level3Result.suggestions.length} additional suggestions found`);
           
           // Add level 3 result to the return object
@@ -146,16 +147,18 @@ class Analyzer {
    * Build the Level 2 prompt for file context analysis
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Array} previousSuggestions - Previous level suggestions to avoid duplicating
    */
-  buildLevel2Prompt(prId, worktreePath) {
+  buildLevel2Prompt(prId, worktreePath, prMetadata, previousSuggestions = []) {
     return `You are reviewing pull request #${prId} in the current working directory.
 
 Perform a Level 2 review - analyze file context:
 
-1. Run 'git diff HEAD~1 --name-only' to identify changed files
+1. Run 'git diff origin/${prMetadata.base_branch}...HEAD --name-only' to identify changed files
 2. For each changed file:
    - Read the full file content to understand context
-   - Run 'git diff HEAD~1 <file>' to see what changed
+   - Run 'git diff origin/${prMetadata.base_branch}...HEAD <file>' to see what changed
    - Analyze how changes fit within the file's overall structure
 3. Look for:
    - Inconsistencies within files (naming conventions, patterns, error handling)
@@ -165,8 +168,8 @@ Perform a Level 2 review - analyze file context:
    - Good practices worth praising in the file's context
 
 You have full access to the codebase and can run commands like:
-- git diff HEAD~1 --name-only
-- git diff HEAD~1 <file>
+- git diff origin/${prMetadata.base_branch}...HEAD --name-only
+- git diff origin/${prMetadata.base_branch}...HEAD <file>
 - cat <file> or any file reading command
 - grep, find, ls commands as needed
 
@@ -187,10 +190,13 @@ Output JSON with this structure:
   "summary": "Brief summary of file context findings"
 }
 
+Previous findings from earlier analysis levels:
+${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_start})`).join('\n')}
+
 Important:
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
 - Focus on issues that require understanding the full file context
-- Do NOT duplicate Level 1 findings that could be found just by looking at the diff
+- Do NOT duplicate findings from earlier levels - avoid duplicating the suggestions listed above
 - If you find an issue on an unchanged line, mention it but attach to the nearest changed line
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
@@ -201,13 +207,14 @@ Important:
    * Build the Level 1 prompt
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
    */
-  buildLevel1Prompt(prId, worktreePath) {
+  buildLevel1Prompt(prId, worktreePath, prMetadata) {
     return `You are reviewing pull request #${prId} in the current working directory.
 
 Perform a Level 1 review - analyze changes in isolation:
 
-1. Run 'git diff HEAD~1' to see what changed in this PR
+1. Run 'git diff origin/${prMetadata.base_branch}...HEAD' to see what changed in this PR
 2. Focus ONLY on the changed lines in the diff
 3. Identify:
    - Bugs or errors in the modified code
@@ -218,7 +225,7 @@ Perform a Level 1 review - analyze changes in isolation:
    - Code style and formatting issues
 
 You have full access to the codebase and can run commands like:
-- git diff HEAD~1
+- git diff origin/${prMetadata.base_branch}...HEAD
 - git diff --stat
 - git show HEAD
 - ls, find, grep commands as needed
@@ -261,11 +268,14 @@ Important:
 
   /**
    * Parse Claude's response into structured suggestions
+   * @param {Object} response - Claude's response
+   * @param {number} level - Analysis level
+   * @param {Array} previousSuggestions - Previous suggestions to check for duplicates
    */
-  parseResponse(response, level) {
+  parseResponse(response, level, previousSuggestions = []) {
     // If response is already parsed JSON
     if (response.suggestions && Array.isArray(response.suggestions)) {
-      return this.validateSuggestions(response.suggestions);
+      return this.validateSuggestions(response.suggestions, previousSuggestions);
     }
 
     // If response is raw text, try to extract JSON
@@ -382,10 +392,12 @@ Important:
    * Perform Level 2 analysis - File Context
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Array} level1Suggestions - Previous Level 1 suggestions to avoid duplicating
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel2(prId, worktreePath, progressCallback = null) {
+  async analyzeLevel2(prId, worktreePath, prMetadata, level1Suggestions = [], progressCallback = null) {
     const runId = uuidv4();
     
     logger.section('Level 2 Analysis Starting');
@@ -409,7 +421,7 @@ Important:
       
       // Step 1: Build the Level 2 prompt
       updateProgress('Building Level 2 prompt for Claude to analyze changes at file level');
-      const prompt = this.buildLevel2Prompt(prId, worktreePath);
+      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, level1Suggestions);
       
       // Step 2: Execute Claude CLI in the worktree directory (single invocation)
       updateProgress('Running Claude to analyze all changed files in context');
@@ -420,7 +432,7 @@ Important:
       
       // Step 3: Parse and validate the response
       updateProgress('Processing AI results');
-      const suggestions = this.parseResponse(response, 2);
+      const suggestions = this.parseResponse(response, 2, level1Suggestions);
       logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
       
       // Step 4: Store Level 2 suggestions in database
@@ -447,10 +459,12 @@ Important:
    * Perform Level 3 analysis - Codebase Context
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Array} previousSuggestions - Previous Level 1 and Level 2 suggestions to avoid duplicating
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel3(prId, worktreePath, progressCallback = null) {
+  async analyzeLevel3(prId, worktreePath, prMetadata, previousSuggestions = [], progressCallback = null) {
     const runId = uuidv4();
     
     logger.section('Level 3 Analysis Starting');
@@ -474,7 +488,7 @@ Important:
       
       // Step 1: Build the Level 3 prompt
       updateProgress('Building Level 3 prompt for Claude to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath);
+      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, previousSuggestions);
       
       // Step 2: Execute Claude CLI for Level 3 analysis
       updateProgress('Running Claude to analyze codebase-wide implications');
@@ -485,7 +499,7 @@ Important:
       
       // Step 3: Parse and validate the response
       updateProgress('Processing codebase context results');
-      const suggestions = this.parseResponse(response, 3);
+      const suggestions = this.parseResponse(response, 3, previousSuggestions);
       logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
       
       // Step 4: Store Level 3 suggestions in database
@@ -512,13 +526,15 @@ Important:
    * Build the Level 3 prompt for codebase context analysis
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Array} previousSuggestions - Previous level suggestions to avoid duplicating
    */
-  buildLevel3Prompt(prId, worktreePath) {
+  buildLevel3Prompt(prId, worktreePath, prMetadata, previousSuggestions = []) {
     return `You are reviewing pull request #${prId} in the current working directory.
 
 Perform a Level 3 review - analyze codebase context:
 
-1. Run 'git diff HEAD~1 --name-only' to see what files changed
+1. Run 'git diff origin/${prMetadata.base_branch}...HEAD --name-only' to see what files changed
 2. Explore the codebase to understand architectural context:
    - Find and examine related files (imports, tests, configs)
    - Look for similar patterns elsewhere in the codebase
@@ -533,7 +549,7 @@ Perform a Level 3 review - analyze codebase context:
    - Potential breaking changes or compatibility issues
 
 You have full access to the codebase and can run commands like:
-- git diff HEAD~1
+- git diff origin/${prMetadata.base_branch}...HEAD
 - find . -name "*.test.js" or similar to find test files
 - grep -r "pattern" to search for patterns
 - cat, ls, tree commands to explore structure
@@ -556,10 +572,13 @@ Output JSON with this structure:
   "summary": "Brief summary of codebase context findings"
 }
 
+Previous findings from earlier analysis levels:
+${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_start || s.line})`).join('\n')}
+
 Important:
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
 - Focus on codebase-wide concerns that require understanding multiple files
-- Do NOT duplicate Level 1 (diff-only) or Level 2 (single-file) findings
+- Do NOT duplicate findings from earlier levels - avoid duplicating the suggestions listed above
 - Look especially for missing tests, documentation, and architectural issues
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
