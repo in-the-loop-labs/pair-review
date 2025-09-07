@@ -17,6 +17,46 @@ const activeAnalyses = new Map();
 const progressClients = new Map();
 
 /**
+ * Determine completion level and suggestion counts from analysis result
+ * @param {Object} result - Analysis result object
+ * @returns {Object} Completion information with level, counts, and progress message
+ */
+function determineCompletionInfo(result) {
+  // Determine completed levels
+  const completedLevel = result.level2Result?.level3Result ? 3 : (result.level2Result ? 2 : 1);
+  
+  // Check for orchestrated suggestions first, then fall back to individual levels
+  let totalSuggestions = 0;
+  let progressMessage = '';
+  
+  if (result.level2Result?.orchestratedSuggestions?.length > 0) {
+    // We have orchestrated suggestions - use those as the final count
+    totalSuggestions = result.level2Result.orchestratedSuggestions.length;
+    progressMessage = `Analysis complete: ${totalSuggestions} orchestrated suggestions stored`;
+    logger.success(`Orchestration successful: ${totalSuggestions} curated suggestions from all levels`);
+  } else {
+    // Fall back to individual level counts
+    const level1Count = result.suggestions.length;
+    const level2Count = result.level2Result?.suggestions?.length || 0;
+    const level3Count = result.level2Result?.level3Result?.suggestions?.length || 0;
+    totalSuggestions = level1Count + level2Count + level3Count;
+    
+    const levelDetails = [];
+    if (level1Count > 0) levelDetails.push(`Level 1: ${level1Count}`);
+    if (level2Count > 0) levelDetails.push(`Level 2: ${level2Count}`);
+    if (level3Count > 0) levelDetails.push(`Level 3: ${level3Count}`);
+    
+    progressMessage = `Analysis complete: ${totalSuggestions} suggestions found (${levelDetails.join(', ')})`;
+  }
+  
+  return {
+    completedLevel,
+    totalSuggestions,
+    progressMessage
+  };
+}
+
+/**
  * Get pull request data by owner, repo, and number
  */
 router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
@@ -440,45 +480,22 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           logger.log('Result', `${icon} ${s.type}: ${s.title} (${s.file}:${s.line_start})`, 'green');
         });
         
-        // Determine completed levels and count orchestrated suggestions if available
-        const completedLevel = result.level2Result?.level3Result ? 3 : (result.level2Result ? 2 : 1);
-        
-        // Check for orchestrated suggestions first, then fall back to individual levels
-        let finalSuggestionsCount = 0;
-        let progressMessage = '';
-        
-        if (result.level2Result?.orchestratedSuggestions?.length > 0) {
-          // We have orchestrated suggestions - use those as the final count
-          finalSuggestionsCount = result.level2Result.orchestratedSuggestions.length;
-          progressMessage = `Analysis complete: ${finalSuggestionsCount} orchestrated suggestions stored`;
-          logger.success(`Orchestration successful: ${finalSuggestionsCount} curated suggestions from all levels`);
-        } else {
-          // Fall back to individual level counts
-          const level1Count = result.suggestions.length;
-          const level2Count = result.level2Result?.suggestions?.length || 0;
-          const level3Count = result.level2Result?.level3Result?.suggestions?.length || 0;
-          finalSuggestionsCount = level1Count + level2Count + level3Count;
-          
-          const levelDetails = [];
-          if (level1Count > 0) levelDetails.push(`Level 1: ${level1Count}`);
-          if (level2Count > 0) levelDetails.push(`Level 2: ${level2Count}`);
-          if (level3Count > 0) levelDetails.push(`Level 3: ${level3Count}`);
-          
-          progressMessage = `Analysis complete: ${finalSuggestionsCount} suggestions found (${levelDetails.join(', ')})`;
-        }
+        // Determine completion status using extracted helper function
+        const completionInfo = determineCompletionInfo(result);
         
         const completedStatus = {
           ...activeAnalyses.get(analysisId),
           status: 'completed',
-          level: completedLevel,
-          completedLevel: completedLevel,
+          level: completionInfo.completedLevel,
+          completedLevel: completionInfo.completedLevel,
           completedAt: new Date().toISOString(),
           result,
-          progress: progressMessage,
-          filesAnalyzed: finalSuggestionsCount,
+          progress: completionInfo.progressMessage,
+          suggestionsCount: completionInfo.totalSuggestions,
+          filesAnalyzed: activeAnalyses.get(analysisId)?.filesAnalyzed || 0,
           filesRemaining: 0,
-          currentFile: finalSuggestionsCount,
-          totalFiles: finalSuggestionsCount
+          currentFile: activeAnalyses.get(analysisId)?.totalFiles || 0,
+          totalFiles: activeAnalyses.get(analysisId)?.totalFiles || 0
         };
         activeAnalyses.set(analysisId, completedStatus);
         

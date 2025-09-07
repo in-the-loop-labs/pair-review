@@ -6,6 +6,7 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const logger = require('../utils/logger');
+const { extractJSON } = require('../utils/json-extractor');
 
 class Analyzer {
   constructor(database) {
@@ -358,7 +359,7 @@ Output JSON with this structure:
 
     // If response is raw text, try multiple extraction strategies
     if (response.raw) {
-      const extracted = this.extractJSONFromResponse(response.raw);
+      const extracted = extractJSON(response.raw);
       if (extracted.success && extracted.data.suggestions && Array.isArray(extracted.data.suggestions)) {
         return this.validateSuggestions(extracted.data.suggestions, previousSuggestions);
       } else {
@@ -1226,87 +1227,6 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
 - **Only comment on changed lines** - Attach suggestions only to lines modified in this PR`;
   }
 
-  /**
-   * Extract JSON from Claude's response using multiple strategies
-   * @param {string} response - Raw response text
-   * @returns {Object} Extraction result with success flag and data/error
-   */
-  extractJSONFromResponse(response) {
-    if (!response || !response.trim()) {
-      return { success: false, error: 'Empty response' };
-    }
-
-    const strategies = [
-      // Strategy 1: Look for markdown code blocks with 'json' label
-      () => {
-        const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-        if (codeBlockMatch && codeBlockMatch[1]) {
-          return JSON.parse(codeBlockMatch[1].trim());
-        }
-        throw new Error('No JSON code block found');
-      },
-      
-      // Strategy 2: Look for JSON between first { and last }
-      () => {
-        const firstBrace = response.indexOf('{');
-        const lastBrace = response.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
-          return JSON.parse(response.substring(firstBrace, lastBrace + 1));
-        }
-        throw new Error('No valid JSON braces found');
-      },
-      
-      // Strategy 3: Try to find JSON-like structure with bracket matching
-      () => {
-        const jsonMatch = response.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          // Try to find the complete JSON by matching brackets
-          const jsonStr = jsonMatch[0];
-          let braceCount = 0;
-          let endIndex = -1;
-          
-          for (let i = 0; i < jsonStr.length; i++) {
-            if (jsonStr[i] === '{') braceCount++;
-            else if (jsonStr[i] === '}') {
-              braceCount--;
-              if (braceCount === 0) {
-                endIndex = i;
-                break;
-              }
-            }
-          }
-          
-          if (endIndex > -1) {
-            return JSON.parse(jsonStr.substring(0, endIndex + 1));
-          }
-        }
-        throw new Error('No balanced JSON structure found');
-      },
-      
-      // Strategy 4: Try the entire response as JSON (for simple cases)
-      () => {
-        return JSON.parse(response.trim());
-      }
-    ];
-
-    for (let i = 0; i < strategies.length; i++) {
-      try {
-        const data = strategies[i]();
-        if (data && typeof data === 'object') {
-          logger.info(`JSON extraction successful using strategy ${i + 1}`);
-          return { success: true, data };
-        }
-      } catch (error) {
-        logger.info(`Strategy ${i + 1} failed: ${error.message}`);
-        continue;
-      }
-    }
-
-    return { 
-      success: false, 
-      error: 'All JSON extraction strategies failed'
-    };
-  }
 
   /**
    * Update suggestion status (adopt, dismiss, etc)
