@@ -90,29 +90,42 @@ pair-review/
 
 ## MENTAL_MODEL.md Maintenance
 
-**CRITICAL**: You must maintain a MENTAL_MODEL.md document in the project root that contains your high-level understanding of how all pieces fit together.
+**CRITICAL**: You must maintain a MENTAL_MODEL.md document in the project root that contains your HIGH-LEVEL CONCEPTUAL understanding of the system architecture.
+
+### Purpose of MENTAL_MODEL.md:
+This is your conceptual map of how the system works - NOT a feature list or changelog. It should help someone understand the architecture and design patterns, not track what was implemented.
 
 ### Before EVERY task:
-1. Read MENTAL_MODEL.md to understand the current system
-2. Use this understanding to inform your implementation
+1. Read MENTAL_MODEL.md to understand the current system architecture
+2. Use this understanding to inform your implementation approach
 
-### After EVERY task:
-1. Update MENTAL_MODEL.md with any new understanding
-2. Document new components and how they connect
-3. Update relationships between existing components
-4. Note any architectural decisions made
+### After completing work that changes the architecture:
+1. Update MENTAL_MODEL.md if the conceptual model has changed
+2. Focus on HOW components work together, not WHAT features exist
+3. Commit MENTAL_MODEL.md updates together with the code changes that precipitated them
 
-### What to include in MENTAL_MODEL.md:
+### What BELONGS in MENTAL_MODEL.md:
 - High-level architecture overview
-- How major components interact
-- Data flow through the system
-- Key architectural decisions and why
-- Important patterns being used
-- Integration points between modules
-- State management approach
-- External service interactions
+- How major components interact conceptually
+- Data flow patterns through the system
+- Key architectural decisions and WHY they were made
+- Important design patterns being used
+- Integration points and interfaces between modules
+- State management strategies
+- Conceptual models (e.g., "AI orchestration uses memory-first pattern")
 
-This document will change frequently early in the project as the system takes shape. Keep it high-level but comprehensive enough to understand the entire system at a glance.
+### What DOES NOT belong in MENTAL_MODEL.md:
+- Feature checklists with checkmarks
+- Detailed implementation specifics (e.g., "16px spacing")
+- Bug fixes and their solutions
+- UI implementation details
+- Lists of completed tasks
+- API endpoint documentation
+- Changelog entries
+- Version history
+
+### Keep it conceptual:
+Think of MENTAL_MODEL.md as explaining the system to a new engineer who needs to understand the architecture, not as documenting what you built. Focus on the "why" and "how" at a system level, not the "what" at an implementation level.
 
 ## Important Notes
 - Always read CLAUDE.md for requirements
