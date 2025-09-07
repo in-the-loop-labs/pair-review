@@ -200,10 +200,9 @@ class PRManager {
       headerContainer.innerHTML = `
         <div class="pr-header">
           <div class="pr-title-section">
-            <h1 class="pr-title">${this.escapeHtml(pr.title)}</h1>
-            <div class="pr-meta">
+            <h1 class="pr-title">
+              ${this.escapeHtml(pr.title)}
               <span class="pr-number">#${pr.number}</span>
-              ${stateBadge}
               ${pr.html_url ? `
                 <a href="${pr.html_url}" target="_blank" class="github-link" title="View on GitHub">
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -211,6 +210,9 @@ class PRManager {
                   </svg>
                 </a>
               ` : ''}
+            </h1>
+            <div class="pr-meta">
+              ${stateBadge}
               <span class="pr-author">opened by <strong>${this.escapeHtml(pr.author)}</strong></span>
               <span class="pr-dates">on ${createdDate}</span>
               ${updatedDate !== createdDate ? `<span class="pr-updated">• updated ${updatedDate}</span>` : ''}

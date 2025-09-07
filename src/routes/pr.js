@@ -133,7 +133,8 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         file_changes: extendedData.changed_files ? extendedData.changed_files.length : 0,
         additions: extendedData.additions || 0,
         deletions: extendedData.deletions || 0,
-        diff_content: extendedData.diff || ''
+        diff_content: extendedData.diff || '',
+        html_url: extendedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`
       }
     };
 

@@ -89,6 +89,21 @@
   color: #1f2328;
   margin: 0 0 8px 0;
   line-height: 1.2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pr-title .pr-number {
+  font-size: 20px;
+  font-weight: 400;
+  color: #656d76;
+}
+
+.pr-title .github-link {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
 }
 
 .pr-meta {
@@ -2881,6 +2896,15 @@ body {
 
 [data-theme="dark"] .github-link:hover {
   color: #58a6ff;
+}
+
+/* Dark theme support for pr-title elements */
+[data-theme="dark"] .pr-title {
+  color: #c9d1d9;
+}
+
+[data-theme="dark"] .pr-title .pr-number {
+  color: #8b949e;
 }
 
 /* Review button styles */
