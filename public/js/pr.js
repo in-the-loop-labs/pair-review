@@ -1134,7 +1134,7 @@ class PRManager {
       
     } catch (error) {
       console.error('Error triggering AI analysis:', error);
-      this.showError('Failed to start AI analysis: ' + error.message);
+      this.showError(`Failed to start AI analysis: ${error.message}`);
       
       // Reset button
       const btn = document.querySelector('button[onclick*="triggerAIAnalysis"]');
@@ -1164,7 +1164,7 @@ class PRManager {
       setTimeout(() => {
         this.triggerAIAnalysis().catch(error => {
           console.error('Auto-triggered AI analysis failed:', error);
-          this.showError('Auto-triggered AI analysis failed: ' + error.message);
+          this.showError(`Auto-triggered AI analysis failed: ${error.message}`);
         });
       }, 500);
     }
@@ -1552,7 +1552,7 @@ class PRManager {
           })()}
         </div>
         <div class="ai-suggestion-actions">
-          <button class="btn btn-sm btn-primary" onclick="prManager.adoptSuggestionDirectly(${suggestion.id})">
+          <button class="btn btn-sm btn-primary" onclick="prManager.adoptSuggestion(${suggestion.id})">
             Adopt
           </button>
           <button class="btn btn-sm btn-primary" onclick="prManager.adoptAndEditSuggestion(${suggestion.id})">
@@ -1572,121 +1572,153 @@ class PRManager {
   }
 
   /**
+   * Helper function to extract suggestion data from DOM
+   */
+  extractSuggestionData(suggestionDiv) {
+    const suggestionText = suggestionDiv.dataset?.originalBody ? 
+      JSON.parse(suggestionDiv.dataset.originalBody) : '';
+    
+    const typeElement = suggestionDiv.querySelector('.type-badge');
+    const titleElement = suggestionDiv.querySelector('.ai-title');
+    const suggestionType = typeElement?.textContent?.trim() || '';
+    const suggestionTitle = titleElement?.textContent?.trim() || '';
+    
+    return { suggestionText, suggestionType, suggestionTitle };
+  }
+
+  /**
+   * Helper function to find target row and extract file/line info
+   */
+  getFileAndLineInfo(suggestionDiv) {
+    const suggestionRow = suggestionDiv.closest('tr');
+    let targetRow = suggestionRow?.previousElementSibling;
+    
+    // Find the actual diff line row (skip other suggestion/comment rows)
+    while (targetRow && (targetRow.classList.contains('ai-suggestion-row') || targetRow.classList.contains('user-comment-row'))) {
+      targetRow = targetRow.previousElementSibling;
+    }
+    
+    if (!targetRow) {
+      throw new Error('Could not find target line for comment');
+    }
+    
+    const lineNumber = targetRow.querySelector('.line-num2')?.textContent?.trim();
+    const fileWrapper = targetRow.closest('.d2h-file-wrapper');
+    const fileName = fileWrapper?.dataset?.fileName || '';
+    
+    if (!lineNumber || !fileName) {
+      throw new Error('Could not determine file and line information');
+    }
+    
+    return { targetRow, suggestionRow, lineNumber, fileName };
+  }
+
+  /**
+   * Helper function to dismiss and collapse AI suggestion
+   */
+  async dismissAndCollapseAISuggestion(suggestionId, suggestionRow, adoptedText = 'Suggestion adopted') {
+    // Dismiss the AI suggestion via API
+    const dismissResponse = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ status: 'dismissed' })
+    });
+
+    if (!dismissResponse.ok) {
+      throw new Error('Failed to dismiss suggestion');
+    }
+
+    // Collapse the AI suggestion in the UI
+    if (suggestionRow) {
+      const suggestionDiv = suggestionRow.querySelector('.ai-suggestion');
+      if (suggestionDiv) {
+        suggestionDiv.classList.add('collapsed');
+        // Update collapsed content text
+        const collapsedContent = suggestionDiv.querySelector('.collapsed-text');
+        if (collapsedContent) {
+          collapsedContent.textContent = adoptedText;
+        }
+        // Update restore button for adopted suggestions
+        const restoreButton = suggestionDiv.querySelector('.btn-restore');
+        if (restoreButton) {
+          restoreButton.title = 'Hide suggestion';
+          const btnText = restoreButton.querySelector('.btn-text');
+          if (btnText) {
+            btnText.textContent = 'Hide';
+          }
+        }
+      }
+      suggestionRow.dataset.hiddenForAdoption = 'true';
+    }
+  }
+
+  /**
+   * Helper function to create user comment from AI suggestion
+   */
+  async createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle) {
+    const createResponse = await fetch('/api/user-comment', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        pr_id: this.currentPR.id,
+        file: fileName,
+        line_start: parseInt(lineNumber),
+        line_end: parseInt(lineNumber),
+        body: suggestionText,
+        parent_id: suggestionId,  // Link to original AI suggestion
+        type: suggestionType,     // Preserve the type
+        title: suggestionTitle    // Preserve the title
+      })
+    });
+    
+    if (!createResponse.ok) {
+      throw new Error('Failed to create user comment');
+    }
+    
+    const result = await createResponse.json();
+    return {
+      id: result.commentId,
+      file: fileName,
+      line_start: parseInt(lineNumber),
+      body: suggestionText,
+      type: suggestionType,
+      title: suggestionTitle,
+      parent_id: suggestionId,
+      created_at: new Date().toISOString()
+    };
+  }
+
+  /**
    * Adopt an AI suggestion and open it in edit mode
    */
   async adoptAndEditSuggestion(suggestionId) {
     try {
-      // Get the suggestion element and its content
+      // Get the suggestion element
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (!suggestionDiv) {
         throw new Error('Suggestion element not found');
       }
 
-      // Get the original markdown text from the data attribute
-      // We need the original markdown, not the rendered HTML text content
-      // Parse the JSON-encoded string to get proper newlines
-      const suggestionText = suggestionDiv.dataset.originalBody ? 
-        JSON.parse(suggestionDiv.dataset.originalBody) : '';
+      // Extract suggestion data using helper
+      const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
       
-      // Extract AI suggestion metadata from the DOM
-      const typeElement = suggestionDiv.querySelector('.type-badge');
-      const titleElement = suggestionDiv.querySelector('.ai-title');
-      const suggestionType = typeElement ? typeElement.textContent.trim() : '';
-      const suggestionTitle = titleElement ? titleElement.textContent.trim() : '';
-      
-      // Get file and line information from the parent row
-      const suggestionRow = suggestionDiv.closest('tr');
-      let targetRow = suggestionRow ? suggestionRow.previousElementSibling : null;
-      
-      // Find the actual diff line row (skip other suggestion/comment rows)
-      while (targetRow && (targetRow.classList.contains('ai-suggestion-row') || targetRow.classList.contains('user-comment-row'))) {
-        targetRow = targetRow.previousElementSibling;
-      }
-      
-      if (!targetRow) {
-        throw new Error('Could not find target line for comment');
-      }
-      
-      const lineNumber = targetRow.querySelector('.line-num2')?.textContent?.trim();
-      const fileWrapper = targetRow.closest('.d2h-file-wrapper');
-      const fileName = fileWrapper ? fileWrapper.dataset.fileName : '';
-      
-      if (!lineNumber || !fileName) {
-        throw new Error('Could not determine file and line information');
-      }
+      // Get file and line information using helper
+      const { suggestionRow, lineNumber, fileName } = this.getFileAndLineInfo(suggestionDiv);
 
-      // First, dismiss the AI suggestion
-      const dismissResponse = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ status: 'dismissed' })
-      });
-
-      if (!dismissResponse.ok) {
-        throw new Error('Failed to dismiss suggestion');
-      }
-
-      // Collapse the AI suggestion instead of hiding it completely
-      if (suggestionRow) {
-        const suggestionDiv = suggestionRow.querySelector('.ai-suggestion');
-        if (suggestionDiv) {
-          suggestionDiv.classList.add('collapsed');
-          // Update collapsed content to show "Suggestion adopted"
-          const collapsedContent = suggestionDiv.querySelector('.collapsed-text');
-          if (collapsedContent) {
-            collapsedContent.textContent = 'Suggestion adopted';
-          }
-          // Update restore button title and text for adopted suggestions
-          const restoreButton = suggestionDiv.querySelector('.btn-restore');
-          if (restoreButton) {
-            restoreButton.title = 'Hide suggestion';
-            const btnText = restoreButton.querySelector('.btn-text');
-            if (btnText) {
-              btnText.textContent = 'Hide';
-            }
-          }
-        }
-        suggestionRow.dataset.hiddenForAdoption = 'true';
-      }
+      // Dismiss and collapse the AI suggestion
+      await this.dismissAndCollapseAISuggestion(suggestionId, suggestionRow);
       
-      // Create user comment with the AI suggestion's text and metadata
-      const createResponse = await fetch('/api/user-comment', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          pr_id: this.currentPR.id,
-          file: fileName,
-          line_start: parseInt(lineNumber),
-          line_end: parseInt(lineNumber),
-          body: suggestionText,
-          parent_id: suggestionId,  // Link to original AI suggestion
-          type: suggestionType,     // Preserve the type
-          title: suggestionTitle    // Preserve the title
-        })
-      });
-      
-      if (!createResponse.ok) {
-        throw new Error('Failed to create user comment');
-      }
-      
-      const result = await createResponse.json();
-      const newCommentId = result.commentId;
+      // Create user comment from suggestion
+      const newComment = await this.createUserCommentFromSuggestion(
+        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle
+      );
       
       // Display the new user comment in edit mode BELOW the suggestion row
-      this.displayUserCommentInEditMode({
-        id: newCommentId,
-        file: fileName,
-        line_start: parseInt(lineNumber),
-        body: suggestionText,
-        type: suggestionType,
-        title: suggestionTitle,
-        parent_id: suggestionId,
-        created_at: new Date().toISOString()
-      }, suggestionRow); // Pass suggestion row instead of target row
+      this.displayUserCommentInEditMode(newComment, suggestionRow);
       
       // Update the suggestion navigator
       if (this.suggestionNavigator && this.suggestionNavigator.suggestions) {
@@ -1700,122 +1732,35 @@ class PRManager {
       this.updateCommentCount();
 
     } catch (error) {
-      console.error('Error adopting suggestion:', error);
-      alert('Failed to adopt suggestion: ' + error.message);
+      console.error('Error adopting and editing suggestion:', error);
+      alert(`Failed to adopt suggestion: ${error.message}`);
     }
   }
 
   /**
    * Adopt an AI suggestion directly (without edit mode)
    */
-  async adoptSuggestionDirectly(suggestionId) {
+  async adoptSuggestion(suggestionId) {
     try {
-      // Get the suggestion element and its content
+      // Get the suggestion element
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (!suggestionDiv) {
         throw new Error('Suggestion element not found');
       }
 
-      // Get the original markdown text from the data attribute
-      const suggestionText = suggestionDiv.dataset.originalBody ? 
-        JSON.parse(suggestionDiv.dataset.originalBody) : '';
+      // Extract suggestion data using helper
+      const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
       
-      // Extract AI suggestion metadata from the DOM
-      const typeElement = suggestionDiv.querySelector('.type-badge');
-      const titleElement = suggestionDiv.querySelector('.ai-title');
-      const suggestionType = typeElement ? typeElement.textContent.trim() : '';
-      const suggestionTitle = titleElement ? titleElement.textContent.trim() : '';
-      
-      // Get file and line information from the parent row
-      const suggestionRow = suggestionDiv.closest('tr');
-      let targetRow = suggestionRow ? suggestionRow.previousElementSibling : null;
-      
-      // Find the actual diff line row (skip other suggestion/comment rows)
-      while (targetRow && (targetRow.classList.contains('ai-suggestion-row') || targetRow.classList.contains('user-comment-row'))) {
-        targetRow = targetRow.previousElementSibling;
-      }
-      
-      if (!targetRow) {
-        throw new Error('Could not find target line for comment');
-      }
-      
-      const lineNumber = targetRow.querySelector('.line-num2')?.textContent?.trim();
-      const fileWrapper = targetRow.closest('.d2h-file-wrapper');
-      const fileName = fileWrapper ? fileWrapper.dataset.fileName : '';
-      
-      if (!lineNumber || !fileName) {
-        throw new Error('Could not determine file and line information');
-      }
+      // Get file and line information using helper
+      const { suggestionRow, lineNumber, fileName } = this.getFileAndLineInfo(suggestionDiv);
 
-      // First, dismiss the AI suggestion
-      const dismissResponse = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ status: 'dismissed' })
-      });
-
-      if (!dismissResponse.ok) {
-        throw new Error('Failed to dismiss suggestion');
-      }
-
-      // Collapse the AI suggestion instead of hiding it completely
-      if (suggestionRow) {
-        const suggestionDiv = suggestionRow.querySelector('.ai-suggestion');
-        if (suggestionDiv) {
-          suggestionDiv.classList.add('collapsed');
-          // Update collapsed content to show "Suggestion adopted"
-          const collapsedContent = suggestionDiv.querySelector('.collapsed-text');
-          if (collapsedContent) {
-            collapsedContent.textContent = 'Suggestion adopted';
-          }
-          // Update restore button title and text for adopted suggestions
-          const restoreButton = suggestionDiv.querySelector('.btn-restore');
-          if (restoreButton) {
-            restoreButton.title = 'Hide suggestion';
-            const btnText = restoreButton.querySelector('.btn-text');
-            if (btnText) {
-              btnText.textContent = 'Hide';
-            }
-          }
-        }
-        suggestionRow.dataset.hiddenForAdoption = 'true';
-      }
+      // Dismiss and collapse the AI suggestion
+      await this.dismissAndCollapseAISuggestion(suggestionId, suggestionRow);
       
-      // Create user comment with the AI suggestion's text and metadata
-      const createResponse = await fetch('/api/user-comment', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          pr_id: this.currentPR.id,
-          file: fileName,
-          line_start: parseInt(lineNumber),
-          line_end: parseInt(lineNumber),
-          body: suggestionText,
-          parent_id: suggestionId,  // Link to original AI suggestion
-          type: suggestionType,     // Preserve the type
-          title: suggestionTitle    // Preserve the title
-        })
-      });
-      
-      if (!createResponse.ok) {
-        throw new Error('Failed to create user comment');
-      }
-      
-      const result = await createResponse.json();
-      const newComment = {
-        id: result.commentId,
-        file: fileName,
-        line_start: parseInt(lineNumber),
-        body: suggestionText,
-        type: suggestionType,
-        title: suggestionTitle,
-        parent_id: suggestionId,
-        created_at: new Date().toISOString()
-      };
+      // Create user comment from suggestion
+      const newComment = await this.createUserCommentFromSuggestion(
+        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle
+      );
       
       // Display the new user comment in read-only mode (not edit mode)
       this.displayUserComment(newComment, suggestionRow);
@@ -1833,7 +1778,7 @@ class PRManager {
 
     } catch (error) {
       console.error('Error adopting suggestion:', error);
-      alert('Failed to adopt suggestion: ' + error.message);
+      alert(`Failed to adopt suggestion: ${error.message}`);
     }
   }
 
