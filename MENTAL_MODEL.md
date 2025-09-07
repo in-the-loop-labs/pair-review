@@ -53,6 +53,8 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - **Human-Centric Framing**: Positions AI as a pair programming partner providing guidance, not mandates
 - **Priority-Based Organization**: Curates suggestions by importance (security > bugs > architecture > performance > style)
 - **Quality Over Quantity**: Produces balanced output with limited praise and focused actionable insights
+- **Robust JSON Parsing**: Multi-strategy extraction handles markdown blocks, mixed content, and various response formats
+- **Error-Resilient Processing**: Graceful fallbacks ensure suggestions are never lost due to parsing failures
 
 #### Test Detection System
 - **Purpose**: Intelligently determines when to include test coverage analysis

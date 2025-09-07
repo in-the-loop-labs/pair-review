@@ -440,9 +440,32 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           logger.log('Result', `${icon} ${s.type}: ${s.title} (${s.file}:${s.line_start})`, 'green');
         });
         
-        // Determine completed levels based on result
-        const completedLevel = result.level2Result ? 2 : 1;
-        const totalSuggestions = result.suggestions.length + (result.level2Result?.suggestions?.length || 0);
+        // Determine completed levels and count orchestrated suggestions if available
+        const completedLevel = result.level2Result?.level3Result ? 3 : (result.level2Result ? 2 : 1);
+        
+        // Check for orchestrated suggestions first, then fall back to individual levels
+        let finalSuggestionsCount = 0;
+        let progressMessage = '';
+        
+        if (result.level2Result?.orchestratedSuggestions?.length > 0) {
+          // We have orchestrated suggestions - use those as the final count
+          finalSuggestionsCount = result.level2Result.orchestratedSuggestions.length;
+          progressMessage = `Analysis complete: ${finalSuggestionsCount} orchestrated suggestions stored`;
+          logger.success(`Orchestration successful: ${finalSuggestionsCount} curated suggestions from all levels`);
+        } else {
+          // Fall back to individual level counts
+          const level1Count = result.suggestions.length;
+          const level2Count = result.level2Result?.suggestions?.length || 0;
+          const level3Count = result.level2Result?.level3Result?.suggestions?.length || 0;
+          finalSuggestionsCount = level1Count + level2Count + level3Count;
+          
+          const levelDetails = [];
+          if (level1Count > 0) levelDetails.push(`Level 1: ${level1Count}`);
+          if (level2Count > 0) levelDetails.push(`Level 2: ${level2Count}`);
+          if (level3Count > 0) levelDetails.push(`Level 3: ${level3Count}`);
+          
+          progressMessage = `Analysis complete: ${finalSuggestionsCount} suggestions found (${levelDetails.join(', ')})`;
+        }
         
         const completedStatus = {
           ...activeAnalyses.get(analysisId),
@@ -451,11 +474,11 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           completedLevel: completedLevel,
           completedAt: new Date().toISOString(),
           result,
-          progress: `Analysis complete: ${totalSuggestions} suggestions found (Level 1: ${result.suggestions.length}${result.level2Result ? `, Level 2: ${result.level2Result.suggestions.length}` : ''}${result.level2Result && result.level2Result.level3Result ? `, Level 3: ${result.level2Result.level3Result.suggestions.length}` : ''})`,
-          filesAnalyzed: totalSuggestions,
+          progress: progressMessage,
+          filesAnalyzed: finalSuggestionsCount,
           filesRemaining: 0,
-          currentFile: totalSuggestions,
-          totalFiles: totalSuggestions
+          currentFile: finalSuggestionsCount,
+          totalFiles: finalSuggestionsCount
         };
         activeAnalyses.set(analysisId, completedStatus);
         

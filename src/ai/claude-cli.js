@@ -75,20 +75,15 @@ class ClaudeCLI {
           return;
         }
 
-        // Try to parse as JSON first
-        try {
-          const jsonMatch = stdout.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
-            logger.success('Successfully parsed JSON response');
-            resolve(parsed);
-          } else {
-            // Return raw text if no JSON found
-            logger.info('Returning raw text response');
-            resolve({ raw: stdout, parsed: false });
-          }
-        } catch (error) {
-          logger.warn(`Failed to parse JSON, returning raw text: ${error.message}`);
+        // Try multiple strategies to extract JSON from response
+        const extracted = this.extractJSON(stdout);
+        if (extracted.success) {
+          logger.success('Successfully parsed JSON response');
+          resolve(extracted.data);
+        } else {
+          logger.warn(`Failed to extract JSON: ${extracted.error}`);
+          logger.info(`Raw response length: ${stdout.length} characters`);
+          logger.info(`Raw response preview: ${stdout.substring(0, 500)}...`);
           resolve({ raw: stdout, parsed: false });
         }
       });
@@ -110,6 +105,88 @@ class ClaudeCLI {
       claude.stdin.write(prompt);
       claude.stdin.end();
     });
+  }
+
+  /**
+   * Extract JSON from Claude's response using multiple strategies
+   * @param {string} response - Raw response from Claude
+   * @returns {Object} Extraction result with success flag and data/error
+   */
+  extractJSON(response) {
+    if (!response || !response.trim()) {
+      return { success: false, error: 'Empty response' };
+    }
+
+    const strategies = [
+      // Strategy 1: Look for markdown code blocks with 'json' label
+      () => {
+        const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (codeBlockMatch && codeBlockMatch[1]) {
+          return JSON.parse(codeBlockMatch[1].trim());
+        }
+        throw new Error('No JSON code block found');
+      },
+      
+      // Strategy 2: Look for JSON between first { and last }
+      () => {
+        const firstBrace = response.indexOf('{');
+        const lastBrace = response.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+          return JSON.parse(response.substring(firstBrace, lastBrace + 1));
+        }
+        throw new Error('No valid JSON braces found');
+      },
+      
+      // Strategy 3: Try to find JSON-like structure with bracket matching
+      () => {
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          // Try to find the complete JSON by matching brackets
+          const jsonStr = jsonMatch[0];
+          let braceCount = 0;
+          let endIndex = -1;
+          
+          for (let i = 0; i < jsonStr.length; i++) {
+            if (jsonStr[i] === '{') braceCount++;
+            else if (jsonStr[i] === '}') {
+              braceCount--;
+              if (braceCount === 0) {
+                endIndex = i;
+                break;
+              }
+            }
+          }
+          
+          if (endIndex > -1) {
+            return JSON.parse(jsonStr.substring(0, endIndex + 1));
+          }
+        }
+        throw new Error('No balanced JSON structure found');
+      },
+      
+      // Strategy 4: Try the entire response as JSON (for simple cases)
+      () => {
+        return JSON.parse(response.trim());
+      }
+    ];
+
+    for (let i = 0; i < strategies.length; i++) {
+      try {
+        const data = strategies[i]();
+        if (data && typeof data === 'object') {
+          logger.info(`JSON extraction successful using strategy ${i + 1}`);
+          return { success: true, data };
+        }
+      } catch (error) {
+        logger.info(`Strategy ${i + 1} failed: ${error.message}`);
+        continue;
+      }
+    }
+
+    return { 
+      success: false, 
+      error: 'All JSON extraction strategies failed'
+    };
   }
 
   /**

@@ -356,18 +356,15 @@ Output JSON with this structure:
       return this.validateSuggestions(response.suggestions, previousSuggestions);
     }
 
-    // If response is raw text, try to extract JSON
+    // If response is raw text, try multiple extraction strategies
     if (response.raw) {
-      try {
-        const jsonMatch = response.raw.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          if (parsed.suggestions) {
-            return this.validateSuggestions(parsed.suggestions, previousSuggestions);
-          }
-        }
-      } catch (error) {
-        logger.warn('Failed to extract suggestions from raw response');
+      const extracted = this.extractJSONFromResponse(response.raw);
+      if (extracted.success && extracted.data.suggestions && Array.isArray(extracted.data.suggestions)) {
+        return this.validateSuggestions(extracted.data.suggestions, previousSuggestions);
+      } else {
+        logger.warn(`JSON extraction failed: ${extracted.error}`);
+        logger.info(`Raw response length: ${response.raw.length} characters`);
+        logger.info(`Raw response preview: ${response.raw.substring(0, 500)}...`);
       }
     }
 
@@ -1154,6 +1151,9 @@ Output JSON with this structure:
 
 # AI Suggestion Orchestration Task
 
+## CRITICAL OUTPUT REQUIREMENT
+Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
+
 ## Your Role
 You are helping a human reviewer by intelligently curating and merging suggestions from a 3-level analysis system. Your goal is to provide the most valuable, non-redundant guidance to accelerate the human review process.
 
@@ -1202,7 +1202,8 @@ Prioritize suggestions in this order:
 - **Provide context** for why each suggestion matters to the reviewer
 
 ## Output Format
-Output JSON with this structure:
+Output ONLY the JSON object below with no additional text before or after. Do NOT use markdown code blocks or explanations:
+
 {
   "level": "orchestrated",
   "suggestions": [{
@@ -1223,6 +1224,88 @@ Output JSON with this structure:
 - **Preserve actionability** - Every suggestion should give clear next steps
 - **Maintain context** - Don't lose important details when merging
 - **Only comment on changed lines** - Attach suggestions only to lines modified in this PR`;
+  }
+
+  /**
+   * Extract JSON from Claude's response using multiple strategies
+   * @param {string} response - Raw response text
+   * @returns {Object} Extraction result with success flag and data/error
+   */
+  extractJSONFromResponse(response) {
+    if (!response || !response.trim()) {
+      return { success: false, error: 'Empty response' };
+    }
+
+    const strategies = [
+      // Strategy 1: Look for markdown code blocks with 'json' label
+      () => {
+        const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (codeBlockMatch && codeBlockMatch[1]) {
+          return JSON.parse(codeBlockMatch[1].trim());
+        }
+        throw new Error('No JSON code block found');
+      },
+      
+      // Strategy 2: Look for JSON between first { and last }
+      () => {
+        const firstBrace = response.indexOf('{');
+        const lastBrace = response.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+          return JSON.parse(response.substring(firstBrace, lastBrace + 1));
+        }
+        throw new Error('No valid JSON braces found');
+      },
+      
+      // Strategy 3: Try to find JSON-like structure with bracket matching
+      () => {
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          // Try to find the complete JSON by matching brackets
+          const jsonStr = jsonMatch[0];
+          let braceCount = 0;
+          let endIndex = -1;
+          
+          for (let i = 0; i < jsonStr.length; i++) {
+            if (jsonStr[i] === '{') braceCount++;
+            else if (jsonStr[i] === '}') {
+              braceCount--;
+              if (braceCount === 0) {
+                endIndex = i;
+                break;
+              }
+            }
+          }
+          
+          if (endIndex > -1) {
+            return JSON.parse(jsonStr.substring(0, endIndex + 1));
+          }
+        }
+        throw new Error('No balanced JSON structure found');
+      },
+      
+      // Strategy 4: Try the entire response as JSON (for simple cases)
+      () => {
+        return JSON.parse(response.trim());
+      }
+    ];
+
+    for (let i = 0; i < strategies.length; i++) {
+      try {
+        const data = strategies[i]();
+        if (data && typeof data === 'object') {
+          logger.info(`JSON extraction successful using strategy ${i + 1}`);
+          return { success: true, data };
+        }
+      } catch (error) {
+        logger.info(`Strategy ${i + 1} failed: ${error.message}`);
+        continue;
+      }
+    }
+
+    return { 
+      success: false, 
+      error: 'All JSON extraction strategies failed'
+    };
   }
 
   /**
