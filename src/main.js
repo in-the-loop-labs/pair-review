@@ -9,6 +9,31 @@ const open = (...args) => import('open').then(({default: open}) => open(...args)
 let db = null;
 
 /**
+ * Parse command line arguments to separate PR arguments from flags
+ * @param {Array<string>} args - Raw command line arguments
+ * @returns {Object} { prArgs: Array<string>, flags: Object }
+ */
+function parseArgs(args) {
+  const prArgs = [];
+  const flags = {};
+  
+  for (const arg of args) {
+    if (arg === '--ai') {
+      flags.ai = true;
+    } else if (arg === '--configure') {
+      // Skip --configure as it's handled earlier
+      continue;
+    } else if (!arg.startsWith('--')) {
+      // This is a PR argument (number or URL)
+      prArgs.push(arg);
+    }
+    // Ignore other unknown flags
+  }
+  
+  return { prArgs, flags };
+}
+
+/**
  * Main application entry point
  */
 async function main() {
@@ -29,10 +54,18 @@ async function main() {
     console.log('Initializing database...');
     db = await initializeDatabase();
 
+    // Parse command line arguments including flags
+    const { prArgs, flags } = parseArgs(args);
+
     // Check if PR arguments were provided
-    if (args.length > 0) {
-      await handlePullRequest(args, config, db);
+    if (prArgs.length > 0) {
+      await handlePullRequest(prArgs, config, db, flags);
     } else {
+      // Check if --ai flag was used without PR identifier
+      if (flags.ai) {
+        throw new Error('--ai flag requires a pull request number or URL to be specified');
+      }
+      
       // No PR arguments - just start the server
       console.log('No pull request specified. Starting server...');
       await startServerOnly(config);
@@ -49,8 +82,9 @@ async function main() {
  * @param {Array<string>} args - Command line arguments
  * @param {Object} config - Application configuration
  * @param {Object} db - Database instance
+ * @param {Object} flags - Parsed command line flags
  */
-async function handlePullRequest(args, config, db) {
+async function handlePullRequest(args, config, db, flags = {}) {
   let prInfo = null; // Declare prInfo outside try block for error handling
   
   try {
@@ -101,10 +135,17 @@ async function handlePullRequest(args, config, db) {
 
     // Start server with PR context
     console.log('Starting server...');
-    const port = await startServerWithPRContext(config, prInfo);
+    const port = await startServerWithPRContext(config, prInfo, flags);
 
     // Open browser to PR view
-    const url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
+    let url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
+    
+    // Add auto-ai parameter if --ai flag is present
+    if (flags.ai) {
+      url += '&auto-ai=true';
+      console.log('Auto-triggering AI analysis...');
+    }
+    
     console.log(`Opening browser to: ${url}`);
     await open(url);
 
@@ -146,11 +187,17 @@ async function startServerOnly(config) {
  * Start server with PR context
  * @param {Object} config - Application configuration
  * @param {Object} prInfo - PR information
+ * @param {Object} flags - Command line flags
  * @returns {Promise<number>} Server port
  */
-async function startServerWithPRContext(config, prInfo) {
+async function startServerWithPRContext(config, prInfo, flags = {}) {
   // Set environment variable for PR context
   process.env.PAIR_REVIEW_PR = JSON.stringify(prInfo);
+  
+  // Set environment variable for auto-AI flag
+  if (flags.ai) {
+    process.env.PAIR_REVIEW_AUTO_AI = 'true';
+  }
   
   const { startServer } = require('./server');
   await startServer(db);
@@ -305,4 +352,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main };
+module.exports = { main, parseArgs };

@@ -8,10 +8,14 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 ### 1. Entry Point (`src/main.js`)
 - **Role**: Application orchestrator and entry point
 - **Key Functions**:
-  - Parses command line arguments for PR information
+  - Parses command line arguments for PR information and flags
+  - **Auto-AI Feature**: Supports `--ai` flag for automatic AI analysis triggering
+  - **Argument Parsing**: `parseArgs()` function separates PR identifiers from flags
+  - **Flag Validation**: Ensures `--ai` flag requires a PR identifier
   - Initializes shared database instance
   - Coordinates PR fetching, worktree setup, and data storage
   - Passes shared database to server to ensure data persistence
+  - **Environment Variables**: Sets `PAIR_REVIEW_AUTO_AI=true` when `--ai` flag is detected
 
 ### 2. Database Layer (`src/database.js`)
 - **Role**: SQLite database management and schema
@@ -149,6 +153,11 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
   - **File Tree**: Hierarchical folder structure with expand/collapse functionality
   - **Diff Viewer**: GitHub-styled diff display using Diff2Html with custom enhancements
   - **Context Expansion**: Expandable sections for hidden lines between diff blocks
+  - **Auto-AI Trigger**: `checkAutoAITrigger()` method detects `?auto-ai=true` URL parameter
+    - **Automatic Analysis**: Triggers AI analysis immediately after PR loads successfully
+    - **URL Cleanup**: Uses `history.replaceState()` to remove auto-ai parameter from URL
+    - **Error Handling**: Prefixes auto-triggered errors with appropriate context
+    - **Timing Control**: 500ms delay to ensure UI is ready before triggering analysis
   - **Progress Modal**: AI analysis progress display with 3-level structure and real-time file tracking
     - **Enhanced Progress Bars**: Shows animated progress bars for active levels only
     - **File-by-File Updates**: Real-time display of "Analyzing file X of Y" with actual file names
@@ -165,14 +174,18 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 ## Data Flow
 
 ### PR Processing Flow
-1. **User runs**: `npx pair-review <PR-URL-or-number>`
-2. **main.js**: Initializes database, parses arguments
-3. **GitHub API**: Fetches PR metadata and commit information
-4. **Worktree Setup**: Creates local checkout of PR branch
-5. **Diff Generation**: Generates unified diff between base and head
-6. **Data Storage**: Stores all data in SQLite database
-7. **Server Start**: Launches web server with shared database instance
-8. **Browser Opens**: Automatically opens to PR review interface
+1. **User runs**: `npx pair-review <PR-URL-or-number>` (optionally with `--ai` flag)
+2. **main.js**: Initializes database, parses arguments and flags using `parseArgs()`
+3. **Flag Validation**: Validates `--ai` requires PR identifier, sets `PAIR_REVIEW_AUTO_AI` environment variable
+4. **GitHub API**: Fetches PR metadata and commit information
+5. **Worktree Setup**: Creates local checkout of PR branch
+6. **Diff Generation**: Generates unified diff between base and head
+7. **Data Storage**: Stores all data in SQLite database
+8. **Server Start**: Launches web server with shared database instance
+9. **Browser Opens**: Automatically opens to PR review interface
+   - **Auto-AI Flow**: If `--ai` flag used, URL includes `?auto-ai=true` parameter
+   - **Frontend Detection**: `checkAutoAITrigger()` detects parameter and auto-starts AI analysis
+   - **URL Cleanup**: Parameter removed from browser URL after triggering analysis
 
 ### Database Persistence Architecture
 - **Single Instance**: Main.js creates database, passes to server
@@ -264,6 +277,14 @@ Level 3 → Memory →
 - ✅ Web server with API endpoints
 - ✅ Automatic browser opening
 - ✅ Port conflict resolution
+- ✅ **Auto-AI Command Line Flag**: `--ai` flag automatically triggers AI analysis when app opens
+  - ✅ Flexible flag positioning (works before or after PR identifier)
+  - ✅ Validation that `--ai` requires a PR identifier 
+  - ✅ Environment variable passing (`PAIR_REVIEW_AUTO_AI`)
+  - ✅ URL parameter-based frontend triggering (`?auto-ai=true`)
+  - ✅ Automatic URL cleanup after triggering
+  - ✅ Console feedback and error handling for auto-triggered analysis
+  - ✅ Compatible with PR numbers and full GitHub URLs
 - ✅ GitHub-like UI with sidebar file navigation
 - ✅ Hierarchical file tree with expand/collapse folders
 - ✅ File navigation with click-to-scroll functionality
