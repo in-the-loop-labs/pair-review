@@ -2304,9 +2304,9 @@ class PRManager {
     td.innerHTML = commentHTML;
     commentRow.appendChild(td);
     
-    // Insert comment after the target row (not before)
+    // Insert comment immediately after the target row (suggestion row)
     if (targetRow.nextSibling) {
-      targetRow.parentNode.insertBefore(commentRow, targetRow.nextSibling.nextSibling);
+      targetRow.parentNode.insertBefore(commentRow, targetRow.nextSibling);
     } else {
       targetRow.parentNode.appendChild(commentRow);
     }
