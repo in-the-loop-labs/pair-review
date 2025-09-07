@@ -154,20 +154,17 @@ class Analyzer {
           const fallbackSuggestions = [];
           
           suggestions.forEach(s => {
-            s.description = `[Level 1: Diff Analysis] ${s.description}`;
             fallbackSuggestions.push(s);
           });
           
           if (level2Result?.suggestions) {
             level2Result.suggestions.forEach(s => {
-              s.description = `[Level 2: File Context] ${s.description}`;
               fallbackSuggestions.push(s);
             });
           }
           
           if (level3Result?.suggestions) {
             level3Result.suggestions.forEach(s => {
-              s.description = `[Level 3: Codebase Context] ${s.description}`;
               fallbackSuggestions.push(s);
             });
           }
@@ -181,9 +178,7 @@ class Analyzer {
         
         // Store only Level 1 suggestions if Level 2 fails
         updateProgress('Storing Level 1 suggestions in database');
-        suggestions.forEach(s => {
-          s.description = `[Level 1: Diff Analysis] ${s.description}`;
-        });
+        // Store Level 1 suggestions without level labels
         await this.storeSuggestions(prId, runId, suggestions, 1);
       }
       
@@ -1124,21 +1119,18 @@ Output JSON with this structure:
       
       if (allSuggestions.level1) {
         allSuggestions.level1.forEach(s => {
-          s.description = `[Level 1: Diff Analysis] ${s.description}`;
           fallbackSuggestions.push(s);
         });
       }
       
       if (allSuggestions.level2) {
         allSuggestions.level2.forEach(s => {
-          s.description = `[Level 2: File Context] ${s.description}`;
           fallbackSuggestions.push(s);
         });
       }
       
       if (allSuggestions.level3) {
         allSuggestions.level3.forEach(s => {
-          s.description = `[Level 3: Codebase Context] ${s.description}`;
           fallbackSuggestions.push(s);
         });
       }
@@ -1187,7 +1179,7 @@ ${allSuggestions.level3 ? allSuggestions.level3.map(s =>
 - **Combine related suggestions** across levels into comprehensive insights
 - **Merge overlapping concerns** (e.g., same security issue found in multiple levels)
 - **Preserve unique insights** that only one level discovered
-- **Note level sources** in merged descriptions (e.g., "Building on diff analysis and file context...")
+- **Do NOT mention which level found the issue** - focus on the insight itself
 
 ### 2. Priority-Based Curation
 Prioritize suggestions in this order:
@@ -1218,7 +1210,7 @@ Output JSON with this structure:
     "line": 42,
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title describing the curated insight",
-    "description": "Comprehensive explanation mentioning which levels contributed and why this guidance matters to the human reviewer",
+    "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
     "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
     "confidence": 0.0-1.0
   }],
