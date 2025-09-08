@@ -31,13 +31,23 @@ class PRManager {
     const prParam = urlParams.get('pr');
     
     if (prParam) {
-      // Parse PR parameter: owner/repo/number
-      const prMatch = prParam.match(/^([^\/]+)\/([^\/]+)\/(\d+)$/);
-      if (prMatch) {
-        const [, owner, repo, number] = prMatch;
+      // First check if it's a GitHub URL
+      const githubMatch = prParam.match(/github\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/);
+      if (githubMatch) {
+        const [, owner, repo, number] = githubMatch;
         this.loadPR(owner, repo, parseInt(number));
       } else {
-        this.showError('Invalid PR format in URL parameter');
+        // Parse PR parameter: owner/repo/number format
+        const prMatch = prParam.match(/^([^\/]+)\/([^\/]+)\/(\d+)$/);
+        if (prMatch) {
+          const [, owner, repo, number] = prMatch;
+          this.loadPR(owner, repo, parseInt(number));
+        } else if (prParam.match(/^\d+$/)) {
+          // Just a PR number - need repository context
+          this.showError('PR number requires repository context. Use format: owner/repo/number or full GitHub URL');
+        } else {
+          this.showError('Invalid PR format in URL parameter');
+        }
       }
     }
   }
@@ -3199,28 +3209,37 @@ class PRManager {
     console.log(`Expanding lines ${start}-${end} of ${fullStart}-${fullEnd} in ${fileName}`);
     
     try {
-      // Fetch actual file content
-      const urlParams = new URLSearchParams(window.location.search);
-      const prParam = urlParams.get('pr');
+      // Get PR details from stored data (should always be available)
       let owner, repo, number;
       
-      if (prParam && prParam.includes('/')) {
-        // GitHub URL format
-        const match = prParam.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-        if (match) {
-          [, owner, repo, number] = match;
-        }
-      } else {
-        // Get from stored PR data
-        if (this.currentPR) {
-          owner = this.currentPR.owner;
-          repo = this.currentPR.repo;
-          number = this.currentPR.number;
+      if (this.currentPR) {
+        owner = this.currentPR.owner;
+        repo = this.currentPR.repo;
+        number = this.currentPR.number;
+      }
+      
+      // Fallback: try to parse from URL if currentPR is missing details
+      if (!owner || !repo || !number) {
+        const urlParams = new URLSearchParams(window.location.search);
+        const prParam = urlParams.get('pr');
+        
+        if (prParam) {
+          if (prParam.includes('github.com')) {
+            // GitHub URL format
+            const match = prParam.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+            if (match) {
+              [, owner, repo, number] = match;
+            }
+          } else if (prParam.match(/^\d+$/)) {
+            // Just a PR number - we need to get repo info from somewhere
+            // This won't work without repo context
+            console.error('PR number without repository context');
+          }
         }
       }
       
       if (!owner || !repo || !number) {
-        console.error('Could not determine PR details');
+        console.error('Could not determine PR details', { currentPR: this.currentPR, owner, repo, number });
         return;
       }
       
