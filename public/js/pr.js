@@ -388,6 +388,9 @@ class PRManager {
     const diffJson = Diff2Html.parse(diffText);
     console.log('Parsed diff files:', diffJson.length, diffJson);
     
+    // Store files data for expand functionality
+    this.filesData = diffJson;
+    
     // Create our own simple unified diff display
     container.innerHTML = '';
     
@@ -486,15 +489,16 @@ class PRManager {
             const isSmallGap = hiddenCount < 20;
             
             if (gapInfo.position === 'above') {
-              // At beginning of file - use fold-down icon only
+              // At beginning of file - use fold-up icon to expand upward
               const expandBtn = document.createElement('button');
               expandBtn.className = 'expand-button chunk-expand';
               expandBtn.title = `Load ${hiddenCount} lines`;
               expandBtn.dataset.start = gapInfo.start;
               expandBtn.dataset.end = gapInfo.end;
               expandBtn.dataset.fileName = gapInfo.fileName;
+              expandBtn.dataset.position = 'above';
               expandBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8.177 14.323l2.896-2.896a.25.25 0 00-.177-.427H8.75V7.764a.75.75 0 10-1.5 0V11H5.104a.25.25 0 00-.177.427l2.896 2.896a.25.25 0 00.354 0zM2.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zM8.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
+                <path d="M7.823 1.677L4.927 4.573A.25.25 0 005.104 5H7.25v3.236a.75.75 0 101.5 0V5h2.146a.25.25 0 00.177-.427L8.177 1.677a.25.25 0 00-.354 0zM13.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-3.75.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM7.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zM4 11.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM1.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5z"></path>
               </svg>`;
               
               expandBtn.addEventListener('click', (e) => {
@@ -3169,13 +3173,79 @@ class PRManager {
     const start = parseInt(button.dataset.start);
     const end = parseInt(button.dataset.end);
     const fileName = button.dataset.fileName;
+    const position = button.dataset.position || 'between';
     
-    // Remove the expand button
-    button.remove();
-    
-    // TODO: Load and display the hidden lines
-    // For now, just log the expansion request
     console.log(`Expanding lines ${start}-${end} in ${fileName}`);
+    
+    // Find the file data
+    const fileData = this.filesData ? this.filesData.find(f => (f.newName || f.oldName) === fileName) : null;
+    if (!fileData) {
+      console.error('File data not found for', fileName);
+      return;
+    }
+    
+    // Create fragment to hold new rows
+    const fragment = document.createDocumentFragment();
+    
+    // Create rows for the expanded lines (context lines that were hidden)
+    for (let lineNum = start; lineNum <= end; lineNum++) {
+      const row = document.createElement('tr');
+      row.className = 'd2h-code-line d2h-cntx';
+      
+      // Line number cell
+      const lineNumCell = document.createElement('td');
+      lineNumCell.className = 'd2h-code-linenumber d2h-cntx';
+      
+      // Create line number spans to match diff2html structure
+      const lineNum1Span = document.createElement('span');
+      lineNum1Span.className = 'line-num1';
+      lineNum1Span.textContent = lineNum;
+      
+      const lineNum2Span = document.createElement('span');
+      lineNum2Span.className = 'line-num2';
+      lineNum2Span.textContent = lineNum;
+      
+      lineNumCell.appendChild(lineNum1Span);
+      lineNumCell.appendChild(lineNum2Span);
+      
+      // Code content cell
+      const codeCell = document.createElement('td');
+      codeCell.className = 'd2h-code-line-ctn';
+      
+      // For now, show ellipsis for hidden context lines
+      // In a real implementation, we'd fetch the actual file content
+      const codeContent = document.createElement('span');
+      codeContent.textContent = `    // ... line ${lineNum} ...`;
+      codeContent.style.color = '#656d76';
+      codeContent.style.fontStyle = 'italic';
+      
+      codeCell.appendChild(codeContent);
+      
+      row.appendChild(lineNumCell);
+      row.appendChild(codeCell);
+      fragment.appendChild(row);
+    }
+    
+    // Insert the new rows after the header row
+    if (headerRow.nextSibling) {
+      headerRow.parentNode.insertBefore(fragment, headerRow.nextSibling);
+    } else {
+      headerRow.parentNode.appendChild(fragment);
+    }
+    
+    // Remove the expand button or button group
+    const buttonContainer = button.closest('.expand-button-group');
+    if (buttonContainer) {
+      // If it's part of a button group, just remove this button
+      button.remove();
+      // If the group is now empty, remove it too
+      if (buttonContainer.children.length === 0) {
+        buttonContainer.remove();
+      }
+    } else {
+      // Single button - remove it
+      button.remove();
+    }
   }
 }
 
