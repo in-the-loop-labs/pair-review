@@ -424,10 +424,159 @@ class PRManager {
         
         // Process blocks with context expansion
         file.blocks.forEach((block, blockIndex) => {
-          // Add block header
+          // Add block header with GitHub-style expand controls
           const headerRow = document.createElement('tr');
           headerRow.className = 'd2h-info';
-          headerRow.innerHTML = `<td colspan="2" class="d2h-info">${block.header}</td>`;
+          
+          // Create separate cells for gutter and code
+          const gutterCell = document.createElement('td');
+          gutterCell.className = 'chunk-expand-gutter';
+          gutterCell.colSpan = 1;
+          
+          const codeCell = document.createElement('td');
+          codeCell.className = 'd2h-info';
+          codeCell.colSpan = 1;
+          
+          // Container for expand controls in the gutter
+          const expandContainer = document.createElement('div');
+          expandContainer.className = 'chunk-expand-container';
+          
+          // Check if there's a gap before this chunk
+          let hasGap = false;
+          let gapInfo = null;
+          
+          if (blockIndex === 0 && block.lines.length > 0) {
+            // Gap at the beginning of the file
+            const firstLine = block.lines[0];
+            const startLine = Math.min(firstLine.oldNumber || 1, firstLine.newNumber || 1);
+            if (startLine > 1) {
+              hasGap = true;
+              gapInfo = {
+                start: 1,
+                end: startLine - 1,
+                position: 'above',
+                fileName: file.newName || file.oldName
+              };
+            }
+          } else if (blockIndex > 0) {
+            // Gap between chunks
+            const prevBlock = file.blocks[blockIndex - 1];
+            const prevLastLine = prevBlock.lines[prevBlock.lines.length - 1];
+            const currentFirstLine = block.lines[0];
+            
+            if (prevLastLine && currentFirstLine) {
+              const prevEnd = Math.max(prevLastLine.oldNumber || 0, prevLastLine.newNumber || 0);
+              const currentStart = Math.min(currentFirstLine.oldNumber || Infinity, currentFirstLine.newNumber || Infinity);
+              
+              if (currentStart > prevEnd + 1) {
+                hasGap = true;
+                gapInfo = {
+                  start: prevEnd + 1,
+                  end: currentStart - 1,
+                  position: 'between',
+                  fileName: file.newName || file.oldName
+                };
+              }
+            }
+          }
+          
+          // Add expand button if there's a gap
+          if (hasGap && gapInfo) {
+            const hiddenCount = gapInfo.end - gapInfo.start + 1;
+            const isSmallGap = hiddenCount < 20;
+            
+            if (gapInfo.position === 'above') {
+              // At beginning of file - use fold-down icon only
+              const expandBtn = document.createElement('button');
+              expandBtn.className = 'expand-button chunk-expand';
+              expandBtn.title = `Load ${hiddenCount} lines`;
+              expandBtn.dataset.start = gapInfo.start;
+              expandBtn.dataset.end = gapInfo.end;
+              expandBtn.dataset.fileName = gapInfo.fileName;
+              expandBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8.177 14.323l2.896-2.896a.25.25 0 00-.177-.427H8.75V7.764a.75.75 0 10-1.5 0V11H5.104a.25.25 0 00-.177.427l2.896 2.896a.25.25 0 00.354 0zM2.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zM8.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
+              </svg>`;
+              
+              expandBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.expandChunkGap(e.target.closest('button'), headerRow);
+              });
+              
+              expandContainer.appendChild(expandBtn);
+            } else if (isSmallGap) {
+              // Small gap between chunks - use single fold icon
+              const expandBtn = document.createElement('button');
+              expandBtn.className = 'expand-button chunk-expand';
+              expandBtn.title = `Load ${hiddenCount} lines`;
+              expandBtn.dataset.start = gapInfo.start;
+              expandBtn.dataset.end = gapInfo.end;
+              expandBtn.dataset.fileName = gapInfo.fileName;
+              expandBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M10.896 2H8.75V.75a.75.75 0 00-1.5 0V2H5.104a.25.25 0 00-.177.427l2.896 2.896a.25.25 0 00.354 0l2.896-2.896A.25.25 0 0010.896 2zM8.75 15.25a.75.75 0 01-1.5 0V14H5.104a.25.25 0 01-.177-.427l2.896-2.896a.25.25 0 01.354 0l2.896 2.896a.25.25 0 01-.177.427H8.75v1.25zm-6.5-6.5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 8a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5A.75.75 0 016 8zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 8a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5A.75.75 0 0112 8zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
+              </svg>`;
+              
+              expandBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.expandChunkGap(e.target.closest('button'), headerRow);
+              });
+              
+              expandContainer.appendChild(expandBtn);
+            } else {
+              // Large gap between chunks - use fold-up and fold-down icons
+              const btnGroup = document.createElement('div');
+              btnGroup.className = 'expand-button-group';
+              
+              // Fold-up button
+              const expandUp = document.createElement('button');
+              expandUp.className = 'expand-button chunk-expand';
+              expandUp.title = `Load more above`;
+              expandUp.dataset.start = gapInfo.start;
+              expandUp.dataset.end = Math.min(gapInfo.start + 19, gapInfo.end);
+              expandUp.dataset.fileName = gapInfo.fileName;
+              expandUp.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M7.823 1.677L4.927 4.573A.25.25 0 005.104 5H7.25v3.236a.75.75 0 101.5 0V5h2.146a.25.25 0 00.177-.427L8.177 1.677a.25.25 0 00-.354 0zM13.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-3.75.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM7.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zM4 11.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM1.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5z"></path>
+              </svg>`;
+              
+              // Fold-down button
+              const expandDown = document.createElement('button');
+              expandDown.className = 'expand-button chunk-expand';
+              expandDown.title = `Load more below`;
+              expandDown.dataset.start = Math.max(gapInfo.end - 19, gapInfo.start);
+              expandDown.dataset.end = gapInfo.end;
+              expandDown.dataset.fileName = gapInfo.fileName;
+              expandDown.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8.177 14.323l2.896-2.896a.25.25 0 00-.177-.427H8.75V7.764a.75.75 0 10-1.5 0V11H5.104a.25.25 0 00-.177.427l2.896 2.896a.25.25 0 00.354 0zM2.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zM8.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
+              </svg>`;
+              
+              expandUp.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.expandChunkGap(e.target.closest('button'), headerRow);
+              });
+              
+              expandDown.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.expandChunkGap(e.target.closest('button'), headerRow);
+              });
+              
+              btnGroup.appendChild(expandUp);
+              btnGroup.appendChild(expandDown);
+              expandContainer.appendChild(btnGroup);
+            }
+          }
+          
+          // Add expand container to gutter cell
+          gutterCell.appendChild(expandContainer);
+          
+          // Add header text to code cell
+          codeCell.textContent = block.header;
+          
+          // Add cells to row
+          headerRow.appendChild(gutterCell);
+          headerRow.appendChild(codeCell);
           tbody.appendChild(headerRow);
           
           // Reset position counter for the first hunk in the file only
@@ -439,13 +588,7 @@ class PRManager {
             fileDiffPosition++;
           }
           
-          // Add expandable context at the beginning of first block if not starting at line 1
-          if (blockIndex === 0 && block.lines.length > 0 && (block.lines[0].oldNumber > 1 || block.lines[0].newNumber > 1)) {
-            const startLine = Math.min(block.lines[0].oldNumber || 1, block.lines[0].newNumber || 1);
-            if (startLine > 1) {
-              this.createGapSection(tbody, file.newName || file.oldName, 1, startLine - 1, startLine - 1);
-            }
-          }
+          // Context expansion is now handled in the chunk header above
           
           // Process lines within block and track positions
           block.lines.forEach((line) => {
@@ -453,21 +596,7 @@ class PRManager {
             this.renderDiffLine(tbody, line, file.newName || file.oldName, fileDiffPosition);
           });
           
-          // Add expandable context between blocks
-          if (blockIndex < file.blocks.length - 1) {
-            const nextBlock = file.blocks[blockIndex + 1];
-            const currentLastLine = block.lines[block.lines.length - 1];
-            const nextFirstLine = nextBlock.lines[0];
-            
-            if (currentLastLine && nextFirstLine) {
-              const currentEnd = Math.max(currentLastLine.oldNumber || 0, currentLastLine.newNumber || 0);
-              const nextStart = Math.min(nextFirstLine.oldNumber || Infinity, nextFirstLine.newNumber || Infinity);
-              
-              if (nextStart - currentEnd > 1) {
-                this.createGapSection(tbody, file.newName || file.oldName, currentEnd + 1, nextStart - 1, nextStart - currentEnd - 1);
-              }
-            }
-          }
+          // Gaps between blocks are now handled by the next block's header
         });
         
         table.appendChild(tbody);
@@ -717,86 +846,104 @@ class PRManager {
     expandControls.dataset.position = position;
     expandControls.dataset.sectionKey = sectionKey;
     
-    // Create the expand buttons with GitHub Octicons
-    const expandAbove = position !== 'above' ? document.createElement('button') : null;
-    if (expandAbove) {
-      expandAbove.className = 'expand-button expand-up';
-      expandAbove.title = 'Expand up';
-      expandAbove.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path fill-rule="evenodd" d="M7.47 5.47a.75.75 0 0 1 1.06 0l3.75 3.75a.75.75 0 0 1-1.06 1.06L8 7.06 4.78 10.28a.75.75 0 0 1-1.06-1.06l3.75-3.75Z"/>
+    // GitHub-style expand buttons - use single icon for small ranges, separate for large
+    const isSmallRange = hiddenCount <= 20;
+    
+    if (isSmallRange && position === 'between') {
+      // For small ranges between changes, use single expand-both icon (unfold)
+      const expandBoth = document.createElement('button');
+      expandBoth.className = 'expand-button expand-both';
+      expandBoth.title = `Expand ${hiddenCount} lines`;
+      expandBoth.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8.177.677l2.896 2.896a.25.25 0 01-.177.427H8.75v1.25a.75.75 0 01-1.5 0V4H5.104a.25.25 0 01-.177-.427L7.823.677a.25.25 0 01.354 0zM7.25 10.75a.75.75 0 011.5 0V12h2.146a.25.25 0 01.177.427l-2.896 2.896a.25.25 0 01-.354 0l-2.896-2.896A.25.25 0 015.104 12H7.25v-1.25zm-5-2a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 8a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5A.75.75 0 016 8zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 8a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5A.75.75 0 0112 8zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
         </svg>
       `;
-    }
-    
-    const expandBelow = position !== 'below' ? document.createElement('button') : null;
-    if (expandBelow) {
-      expandBelow.className = 'expand-button expand-down';
-      expandBelow.title = 'Expand down';
-      expandBelow.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path fill-rule="evenodd" d="M8.53 10.53a.75.75 0 0 1-1.06 0l-3.75-3.75a.75.75 0 0 1 1.06-1.06L8 8.94l3.22-3.22a.75.75 0 1 1 1.06 1.06l-3.75 3.75Z"/>
-        </svg>
-      `;
-    }
-    
-    // Stack only up/down buttons compactly in the gutter based on position
-    if (position === 'above') {
-      // At the top - only show expand below
-      buttonContainer.appendChild(expandBelow);
-    } else if (position === 'below') {
-      // At the bottom - only show expand above
-      buttonContainer.appendChild(expandAbove);
+      buttonContainer.appendChild(expandBoth);
     } else {
-      // Between changes - show both buttons
-      buttonContainer.appendChild(expandAbove);
-      buttonContainer.appendChild(expandBelow);
+      // For large ranges or at edges, use separate fold-up/fold-down icons
+      const expandAbove = position !== 'above' ? document.createElement('button') : null;
+      if (expandAbove) {
+        expandAbove.className = 'expand-button expand-up';
+        expandAbove.title = 'Load more above';
+        expandAbove.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M7.823 1.677L4.927 4.573A.25.25 0 005.104 5H7.25v3.236a.75.75 0 101.5 0V5h2.146a.25.25 0 00.177-.427L8.177 1.677a.25.25 0 00-.354 0zM13.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-3.75.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM7.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zM4 11.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM1.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5z"></path>
+          </svg>
+        `;
+      }
+      
+      const expandBelow = position !== 'below' ? document.createElement('button') : null;
+      if (expandBelow) {
+        expandBelow.className = 'expand-button expand-down';
+        expandBelow.title = 'Load more below';
+        expandBelow.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8.177 14.323l2.896-2.896a.25.25 0 00-.177-.427H8.75V7.764a.75.75 0 10-1.5 0V11H5.104a.25.25 0 00-.177.427l2.896 2.896a.25.25 0 00.354 0zM2.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zM8.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
+          </svg>
+        `;
+      }
+      
+      // Add buttons based on position
+      if (position === 'above') {
+        // At the top - only show expand below
+        buttonContainer.appendChild(expandBelow);
+      } else if (position === 'below') {
+        // At the bottom - only show expand above
+        buttonContainer.appendChild(expandAbove);
+      } else {
+        // Between changes - show both buttons stacked
+        buttonContainer.style.flexDirection = 'column';
+        buttonContainer.appendChild(expandAbove);
+        buttonContainer.appendChild(expandBelow);
+      }
     }
     
     oldLineCell.appendChild(buttonContainer);
     
-    // Create content cell for hidden lines text with inline expand-all
+    // Create content cell for hidden lines text (GitHub style - no inline button)
     const contentCell = document.createElement('td');
     contentCell.className = 'diff-code expand-content';
     contentCell.colSpan = 2;
     
-    const contentWrapper = document.createElement('div');
-    contentWrapper.className = 'expand-content-wrapper';
-    
     const expandInfo = document.createElement('span');
     expandInfo.className = 'expand-info';
-    expandInfo.innerHTML = `${hiddenCount} hidden lines`;
-    
-    const expandAll = document.createElement('button');
-    expandAll.className = 'expand-button-inline expand-all';
-    expandAll.title = `Expand all ${hiddenCount} lines`;
-    expandAll.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path fill-rule="evenodd" d="M8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0ZM8 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 1 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
+    // Use ellipsis icon like GitHub
+    expandInfo.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="vertical-align: text-bottom; margin-right: 4px;">
+        <path d="M0 5.75C0 4.784.784 4 1.75 4h12.5c.966 0 1.75.784 1.75 1.75v4.5A1.75 1.75 0 0114.25 12H1.75A1.75 1.75 0 010 10.25v-4.5zM4 7a1 1 0 100 2 1 1 0 000-2zm3 1a1 1 0 112 0 1 1 0 01-2 0zm5-1a1 1 0 100 2 1 1 0 000-2z"></path>
       </svg>
     `;
     
-    contentWrapper.appendChild(expandInfo);
-    contentWrapper.appendChild(expandAll);
-    contentCell.appendChild(contentWrapper);
+    contentCell.appendChild(expandInfo);
     
     // Store the hidden lines data for expansion
     expandControls.hiddenLines = allLines.slice(startIdx, endIdx);
     
     // Add click handlers for collapsed section expansion
-    expandAbove?.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandContext(row.expandControls, 'up', 20);
-    });
-    expandAll.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      const hiddenCountValue = parseInt(expandControls.dataset.hiddenCount) || hiddenCount;
-      this.expandContext(row.expandControls, 'all', hiddenCountValue);
-    });
-    expandBelow?.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandContext(row.expandControls, 'down', 20);
-    });
+    if (isSmallRange && position === 'between') {
+      // For the single expand-both button
+      const expandBoth = buttonContainer.querySelector('.expand-both');
+      expandBoth?.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        const hiddenCountValue = parseInt(expandControls.dataset.hiddenCount) || hiddenCount;
+        this.expandContext(row.expandControls, 'all', hiddenCountValue);
+      });
+    } else {
+      // For separate expand buttons
+      const expandAbove = buttonContainer.querySelector('.expand-up');
+      const expandBelow = buttonContainer.querySelector('.expand-down');
+      
+      expandAbove?.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandContext(row.expandControls, 'up', 20);
+      });
+      
+      expandBelow?.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandContext(row.expandControls, 'down', 20);
+      });
+    }
     
     // Store expand controls reference on row
     row.expandControls = expandControls;
@@ -3011,6 +3158,24 @@ class PRManager {
       themeButton.innerHTML = icon;
       themeButton.title = `Switch to ${this.currentTheme === 'light' ? 'dark' : 'light'} mode`;
     }
+  }
+
+  /**
+   * Expand gap in chunk header
+   * @param {HTMLElement} button - The expand button
+   * @param {HTMLElement} headerRow - The chunk header row
+   */
+  expandChunkGap(button, headerRow) {
+    const start = parseInt(button.dataset.start);
+    const end = parseInt(button.dataset.end);
+    const fileName = button.dataset.fileName;
+    
+    // Remove the expand button
+    button.remove();
+    
+    // TODO: Load and display the hidden lines
+    // For now, just log the expansion request
+    console.log(`Expanding lines ${start}-${end} in ${fileName}`);
   }
 }
 

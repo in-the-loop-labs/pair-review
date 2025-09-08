@@ -787,11 +787,41 @@
   color: var(--color-text-secondary);
 }
 
-/* Context Expansion Controls */
+/* GitHub-style Context Expansion Controls */
 .context-expand-row {
-  background: var(--color-bg-secondary);
-  border-top: 1px solid var(--color-border-primary);
-  border-bottom: 1px solid var(--color-border-primary);
+  background: #f1f8ff;
+  border: none;
+  position: relative;
+}
+
+.context-expand-row td {
+  background: #f1f8ff !important;
+  border-top: 1px solid #d1d9e0;
+  border-bottom: 1px solid #d1d9e0;
+  padding: 4px 8px;
+}
+
+.context-expand-row td.diff-line-num {
+  background: #f1f8ff !important;
+  color: #0969da;
+  text-align: center;
+  padding: 4px;
+  width: 40px;
+  min-width: 40px;
+}
+
+[data-theme="dark"] .context-expand-row {
+  background: #161b22;
+}
+
+[data-theme="dark"] .context-expand-row td {
+  background: #161b22 !important;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .context-expand-row td.diff-line-num {
+  background: #161b22 !important;
+  color: #58a6ff;
 }
 
 .context-expand-cell {
@@ -801,41 +831,72 @@
   position: relative;
 }
 
+/* GitHub-style expand controls - prominent and dark */
 .expand-button {
   background: transparent;
   border: none;
-  padding: 0;
+  padding: 2px;
   margin: 0;
   cursor: pointer;
-  color: #0969da;
-  display: flex;
+  color: #57606a; /* Dark gray like GitHub */
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 10px;
-  border-radius: 2px;
-  transition: background-color 0.2s ease;
+  width: 20px;
+  height: 20px;
+  transition: opacity 0.2s ease;
   position: relative;
   line-height: 0;
 }
 
+.expand-button.chunk-expand {
+  /* Buttons in chunk headers are centered in gutter */
+  margin: 0 auto;
+  display: flex;
+}
+
+[data-theme="dark"] .expand-button {
+  color: #8b949e;
+}
+
 .expand-button:hover {
-  background: var(--color-accent-light);
+  color: #24292f;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 3px;
+}
+
+[data-theme="dark"] .expand-button:hover {
+  color: #c9d1d9;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .expand-button svg {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   fill: currentColor;
 }
 
+/* For dual expand buttons (fold-up and fold-down) */
+.expand-button-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+}
+
 .expand-info {
-  color: #656d76;
+  color: #0969da;
   font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  padding: 2px 10px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
   user-select: none;
+}
+
+[data-theme="dark"] .expand-info {
+  color: #58a6ff;
 }
 
 /* Inline expand-all button */
@@ -864,24 +925,29 @@
   fill: currentColor;
 }
 
-/* Container for vertically stacked expand buttons */
+/* Container for expand buttons - GitHub style */
 .expand-button-container {
   display: inline-flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0;
+  justify-content: center;
+  padding: 4px;
+  gap: 2px;
   line-height: 0;
-  margin: 0 auto;
 }
 
 /* Expand content cell */
 .expand-content {
-  padding: 1px 0;
-  background: var(--color-bg-secondary);
+  padding: 4px 10px;
+  background: transparent;
   text-align: center;
   line-height: 20px;
   font-size: 12px;
   position: relative;
+  color: #0969da;
+}
+
+[data-theme="dark"] .expand-content {
+  color: #58a6ff;
 }
 
 .expand-content-wrapper {
@@ -890,26 +956,13 @@
   gap: 8px;
   position: relative;
   z-index: 1;
-  background: var(--color-bg-secondary);
+  background: transparent;
   padding: 0 8px;
 }
 
-/* Add divider line effect */
+/* Remove divider line for cleaner GitHub look */
 .expand-content::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 16px;
-  right: 16px;
-  height: 1px;
-  background: linear-gradient(to right, 
-    var(--color-border-primary) 0%, 
-    var(--color-border-primary) calc(50% - 90px), 
-    transparent calc(50% - 90px), 
-    transparent calc(50% + 90px), 
-    var(--color-border-primary) calc(50% + 90px), 
-    var(--color-border-primary) 100%);
-  z-index: 0;
+  display: none;
 }
 
 /* Diff styling improvements */
@@ -974,15 +1027,62 @@
   background-color: var(--color-diff-deletion-num);
 }
 
+/* GitHub-style chunk headers */
 .d2h-info {
-  background: var(--color-bg-secondary);
-  color: var(--color-text-secondary);
-  font-weight: 600;
+  background: #f1f8ff;
+  position: relative;
+}
+
+[data-theme="dark"] .d2h-info {
+  background: #161b22;
 }
 
 .d2h-info td {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--color-border-primary);
+  background: #f1f8ff;
+  padding: 4px 10px;
+  border: none;
+  vertical-align: middle;
+  color: #656d76; /* Medium gray for chunk header text */
+  font-weight: 400;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+/* Darker blue background for line number gutters in chunk headers */
+.d2h-info td.chunk-expand-gutter {
+  background: #ddf4ff;
+  width: 40px;
+  min-width: 40px;
+  text-align: center;
+  padding: 4px;
+}
+
+[data-theme="dark"] .d2h-info td {
+  background: #161b22;
+  color: #8b949e;
+}
+
+[data-theme="dark"] .d2h-info td.chunk-expand-gutter {
+  background: #0d1117;
+}
+
+/* Chunk header layout */
+.chunk-header-content {
+  display: contents; /* Use contents to allow proper table cell layout */
+}
+
+.chunk-expand-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.chunk-header-text {
+  display: block;
+  padding-left: 10px;
 }
 
 /* Responsive Design */
