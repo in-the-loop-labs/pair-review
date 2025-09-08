@@ -300,14 +300,7 @@ mark.d2h-code-line-ctn {
     padding-right: 8px;
 }
 
-/* Style info/hunk headers (@@ lines) */
-.d2h-info {
-    background: var(--color-bg-secondary) !important;
-    color: var(--color-accent-primary) !important;
-    font-family: 'SF Mono', Monaco, monospace !important;
-    font-size: 12px !important;
-    padding: 4px 10px !important;
-}
+/* Style info/hunk headers (@@ lines) - moved to pr.css for proper GitHub-style blue backgrounds */
 
 /* Remove any yellow/changed line styling */
 .d2h-change {

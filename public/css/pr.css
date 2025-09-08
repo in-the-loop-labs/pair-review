@@ -1028,21 +1028,24 @@
 }
 
 /* GitHub-style chunk headers */
-.d2h-info {
-  background: #f1f8ff;
+.d2h-info,
+tr.d2h-info {
+  background: #f1f8ff !important;
   position: relative;
 }
 
-[data-theme="dark"] .d2h-info {
-  background: #161b22;
+[data-theme="dark"] .d2h-info,
+[data-theme="dark"] tr.d2h-info {
+  background: #161b22 !important;
 }
 
-.d2h-info td {
-  background: #f1f8ff;
+.d2h-info td,
+tr.d2h-info td {
+  background: #f1f8ff !important;
   padding: 4px 10px;
-  border: none;
+  border: none !important;
   vertical-align: middle;
-  color: #656d76; /* Medium gray for chunk header text */
+  color: #656d76 !important; /* Medium gray for chunk header text */
   font-weight: 400;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 12px;
@@ -1050,21 +1053,24 @@
 }
 
 /* Darker blue background for line number gutters in chunk headers */
-.d2h-info td.chunk-expand-gutter {
-  background: #ddf4ff;
+.d2h-info td.chunk-expand-gutter,
+tr.d2h-info td.chunk-expand-gutter {
+  background: #ddf4ff !important;
   width: 40px;
   min-width: 40px;
   text-align: center;
   padding: 4px;
 }
 
-[data-theme="dark"] .d2h-info td {
-  background: #161b22;
-  color: #8b949e;
+[data-theme="dark"] .d2h-info td,
+[data-theme="dark"] tr.d2h-info td {
+  background: #161b22 !important;
+  color: #8b949e !important;
 }
 
-[data-theme="dark"] .d2h-info td.chunk-expand-gutter {
-  background: #0d1117;
+[data-theme="dark"] .d2h-info td.chunk-expand-gutter,
+[data-theme="dark"] tr.d2h-info td.chunk-expand-gutter {
+  background: #0d1117 !important;
 }
 
 /* Chunk header layout */
