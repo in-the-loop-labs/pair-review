@@ -75,11 +75,19 @@ class PRManager {
       // Handle new API format with success field
       if (data.success && data.data) {
         this.currentPR = data.data;
+        // Ensure owner, repo, and number are stored
+        this.currentPR.owner = this.currentPR.owner || owner;
+        this.currentPR.repo = this.currentPR.repo || repo;
+        this.currentPR.number = this.currentPR.number || number;
         // Display PR information with proper structure
         this.displayPR({ pr: data.data });
       } else {
         // Fallback for old format
         this.currentPR = data.pr;
+        // Ensure owner, repo, and number are stored
+        this.currentPR.owner = this.currentPR.owner || owner;
+        this.currentPR.repo = this.currentPR.repo || repo;
+        this.currentPR.number = this.currentPR.number || number;
         this.displayPR(data);
       }
       
@@ -497,6 +505,8 @@ class PRManager {
               expandBtn.dataset.end = gapInfo.end;
               expandBtn.dataset.fileName = gapInfo.fileName;
               expandBtn.dataset.position = 'above';
+              expandBtn.dataset.fullStart = gapInfo.start;
+              expandBtn.dataset.fullEnd = gapInfo.end;
               expandBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M7.823 1.677L4.927 4.573A.25.25 0 005.104 5H7.25v3.236a.75.75 0 101.5 0V5h2.146a.25.25 0 00.177-.427L8.177 1.677a.25.25 0 00-.354 0zM13.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-3.75.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM7.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zM4 11.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM1.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5z"></path>
               </svg>`;
@@ -516,6 +526,8 @@ class PRManager {
               expandBtn.dataset.start = gapInfo.start;
               expandBtn.dataset.end = gapInfo.end;
               expandBtn.dataset.fileName = gapInfo.fileName;
+              expandBtn.dataset.fullStart = gapInfo.start;
+              expandBtn.dataset.fullEnd = gapInfo.end;
               expandBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M10.896 2H8.75V.75a.75.75 0 00-1.5 0V2H5.104a.25.25 0 00-.177.427l2.896 2.896a.25.25 0 00.354 0l2.896-2.896A.25.25 0 0010.896 2zM8.75 15.25a.75.75 0 01-1.5 0V14H5.104a.25.25 0 01-.177-.427l2.896-2.896a.25.25 0 01.354 0l2.896 2.896a.25.25 0 01-.177.427H8.75v1.25zm-6.5-6.5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 8a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5A.75.75 0 016 8zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 8a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5A.75.75 0 0112 8zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
               </svg>`;
@@ -539,6 +551,9 @@ class PRManager {
               expandUp.dataset.start = gapInfo.start;
               expandUp.dataset.end = Math.min(gapInfo.start + 19, gapInfo.end);
               expandUp.dataset.fileName = gapInfo.fileName;
+              expandUp.dataset.fullStart = gapInfo.start;
+              expandUp.dataset.fullEnd = gapInfo.end;
+              expandUp.dataset.direction = 'up';
               expandUp.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M7.823 1.677L4.927 4.573A.25.25 0 005.104 5H7.25v3.236a.75.75 0 101.5 0V5h2.146a.25.25 0 00.177-.427L8.177 1.677a.25.25 0 00-.354 0zM13.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-3.75.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM7.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zM4 11.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM1.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5z"></path>
               </svg>`;
@@ -550,6 +565,9 @@ class PRManager {
               expandDown.dataset.start = Math.max(gapInfo.end - 19, gapInfo.start);
               expandDown.dataset.end = gapInfo.end;
               expandDown.dataset.fileName = gapInfo.fileName;
+              expandDown.dataset.fullStart = gapInfo.start;
+              expandDown.dataset.fullEnd = gapInfo.end;
+              expandDown.dataset.direction = 'down';
               expandDown.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M8.177 14.323l2.896-2.896a.25.25 0 00-.177-.427H8.75V7.764a.75.75 0 10-1.5 0V11H5.104a.25.25 0 00-.177.427l2.896 2.896a.25.25 0 00.354 0zM2.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zM8.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
               </svg>`;
@@ -3169,81 +3187,219 @@ class PRManager {
    * @param {HTMLElement} button - The expand button
    * @param {HTMLElement} headerRow - The chunk header row
    */
-  expandChunkGap(button, headerRow) {
+  async expandChunkGap(button, headerRow) {
     const start = parseInt(button.dataset.start);
     const end = parseInt(button.dataset.end);
     const fileName = button.dataset.fileName;
+    const fullStart = parseInt(button.dataset.fullStart || start);
+    const fullEnd = parseInt(button.dataset.fullEnd || end);
+    const direction = button.dataset.direction;
     const position = button.dataset.position || 'between';
     
-    console.log(`Expanding lines ${start}-${end} in ${fileName}`);
+    console.log(`Expanding lines ${start}-${end} of ${fullStart}-${fullEnd} in ${fileName}`);
     
-    // Find the file data
-    const fileData = this.filesData ? this.filesData.find(f => (f.newName || f.oldName) === fileName) : null;
-    if (!fileData) {
-      console.error('File data not found for', fileName);
-      return;
-    }
-    
-    // Create fragment to hold new rows
-    const fragment = document.createDocumentFragment();
-    
-    // Create rows for the expanded lines (context lines that were hidden)
-    for (let lineNum = start; lineNum <= end; lineNum++) {
-      const row = document.createElement('tr');
-      row.className = 'd2h-code-line d2h-cntx';
+    try {
+      // Fetch actual file content
+      const urlParams = new URLSearchParams(window.location.search);
+      const prParam = urlParams.get('pr');
+      let owner, repo, number;
       
-      // Line number cell
-      const lineNumCell = document.createElement('td');
-      lineNumCell.className = 'd2h-code-linenumber d2h-cntx';
-      
-      // Create line number spans to match diff2html structure
-      const lineNum1Span = document.createElement('span');
-      lineNum1Span.className = 'line-num1';
-      lineNum1Span.textContent = lineNum;
-      
-      const lineNum2Span = document.createElement('span');
-      lineNum2Span.className = 'line-num2';
-      lineNum2Span.textContent = lineNum;
-      
-      lineNumCell.appendChild(lineNum1Span);
-      lineNumCell.appendChild(lineNum2Span);
-      
-      // Code content cell
-      const codeCell = document.createElement('td');
-      codeCell.className = 'd2h-code-line-ctn';
-      
-      // For now, show ellipsis for hidden context lines
-      // In a real implementation, we'd fetch the actual file content
-      const codeContent = document.createElement('span');
-      codeContent.textContent = `    // ... line ${lineNum} ...`;
-      codeContent.style.color = '#656d76';
-      codeContent.style.fontStyle = 'italic';
-      
-      codeCell.appendChild(codeContent);
-      
-      row.appendChild(lineNumCell);
-      row.appendChild(codeCell);
-      fragment.appendChild(row);
-    }
-    
-    // Insert the new rows after the header row
-    if (headerRow.nextSibling) {
-      headerRow.parentNode.insertBefore(fragment, headerRow.nextSibling);
-    } else {
-      headerRow.parentNode.appendChild(fragment);
-    }
-    
-    // Remove the expand button or button group
-    const buttonContainer = button.closest('.expand-button-group');
-    if (buttonContainer) {
-      // If it's part of a button group, just remove this button
-      button.remove();
-      // If the group is now empty, remove it too
-      if (buttonContainer.children.length === 0) {
-        buttonContainer.remove();
+      if (prParam && prParam.includes('/')) {
+        // GitHub URL format
+        const match = prParam.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+        if (match) {
+          [, owner, repo, number] = match;
+        }
+      } else {
+        // Get from stored PR data
+        if (this.currentPR) {
+          owner = this.currentPR.owner;
+          repo = this.currentPR.repo;
+          number = this.currentPR.number;
+        }
       }
-    } else {
-      // Single button - remove it
+      
+      if (!owner || !repo || !number) {
+        console.error('Could not determine PR details');
+        return;
+      }
+      
+      // Fetch file content
+      const response = await fetch(`/api/file-content-original/${encodeURIComponent(fileName)}?owner=${owner}&repo=${repo}&number=${number}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch file content');
+      }
+      
+      const data = await response.json();
+      const lines = data.lines;
+      
+      // Create fragment to hold new rows
+      const fragment = document.createDocumentFragment();
+      
+      // Create rows for the expanded lines (only the requested range)
+      for (let lineNum = start; lineNum <= end && lineNum <= lines.length; lineNum++) {
+        const row = document.createElement('tr');
+        row.className = 'd2h-code-line d2h-cntx';
+        
+        // Line number cell
+        const lineNumCell = document.createElement('td');
+        lineNumCell.className = 'd2h-code-linenumber d2h-cntx';
+        
+        // Create line number spans to match diff2html structure
+        const lineNum1Span = document.createElement('span');
+        lineNum1Span.className = 'line-num1';
+        lineNum1Span.textContent = lineNum;
+        
+        const lineNum2Span = document.createElement('span');
+        lineNum2Span.className = 'line-num2';
+        lineNum2Span.textContent = lineNum;
+        
+        lineNumCell.appendChild(lineNum1Span);
+        lineNumCell.appendChild(lineNum2Span);
+        
+        // Code content cell with actual content
+        const codeCell = document.createElement('td');
+        codeCell.className = 'd2h-code-line-ctn';
+        
+        // Get actual line content (lines array is 0-indexed)
+        const lineContent = lines[lineNum - 1] || '';
+        codeCell.textContent = lineContent;
+        
+        row.appendChild(lineNumCell);
+        row.appendChild(codeCell);
+        fragment.appendChild(row);
+      }
+      
+      // Check if we need to add new expand buttons for remaining lines
+      const remainingLines = fullEnd - end;
+      if (remainingLines > 0 && direction) {
+        // Create new chunk header row with expand button for remaining lines
+        const newHeaderRow = document.createElement('tr');
+        newHeaderRow.className = 'd2h-info';
+        
+        const gutterCell = document.createElement('td');
+        gutterCell.className = 'chunk-expand-gutter';
+        
+        const expandContainer = document.createElement('div');
+        expandContainer.className = 'chunk-expand-container';
+        
+        if (direction === 'down') {
+          // Add button to expand more below
+          const expandBtn = document.createElement('button');
+          expandBtn.className = 'expand-button chunk-expand';
+          expandBtn.title = `Load ${Math.min(20, remainingLines)} more lines`;
+          expandBtn.dataset.start = end + 1;
+          expandBtn.dataset.end = Math.min(end + 20, fullEnd);
+          expandBtn.dataset.fileName = fileName;
+          expandBtn.dataset.fullStart = fullStart;
+          expandBtn.dataset.fullEnd = fullEnd;
+          expandBtn.dataset.direction = 'down';
+          
+          // Use appropriate icon
+          if (remainingLines <= 20) {
+            // Use fold icon for small gaps
+            expandBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M10.896 2H8.75V.75a.75.75 0 00-1.5 0V2H5.104a.25.25 0 00-.177.427l2.896 2.896a.25.25 0 00.354 0l2.896-2.896A.25.25 0 0010.896 2zM8.75 15.25a.75.75 0 01-1.5 0V14H5.104a.25.25 0 01-.177-.427l2.896-2.896a.25.25 0 01.354 0l2.896 2.896a.25.25 0 01-.177.427H8.75v1.25zm-6.5-6.5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 8a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5A.75.75 0 016 8zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 8a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5A.75.75 0 0112 8zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
+            </svg>`;
+          } else {
+            // Use fold-down for larger gaps
+            expandBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8.177 14.323l2.896-2.896a.25.25 0 00-.177-.427H8.75V7.764a.75.75 0 10-1.5 0V11H5.104a.25.25 0 00-.177.427l2.896 2.896a.25.25 0 00.354 0zM2.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zM8.25 5a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM12 4.25a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zm2.25.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"></path>
+            </svg>`;
+          }
+          
+          expandBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.expandChunkGap(e.target.closest('button'), newHeaderRow);
+          });
+          
+          expandContainer.appendChild(expandBtn);
+        }
+        
+        // Similarly handle 'up' direction if needed
+        if (direction === 'up' && start > fullStart) {
+          // Add button to expand more above
+          const expandBtn = document.createElement('button');
+          expandBtn.className = 'expand-button chunk-expand';
+          expandBtn.title = `Load ${Math.min(20, start - fullStart)} more lines`;
+          expandBtn.dataset.start = Math.max(fullStart, start - 20);
+          expandBtn.dataset.end = start - 1;
+          expandBtn.dataset.fileName = fileName;
+          expandBtn.dataset.fullStart = fullStart;
+          expandBtn.dataset.fullEnd = fullEnd;
+          expandBtn.dataset.direction = 'up';
+          
+          // Use fold-up icon
+          expandBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M7.823 1.677L4.927 4.573A.25.25 0 005.104 5H7.25v3.236a.75.75 0 101.5 0V5h2.146a.25.25 0 00.177-.427L8.177 1.677a.25.25 0 00-.354 0zM13.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zm-3.75.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM7.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5zM4 11.75a.75.75 0 01.75-.75h.5a.75.75 0 010 1.5h-.5a.75.75 0 01-.75-.75zM1.75 11a.75.75 0 000 1.5h.5a.75.75 0 000-1.5h-.5z"></path>
+          </svg>`;
+          
+          expandBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.expandChunkGap(e.target.closest('button'), newHeaderRow);
+          });
+          
+          expandContainer.appendChild(expandBtn);
+        }
+        
+        gutterCell.appendChild(expandContainer);
+        
+        const codeCell = document.createElement('td');
+        codeCell.className = 'chunk-header-content';
+        codeCell.textContent = '';
+        
+        newHeaderRow.appendChild(gutterCell);
+        newHeaderRow.appendChild(codeCell);
+        
+        // Add the new header row if we added any buttons
+        if (expandContainer.children.length > 0) {
+          fragment.appendChild(newHeaderRow);
+        }
+      }
+      
+      // Insert the new rows after the header row
+      if (headerRow.nextSibling) {
+        headerRow.parentNode.insertBefore(fragment, headerRow.nextSibling);
+      } else {
+        headerRow.parentNode.appendChild(fragment);
+      }
+      
+      // Remove the clicked button
+      const buttonContainer = button.closest('.expand-button-group');
+      if (buttonContainer) {
+        // If it's part of a button group, just remove this button
+        button.remove();
+        // If the group is now empty, remove it too
+        if (buttonContainer.children.length === 0) {
+          buttonContainer.remove();
+        }
+      } else {
+        // Single button - remove it
+        button.remove();
+      }
+      
+    } catch (error) {
+      console.error('Error expanding chunk:', error);
+      // Show error message in a tooltip or inline
+      const errorRow = document.createElement('tr');
+      errorRow.className = 'd2h-code-line';
+      const errorCell = document.createElement('td');
+      errorCell.colSpan = 2;
+      errorCell.style.color = '#cf222e';
+      errorCell.style.fontStyle = 'italic';
+      errorCell.style.padding = '8px';
+      errorCell.textContent = 'Failed to load file content. The file may not exist in the base branch.';
+      errorRow.appendChild(errorCell);
+      
+      if (headerRow.nextSibling) {
+        headerRow.parentNode.insertBefore(errorRow, headerRow.nextSibling);
+      } else {
+        headerRow.parentNode.appendChild(errorRow);
+      }
+      
+      // Still remove the button since it failed
       button.remove();
     }
   }
