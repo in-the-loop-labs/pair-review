@@ -14,7 +14,7 @@ function extractJSON(response) {
   const strategies = [
     // Strategy 1: Look for markdown code blocks with 'json' label
     () => {
-      const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      const codeBlockMatch = response.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
       if (codeBlockMatch && codeBlockMatch[1]) {
         return JSON.parse(codeBlockMatch[1].trim());
       }

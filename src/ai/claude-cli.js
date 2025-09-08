@@ -13,13 +13,13 @@ class ClaudeCLI {
     this.useShell = claudeCmd.includes(' ');
     
     if (this.useShell) {
-      // Use the full command string with -p appended
-      this.command = `${claudeCmd} -p`;
+      // Use the full command string with -p and --output-format json appended
+      this.command = `${claudeCmd} -p --output-format json`;
       this.args = [];
     } else {
       // Single command, use normal spawn mode
       this.command = claudeCmd;
-      this.args = ['-p'];
+      this.args = ['-p', '--output-format', 'json'];
     }
   }
 
@@ -76,16 +76,43 @@ class ClaudeCLI {
           return;
         }
 
-        // Try multiple strategies to extract JSON from response using shared utility
-        const extracted = extractJSON(stdout);
-        if (extracted.success) {
-          logger.success('Successfully parsed JSON response');
-          resolve(extracted.data);
-        } else {
-          logger.warn(`Failed to extract JSON: ${extracted.error}`);
-          logger.info(`Raw response length: ${stdout.length} characters`);
-          logger.info(`Raw response preview: ${stdout.substring(0, 500)}...`);
-          resolve({ raw: stdout, parsed: false });
+        // Try to parse the outer JSON envelope first
+        try {
+          const envelope = JSON.parse(stdout);
+          if (envelope.result !== undefined) {
+            // Extract JSON from the result field (may still have markdown)
+            const extracted = extractJSON(envelope.result);
+            if (extracted.success) {
+              logger.success('Successfully parsed JSON response');
+              resolve(extracted.data);
+            } else {
+              logger.warn(`Failed to extract JSON from result field: ${extracted.error}`);
+              logger.info(`Raw result length: ${envelope.result.length} characters`);
+              logger.info(`Raw result preview: ${envelope.result.substring(0, 500)}...`);
+              resolve({ raw: envelope.result, parsed: false });
+            }
+          } else if (envelope.error) {
+            // Handle error response
+            logger.error(`Claude API error: ${envelope.error}`);
+            reject(new Error(`Claude API error: ${envelope.error}`));
+          } else {
+            // Unexpected envelope structure
+            logger.warn('Unexpected JSON envelope structure');
+            resolve({ raw: stdout, parsed: false });
+          }
+        } catch (e) {
+          // Fallback to existing extraction for backwards compatibility
+          logger.info('Falling back to direct JSON extraction (no envelope detected)');
+          const extracted = extractJSON(stdout);
+          if (extracted.success) {
+            logger.success('Successfully parsed JSON response');
+            resolve(extracted.data);
+          } else {
+            logger.warn(`Failed to extract JSON: ${extracted.error}`);
+            logger.info(`Raw response length: ${stdout.length} characters`);
+            logger.info(`Raw response preview: ${stdout.substring(0, 500)}...`);
+            resolve({ raw: stdout, parsed: false });
+          }
         }
       });
 
