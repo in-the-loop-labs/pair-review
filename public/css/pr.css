@@ -486,7 +486,11 @@
   
   --color-selection: #fff5b1;
   --color-selection-num: #ffeb3b;
-  
+
+  /* Multiline selection colors - light theme */
+  --color-line-selected: #fff8e1;
+  --color-line-selecting: #fff3c4;
+
   --color-shadow: rgba(27, 31, 36, 0.04);
   --color-shadow-large: rgba(0, 0, 0, 0.3);
 }
@@ -523,7 +527,11 @@
   
   --color-selection: #3d3300;
   --color-selection-num: #4d4000;
-  
+
+  /* Multiline selection colors - dark theme */
+  --color-line-selected: #2a2a0e;
+  --color-line-selecting: #3a3a14;
+
   --color-shadow: rgba(0, 0, 0, 0.3);
   --color-shadow-large: rgba(0, 0, 0, 0.5);
 }
@@ -3291,5 +3299,34 @@ body {
 
 [data-theme="dark"] .warning-dialog-content {
   color: #ffca28;
+}
+
+/* Multiline selection styles */
+.line-selected {
+  background-color: var(--color-line-selected) !important;
+  border-left: 2px solid var(--color-accent-primary) !important;
+}
+
+.selecting-lines .line-selected {
+  background-color: var(--color-line-selecting) !important;
+}
+
+.selecting-lines {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+}
+
+.selection-feedback {
+  position: fixed;
+  background: var(--color-canvas-overlay);
+  color: var(--color-fg-default);
+  border: 1px solid var(--color-border-default);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  z-index: 10000;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  pointer-events: none;
 }
 

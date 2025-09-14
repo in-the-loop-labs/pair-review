@@ -9,9 +9,21 @@ class PRManager {
     this.expandedSections = new Set();
     this.currentTheme = localStorage.getItem('theme') || 'light';
     this.suggestionNavigator = null;
+
+    // Multiline selection state
+    this.selectedLines = new Set(); // For multi-line selection
+    this.selectionStart = null;
+    this.selectionEnd = null;
+    this.selectionFile = null;
+    this.isSelecting = false;
+    this.fileLineRows = null;
+    this.globalMouseMoveHandler = null;
+    this.globalMouseUpHandler = null;
+
     this.init();
     this.initTheme();
     this.initSuggestionNavigator();
+    this.setupGlobalSelectionHandlers();
   }
 
   /**
@@ -489,14 +501,18 @@ class PRManager {
    */
   renderDiffLine(tbody, line, fileName, diffPosition) {
     const row = document.createElement('tr');
-    row.className = line.type === 'insert' ? 'd2h-ins' : 
-                   line.type === 'delete' ? 'd2h-del' : 
+    row.className = line.type === 'insert' ? 'd2h-ins' :
+                   line.type === 'delete' ? 'd2h-del' :
                    'd2h-cntx';
-    
-    // Add data attributes for comment functionality
+
+    // Add data attributes for comment functionality and selection
     if (line.newNumber) {
       row.dataset.lineNumber = line.newNumber;
       row.dataset.fileName = fileName;
+      // Add file attribute for selection (only for insert and context lines)
+      if (line.type === 'insert' || line.type === 'context') {
+        row.dataset.file = fileName;
+      }
       // Add diff position for GitHub API positioning
       if (diffPosition !== undefined) {
         row.dataset.diffPosition = diffPosition;
@@ -518,12 +534,130 @@ class PRManager {
       commentButton.className = 'add-comment-btn';
       commentButton.innerHTML = '+';
       commentButton.title = 'Add comment';
-      commentButton.onclick = (e) => {
-        e.preventDefault();
+
+      // Only add multiline selection if fileName is available
+      if (fileName) {
+        // Track mouse events for multiline selection
+        let buttonMouseDown = false;
+        let isDragging = false;
+        let mouseDownPos = null;
+        let wasAlreadySelected = false;
+
+        commentButton.addEventListener('mousedown', (e) => {
         e.stopPropagation();
-        const diffPos = row.dataset.diffPosition;
-        this.showCommentForm(row, line.newNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos);
+        e.preventDefault();
+        if (e.button === 0) { // Left click only
+          buttonMouseDown = true;
+          isDragging = false;
+          mouseDownPos = { x: e.clientX, y: e.clientY };
+
+          // Check if this line is already part of a selection
+          const lineNumber = parseInt(line.newNumber);
+          wasAlreadySelected = this.selectedLines.has(lineNumber) && this.selectionFile === fileName;
+
+          // Handle Shift+click to extend selection
+          if (e.shiftKey && this.selectedLines.size > 0 && this.selectionFile === fileName) {
+            // Extend existing selection
+            const selectedArray = Array.from(this.selectedLines).map(Number).sort((a, b) => a - b);
+            const currentStart = selectedArray[0];
+            const currentEnd = selectedArray[selectedArray.length - 1];
+
+            // Extend to the clicked line
+            const newStart = Math.min(currentStart, lineNumber);
+            const newEnd = Math.max(currentEnd, lineNumber);
+
+            // Update selection
+            this.clearLineSelection();
+            this.selectionFile = fileName;
+            this.selectedLines.clear();
+
+            // Select all lines in extended range
+            for (let i = newStart; i <= newEnd; i++) {
+              const lineRow = document.querySelector(`tr[data-file="${fileName}"][data-line-number="${i}"]`);
+              if (lineRow) {
+                lineRow.classList.add('line-selected');
+                this.selectedLines.add(i);
+              }
+            }
+            return;
+          }
+
+          if (!wasAlreadySelected) {
+            // Start new line selection if not already selected
+            this.startLineSelection(fileName, lineNumber, row);
+          }
+        }
+      });
+
+      // Track mouse movement globally when button is pressed
+      const trackDrag = (e) => {
+        if (!buttonMouseDown) return;
+
+        const dx = e.clientX - mouseDownPos.x;
+        const dy = e.clientY - mouseDownPos.y;
+        const dragThreshold = 3;
+
+        if (!isDragging && (Math.abs(dx) > dragThreshold || Math.abs(dy) > dragThreshold)) {
+          isDragging = true;
+        }
       };
+
+      const handleMouseUp = (e) => {
+        if (!buttonMouseDown) return;
+
+        buttonMouseDown = false;
+        document.removeEventListener('mousemove', trackDrag);
+        document.removeEventListener('mouseup', handleMouseUp);
+
+        // If it wasn't a drag, treat it as a click
+        if (!isDragging && mouseDownPos) {
+          // Small delay to ensure selection is complete
+          setTimeout(() => {
+            const diffPos = row.dataset.diffPosition;
+
+            // If the button was already part of a selection, use that selection
+            if (wasAlreadySelected && this.selectedLines.size > 0 && this.selectionFile === fileName) {
+              // Use the existing multiline selection
+              const selectedArray = Array.from(this.selectedLines).map(Number).sort((a, b) => a - b);
+              const lineStart = selectedArray[0];
+              const lineEnd = selectedArray[selectedArray.length - 1];
+
+              // Find the button for the last line to position the form correctly
+              const lastLineRow = document.querySelector(`tr[data-file="${fileName}"][data-line-number="${lineEnd}"]`) || row;
+
+              // Create comment form for the entire selection range
+              this.showCommentForm(lastLineRow, lineStart, fileName, diffPos, lineEnd);
+            } else if (this.selectedLines.size > 0 && this.selectionFile === fileName) {
+              // New selection was just created
+              const selectedArray = Array.from(this.selectedLines).map(Number).sort((a, b) => a - b);
+              const lineStart = selectedArray[0];
+              const lineEnd = selectedArray[selectedArray.length - 1];
+
+              // Find the button for the last line to position the form correctly
+              const lastLineRow = document.querySelector(`tr[data-file="${fileName}"][data-line-number="${lineEnd}"]`) || row;
+
+              // Create comment form for the selection
+              this.showCommentForm(lastLineRow, lineStart, fileName, diffPos, lineEnd);
+            } else {
+              // Single line comment
+              this.showCommentForm(row, line.newNumber, fileName, diffPos);
+            }
+          }, 10);
+        }
+      };
+
+        document.addEventListener('mousemove', trackDrag);
+        document.addEventListener('mouseup', handleMouseUp);
+      } else {
+        // Fallback to basic comment button behavior when fileName is not available
+        commentButton.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const diffPos = row.dataset.diffPosition;
+          this.showCommentForm(row, line.newNumber, fileName || 'unknown', diffPos);
+        };
+      }
+
       lineNumContent.appendChild(commentButton);
     }
     
@@ -1965,31 +2099,263 @@ class PRManager {
   }
 
   /**
-   * Show comment form inline
+   * Setup global mouse handlers for multiline selection
    */
-  showCommentForm(targetRow, lineNumber, fileName, diffPosition) {
+  setupGlobalSelectionHandlers() {
+    // Cleanup existing handlers if they exist
+    if (this.globalMouseMoveHandler) {
+      document.removeEventListener('mousemove', this.globalMouseMoveHandler, true);
+      this.globalMouseMoveHandler = null;
+    }
+    if (this.globalMouseUpHandler) {
+      document.removeEventListener('mouseup', this.globalMouseUpHandler, true);
+      this.globalMouseUpHandler = null;
+    }
+
+    // Global mousemove for selection dragging
+    this.globalMouseMoveHandler = (e) => {
+      if (!this.isSelecting || this.selectionStart === null || !this.selectionFile) return;
+
+      // Prevent text selection during drag
+      e.preventDefault();
+
+      // Find all elements at the mouse position
+      const elements = document.elementsFromPoint(e.clientX, e.clientY);
+
+      // Look for a line row in the elements
+      for (const element of elements) {
+        const lineRow = element.closest ? element.closest('tr[data-file][data-line-number]') : null;
+        if (lineRow && lineRow.dataset.file === this.selectionFile) {
+          const lineNum = parseInt(lineRow.dataset.lineNumber);
+          if (!isNaN(lineNum) && lineNum !== this.selectionEnd) {
+            this.updateLineSelection(lineNum);
+          }
+          break;
+        }
+      }
+    };
+
+    // Global mouseup for ending selection
+    this.globalMouseUpHandler = (e) => {
+      if (this.isSelecting && this.selectionStart !== null) {
+        this.endLineSelection();
+      }
+    };
+
+    document.addEventListener('mousemove', this.globalMouseMoveHandler, true);
+    document.addEventListener('mouseup', this.globalMouseUpHandler, true);
+
+    // Global keydown handler for Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        this.clearLineSelection();
+      }
+    });
+  }
+
+  /**
+   * Start line selection for multiline comments
+   */
+  startLineSelection(file, lineNum, lineRow) {
+    // Clear any existing selection
+    this.clearLineSelection();
+
+    this.selectionStart = lineNum;
+    this.selectionEnd = lineNum;
+    this.selectedLines.add(lineNum);
+    this.selectionFile = file;
+    this.isSelecting = true;
+
+    // Add visual feedback
+    lineRow.classList.add('line-selected');
+
+    // Store all line rows for this file for faster access
+    this.fileLineRows = new Map();
+    document.querySelectorAll(`tr[data-file="${file}"][data-line-number]`).forEach(row => {
+      const num = parseInt(row.dataset.lineNumber);
+      if (!isNaN(num)) {
+        this.fileLineRows.set(num, row);
+      }
+    });
+
+    // Prevent text selection during drag
+    document.body.style.userSelect = 'none';
+    document.body.style.webkitUserSelect = 'none';
+    document.body.style.cursor = 'pointer';
+
+    // Add a class to the body to indicate we're selecting
+    document.body.classList.add('selecting-lines');
+  }
+
+  /**
+   * Update line selection during drag
+   */
+  updateLineSelection(lineNum) {
+    if (this.selectionStart === null || !this.isSelecting) return;
+
+    // Skip if same as current end
+    if (lineNum === this.selectionEnd) return;
+
+    this.selectionEnd = lineNum;
+
+    // Clear previous visual selection
+    document.querySelectorAll('.line-selected').forEach(el => {
+      el.classList.remove('line-selected');
+    });
+    this.selectedLines.clear();
+
+    // Calculate range
+    const start = Math.min(this.selectionStart, this.selectionEnd);
+    const end = Math.max(this.selectionStart, this.selectionEnd);
+
+    // Select all lines in range using cached rows
+    for (let i = start; i <= end; i++) {
+      const row = this.fileLineRows.get(i);
+      if (row) {
+        row.classList.add('line-selected');
+        this.selectedLines.add(i);
+      }
+    }
+
+    // Update visual feedback to show range
+    this.showSelectionFeedback(start, end);
+  }
+
+  /**
+   * Show selection feedback tooltip
+   */
+  showSelectionFeedback(start, end) {
+    // Remove any existing feedback
+    const existingFeedback = document.querySelector('.selection-feedback');
+    if (existingFeedback) {
+      existingFeedback.remove();
+    }
+
+    if (start !== end) {
+      // Create feedback element showing line range
+      const feedback = document.createElement('div');
+      feedback.className = 'selection-feedback';
+      feedback.textContent = `Lines ${start}-${end} selected`;
+      feedback.style.cssText = `
+        position: fixed;
+        top: ${event?.clientY + 10 || 100}px;
+        left: ${event?.clientX + 10 || 100}px;
+        background: var(--color-canvas-overlay);
+        color: var(--color-fg-default);
+        border: 1px solid var(--color-border-default);
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 13px;
+        z-index: 10000;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      `;
+      document.body.appendChild(feedback);
+    }
+  }
+
+  /**
+   * End line selection
+   */
+  endLineSelection() {
+    this.isSelecting = false;
+
+    // Re-enable text selection
+    document.body.style.userSelect = '';
+    document.body.style.webkitUserSelect = '';
+    document.body.style.cursor = '';
+
+    // Remove the selecting class
+    document.body.classList.remove('selecting-lines');
+
+    // Remove selection feedback
+    const feedback = document.querySelector('.selection-feedback');
+    if (feedback) {
+      feedback.remove();
+    }
+
+    // Clear cached rows
+    this.fileLineRows = null;
+
+    // Keep the selection visible until used or cleared
+    // but reset the selection tracking variables
+    this.selectionStart = null;
+    this.selectionEnd = null;
+  }
+
+  /**
+   * Clear line selection
+   */
+  clearLineSelection() {
+    // Remove visual selection
+    document.querySelectorAll('.line-selected').forEach(el => {
+      el.classList.remove('line-selected');
+    });
+
+    // Clear selection state
+    this.selectedLines.clear();
+    this.selectionStart = null;
+    this.selectionEnd = null;
+    this.selectionFile = null;
+    this.isSelecting = false;
+    this.fileLineRows = null;
+
+    // Remove any feedback
+    const feedback = document.querySelector('.selection-feedback');
+    if (feedback) {
+      feedback.remove();
+    }
+
+    // Re-enable text selection
+    document.body.style.userSelect = '';
+    document.body.style.webkitUserSelect = '';
+    document.body.style.cursor = '';
+
+    // Remove the selecting class
+    document.body.classList.remove('selecting-lines');
+  }
+
+  /**
+   * Show comment form inline
+   * Supports both single line and multiline ranges
+   */
+  showCommentForm(targetRow, lineNumber, fileName, diffPosition, lineEnd = null) {
     // Close any existing comment forms
     this.hideCommentForm();
-    
+
+    // Determine if this is a multiline comment
+    const isMultiline = lineEnd && lineEnd !== lineNumber;
+    const actualLineEnd = lineEnd || lineNumber;
+
+    // Clear selection after using it
+    if (this.selectedLines.size > 0) {
+      this.clearLineSelection();
+    }
+
     // Create comment form row
     const formRow = document.createElement('tr');
     formRow.className = 'comment-form-row';
-    
+
     const td = document.createElement('td');
     td.colSpan = 4;
     td.className = 'comment-form-cell';
-    
+
+    // Create title text based on single or multiline
+    const titleText = isMultiline ?
+      `Add comment (lines ${Math.min(lineNumber, actualLineEnd)}-${Math.max(lineNumber, actualLineEnd)})` :
+      'Add comment';
+
     const formHTML = `
       <div class="user-comment-form">
         <div class="comment-form-header">
           <span class="comment-icon">💬</span>
-          <span class="comment-title">Add comment</span>
+          <span class="comment-title">${titleText}</span>
         </div>
-        <textarea 
-          class="comment-textarea" 
+        <textarea
+          class="comment-textarea"
           placeholder="Leave a comment..."
           rows="3"
-          data-line="${lineNumber}"
+          data-line-start="${Math.min(lineNumber, actualLineEnd)}"
+          data-line-end="${Math.max(lineNumber, actualLineEnd)}"
           data-file="${fileName}"
           data-diff-position="${diffPosition || ''}"
         ></textarea>
@@ -2000,21 +2366,21 @@ class PRManager {
         </div>
       </div>
     `;
-    
+
     td.innerHTML = formHTML;
     formRow.appendChild(td);
-    
+
     // Insert form after the target row
     targetRow.parentNode.insertBefore(formRow, targetRow.nextSibling);
-    
+
     // Focus on textarea
     const textarea = td.querySelector('.comment-textarea');
     textarea.focus();
-    
+
     // Add event listeners
     const saveBtn = td.querySelector('.save-comment-btn');
     const cancelBtn = td.querySelector('.cancel-comment-btn');
-    
+
     saveBtn.addEventListener('click', () => this.saveUserComment(textarea, formRow));
     cancelBtn.addEventListener('click', () => this.hideCommentForm());
     
@@ -2040,13 +2406,14 @@ class PRManager {
    */
   autoSaveComment(textarea) {
     const fileName = textarea.dataset.file;
-    const lineNumber = textarea.dataset.line;
+    const lineStart = textarea.dataset.lineStart;
+    const lineEnd = textarea.dataset.lineEnd;
     const content = textarea.value.trim();
-    
+
     if (!content) return;
-    
+
     // Save to localStorage as draft
-    const draftKey = `draft_${this.currentPR?.number}_${fileName}_${lineNumber}`;
+    const draftKey = `draft_${this.currentPR?.number}_${fileName}_${lineStart}_${lineEnd}`;
     localStorage.setItem(draftKey, content);
     
     // Show draft indicator
@@ -2062,15 +2429,16 @@ class PRManager {
    */
   async saveUserComment(textarea, formRow) {
     const fileName = textarea.dataset.file;
-    const lineNumber = parseInt(textarea.dataset.line);
+    const lineStart = parseInt(textarea.dataset.lineStart);
+    const lineEnd = parseInt(textarea.dataset.lineEnd);
     const diffPosition = textarea.dataset.diffPosition ? parseInt(textarea.dataset.diffPosition) : null;
     const content = textarea.value.trim();
-    
+
     if (!content) {
       alert('Please enter a comment');
       return;
     }
-    
+
     try {
       const response = await fetch('/api/user-comment', {
         method: 'POST',
@@ -2080,8 +2448,8 @@ class PRManager {
         body: JSON.stringify({
           pr_id: this.currentPR.id,
           file: fileName,
-          line_start: lineNumber,
-          line_end: lineNumber,
+          line_start: lineStart,
+          line_end: lineEnd,
           diff_position: diffPosition,
           body: content
         })

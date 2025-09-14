@@ -107,6 +107,15 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - **Intelligent Merging**: AI-powered orchestration eliminates redundancy and noise
 - **Human-Centric Output**: Balanced, actionable guidance over comprehensive lists
 
+### Multiline Comment System
+- **Selection State Management**: Track multiline selections with dedicated state variables (selectedLines, selectionStart, selectionEnd, selectionFile, isSelecting)
+- **Visual Feedback**: Real-time highlighting of selected line ranges with CSS-based visual indicators
+- **Mouse Interaction**: Drag-to-select functionality with global mouse handlers for seamless multiline selection
+- **Keyboard Enhancement**: Shift+Click to extend selection, Escape to clear selection
+- **Form Integration**: Dynamic comment form headers showing line ranges (e.g., "Add comment (lines 5-12)")
+- **API Support**: Backend endpoints already support line_start and line_end fields for multiline comments
+- **Data Persistence**: Comments stored with line ranges in SQLite database
+
 ### Component Integration
 - **Event-Driven Updates**: Server-Sent Events for real-time progress streaming
 - **GitHub-Like UI**: Familiar interface patterns for immediate usability
