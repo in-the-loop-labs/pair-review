@@ -509,10 +509,8 @@ class PRManager {
     if (line.newNumber) {
       row.dataset.lineNumber = line.newNumber;
       row.dataset.fileName = fileName;
-      // Add file attribute for selection (only for insert and context lines)
-      if (line.type === 'insert' || line.type === 'context') {
-        row.dataset.file = fileName;
-      }
+      // Add file attribute for selection - needed for all lines with newNumber
+      row.dataset.file = fileName;
       // Add diff position for GitHub API positioning
       if (diffPosition !== undefined) {
         row.dataset.diffPosition = diffPosition;
@@ -2461,15 +2459,16 @@ class PRManager {
       
       const result = await response.json();
       
-      // Clear draft
-      const draftKey = `draft_${this.currentPR?.number}_${fileName}_${lineNumber}`;
+      // Clear draft - use lineStart for the draft key
+      const draftKey = `draft_${this.currentPR?.number}_${fileName}_${lineStart}`;
       localStorage.removeItem(draftKey);
-      
-      // Create comment display row
+
+      // Create comment display row with proper line range
       this.displayUserComment({
         id: result.commentId,
         file: fileName,
-        line_start: lineNumber,
+        line_start: lineStart,
+        line_end: lineEnd,
         body: content,
         created_at: new Date().toISOString()
       }, formRow.previousElementSibling);
