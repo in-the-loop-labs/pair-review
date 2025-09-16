@@ -368,3 +368,67 @@ mark.d2h-code-line-ctn {
 .d2h-file-addition .d2h-code-line {
     background: var(--color-diff-addition) !important;  /* Same green as regular additions */
 }
+
+/* Line selection styles for multi-line comments */
+.line-selected {
+    background: var(--color-selection) !important;
+}
+
+.line-selected .d2h-code-line-ctn,
+.line-selected .d2h-code-line,
+.line-selected .line-number-content {
+    background: var(--color-selection) !important;
+}
+
+/* Line selection during commenting (keep highlighted while form is open) */
+.line-commenting {
+    background: var(--color-selection) !important;
+}
+
+.line-commenting .d2h-code-line-ctn,
+.line-commenting .d2h-code-line,
+.line-commenting .line-number-content {
+    background: var(--color-selection) !important;
+}
+
+/* Prevent text selection during line selection */
+.selecting-lines {
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+    -ms-user-select: none !important;
+    user-select: none !important;
+}
+
+/* Make line numbers more prominent during selection */
+.selecting-lines .line-number-content {
+    cursor: pointer !important;
+}
+
+/* Selection feedback indicator */
+.selection-feedback {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: var(--color-accent-primary);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    z-index: 10000;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    transition: opacity 0.2s ease;
+}
+
+/* Override any conflicting diff coloring for selected lines */
+.line-selected.d2h-ins,
+.line-selected.d2h-del,
+.line-selected.d2h-cntx {
+    background: var(--color-selection) !important;
+}
+
+.line-selected.d2h-ins .d2h-code-line-ctn,
+.line-selected.d2h-del .d2h-code-line-ctn,
+.line-selected.d2h-cntx .d2h-code-line-ctn {
+    background: var(--color-selection) !important;
+}
