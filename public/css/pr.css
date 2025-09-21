@@ -2323,6 +2323,15 @@ tr:hover .add-comment-btn {
   display: block;
 }
 
+/* Highlight selected comment range */
+tr.selected-comment-range td {
+  background-color: #fff8c5 !important;
+}
+
+[data-theme="dark"] tr.selected-comment-range td {
+  background-color: rgba(255, 210, 63, 0.28) !important;
+}
+
 /* Comment Form */
 .comment-form-row {
   border: none;
@@ -2350,6 +2359,17 @@ tr:hover .add-comment-btn {
   margin-bottom: 12px;
   font-weight: 600;
   color: #1f2328;
+}
+
+.comment-line-range {
+  margin-left: auto;
+  font-weight: 500;
+  font-size: 13px;
+  color: #656d76;
+}
+
+[data-theme="dark"] .comment-line-range {
+  color: #9ca7b3;
 }
 
 .comment-icon {
@@ -2380,6 +2400,17 @@ tr:hover .add-comment-btn {
   align-items: center;
   gap: 8px;
   margin-top: 12px;
+}
+
+.comment-edit-line-info {
+  font-size: 13px;
+  font-weight: 500;
+  color: #656d76;
+  margin-bottom: 8px;
+}
+
+[data-theme="dark"] .comment-edit-line-info {
+  color: #9ca7b3;
 }
 
 .save-comment-btn {
@@ -3292,4 +3323,3 @@ body {
 [data-theme="dark"] .warning-dialog-content {
   color: #ffca28;
 }
-

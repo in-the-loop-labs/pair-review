@@ -9,6 +9,15 @@ class PRManager {
     this.expandedSections = new Set();
     this.currentTheme = localStorage.getItem('theme') || 'light';
     this.suggestionNavigator = null;
+    this.isSelectingLines = false;
+    this.selectionFileName = null;
+    this.selectionStartLine = null;
+    this.selectionCurrentLine = null;
+    this.selectionTbody = null;
+    this.dragSelectionRows = [];
+    this.activeSelectionRows = [];
+    this.activeSelectionRange = null;
+    this.handleDocumentMouseUp = this.handleDocumentMouseUp.bind(this);
     this.init();
     this.initTheme();
     this.initSuggestionNavigator();
@@ -522,9 +531,18 @@ class PRManager {
         e.preventDefault();
         e.stopPropagation();
         const diffPos = row.dataset.diffPosition;
-        this.showCommentForm(row, line.newNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos);
+        this.showCommentForm(
+          row,
+          line.newNumber,
+          tbody.closest('.d2h-file-wrapper').dataset.fileName,
+          diffPos,
+          { selectionRows: [row] }
+        );
       };
       lineNumContent.appendChild(commentButton);
+
+      row.addEventListener('mousedown', (event) => this.handleLineMouseDown(event, row));
+      row.addEventListener('mouseenter', (event) => this.handleLineMouseEnter(event, row));
     }
     
     lineNumCell.appendChild(lineNumContent);
@@ -1660,6 +1678,7 @@ class PRManager {
    * Helper function to create user comment from AI suggestion
    */
   async createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle) {
+    const parsedLineNumber = parseInt(lineNumber, 10);
     const createResponse = await fetch('/api/user-comment', {
       method: 'POST',
       headers: {
@@ -1668,8 +1687,8 @@ class PRManager {
       body: JSON.stringify({
         pr_id: this.currentPR.id,
         file: fileName,
-        line_start: parseInt(lineNumber),
-        line_end: parseInt(lineNumber),
+        line_start: parsedLineNumber,
+        line_end: parsedLineNumber,
         body: suggestionText,
         parent_id: suggestionId,  // Link to original AI suggestion
         type: suggestionType,     // Preserve the type
@@ -1685,7 +1704,8 @@ class PRManager {
     return {
       id: result.commentId,
       file: fileName,
-      line_start: parseInt(lineNumber),
+      line_start: parsedLineNumber,
+      line_end: parsedLineNumber,
       body: suggestionText,
       type: suggestionType,
       title: suggestionTitle,
@@ -1965,11 +1985,199 @@ class PRManager {
   }
 
   /**
+   * Handle mouse down on a diff line for range selection
+   */
+  handleLineMouseDown(event, row) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    if (event.target.closest('.add-comment-btn')) {
+      return; // Let the comment button handler manage this case
+    }
+
+    if (!row?.dataset?.lineNumber) {
+      return;
+    }
+
+    event.preventDefault();
+
+    // Close any existing form and clear prior selection
+    this.hideCommentForm();
+
+    this.isSelectingLines = true;
+    this.selectionFileName = row.dataset.fileName;
+    this.selectionTbody = row.parentElement;
+    this.selectionStartLine = parseInt(row.dataset.lineNumber, 10);
+    this.selectionCurrentLine = this.selectionStartLine;
+
+    this.applyDragSelection([row]);
+
+    document.addEventListener('mouseup', this.handleDocumentMouseUp);
+  }
+
+  /**
+   * Handle mouse entering a diff line during selection drag
+   */
+  handleLineMouseEnter(event, row) {
+    if (!this.isSelectingLines) {
+      return;
+    }
+
+    if (!row?.dataset?.lineNumber) {
+      return;
+    }
+
+    if (row.dataset.fileName !== this.selectionFileName) {
+      return;
+    }
+
+    const currentLine = parseInt(row.dataset.lineNumber, 10);
+    if (Number.isNaN(currentLine)) {
+      return;
+    }
+
+    this.updateLineSelection(this.selectionStartLine, currentLine);
+  }
+
+  /**
+   * Handle mouse up to finalize a line range selection
+   */
+  handleDocumentMouseUp() {
+    if (!this.isSelectingLines) {
+      return;
+    }
+
+    document.removeEventListener('mouseup', this.handleDocumentMouseUp);
+    this.isSelectingLines = false;
+
+    const selectionRows = [...this.dragSelectionRows];
+    const hasSelection = selectionRows.length > 0;
+    const startLine = this.selectionStartLine;
+    const endLine = this.selectionCurrentLine;
+    const fileName = this.selectionFileName;
+
+    // Reset drag references before potentially opening a form
+    this.dragSelectionRows = [];
+    this.selectionTbody = null;
+
+    if (!hasSelection || startLine === null || endLine === null || !fileName) {
+      this.clearSelectionHighlight();
+      this.selectionStartLine = null;
+      this.selectionCurrentLine = null;
+      this.selectionFileName = null;
+      return;
+    }
+
+    const rangeStart = Math.min(startLine, endLine);
+    const rangeEnd = Math.max(startLine, endLine);
+    const anchorRow = selectionRows.reduce((lowestRow, currentRow) => {
+      const currentLine = parseInt(currentRow.dataset.lineNumber, 10);
+      const lowestLine = lowestRow ? parseInt(lowestRow.dataset.lineNumber, 10) : Infinity;
+      return currentLine < lowestLine ? currentRow : lowestRow;
+    }, null);
+
+    if (!anchorRow) {
+      this.clearSelectionHighlight();
+      this.selectionStartLine = null;
+      this.selectionCurrentLine = null;
+      this.selectionFileName = null;
+      return;
+    }
+
+    const diffPosition = anchorRow.dataset.diffPosition ? parseInt(anchorRow.dataset.diffPosition, 10) : null;
+
+    this.showCommentForm(anchorRow, rangeStart, fileName, diffPosition, {
+      lineEnd: rangeEnd,
+      selectionRows
+    });
+
+    this.selectionStartLine = null;
+    this.selectionCurrentLine = null;
+    this.selectionFileName = null;
+  }
+
+  /**
+   * Update line selection highlight while dragging
+   */
+  updateLineSelection(startLine, currentLine) {
+    if (!this.selectionTbody || startLine === null || currentLine === null) {
+      return;
+    }
+
+    const rangeStart = Math.min(startLine, currentLine);
+    const rangeEnd = Math.max(startLine, currentLine);
+
+    const rowsInRange = Array.from(this.selectionTbody.querySelectorAll('tr')).filter((tableRow) => {
+      if (!tableRow?.dataset?.lineNumber || tableRow.dataset.fileName !== this.selectionFileName) {
+        return false;
+      }
+      const line = parseInt(tableRow.dataset.lineNumber, 10);
+      return line >= rangeStart && line <= rangeEnd;
+    });
+
+    this.selectionCurrentLine = currentLine;
+    this.applyDragSelection(rowsInRange);
+  }
+
+  /**
+   * Apply highlight to the current drag selection
+   */
+  applyDragSelection(rows) {
+    this.clearDragSelectionHighlight();
+    if (!rows || rows.length === 0) {
+      return;
+    }
+    this.dragSelectionRows = rows;
+    rows.forEach((tableRow) => {
+      tableRow.classList.add('selected-comment-range');
+    });
+  }
+
+  /**
+   * Clear highlight applied during dragging
+   */
+  clearDragSelectionHighlight() {
+    if (this.dragSelectionRows && this.dragSelectionRows.length) {
+      this.dragSelectionRows.forEach((row) => row.classList.remove('selected-comment-range'));
+    }
+    this.dragSelectionRows = [];
+  }
+
+  /**
+   * Highlight active selection tied to an open comment form
+   */
+  setActiveSelection(rows, lineStart, lineEnd, fileName) {
+    this.activeSelectionRows = Array.isArray(rows) ? rows : rows ? [rows] : [];
+    this.activeSelectionRange = lineStart != null ? { lineStart, lineEnd, fileName } : null;
+    this.activeSelectionRows.forEach((row) => row.classList.add('selected-comment-range'));
+  }
+
+  /**
+   * Clear all selection highlighting
+   */
+  clearSelectionHighlight() {
+    if (this.activeSelectionRows && this.activeSelectionRows.length) {
+      this.activeSelectionRows.forEach((row) => row.classList.remove('selected-comment-range'));
+    }
+    this.activeSelectionRows = [];
+    this.activeSelectionRange = null;
+
+    this.clearDragSelectionHighlight();
+  }
+
+  /**
    * Show comment form inline
    */
-  showCommentForm(targetRow, lineNumber, fileName, diffPosition) {
-    // Close any existing comment forms
+  showCommentForm(targetRow, lineStart, fileName, diffPosition, options = {}) {
+    const { lineEnd = lineStart, selectionRows } = options;
+
+    // Close any existing comment forms and clear highlights
     this.hideCommentForm();
+
+    // Re-apply highlight for the active selection (single or multi-line)
+    const highlightRows = selectionRows && selectionRows.length ? selectionRows : [targetRow];
+    this.setActiveSelection(highlightRows, lineStart, lineEnd, fileName);
     
     // Create comment form row
     const formRow = document.createElement('tr');
@@ -1979,19 +2187,22 @@ class PRManager {
     td.colSpan = 4;
     td.className = 'comment-form-cell';
     
+    const lineRangeText = lineStart === lineEnd ? `Line ${lineStart}` : `Lines ${lineStart}-${lineEnd}`;
     const formHTML = `
       <div class="user-comment-form">
         <div class="comment-form-header">
           <span class="comment-icon">💬</span>
           <span class="comment-title">Add comment</span>
+          <span class="comment-line-range">${lineRangeText}</span>
         </div>
         <textarea 
           class="comment-textarea" 
           placeholder="Leave a comment..."
           rows="3"
-          data-line="${lineNumber}"
+          data-line-start="${lineStart}"
+          data-line-end="${lineEnd}"
           data-file="${fileName}"
-          data-diff-position="${diffPosition || ''}"
+          data-diff-position="${diffPosition != null ? diffPosition : ''}"
         ></textarea>
         <div class="comment-form-actions">
           <button class="btn btn-sm btn-primary save-comment-btn">Save</button>
@@ -2033,20 +2244,32 @@ class PRManager {
       this.currentCommentForm.remove();
       this.currentCommentForm = null;
     }
+    this.clearSelectionHighlight();
   }
   
+  /**
+   * Generate a consistent draft storage key
+   */
+  getDraftKey(fileName, lineStart, lineEnd) {
+    const prIdentifier = this.currentPR?.number ?? this.currentPR?.id ?? 'unknown';
+    const startPart = lineStart ?? '';
+    const endPart = lineEnd ?? lineStart ?? '';
+    return `draft_${prIdentifier}_${fileName || 'unknown'}_${startPart}_${endPart}`;
+  }
+
   /**
    * Auto-save comment draft
    */
   autoSaveComment(textarea) {
     const fileName = textarea.dataset.file;
-    const lineNumber = textarea.dataset.line;
+    const lineStart = textarea.dataset.lineStart;
+    const lineEnd = textarea.dataset.lineEnd;
     const content = textarea.value.trim();
     
     if (!content) return;
     
     // Save to localStorage as draft
-    const draftKey = `draft_${this.currentPR?.number}_${fileName}_${lineNumber}`;
+    const draftKey = this.getDraftKey(fileName, lineStart, lineEnd);
     localStorage.setItem(draftKey, content);
     
     // Show draft indicator
@@ -2062,13 +2285,23 @@ class PRManager {
    */
   async saveUserComment(textarea, formRow) {
     const fileName = textarea.dataset.file;
-    const lineNumber = parseInt(textarea.dataset.line);
-    const diffPosition = textarea.dataset.diffPosition ? parseInt(textarea.dataset.diffPosition) : null;
+    const lineStart = textarea.dataset.lineStart ? parseInt(textarea.dataset.lineStart, 10) : null;
+    let lineEnd = textarea.dataset.lineEnd ? parseInt(textarea.dataset.lineEnd, 10) : null;
+    const diffPosition = textarea.dataset.diffPosition ? parseInt(textarea.dataset.diffPosition, 10) : null;
     const content = textarea.value.trim();
     
     if (!content) {
       alert('Please enter a comment');
       return;
+    }
+
+    if (lineStart === null || Number.isNaN(lineStart)) {
+      alert('Unable to determine the selected line range for this comment.');
+      return;
+    }
+
+    if (lineEnd === null || Number.isNaN(lineEnd)) {
+      lineEnd = lineStart;
     }
     
     try {
@@ -2080,8 +2313,8 @@ class PRManager {
         body: JSON.stringify({
           pr_id: this.currentPR.id,
           file: fileName,
-          line_start: lineNumber,
-          line_end: lineNumber,
+          line_start: lineStart,
+          line_end: lineEnd,
           diff_position: diffPosition,
           body: content
         })
@@ -2094,14 +2327,15 @@ class PRManager {
       const result = await response.json();
       
       // Clear draft
-      const draftKey = `draft_${this.currentPR?.number}_${fileName}_${lineNumber}`;
+      const draftKey = this.getDraftKey(fileName, lineStart, lineEnd);
       localStorage.removeItem(draftKey);
       
       // Create comment display row
       this.displayUserComment({
         id: result.commentId,
         file: fileName,
-        line_start: lineNumber,
+        line_start: lineStart,
+        line_end: lineEnd,
         body: content,
         created_at: new Date().toISOString()
       }, formRow.previousElementSibling);
@@ -2173,7 +2407,7 @@ class PRManager {
             </button>
           </div>
         </div>
-        <div class="user-comment-body" data-original-markdown="${this.escapeHtml(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : this.escapeHtml(comment.body)}</div>
+        <div class="user-comment-body" data-original-markdown="${this.escapeHtml(comment.body || '')}">${window.renderMarkdown ? window.renderMarkdown(comment.body || '') : this.escapeHtml(comment.body || '')}</div>
       </div>
     `;
     
@@ -2195,6 +2429,10 @@ class PRManager {
     const td = document.createElement('td');
     td.colSpan = 4;
     td.className = 'user-comment-cell';
+
+    const lineInfo = comment.line_end && comment.line_end !== comment.line_start
+      ? `Lines ${comment.line_start}-${comment.line_end}`
+      : `Line ${comment.line_start}`;
     
     const commentHTML = `
       <div class="user-comment editing-mode ${comment.parent_id ? 'adopted-comment' : ''}">
@@ -2204,7 +2442,7 @@ class PRManager {
               <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"></path>
             </svg>
           </span>
-          <span class="user-comment-line-info">Line ${comment.line_start}</span>
+          <span class="user-comment-line-info">${lineInfo}</span>
           ${comment.type && comment.type !== 'comment' ? `
             <button class="btn-toggle-original" onclick="prManager.toggleOriginalSuggestion(${comment.parent_id}, ${comment.id})" title="Show/hide original AI suggestion">
               <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="20" height="20">
@@ -2229,13 +2467,14 @@ class PRManager {
           </div>
         </div>
         <!-- Hidden body div for saving - pre-populate with markdown rendered content and store original -->
-        <div class="user-comment-body" style="display: none;" data-original-markdown="${this.escapeHtml(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : this.escapeHtml(comment.body)}</div>
+        <div class="user-comment-body" style="display: none;" data-original-markdown="${this.escapeHtml(comment.body || '')}">${window.renderMarkdown ? window.renderMarkdown(comment.body || '') : this.escapeHtml(comment.body || '')}</div>
         <div class="user-comment-edit-form">
+          <div class="comment-edit-line-info">${lineInfo}</div>
           <textarea 
             id="edit-comment-${comment.id}" 
             class="comment-edit-textarea"
             placeholder="Enter your comment..."
-            rows="3">${this.escapeHtml(comment.body)}</textarea>
+            rows="3">${this.escapeHtml(comment.body || '')}</textarea>
           <div class="comment-edit-actions">
             <button class="btn btn-sm btn-primary" onclick="prManager.saveEditedUserComment(${comment.id})">
               Save comment
@@ -2308,9 +2547,13 @@ class PRManager {
       // Add editing mode
       commentDiv.classList.add('editing-mode');
       
+      const lineInfoElement = commentDiv.querySelector('.user-comment-line-info');
+      const lineInfoText = lineInfoElement ? lineInfoElement.textContent.trim() : '';
+
       // Replace body with edit form
       const editFormHTML = `
         <div class="user-comment-edit-form">
+          <div class="comment-edit-line-info">${this.escapeHtml(lineInfoText)}</div>
           <textarea 
             id="edit-comment-${commentId}" 
             class="comment-edit-textarea"
