@@ -8,9 +8,11 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 ### 1. Entry Point (`src/main.js`)
 - **Role**: Application orchestrator that coordinates the entire PR review process
 - **Key Functions**:
-  - Parses command line arguments and handles `--ai` flag for automatic analysis
+  - Parses command line arguments and handles `--ai` and `--direct` flags
+  - `--ai` flag: Automatic analysis in web UI mode
+  - `--direct` flag: Automated review mode that bypasses web UI entirely
   - Initializes shared database instance and coordinates data flow
-  - Sets up PR fetching, worktree creation, and launches web server
+  - Sets up PR fetching, worktree creation, and launches web server (except in direct mode)
   - Passes shared database to server to ensure data persistence
 
 ### 2. Database Layer (`src/database.js`)
@@ -67,16 +69,29 @@ Pair-Review is a local web application that helps human reviewers analyze GitHub
 - **Real-time Updates**: Server-Sent Events for progress tracking during AI analysis
 - **Responsive Layout**: Auto-collapsing sidebar with mobile-friendly design
 
+### 8. Direct Review Mode (`src/ai/direct-reviewer.js`)
+- **Purpose**: Fully automated review workflow that bypasses the web UI
+- **Triggered by**: `--direct` command line flag
+- **Workflow**:
+  1. Runs complete AI analysis (all 3 levels automatically)
+  2. Adopts ALL AI suggestions as user comments using parent_id linkage
+  3. Submits review to GitHub as DRAFT status (always DRAFT, not configurable)
+  4. Exits process with completion summary
+- **Use Case**: Automated CI/CD integration or quick review generation
+- **Output**: GitHub DRAFT review ready for human inspection
+
 ## Data Flow
 
 ### PR Processing Flow
-1. **Command Line**: User runs `npx pair-review <PR-URL>` with optional `--ai` flag
+1. **Command Line**: User runs `npx pair-review <PR-URL>` with optional `--ai` or `--direct` flag
 2. **Initialization**: Application parses arguments, initializes shared database
 3. **GitHub Integration**: Fetches PR metadata and commit information via API
 4. **Local Setup**: Creates git worktree and generates unified diff
 5. **Data Storage**: Persists all data in SQLite database
-6. **Web Server**: Launches Express server with shared database instance
-7. **Browser Interface**: Opens web interface, optionally auto-triggering AI analysis
+6. **Mode Selection**:
+   - **Direct Mode** (`--direct`): Launches DirectReviewer, performs automated analysis and submission, exits
+   - **Web Mode** (default): Launches Express server with shared database instance
+7. **Browser Interface**: (Web mode only) Opens web interface, optionally auto-triggering AI analysis
 
 ### AI Analysis Architecture
 - **Multi-Level Pipeline**: Sequential analysis at diff → file → codebase levels

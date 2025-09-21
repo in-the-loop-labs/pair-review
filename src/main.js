@@ -20,6 +20,8 @@ function parseArgs(args) {
   for (const arg of args) {
     if (arg === '--ai') {
       flags.ai = true;
+    } else if (arg === '--direct') {
+      flags.direct = true;
     } else if (arg === '--configure') {
       // Skip --configure as it's handled earlier
       continue;
@@ -61,11 +63,14 @@ async function main() {
     if (prArgs.length > 0) {
       await handlePullRequest(prArgs, config, db, flags);
     } else {
-      // Check if --ai flag was used without PR identifier
+      // Check if --ai or --direct flag was used without PR identifier
       if (flags.ai) {
         throw new Error('--ai flag requires a pull request number or URL to be specified');
       }
-      
+      if (flags.direct) {
+        throw new Error('--direct flag requires a pull request number or URL to be specified');
+      }
+
       // No PR arguments - just start the server
       console.log('No pull request specified. Starting server...');
       await startServerOnly(config);
@@ -133,19 +138,28 @@ async function handlePullRequest(args, config, db, flags = {}) {
     console.log('Storing pull request data...');
     await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
 
+    // Handle direct review mode
+    if (flags.direct) {
+      console.log('Starting direct review mode...');
+      const { DirectReviewer } = require('./ai/direct-reviewer');
+      const directReviewer = new DirectReviewer(db, config);
+      await directReviewer.performDirectReview(prInfo, prData, worktreePath);
+      process.exit(0);
+    }
+
     // Start server with PR context
     console.log('Starting server...');
     const port = await startServerWithPRContext(config, prInfo, flags);
 
     // Open browser to PR view
     let url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
-    
+
     // Add auto-ai parameter if --ai flag is present
     if (flags.ai) {
       url += '&auto-ai=true';
       console.log('Auto-triggering AI analysis...');
     }
-    
+
     console.log(`Opening browser to: ${url}`);
     await open(url);
 
