@@ -2323,6 +2323,51 @@ tr:hover .add-comment-btn {
   display: block;
 }
 
+/* Line range selection */
+.line-range-selected {
+  background-color: rgba(255, 223, 93, 0.3) !important;
+}
+
+.line-range-start {
+  background-color: rgba(255, 223, 93, 0.5) !important;
+}
+
+.line-range-selected .d2h-code-linenumber,
+.line-range-start .d2h-code-linenumber {
+  background-color: rgba(255, 223, 93, 0.4) !important;
+}
+
+.line-range-indicator {
+  margin-left: auto;
+  padding: 2px 8px;
+  background: #ddf4ff;
+  border: 1px solid #54aeff;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #0969da;
+}
+
+/* Dark theme line range selection */
+.theme-dark .line-range-selected {
+  background-color: rgba(187, 128, 9, 0.25) !important;
+}
+
+.theme-dark .line-range-start {
+  background-color: rgba(187, 128, 9, 0.35) !important;
+}
+
+.theme-dark .line-range-selected .d2h-code-linenumber,
+.theme-dark .line-range-start .d2h-code-linenumber {
+  background-color: rgba(187, 128, 9, 0.3) !important;
+}
+
+.theme-dark .line-range-indicator {
+  background: rgba(56, 139, 253, 0.15);
+  border-color: #388bfd;
+  color: #58a6ff;
+}
+
 /* Comment Form */
 .comment-form-row {
   border: none;

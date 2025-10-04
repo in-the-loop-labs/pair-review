@@ -9,6 +9,9 @@ class PRManager {
     this.expandedSections = new Set();
     this.currentTheme = localStorage.getItem('theme') || 'light';
     this.suggestionNavigator = null;
+    // Line range selection state
+    this.rangeSelectionStart = null;
+    this.rangeSelectionEnd = null;
     this.init();
     this.initTheme();
     this.initSuggestionNavigator();
@@ -517,14 +520,40 @@ class PRManager {
       const commentButton = document.createElement('button');
       commentButton.className = 'add-comment-btn';
       commentButton.innerHTML = '+';
-      commentButton.title = 'Add comment';
+      commentButton.title = 'Add comment (Shift+click to select range)';
       commentButton.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
         const diffPos = row.dataset.diffPosition;
-        this.showCommentForm(row, line.newNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos);
+
+        // Check if shift key is held for range selection
+        if (e.shiftKey && this.rangeSelectionStart) {
+          // Complete range selection
+          this.completeRangeSelection(row, line.newNumber, fileName);
+        } else {
+          // Single line comment or start of range
+          this.startRangeSelection(row, line.newNumber, fileName);
+          this.showCommentForm(row, line.newNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos);
+        }
       };
       lineNumContent.appendChild(commentButton);
+    }
+
+    // Add click handler to line number for range selection
+    if (line.newNumber && (line.type === 'insert' || line.type === 'context')) {
+      const lineNum2 = lineNumContent.querySelector('.line-num2');
+      if (lineNum2) {
+        lineNum2.style.cursor = 'pointer';
+        lineNum2.onclick = (e) => {
+          if (e.shiftKey && this.rangeSelectionStart) {
+            // Complete range selection
+            this.completeRangeSelection(row, line.newNumber, fileName);
+          } else {
+            // Start range selection
+            this.startRangeSelection(row, line.newNumber, fileName);
+          }
+        };
+      }
     }
     
     lineNumCell.appendChild(lineNumContent);
@@ -1965,9 +1994,96 @@ class PRManager {
   }
 
   /**
+   * Start line range selection
+   */
+  startRangeSelection(row, lineNumber, fileName) {
+    // Clear any existing selection
+    this.clearRangeSelection();
+
+    // Set start of range
+    this.rangeSelectionStart = {
+      row: row,
+      lineNumber: lineNumber,
+      fileName: fileName
+    };
+
+    // Add visual indicator
+    row.classList.add('line-range-start');
+  }
+
+  /**
+   * Complete line range selection and show comment form
+   */
+  completeRangeSelection(endRow, endLineNumber, fileName) {
+    if (!this.rangeSelectionStart) return;
+
+    // Ensure we're in the same file
+    if (this.rangeSelectionStart.fileName !== fileName) {
+      alert('Cannot select range across different files');
+      this.clearRangeSelection();
+      return;
+    }
+
+    const startLine = this.rangeSelectionStart.lineNumber;
+    const endLine = endLineNumber;
+
+    // Ensure start is before end
+    const minLine = Math.min(startLine, endLine);
+    const maxLine = Math.max(startLine, endLine);
+
+    // Highlight all rows in range
+    this.highlightLineRange(this.rangeSelectionStart.row, endRow, fileName, minLine, maxLine);
+
+    // Store end of range
+    this.rangeSelectionEnd = {
+      row: endRow,
+      lineNumber: endLineNumber,
+      fileName: fileName
+    };
+
+    // Get diff position from the end row (GitHub uses position at end of range)
+    const diffPosition = endRow.dataset.diffPosition;
+
+    // Show comment form with range
+    this.showCommentForm(endRow, minLine, fileName, diffPosition, maxLine);
+  }
+
+  /**
+   * Highlight all lines in a range
+   */
+  highlightLineRange(startRow, endRow, fileName, minLine, maxLine) {
+    // Find all rows in the file between minLine and maxLine
+    const fileWrapper = startRow.closest('.d2h-file-wrapper');
+    if (!fileWrapper) return;
+
+    const allRows = fileWrapper.querySelectorAll('tr[data-line-number]');
+
+    allRows.forEach(row => {
+      const lineNum = parseInt(row.dataset.lineNumber);
+      if (lineNum >= minLine && lineNum <= maxLine && row.dataset.fileName === fileName) {
+        row.classList.add('line-range-selected');
+      }
+    });
+  }
+
+  /**
+   * Clear line range selection
+   */
+  clearRangeSelection() {
+    // Remove all selection highlights
+    document.querySelectorAll('.line-range-start, .line-range-selected').forEach(row => {
+      row.classList.remove('line-range-start', 'line-range-selected');
+    });
+
+    // Clear state
+    this.rangeSelectionStart = null;
+    this.rangeSelectionEnd = null;
+  }
+
+  /**
    * Show comment form inline
    */
-  showCommentForm(targetRow, lineNumber, fileName, diffPosition) {
+  showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber) {
     // Close any existing comment forms
     this.hideCommentForm();
     
@@ -1979,17 +2095,23 @@ class PRManager {
     td.colSpan = 4;
     td.className = 'comment-form-cell';
     
+    // Determine if this is a range comment
+    const isRange = endLineNumber && endLineNumber !== lineNumber;
+    const lineRangeText = isRange ? `Lines ${lineNumber}-${endLineNumber}` : `Line ${lineNumber}`;
+
     const formHTML = `
       <div class="user-comment-form">
         <div class="comment-form-header">
           <span class="comment-icon">💬</span>
           <span class="comment-title">Add comment</span>
+          ${isRange ? `<span class="line-range-indicator">${lineRangeText}</span>` : ''}
         </div>
-        <textarea 
-          class="comment-textarea" 
+        <textarea
+          class="comment-textarea"
           placeholder="Leave a comment..."
           rows="3"
           data-line="${lineNumber}"
+          data-line-end="${endLineNumber || lineNumber}"
           data-file="${fileName}"
           data-diff-position="${diffPosition || ''}"
         ></textarea>
@@ -2033,6 +2155,8 @@ class PRManager {
       this.currentCommentForm.remove();
       this.currentCommentForm = null;
     }
+    // Clear range selection when hiding form
+    this.clearRangeSelection();
   }
   
   /**
@@ -2063,14 +2187,15 @@ class PRManager {
   async saveUserComment(textarea, formRow) {
     const fileName = textarea.dataset.file;
     const lineNumber = parseInt(textarea.dataset.line);
+    const endLineNumber = parseInt(textarea.dataset.lineEnd) || lineNumber;
     const diffPosition = textarea.dataset.diffPosition ? parseInt(textarea.dataset.diffPosition) : null;
     const content = textarea.value.trim();
-    
+
     if (!content) {
       alert('Please enter a comment');
       return;
     }
-    
+
     try {
       const response = await fetch('/api/user-comment', {
         method: 'POST',
@@ -2081,27 +2206,28 @@ class PRManager {
           pr_id: this.currentPR.id,
           file: fileName,
           line_start: lineNumber,
-          line_end: lineNumber,
+          line_end: endLineNumber,
           diff_position: diffPosition,
           body: content
         })
       });
-      
+
       if (!response.ok) {
         throw new Error('Failed to save comment');
       }
-      
+
       const result = await response.json();
-      
+
       // Clear draft
       const draftKey = `draft_${this.currentPR?.number}_${fileName}_${lineNumber}`;
       localStorage.removeItem(draftKey);
-      
+
       // Create comment display row
       this.displayUserComment({
         id: result.commentId,
         file: fileName,
         line_start: lineNumber,
+        line_end: endLineNumber,
         body: content,
         created_at: new Date().toISOString()
       }, formRow.previousElementSibling);
