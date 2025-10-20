@@ -2324,17 +2324,51 @@ tr:hover .add-comment-btn {
 }
 
 /* Line range selection */
-.line-range-selected {
+.line-range-selected,
+tr.line-range-selected,
+.line-range-start,
+tr.line-range-start {
   background-color: rgba(255, 223, 93, 0.3) !important;
 }
 
-.line-range-start {
-  background-color: rgba(255, 223, 93, 0.5) !important;
+/* Ensure all cells in selected rows are highlighted */
+.line-range-selected td,
+.line-range-start td,
+tr.line-range-selected td,
+tr.line-range-start td {
+  background-color: rgba(255, 223, 93, 0.3) !important;
+}
+
+/* Override diff-specific backgrounds for selected rows */
+tr.line-range-selected.d2h-ins,
+tr.line-range-selected.d2h-del,
+tr.line-range-selected.d2h-cntx,
+tr.line-range-start.d2h-ins,
+tr.line-range-start.d2h-del,
+tr.line-range-start.d2h-cntx {
+  background-color: rgba(255, 223, 93, 0.3) !important;
+}
+
+tr.line-range-selected.d2h-ins td,
+tr.line-range-selected.d2h-del td,
+tr.line-range-selected.d2h-cntx td,
+tr.line-range-start.d2h-ins td,
+tr.line-range-start.d2h-del td,
+tr.line-range-start.d2h-cntx td {
+  background-color: rgba(255, 223, 93, 0.3) !important;
 }
 
 .line-range-selected .d2h-code-linenumber,
 .line-range-start .d2h-code-linenumber {
   background-color: rgba(255, 223, 93, 0.4) !important;
+}
+
+/* Override the code content cell background */
+.line-range-selected .d2h-code-line-ctn,
+.line-range-start .d2h-code-line-ctn,
+tr.line-range-selected .d2h-code-line-ctn,
+tr.line-range-start .d2h-code-line-ctn {
+  background-color: transparent !important;
 }
 
 .line-range-indicator {
@@ -2349,17 +2383,54 @@ tr:hover .add-comment-btn {
 }
 
 /* Dark theme line range selection */
-.theme-dark .line-range-selected {
+.theme-dark .line-range-selected,
+.theme-dark tr.line-range-selected {
   background-color: rgba(187, 128, 9, 0.25) !important;
 }
 
-.theme-dark .line-range-start {
+.theme-dark .line-range-start,
+.theme-dark tr.line-range-start {
   background-color: rgba(187, 128, 9, 0.35) !important;
+}
+
+/* Ensure all cells in selected rows are highlighted in dark theme */
+.theme-dark .line-range-selected td,
+.theme-dark .line-range-start td,
+.theme-dark tr.line-range-selected td,
+.theme-dark tr.line-range-start td {
+  background-color: rgba(187, 128, 9, 0.25) !important;
+}
+
+/* Override diff-specific backgrounds for selected rows in dark theme */
+.theme-dark tr.line-range-selected.d2h-ins,
+.theme-dark tr.line-range-selected.d2h-del,
+.theme-dark tr.line-range-selected.d2h-cntx,
+.theme-dark tr.line-range-start.d2h-ins,
+.theme-dark tr.line-range-start.d2h-del,
+.theme-dark tr.line-range-start.d2h-cntx {
+  background-color: rgba(187, 128, 9, 0.25) !important;
+}
+
+.theme-dark tr.line-range-selected.d2h-ins td,
+.theme-dark tr.line-range-selected.d2h-del td,
+.theme-dark tr.line-range-selected.d2h-cntx td,
+.theme-dark tr.line-range-start.d2h-ins td,
+.theme-dark tr.line-range-start.d2h-del td,
+.theme-dark tr.line-range-start.d2h-cntx td {
+  background-color: rgba(187, 128, 9, 0.25) !important;
 }
 
 .theme-dark .line-range-selected .d2h-code-linenumber,
 .theme-dark .line-range-start .d2h-code-linenumber {
   background-color: rgba(187, 128, 9, 0.3) !important;
+}
+
+/* Override the code content cell background in dark theme */
+.theme-dark .line-range-selected .d2h-code-line-ctn,
+.theme-dark .line-range-start .d2h-code-line-ctn,
+.theme-dark tr.line-range-selected .d2h-code-line-ctn,
+.theme-dark tr.line-range-start .d2h-code-line-ctn {
+  background-color: transparent !important;
 }
 
 .theme-dark .line-range-indicator {
