@@ -486,7 +486,13 @@
   
   --color-selection: #fff5b1;
   --color-selection-num: #ffeb3b;
-  
+
+  --color-range-selection: rgba(255, 223, 93, 0.3);
+  --color-range-selection-num: rgba(255, 223, 93, 0.4);
+  --color-range-indicator-bg: #ddf4ff;
+  --color-range-indicator-border: #54aeff;
+  --color-range-indicator-text: #0969da;
+
   --color-shadow: rgba(27, 31, 36, 0.04);
   --color-shadow-large: rgba(0, 0, 0, 0.3);
 }
@@ -523,7 +529,13 @@
   
   --color-selection: #3d3300;
   --color-selection-num: #4d4000;
-  
+
+  --color-range-selection: rgba(187, 128, 9, 0.25);
+  --color-range-selection-num: rgba(187, 128, 9, 0.3);
+  --color-range-indicator-bg: rgba(56, 139, 253, 0.15);
+  --color-range-indicator-border: #388bfd;
+  --color-range-indicator-text: #58a6ff;
+
   --color-shadow: rgba(0, 0, 0, 0.3);
   --color-shadow-large: rgba(0, 0, 0, 0.5);
 }
@@ -2321,6 +2333,65 @@ tr.newly-expanded .d2h-code-line-ctn {
 /* Show comment button on hover */
 tr:hover .add-comment-btn {
   display: block;
+}
+
+/* Line range selection */
+.line-range-selected,
+tr.line-range-selected,
+.line-range-start,
+tr.line-range-start {
+  background-color: var(--color-range-selection) !important;
+}
+
+/* Ensure all cells in selected rows are highlighted */
+.line-range-selected td,
+.line-range-start td,
+tr.line-range-selected td,
+tr.line-range-start td {
+  background-color: var(--color-range-selection) !important;
+}
+
+/* Override diff-specific backgrounds for selected rows */
+tr.line-range-selected.d2h-ins,
+tr.line-range-selected.d2h-del,
+tr.line-range-selected.d2h-cntx,
+tr.line-range-start.d2h-ins,
+tr.line-range-start.d2h-del,
+tr.line-range-start.d2h-cntx {
+  background-color: var(--color-range-selection) !important;
+}
+
+tr.line-range-selected.d2h-ins td,
+tr.line-range-selected.d2h-del td,
+tr.line-range-selected.d2h-cntx td,
+tr.line-range-start.d2h-ins td,
+tr.line-range-start.d2h-del td,
+tr.line-range-start.d2h-cntx td {
+  background-color: var(--color-range-selection) !important;
+}
+
+.line-range-selected .d2h-code-linenumber,
+.line-range-start .d2h-code-linenumber {
+  background-color: var(--color-range-selection-num) !important;
+}
+
+/* Override the code content cell background */
+.line-range-selected .d2h-code-line-ctn,
+.line-range-start .d2h-code-line-ctn,
+tr.line-range-selected .d2h-code-line-ctn,
+tr.line-range-start .d2h-code-line-ctn {
+  background-color: transparent !important;
+}
+
+.line-range-indicator {
+  margin-left: auto;
+  padding: 2px 8px;
+  background: var(--color-range-indicator-bg);
+  border: 1px solid var(--color-range-indicator-border);
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-range-indicator-text);
 }
 
 /* Comment Form */
