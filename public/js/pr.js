@@ -552,7 +552,7 @@ class PRManager {
         const diffPos = row.dataset.diffPosition;
 
         // If we have a completed drag selection, use it
-        if (this.rangeSelectionStart && this.rangeSelectionEnd &&
+        if (this.rangeSelectionStart?.lineNumber && this.rangeSelectionEnd?.lineNumber &&
             this.rangeSelectionStart.lineNumber !== this.rangeSelectionEnd.lineNumber) {
           const minLine = Math.min(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
           const maxLine = Math.max(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
@@ -2128,6 +2128,12 @@ class PRManager {
       row.classList.remove('line-range-start', 'line-range-selected');
     });
 
+    // Clean up global listener if it exists
+    if (this.handleGlobalMouseUp) {
+      document.removeEventListener('mouseup', this.handleGlobalMouseUp);
+      this.handleGlobalMouseUp = null;
+    }
+
     // Clear state
     this.rangeSelectionStart = null;
     this.rangeSelectionEnd = null;
@@ -2141,7 +2147,7 @@ class PRManager {
    * Start drag selection
    */
   startDragSelection(row, lineNumber, fileName) {
-    // Clear any existing selection
+    // Clear any existing selection and ensure cleanup
     this.clearRangeSelection();
 
     // Set dragging state
@@ -2160,11 +2166,13 @@ class PRManager {
     row.classList.add('line-range-selected');
 
     // Add global mouse up handler to catch mouseup outside of line numbers
-    document.addEventListener('mouseup', this.handleGlobalMouseUp = (e) => {
+    // Store as bound function for reliable cleanup
+    this.handleGlobalMouseUp = (e) => {
       if (this.isDraggingRange) {
         this.completeDragSelection(row, this.dragEndLine || lineNumber, fileName);
       }
-    });
+    };
+    document.addEventListener('mouseup', this.handleGlobalMouseUp);
   }
 
   /**
@@ -2203,37 +2211,42 @@ class PRManager {
   completeDragSelection(row, lineNumber, fileName) {
     if (!this.isDraggingRange) return;
 
-    // Remove global mouse up handler
-    if (this.handleGlobalMouseUp) {
-      document.removeEventListener('mouseup', this.handleGlobalMouseUp);
-      this.handleGlobalMouseUp = null;
-    }
+    try {
+      // Update end of range
+      this.rangeSelectionEnd = {
+        row: row,
+        lineNumber: lineNumber,
+        fileName: fileName
+      };
 
-    // Update end of range
-    this.rangeSelectionEnd = {
-      row: row,
-      lineNumber: lineNumber,
-      fileName: fileName
-    };
+      // If we have a valid range (more than one line), keep selection
+      const minLine = Math.min(this.dragStartLine, this.dragEndLine);
+      const maxLine = Math.max(this.dragStartLine, this.dragEndLine);
 
-    // Stop dragging
-    this.isDraggingRange = false;
-
-    // If we have a valid range (more than one line), keep selection
-    const minLine = Math.min(this.dragStartLine, this.dragEndLine);
-    const maxLine = Math.max(this.dragStartLine, this.dragEndLine);
-
-    if (minLine === maxLine) {
-      // Single line - clear selection
-      this.clearRangeSelection();
-    } else {
-      // Multi-line - keep selection for user to click + button
-      // The selection stays highlighted until they click a comment button or clear it
+      if (minLine === maxLine) {
+        // Single line - clear selection
+        this.clearRangeSelection();
+      } else {
+        // Multi-line - keep selection for user to click + button
+        // The selection stays highlighted until they click a comment button or clear it
+      }
+    } finally {
+      // Always clean up the global listener and dragging state
+      if (this.handleGlobalMouseUp) {
+        document.removeEventListener('mouseup', this.handleGlobalMouseUp);
+        this.handleGlobalMouseUp = null;
+      }
+      this.isDraggingRange = false;
     }
   }
 
   /**
    * Show comment form inline
+   * @param {HTMLElement} targetRow - The row to insert the comment form after
+   * @param {number} lineNumber - The starting line number for the comment
+   * @param {string} fileName - The file name
+   * @param {number} diffPosition - The diff position for GitHub API
+   * @param {number} [endLineNumber] - Optional ending line number for multi-line comments
    */
   showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber) {
     // Close any existing comment forms
@@ -2364,7 +2377,9 @@ class PRManager {
   async saveUserComment(textarea, formRow) {
     const fileName = textarea.dataset.file;
     const lineNumber = parseInt(textarea.dataset.line);
-    const endLineNumber = parseInt(textarea.dataset.lineEnd) || lineNumber;
+    // Validate endLineNumber, fallback to lineNumber if invalid
+    const parsedEndLine = parseInt(textarea.dataset.lineEnd);
+    const endLineNumber = !isNaN(parsedEndLine) ? parsedEndLine : lineNumber;
     const diffPosition = textarea.dataset.diffPosition ? parseInt(textarea.dataset.diffPosition) : null;
     const content = textarea.value.trim();
 
