@@ -8,7 +8,8 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const DEFAULT_CONFIG = {
   github_token: "",
   port: 3000,
-  theme: "light"
+  theme: "light",
+  model: "sonnet"
 };
 
 /**

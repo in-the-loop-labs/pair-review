@@ -16,10 +16,20 @@ let db = null;
 function parseArgs(args) {
   const prArgs = [];
   const flags = {};
-  
-  for (const arg of args) {
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
     if (arg === '--ai') {
       flags.ai = true;
+    } else if (arg === '--model') {
+      // Next argument is the model name
+      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
+        flags.model = args[i + 1];
+        i++; // Skip next argument since we consumed it
+      } else {
+        throw new Error('--model flag requires a model name (e.g., --model opus)');
+      }
     } else if (arg === '--configure') {
       // Skip --configure as it's handled earlier
       continue;
@@ -29,7 +39,7 @@ function parseArgs(args) {
     }
     // Ignore other unknown flags
   }
-  
+
   return { prArgs, flags };
 }
 
@@ -193,15 +203,20 @@ async function startServerOnly(config) {
 async function startServerWithPRContext(config, prInfo, flags = {}) {
   // Set environment variable for PR context
   process.env.PAIR_REVIEW_PR = JSON.stringify(prInfo);
-  
+
   // Set environment variable for auto-AI flag
   if (flags.ai) {
     process.env.PAIR_REVIEW_AUTO_AI = 'true';
   }
-  
+
+  // Set environment variable for model override (CLI takes priority)
+  if (flags.model) {
+    process.env.PAIR_REVIEW_MODEL = flags.model;
+  }
+
   const { startServer } = require('./server');
   await startServer(db);
-  
+
   // Return port from config (server will find available port)
   return config.port;
 }
