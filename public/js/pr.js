@@ -450,7 +450,8 @@ class PRManager {
           if (blockIndex === 0 && block.lines.length > 0 && (block.lines[0].oldNumber > 1 || block.lines[0].newNumber > 1)) {
             const startLine = Math.min(block.lines[0].oldNumber || 1, block.lines[0].newNumber || 1);
             if (startLine > 1) {
-              this.createGapSection(tbody, file.newName || file.oldName, 1, startLine - 1, startLine - 1);
+              // This is at the TOP of the file
+              this.createGapSection(tbody, file.newName || file.oldName, 1, startLine - 1, startLine - 1, { isTop: true, isBottom: false });
             }
           }
           
@@ -465,13 +466,14 @@ class PRManager {
             const nextBlock = file.blocks[blockIndex + 1];
             const currentLastLine = block.lines[block.lines.length - 1];
             const nextFirstLine = nextBlock.lines[0];
-            
+
             if (currentLastLine && nextFirstLine) {
               const currentEnd = Math.max(currentLastLine.oldNumber || 0, currentLastLine.newNumber || 0);
               const nextStart = Math.min(nextFirstLine.oldNumber || Infinity, nextFirstLine.newNumber || Infinity);
-              
+
               if (nextStart - currentEnd > 1) {
-                this.createGapSection(tbody, file.newName || file.oldName, currentEnd + 1, nextStart - 1, nextStart - currentEnd - 1);
+                // This is in the MIDDLE (between hunks)
+                this.createGapSection(tbody, file.newName || file.oldName, currentEnd + 1, nextStart - 1, nextStart - currentEnd - 1, { isTop: false, isBottom: false });
               }
             }
           }
@@ -632,110 +634,112 @@ class PRManager {
    * Create gap section for expandable context between diff blocks
    * @param {HTMLElement} tbody - Table body element
    * @param {string} fileName - File name
-   * @param {number} startLine - Start line number
-   * @param {number} endLine - End line number  
+   * @param {number} startLine - Start line number (of the gap)
+   * @param {number} endLine - End line number (of the gap)
    * @param {number} gapSize - Number of hidden lines
+   * @param {Object} options - Additional options
+   * @param {boolean} options.isTop - True if this is at the top of the file
+   * @param {boolean} options.isBottom - True if this is at the bottom of the file
    */
-  createGapSection(tbody, fileName, startLine, endLine, gapSize) {
+  createGapSection(tbody, fileName, startLine, endLine, gapSize, options = {}) {
+    const { isTop = false, isBottom = false } = options;
+
     // Create a row for the gap between diff blocks
     const row = document.createElement('tr');
     row.className = 'context-expand-row';
-    
-    // Create separate cells for old and new line numbers
-    const oldLineCell = document.createElement('td');
-    oldLineCell.className = 'diff-line-num';
-    oldLineCell.style.padding = '0';
-    oldLineCell.style.textAlign = 'center';
-    
-    const newLineCell = document.createElement('td');
-    newLineCell.className = 'diff-line-num';
-    newLineCell.style.padding = '0';
-    newLineCell.style.textAlign = 'center';
-    
-    // Put expand buttons in the first line number cell
-    const buttonContainer = document.createElement('div');
-    buttonContainer.className = 'expand-button-container';
-    
+
     // Create expand controls container for metadata
     const expandControls = document.createElement('div');
     expandControls.className = 'context-expand-controls';
-    
+
     // Store metadata for expansion
     expandControls.dataset.fileName = fileName;
     expandControls.dataset.startLine = startLine;
     expandControls.dataset.endLine = endLine;
     expandControls.dataset.hiddenCount = gapSize;
-    expandControls.dataset.isGap = 'true'; // Mark this as a gap section
-    
-    // Create the expand buttons with GitHub Octicons
-    const expandAbove = document.createElement('button');
-    expandAbove.className = 'expand-button expand-up';
-    expandAbove.title = 'Expand up';
-    expandAbove.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path fill-rule="evenodd" d="M7.47 5.47a.75.75 0 0 1 1.06 0l3.75 3.75a.75.75 0 0 1-1.06 1.06L8 7.06 4.78 10.28a.75.75 0 0 1-1.06-1.06l3.75-3.75Z"/>
+    expandControls.dataset.isGap = 'true';
+
+    // GitHub unfold icon
+    const unfoldIcon = `
+      <svg aria-hidden="true" height="16" viewBox="0 0 16 16" width="16" class="unfold-icon">
+        <path d="M8.177.677l2.896 2.896a.25.25 0 0 1-.177.427H8.75v1.25a.75.75 0 0 1-1.5 0V4H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0ZM7.25 10.75a.75.75 0 0 1 1.5 0V12h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896A.25.25 0 0 1 5.104 12H7.25v-1.25Zm-5-2a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 6 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 12 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"></path>
       </svg>
     `;
-    
-    const expandBelow = document.createElement('button');
-    expandBelow.className = 'expand-button expand-down';
-    expandBelow.title = 'Expand down';
-    expandBelow.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path fill-rule="evenodd" d="M8.53 10.53a.75.75 0 0 1-1.06 0l-3.75-3.75a.75.75 0 0 1 1.06-1.06L8 8.94l3.22-3.22a.75.75 0 1 1 1.06 1.06l-3.75 3.75Z"/>
-      </svg>
-    `;
-    
-    // Stack only up/down buttons compactly in the gutter
-    buttonContainer.appendChild(expandAbove);
-    buttonContainer.appendChild(expandBelow);
-    oldLineCell.appendChild(buttonContainer);
-    
-    // Create content cell for hidden lines text with inline expand-all
+
+    // Determine which buttons to show based on position and gap size
+    // At top: only show up (to reveal lines before first hunk)
+    // At bottom: only show down (to reveal lines after last hunk)
+    // In middle with >20 lines: show both up and down
+    // In middle with ≤20 lines: show neither (just expand all link)
+    let showExpandUp, showExpandDown;
+
+    if (isTop) {
+      // Top of file - only expand up to see earlier lines
+      showExpandUp = true;
+      showExpandDown = false;
+    } else if (isBottom) {
+      // Bottom of file - only expand down to see later lines
+      showExpandUp = false;
+      showExpandDown = true;
+    } else {
+      // Middle of file - show both only if >20 lines
+      showExpandUp = gapSize > 20;
+      showExpandDown = gapSize > 20;
+    }
+
+    // Left line number cell - contains expand up button if applicable
+    const leftLineCell = document.createElement('td');
+    leftLineCell.className = 'expand-line-num';
+
+    if (showExpandUp) {
+      const expandUpBtn = document.createElement('button');
+      expandUpBtn.className = 'expand-button-gutter expand-up';
+      expandUpBtn.innerHTML = unfoldIcon;
+      expandUpBtn.title = 'Expand up';
+      expandUpBtn.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandGapContext(row.expandControls, 'up', 20);
+      });
+      leftLineCell.appendChild(expandUpBtn);
+    }
+
+    // Right line number cell - contains expand down button if applicable
+    const rightLineCell = document.createElement('td');
+    rightLineCell.className = 'expand-line-num';
+
+    if (showExpandDown) {
+      const expandDownBtn = document.createElement('button');
+      expandDownBtn.className = 'expand-button-gutter expand-down';
+      expandDownBtn.innerHTML = unfoldIcon;
+      expandDownBtn.title = 'Expand down';
+      expandDownBtn.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandGapContext(row.expandControls, 'down', 20);
+      });
+      rightLineCell.appendChild(expandDownBtn);
+    }
+
+    // Content cell - contains expand all link
     const contentCell = document.createElement('td');
-    contentCell.className = 'diff-code expand-content';
-    contentCell.colSpan = 2;
-    
-    const contentWrapper = document.createElement('div');
-    contentWrapper.className = 'expand-content-wrapper';
-    
-    const expandInfo = document.createElement('span');
-    expandInfo.className = 'expand-info';
-    expandInfo.innerHTML = `${gapSize} hidden lines`;
-    
-    const expandAll = document.createElement('button');
-    expandAll.className = 'expand-button-inline expand-all';
-    expandAll.title = `Expand all ${gapSize} lines`;
-    expandAll.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path fill-rule="evenodd" d="M8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0ZM8 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 1 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
-      </svg>
-    `;
-    
-    contentWrapper.appendChild(expandInfo);
-    contentWrapper.appendChild(expandAll);
-    contentCell.appendChild(contentWrapper);
-    
-    // Add event listeners for gap expansion
-    expandAbove.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandGapContext(row.expandControls, 'up', 20);
-    });
-    expandAll.addEventListener('click', (e) => {
+    contentCell.className = 'expand-content';
+
+    const expandAllLink = document.createElement('a');
+    expandAllLink.className = 'expand-all-link';
+    expandAllLink.href = '#';
+    expandAllLink.textContent = `Expand all ${gapSize} hidden lines`;
+    expandAllLink.addEventListener('click', (e) => {
+      e.preventDefault();
       const row = e.currentTarget.closest('tr');
       const hiddenCount = parseInt(expandControls.dataset.hiddenCount) || gapSize;
       this.expandGapContext(row.expandControls, 'all', hiddenCount);
     });
-    expandBelow.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandGapContext(row.expandControls, 'down', 20);
-    });
-    
+    contentCell.appendChild(expandAllLink);
+
     // Store expand controls reference on row
     row.expandControls = expandControls;
-    
-    row.appendChild(oldLineCell);
-    row.appendChild(newLineCell);
+
+    row.appendChild(leftLineCell);
+    row.appendChild(rightLineCell);
     row.appendChild(contentCell);
     tbody.appendChild(row);
   }
@@ -753,44 +757,28 @@ class PRManager {
     const hiddenCount = endIdx - startIdx;
     const firstLine = allLines[startIdx];
     const lastLine = allLines[endIdx - 1];
-    
+
     // Check if this section was previously expanded
-    const sectionKey = this.getExpandedSectionKey(fileName, 
-      firstLine.oldNumber || firstLine.newNumber, 
+    const sectionKey = this.getExpandedSectionKey(fileName,
+      firstLine.oldNumber || firstLine.newNumber,
       lastLine.oldNumber || lastLine.newNumber);
-    
+
     if (this.expandedSections.has(sectionKey)) {
       // This section was previously expanded, show all lines
       allLines.slice(startIdx, endIdx).forEach(line => {
-        // Context expansion lines don't have a specific diff position since they weren't in the original diff
         this.renderDiffLine(tbody, line, fileName, null);
       });
       return; // Don't create collapsed section
     }
-    
+
     // Create the collapsed section row
     const row = document.createElement('tr');
     row.className = 'context-expand-row';
-    
-    // Create separate cells for old and new line numbers
-    const oldLineCell = document.createElement('td');
-    oldLineCell.className = 'diff-line-num';
-    oldLineCell.style.padding = '0';
-    oldLineCell.style.textAlign = 'center';
-    
-    const newLineCell = document.createElement('td');
-    newLineCell.className = 'diff-line-num';  
-    newLineCell.style.padding = '0';
-    newLineCell.style.textAlign = 'center';
-    
-    // Put expand buttons in the first line number cell
-    const buttonContainer = document.createElement('div');
-    buttonContainer.className = 'expand-button-container';
-    
+
     // Create expand controls container for metadata
     const expandControls = document.createElement('div');
     expandControls.className = 'context-expand-controls';
-    
+
     // Store metadata for expansion
     expandControls.dataset.fileName = fileName;
     expandControls.dataset.startLine = firstLine.oldNumber || firstLine.newNumber;
@@ -798,93 +786,90 @@ class PRManager {
     expandControls.dataset.hiddenCount = hiddenCount;
     expandControls.dataset.position = position;
     expandControls.dataset.sectionKey = sectionKey;
-    
-    // Create the expand buttons with GitHub Octicons
-    const expandAbove = position !== 'above' ? document.createElement('button') : null;
-    if (expandAbove) {
-      expandAbove.className = 'expand-button expand-up';
-      expandAbove.title = 'Expand up';
-      expandAbove.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path fill-rule="evenodd" d="M7.47 5.47a.75.75 0 0 1 1.06 0l3.75 3.75a.75.75 0 0 1-1.06 1.06L8 7.06 4.78 10.28a.75.75 0 0 1-1.06-1.06l3.75-3.75Z"/>
-        </svg>
-      `;
-    }
-    
-    const expandBelow = position !== 'below' ? document.createElement('button') : null;
-    if (expandBelow) {
-      expandBelow.className = 'expand-button expand-down';
-      expandBelow.title = 'Expand down';
-      expandBelow.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path fill-rule="evenodd" d="M8.53 10.53a.75.75 0 0 1-1.06 0l-3.75-3.75a.75.75 0 0 1 1.06-1.06L8 8.94l3.22-3.22a.75.75 0 1 1 1.06 1.06l-3.75 3.75Z"/>
-        </svg>
-      `;
-    }
-    
-    // Stack only up/down buttons compactly in the gutter based on position
-    if (position === 'above') {
-      // At the top - only show expand below
-      buttonContainer.appendChild(expandBelow);
-    } else if (position === 'below') {
-      // At the bottom - only show expand above
-      buttonContainer.appendChild(expandAbove);
-    } else {
-      // Between changes - show both buttons
-      buttonContainer.appendChild(expandAbove);
-      buttonContainer.appendChild(expandBelow);
-    }
-    
-    oldLineCell.appendChild(buttonContainer);
-    
-    // Create content cell for hidden lines text with inline expand-all
-    const contentCell = document.createElement('td');
-    contentCell.className = 'diff-code expand-content';
-    contentCell.colSpan = 2;
-    
-    const contentWrapper = document.createElement('div');
-    contentWrapper.className = 'expand-content-wrapper';
-    
-    const expandInfo = document.createElement('span');
-    expandInfo.className = 'expand-info';
-    expandInfo.innerHTML = `${hiddenCount} hidden lines`;
-    
-    const expandAll = document.createElement('button');
-    expandAll.className = 'expand-button-inline expand-all';
-    expandAll.title = `Expand all ${hiddenCount} lines`;
-    expandAll.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path fill-rule="evenodd" d="M8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0ZM8 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 1 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
-      </svg>
-    `;
-    
-    contentWrapper.appendChild(expandInfo);
-    contentWrapper.appendChild(expandAll);
-    contentCell.appendChild(contentWrapper);
-    
+
     // Store the hidden lines data for expansion
     expandControls.hiddenLines = allLines.slice(startIdx, endIdx);
-    
-    // Add click handlers for collapsed section expansion
-    expandAbove?.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandContext(row.expandControls, 'up', 20);
-    });
-    expandAll.addEventListener('click', (e) => {
+
+    // GitHub unfold icon
+    const unfoldIcon = `
+      <svg aria-hidden="true" height="16" viewBox="0 0 16 16" width="16" class="unfold-icon">
+        <path d="M8.177.677l2.896 2.896a.25.25 0 0 1-.177.427H8.75v1.25a.75.75 0 0 1-1.5 0V4H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0ZM7.25 10.75a.75.75 0 0 1 1.5 0V12h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896A.25.25 0 0 1 5.104 12H7.25v-1.25Zm-5-2a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 6 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 12 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"></path>
+      </svg>
+    `;
+
+    // Determine which buttons to show based on position and section size
+    const isTop = position === 'above';
+    const isBottom = position === 'below';
+
+    let showExpandUp, showExpandDown;
+
+    if (isTop) {
+      // Top of file - only expand up to see earlier lines
+      showExpandUp = true;
+      showExpandDown = false;
+    } else if (isBottom) {
+      // Bottom of file - only expand down to see later lines
+      showExpandUp = false;
+      showExpandDown = true;
+    } else {
+      // Middle of file - show both only if >20 lines
+      showExpandUp = hiddenCount > 20;
+      showExpandDown = hiddenCount > 20;
+    }
+
+    // Left line number cell - contains expand up button if applicable
+    const leftLineCell = document.createElement('td');
+    leftLineCell.className = 'expand-line-num';
+
+    if (showExpandUp) {
+      const expandUpBtn = document.createElement('button');
+      expandUpBtn.className = 'expand-button-gutter expand-up';
+      expandUpBtn.innerHTML = unfoldIcon;
+      expandUpBtn.title = 'Expand up';
+      expandUpBtn.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandContext(row.expandControls, 'up', 20);
+      });
+      leftLineCell.appendChild(expandUpBtn);
+    }
+
+    // Right line number cell - contains expand down button if applicable
+    const rightLineCell = document.createElement('td');
+    rightLineCell.className = 'expand-line-num';
+
+    if (showExpandDown) {
+      const expandDownBtn = document.createElement('button');
+      expandDownBtn.className = 'expand-button-gutter expand-down';
+      expandDownBtn.innerHTML = unfoldIcon;
+      expandDownBtn.title = 'Expand down';
+      expandDownBtn.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandContext(row.expandControls, 'down', 20);
+      });
+      rightLineCell.appendChild(expandDownBtn);
+    }
+
+    // Content cell - contains expand all link
+    const contentCell = document.createElement('td');
+    contentCell.className = 'expand-content';
+
+    const expandAllLink = document.createElement('a');
+    expandAllLink.className = 'expand-all-link';
+    expandAllLink.href = '#';
+    expandAllLink.textContent = `Expand all ${hiddenCount} hidden lines`;
+    expandAllLink.addEventListener('click', (e) => {
+      e.preventDefault();
       const row = e.currentTarget.closest('tr');
       const hiddenCountValue = parseInt(expandControls.dataset.hiddenCount) || hiddenCount;
       this.expandContext(row.expandControls, 'all', hiddenCountValue);
     });
-    expandBelow?.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandContext(row.expandControls, 'down', 20);
-    });
-    
+    contentCell.appendChild(expandAllLink);
+
     // Store expand controls reference on row
     row.expandControls = expandControls;
-    
-    row.appendChild(oldLineCell);
-    row.appendChild(newLineCell);
+
+    row.appendChild(leftLineCell);
+    row.appendChild(rightLineCell);
     row.appendChild(contentCell);
     tbody.appendChild(row);
   }
@@ -943,11 +928,11 @@ class PRManager {
         this.expandedSections.add(sectionKey);
       }
     } else if (direction === 'up') {
-      // Show first N lines
+      // "Up" = reveal earlier lines (first N lines of hidden section)
       linesToShow = hiddenLines.slice(0, Math.min(lineCount, hiddenLines.length));
       remainingLines = hiddenLines.slice(lineCount);
     } else if (direction === 'down') {
-      // Show last N lines
+      // "Down" = reveal later lines (last N lines of hidden section)
       const startIdx = Math.max(0, hiddenLines.length - lineCount);
       linesToShow = hiddenLines.slice(startIdx);
       remainingLines = hiddenLines.slice(0, startIdx);
@@ -997,11 +982,13 @@ class PRManager {
           expandAllBtn.title = `Expand all ${remainingLines.length} lines`;
         }
         
-        // Insert the expanded lines
+        // Insert the expanded lines in the correct position
         if (row && row.parentNode) {
           if (direction === 'up') {
+            // Expanding upward (showing earlier lines) - insert BEFORE the row
             row.parentNode.insertBefore(fragment, row);
           } else {
+            // Expanding downward (showing later lines) - insert AFTER the row
             row.parentNode.insertBefore(fragment, row.nextSibling);
           }
         }
@@ -1077,24 +1064,24 @@ class PRManager {
         // Show all hidden lines
         linesToShow = allGapLines;
       } else if (direction === 'up') {
-        // "Up" means expand upward from bottom - show LAST N lines of the gap
-        const showFromLine = Math.max(startLine, endLine - lineCount + 1);
-        linesToShow = data.lines.slice(showFromLine - 1, endLine);
-        remainingEndLine = showFromLine - 1;
-      } else if (direction === 'down') {
-        // "Down" means expand downward from top - show FIRST N lines of the gap
+        // "Up" means expand upward - show lines at START of gap (earlier in file)
         const showToLine = Math.min(endLine, startLine + lineCount - 1);
         linesToShow = data.lines.slice(startLine - 1, showToLine);
         remainingStartLine = showToLine + 1;
+      } else if (direction === 'down') {
+        // "Down" means expand downward - show lines at END of gap (later in file)
+        const showFromLine = Math.max(startLine, endLine - lineCount + 1);
+        linesToShow = data.lines.slice(showFromLine - 1, endLine);
+        remainingEndLine = showFromLine - 1;
       }
       
       // Create diff-formatted lines
       const fragment = document.createDocumentFragment();
       linesToShow.forEach((content, idx) => {
-        const lineNumber = direction === 'down' ? 
-          startLine + idx : 
-          direction === 'up' ? 
-          (endLine - linesToShow.length + 1 + idx) : 
+        const lineNumber = direction === 'up' ?
+          startLine + idx :
+          direction === 'down' ?
+          (endLine - linesToShow.length + 1 + idx) :
           startLine + idx;
           
         const lineData = {
@@ -1145,11 +1132,11 @@ class PRManager {
           
           // Insert the expanded lines in the correct position
           if (row && row.parentNode) {
-            if (direction === 'down') {
-              // Expanding downward from top of gap - insert BEFORE divider
+            if (direction === 'up') {
+              // Expanding upward (showing earlier lines) - insert BEFORE the gap row
               row.parentNode.insertBefore(fragment, row);
-            } else if (direction === 'up') {
-              // Expanding upward from bottom of gap - insert AFTER divider
+            } else if (direction === 'down') {
+              // Expanding downward (showing later lines) - insert AFTER the gap row
               row.parentNode.insertBefore(fragment, row.nextSibling);
             }
           }

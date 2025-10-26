@@ -801,127 +801,96 @@
 
 /* Context Expansion Controls */
 .context-expand-row {
-  background: var(--color-bg-secondary);
-  border-top: 1px solid var(--color-border-primary);
-  border-bottom: 1px solid var(--color-border-primary);
+  background: #f0f9ff; /* Light blue background like GitHub */
+  border-top: 1px solid #d0e3f0;
+  border-bottom: 1px solid #d0e3f0;
 }
 
-.context-expand-cell {
+[data-theme="dark"] .context-expand-row {
+  background: #0c2d3b; /* Dark blue background for dark mode */
+  border-top: 1px solid #1f4a5c;
+  border-bottom: 1px solid #1f4a5c;
+}
+
+/* Expand line number cells - contains gutter buttons */
+.expand-line-num {
   padding: 0;
-  background: var(--color-bg-secondary);
+  background: transparent;
   text-align: center;
-  position: relative;
+  vertical-align: middle;
+  width: 40px;
 }
 
-.expand-button {
+/* Gutter expand buttons (in line number columns) */
+.expand-button-gutter {
   background: transparent;
   border: none;
-  padding: 0;
-  margin: 0;
+  padding: 2px;
+  margin: 0 auto;
   cursor: pointer;
-  color: #0969da;
+  color: #57606a;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 10px;
-  border-radius: 2px;
-  transition: background-color 0.2s ease;
-  position: relative;
-  line-height: 0;
-}
-
-.expand-button:hover {
-  background: var(--color-accent-light);
-}
-
-.expand-button svg {
-  width: 12px;
-  height: 12px;
-  fill: currentColor;
-}
-
-.expand-info {
-  color: #656d76;
-  font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  user-select: none;
-}
-
-/* Inline expand-all button */
-.expand-button-inline {
-  background: transparent;
-  border: none;
-  padding: 0 4px;
-  margin: 0;
-  cursor: pointer;
-  color: #0969da;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   border-radius: 3px;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
 }
 
-.expand-button-inline:hover {
-  background: var(--color-accent-light);
+[data-theme="dark"] .expand-button-gutter {
+  color: #8b949e;
 }
 
-.expand-button-inline svg {
-  width: 14px;
-  height: 14px;
+.expand-button-gutter:hover {
+  background: rgba(9, 105, 218, 0.1);
+  color: #0969da;
+}
+
+[data-theme="dark"] .expand-button-gutter:hover {
+  background: rgba(88, 166, 255, 0.1);
+  color: #58a6ff;
+}
+
+.expand-button-gutter svg {
+  width: 16px;
+  height: 16px;
   fill: currentColor;
+  flex-shrink: 0;
 }
 
-/* Container for vertically stacked expand buttons */
-.expand-button-container {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0;
-  line-height: 0;
-  margin: 0 auto;
-}
-
-/* Expand content cell */
+/* Expand content cell - contains expand all link */
 .expand-content {
-  padding: 1px 0;
-  background: var(--color-bg-secondary);
+  padding: 2px 10px;
+  background: transparent;
   text-align: center;
-  line-height: 20px;
   font-size: 12px;
-  position: relative;
+  vertical-align: middle;
 }
 
-.expand-content-wrapper {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  position: relative;
-  z-index: 1;
-  background: var(--color-bg-secondary);
-  padding: 0 8px;
+/* Expand all link (GitHub-style blue link) */
+.expand-all-link {
+  color: #0969da;
+  text-decoration: none;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-block;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: background-color 0.15s ease;
 }
 
-/* Add divider line effect */
-.expand-content::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 16px;
-  right: 16px;
-  height: 1px;
-  background: linear-gradient(to right, 
-    var(--color-border-primary) 0%, 
-    var(--color-border-primary) calc(50% - 90px), 
-    transparent calc(50% - 90px), 
-    transparent calc(50% + 90px), 
-    var(--color-border-primary) calc(50% + 90px), 
-    var(--color-border-primary) 100%);
-  z-index: 0;
+[data-theme="dark"] .expand-all-link {
+  color: #58a6ff;
+}
+
+.expand-all-link:hover {
+  background: rgba(9, 105, 218, 0.1);
+  text-decoration: underline;
+}
+
+[data-theme="dark"] .expand-all-link:hover {
+  background: rgba(88, 166, 255, 0.1);
 }
 
 /* Diff styling improvements */
