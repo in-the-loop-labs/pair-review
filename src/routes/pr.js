@@ -17,6 +17,28 @@ const activeAnalyses = new Map();
 const progressClients = new Map();
 
 /**
+ * Get the model to use for AI analysis
+ * Priority: CLI flag (PAIR_REVIEW_MODEL env var) > config.model > 'sonnet' default
+ * @param {Object} req - Express request object
+ * @returns {string} Model name to use
+ */
+function getModel(req) {
+  // CLI flag takes priority (passed via environment variable)
+  if (process.env.PAIR_REVIEW_MODEL) {
+    return process.env.PAIR_REVIEW_MODEL;
+  }
+
+  // Config file setting
+  const config = req.app.get('config');
+  if (config && config.model) {
+    return config.model;
+  }
+
+  // Default fallback
+  return 'sonnet';
+}
+
+/**
  * Determine completion level and suggestion counts from analysis result
  * @param {Object} result - Analysis result object
  * @returns {Object} Completion information with level, counts, and progress message
@@ -431,14 +453,16 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
-    // Create analyzer instance
-    const analyzer = new Analyzer(req.app.get('db'));
-    
+    // Create analyzer instance with model from config/CLI
+    const model = getModel(req);
+    const analyzer = new Analyzer(req.app.get('db'), model);
+
     // Log analysis start with colorful output
     logger.section(`AI Analysis Request - PR #${prNumber}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
     logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    logger.log('API', `Model: ${model}`, 'cyan');
     
     // Update status to running and broadcast
     setTimeout(() => {
@@ -593,12 +617,14 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
-    // Create analyzer instance
-    const analyzer = new Analyzer(req.app.get('db'));
-    
+    // Create analyzer instance with model from config/CLI
+    const model = getModel(req);
+    const analyzer = new Analyzer(req.app.get('db'), model);
+
     logger.section(`Level 2 AI Analysis Request - PR #${prNumber}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    logger.log('API', `Model: ${model}`, 'cyan');
 
     // Create progress callback function
     const progressCallback = (progressUpdate) => {
@@ -714,12 +740,14 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
-    // Create analyzer instance
-    const analyzer = new Analyzer(req.app.get('db'));
-    
+    // Create analyzer instance with model from config/CLI
+    const model = getModel(req);
+    const analyzer = new Analyzer(req.app.get('db'), model);
+
     logger.section(`Level 3 AI Analysis Request - PR #${prNumber}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    logger.log('API', `Model: ${model}`, 'cyan');
 
     // Create progress callback function
     const progressCallback = (progressUpdate) => {

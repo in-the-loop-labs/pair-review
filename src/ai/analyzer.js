@@ -9,8 +9,8 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 
 class Analyzer {
-  constructor(database) {
-    this.claude = new ClaudeCLI();
+  constructor(database, model = 'sonnet') {
+    this.claude = new ClaudeCLI(model);
     this.db = database;
     this.testContextCache = new Map(); // Cache test detection results per worktree
   }

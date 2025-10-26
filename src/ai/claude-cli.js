@@ -4,22 +4,25 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 
 class ClaudeCLI {
-  constructor() {
+  constructor(model = 'sonnet') {
     // Check for environment variable to override default command
     // Use PAIR_REVIEW_CLAUDE_CMD environment variable if set, otherwise default to 'claude'
     const claudeCmd = process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
-    
+
+    // Store model for use in commands
+    this.model = model;
+
     // For multi-word commands like "devx claude", we need to use shell mode
     this.useShell = claudeCmd.includes(' ');
-    
+
     if (this.useShell) {
-      // Use the full command string with -p appended
-      this.command = `${claudeCmd} -p`;
+      // Use the full command string with -p and --model appended
+      this.command = `${claudeCmd} -p --model ${model}`;
       this.args = [];
     } else {
       // Single command, use normal spawn mode
       this.command = claudeCmd;
-      this.args = ['-p'];
+      this.args = ['-p', '--model', model];
     }
   }
 
