@@ -381,19 +381,37 @@ Output JSON with this structure:
    */
   validateSuggestions(suggestions, previousSuggestions = []) {
     const validSuggestions = suggestions
+      .map(s => {
+        // Normalize: Some models (like Haiku) use 'description' instead of 'title'
+        // If title is missing but description exists, extract first line as title
+        if (!s.title && s.description) {
+          // Extract first line or sentence as title (max 150 chars)
+          const firstLine = s.description.split(/[.\n]/)[0].trim();
+          const title = firstLine.length > 150
+            ? firstLine.substring(0, 147) + '...'
+            : firstLine;
+
+          return {
+            ...s,
+            title: title,
+            description: s.description // Keep full description
+          };
+        }
+        return s;
+      })
       .filter(s => {
-        // Ensure required fields exist
+        // Ensure required fields exist after normalization
         if (!s.file || !s.line || !s.type || !s.title) {
           logger.warn(`Skipping invalid suggestion: ${JSON.stringify(s)}`);
           return false;
         }
-        
+
         // Filter out low confidence suggestions
         if (s.confidence && s.confidence < 0.3) {
           logger.info(`Filtering low confidence suggestion: ${s.title} (${s.confidence})`);
           return false;
         }
-        
+
         return true;
       });
     
