@@ -401,26 +401,38 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
   try {
     const { owner, repo, pr } = req.params;
     const prNumber = parseInt(pr);
-    
+
     if (isNaN(prNumber) || prNumber <= 0) {
-      return res.status(400).json({ 
-        error: 'Invalid pull request number' 
+      return res.status(400).json({
+        error: 'Invalid pull request number'
       });
     }
 
     const repository = `${owner}/${repo}`;
-    
+
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id, base_branch FROM pr_metadata
+      SELECT id, base_branch, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
     if (!prMetadata) {
-      return res.status(404).json({ 
-        error: `Pull request #${prNumber} not found. Please load the PR first.` 
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found. Please load the PR first.`
       });
     }
+
+    // Parse pr_data to get base_sha and head_sha
+    let prData = {};
+    try {
+      prData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    } catch (error) {
+      console.warn('Error parsing PR data JSON:', error);
+    }
+
+    // Merge parsed data into prMetadata for use in analysis
+    prMetadata.base_sha = prData.base_sha;
+    prMetadata.head_sha = prData.head_sha;
 
     // Get worktree path
     const worktreeManager = new GitWorktreeManager();
@@ -565,26 +577,38 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
   try {
     const { owner, repo, pr } = req.params;
     const prNumber = parseInt(pr);
-    
+
     if (isNaN(prNumber) || prNumber <= 0) {
-      return res.status(400).json({ 
-        error: 'Invalid pull request number' 
+      return res.status(400).json({
+        error: 'Invalid pull request number'
       });
     }
 
     const repository = `${owner}/${repo}`;
-    
+
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id, base_branch FROM pr_metadata
+      SELECT id, base_branch, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
     if (!prMetadata) {
-      return res.status(404).json({ 
-        error: `Pull request #${prNumber} not found. Please load the PR first.` 
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found. Please load the PR first.`
       });
     }
+
+    // Parse pr_data to get base_sha and head_sha
+    let prData = {};
+    try {
+      prData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    } catch (error) {
+      console.warn('Error parsing PR data JSON:', error);
+    }
+
+    // Merge parsed data into prMetadata for use in analysis
+    prMetadata.base_sha = prData.base_sha;
+    prMetadata.head_sha = prData.head_sha;
 
     // Get worktree path
     const worktreeManager = new GitWorktreeManager();
@@ -696,23 +720,35 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
     }
 
     const repository = `${owner}/${repo}`;
-    
+
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id, base_branch FROM pr_metadata
+      SELECT id, base_branch, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
     if (!prMetadata) {
-      return res.status(404).json({ 
-        error: `Pull request #${prNumber} not found. Please load the PR first.` 
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found. Please load the PR first.`
       });
     }
+
+    // Parse pr_data to get base_sha and head_sha
+    let prData = {};
+    try {
+      prData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    } catch (error) {
+      console.warn('Error parsing PR data JSON:', error);
+    }
+
+    // Merge parsed data into prMetadata for use in analysis
+    prMetadata.base_sha = prData.base_sha;
+    prMetadata.head_sha = prData.head_sha;
 
     // Get worktree path
     const worktreeManager = new GitWorktreeManager();
     const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
-    
+
     // Check if worktree exists
     if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
       return res.status(404).json({ 
