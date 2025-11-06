@@ -895,8 +895,9 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
     }
 
     // Get AI suggestions from the new comments table (include dismissed ones too)
+    // Only fetch final orchestrated suggestions (ai_level IS NULL), not per-level suggestions
     const suggestions = await query(req.app.get('db'), `
-      SELECT 
+      SELECT
         id,
         source,
         author,
@@ -913,7 +914,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'ai' AND status IN ('active', 'dismissed')
+      WHERE pr_id = ? AND source = 'ai' AND ai_level IS NULL AND status IN ('active', 'dismissed')
       ORDER BY file, line_start
     `, [prMetadata.id]);
 

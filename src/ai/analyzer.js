@@ -88,10 +88,12 @@ class Analyzer {
       updateProgress('Processing AI results');
       const suggestions = this.parseResponse(response, 1);
       logger.success(`Parsed ${suggestions.length} valid Level 1 suggestions`);
-      
-      // Keep suggestions in memory - do not store yet
-      logger.success(`Level 1 analysis complete: ${suggestions.length} suggestions found`);
-      
+
+      // Store Level 1 suggestions
+      updateProgress('Storing Level 1 suggestions in database');
+      await this.storeSuggestions(prId, runId, suggestions, 1);
+      logger.success(`Level 1 analysis complete: ${suggestions.length} suggestions found and stored`);
+
       // After Level 1 completes, automatically start Level 2
       let level2Result = null;
       try {
@@ -105,9 +107,13 @@ class Analyzer {
           });
         } : null;
         
-        level2Result = await this.analyzeLevel2(prId, worktreePath, prMetadata, suggestions, level2ProgressCallback);
+        level2Result = await this.analyzeLevel2(prId, worktreePath, prMetadata, level2ProgressCallback);
         logger.success(`Level 2 analysis complete: ${level2Result.suggestions.length} additional suggestions found`);
-        
+
+        // Store Level 2 suggestions
+        updateProgress('Storing Level 2 suggestions in database');
+        await this.storeSuggestions(prId, runId, level2Result.suggestions, 2);
+
         // After Level 2 completes, automatically start Level 3
         let level3Result = null;
         try {
@@ -121,8 +127,12 @@ class Analyzer {
             });
           } : null;
           
-          level3Result = await this.analyzeLevel3(prId, worktreePath, prMetadata, [...suggestions, ...level2Result.suggestions], level3ProgressCallback);
+          level3Result = await this.analyzeLevel3(prId, worktreePath, prMetadata, level3ProgressCallback);
           logger.success(`Level 3 analysis complete: ${level3Result.suggestions.length} additional suggestions found`);
+
+          // Store Level 3 suggestions
+          updateProgress('Storing Level 3 suggestions in database');
+          await this.storeSuggestions(prId, runId, level3Result.suggestions, 3);
         } catch (level3Error) {
           logger.warn(`Level 3 analysis failed, but Level 1 and Level 2 results are still available: ${level3Error.message}`);
         }
@@ -137,10 +147,10 @@ class Analyzer {
           };
           
           const orchestratedSuggestions = await this.orchestrateWithAI(allSuggestions, prMetadata);
-          
-          // Store only the orchestrated results
+
+          // Store only the orchestrated results with ai_level = NULL (final suggestions)
           updateProgress('Storing orchestrated suggestions in database');
-          await this.storeSuggestions(prId, runId, orchestratedSuggestions, 'orchestrated');
+          await this.storeSuggestions(prId, runId, orchestratedSuggestions, null);
           
           // Update the return object with orchestrated results
           level2Result.level3Result = level3Result;
@@ -170,7 +180,7 @@ class Analyzer {
             });
           }
           
-          await this.storeSuggestions(prId, runId, fallbackSuggestions, 'fallback');
+          await this.storeSuggestions(prId, runId, fallbackSuggestions, null);
           level2Result.orchestratedSuggestions = fallbackSuggestions;
         }
         
@@ -202,26 +212,21 @@ class Analyzer {
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
-   * @param {Array} previousSuggestions - Previous level suggestions to avoid duplicating
    */
-  buildLevel2Prompt(prId, worktreePath, prMetadata, previousSuggestions = []) {
+  buildLevel2Prompt(prId, worktreePath, prMetadata) {
     return `You are reviewing pull request #${prId} in the current working directory.
 
 # Level 2 Review - Analyze File Context
 
-## Previous Analysis Context
-Level 1 analysis found ${previousSuggestions.length} suggestions:
-${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_start})`).join('\n')}
-
 ## Analysis Process
-Level 1 already identified the changed files. For each file with changes:
+For each file with changes:
    - Read the full file content to understand context
    - Run 'git diff ${prMetadata.base_sha}...${prMetadata.head_sha} <file>' to see what changed
    - Analyze how changes fit within the file's overall structure
-   - Focus on file-level patterns and consistency, not re-analyzing the specific line changes from Level 1
+   - Focus on file-level patterns and consistency
    - Skip files where no file-level issues are found (efficiency focus)
 
-## Focus Areas (Building on Level 1 findings)
+## Focus Areas
 Look for:
    - Inconsistencies within files (naming conventions, patterns, error handling)
    - Missing related changes within files (if one part changed, what else should change?)
@@ -262,8 +267,7 @@ Output JSON with this structure:
 ## Important Guidelines
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
 - Focus on issues that require understanding the full file context
-- Do NOT duplicate findings from earlier levels - avoid duplicating the suggestions listed above
-- Do not re-analyze the specific line changes from Level 1 - focus on file-level patterns
+- Focus on file-level patterns and consistency
 - If you find an issue on an unchanged line, mention it but attach to the nearest changed line
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
@@ -597,11 +601,10 @@ Output JSON with this structure:
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
-   * @param {Array} level1Suggestions - Previous Level 1 suggestions to avoid duplicating
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel2(prId, worktreePath, prMetadata, level1Suggestions = [], progressCallback = null) {
+  async analyzeLevel2(prId, worktreePath, prMetadata, progressCallback = null) {
     const runId = uuidv4();
     
     logger.section('Level 2 Analysis Starting');
@@ -625,18 +628,18 @@ Output JSON with this structure:
       
       // Step 1: Build the Level 2 prompt
       updateProgress('Building Level 2 prompt for Claude to analyze changes at file level');
-      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, level1Suggestions);
-      
+      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata);
+
       // Step 2: Execute Claude CLI in the worktree directory (single invocation)
       updateProgress('Running Claude to analyze all changed files in context');
       const response = await this.claude.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000 // 10 minutes for Level 2 - analyze all files in one go
       });
-      
+
       // Step 3: Parse and validate the response
       updateProgress('Processing AI results');
-      const suggestions = this.parseResponse(response, 2, level1Suggestions);
+      const suggestions = this.parseResponse(response, 2);
       logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
       
       // Keep suggestions in memory - do not store yet (orchestration will handle storage)
@@ -931,11 +934,10 @@ Output JSON with this structure:
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
-   * @param {Array} previousSuggestions - Previous Level 1 and Level 2 suggestions to avoid duplicating
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel3(prId, worktreePath, prMetadata, previousSuggestions = [], progressCallback = null) {
+  async analyzeLevel3(prId, worktreePath, prMetadata, progressCallback = null) {
     const runId = uuidv4();
     
     logger.section('Level 3 Analysis Starting');
@@ -960,21 +962,21 @@ Output JSON with this structure:
       // Step 1: Detect testing context
       updateProgress('Detecting testing context for codebase');
       const testingContext = await this.detectTestingContext(worktreePath, prMetadata);
-      
+
       // Step 2: Build the Level 3 prompt with test context
       updateProgress('Building Level 3 prompt for Claude to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, previousSuggestions, testingContext);
-      
+      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext);
+
       // Step 2: Execute Claude CLI for Level 3 analysis
       updateProgress('Running Claude to analyze codebase-wide implications');
       const response = await this.claude.execute(prompt, {
         cwd: worktreePath,
         timeout: 900000 // 15 minutes for Level 3 - full codebase exploration
       });
-      
+
       // Step 3: Parse and validate the response
       updateProgress('Processing codebase context results');
-      const suggestions = this.parseResponse(response, 3, previousSuggestions);
+      const suggestions = this.parseResponse(response, 3);
       logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
       
       // Keep suggestions in memory - do not store yet (orchestration will handle storage)
@@ -1026,25 +1028,21 @@ Output JSON with this structure:
     }
   }
 
-  buildLevel3Prompt(prId, worktreePath, prMetadata, previousSuggestions = [], testingContext = null) {
+  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null) {
     return `You are reviewing pull request #${prId} in the current working directory.
 
 # Level 3 Review - Analyze Codebase Context
-
-## Previous Analysis Context
-Previous levels found ${previousSuggestions.length} suggestions:
-${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_start || s.line})`).join('\n')}
 
 ## Analysis Process
 Focus on architectural and cross-file concerns not visible in single-file context.
 Skip exploration of unchanged areas unless directly impacted by the changes.
 
-Based on the changed files identified in previous levels, explore the codebase to understand architectural context:
+Identify changed files and explore the codebase to understand architectural context:
    - Find and examine related files (imports, tests, configs)
    - Look for similar patterns elsewhere in the codebase
    - Check for related documentation
 
-## Focus Areas (Building on Previous Findings)
+## Focus Areas
 Analyze:
    - Architectural consistency across the codebase
    - Pattern violations or inconsistencies with established patterns
@@ -1089,7 +1087,6 @@ Output JSON with this structure:
 ## Important Guidelines
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
 - Focus on codebase-wide concerns that require understanding multiple files
-- Do NOT duplicate findings from earlier levels - avoid duplicating the suggestions listed above
 - Look especially for ${testingContext?.shouldCheckTests ? 'missing tests,' : ''} documentation, and architectural issues
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
