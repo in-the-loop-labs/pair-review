@@ -216,7 +216,7 @@ ${previousSuggestions.map(s => `- ${s.type}: ${s.title} (${s.file}:${s.line_star
 ## Analysis Process
 Level 1 already identified the changed files. For each file with changes:
    - Read the full file content to understand context
-   - Run 'git diff origin/${prMetadata.base_branch}...HEAD <file>' to see what changed
+   - Run 'git diff ${prMetadata.base_sha}...${prMetadata.head_sha} <file>' to see what changed
    - Analyze how changes fit within the file's overall structure
    - Focus on file-level patterns and consistency, not re-analyzing the specific line changes from Level 1
    - Skip files where no file-level issues are found (efficiency focus)
@@ -237,7 +237,7 @@ Look for:
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
-- git diff origin/${prMetadata.base_branch}...HEAD <file>
+- git diff ${prMetadata.base_sha}...${prMetadata.head_sha} <file>
 - cat <file> or any file reading command
 - grep, find, ls commands as needed
 
@@ -285,7 +285,7 @@ Output JSON with this structure:
 **This level should be fast** - focusing only on the diff itself without exploring file context or surrounding unchanged code. That analysis is reserved for Level 2.
 
 ## Initial Setup
-1. Run 'git diff origin/${prMetadata.base_branch}...HEAD' to see what changed in this PR
+1. Run 'git diff ${prMetadata.base_sha}...${prMetadata.head_sha}' to see what changed in this PR
 2. Focus ONLY on the changed lines in the diff
 3. Do not analyze file context or surrounding unchanged code - that's for Level 2
 
@@ -303,7 +303,7 @@ Identify the following in changed code:
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
-- git diff origin/${prMetadata.base_branch}...HEAD
+- git diff ${prMetadata.base_sha}...${prMetadata.head_sha}
 - git diff --stat
 - ls, find, grep commands as needed
 
@@ -670,10 +670,10 @@ Output JSON with this structure:
     }
 
     logger.info('Detecting testing context for codebase');
-    
+
     try {
       // Step 1: Detect primary language(s) from changed files
-      const { stdout: changedFiles } = await execPromise(`git diff origin/${prMetadata.base_branch}...HEAD --name-only`, { cwd: worktreePath });
+      const { stdout: changedFiles } = await execPromise(`git diff ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`, { cwd: worktreePath });
       const files = changedFiles.trim().split('\n').filter(f => f.length > 0);
       
       const languages = this.detectLanguages(files);
