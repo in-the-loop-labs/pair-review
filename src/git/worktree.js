@@ -67,10 +67,20 @@ class GitWorktreeManager {
       // Create git instance for the worktree
       const worktreeGit = simpleGit(worktreePath);
       
+      // Ensure base SHA is available (in case base branch was force-pushed or rebased)
+      console.log(`Ensuring base commit ${prData.base_sha} is available...`);
+      try {
+        // Try to fetch the specific base SHA if it's not already available
+        await worktreeGit.raw(['fetch', 'origin', prData.base_sha]);
+      } catch (fetchError) {
+        // If fetch fails, the SHA might already be available locally
+        console.log(`Base SHA fetch not needed or already available: ${fetchError.message}`);
+      }
+
       // Fetch the PR head using GitHub's pull request refs (more reliable than branch names)
       console.log(`Fetching PR #${prInfo.number} head...`);
       await worktreeGit.fetch(['origin', `+refs/pull/${prInfo.number}/head:refs/remotes/origin/pr-${prInfo.number}`]);
-      
+
       // Checkout to PR head commit
       console.log(`Checking out to PR head commit ${prData.head_sha}...`);
       await worktreeGit.checkout([`origin/pr-${prInfo.number}`]);
@@ -106,18 +116,19 @@ class GitWorktreeManager {
    */
   async generateUnifiedDiff(worktreePath, prData) {
     try {
-      console.log(`Generating diff between ${prData.base_branch} and ${prData.head_branch}...`);
-      
+      console.log(`Generating diff between ${prData.base_sha} and ${prData.head_sha}...`);
+
       const git = simpleGit(worktreePath);
-      
-      // Generate diff between base and head
+
+      // Generate diff between base SHA and head SHA (not branch names)
+      // This ensures we compare the exact commits from the PR, even if the base branch has moved
       const diff = await git.diff([
-        `origin/${prData.base_branch}...HEAD`,
+        `${prData.base_sha}...${prData.head_sha}`,
         '--unified=3'
       ]);
-      
+
       return diff;
-      
+
     } catch (error) {
       console.error('Error generating diff:', error);
       throw new Error(`Failed to generate diff: ${error.message}`);
@@ -133,10 +144,11 @@ class GitWorktreeManager {
   async getChangedFiles(worktreePath, prData) {
     try {
       const git = simpleGit(worktreePath);
-      
-      // Get file changes with stats
-      const diffSummary = await git.diffSummary([`origin/${prData.base_branch}...HEAD`]);
-      
+
+      // Get file changes with stats using base SHA and head SHA
+      // This ensures we get the exact files changed in the PR, even if the base branch has moved
+      const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`]);
+
       return diffSummary.files.map(file => ({
         file: file.file,
         insertions: file.insertions,
@@ -144,7 +156,7 @@ class GitWorktreeManager {
         changes: file.changes,
         binary: file.binary || false
       }));
-      
+
     } catch (error) {
       console.error('Error getting changed files:', error);
       throw new Error(`Failed to get changed files: ${error.message}`);
