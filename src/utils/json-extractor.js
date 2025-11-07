@@ -4,9 +4,12 @@ const logger = require('./logger');
  * Extract JSON from text responses using multiple strategies
  * This is a shared utility to ensure consistent JSON extraction across the application
  * @param {string} response - Raw response text
+ * @param {string|number} level - Level identifier for logging (e.g., 1, 2, 3, 'orchestration', 'unknown')
  * @returns {Object} Extraction result with success flag and data/error
  */
-function extractJSON(response) {
+function extractJSON(response, level = 'unknown') {
+  const levelPrefix = `[Level ${level}]`;
+
   if (!response || !response.trim()) {
     return { success: false, error: 'Empty response' };
   }
@@ -69,15 +72,15 @@ function extractJSON(response) {
     try {
       const data = strategies[i]();
       if (data && typeof data === 'object') {
-        logger.info(`JSON extraction successful using strategy ${i + 1}`);
+        logger.info(`${levelPrefix} JSON extraction successful using strategy ${i + 1}`);
         return { success: true, data };
       }
     } catch (error) {
       // Continue to next strategy
       if (i === strategies.length - 1) {
         // Last strategy failed, log the error
-        logger.warn(`All JSON extraction strategies failed`);
-        logger.warn(`Response preview: ${response.substring(0, 200)}...`);
+        logger.warn(`${levelPrefix} All JSON extraction strategies failed`);
+        logger.warn(`${levelPrefix} Response preview: ${response.substring(0, 200)}...`);
       }
     }
   }

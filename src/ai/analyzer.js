@@ -10,7 +10,8 @@ const { extractJSON } = require('../utils/json-extractor');
 
 class Analyzer {
   constructor(database, model = 'sonnet') {
-    this.claude = new ClaudeCLI(model);
+    // Store model for creating separate ClaudeCLI instances per level
+    this.model = model;
     this.db = database;
     this.testContextCache = new Map(); // Cache test detection results per worktree
   }
@@ -179,9 +180,12 @@ class Analyzer {
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, progressCallback = null) {
-    logger.info('Level 1 Analysis Starting');
+    logger.info('[Level 1] Analysis Starting');
 
     try {
+      // Create separate ClaudeCLI instance for this level
+      const claude = new ClaudeCLI(this.model);
+
       const updateProgress = (step) => {
         const progress = `Level 1: ${step}...`;
 
@@ -201,9 +205,10 @@ class Analyzer {
 
       // Execute Claude CLI in the worktree directory
       updateProgress('Running Claude to analyze changes in isolation');
-      const response = await this.claude.execute(prompt, {
+      const response = await claude.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000 // 10 minutes for Level 1
+        timeout: 600000, // 10 minutes for Level 1
+        level: 1
       });
 
       // Parse and validate the response
@@ -376,6 +381,8 @@ Output JSON with this structure:
    * @param {Array} previousSuggestions - Previous suggestions to check for duplicates
    */
   parseResponse(response, level, previousSuggestions = []) {
+    const levelPrefix = `[Level ${level}]`;
+
     // If response is already parsed JSON
     if (response.suggestions && Array.isArray(response.suggestions)) {
       return this.validateSuggestions(response.suggestions, previousSuggestions);
@@ -383,18 +390,18 @@ Output JSON with this structure:
 
     // If response is raw text, try multiple extraction strategies
     if (response.raw) {
-      const extracted = extractJSON(response.raw);
+      const extracted = extractJSON(response.raw, level);
       if (extracted.success && extracted.data.suggestions && Array.isArray(extracted.data.suggestions)) {
         return this.validateSuggestions(extracted.data.suggestions, previousSuggestions);
       } else {
-        logger.warn(`JSON extraction failed: ${extracted.error}`);
-        logger.info(`Raw response length: ${response.raw.length} characters`);
-        logger.info(`Raw response preview: ${response.raw.substring(0, 500)}...`);
+        logger.warn(`${levelPrefix} JSON extraction failed: ${extracted.error}`);
+        logger.info(`${levelPrefix} Raw response length: ${response.raw.length} characters`);
+        logger.info(`${levelPrefix} Raw response preview: ${response.raw.substring(0, 500)}...`);
       }
     }
 
     // Fallback to empty array
-    logger.warn('No valid suggestions found in response');
+    logger.warn(`${levelPrefix} No valid suggestions found in response`);
     return [];
   }
 
@@ -626,9 +633,12 @@ Output JSON with this structure:
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, progressCallback = null) {
-    logger.info('Level 2 Analysis Starting');
+    logger.info('[Level 2] Analysis Starting');
 
     try {
+      // Create separate ClaudeCLI instance for this level
+      const claude = new ClaudeCLI(this.model);
+
       const updateProgress = (step) => {
         const progress = `Level 2: ${step}...`;
 
@@ -648,9 +658,10 @@ Output JSON with this structure:
 
       // Execute Claude CLI in the worktree directory
       updateProgress('Running Claude to analyze files in context');
-      const response = await this.claude.execute(prompt, {
+      const response = await claude.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000 // 10 minutes for Level 2
+        timeout: 600000, // 10 minutes for Level 2
+        level: 2
       });
 
       // Parse and validate the response
@@ -684,9 +695,12 @@ Output JSON with this structure:
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, progressCallback = null) {
-    logger.info('Level 3 Analysis Starting');
+    logger.info('[Level 3] Analysis Starting');
 
     try {
+      // Create separate ClaudeCLI instance for this level
+      const claude = new ClaudeCLI(this.model);
+
       const updateProgress = (step) => {
         const progress = `Level 3: ${step}...`;
 
@@ -710,9 +724,10 @@ Output JSON with this structure:
 
       // Execute Claude CLI for Level 3 analysis
       updateProgress('Running Claude to analyze codebase-wide implications');
-      const response = await this.claude.execute(prompt, {
+      const response = await claude.execute(prompt, {
         cwd: worktreePath,
-        timeout: 900000 // 15 minutes for Level 3
+        timeout: 900000, // 15 minutes for Level 3
+        level: 3
       });
 
       // Parse and validate the response
@@ -746,16 +761,19 @@ Output JSON with this structure:
    */
   async analyzeLevel2(prId, worktreePath, prMetadata, progressCallback = null) {
     const runId = uuidv4();
-    
-    logger.section('Level 2 Analysis Starting');
+
+    logger.section('[Level 2] Analysis Starting');
     logger.info(`PR ID: ${prId}`);
     logger.info(`Analysis run ID: ${runId}`);
     logger.info(`Worktree path: ${worktreePath}`);
-    
+
     try {
+      // Create separate ClaudeCLI instance
+      const claude = new ClaudeCLI(this.model);
+
       const updateProgress = (step) => {
         const progress = `Level 2: ${step}...`;
-        
+
         if (progressCallback) {
           progressCallback({
             status: 'running',
@@ -765,16 +783,17 @@ Output JSON with this structure:
         }
         logger.info(progress);
       };
-      
+
       // Step 1: Build the Level 2 prompt
       updateProgress('Building Level 2 prompt for Claude to analyze changes at file level');
       const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata);
 
       // Step 2: Execute Claude CLI in the worktree directory (single invocation)
       updateProgress('Running Claude to analyze all changed files in context');
-      const response = await this.claude.execute(prompt, {
+      const response = await claude.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000 // 10 minutes for Level 2 - analyze all files in one go
+        timeout: 600000, // 10 minutes for Level 2 - analyze all files in one go
+        level: 2
       });
 
       // Step 3: Parse and validate the response
@@ -1079,16 +1098,19 @@ Output JSON with this structure:
    */
   async analyzeLevel3(prId, worktreePath, prMetadata, progressCallback = null) {
     const runId = uuidv4();
-    
-    logger.section('Level 3 Analysis Starting');
+
+    logger.section('[Level 3] Analysis Starting');
     logger.info(`PR ID: ${prId}`);
     logger.info(`Analysis run ID: ${runId}`);
     logger.info(`Worktree path: ${worktreePath}`);
-    
+
     try {
+      // Create separate ClaudeCLI instance
+      const claude = new ClaudeCLI(this.model);
+
       const updateProgress = (step) => {
         const progress = `Level 3: ${step}...`;
-        
+
         if (progressCallback) {
           progressCallback({
             status: 'running',
@@ -1098,7 +1120,7 @@ Output JSON with this structure:
         }
         logger.info(progress);
       };
-      
+
       // Step 1: Detect testing context
       updateProgress('Detecting testing context for codebase');
       const testingContext = await this.detectTestingContext(worktreePath, prMetadata);
@@ -1109,9 +1131,10 @@ Output JSON with this structure:
 
       // Step 2: Execute Claude CLI for Level 3 analysis
       updateProgress('Running Claude to analyze codebase-wide implications');
-      const response = await this.claude.execute(prompt, {
+      const response = await claude.execute(prompt, {
         cwd: worktreePath,
-        timeout: 900000 // 15 minutes for Level 3 - full codebase exploration
+        timeout: 900000, // 15 minutes for Level 3 - full codebase exploration
+        level: 3
       });
 
       // Step 3: Parse and validate the response
@@ -1239,28 +1262,32 @@ Output JSON with this structure:
    * @returns {Promise<Array>} Curated suggestions array
    */
   async orchestrateWithAI(allSuggestions, prMetadata) {
-    logger.section('AI Orchestration Starting');
-    
-    const totalSuggestions = (allSuggestions.level1?.length || 0) + 
-                           (allSuggestions.level2?.length || 0) + 
+    logger.section('[Orchestration] AI Orchestration Starting');
+
+    const totalSuggestions = (allSuggestions.level1?.length || 0) +
+                           (allSuggestions.level2?.length || 0) +
                            (allSuggestions.level3?.length || 0);
-    
-    logger.info(`Orchestrating ${totalSuggestions} total suggestions across all levels`);
-    
+
+    logger.info(`[Orchestration] Orchestrating ${totalSuggestions} total suggestions across all levels`);
+
     try {
+      // Create separate ClaudeCLI instance for orchestration
+      const claude = new ClaudeCLI(this.model);
+
       // Build the orchestration prompt
       const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata);
-      
+
       // Execute Claude CLI for orchestration
-      logger.info('Running AI orchestration to curate and merge suggestions...');
-      const response = await this.claude.execute(prompt, {
-        timeout: 300000 // 5 minutes for orchestration
+      logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
+      const response = await claude.execute(prompt, {
+        timeout: 300000, // 5 minutes for orchestration
+        level: 'orchestration'
       });
-      
+
       // Parse the orchestrated response
-      const orchestratedSuggestions = this.parseResponse(response, 'orchestrated');
-      logger.success(`AI orchestration complete: ${orchestratedSuggestions.length} curated suggestions`);
-      
+      const orchestratedSuggestions = this.parseResponse(response, 'orchestration');
+      logger.success(`[Orchestration] AI orchestration complete: ${orchestratedSuggestions.length} curated suggestions`);
+
       return orchestratedSuggestions;
       
     } catch (error) {
