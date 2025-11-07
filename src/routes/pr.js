@@ -663,7 +663,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
     };
     
     // Start Level 2 analysis asynchronously
-    analyzer.analyzeLevel2(prMetadata.id, worktreePath, prMetadata, [], progressCallback)
+    analyzer.analyzeLevel2(prMetadata.id, worktreePath, prMetadata, progressCallback)
       .then(result => {
         const completedStatus = {
           ...activeAnalyses.get(analysisId),
@@ -798,7 +798,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
     };
     
     // Start Level 3 analysis asynchronously
-    analyzer.analyzeLevel3(prMetadata.id, worktreePath, prMetadata, [], progressCallback)
+    analyzer.analyzeLevel3(prMetadata.id, worktreePath, prMetadata, progressCallback)
       .then(result => {
         const completedStatus = {
           ...activeAnalyses.get(analysisId),

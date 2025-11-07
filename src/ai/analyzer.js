@@ -40,7 +40,124 @@ class Analyzer {
   }
 
   /**
-   * Perform Level 1 analysis on a PR
+   * Perform all 3 levels of analysis in parallel
+   * @param {number} prId - Pull request ID
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Function} progressCallback - Callback for progress updates
+   * @returns {Promise<Object>} Analysis results
+   */
+  async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null) {
+    const runId = uuidv4();
+
+    logger.section('Multi-Level AI Analysis Starting (Parallel Execution)');
+    logger.info(`PR ID: ${prId}`);
+    logger.info(`Analysis run ID: ${runId}`);
+    logger.info(`Worktree path: ${worktreePath}`);
+
+    try {
+      // Step 1: Delete old AI suggestions before starting new analysis
+      logger.info('Clearing previous AI suggestions...');
+      await this.deleteOldAISuggestions(prId);
+
+      // Step 2: Run all 3 levels in parallel
+      logger.info('Starting all 3 analysis levels in parallel...');
+      const results = await Promise.allSettled([
+        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, progressCallback),
+        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, progressCallback),
+        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, progressCallback)
+      ]);
+
+      // Step 3: Collect successful results
+      const levelResults = {
+        level1: { suggestions: [], status: 'failed' },
+        level2: { suggestions: [], status: 'failed' },
+        level3: { suggestions: [], status: 'failed' }
+      };
+
+      results.forEach((result, index) => {
+        const levelName = ['level1', 'level2', 'level3'][index];
+        if (result.status === 'fulfilled') {
+          levelResults[levelName] = {
+            suggestions: result.value.suggestions || [],
+            status: 'success',
+            summary: result.value.summary
+          };
+          logger.success(`Level ${index + 1} completed: ${levelResults[levelName].suggestions.length} suggestions`);
+        } else {
+          logger.warn(`Level ${index + 1} failed: ${result.reason?.message || 'Unknown error'}`);
+        }
+      });
+
+      // Check if at least one level succeeded
+      const hasAnySuccess = Object.values(levelResults).some(r => r.status === 'success');
+      if (!hasAnySuccess) {
+        throw new Error('All analysis levels failed');
+      }
+
+      // Step 4: Orchestrate all suggestions
+      logger.info('All levels complete. Starting orchestration...');
+      if (progressCallback) {
+        progressCallback({
+          status: 'running',
+          progress: 'Orchestrating AI suggestions for intelligent curation...',
+          level: 'orchestration'
+        });
+      }
+
+      try {
+        const allSuggestions = {
+          level1: levelResults.level1.suggestions,
+          level2: levelResults.level2.suggestions,
+          level3: levelResults.level3.suggestions
+        };
+
+        const orchestratedSuggestions = await this.orchestrateWithAI(allSuggestions, prMetadata);
+
+        // Store orchestrated results with ai_level = NULL (final suggestions)
+        logger.info('Storing orchestrated suggestions in database...');
+        await this.storeSuggestions(prId, runId, orchestratedSuggestions, null);
+
+        logger.success(`Analysis complete: ${orchestratedSuggestions.length} final suggestions`);
+
+        return {
+          runId,
+          suggestions: orchestratedSuggestions,
+          levelResults,
+          summary: `Analyzed PR with ${orchestratedSuggestions.length} curated suggestions`
+        };
+
+      } catch (orchestrationError) {
+        logger.error(`Orchestration failed: ${orchestrationError.message}`);
+        logger.warn('Falling back to storing all level suggestions without orchestration');
+
+        // Fallback: store all suggestions as final without orchestration
+        const fallbackSuggestions = [
+          ...levelResults.level1.suggestions,
+          ...levelResults.level2.suggestions,
+          ...levelResults.level3.suggestions
+        ];
+
+        await this.storeSuggestions(prId, runId, fallbackSuggestions, null);
+
+        return {
+          runId,
+          suggestions: fallbackSuggestions,
+          levelResults,
+          summary: `Analysis complete (orchestration failed): ${fallbackSuggestions.length} suggestions`,
+          orchestrationFailed: true
+        };
+      }
+
+    } catch (error) {
+      logger.error(`Analysis failed: ${error.message}`);
+      logger.error(`Error stack: ${error.stack}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Perform Level 1 analysis on a PR (backwards compatibility wrapper)
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
@@ -48,17 +165,26 @@ class Analyzer {
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel1(prId, worktreePath, prMetadata, progressCallback = null) {
-    const runId = uuidv4();
-    
-    logger.section('Level 1 Analysis Starting');
-    logger.info(`PR ID: ${prId}`);
-    logger.info(`Analysis run ID: ${runId}`);
-    logger.info(`Worktree path: ${worktreePath}`);
-    
+    // This is now a wrapper that calls the parallel implementation
+    return this.analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback);
+  }
+
+  /**
+   * Isolated Level 1 analysis (no auto-chaining)
+   * @param {number} prId - Pull request ID
+   * @param {string} runId - Analysis run ID
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Function} progressCallback - Callback for progress updates
+   * @returns {Promise<Object>} Analysis results
+   */
+  async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, progressCallback = null) {
+    logger.info('Level 1 Analysis Starting');
+
     try {
       const updateProgress = (step) => {
         const progress = `Level 1: ${step}...`;
-        
+
         if (progressCallback) {
           progressCallback({
             status: 'running',
@@ -68,23 +194,19 @@ class Analyzer {
         }
         logger.info(progress);
       };
-      
-      // Step 1: Delete old AI suggestions before starting new analysis
-      updateProgress('Clearing previous AI suggestions');
-      await this.deleteOldAISuggestions(prId);
-      
-      // Step 2: Build the Level 1 prompt
-      updateProgress('Building Level 1 prompt for Claude to analyze changes');
+
+      // Build the Level 1 prompt
+      updateProgress('Building prompt for Claude to analyze changes');
       const prompt = this.buildLevel1Prompt(prId, worktreePath, prMetadata);
-      
-      // Step 3: Execute Claude CLI in the worktree directory
+
+      // Execute Claude CLI in the worktree directory
       updateProgress('Running Claude to analyze changes in isolation');
       const response = await this.claude.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000 // 10 minutes for Level 1 - let Claude be thorough
+        timeout: 600000 // 10 minutes for Level 1
       });
 
-      // Step 4: Parse and validate the response
+      // Parse and validate the response
       updateProgress('Processing AI results');
       const suggestions = this.parseResponse(response, 1);
       logger.success(`Parsed ${suggestions.length} valid Level 1 suggestions`);
@@ -92,117 +214,15 @@ class Analyzer {
       // Store Level 1 suggestions
       updateProgress('Storing Level 1 suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 1);
-      logger.success(`Level 1 analysis complete: ${suggestions.length} suggestions found and stored`);
+      logger.success(`Level 1 complete: ${suggestions.length} suggestions`);
 
-      // After Level 1 completes, automatically start Level 2
-      let level2Result = null;
-      try {
-        logger.info('Starting Level 2 analysis automatically...');
-        
-        // Create separate progress callback for Level 2 that properly reports level
-        const level2ProgressCallback = progressCallback ? (progressUpdate) => {
-          progressCallback({
-            ...progressUpdate,
-            level: 2
-          });
-        } : null;
-        
-        level2Result = await this.analyzeLevel2(prId, worktreePath, prMetadata, level2ProgressCallback);
-        logger.success(`Level 2 analysis complete: ${level2Result.suggestions.length} additional suggestions found`);
-
-        // Store Level 2 suggestions
-        updateProgress('Storing Level 2 suggestions in database');
-        await this.storeSuggestions(prId, runId, level2Result.suggestions, 2);
-
-        // After Level 2 completes, automatically start Level 3
-        let level3Result = null;
-        try {
-          logger.info('Starting Level 3 analysis automatically...');
-          
-          // Create separate progress callback for Level 3 that properly reports level
-          const level3ProgressCallback = progressCallback ? (progressUpdate) => {
-            progressCallback({
-              ...progressUpdate,
-              level: 3
-            });
-          } : null;
-          
-          level3Result = await this.analyzeLevel3(prId, worktreePath, prMetadata, level3ProgressCallback);
-          logger.success(`Level 3 analysis complete: ${level3Result.suggestions.length} additional suggestions found`);
-
-          // Store Level 3 suggestions
-          updateProgress('Storing Level 3 suggestions in database');
-          await this.storeSuggestions(prId, runId, level3Result.suggestions, 3);
-        } catch (level3Error) {
-          logger.warn(`Level 3 analysis failed, but Level 1 and Level 2 results are still available: ${level3Error.message}`);
-        }
-        
-        // Now orchestrate all suggestions before storing
-        updateProgress('Orchestrating AI suggestions for intelligent curation');
-        try {
-          const allSuggestions = {
-            level1: suggestions,
-            level2: level2Result.suggestions,
-            level3: level3Result?.suggestions || []
-          };
-          
-          const orchestratedSuggestions = await this.orchestrateWithAI(allSuggestions, prMetadata);
-
-          // Store only the orchestrated results with ai_level = NULL (final suggestions)
-          updateProgress('Storing orchestrated suggestions in database');
-          await this.storeSuggestions(prId, runId, orchestratedSuggestions, null);
-          
-          // Update the return object with orchestrated results
-          level2Result.level3Result = level3Result;
-          level2Result.orchestratedSuggestions = orchestratedSuggestions;
-          
-        } catch (orchestrationError) {
-          logger.error(`Orchestration failed: ${orchestrationError.message}`);
-          logger.warn('Falling back to storing all original suggestions');
-          
-          // Store all original suggestions with level labels as fallback
-          updateProgress('Storing fallback suggestions in database');
-          const fallbackSuggestions = [];
-          
-          suggestions.forEach(s => {
-            fallbackSuggestions.push(s);
-          });
-          
-          if (level2Result?.suggestions) {
-            level2Result.suggestions.forEach(s => {
-              fallbackSuggestions.push(s);
-            });
-          }
-          
-          if (level3Result?.suggestions) {
-            level3Result.suggestions.forEach(s => {
-              fallbackSuggestions.push(s);
-            });
-          }
-          
-          await this.storeSuggestions(prId, runId, fallbackSuggestions, null);
-          level2Result.orchestratedSuggestions = fallbackSuggestions;
-        }
-        
-      } catch (level2Error) {
-        logger.warn(`Level 2 analysis failed, storing Level 1 results only: ${level2Error.message}`);
-        
-        // Store only Level 1 suggestions if Level 2 fails
-        updateProgress('Storing Level 1 suggestions in database');
-        // Store Level 1 suggestions without level labels
-        await this.storeSuggestions(prId, runId, suggestions, 1);
-      }
-      
       return {
-        runId,
-        level: 1,
         suggestions,
-        summary: response.summary || `Found ${suggestions.length} suggestions`,
-        level2Result
+        summary: response.summary || `Level 1: Found ${suggestions.length} suggestions`
       };
+
     } catch (error) {
       logger.error(`Level 1 analysis failed: ${error.message}`);
-      logger.error(`Error stack: ${error.stack}`);
       throw error;
     }
   }
@@ -595,6 +615,126 @@ Output JSON with this structure:
     return await query(this.db, sql, params);
   }
 
+
+  /**
+   * Isolated Level 2 analysis (no auto-chaining)
+   * @param {number} prId - Pull request ID
+   * @param {string} runId - Analysis run ID
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Function} progressCallback - Callback for progress updates
+   * @returns {Promise<Object>} Analysis results
+   */
+  async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, progressCallback = null) {
+    logger.info('Level 2 Analysis Starting');
+
+    try {
+      const updateProgress = (step) => {
+        const progress = `Level 2: ${step}...`;
+
+        if (progressCallback) {
+          progressCallback({
+            status: 'running',
+            progress,
+            level: 2
+          });
+        }
+        logger.info(progress);
+      };
+
+      // Build the Level 2 prompt
+      updateProgress('Building prompt for Claude to analyze file context');
+      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata);
+
+      // Execute Claude CLI in the worktree directory
+      updateProgress('Running Claude to analyze files in context');
+      const response = await this.claude.execute(prompt, {
+        cwd: worktreePath,
+        timeout: 600000 // 10 minutes for Level 2
+      });
+
+      // Parse and validate the response
+      updateProgress('Processing AI results');
+      const suggestions = this.parseResponse(response, 2);
+      logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
+
+      // Store Level 2 suggestions
+      updateProgress('Storing Level 2 suggestions in database');
+      await this.storeSuggestions(prId, runId, suggestions, 2);
+      logger.success(`Level 2 complete: ${suggestions.length} suggestions`);
+
+      return {
+        suggestions,
+        summary: response.summary || `Level 2: Found ${suggestions.length} file context suggestions`
+      };
+
+    } catch (error) {
+      logger.error(`Level 2 analysis failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Isolated Level 3 analysis (no auto-chaining)
+   * @param {number} prId - Pull request ID
+   * @param {string} runId - Analysis run ID
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Function} progressCallback - Callback for progress updates
+   * @returns {Promise<Object>} Analysis results
+   */
+  async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, progressCallback = null) {
+    logger.info('Level 3 Analysis Starting');
+
+    try {
+      const updateProgress = (step) => {
+        const progress = `Level 3: ${step}...`;
+
+        if (progressCallback) {
+          progressCallback({
+            status: 'running',
+            progress,
+            level: 3
+          });
+        }
+        logger.info(progress);
+      };
+
+      // Detect testing context
+      updateProgress('Detecting testing context for codebase');
+      const testingContext = await this.detectTestingContext(worktreePath, prMetadata);
+
+      // Build the Level 3 prompt with test context
+      updateProgress('Building prompt for Claude to analyze codebase impact');
+      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext);
+
+      // Execute Claude CLI for Level 3 analysis
+      updateProgress('Running Claude to analyze codebase-wide implications');
+      const response = await this.claude.execute(prompt, {
+        cwd: worktreePath,
+        timeout: 900000 // 15 minutes for Level 3
+      });
+
+      // Parse and validate the response
+      updateProgress('Processing codebase context results');
+      const suggestions = this.parseResponse(response, 3);
+      logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
+
+      // Store Level 3 suggestions
+      updateProgress('Storing Level 3 suggestions in database');
+      await this.storeSuggestions(prId, runId, suggestions, 3);
+      logger.success(`Level 3 complete: ${suggestions.length} suggestions`);
+
+      return {
+        suggestions,
+        summary: response.summary || `Level 3: Found ${suggestions.length} codebase context suggestions`
+      };
+
+    } catch (error) {
+      logger.error(`Level 3 analysis failed: ${error.message}`);
+      throw error;
+    }
+  }
 
   /**
    * Perform Level 2 analysis - File Context
