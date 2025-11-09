@@ -764,7 +764,7 @@ Output JSON with this structure:
       updateProgress('Running Claude to analyze codebase-wide implications');
       const response = await claude.execute(prompt, {
         cwd: worktreePath,
-        timeout: 900000, // 15 minutes for Level 3
+        timeout: 600000, // 10 minutes for Level 3
         level: 3
       });
 
@@ -1251,40 +1251,46 @@ Output JSON with this structure:
   buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null) {
     return `You are reviewing pull request #${prId} in the current working directory.
 
-# Level 3 Review - Analyze Codebase Context
+# Level 3 Review - Analyze Change Impact on Codebase
+
+## Purpose
+Level 3 analyzes how the PR changes connect to and impact the broader codebase.
+This is NOT a general codebase review or architectural audit.
+Focus on understanding the relationships between these specific changes and existing code.
 
 ## Analysis Process
-Focus on architectural and cross-file concerns not visible in single-file context.
-Skip exploration of unchanged areas unless directly impacted by the changes.
+Start from the changed files and explore outward to understand connections:
+   - How these changes interact with files that import or are imported by changed files
+   - How these changes relate to tests, configurations, and documentation
+   - Whether these changes follow or violate patterns established elsewhere in the codebase
+   - What impact these changes have on other parts of the system
 
-Identify changed files and explore the codebase to understand architectural context:
-   - Find and examine related files (imports, tests, configs)
-   - Look for similar patterns elsewhere in the codebase
-   - Check for related documentation
+Explore as deeply as needed to understand the impact, but stay focused on relationships to the PR changes.
+Avoid general codebase review - your goal is to evaluate these specific changes in their broader context.
 
 ## Focus Areas
-Analyze:
-   - Architectural consistency across the codebase
-   - Pattern violations or inconsistencies with established patterns
-   - Cross-file dependencies and potential impact
+Analyze how these changes affect or relate to:
+   - Existing architecture - do these changes fit with or disrupt architectural patterns?
+   - Established patterns - do these changes follow patterns used elsewhere in the codebase?
+   - Cross-file dependencies - how do these changes impact other files that depend on them?
    - ${this.buildTestAnalysisSection(testingContext)}
-   - Missing or outdated documentation
-   - API documentation consistency
-   - Configuration changes needed
-   - Environment-specific considerations
-   - Potential breaking changes or compatibility issues
-   - Backward compatibility concerns
-   - Cross-component performance implications
-   - Scalability considerations
-   - Cross-system security implications
-   - Data flow security analysis
+   - Documentation - do these changes require updates to docs? Are they consistent with documented APIs?
+   - API contracts - do these changes maintain consistency with existing API patterns?
+   - Configuration - do these changes necessitate configuration updates?
+   - Environment compatibility - how do these changes behave across different environments?
+   - Breaking changes - do these changes break existing functionality or contracts?
+   - Backward compatibility - do these changes maintain compatibility with prior versions?
+   - Performance of connected components - how do these changes affect performance elsewhere?
+   - System scalability - how do these changes impact the system's ability to scale?
+   - Security of connected systems - do these changes introduce security risks in other parts?
+   - Data flow security - how do these changes affect security across data flows?
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
 - find . -name "*.test.js" or similar to find test files
 - grep -r "pattern" to search for patterns
 - cat, ls, tree commands to explore structure
-- Any other commands needed to understand the codebase
+- Any other commands needed to understand how changes connect to the codebase
 
 Note: You may optionally use parallel Tasks to explore different areas of the codebase if that would be helpful.
 
@@ -1301,13 +1307,13 @@ Output JSON with this structure:
     "suggestion": "How to fix/improve based on codebase context (omit for praise items)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Brief summary of codebase context findings"
+  "summary": "Brief summary of how these changes connect to and impact the codebase"
 }
 
 ## Important Guidelines
 - Only attach suggestions to lines that were ADDED or MODIFIED in this PR
-- Focus on codebase-wide concerns that require understanding multiple files
-- Look especially for ${testingContext?.shouldCheckTests ? 'missing tests,' : ''} documentation, and architectural issues
+- Focus on how these changes interact with the broader codebase
+- Look especially for ${testingContext?.shouldCheckTests ? 'missing tests,' : ''} documentation, and integration issues
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
   }
