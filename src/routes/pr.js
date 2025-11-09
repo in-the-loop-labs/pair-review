@@ -527,6 +527,10 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         const completionInfo = determineCompletionInfo(result);
 
         const currentStatus = activeAnalyses.get(analysisId);
+        if (!currentStatus) {
+          console.warn('Analysis already completed or removed:', analysisId);
+          return;
+        }
 
         // Mark all completed levels as completed
         for (let i = 1; i <= completionInfo.completedLevel; i++) {
@@ -558,6 +562,10 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       .catch(error => {
         logger.error(`Analysis failed for PR #${prNumber}: ${error.message}`);
         const currentStatus = activeAnalyses.get(analysisId);
+        if (!currentStatus) {
+          console.warn('Analysis status not found during error handling:', analysisId);
+          return;
+        }
 
         // Mark all levels as failed
         for (let i = 1; i <= 3; i++) {

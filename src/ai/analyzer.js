@@ -221,6 +221,15 @@ class Analyzer {
       await this.storeSuggestions(prId, runId, suggestions, 1);
       logger.success(`Level 1 complete: ${suggestions.length} suggestions`);
 
+      // Report completion to progress callback
+      if (progressCallback) {
+        progressCallback({
+          status: 'completed',
+          progress: `Level 1 complete: ${suggestions.length} suggestions`,
+          level: 1
+        });
+      }
+
       return {
         suggestions,
         summary: response.summary || `Level 1: Found ${suggestions.length} suggestions`
@@ -228,6 +237,16 @@ class Analyzer {
 
     } catch (error) {
       logger.error(`Level 1 analysis failed: ${error.message}`);
+
+      // Report failure to progress callback
+      if (progressCallback) {
+        progressCallback({
+          status: 'failed',
+          progress: `Level 1 failed: ${error.message}`,
+          level: 1
+        });
+      }
+
       throw error;
     }
   }
@@ -674,6 +693,15 @@ Output JSON with this structure:
       await this.storeSuggestions(prId, runId, suggestions, 2);
       logger.success(`Level 2 complete: ${suggestions.length} suggestions`);
 
+      // Report completion to progress callback
+      if (progressCallback) {
+        progressCallback({
+          status: 'completed',
+          progress: `Level 2 complete: ${suggestions.length} suggestions`,
+          level: 2
+        });
+      }
+
       return {
         suggestions,
         summary: response.summary || `Level 2: Found ${suggestions.length} file context suggestions`
@@ -681,6 +709,16 @@ Output JSON with this structure:
 
     } catch (error) {
       logger.error(`Level 2 analysis failed: ${error.message}`);
+
+      // Report failure to progress callback
+      if (progressCallback) {
+        progressCallback({
+          status: 'failed',
+          progress: `Level 2 failed: ${error.message}`,
+          level: 2
+        });
+      }
+
       throw error;
     }
   }
@@ -740,6 +778,15 @@ Output JSON with this structure:
       await this.storeSuggestions(prId, runId, suggestions, 3);
       logger.success(`Level 3 complete: ${suggestions.length} suggestions`);
 
+      // Report completion to progress callback
+      if (progressCallback) {
+        progressCallback({
+          status: 'completed',
+          progress: `Level 3 complete: ${suggestions.length} suggestions`,
+          level: 3
+        });
+      }
+
       return {
         suggestions,
         summary: response.summary || `Level 3: Found ${suggestions.length} codebase context suggestions`
@@ -747,6 +794,16 @@ Output JSON with this structure:
 
     } catch (error) {
       logger.error(`Level 3 analysis failed: ${error.message}`);
+
+      // Report failure to progress callback
+      if (progressCallback) {
+        progressCallback({
+          status: 'failed',
+          progress: `Level 3 failed: ${error.message}`,
+          level: 3
+        });
+      }
+
       throw error;
     }
   }

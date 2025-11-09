@@ -317,13 +317,17 @@ class ProgressModal {
    * @param {Object} status - Status object from server
    */
   updateProgress(status) {
+    // Validate status structure before accessing properties
+    if (!status.levels || typeof status.levels !== 'object') {
+      console.warn('Invalid status structure - missing or malformed levels object:', status);
+      return;
+    }
+
     // Update each level's progress independently from the levels object
-    if (status.levels) {
-      for (let level = 1; level <= 3; level++) {
-        const levelStatus = status.levels[level];
-        if (levelStatus) {
-          this.updateLevelProgress(level, levelStatus);
-        }
+    for (let level = 1; level <= 3; level++) {
+      const levelStatus = status.levels[level];
+      if (levelStatus) {
+        this.updateLevelProgress(level, levelStatus);
       }
     }
 
@@ -409,6 +413,7 @@ class ProgressModal {
 
     } else {
       // For pending or other states
+      console.warn('Unexpected level status:', levelStatus.status, 'for level', level);
       icon.className = 'icon pending';
       icon.textContent = '⏸';
       statusText.textContent = levelStatus.progress || 'Pending';
