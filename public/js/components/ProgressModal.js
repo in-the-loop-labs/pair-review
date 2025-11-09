@@ -195,24 +195,24 @@ class ProgressModal {
    * Reset progress to initial state
    */
   resetProgress() {
-    // Reset all levels to pending
+    // Reset all levels to starting state
     for (let i = 1; i <= 3; i++) {
       const level = document.getElementById(`level-${i}`);
       if (level) {
         const icon = level.querySelector('.icon');
         const status = level.querySelector('.level-status');
-        
-        icon.className = 'icon pending';
-        icon.textContent = '⏸';
-        status.textContent = 'Pending';
+        const progressContainer = level.querySelector('.progress-bar-container');
+
+        icon.className = 'icon active';
+        icon.textContent = '▶';
+        status.textContent = 'Starting...';
+        status.style.display = 'none';
+
+        // Show progress bar immediately for all levels
+        if (progressContainer) {
+          progressContainer.style.display = 'block';
+        }
       }
-    }
-    
-    // Set Level 1 as preparing
-    const level1 = document.getElementById('level-1');
-    if (level1) {
-      const status = level1.querySelector('.level-status');
-      status.textContent = 'Preparing to start...';
     }
   }
 
@@ -317,19 +317,23 @@ class ProgressModal {
    * @param {Object} status - Status object from server
    */
   updateProgress(status) {
-    const currentLevel = status.level || 1;
-    
-    // Mark previous levels as completed when we move to a new level
-    for (let i = 1; i < currentLevel; i++) {
-      this.markLevelAsCompleted(i);
+    // Validate status structure before accessing properties
+    if (!status.levels || typeof status.levels !== 'object') {
+      console.warn('Invalid status structure - missing or malformed levels object:', status);
+      return;
     }
-    
-    // Update current level status
-    this.updateLevelProgress(currentLevel, status);
-    
+
+    // Update each level's progress independently from the levels object
+    for (let level = 1; level <= 3; level++) {
+      const levelStatus = status.levels[level];
+      if (levelStatus) {
+        this.updateLevelProgress(level, levelStatus);
+      }
+    }
+
     // Update overall progress message
     this.updateStatus(status.progress || 'Running...');
-    
+
     // Handle completion
     if (status.status === 'completed') {
       this.handleCompletion(status);
@@ -364,44 +368,59 @@ class ProgressModal {
   /**
    * Update a specific level's progress
    * @param {number} level - Level number (1, 2, or 3)
-   * @param {Object} status - Status object
+   * @param {Object} levelStatus - Level status object with { status, progress }
    */
-  updateLevelProgress(level, status) {
+  updateLevelProgress(level, levelStatus) {
     const levelElement = document.getElementById(`level-${level}`);
     if (!levelElement) return;
-    
+
     const icon = levelElement.querySelector('.icon');
     const statusText = levelElement.querySelector('.level-status');
     const progressContainer = levelElement.querySelector('.progress-bar-container');
-    
+
     // Update icon and status based on current state
-    if (status.status === 'running' || status.status === 'started') {
+    if (levelStatus.status === 'running') {
       icon.className = 'icon active';
       icon.textContent = '▶';
-      
-      // Show progress bar for the current level and update status
-      if (progressContainer && status.level === level) {
-        statusText.style.display = 'none';
+
+      // Show progress bar and hide status text for running levels
+      statusText.style.display = 'none';
+      if (progressContainer) {
         progressContainer.style.display = 'block';
-      } else {
-        statusText.textContent = status.progress || 'In progress...';
-        statusText.style.display = 'block';
-        if (progressContainer) {
-          progressContainer.style.display = 'none';
-        }
       }
-      
-    } else if (status.status === 'completed' && status.completedLevel >= level) {
-      this.markLevelAsCompleted(level);
-    } else {
-      // For pending or other states, hide progress bar
+
+    } else if (levelStatus.status === 'completed') {
+      icon.className = 'icon completed';
+      icon.textContent = '✓';
+      statusText.textContent = 'Completed';
+      statusText.style.display = 'block';
+
+      // Hide progress bar for completed levels
       if (progressContainer) {
         progressContainer.style.display = 'none';
       }
+
+    } else if (levelStatus.status === 'failed') {
+      icon.className = 'icon error';
+      icon.textContent = '❌';
+      statusText.textContent = 'Failed';
       statusText.style.display = 'block';
-      
-      if (status.status === 'pending') {
-        statusText.textContent = 'Pending';
+
+      // Hide progress bar for failed levels
+      if (progressContainer) {
+        progressContainer.style.display = 'none';
+      }
+
+    } else {
+      // For pending or other states
+      console.warn('Unexpected level status:', levelStatus.status, 'for level', level);
+      icon.className = 'icon pending';
+      icon.textContent = '⏸';
+      statusText.textContent = levelStatus.progress || 'Pending';
+      statusText.style.display = 'block';
+
+      if (progressContainer) {
+        progressContainer.style.display = 'none';
       }
     }
   }
@@ -420,34 +439,28 @@ class ProgressModal {
    * @param {Object} status - Final status object
    */
   handleCompletion(status) {
-    // Mark levels as complete based on which level completed
-    const completedLevel = status.completedLevel || status.level || 1;
-    
-    for (let i = 1; i <= completedLevel; i++) {
-      this.updateLevelProgress(i, { 
-        status: 'completed', 
-        completedLevel: i,
-        filesAnalyzed: status.result?.suggestions?.length || 0
-      });
-    }
-    
+    // Levels are already marked as completed by updateProgress
+    // Just update the UI buttons
+
+    const completedLevel = status.completedLevel || status.level || 3;
+
     // Update button to show completion
     const runBackgroundBtn = document.getElementById('run-background-btn');
     const cancelBtn = document.getElementById('cancel-btn');
-    
+
     if (runBackgroundBtn) {
-      runBackgroundBtn.textContent = `Level ${completedLevel} Analysis Complete`;
+      runBackgroundBtn.textContent = `Analysis Complete`;
       runBackgroundBtn.disabled = true;
     }
     if (cancelBtn) {
       cancelBtn.textContent = 'Close';
     }
-    
+
     // Update status indicator if in background
     if (this.isRunningInBackground && window.statusIndicator) {
-      window.statusIndicator.showComplete(`Level ${completedLevel} analysis complete`);
+      window.statusIndicator.showComplete(`Analysis complete`);
     }
-    
+
     // CRITICAL FIX: Automatically reload AI suggestions when analysis completes
     console.log('Analysis completed, reloading AI suggestions...');
     if (window.prManager && typeof window.prManager.loadAISuggestions === 'function') {
@@ -486,22 +499,13 @@ class ProgressModal {
    * @param {Object} status - Error status object
    */
   handleFailure(status) {
-    const currentLevel = status.level || 1;
-    const levelElement = document.getElementById(`level-${currentLevel}`);
-    
-    if (levelElement) {
-      const icon = levelElement.querySelector('.icon');
-      const statusText = levelElement.querySelector('.level-status');
-      
-      icon.className = 'icon error';
-      icon.textContent = '❌';
-      statusText.textContent = 'Failed: ' + (status.error || 'Unknown error');
-    }
-    
+    // Levels are already marked as failed by updateProgress
+    // Just update the UI buttons
+
     // Update buttons
     const runBackgroundBtn = document.getElementById('run-background-btn');
     const cancelBtn = document.getElementById('cancel-btn');
-    
+
     if (runBackgroundBtn) {
       runBackgroundBtn.textContent = 'Analysis Failed';
       runBackgroundBtn.disabled = true;
@@ -509,7 +513,7 @@ class ProgressModal {
     if (cancelBtn) {
       cancelBtn.textContent = 'Close';
     }
-    
+
     // Update status indicator if in background
     if (this.isRunningInBackground && window.statusIndicator) {
       window.statusIndicator.showError('Analysis failed');
