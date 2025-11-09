@@ -2,6 +2,18 @@
  * Pull Request UI Management
  */
 class PRManager {
+  // Category to emoji mapping for adopted suggestions
+  static CATEGORY_EMOJI_MAP = {
+    'bug': '🐛',
+    'performance': '⚡',
+    'design': '📐',
+    'code-style': '🧹',
+    'improvement': '💡',
+    'praise': '⭐',
+    'security': '🔒',
+    'suggestion': '💬'
+  };
+
   constructor() {
     this.currentPR = null;
     this.loadingState = false;
@@ -1739,9 +1751,35 @@ class PRManager {
   }
 
   /**
+   * Get emoji for suggestion category
+   */
+  getCategoryEmoji(category) {
+    return PRManager.CATEGORY_EMOJI_MAP[category] || '💬';
+  }
+
+  /**
+   * Format adopted comment text with emoji and category prefix
+   */
+  formatAdoptedComment(text, category) {
+    if (!category) {
+      return text;
+    }
+    const emoji = this.getCategoryEmoji(category);
+    // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
+    const capitalizedCategory = category
+      .split('-')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+    return `${emoji} **${capitalizedCategory}**: ${text}`;
+  }
+
+  /**
    * Helper function to create user comment from AI suggestion
    */
   async createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle) {
+    // Format the comment text with emoji and category prefix
+    const formattedText = this.formatAdoptedComment(suggestionText, suggestionType);
+
     const createResponse = await fetch('/api/user-comment', {
       method: 'POST',
       headers: {
@@ -1752,23 +1790,23 @@ class PRManager {
         file: fileName,
         line_start: parseInt(lineNumber),
         line_end: parseInt(lineNumber),
-        body: suggestionText,
+        body: formattedText,
         parent_id: suggestionId,  // Link to original AI suggestion
         type: suggestionType,     // Preserve the type
         title: suggestionTitle    // Preserve the title
       })
     });
-    
+
     if (!createResponse.ok) {
       throw new Error('Failed to create user comment');
     }
-    
+
     const result = await createResponse.json();
     return {
       id: result.commentId,
       file: fileName,
       line_start: parseInt(lineNumber),
-      body: suggestionText,
+      body: formattedText,
       type: suggestionType,
       title: suggestionTitle,
       parent_id: suggestionId,
