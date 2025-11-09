@@ -61,27 +61,42 @@ This document captures the architectural decisions for Phase 4: AI Integration o
 ### 3. Three-Level Analysis Architecture
 
 #### Execution Strategy
-- **Sequential execution** (not parallel) to build on previous insights
-- Each level receives results from previous level(s)
-- Allows for early termination if critical issues found
+- **Parallel execution** of all three levels for maximum speed (~40% faster)
+- Each level analyzes independently without seeing other levels' results
+- Prevents anchoring bias - each level forms its own perspective
+- All levels complete, then orchestration step merges and curates suggestions
+- Separate ClaudeCLI process instances ensure true isolation
 
 #### Level 1: Diff Analysis (Isolated Changes)
 - **Claude explores**: Uses `git diff` to examine changes
 - **Focus**: Issues visible in changed lines alone
 - **Categories**: bugs, logic errors, syntax issues
 - **Prompt size**: ~500-1000 tokens (just instructions)
+- **Typical time**: 10-30 seconds
 
 #### Level 2: File Context Analysis
 - **Claude explores**: Reads full modified files, examines patterns
 - **Focus**: Consistency within files, incomplete changes
 - **Categories**: missing imports, incomplete refactors, style consistency
-- **Prompt size**: ~500-1000 tokens (just instructions + Level 1 summary)
+- **Prompt size**: ~500-1000 tokens (just instructions, independent analysis)
+- **Typical time**: 20-60 seconds
 
 #### Level 3: Codebase Context Analysis
 - **Claude explores**: Uses grep/find to discover related files, tests, dependencies
 - **Focus**: Architectural impact, breaking changes
 - **Categories**: API compatibility, test coverage, performance
-- **Prompt size**: ~1000-1500 tokens (just instructions + Level 1&2 summaries)
+- **Prompt size**: ~1000-1500 tokens (just instructions, independent analysis)
+- **Typical time**: 30-90 seconds
+
+#### Orchestration Step (Fourth AI Pass)
+- **Runs after** all three levels complete
+- **Purpose**: Intelligently merge, deduplicate, and prioritize suggestions
+- **Input**: All suggestions from levels 1, 2, and 3
+- **Output**: Curated final suggestions (quality over quantity)
+- **Deduplication**: 80% text similarity threshold using Levenshtein distance
+- **Prioritization**: Security > Bugs > Architecture > Performance > Style
+- **Typical time**: 30-60 seconds
+- **Storage**: Only orchestrated suggestions shown to user (per-level stored for debugging)
 
 ### 4. Prompt Engineering
 
@@ -153,39 +168,35 @@ Focus only on the changed lines. Do not review unchanged code or missing tests (
 ```
 You are reviewing pull request #[PR_NUMBER] in the worktree at [WORKTREE_PATH].
 
-Perform a Level 2 review building on these Level 1 findings:
-[Level 1 summary]
-
-Now examine the complete files that were changed:
+Perform a Level 2 review analyzing file-level context:
 - Use git diff to see what changed
 - Read the full content of modified files
-- Analyze how changes integrate with existing code
-- Find inconsistencies with file patterns
-- Identify incomplete refactoring
-- Check for local side effects
+- Analyze how changes integrate with existing code in each file
+- Find inconsistencies with file patterns and conventions
+- Identify incomplete refactoring within files
+- Check for local side effects and missing related changes
 
 Output JSON with the same structure as Level 1.
-Focus on issues only visible with full file context.
+Focus on issues that require understanding the full file context.
+Analyze independently - don't assume other reviews have been done.
 ```
 
 **Level 3 - Codebase Context:**
 ```
 You are reviewing pull request #[PR_NUMBER] in the worktree at [WORKTREE_PATH].
 
-Perform a Level 3 review building on previous findings:
-Level 1: [summary]
-Level 2: [summary]
-
-Now analyze the broader codebase impact:
+Perform a Level 3 review analyzing codebase-wide impact:
 - Explore related files (imports, tests, dependencies)
 - Check for breaking changes to APIs/interfaces
 - Verify test coverage for the changes
-- Assess architectural consistency
+- Assess architectural consistency across the codebase
 - Evaluate performance implications
+- Find cross-file dependencies and potential impact
 
 Use grep, find, and read tools to explore the codebase as needed.
-Output JSON with the same structure.
-Focus on system-wide implications.
+Output JSON with the same structure as Level 1.
+Focus on system-wide implications and architectural concerns.
+Analyze independently - don't assume other reviews have been done.
 ```
 
 ### 5. Response Processing & Storage
@@ -443,17 +454,32 @@ Line 42: user.name.toUpperCase()
 - Skip binary and generated files automatically
 
 ### Response Time Expectations
-- Level 1: 10-30 seconds for typical PR (prioritize thoroughness)
-- Level 2: 20-60 seconds (depends on file sizes)
-- Level 3: 30-90 seconds (depends on codebase complexity)
-- Total: 1-3 minutes for complete analysis is acceptable
-- Large PRs (1000+ lines): May take 5+ minutes
+
+#### Parallel Execution (Current Implementation)
+- All 3 levels run concurrently for maximum speed
+- **Sequential baseline**: L1(20s) + L2(40s) + L3(60s) + Orch(30s) = 150s
+- **Parallel timing**: max(L1, L2, L3) + Orch = 60s + 30s = 90s
+- **Speedup**: ~40% faster (saves 60 seconds on typical PR)
+
+#### Typical PR Timings
+- Small PR (1-2 files, <50 lines): 60-90 seconds total
+- Medium PR (5-10 files, 200-500 lines): 90-150 seconds total
+- Large PR (20+ files, 1000+ lines): 150-240 seconds total
+- Orchestration adds 30-60 seconds regardless of PR size
+
+#### Benefits of Parallel Architecture
+- Faster reviews without sacrificing thoroughness
+- Independent perspectives catch more issues (no anchoring bias)
+- Better resource utilization (3 concurrent Claude processes)
+- Graceful degradation (if one level fails, others still complete)
 - User can run in background and continue reviewing manually
 
 ### Concurrent Processing
-- Process multiple files in Level 2 if under token limit
+- Three separate ClaudeCLI instances (one per level)
+- Each level spawns independent process with isolated resources
+- Orchestration uses fourth ClaudeCLI instance
 - Queue system for multiple PR analyses
-- Rate limiting to avoid overwhelming Claude CLI
+- Per-level progress reporting via Server-Sent Events
 
 ## Security Considerations
 
