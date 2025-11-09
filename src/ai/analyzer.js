@@ -258,8 +258,22 @@ class Analyzer {
    * @param {Object} prMetadata - PR metadata with base branch info
    */
   buildLevel2Prompt(prId, worktreePath, prMetadata) {
-    return `You are reviewing pull request #${prId} in the current working directory.
+    const prContext = prMetadata.title || prMetadata.description ? `
+## Pull Request Context
+**Title:** ${prMetadata.title || '(No title provided)'}
 
+**Author's Description:**
+${prMetadata.description || '(No description provided)'}
+
+⚠️ **Critical Note:** Treat this description as the author's CLAIM about what they changed and why. As you analyze file-level consistency, verify if the actual changes align with this description. Be alert for:
+- File-level changes not mentioned in the description
+- Inconsistencies between stated goals and implementation patterns
+- Scope creep beyond what was described
+
+` : '';
+
+    return `You are reviewing pull request #${prId} in the current working directory.
+${prContext}
 # Level 2 Review - Analyze File Context
 
 ## Analysis Process
@@ -325,8 +339,22 @@ Output JSON with this structure:
    * @param {Object} prMetadata - PR metadata with base branch info
    */
   buildLevel1Prompt(prId, worktreePath, prMetadata) {
-    return `You are reviewing pull request #${prId} in the current working directory.
+    const prContext = prMetadata.title || prMetadata.description ? `
+## Pull Request Context
+**Title:** ${prMetadata.title || '(No title provided)'}
 
+**Author's Description:**
+${prMetadata.description || '(No description provided)'}
+
+⚠️ **Critical Note:** Treat this description as the author's CLAIM about what they changed and why. Your job is to independently verify if the actual code changes align with this description. As you analyze, be alert for:
+- Discrepancies between the description and actual implementation
+- Undocumented changes or side effects not mentioned in the description
+- Overstated or understated scope
+
+` : '';
+
+    return `You are reviewing pull request #${prId} in the current working directory.
+${prContext}
 # Level 1 Review - Analyze Changes in Isolation
 
 ## Speed and Scope Expectations
@@ -1249,8 +1277,23 @@ Output JSON with this structure:
   }
 
   buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null) {
-    return `You are reviewing pull request #${prId} in the current working directory.
+    const prContext = prMetadata.title || prMetadata.description ? `
+## Pull Request Context
+**Title:** ${prMetadata.title || '(No title provided)'}
 
+**Author's Description:**
+${prMetadata.description || '(No description provided)'}
+
+⚠️ **Critical Note:** Treat this description as the author's CLAIM about what they changed and why. At this architectural level, it's especially important to verify alignment between stated intent and actual implementation. Flag any:
+- **Architectural discrepancies:** Does the implementation match the architectural approach described?
+- **Scope misalignment:** Are there changes beyond what's described, or is described functionality missing?
+- **Impact inconsistencies:** Does the actual codebase impact match what the author claimed?
+- **Undocumented side effects:** Are there broader impacts not mentioned in the description?
+
+` : '';
+
+    return `You are reviewing pull request #${prId} in the current working directory.
+${prContext}
 # Level 3 Review - Analyze Change Impact on Codebase
 
 ## Purpose

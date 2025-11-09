@@ -412,7 +412,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id, base_branch, pr_data FROM pr_metadata
+      SELECT id, base_branch, title, description, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
@@ -622,7 +622,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
 
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id, base_branch, pr_data FROM pr_metadata
+      SELECT id, base_branch, title, description, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
@@ -757,7 +757,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
 
     // Check if PR exists in database
     const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id, base_branch, pr_data FROM pr_metadata
+      SELECT id, base_branch, title, description, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
