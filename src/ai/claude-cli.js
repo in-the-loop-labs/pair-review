@@ -125,6 +125,7 @@ class ClaudeCLI {
         if (err) {
           logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
           if (timeoutId) clearTimeout(timeoutId);
+          claude.kill('SIGTERM'); // Prevent resource leak
           reject(new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
         }
       });

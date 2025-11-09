@@ -914,6 +914,8 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         created_at,
         updated_at
       FROM comments
+      -- ai_level IS NULL filters for final orchestrated suggestions only
+      -- Per-level suggestions (ai_level = 1, 2, 3) are stored for debugging but not shown in UI
       WHERE pr_id = ? AND source = 'ai' AND ai_level IS NULL AND status IN ('active', 'dismissed')
       ORDER BY file, line_start
     `, [prMetadata.id]);
