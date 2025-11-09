@@ -1260,9 +1260,9 @@ Focus on understanding the relationships between these specific changes and exis
 
 ## Analysis Process
 Start from the changed files and explore outward to understand connections:
-   - How these changes interact with files that import or are imported by changed files
+   - How these changes interact with files that reference them or are referenced by changed files
    - How these changes relate to tests, configurations, and documentation
-   - Whether these changes follow or violate patterns established elsewhere in the codebase
+   - Whether these changes follow, improve, or violate patterns established elsewhere in the codebase
    - What impact these changes have on other parts of the system
 
 Explore as deeply as needed to understand the impact, but stay focused on relationships to the PR changes.
@@ -1270,20 +1270,20 @@ Avoid general codebase review - your goal is to evaluate these specific changes 
 
 ## Focus Areas
 Analyze how these changes affect or relate to:
-   - Existing architecture - do these changes fit with or disrupt architectural patterns?
-   - Established patterns - do these changes follow patterns used elsewhere in the codebase?
-   - Cross-file dependencies - how do these changes impact other files that depend on them?
+   - Existing architecture: do these changes fit with, improve, or disrupt architectural patterns?
+   - Established patterns: do these changes follow, improve, or violate patterns used elsewhere in the codebase?
+   - Cross-file dependencies: how do these changes impact other files that depend on them?
    - ${this.buildTestAnalysisSection(testingContext)}
-   - Documentation - do these changes require updates to docs? Are they consistent with documented APIs?
-   - API contracts - do these changes maintain consistency with existing API patterns?
-   - Configuration - do these changes necessitate configuration updates?
-   - Environment compatibility - how do these changes behave across different environments?
-   - Breaking changes - do these changes break existing functionality or contracts?
-   - Backward compatibility - do these changes maintain compatibility with prior versions?
-   - Performance of connected components - how do these changes affect performance elsewhere?
-   - System scalability - how do these changes impact the system's ability to scale?
-   - Security of connected systems - do these changes introduce security risks in other parts?
-   - Data flow security - how do these changes affect security across data flows?
+   - Documentation: do these changes require updates to docs? Are they consistent with documented APIs?
+   - API contracts: do these changes maintain or improve consistency with existing API patterns?
+   - Configuration: do these changes necessitate configuration updates?
+   - Environment compatibility: how do these changes behave across different environments?
+   - Breaking changes: do these changes break existing functionality or contracts?
+   - Backward compatibility: do these changes maintain compatibility with prior versions?
+   - Performance of connected components: how do these changes affect performance elsewhere?
+   - System scalability: how do these changes impact the system's ability to scale?
+   - Security of connected systems: do these changes introduce security risks in other parts?
+   - Data flow security: how do these changes affect security across data flows?
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
