@@ -447,21 +447,26 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Create analysis ID
     const analysisId = uuidv4();
-    
-    // Store analysis status
+
+    // Store analysis status with separate tracking for each level
     const initialStatus = {
       id: analysisId,
       prNumber,
       repository,
-      status: 'started',
-      level: 1,
+      status: 'running',
       startedAt: new Date().toISOString(),
-      progress: 'Starting Level 1 analysis...',
+      progress: 'Starting analysis...',
+      // Track each level separately for parallel execution
+      levels: {
+        1: { status: 'running', progress: 'Starting...' },
+        2: { status: 'running', progress: 'Starting...' },
+        3: { status: 'running', progress: 'Starting...' }
+      },
       filesAnalyzed: 0,
       filesRemaining: 0
     };
     activeAnalyses.set(analysisId, initialStatus);
-    
+
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
@@ -475,28 +480,29 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
     logger.log('API', `Model: ${model}`, 'cyan');
-    
-    // Update status to running and broadcast
-    setTimeout(() => {
-      const runningStatus = {
-        ...activeAnalyses.get(analysisId),
-        status: 'running',
-        progress: 'Analyzing diff hunks...'
-      };
-      activeAnalyses.set(analysisId, runningStatus);
-      broadcastProgress(analysisId, runningStatus);
-    }, 1000);
 
-    // Create progress callback function
+    // Create progress callback function that tracks each level separately
     const progressCallback = (progressUpdate) => {
-      const updatedStatus = {
-        ...activeAnalyses.get(analysisId),
-        ...progressUpdate,
-        // Don't override the level if it's already set in progressUpdate
-        level: progressUpdate.level || 1
-      };
-      activeAnalyses.set(analysisId, updatedStatus);
-      broadcastProgress(analysisId, updatedStatus);
+      const currentStatus = activeAnalyses.get(analysisId);
+      if (!currentStatus) return;
+
+      const level = progressUpdate.level;
+
+      // Update the specific level's status
+      if (level && level >= 1 && level <= 3) {
+        currentStatus.levels[level] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'In progress...'
+        };
+      }
+
+      // Update overall progress message if provided
+      if (progressUpdate.progress && !level) {
+        currentStatus.progress = progressUpdate.progress;
+      }
+
+      activeAnalyses.set(analysisId, currentStatus);
+      broadcastProgress(analysisId, currentStatus);
     };
     
     // Start analysis asynchronously with progress callback
@@ -516,12 +522,22 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
                        s.type === 'code-style' || s.type === 'style' ? '🧹' : '📝';
           logger.log('Result', `${icon} ${s.type}: ${s.title} (${s.file}:${s.line_start})`, 'green');
         });
-        
+
         // Determine completion status using extracted helper function
         const completionInfo = determineCompletionInfo(result);
-        
+
+        const currentStatus = activeAnalyses.get(analysisId);
+
+        // Mark all completed levels as completed
+        for (let i = 1; i <= completionInfo.completedLevel; i++) {
+          currentStatus.levels[i] = {
+            status: 'completed',
+            progress: `Level ${i} complete`
+          };
+        }
+
         const completedStatus = {
-          ...activeAnalyses.get(analysisId),
+          ...currentStatus,
           status: 'completed',
           level: completionInfo.completedLevel,
           completedLevel: completionInfo.completedLevel,
@@ -529,20 +545,30 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           result,
           progress: completionInfo.progressMessage,
           suggestionsCount: completionInfo.totalSuggestions,
-          filesAnalyzed: activeAnalyses.get(analysisId)?.filesAnalyzed || 0,
+          filesAnalyzed: currentStatus?.filesAnalyzed || 0,
           filesRemaining: 0,
-          currentFile: activeAnalyses.get(analysisId)?.totalFiles || 0,
-          totalFiles: activeAnalyses.get(analysisId)?.totalFiles || 0
+          currentFile: currentStatus?.totalFiles || 0,
+          totalFiles: currentStatus?.totalFiles || 0
         };
         activeAnalyses.set(analysisId, completedStatus);
-        
+
         // Broadcast completion status
         broadcastProgress(analysisId, completedStatus);
       })
       .catch(error => {
         logger.error(`Analysis failed for PR #${prNumber}: ${error.message}`);
+        const currentStatus = activeAnalyses.get(analysisId);
+
+        // Mark all levels as failed
+        for (let i = 1; i <= 3; i++) {
+          currentStatus.levels[i] = {
+            status: 'failed',
+            progress: 'Failed'
+          };
+        }
+
         const failedStatus = {
-          ...activeAnalyses.get(analysisId),
+          ...currentStatus,
           status: 'failed',
           level: 1,
           completedAt: new Date().toISOString(),
@@ -550,7 +576,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           progress: 'Analysis failed'
         };
         activeAnalyses.set(analysisId, failedStatus);
-        
+
         // Broadcast failure status
         broadcastProgress(analysisId, failedStatus);
       });
