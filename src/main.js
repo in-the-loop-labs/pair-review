@@ -341,6 +341,39 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
 }
 
 /**
+ * Category to emoji mapping for AI suggestions
+ */
+const CATEGORY_EMOJI_MAP = {
+  'bug': '🐛',
+  'performance': '⚡',
+  'design': '📐',
+  'code-style': '🧹',
+  'improvement': '💡',
+  'praise': '⭐',
+  'security': '🔒',
+  'suggestion': '💬'
+};
+
+/**
+ * Format AI suggestion with emoji and category prefix
+ * @param {string} text - The suggestion text
+ * @param {string} category - The suggestion category
+ * @returns {string} Formatted comment text
+ */
+function formatAISuggestion(text, category) {
+  if (!category) {
+    return text;
+  }
+  const emoji = CATEGORY_EMOJI_MAP[category] || '💬';
+  // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
+  const capitalizedCategory = category
+    .split('-')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+  return `${emoji} **${capitalizedCategory}**: ${text}`;
+}
+
+/**
  * Handle draft mode review workflow
  * Runs AI analysis and submits draft review to GitHub without opening browser
  * @param {Array<string>} args - Command line arguments
@@ -450,15 +483,13 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
 
     // Format AI suggestions for GitHub
     const githubComments = aiSuggestions.map(suggestion => {
-      // Combine title and body for the comment
-      const commentBody = suggestion.title
-        ? `**${suggestion.title}**\n\n${suggestion.body}`
-        : suggestion.body;
+      // Format with emoji and category prefix, same as adopted suggestions
+      const formattedBody = formatAISuggestion(suggestion.body, suggestion.type);
 
       return {
         path: suggestion.file,
         line: suggestion.line_start,
-        body: commentBody,
+        body: formattedBody,
         diff_position: suggestion.diff_position
       };
     });
