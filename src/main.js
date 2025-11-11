@@ -4,7 +4,7 @@ const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
-const { Analyzer } = require('./ai/analyzer');
+const Analyzer = require('./ai/analyzer');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
