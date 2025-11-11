@@ -1,9 +1,10 @@
 const { loadConfig } = require('./config');
-const { initializeDatabase, run, queryOne } = require('./database');
+const { initializeDatabase, run, queryOne, query } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
+const { Analyzer } = require('./ai/analyzer');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
@@ -22,6 +23,8 @@ function parseArgs(args) {
 
     if (arg === '--ai') {
       flags.ai = true;
+    } else if (arg === '--ai-draft') {
+      flags.aiDraft = true;
     } else if (arg === '--model') {
       // Next argument is the model name
       if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
@@ -69,13 +72,21 @@ async function main() {
 
     // Check if PR arguments were provided
     if (prArgs.length > 0) {
-      await handlePullRequest(prArgs, config, db, flags);
+      // Check for --ai-draft mode
+      if (flags.aiDraft) {
+        await handleDraftModeReview(prArgs, config, db, flags);
+      } else {
+        await handlePullRequest(prArgs, config, db, flags);
+      }
     } else {
-      // Check if --ai flag was used without PR identifier
+      // Check if --ai or --ai-draft flags were used without PR identifier
       if (flags.ai) {
         throw new Error('--ai flag requires a pull request number or URL to be specified');
       }
-      
+      if (flags.aiDraft) {
+        throw new Error('--ai-draft flag requires a pull request number or URL to be specified');
+      }
+
       // No PR arguments - just start the server
       console.log('No pull request specified. Starting server...');
       await startServerOnly(config);
@@ -326,6 +337,214 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
   } catch (error) {
     console.error('Error storing PR data:', error);
     throw new Error(`Failed to store PR data: ${error.message}`);
+  }
+}
+
+/**
+ * Handle draft mode review workflow
+ * Runs AI analysis and submits draft review to GitHub without opening browser
+ * @param {Array<string>} args - Command line arguments
+ * @param {Object} config - Application configuration
+ * @param {Object} db - Database instance
+ * @param {Object} flags - Parsed command line flags
+ */
+async function handleDraftModeReview(args, config, db, flags = {}) {
+  let prInfo = null;
+
+  try {
+    // Validate GitHub token
+    if (!config.github_token) {
+      throw new Error('GitHub token not found. Run: npx pair-review --configure');
+    }
+
+    // Parse PR arguments
+    const parser = new PRArgumentParser();
+    prInfo = await parser.parsePRArguments(args);
+
+    console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in draft mode`);
+
+    // Create GitHub client and validate token
+    const githubClient = new GitHubClient(config.github_token);
+    const tokenValid = await githubClient.validateToken();
+    if (!tokenValid) {
+      throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
+    }
+
+    // Check if repository is accessible
+    const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
+    if (!repoExists) {
+      throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
+    }
+
+    // Fetch PR data from GitHub
+    console.log('Fetching pull request data from GitHub...');
+    const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
+
+    // Get current repository path
+    const currentDir = parser.getCurrentDirectory();
+
+    // Setup git worktree
+    console.log('Setting up git worktree...');
+    const worktreeManager = new GitWorktreeManager();
+    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
+
+    // Generate unified diff
+    console.log('Generating unified diff...');
+    const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
+    const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+
+    // Store PR data in database
+    console.log('Storing pull request data...');
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
+
+    // Get PR metadata ID for AI analysis
+    const repository = `${prInfo.owner}/${prInfo.repo}`;
+    const prMetadata = await queryOne(db, `
+      SELECT id, pr_data FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prInfo.number, repository]);
+
+    if (!prMetadata) {
+      throw new Error('Failed to retrieve stored PR metadata');
+    }
+
+    const prId = prMetadata.id;
+    const storedPRData = JSON.parse(prMetadata.pr_data);
+
+    // Run AI analysis
+    console.log('Running AI analysis (all 3 levels)...');
+    const model = flags.model || process.env.PAIR_REVIEW_MODEL || 'sonnet';
+    const analyzer = new Analyzer(db, model);
+
+    try {
+      await analyzer.analyzeAllLevels(prId, worktreePath, storedPRData);
+      console.log('AI analysis completed successfully');
+    } catch (analysisError) {
+      console.error(`AI analysis failed: ${analysisError.message}`);
+      console.error('Suggestions (if any) have been saved to the database.');
+      console.error('You can run pair-review without --ai-draft to view them in the UI.');
+      throw new Error(`AI analysis failed: ${analysisError.message}`);
+    }
+
+    // Query for final AI suggestions (orchestrated, not per-level)
+    const aiSuggestions = await query(db, `
+      SELECT
+        id,
+        file,
+        line_start,
+        body,
+        diff_position,
+        title,
+        type
+      FROM comments
+      WHERE pr_id = ? AND source = 'ai' AND ai_level IS NULL AND status = 'active'
+      ORDER BY file, line_start
+    `, [prId]);
+
+    console.log(`Found ${aiSuggestions.length} AI suggestions to submit`);
+
+    if (aiSuggestions.length === 0) {
+      console.log('No AI suggestions to submit. Exiting without creating draft review.');
+      process.exit(0);
+    }
+
+    // Format AI suggestions for GitHub
+    const githubComments = aiSuggestions.map(suggestion => {
+      // Combine title and body for the comment
+      const commentBody = suggestion.title
+        ? `**${suggestion.title}**\n\n${suggestion.body}`
+        : suggestion.body;
+
+      return {
+        path: suggestion.file,
+        line: suggestion.line_start,
+        body: commentBody,
+        diff_position: suggestion.diff_position
+      };
+    });
+
+    // Submit draft review to GitHub
+    console.log(`Submitting draft review with ${githubComments.length} comments...`);
+
+    let diffContent = '';
+    try {
+      diffContent = await worktreeManager.generateUnifiedDiff(worktreePath, storedPRData);
+    } catch (diffError) {
+      console.warn('Could not generate diff for position calculation:', diffError.message);
+    }
+
+    const githubReview = await githubClient.createReview(
+      prInfo.owner,
+      prInfo.repo,
+      prInfo.number,
+      'DRAFT',
+      '', // Empty body as requested
+      githubComments,
+      diffContent
+    );
+
+    // Update database to track the draft review
+    await run(db, 'BEGIN TRANSACTION');
+
+    try {
+      const now = new Date().toISOString();
+      const reviewData = {
+        github_review_id: githubReview.id,
+        github_url: githubReview.html_url,
+        event: 'DRAFT',
+        body: '',
+        comments_count: githubReview.comments_count,
+        created_at: now
+      };
+
+      await run(db, `
+        INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, review_data)
+        VALUES (?, ?, 'draft', ?, ?, ?)
+      `, [prInfo.number, repository, githubReview.id, now, JSON.stringify(reviewData)]);
+
+      // Update AI suggestions to 'draft' status
+      for (const suggestion of aiSuggestions) {
+        await run(db, `
+          UPDATE comments
+          SET status = 'draft', updated_at = ?
+          WHERE id = ?
+        `, [now, suggestion.id]);
+      }
+
+      await run(db, 'COMMIT');
+
+      console.log(`\n✅ Draft review created successfully!`);
+      console.log(`   Review URL: ${githubReview.html_url}`);
+      console.log(`   Comments submitted: ${githubReview.comments_count}\n`);
+
+    } catch (dbError) {
+      await run(db, 'ROLLBACK');
+      throw dbError;
+    }
+
+  } catch (error) {
+    // Provide cleaner error messages for common issues
+    if (error.message && error.message.includes('not found in repository')) {
+      if (prInfo) {
+        console.error(`\n❌ Pull request #${prInfo.number} does not exist in ${prInfo.owner}/${prInfo.repo}`);
+      } else {
+        console.error(`\n❌ ${error.message}`);
+      }
+      console.error('Please check the PR number and try again.\n');
+    } else if (error.message && error.message.includes('authentication failed')) {
+      console.error('\n❌ GitHub authentication failed');
+      console.error('Please check your token in ~/.pair-review/config.json\n');
+    } else if (error.message && error.message.includes('Repository') && error.message.includes('not found')) {
+      console.error(`\n❌ ${error.message}`);
+      console.error('Please check the repository name and your access permissions.\n');
+    } else if (error.message && error.message.includes('Network error')) {
+      console.error('\n❌ Network connection error');
+      console.error('Please check your internet connection and try again.\n');
+    } else {
+      // For other errors, show a clean message without stack trace
+      console.error(`\n❌ Error: ${error.message}\n`);
+    }
+    process.exit(1);
   }
 }
 
