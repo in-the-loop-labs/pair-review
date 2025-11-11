@@ -242,9 +242,12 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
  * @param {string} worktreePath - Worktree path
  */
 async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath) {
+  const repository = `${prInfo.owner}/${prInfo.repo}`;
+
+  // Begin transaction for atomic database operations
+  await run(db, 'BEGIN TRANSACTION');
+
   try {
-    const repository = `${prInfo.owner}/${prInfo.repo}`;
-    
     // Prepare extended PR data
     const extendedPRData = {
       ...prData,
@@ -258,13 +261,13 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
     const existingPR = await queryOne(db, `
       SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?
     `, [prInfo.number, repository]);
-    
+
     if (existingPR) {
       // Update existing PR metadata (preserves ID)
       await run(db, `
-        UPDATE pr_metadata 
-        SET title = ?, description = ?, author = ?, 
-            base_branch = ?, head_branch = ?, pr_data = ?, 
+        UPDATE pr_metadata
+        SET title = ?, description = ?, author = ?,
+            base_branch = ?, head_branch = ?, pr_data = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `, [
@@ -280,7 +283,7 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
     } else {
       // Insert new PR metadata
       const result = await run(db, `
-        INSERT INTO pr_metadata 
+        INSERT INTO pr_metadata
         (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `, [
@@ -300,11 +303,11 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
     const existingReview = await queryOne(db, `
       SELECT id FROM reviews WHERE pr_number = ? AND repository = ?
     `, [prInfo.number, repository]);
-    
+
     if (existingReview) {
       // Update existing review (preserves ID)
       await run(db, `
-        UPDATE reviews 
+        UPDATE reviews
         SET review_data = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `, [
@@ -332,9 +335,13 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
       console.log(`Created new review (ID: ${result.lastID})`);
     }
 
+    // Commit transaction
+    await run(db, 'COMMIT');
     console.log(`Stored PR data for ${repository} #${prInfo.number}`);
-    
+
   } catch (error) {
+    // Rollback transaction on error
+    await run(db, 'ROLLBACK');
     console.error('Error storing PR data:', error);
     throw new Error(`Failed to store PR data: ${error.message}`);
   }
@@ -478,11 +485,37 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
 
     if (aiSuggestions.length === 0) {
       console.log('No AI suggestions to submit. Exiting without creating draft review.');
-      process.exit(0);
+      return; // Exit gracefully without creating a review
     }
 
+    // Filter out suggestions without valid line information
+    const validSuggestions = aiSuggestions.filter(suggestion => {
+      const hasValidLine = suggestion.line_start && suggestion.line_start > 0;
+      const hasValidPath = suggestion.file && suggestion.file.trim() !== '';
+
+      if (!hasValidLine || !hasValidPath) {
+        console.warn(`Skipping suggestion for ${suggestion.file || 'unknown file'}:${suggestion.line_start || 'unknown line'} - missing valid line or path information`);
+        return false;
+      }
+      return true;
+    });
+
+    console.log(`Filtered to ${validSuggestions.length} suggestions with valid line information`);
+
+    if (validSuggestions.length === 0) {
+      console.log('No suggestions with valid line information. Exiting without creating draft review.');
+      return; // Exit gracefully without creating a review
+    }
+
+    // Count suggestions by category for summary
+    const categoryCounts = validSuggestions.reduce((acc, suggestion) => {
+      const category = suggestion.type || 'suggestion';
+      acc[category] = (acc[category] || 0) + 1;
+      return acc;
+    }, {});
+
     // Format AI suggestions for GitHub
-    const githubComments = aiSuggestions.map(suggestion => {
+    const githubComments = validSuggestions.map(suggestion => {
       // Format with emoji and category prefix, same as adopted suggestions
       const formattedBody = formatAISuggestion(suggestion.body, suggestion.type);
 
@@ -493,6 +526,26 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
         diff_position: suggestion.diff_position
       };
     });
+
+    // Build review body with helpful summary
+    const categoryList = Object.entries(categoryCounts)
+      .map(([category, count]) => {
+        const emoji = CATEGORY_EMOJI_MAP[category] || '💬';
+        const capitalizedCategory = category
+          .split('-')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ');
+        return `- ${emoji} ${count} ${capitalizedCategory}`;
+      })
+      .join('\n');
+
+    const reviewBody = `## AI Analysis Summary
+
+Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' : 's'}:
+
+${categoryList}
+
+> Generated by [pair-review](https://github.com/in-the-loop-labs/pair-review) with \`--ai-draft\` mode`;
 
     // Submit draft review to GitHub
     console.log(`Submitting draft review with ${githubComments.length} comments...`);
@@ -509,7 +562,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
       prInfo.repo,
       prInfo.number,
       'DRAFT',
-      '', // Empty body as requested
+      reviewBody,
       githubComments,
       diffContent
     );
