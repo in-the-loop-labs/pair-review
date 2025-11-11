@@ -47,6 +47,108 @@ function parseArgs(args) {
 }
 
 /**
+ * Extract and validate PR information from arguments
+ * @param {Array<string>} args - Command line arguments
+ * @param {Object} config - Application configuration
+ * @returns {Promise<{prInfo: Object, githubClient: GitHubClient, prData: Object}>}
+ */
+async function extractPRInfo(args, config) {
+  // Validate GitHub token
+  if (!config.github_token) {
+    throw new Error('GitHub token not found. Run: npx pair-review --configure');
+  }
+
+  // Parse PR arguments
+  const parser = new PRArgumentParser();
+  const prInfo = await parser.parsePRArguments(args);
+
+  console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo}`);
+
+  // Create GitHub client and validate token
+  const githubClient = new GitHubClient(config.github_token);
+  const tokenValid = await githubClient.validateToken();
+  if (!tokenValid) {
+    throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
+  }
+
+  // Check if repository is accessible
+  const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
+  if (!repoExists) {
+    throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
+  }
+
+  // Fetch PR data from GitHub
+  console.log('Fetching pull request data from GitHub...');
+  const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
+
+  return { prInfo, githubClient, prData };
+}
+
+/**
+ * Setup git worktree for PR review
+ * @param {Object} prInfo - PR information
+ * @param {Object} prData - PR data from GitHub
+ * @returns {Promise<string>} Worktree path
+ */
+async function setupReviewWorkspace(prInfo, prData) {
+  // Get current repository path
+  const parser = new PRArgumentParser();
+  const currentDir = parser.getCurrentDirectory();
+
+  // Setup git worktree
+  console.log('Setting up git worktree...');
+  const worktreeManager = new GitWorktreeManager();
+  const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
+
+  return worktreePath;
+}
+
+/**
+ * Generate unified diff and get changed files
+ * @param {string} worktreePath - Path to the worktree
+ * @param {Object} prData - PR data from GitHub
+ * @returns {Promise<{diff: string, changedFiles: Array}>}
+ */
+async function generateDiff(worktreePath, prData) {
+  console.log('Generating unified diff...');
+  const worktreeManager = new GitWorktreeManager();
+  const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
+  const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+
+  return { diff, changedFiles };
+}
+
+/**
+ * Handle common review errors with user-friendly messages
+ * @param {Error} error - The error to handle
+ * @param {Object|null} prInfo - PR information (may be null if parsing failed)
+ */
+function handleReviewError(error, prInfo) {
+  // Provide cleaner error messages for common issues
+  if (error.message && error.message.includes('not found in repository')) {
+    if (prInfo) {
+      console.error(`\n❌ Pull request #${prInfo.number} does not exist in ${prInfo.owner}/${prInfo.repo}`);
+    } else {
+      console.error(`\n❌ ${error.message}`);
+    }
+    console.error('Please check the PR number and try again.\n');
+  } else if (error.message && error.message.includes('authentication failed')) {
+    console.error('\n❌ GitHub authentication failed');
+    console.error('Please check your token in ~/.pair-review/config.json\n');
+  } else if (error.message && error.message.includes('Repository') && error.message.includes('not found')) {
+    console.error(`\n❌ ${error.message}`);
+    console.error('Please check the repository name and your access permissions.\n');
+  } else if (error.message && error.message.includes('Network error')) {
+    console.error('\n❌ Network connection error');
+    console.error('Please check your internet connection and try again.\n');
+  } else {
+    // For other errors, show a clean message without stack trace
+    console.error(`\n❌ Error: ${error.message}\n`);
+  }
+  process.exit(1);
+}
+
+/**
  * Main application entry point
  */
 async function main() {
@@ -112,48 +214,17 @@ async function main() {
  */
 async function handlePullRequest(args, config, db, flags = {}) {
   let prInfo = null; // Declare prInfo outside try block for error handling
-  
+
   try {
-    // Validate GitHub token
-    if (!config.github_token) {
-      throw new Error('GitHub token not found. Run: npx pair-review --configure');
-    }
+    // Extract and validate PR information
+    const { prInfo: info, githubClient, prData } = await extractPRInfo(args, config);
+    prInfo = info; // Store for error handling
 
-    // Parse PR arguments
-    const parser = new PRArgumentParser();
-    prInfo = await parser.parsePRArguments(args);
-    
-    console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo}`);
-
-    // Create GitHub client and validate token
-    const githubClient = new GitHubClient(config.github_token);
-    const tokenValid = await githubClient.validateToken();
-    if (!tokenValid) {
-      throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
-    }
-
-    // Check if repository is accessible
-    const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
-    if (!repoExists) {
-      throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
-    }
-
-    // Fetch PR data from GitHub
-    console.log('Fetching pull request data from GitHub...');
-    const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
-
-    // Get current repository path
-    const currentDir = parser.getCurrentDirectory();
-    
     // Setup git worktree
-    console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager();
-    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
+    const worktreePath = await setupReviewWorkspace(prInfo, prData);
 
     // Generate unified diff
-    console.log('Generating unified diff...');
-    const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
-    const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+    const { diff, changedFiles } = await generateDiff(worktreePath, prData);
 
     // Store PR data in database
     console.log('Storing pull request data...');
@@ -165,39 +236,18 @@ async function handlePullRequest(args, config, db, flags = {}) {
 
     // Open browser to PR view
     let url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
-    
+
     // Add auto-ai parameter if --ai flag is present
     if (flags.ai) {
       url += '&auto-ai=true';
       console.log('Auto-triggering AI analysis...');
     }
-    
+
     console.log(`Opening browser to: ${url}`);
     await open(url);
 
   } catch (error) {
-    // Provide cleaner error messages for common issues
-    if (error.message && error.message.includes('not found in repository')) {
-      if (prInfo) {
-        console.error(`\n❌ Pull request #${prInfo.number} does not exist in ${prInfo.owner}/${prInfo.repo}`);
-      } else {
-        console.error(`\n❌ ${error.message}`);
-      }
-      console.error('Please check the PR number and try again.\n');
-    } else if (error.message && error.message.includes('authentication failed')) {
-      console.error('\n❌ GitHub authentication failed');
-      console.error('Please check your token in ~/.pair-review/config.json\n');
-    } else if (error.message && error.message.includes('Repository') && error.message.includes('not found')) {
-      console.error(`\n❌ ${error.message}`);
-      console.error('Please check the repository name and your access permissions.\n');
-    } else if (error.message && error.message.includes('Network error')) {
-      console.error('\n❌ Network connection error');
-      console.error('Please check your internet connection and try again.\n');
-    } else {
-      // For other errors, show a clean message without stack trace
-      console.error(`\n❌ Error: ${error.message}\n`);
-    }
-    process.exit(1);
+    handleReviewError(error, prInfo);
   }
 }
 
@@ -397,46 +447,17 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
   let prInfo = null;
 
   try {
-    // Validate GitHub token
-    if (!config.github_token) {
-      throw new Error('GitHub token not found. Run: npx pair-review --configure');
-    }
+    // Extract and validate PR information
+    const { prInfo: info, githubClient, prData } = await extractPRInfo(args, config);
+    prInfo = info; // Store for error handling
 
-    // Parse PR arguments
-    const parser = new PRArgumentParser();
-    prInfo = await parser.parsePRArguments(args);
-
-    console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in draft mode`);
-
-    // Create GitHub client and validate token
-    const githubClient = new GitHubClient(config.github_token);
-    const tokenValid = await githubClient.validateToken();
-    if (!tokenValid) {
-      throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
-    }
-
-    // Check if repository is accessible
-    const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
-    if (!repoExists) {
-      throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
-    }
-
-    // Fetch PR data from GitHub
-    console.log('Fetching pull request data from GitHub...');
-    const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
-
-    // Get current repository path
-    const currentDir = parser.getCurrentDirectory();
+    console.log(`Processing in draft mode`);
 
     // Setup git worktree
-    console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager();
-    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
+    const worktreePath = await setupReviewWorkspace(prInfo, prData);
 
     // Generate unified diff
-    console.log('Generating unified diff...');
-    const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
-    const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+    const { diff, changedFiles } = await generateDiff(worktreePath, prData);
 
     // Store PR data in database
     console.log('Storing pull request data...');
@@ -606,28 +627,7 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
     }
 
   } catch (error) {
-    // Provide cleaner error messages for common issues
-    if (error.message && error.message.includes('not found in repository')) {
-      if (prInfo) {
-        console.error(`\n❌ Pull request #${prInfo.number} does not exist in ${prInfo.owner}/${prInfo.repo}`);
-      } else {
-        console.error(`\n❌ ${error.message}`);
-      }
-      console.error('Please check the PR number and try again.\n');
-    } else if (error.message && error.message.includes('authentication failed')) {
-      console.error('\n❌ GitHub authentication failed');
-      console.error('Please check your token in ~/.pair-review/config.json\n');
-    } else if (error.message && error.message.includes('Repository') && error.message.includes('not found')) {
-      console.error(`\n❌ ${error.message}`);
-      console.error('Please check the repository name and your access permissions.\n');
-    } else if (error.message && error.message.includes('Network error')) {
-      console.error('\n❌ Network connection error');
-      console.error('Please check your internet connection and try again.\n');
-    } else {
-      // For other errors, show a clean message without stack trace
-      console.error(`\n❌ Error: ${error.message}\n`);
-    }
-    process.exit(1);
+    handleReviewError(error, prInfo);
   }
 }
 
