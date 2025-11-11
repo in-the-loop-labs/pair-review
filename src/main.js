@@ -488,30 +488,24 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
       return; // Exit gracefully without creating a review
     }
 
-    // Filter out suggestions without valid line information and diff positions
+    // Filter out suggestions without valid line information
+    // Note: diff positions will be recalculated fresh by GitHub client
     const validSuggestions = aiSuggestions.filter(suggestion => {
       const hasValidLine = suggestion.line_start && suggestion.line_start > 0;
       const hasValidPath = suggestion.file && suggestion.file.trim() !== '';
-      const hasValidDiffPosition = suggestion.diff_position && suggestion.diff_position > 0;
 
       if (!hasValidLine || !hasValidPath) {
         console.warn(`Skipping suggestion for ${suggestion.file || 'unknown file'}:${suggestion.line_start || 'unknown line'} - missing valid line or path information`);
         return false;
       }
 
-      if (!hasValidDiffPosition) {
-        console.warn(`Skipping suggestion for ${suggestion.file}:${suggestion.line_start} - missing valid diff position (GitHub requires position in diff)`);
-        return false;
-      }
-
       return true;
     });
 
-    console.log(`Filtered to ${validSuggestions.length} suggestions with valid line and diff position information`);
+    console.log(`Filtered to ${validSuggestions.length} suggestions with valid line information`);
 
     if (validSuggestions.length === 0) {
-      console.log('No suggestions with valid diff positions. Exiting without creating draft review.');
-      console.log('Note: AI suggestions must have valid diff positions to be submitted to GitHub.');
+      console.log('No suggestions with valid line information. Exiting without creating draft review.');
       return; // Exit gracefully without creating a review
     }
 
@@ -531,7 +525,9 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
         path: suggestion.file,
         line: suggestion.line_start,
         body: formattedBody,
-        diff_position: suggestion.diff_position
+        // Don't pass diff_position - let GitHub client recalculate it fresh
+        // This ensures positions are accurate for the current diff
+        diff_position: null
       };
     });
 
