@@ -72,7 +72,12 @@ async function main() {
 
     // Check if PR arguments were provided
     if (prArgs.length > 0) {
-      // Check for --ai-draft mode
+      // Warn if both --ai and --ai-draft flags are provided
+      if (flags.ai && flags.aiDraft) {
+        console.log('⚠️  Warning: Both --ai and --ai-draft flags provided. Using --ai-draft mode.');
+      }
+
+      // Check for --ai-draft mode (takes precedence over --ai)
       if (flags.aiDraft) {
         await handleDraftModeReview(prArgs, config, db, flags);
       } else {
@@ -590,13 +595,15 @@ ${categoryList}
         VALUES (?, ?, 'draft', ?, ?, ?)
       `, [prInfo.number, repository, githubReview.id, now, JSON.stringify(reviewData)]);
 
-      // Update AI suggestions to 'draft' status
-      for (const suggestion of aiSuggestions) {
+      // Update AI suggestions to 'draft' status (batch update for performance)
+      if (aiSuggestions.length > 0) {
+        const suggestionIds = aiSuggestions.map(s => s.id);
+        const placeholders = suggestionIds.map(() => '?').join(',');
         await run(db, `
           UPDATE comments
           SET status = 'draft', updated_at = ?
-          WHERE id = ?
-        `, [now, suggestion.id]);
+          WHERE id IN (${placeholders})
+        `, [now, ...suggestionIds]);
       }
 
       await run(db, 'COMMIT');
