@@ -88,30 +88,27 @@ async function extractPRInfo(args, config) {
  * Setup git worktree for PR review
  * @param {Object} prInfo - PR information
  * @param {Object} prData - PR data from GitHub
- * @returns {Promise<string>} Worktree path
+ * @param {string} currentDir - Current repository directory
+ * @returns {Promise<{worktreePath: string, worktreeManager: GitWorktreeManager}>}
  */
-async function setupReviewWorkspace(prInfo, prData) {
-  // Get current repository path
-  const parser = new PRArgumentParser();
-  const currentDir = parser.getCurrentDirectory();
-
+async function setupReviewWorkspace(prInfo, prData, currentDir) {
   // Setup git worktree
   console.log('Setting up git worktree...');
   const worktreeManager = new GitWorktreeManager();
   const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
 
-  return worktreePath;
+  return { worktreePath, worktreeManager };
 }
 
 /**
  * Generate unified diff and get changed files
+ * @param {GitWorktreeManager} worktreeManager - Worktree manager instance
  * @param {string} worktreePath - Path to the worktree
  * @param {Object} prData - PR data from GitHub
  * @returns {Promise<{diff: string, changedFiles: Array}>}
  */
-async function generateDiff(worktreePath, prData) {
+async function generateDiff(worktreeManager, worktreePath, prData) {
   console.log('Generating unified diff...');
-  const worktreeManager = new GitWorktreeManager();
   const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
   const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
 
@@ -220,11 +217,15 @@ async function handlePullRequest(args, config, db, flags = {}) {
     const { prInfo: info, githubClient, prData } = await extractPRInfo(args, config);
     prInfo = info; // Store for error handling
 
+    // Get current repository path
+    const parser = new PRArgumentParser();
+    const currentDir = parser.getCurrentDirectory();
+
     // Setup git worktree
-    const worktreePath = await setupReviewWorkspace(prInfo, prData);
+    const { worktreePath, worktreeManager } = await setupReviewWorkspace(prInfo, prData, currentDir);
 
     // Generate unified diff
-    const { diff, changedFiles } = await generateDiff(worktreePath, prData);
+    const { diff, changedFiles } = await generateDiff(worktreeManager, worktreePath, prData);
 
     // Store PR data in database
     console.log('Storing pull request data...');
@@ -451,13 +452,17 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     const { prInfo: info, githubClient, prData } = await extractPRInfo(args, config);
     prInfo = info; // Store for error handling
 
-    console.log(`Processing in draft mode`);
+    console.log(`Processing pull request #${prInfo.number} in draft mode`);
+
+    // Get current repository path
+    const parser = new PRArgumentParser();
+    const currentDir = parser.getCurrentDirectory();
 
     // Setup git worktree
-    const worktreePath = await setupReviewWorkspace(prInfo, prData);
+    const { worktreePath, worktreeManager } = await setupReviewWorkspace(prInfo, prData, currentDir);
 
     // Generate unified diff
-    const { diff, changedFiles } = await generateDiff(worktreePath, prData);
+    const { diff, changedFiles } = await generateDiff(worktreeManager, worktreePath, prData);
 
     // Store PR data in database
     console.log('Storing pull request data...');
