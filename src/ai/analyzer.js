@@ -113,19 +113,19 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestratedSuggestions = await this.orchestrateWithAI(allSuggestions, prMetadata);
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata);
 
         // Store orchestrated results with ai_level = NULL (final suggestions)
         logger.info('Storing orchestrated suggestions in database...');
-        await this.storeSuggestions(prId, runId, orchestratedSuggestions, null);
+        await this.storeSuggestions(prId, runId, orchestrationResult.suggestions, null);
 
-        logger.success(`Analysis complete: ${orchestratedSuggestions.length} final suggestions`);
+        logger.success(`Analysis complete: ${orchestrationResult.suggestions.length} final suggestions`);
 
         return {
           runId,
-          suggestions: orchestratedSuggestions,
+          suggestions: orchestrationResult.suggestions,
           levelResults,
-          summary: `Analyzed PR with ${orchestratedSuggestions.length} curated suggestions`
+          summary: orchestrationResult.summary
         };
 
       } catch (orchestrationError) {
@@ -1391,36 +1391,54 @@ Output JSON with this structure:
 
       // Parse the orchestrated response
       const orchestratedSuggestions = this.parseResponse(response, 'orchestration');
+
+      // Extract summary from the orchestration response
+      let summary = `Analyzed PR with ${orchestratedSuggestions.length} curated suggestions`;
+      if (response.summary) {
+        summary = response.summary;
+      } else if (response.raw) {
+        const extracted = extractJSON(response.raw, 'orchestration');
+        if (extracted.success && extracted.data.summary) {
+          summary = extracted.data.summary;
+        }
+      }
+
       logger.success(`[Orchestration] AI orchestration complete: ${orchestratedSuggestions.length} curated suggestions`);
 
-      return orchestratedSuggestions;
+      return {
+        suggestions: orchestratedSuggestions,
+        summary: summary
+      };
       
     } catch (error) {
       logger.warn(`AI orchestration failed: ${error.message}`);
       logger.warn('Falling back to storing all original suggestions');
-      
+
       // Fallback: combine all suggestions with level labels
       const fallbackSuggestions = [];
-      
+
       if (allSuggestions.level1) {
         allSuggestions.level1.forEach(s => {
           fallbackSuggestions.push(s);
         });
       }
-      
+
       if (allSuggestions.level2) {
         allSuggestions.level2.forEach(s => {
           fallbackSuggestions.push(s);
         });
       }
-      
+
       if (allSuggestions.level3) {
         allSuggestions.level3.forEach(s => {
           fallbackSuggestions.push(s);
         });
       }
-      
-      return fallbackSuggestions;
+
+      return {
+        suggestions: fallbackSuggestions,
+        summary: `Analysis complete (orchestration failed): ${fallbackSuggestions.length} suggestions from all analysis levels`
+      };
     }
   }
 
