@@ -558,11 +558,11 @@ ${categoryList}
     // Submit draft review to GitHub
     console.log(`Submitting draft review with ${githubComments.length} comments...`);
 
-    let diffContent = '';
-    try {
-      diffContent = await worktreeManager.generateUnifiedDiff(worktreePath, storedPRData);
-    } catch (diffError) {
-      console.warn('Could not generate diff for position calculation:', diffError.message);
+    // Use the diff that was stored in the database (same one used for AI analysis)
+    const diffContent = storedPRData.diff || '';
+
+    if (!diffContent) {
+      console.warn('No diff content available for position validation');
     }
 
     const githubReview = await githubClient.createReview(
