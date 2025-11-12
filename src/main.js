@@ -587,7 +587,8 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
       'DRAFT',
       reviewBody,
       githubComments,
-      diffContent
+      diffContent,
+      storedPRData.head_sha
     );
 
     // Update database to track the draft review

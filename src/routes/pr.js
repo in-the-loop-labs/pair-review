@@ -1606,13 +1606,14 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Submit review using single method that handles both drafts and final reviews
       console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
       const githubReview = await githubClient.createReview(
-        owner, 
-        repo, 
-        prNumber, 
-        event, 
-        body || '', 
-        githubComments, 
-        diffContent
+        owner,
+        repo,
+        prNumber,
+        event,
+        body || '',
+        githubComments,
+        diffContent,
+        prData.head_sha
       );
       
       // Update reviews table with appropriate status

@@ -149,9 +149,10 @@ class GitHubClient {
    * @param {string} body - Overall review body/summary
    * @param {Array} comments - Array of inline comments with path, line, body
    * @param {string} diffContent - The PR diff for position calculation
+   * @param {string} headSha - The head commit SHA for line-based comments (optional)
    * @returns {Promise<Object>} Review submission result with GitHub URL
    */
-  async createReview(owner, repo, pullNumber, event, body, comments = [], diffContent = '') {
+  async createReview(owner, repo, pullNumber, event, body, comments = [], diffContent = '', headSha = null) {
     try {
       const reviewType = event === 'DRAFT' ? 'draft review' : 'review';
       console.log(`Creating ${reviewType} for PR #${pullNumber} in ${owner}/${repo}`);
@@ -195,14 +196,19 @@ class GitHubClient {
         }
         
         if (position === -1 || position === null) {
-          // If we can't calculate position and don't have a stored one, try using line-based comment
-          // This requires the PR to be based on a commit that's in the base branch
-          console.warn(`Could not calculate diff position for ${comment.path}:${comment.line}, using line-based comment`);
+          // If we can't calculate position and don't have a stored one, use line-based comment
+          // Line-based comments require commit_id to specify which version of the file
+          if (!headSha) {
+            console.warn(`Could not calculate diff position for ${comment.path}:${comment.line} and no commit SHA available, skipping comment`);
+            continue; // Skip this comment if we can't position it and have no commit SHA
+          }
+          console.warn(`Could not calculate diff position for ${comment.path}:${comment.line}, using line-based comment with commit ${headSha.substring(0, 7)}`);
           formattedComments.push({
             path: comment.path,
             line: comment.line,
             side: 'RIGHT',
-            body: comment.body
+            body: comment.body,
+            commit_id: headSha
           });
         } else {
           // Use position-based comment (preferred for PR reviews)
