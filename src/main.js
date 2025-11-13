@@ -5,6 +5,7 @@ const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
+const http = require('http');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
@@ -164,16 +165,44 @@ async function handlePullRequest(args, config, db, flags = {}) {
     const port = await startServerWithPRContext(config, prInfo, flags);
 
     // Open browser to PR view
-    let url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
-    
-    // Add auto-ai parameter if --ai flag is present
-    if (flags.ai) {
-      url += '&auto-ai=true';
-      console.log('Auto-triggering AI analysis...');
-    }
-    
+    const url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
+
     console.log(`Opening browser to: ${url}`);
     await open(url);
+
+    // Trigger AI analysis server-side if --ai flag is present
+    if (flags.ai) {
+      // Small delay to ensure server routes are fully registered
+      setTimeout(() => {
+        console.log('Auto-triggering AI analysis...');
+        const analysisPath = `/api/analyze/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
+
+        const options = {
+          hostname: 'localhost',
+          port: port,
+          path: analysisPath,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': '0'
+          }
+        };
+
+        const req = http.request(options, (res) => {
+          if (res.statusCode === 200) {
+            console.log('AI analysis started successfully');
+          } else {
+            console.error(`Failed to trigger AI analysis: HTTP ${res.statusCode}`);
+          }
+        });
+
+        req.on('error', (error) => {
+          console.error('Failed to trigger AI analysis:', error.message);
+        });
+
+        req.end();
+      }, 200); // Small delay to ensure routes are ready
+    }
 
   } catch (error) {
     // Provide cleaner error messages for common issues
@@ -231,10 +260,10 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
   }
 
   const { startServer } = require('./server');
-  await startServer(db);
+  const actualPort = await startServer(db);
 
-  // Return port from config (server will find available port)
-  return config.port;
+  // Return the actual port being used by the server
+  return actualPort;
 }
 
 /**

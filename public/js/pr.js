@@ -101,10 +101,7 @@ class PRManager {
         this.currentPR = data.pr;
         this.displayPR(data);
       }
-      
-      // Check for auto-ai parameter after successful PR display
-      this.checkAutoAITrigger();
-      
+
     } catch (error) {
       console.error('Error loading PR:', error);
       this.showError(error.message);
@@ -1238,31 +1235,6 @@ class PRManager {
         btn.disabled = false;
         btn.innerHTML = 'Analyze with AI';
       }
-    }
-  }
-
-  /**
-   * Check for auto-ai parameter and trigger analysis automatically
-   */
-  checkAutoAITrigger() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const autoAI = urlParams.get('auto-ai');
-    
-    if (autoAI === 'true') {
-      console.log('Auto-triggering AI analysis...');
-      
-      // Clean up URL parameter using history.replaceState()
-      const url = new URL(window.location);
-      url.searchParams.delete('auto-ai');
-      window.history.replaceState({}, document.title, url.toString());
-      
-      // Trigger AI analysis with a small delay to ensure UI is ready
-      setTimeout(() => {
-        this.triggerAIAnalysis().catch(error => {
-          console.error('Auto-triggered AI analysis failed:', error);
-          this.showError(`Auto-triggered AI analysis failed: ${error.message}`);
-        });
-      }, 500);
     }
   }
 

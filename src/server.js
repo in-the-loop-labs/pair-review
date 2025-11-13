@@ -179,25 +179,31 @@ async function startServer(sharedDb = null) {
     
     // Find available port and start server
     const port = await findAvailablePort(app, config.port);
-    
-    server = app.listen(port, () => {
-      console.log(`Server running on http://localhost:${port}`);
+
+    // Wait for server to be ready before returning
+    await new Promise((resolve, reject) => {
+      server = app.listen(port, () => {
+        console.log(`Server running on http://localhost:${port}`);
+        resolve();
+      });
+
+      server.on('error', (error) => {
+        console.error('Server error:', error);
+        reject(error);
+      });
     });
-    
-    server.on('error', (error) => {
-      console.error('Server error:', error);
-      process.exit(1);
-    });
-    
+
+    return port; // Return the actual port being used
+
   } catch (error) {
     console.error('Failed to start server:', error.message);
-    
+
     // Check for specific error conditions
     if (error.message.includes('public') || error.code === 'ENOENT') {
       console.error('Public directory not found');
       process.exit(1);
     }
-    
+
     process.exit(1);
   }
 }
