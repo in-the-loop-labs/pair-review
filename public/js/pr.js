@@ -1298,13 +1298,9 @@ class PRManager {
     } catch (error) {
       console.error('Error triggering AI analysis:', error);
       this.showError(`Failed to start AI analysis: ${error.message}`);
-      
-      // Reset button
-      const btn = document.querySelector('button[onclick*="triggerAIAnalysis"]');
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = 'Analyze with AI';
-      }
+
+      // Reset button state properly
+      this.resetButton();
     }
   }
 
