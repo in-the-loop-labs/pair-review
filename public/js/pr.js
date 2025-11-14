@@ -101,9 +101,9 @@ class PRManager {
         this.currentPR = data.pr;
         this.displayPR(data);
       }
-      
-      // Check for auto-ai parameter after successful PR display
-      this.checkAutoAITrigger();
+
+      // Check if analysis is running after successful PR display
+      await this.checkRunningAnalysis();
       
     } catch (error) {
       console.error('Error loading PR:', error);
@@ -1242,27 +1242,30 @@ class PRManager {
   }
 
   /**
-   * Check for auto-ai parameter and trigger analysis automatically
+   * Check if AI analysis is currently running for this PR and show progress dialog
    */
-  checkAutoAITrigger() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const autoAI = urlParams.get('auto-ai');
-    
-    if (autoAI === 'true') {
-      console.log('Auto-triggering AI analysis...');
-      
-      // Clean up URL parameter using history.replaceState()
-      const url = new URL(window.location);
-      url.searchParams.delete('auto-ai');
-      window.history.replaceState({}, document.title, url.toString());
-      
-      // Trigger AI analysis with a small delay to ensure UI is ready
-      setTimeout(() => {
-        this.triggerAIAnalysis().catch(error => {
-          console.error('Auto-triggered AI analysis failed:', error);
-          this.showError(`Auto-triggered AI analysis failed: ${error.message}`);
-        });
-      }, 500);
+  async checkRunningAnalysis() {
+    if (!this.currentPR) return;
+
+    try {
+      const { owner, repo, number } = this.currentPR;
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/analysis-status`);
+
+      if (!response.ok) {
+        console.warn('Could not check analysis status:', response.statusText);
+        return;
+      }
+
+      const data = await response.json();
+
+      if (data.running && data.analysisId) {
+        console.log('Found running analysis:', data.analysisId);
+        // Show progress dialog for the running analysis
+        window.progressModal.show(data.analysisId);
+      }
+    } catch (error) {
+      console.error('Error checking running analysis:', error);
+      // Don't show error to user - this is a background check
     }
   }
 
