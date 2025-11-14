@@ -1187,27 +1187,41 @@ class PRManager {
 
   /**
    * Check if there's an active analysis for this PR and show progress dialog
+   * Uses retry logic to handle race conditions when analysis is triggered server-side
    */
   async checkForActiveAnalysis() {
     if (!this.currentPR) return;
 
     const { owner, repo, number } = this.currentPR;
+    const maxRetries = 5;
+    const retryDelay = 300; // ms between retries
 
-    try {
-      const response = await fetch(`/api/analyze/${owner}/${repo}/${number}/active`);
-      if (!response.ok) return;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // Add delay before retry (except first attempt)
+        if (attempt > 0) {
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
 
-      const data = await response.json();
+        const response = await fetch(`/api/analyze/${owner}/${repo}/${number}/active`);
+        if (!response.ok) continue;
 
-      if (data.active && data.analysisId) {
-        console.log('Found active analysis:', data.analysisId);
-        // Show the progress dialog and start polling
-        this.showAIAnalysisProgress(data.analysisId);
+        const data = await response.json();
+
+        if (data.active && data.analysisId) {
+          console.log('Found active analysis:', data.analysisId);
+          // Show the progress dialog and start polling
+          this.showAIAnalysisProgress(data.analysisId);
+          return; // Success - stop retrying
+        }
+      } catch (error) {
+        console.error('Error checking for active analysis:', error);
+        // Continue to next retry
       }
-    } catch (error) {
-      console.error('Error checking for active analysis:', error);
-      // Silently fail - this is just a nice-to-have feature
     }
+
+    // No active analysis found after all retries - this is normal
+    console.log('No active analysis detected');
   }
 
   /**

@@ -172,7 +172,8 @@ async function handlePullRequest(args, config, db, flags = {}) {
 
     // Trigger AI analysis server-side if --ai flag is present
     if (flags.ai) {
-      // Small delay to ensure server routes are fully registered
+      // Delay to ensure server routes and middleware are fully registered
+      // The frontend also uses retry logic to handle race conditions
       setTimeout(() => {
         console.log('Auto-triggering AI analysis...');
         const analysisPath = `/api/analyze/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
@@ -201,7 +202,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
         });
 
         req.end();
-      }, 200); // Small delay to ensure routes are ready
+      }, 500); // 500ms delay to ensure routes are ready
     }
 
   } catch (error) {
