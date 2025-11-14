@@ -709,7 +709,11 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
       filesRemaining: 0
     };
     activeAnalyses.set(analysisId, initialStatus);
-    
+
+    // Store PR to analysis ID mapping
+    const prKey = getPRKey(owner, repo, prNumber);
+    prToAnalysisId.set(prKey, analysisId);
+
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
@@ -760,6 +764,11 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
         };
         activeAnalyses.set(analysisId, failedStatus);
         broadcastProgress(analysisId, failedStatus);
+      })
+      .finally(() => {
+        // Clean up PR to analysis ID mapping (always runs regardless of success/failure)
+        const prKey = getPRKey(owner, repo, prNumber);
+        prToAnalysisId.delete(prKey);
       });
 
     res.json({
@@ -844,7 +853,11 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
       filesRemaining: 0
     };
     activeAnalyses.set(analysisId, initialStatus);
-    
+
+    // Store PR to analysis ID mapping
+    const prKey = getPRKey(owner, repo, prNumber);
+    prToAnalysisId.set(prKey, analysisId);
+
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
@@ -895,6 +908,11 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
         };
         activeAnalyses.set(analysisId, failedStatus);
         broadcastProgress(analysisId, failedStatus);
+      })
+      .finally(() => {
+        // Clean up PR to analysis ID mapping (always runs regardless of success/failure)
+        const prKey = getPRKey(owner, repo, prNumber);
+        prToAnalysisId.delete(prKey);
       });
 
     res.json({
