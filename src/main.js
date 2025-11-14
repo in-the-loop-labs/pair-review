@@ -166,20 +166,40 @@ async function handlePullRequest(args, config, db, flags = {}) {
     // Trigger AI analysis server-side if --ai flag is present
     if (flags.ai) {
       console.log('Starting AI analysis...');
-      try {
-        const response = await fetch(`http://localhost:${port}/api/analyze/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
 
-        if (response.ok) {
-          const result = await response.json();
-          console.log(`AI analysis started (ID: ${result.analysisId})`);
-        } else {
-          console.warn('Failed to start AI analysis:', await response.text());
+      // Wait for server to be ready with retry logic
+      const maxRetries = 5;
+      const retryDelay = 200; // ms
+      let lastError;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          // Add small delay to ensure server is fully initialized
+          if (attempt > 1) {
+            await new Promise(resolve => setTimeout(resolve, retryDelay * attempt));
+          }
+
+          const response = await fetch(`http://localhost:${port}/api/analyze/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            console.log(`AI analysis started (ID: ${result.analysisId})`);
+            break; // Success, exit retry loop
+          } else {
+            lastError = `Server responded with ${response.status}: ${await response.text()}`;
+            if (attempt === maxRetries) {
+              console.warn('Failed to start AI analysis:', lastError);
+            }
+          }
+        } catch (error) {
+          lastError = error.message;
+          if (attempt === maxRetries) {
+            console.warn('Could not start AI analysis after', maxRetries, 'attempts:', lastError);
+          }
         }
-      } catch (error) {
-        console.warn('Could not start AI analysis:', error.message);
       }
     }
 
