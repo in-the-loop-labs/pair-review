@@ -88,6 +88,21 @@ class ProgressModal {
                 </div>
               </div>
             </div>
+
+            <div class="progress-level" id="level-4">
+              <div class="level-icon">
+                <span class="icon pending">⏸</span>
+              </div>
+              <div class="level-content">
+                <div class="level-title">Finalizing Results</div>
+                <div class="level-status">Pending</div>
+                <div class="progress-bar-container" style="display: none;">
+                  <div class="barbershop-progress-bar">
+                    <div class="barbershop-stripes"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         
@@ -193,7 +208,7 @@ class ProgressModal {
    * Reset progress to initial state
    */
   resetProgress() {
-    // Reset all levels to starting state
+    // Reset levels 1-3 to running state
     for (let i = 1; i <= 3; i++) {
       const level = document.getElementById(`level-${i}`);
       if (level) {
@@ -206,10 +221,27 @@ class ProgressModal {
         status.textContent = 'Starting...';
         status.style.display = 'none';
 
-        // Show progress bar immediately for all levels
+        // Show progress bar immediately for levels 1-3
         if (progressContainer) {
           progressContainer.style.display = 'block';
         }
+      }
+    }
+
+    // Level 4 (orchestration) starts as pending
+    const level4 = document.getElementById('level-4');
+    if (level4) {
+      const icon = level4.querySelector('.icon');
+      const status = level4.querySelector('.level-status');
+      const progressContainer = level4.querySelector('.progress-bar-container');
+
+      icon.className = 'icon pending';
+      icon.textContent = '⏸';
+      status.textContent = 'Pending';
+      status.style.display = 'block';
+
+      if (progressContainer) {
+        progressContainer.style.display = 'none';
       }
     }
   }
@@ -322,7 +354,7 @@ class ProgressModal {
     }
 
     // Update each level's progress independently from the levels object
-    for (let level = 1; level <= 3; level++) {
+    for (let level = 1; level <= 4; level++) {
       const levelStatus = status.levels[level];
       if (levelStatus) {
         this.updateLevelProgress(level, levelStatus);
