@@ -1556,7 +1556,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 .modal-container {
   position: relative;
   width: 480px;
-  height: 420px; /* Increased from 320px to show all 3 levels without scrolling */
+  height: 520px; /* Increased from 420px to show all 4 levels without scrolling */
   background: var(--color-bg-primary, #ffffff);
   border-radius: 20px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
