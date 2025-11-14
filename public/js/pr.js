@@ -103,9 +103,8 @@ class PRManager {
       }
 
       // Check if there's an active analysis for this PR
-      console.log('[Auto-AI] About to call checkForActiveAnalysis()...');
       this.checkForActiveAnalysis().catch(err => {
-        console.error('[Auto-AI] checkForActiveAnalysis failed:', err);
+        console.error('Failed to check for active analysis:', err);
       });
 
     } catch (error) {
@@ -1193,17 +1192,9 @@ class PRManager {
    * Uses retry logic to handle race conditions when analysis is triggered server-side
    */
   async checkForActiveAnalysis() {
-    console.log('[Auto-AI] METHOD CALLED');
-    console.log('[Auto-AI] this.currentPR:', this.currentPR);
-
-    if (!this.currentPR) {
-      console.log('[Auto-AI] No current PR, returning early');
-      return;
-    }
+    if (!this.currentPR) return;
 
     const { owner, repo, number } = this.currentPR;
-    console.log(`[Auto-AI] Checking for active analysis for ${owner}/${repo}/${number}...`);
-
     const maxRetries = 8; // Increased retries to handle longer delays
     const retryDelay = 250; // ms between retries
 
@@ -1214,37 +1205,23 @@ class PRManager {
           await new Promise(resolve => setTimeout(resolve, retryDelay));
         }
 
-        console.log(`[Auto-AI] Check attempt ${attempt + 1}/${maxRetries}...`);
         const response = await fetch(`/api/analyze/${owner}/${repo}/${number}/active`);
-
-        if (!response.ok) {
-          console.log(`[Auto-AI] Check failed with status ${response.status}`);
-          continue;
-        }
+        if (!response.ok) continue;
 
         const data = await response.json();
 
         if (data.active && data.analysisId) {
-          console.log('[Auto-AI] ✓ Found active analysis:', data.analysisId);
+          console.log('Auto-triggering AI progress dialog');
           // Show the progress dialog and start polling
           if (window.progressModal) {
-            console.log('[Auto-AI] Showing progress modal...');
             window.progressModal.show(data.analysisId);
-          } else {
-            console.error('[Auto-AI] Progress modal not available!');
           }
           return; // Success - stop retrying
-        } else {
-          console.log('[Auto-AI] No active analysis yet, will retry...');
         }
       } catch (error) {
-        console.error('[Auto-AI] Error on attempt ' + (attempt + 1) + ':', error);
-        // Continue to next retry
+        // Silently continue to next retry
       }
     }
-
-    // No active analysis found after all retries - this is normal
-    console.log('[Auto-AI] No active analysis detected after all retries');
   }
 
   /**

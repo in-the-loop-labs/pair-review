@@ -31,19 +31,24 @@ function findAvailablePort(app, startPort, maxAttempts = 5) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
     let currentPort = startPort;
-    
+    let portConflictDetected = false;
+
     function tryPort() {
       const testServer = app.listen(currentPort, (error) => {
         if (error) {
           testServer.close();
-          console.log(`Port ${currentPort} is already in use`);
+          if (!portConflictDetected) {
+            console.log(`⚠️  Port ${startPort} is already in use (may be an old pair-review instance)`);
+            console.log(`   Tip: Run 'pkill -f pair-review' to stop all pair-review processes`);
+            portConflictDetected = true;
+          }
           attempts++;
-          
+
           if (attempts >= maxAttempts) {
             reject(new Error(`Could not find available port after ${maxAttempts} attempts starting from ${startPort}`));
             return;
           }
-          
+
           currentPort++;
           tryPort();
         } else {
@@ -52,18 +57,22 @@ function findAvailablePort(app, startPort, maxAttempts = 5) {
           });
         }
       });
-      
+
       testServer.on('error', (error) => {
         if (error.code === 'EADDRINUSE') {
           testServer.close();
-          console.log(`Port ${currentPort} is already in use`);
+          if (!portConflictDetected) {
+            console.log(`⚠️  Port ${startPort} is already in use (may be an old pair-review instance)`);
+            console.log(`   Tip: Run 'pkill -f pair-review' to stop all pair-review processes`);
+            portConflictDetected = true;
+          }
           attempts++;
-          
+
           if (attempts >= maxAttempts) {
             reject(new Error(`Could not find available port after ${maxAttempts} attempts starting from ${startPort}`));
             return;
           }
-          
+
           currentPort++;
           tryPort();
         } else {
@@ -71,7 +80,7 @@ function findAvailablePort(app, startPort, maxAttempts = 5) {
         }
       });
     }
-    
+
     tryPort();
   });
 }

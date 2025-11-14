@@ -466,8 +466,6 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       filesRemaining: 0
     };
     activeAnalyses.set(analysisId, initialStatus);
-    console.log(`[Analysis Start] Registered analysis ${analysisId} for ${repository}/${prNumber}`);
-    console.log(`[Analysis Start] Total active analyses: ${activeAnalyses.size}`);
 
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
@@ -909,9 +907,6 @@ router.get('/api/analyze/:owner/:repo/:pr/active', async (req, res) => {
     const { owner, repo, pr } = req.params;
     const prNumber = parseInt(pr);
 
-    console.log(`[Active Check] Checking for active analysis: ${owner}/${repo}/${pr}`);
-    console.log(`[Active Check] Current active analyses: ${activeAnalyses.size}`);
-
     if (isNaN(prNumber) || prNumber <= 0) {
       return res.status(400).json({
         error: 'Invalid pull request number'
@@ -922,9 +917,7 @@ router.get('/api/analyze/:owner/:repo/:pr/active', async (req, res) => {
 
     // Search for active analysis for this PR
     for (const [analysisId, analysis] of activeAnalyses.entries()) {
-      console.log(`[Active Check] Comparing: ${analysis.repository}/${analysis.prNumber} vs ${repository}/${prNumber}`);
       if (analysis.repository === repository && analysis.prNumber === prNumber) {
-        console.log(`[Active Check] ✓ Found active analysis: ${analysisId} with status: ${analysis.status}`);
         return res.json({
           active: true,
           analysisId: analysisId,
@@ -934,7 +927,6 @@ router.get('/api/analyze/:owner/:repo/:pr/active', async (req, res) => {
     }
 
     // No active analysis found
-    console.log(`[Active Check] No active analysis found for ${repository}/${prNumber}`);
     res.json({ active: false });
 
   } catch (error) {
