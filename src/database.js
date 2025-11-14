@@ -107,7 +107,7 @@ function initializeDatabase() {
     const db = new sqlite3.Database(DB_PATH, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, async (error) => {
       if (error) {
         console.error('Database connection error:', error.message);
-        
+
         // If database is corrupted, try to recreate it
         if (error.code === 'SQLITE_CORRUPT' || error.code === 'SQLITE_NOTADB') {
           console.log('Database appears corrupted, recreating with fresh schema...');
@@ -128,7 +128,14 @@ function initializeDatabase() {
           reject(error);
         }
       } else {
-        setupSchema(db, resolve, reject);
+        // Enable WAL mode for better concurrent access across multiple instances
+        db.run('PRAGMA journal_mode=WAL', (walError) => {
+          if (walError) {
+            console.warn('Failed to enable WAL mode:', walError.message);
+            // Continue anyway - not critical
+          }
+          setupSchema(db, resolve, reject);
+        });
       }
     });
   });
