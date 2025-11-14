@@ -880,21 +880,59 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
 router.get('/api/analyze/status/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const analysis = activeAnalyses.get(id);
-    
+
     if (!analysis) {
-      return res.status(404).json({ 
-        error: 'Analysis not found' 
+      return res.status(404).json({
+        error: 'Analysis not found'
       });
     }
 
     res.json(analysis);
-    
+
   } catch (error) {
     console.error('Error fetching analysis status:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch analysis status' 
+    res.status(500).json({
+      error: 'Failed to fetch analysis status'
+    });
+  }
+});
+
+/**
+ * Check if there's an active analysis for a specific PR
+ */
+router.get('/api/analyze/:owner/:repo/:pr/active', async (req, res) => {
+  try {
+    const { owner, repo, pr } = req.params;
+    const prNumber = parseInt(pr);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+
+    // Search for active analysis for this PR
+    for (const [analysisId, analysis] of activeAnalyses.entries()) {
+      if (analysis.repository === repository && analysis.prNumber === prNumber) {
+        return res.json({
+          active: true,
+          analysisId: analysisId,
+          status: analysis.status
+        });
+      }
+    }
+
+    // No active analysis found
+    res.json({ active: false });
+
+  } catch (error) {
+    console.error('Error checking active analysis:', error);
+    res.status(500).json({
+      error: 'Failed to check active analysis'
     });
   }
 });

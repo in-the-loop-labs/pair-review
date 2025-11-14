@@ -102,6 +102,9 @@ class PRManager {
         this.displayPR(data);
       }
 
+      // Check if there's an active analysis for this PR
+      this.checkForActiveAnalysis();
+
     } catch (error) {
       console.error('Error loading PR:', error);
       this.showError(error.message);
@@ -1182,6 +1185,30 @@ class PRManager {
     }
   }
 
+  /**
+   * Check if there's an active analysis for this PR and show progress dialog
+   */
+  async checkForActiveAnalysis() {
+    if (!this.currentPR) return;
+
+    const { owner, repo, number } = this.currentPR;
+
+    try {
+      const response = await fetch(`/api/analyze/${owner}/${repo}/${number}/active`);
+      if (!response.ok) return;
+
+      const data = await response.json();
+
+      if (data.active && data.analysisId) {
+        console.log('Found active analysis:', data.analysisId);
+        // Show the progress dialog and start polling
+        this.showAIAnalysisProgress(data.analysisId);
+      }
+    } catch (error) {
+      console.error('Error checking for active analysis:', error);
+      // Silently fail - this is just a nice-to-have feature
+    }
+  }
 
   /**
    * Trigger AI analysis
