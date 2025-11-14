@@ -163,15 +163,29 @@ async function handlePullRequest(args, config, db, flags = {}) {
     console.log('Starting server...');
     const port = await startServerWithPRContext(config, prInfo, flags);
 
-    // Open browser to PR view
-    let url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
-    
-    // Add auto-ai parameter if --ai flag is present
+    // Trigger AI analysis server-side if --ai flag is present
     if (flags.ai) {
-      url += '&auto-ai=true';
-      console.log('Auto-triggering AI analysis...');
+      console.log('Starting AI analysis...');
+      try {
+        const response = await fetch(`http://localhost:${port}/api/analyze/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          console.log(`AI analysis started (ID: ${result.analysisId})`);
+        } else {
+          console.warn('Failed to start AI analysis:', await response.text());
+        }
+      } catch (error) {
+        console.warn('Could not start AI analysis:', error.message);
+      }
     }
-    
+
+    // Open browser to PR view (clean URL without auto-ai parameter)
+    const url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
+
     console.log(`Opening browser to: ${url}`);
     await open(url);
 

@@ -13,6 +13,9 @@ const router = express.Router();
 // Store active analysis runs in memory for status tracking
 const activeAnalyses = new Map();
 
+// Store mapping of PR (owner/repo/number) to analysis ID for tracking
+const prToAnalysisId = new Map();
+
 // Store SSE clients for real-time progress updates
 const progressClients = new Map();
 
@@ -467,6 +470,10 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     };
     activeAnalyses.set(analysisId, initialStatus);
 
+    // Store PR to analysis ID mapping
+    const prKey = `${owner}/${repo}/${prNumber}`;
+    prToAnalysisId.set(prKey, analysisId);
+
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
@@ -556,6 +563,10 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         };
         activeAnalyses.set(analysisId, completedStatus);
 
+        // Clean up PR to analysis ID mapping
+        const prKey = `${owner}/${repo}/${prNumber}`;
+        prToAnalysisId.delete(prKey);
+
         // Broadcast completion status
         broadcastProgress(analysisId, completedStatus);
       })
@@ -584,6 +595,10 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           progress: 'Analysis failed'
         };
         activeAnalyses.set(analysisId, failedStatus);
+
+        // Clean up PR to analysis ID mapping
+        const prKey = `${owner}/${repo}/${prNumber}`;
+        prToAnalysisId.delete(prKey);
 
         // Broadcast failure status
         broadcastProgress(analysisId, failedStatus);
@@ -880,25 +895,68 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
 router.get('/api/analyze/status/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const analysis = activeAnalyses.get(id);
-    
+
     if (!analysis) {
-      return res.status(404).json({ 
-        error: 'Analysis not found' 
+      return res.status(404).json({
+        error: 'Analysis not found'
       });
     }
 
     res.json(analysis);
-    
+
   } catch (error) {
     console.error('Error fetching analysis status:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch analysis status' 
+    res.status(500).json({
+      error: 'Failed to fetch analysis status'
     });
   }
 });
 
+/**
+ * Check if analysis is running for a specific PR
+ */
+router.get('/api/pr/:owner/:repo/:number/analysis-status', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prKey = `${owner}/${repo}/${number}`;
+
+    const analysisId = prToAnalysisId.get(prKey);
+
+    if (!analysisId) {
+      return res.json({
+        running: false,
+        analysisId: null,
+        status: null
+      });
+    }
+
+    const analysis = activeAnalyses.get(analysisId);
+
+    if (!analysis) {
+      // Clean up stale mapping
+      prToAnalysisId.delete(prKey);
+      return res.json({
+        running: false,
+        analysisId: null,
+        status: null
+      });
+    }
+
+    res.json({
+      running: true,
+      analysisId,
+      status: analysis
+    });
+
+  } catch (error) {
+    console.error('Error checking PR analysis status:', error);
+    res.status(500).json({
+      error: 'Failed to check analysis status'
+    });
+  }
+});
 
 /**
  * Get AI suggestions for a PR (compatibility endpoint with owner/repo/number)
