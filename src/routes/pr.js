@@ -20,6 +20,17 @@ const prToAnalysisId = new Map();
 const progressClients = new Map();
 
 /**
+ * Generate a consistent PR key for mapping
+ * @param {string} owner - Repository owner
+ * @param {string} repo - Repository name
+ * @param {number} prNumber - Pull request number
+ * @returns {string} PR key in format "owner/repo/number"
+ */
+function getPRKey(owner, repo, prNumber) {
+  return `${owner}/${repo}/${prNumber}`;
+}
+
+/**
  * Get the model to use for AI analysis
  * Priority: CLI flag (PAIR_REVIEW_MODEL env var) > config.model > 'sonnet' default
  * @param {Object} req - Express request object
@@ -471,7 +482,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     activeAnalyses.set(analysisId, initialStatus);
 
     // Store PR to analysis ID mapping
-    const prKey = `${owner}/${repo}/${prNumber}`;
+    const prKey = getPRKey(owner, repo, prNumber);
     prToAnalysisId.set(prKey, analysisId);
 
     // Broadcast initial status
@@ -563,10 +574,6 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         };
         activeAnalyses.set(analysisId, completedStatus);
 
-        // Clean up PR to analysis ID mapping
-        const prKey = `${owner}/${repo}/${prNumber}`;
-        prToAnalysisId.delete(prKey);
-
         // Broadcast completion status
         broadcastProgress(analysisId, completedStatus);
       })
@@ -596,12 +603,13 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         };
         activeAnalyses.set(analysisId, failedStatus);
 
-        // Clean up PR to analysis ID mapping
-        const prKey = `${owner}/${repo}/${prNumber}`;
-        prToAnalysisId.delete(prKey);
-
         // Broadcast failure status
         broadcastProgress(analysisId, failedStatus);
+      })
+      .finally(() => {
+        // Clean up PR to analysis ID mapping (always runs regardless of success/failure)
+        const prKey = getPRKey(owner, repo, prNumber);
+        prToAnalysisId.delete(prKey);
       });
 
     // Return analysis ID immediately
@@ -920,7 +928,7 @@ router.get('/api/analyze/status/:id', async (req, res) => {
 router.get('/api/pr/:owner/:repo/:number/analysis-status', async (req, res) => {
   try {
     const { owner, repo, number } = req.params;
-    const prKey = `${owner}/${repo}/${number}`;
+    const prKey = getPRKey(owner, repo, number);
 
     const analysisId = prToAnalysisId.get(prKey);
 

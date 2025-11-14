@@ -1261,7 +1261,11 @@ class PRManager {
       if (data.running && data.analysisId) {
         console.log('Found running analysis:', data.analysisId);
         // Show progress dialog for the running analysis
-        window.progressModal.show(data.analysisId);
+        if (window.progressModal) {
+          window.progressModal.show(data.analysisId);
+        } else {
+          console.warn('Progress modal not yet initialized');
+        }
       }
     } catch (error) {
       console.error('Error checking running analysis:', error);
