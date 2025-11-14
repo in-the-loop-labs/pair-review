@@ -1208,7 +1208,7 @@ class PRManager {
 
     btn.classList.add('btn-analyzing');
     btn.disabled = false; // Keep clickable to reopen modal
-    btn.innerHTML = '<span class="analyzing-icon">⚙️</span> Analyzing...';
+    btn.innerHTML = '<span class="analyzing-icon">✨</span> Analyzing...';
 
     // Change click handler to reopen modal
     btn.onclick = () => this.reopenProgressModal();
