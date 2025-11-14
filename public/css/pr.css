@@ -404,6 +404,43 @@
   border-color: #1a7f37;
 }
 
+/* Analyzing button state */
+.btn-primary.btn-analyzing {
+  background-color: #0969da;
+  border-color: #0969da;
+  cursor: pointer;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+.btn-primary.btn-analyzing:hover {
+  background-color: #0860ca;
+  border-color: #0860ca;
+}
+
+/* Pulsing animation for the analyzing icon */
+.btn-analyzing .analyzing-icon {
+  display: inline-block;
+  animation: pulse-icon 2s ease-in-out infinite;
+}
+
+@keyframes pulse-icon {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.1);
+  }
+}
+
+/* Completion state */
+.btn-primary.btn-complete {
+  background-color: #1a7f37;
+  border-color: #1a7f37;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
 .btn-secondary {
   color: var(--color-text-primary);
   background-color: var(--color-bg-secondary);
