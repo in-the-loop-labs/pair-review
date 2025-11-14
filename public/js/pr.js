@@ -1193,8 +1193,10 @@ class PRManager {
     if (!this.currentPR) return;
 
     const { owner, repo, number } = this.currentPR;
-    const maxRetries = 5;
-    const retryDelay = 300; // ms between retries
+    const maxRetries = 8; // Increased retries to handle longer delays
+    const retryDelay = 250; // ms between retries
+
+    console.log('[Auto-AI] Checking for active analysis...');
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
@@ -1203,25 +1205,37 @@ class PRManager {
           await new Promise(resolve => setTimeout(resolve, retryDelay));
         }
 
+        console.log(`[Auto-AI] Check attempt ${attempt + 1}/${maxRetries}...`);
         const response = await fetch(`/api/analyze/${owner}/${repo}/${number}/active`);
-        if (!response.ok) continue;
+
+        if (!response.ok) {
+          console.log(`[Auto-AI] Check failed with status ${response.status}`);
+          continue;
+        }
 
         const data = await response.json();
 
         if (data.active && data.analysisId) {
-          console.log('Found active analysis:', data.analysisId);
+          console.log('[Auto-AI] ✓ Found active analysis:', data.analysisId);
           // Show the progress dialog and start polling
-          this.showAIAnalysisProgress(data.analysisId);
+          if (window.progressModal) {
+            console.log('[Auto-AI] Showing progress modal...');
+            window.progressModal.show(data.analysisId);
+          } else {
+            console.error('[Auto-AI] Progress modal not available!');
+          }
           return; // Success - stop retrying
+        } else {
+          console.log('[Auto-AI] No active analysis yet, will retry...');
         }
       } catch (error) {
-        console.error('Error checking for active analysis:', error);
+        console.error('[Auto-AI] Error on attempt ' + (attempt + 1) + ':', error);
         // Continue to next retry
       }
     }
 
     // No active analysis found after all retries - this is normal
-    console.log('No active analysis detected');
+    console.log('[Auto-AI] No active analysis detected after all retries');
   }
 
   /**
