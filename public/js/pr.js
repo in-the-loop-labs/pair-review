@@ -103,7 +103,10 @@ class PRManager {
       }
 
       // Check if there's an active analysis for this PR
-      this.checkForActiveAnalysis();
+      console.log('[Auto-AI] About to call checkForActiveAnalysis()...');
+      this.checkForActiveAnalysis().catch(err => {
+        console.error('[Auto-AI] checkForActiveAnalysis failed:', err);
+      });
 
     } catch (error) {
       console.error('Error loading PR:', error);
@@ -1190,13 +1193,19 @@ class PRManager {
    * Uses retry logic to handle race conditions when analysis is triggered server-side
    */
   async checkForActiveAnalysis() {
-    if (!this.currentPR) return;
+    console.log('[Auto-AI] METHOD CALLED');
+    console.log('[Auto-AI] this.currentPR:', this.currentPR);
+
+    if (!this.currentPR) {
+      console.log('[Auto-AI] No current PR, returning early');
+      return;
+    }
 
     const { owner, repo, number } = this.currentPR;
+    console.log(`[Auto-AI] Checking for active analysis for ${owner}/${repo}/${number}...`);
+
     const maxRetries = 8; // Increased retries to handle longer delays
     const retryDelay = 250; // ms between retries
-
-    console.log('[Auto-AI] Checking for active analysis...');
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
