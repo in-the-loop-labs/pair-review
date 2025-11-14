@@ -417,20 +417,20 @@
   border-color: #0860ca;
 }
 
-/* Pulsing animation for the analyzing icon */
+/* Pulsing animation for the analyzing sparkle icon */
 .btn-analyzing .analyzing-icon {
   display: inline-block;
-  animation: pulse-icon 2s ease-in-out infinite;
+  animation: pulse-sparkle 1.5s ease-in-out infinite;
 }
 
-@keyframes pulse-icon {
+@keyframes pulse-sparkle {
   0%, 100% {
-    opacity: 1;
-    transform: scale(1);
+    filter: grayscale(100%) brightness(2);
+    /* White sparkle */
   }
   50% {
-    opacity: 0.6;
-    transform: scale(1.1);
+    filter: grayscale(0%) brightness(1.2) saturate(1.5);
+    /* Yellow sparkle */
   }
 }
 
