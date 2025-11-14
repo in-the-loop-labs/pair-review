@@ -420,17 +420,19 @@
 /* Pulsing animation for the analyzing sparkle icon */
 .btn-analyzing .analyzing-icon {
   display: inline-block;
-  animation: pulse-sparkle 1.5s ease-in-out infinite;
+  animation: pulse-sparkle 1s ease-in-out infinite;
 }
 
 @keyframes pulse-sparkle {
   0%, 100% {
-    filter: grayscale(100%) brightness(2);
-    /* White sparkle */
+    filter: brightness(2) drop-shadow(0 0 2px rgba(255, 255, 255, 0.8));
+    transform: scale(1);
+    /* Bright white sparkle with glow */
   }
   50% {
-    filter: grayscale(0%) brightness(1.2) saturate(1.5);
-    /* Yellow sparkle */
+    filter: brightness(1.5) saturate(2) hue-rotate(-15deg) drop-shadow(0 0 4px rgba(255, 215, 0, 0.9));
+    transform: scale(1.2);
+    /* Bright golden yellow sparkle with stronger glow */
   }
 }
 

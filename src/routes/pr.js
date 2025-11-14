@@ -474,7 +474,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       levels: {
         1: { status: 'running', progress: 'Starting...' },
         2: { status: 'running', progress: 'Starting...' },
-        3: { status: 'running', progress: 'Starting...' }
+        3: { status: 'running', progress: 'Starting...' },
+        4: { status: 'pending', progress: 'Pending' }
       },
       filesAnalyzed: 0,
       filesRemaining: 0
@@ -511,6 +512,14 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         currentStatus.levels[level] = {
           status: progressUpdate.status || 'running',
           progress: progressUpdate.progress || 'In progress...'
+        };
+      }
+
+      // Handle orchestration as level 4
+      if (level === 'orchestration') {
+        currentStatus.levels[4] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'Finalizing results...'
         };
       }
 
@@ -558,6 +567,12 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           };
         }
 
+        // Mark orchestration (level 4) as completed
+        currentStatus.levels[4] = {
+          status: 'completed',
+          progress: 'Results finalized'
+        };
+
         const completedStatus = {
           ...currentStatus,
           status: 'completed',
@@ -586,7 +601,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         }
 
         // Mark all levels as failed
-        for (let i = 1; i <= 3; i++) {
+        for (let i = 1; i <= 4; i++) {
           currentStatus.levels[i] = {
             status: 'failed',
             progress: 'Failed'
