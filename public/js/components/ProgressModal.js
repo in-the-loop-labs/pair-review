@@ -153,11 +153,9 @@ class ProgressModal {
   runInBackground() {
     this.isRunningInBackground = true;
     this.hide();
-    
-    // Show status indicator in toolbar
-    if (window.statusIndicator) {
-      window.statusIndicator.show(this.currentAnalysisId, 'AI analyzing...');
-    }
+
+    // Button already shows analyzing state, no need for separate status indicator
+    // The button was set to analyzing state when analysis started
   }
 
   /**
@@ -184,10 +182,10 @@ class ProgressModal {
 
     this.stopProgressMonitoring();
     this.hide();
-    
-    // Hide status indicator
-    if (window.statusIndicator) {
-      window.statusIndicator.hide();
+
+    // Reset button
+    if (window.prManager) {
+      window.prManager.resetButton();
     }
   }
 
@@ -456,9 +454,9 @@ class ProgressModal {
       cancelBtn.textContent = 'Close';
     }
 
-    // Update status indicator if in background
-    if (this.isRunningInBackground && window.statusIndicator) {
-      window.statusIndicator.showComplete(`Analysis complete`);
+    // Update button to show completion
+    if (window.prManager) {
+      window.prManager.setButtonComplete();
     }
 
     // CRITICAL FIX: Automatically reload AI suggestions when analysis completes
@@ -514,9 +512,9 @@ class ProgressModal {
       cancelBtn.textContent = 'Close';
     }
 
-    // Update status indicator if in background
-    if (this.isRunningInBackground && window.statusIndicator) {
-      window.statusIndicator.showError('Analysis failed');
+    // Reset button on failure
+    if (window.prManager) {
+      window.prManager.resetButton();
     }
   }
 

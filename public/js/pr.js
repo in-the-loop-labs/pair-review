@@ -21,6 +21,9 @@ class PRManager {
     this.expandedSections = new Set();
     this.currentTheme = localStorage.getItem('theme') || 'light';
     this.suggestionNavigator = null;
+    // AI analysis state
+    this.isAnalyzing = false;
+    this.currentAnalysisId = null;
     // Line range selection state
     this.rangeSelectionStart = null;
     this.rangeSelectionEnd = null;
@@ -1187,6 +1190,74 @@ class PRManager {
 
 
   /**
+   * Get the Analyze with AI button
+   */
+  getAnalyzeButton() {
+    return document.querySelector('button[onclick*="triggerAIAnalysis"]');
+  }
+
+  /**
+   * Set button to analyzing state
+   */
+  setButtonAnalyzing(analysisId) {
+    const btn = this.getAnalyzeButton();
+    if (!btn) return;
+
+    this.isAnalyzing = true;
+    this.currentAnalysisId = analysisId;
+
+    btn.classList.add('btn-analyzing');
+    btn.disabled = false; // Keep clickable to reopen modal
+    btn.innerHTML = '<span class="analyzing-icon">⚙️</span> Analyzing...';
+
+    // Change click handler to reopen modal
+    btn.onclick = () => this.reopenProgressModal();
+  }
+
+  /**
+   * Set button to complete state (briefly)
+   */
+  setButtonComplete() {
+    const btn = this.getAnalyzeButton();
+    if (!btn) return;
+
+    btn.classList.remove('btn-analyzing');
+    btn.classList.add('btn-complete');
+    btn.innerHTML = '✓ Analysis Complete';
+    btn.disabled = true;
+
+    // Revert to normal after 2 seconds
+    setTimeout(() => this.resetButton(), 2000);
+  }
+
+  /**
+   * Reset button to normal state
+   */
+  resetButton() {
+    const btn = this.getAnalyzeButton();
+    if (!btn) return;
+
+    this.isAnalyzing = false;
+    this.currentAnalysisId = null;
+
+    btn.classList.remove('btn-analyzing', 'btn-complete');
+    btn.disabled = false;
+    btn.innerHTML = 'Analyze with AI';
+
+    // Restore original click handler
+    btn.onclick = () => this.triggerAIAnalysis();
+  }
+
+  /**
+   * Reopen progress modal when button is clicked during analysis
+   */
+  reopenProgressModal() {
+    if (this.currentAnalysisId && window.progressModal) {
+      window.progressModal.show(this.currentAnalysisId);
+    }
+  }
+
+  /**
    * Trigger AI analysis
    */
   async triggerAIAnalysis() {
@@ -1216,16 +1287,12 @@ class PRManager {
       }
 
       const result = await response.json();
-      
-      // Show progress modal
+
+      // Set analyzing state and show progress modal
+      this.setButtonAnalyzing(result.analysisId);
+
       if (window.progressModal) {
         window.progressModal.show(result.analysisId);
-      }
-      
-      // Reset button
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = 'Analyze with AI';
       }
       
     } catch (error) {
@@ -1260,6 +1327,10 @@ class PRManager {
 
       if (data.running && data.analysisId) {
         console.log('Found running analysis:', data.analysisId);
+
+        // Set button to analyzing state
+        this.setButtonAnalyzing(data.analysisId);
+
         // Show progress dialog for the running analysis
         if (window.progressModal) {
           window.progressModal.show(data.analysisId);
