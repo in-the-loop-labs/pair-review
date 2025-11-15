@@ -128,7 +128,8 @@ class PreviewModal {
         throw new Error('Failed to load comments');
       }
 
-      const comments = await response.json();
+      const data = await response.json();
+      const comments = data.comments || [];
 
       // Format comments for preview
       const formattedText = this.formatComments(comments);
