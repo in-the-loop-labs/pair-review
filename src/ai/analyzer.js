@@ -324,7 +324,7 @@ Note: You may optionally use parallel read-only Tasks to examine multiple files 
 ## Output Format
 
 ### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in ```json blocks. The response must start with { and end with }.
+Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
 
 Output JSON with this structure:
 {
@@ -399,7 +399,7 @@ Note: You may optionally use parallel Tasks to analyze different parts of the ch
 ## Output Format
 
 ### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in ```json blocks. The response must start with { and end with }.
+Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
 
 Output JSON with this structure:
 {
@@ -1347,7 +1347,7 @@ Note: You may optionally use parallel Tasks to explore different areas of the co
 ## Output Format
 
 ### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in ```json blocks. The response must start with { and end with }.
+Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
 
 Output JSON with this structure:
 {
