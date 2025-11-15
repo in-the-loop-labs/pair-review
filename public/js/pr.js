@@ -249,6 +249,9 @@ class PRManager {
             <button class="btn btn-primary" onclick="prManager.triggerAIAnalysis()">
               Analyze with AI
             </button>
+            <button class="btn btn-secondary" onclick="prManager.openPreviewModal()" title="Preview comments for copying">
+              Preview Comments
+            </button>
             <button class="btn review-button" id="review-button" onclick="prManager.openReviewModal()">
               <span class="review-button-text">0 comments</span>
             </button>
@@ -2956,7 +2959,17 @@ class PRManager {
     }
     this.reviewModal.show();
   }
-  
+
+  /**
+   * Open preview comments modal
+   */
+  openPreviewModal() {
+    if (!this.previewModal) {
+      this.previewModal = new PreviewModal();
+    }
+    this.previewModal.show();
+  }
+
   /**
    * Update comment count in review button
    */

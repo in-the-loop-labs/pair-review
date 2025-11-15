@@ -3249,6 +3249,66 @@ body {
   border-top-color: #30363d;
 }
 
+/* Preview Modal Styles */
+.preview-modal-container {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.15);
+  width: 90%;
+  max-width: 800px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-modal-body {
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.preview-content-wrapper {
+  height: 100%;
+  overflow: auto;
+}
+
+.preview-text {
+  margin: 0;
+  padding: 20px 24px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #24292f;
+  background-color: #f6f8fa;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  min-height: 300px;
+}
+
+.preview-modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid #d1d9e0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Dark theme preview modal styles */
+[data-theme="dark"] .preview-modal-container {
+  background: #0d1117;
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .preview-text {
+  background-color: #161b22;
+  color: #e6edf3;
+}
+
+[data-theme="dark"] .preview-modal-footer {
+  border-top-color: #30363d;
+}
+
 /* Toast Notification Styles */
 .toast-container {
   position: fixed;
