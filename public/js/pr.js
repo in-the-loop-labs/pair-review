@@ -31,9 +31,12 @@ class PRManager {
     this.dragStartLine = null;
     this.dragEndLine = null;
     this.potentialDragStart = null;
+    // Level filter state - default to 'final' (orchestrated suggestions)
+    this.selectedLevel = 'final';
     this.init();
     this.initTheme();
     this.initSuggestionNavigator();
+    this.setupLevelChangeListener();
   }
 
   /**
@@ -47,11 +50,11 @@ class PRManager {
       this.loadPR(owner, repo, parseInt(number));
       return;
     }
-    
+
     // Fallback: Check if we have PR context from URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const prParam = urlParams.get('pr');
-    
+
     if (prParam) {
       // Parse PR parameter: owner/repo/number
       const prMatch = prParam.match(/^([^\/]+)\/([^\/]+)\/(\d+)$/);
@@ -62,6 +65,18 @@ class PRManager {
         this.showError('Invalid PR format in URL parameter');
       }
     }
+  }
+
+  /**
+   * Setup listener for level changes from SuggestionNavigator
+   */
+  setupLevelChangeListener() {
+    document.addEventListener('levelChanged', async (e) => {
+      const newLevel = e.detail.level;
+      console.log(`Level changed to: ${newLevel}`);
+      this.selectedLevel = newLevel;
+      await this.loadAISuggestions();
+    });
   }
 
   /**
@@ -1484,10 +1499,10 @@ class PRManager {
 
     try {
       let response;
-      
+
       // Use currentPR data if available (preferred approach)
       if (this.currentPR.owner && this.currentPR.repo && this.currentPR.number) {
-        response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/ai-suggestions`);
+        response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/ai-suggestions?levels=${this.selectedLevel}`);
       } else {
         // Fallback: parse from URL if currentPR data is incomplete
         const urlParts = window.location.pathname.split('/');
@@ -1495,12 +1510,12 @@ class PRManager {
           const owner = urlParts[2];
           const repo = urlParts[3];
           const number = urlParts[4];
-          response = await fetch(`/api/pr/${owner}/${repo}/${number}/ai-suggestions`);
+          response = await fetch(`/api/pr/${owner}/${repo}/${number}/ai-suggestions?levels=${this.selectedLevel}`);
         } else {
           throw new Error('Unable to determine PR repository information');
         }
       }
-      
+
       if (!response.ok) {
         throw new Error('Failed to load AI suggestions');
       }
@@ -1508,7 +1523,7 @@ class PRManager {
       const data = await response.json();
       const suggestions = data.suggestions || [];
 
-      console.log(`Loaded ${suggestions.length} AI suggestions`);
+      console.log(`Loaded ${suggestions.length} AI suggestions for level: ${this.selectedLevel}`);
 
       // Display suggestions inline with the diff
       this.displayAISuggestions(suggestions);
@@ -1523,18 +1538,18 @@ class PRManager {
    */
   displayAISuggestions(suggestions) {
     console.log(`[UI] Displaying ${suggestions.length} AI suggestions`);
-    
+
     // Clear existing AI suggestion rows before displaying new ones
     const existingSuggestionRows = document.querySelectorAll('.ai-suggestion-row');
     existingSuggestionRows.forEach(row => row.remove());
     console.log(`[UI] Removed ${existingSuggestionRows.length} existing suggestion rows`);
-    
+
     // Create suggestion navigator if not already created
     if (!this.suggestionNavigator && window.SuggestionNavigator) {
       console.log('[UI] Creating SuggestionNavigator instance');
       this.suggestionNavigator = new window.SuggestionNavigator();
     }
-    
+
     // Update the suggestion navigator
     if (this.suggestionNavigator) {
       this.suggestionNavigator.updateSuggestions(suggestions);
@@ -1694,8 +1709,9 @@ class PRManager {
               </svg>
             </span>
             <span class="type-badge type-${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">${suggestion.type}</span>
-            ${suggestion.ai_level === 2 ? '<span class="level-badge level-2">File Context</span>' : ''}
-            ${suggestion.ai_level === 3 ? '<span class="level-badge level-3">Codebase Context</span>' : ''}
+            ${suggestion.ai_level === 1 ? '<span class="level-badge level-1">L1: Diff Analysis</span>' : ''}
+            ${suggestion.ai_level === 2 ? '<span class="level-badge level-2">L2: File Context</span>' : ''}
+            ${suggestion.ai_level === 3 ? '<span class="level-badge level-3">L3: Codebase Context</span>' : ''}
             <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
             ${suggestion.ai_confidence ? `<span class="confidence">${Math.round(suggestion.ai_confidence * 100)}% confident</span>` : ''}
           </div>

@@ -1006,15 +1006,15 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
   try {
     const { owner, repo, number } = req.params;
     const prNumber = parseInt(number);
-    
+
     if (isNaN(prNumber) || prNumber <= 0) {
-      return res.status(400).json({ 
-        error: 'Invalid pull request number' 
+      return res.status(400).json({
+        error: 'Invalid pull request number'
       });
     }
 
     const repository = `${owner}/${repo}`;
-    
+
     // Get PR ID
     const prMetadata = await queryOne(req.app.get('db'), `
       SELECT id FROM pr_metadata
@@ -1022,13 +1022,33 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
     `, [prNumber, repository]);
 
     if (!prMetadata) {
-      return res.status(404).json({ 
-        error: `Pull request #${prNumber} not found` 
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found`
       });
     }
 
-    // Get AI suggestions from the new comments table (include dismissed ones too)
-    // Only fetch final orchestrated suggestions (ai_level IS NULL), not per-level suggestions
+    // Parse levels query parameter (e.g., ?levels=final,1,2)
+    // Default to 'final' (orchestrated suggestions only) if not specified
+    const levelsParam = req.query.levels || 'final';
+    const requestedLevels = levelsParam.split(',').map(l => l.trim());
+
+    // Build level filter clause
+    const levelConditions = [];
+    requestedLevels.forEach(level => {
+      if (level === 'final') {
+        levelConditions.push('ai_level IS NULL');
+      } else if (['1', '2', '3'].includes(level)) {
+        levelConditions.push(`ai_level = ${parseInt(level)}`);
+      }
+    });
+
+    // If no valid levels specified, default to final
+    const levelFilter = levelConditions.length > 0
+      ? `(${levelConditions.join(' OR ')})`
+      : 'ai_level IS NULL';
+
+    // Get AI suggestions from the comments table
+    // Support filtering by analysis level via query parameter
     const suggestions = await query(req.app.get('db'), `
       SELECT
         id,
@@ -1047,18 +1067,25 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      -- ai_level IS NULL filters for final orchestrated suggestions only
-      -- Per-level suggestions (ai_level = 1, 2, 3) are stored for debugging but not shown in UI
-      WHERE pr_id = ? AND source = 'ai' AND ai_level IS NULL AND status IN ('active', 'dismissed')
-      ORDER BY file, line_start
+      WHERE pr_id = ? AND source = 'ai' AND ${levelFilter} AND status IN ('active', 'dismissed')
+      ORDER BY
+        CASE
+          WHEN ai_level IS NULL THEN 0
+          WHEN ai_level = 1 THEN 1
+          WHEN ai_level = 2 THEN 2
+          WHEN ai_level = 3 THEN 3
+          ELSE 4
+        END,
+        file,
+        line_start
     `, [prMetadata.id]);
 
     res.json({ suggestions });
-    
+
   } catch (error) {
     console.error('Error fetching AI suggestions:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch AI suggestions' 
+    res.status(500).json({
+      error: 'Failed to fetch AI suggestions'
     });
   }
 });

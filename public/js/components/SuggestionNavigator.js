@@ -46,10 +46,25 @@ class SuggestionNavigator {
           </svg>
         </button>
       </div>
+      <div class="level-selector">
+        <label class="level-option" title="Orchestrated and curated suggestions (recommended)">
+          <input type="radio" name="analysis-level" value="final" checked>
+          <span>Overall</span>
+        </label>
+        <label class="level-option" title="Level 1: Diff analysis - issues found in changed lines only">
+          <input type="radio" name="analysis-level" value="1">
+          <span>L1</span>
+        </label>
+        <label class="level-option" title="Level 2: File context - consistency within modified files">
+          <input type="radio" name="analysis-level" value="2">
+          <span>L2</span>
+        </label>
+        <label class="level-option" title="Level 3: Codebase context - architectural patterns and cross-file dependencies">
+          <input type="radio" name="analysis-level" value="3">
+          <span>L3</span>
+        </label>
+      </div>
       <div class="navigator-controls">
-        <div class="suggestion-counter">
-          <span id="current-suggestion">0</span> of <span id="total-suggestions">0</span> suggestions
-        </div>
         <div class="navigation-buttons">
           <button class="nav-btn nav-prev" title="Previous suggestion (k)">
             <svg viewBox="0 0 16 16">
@@ -61,6 +76,9 @@ class SuggestionNavigator {
               <path d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
             </svg>
           </button>
+        </div>
+        <div class="suggestion-counter">
+          <span id="current-suggestion">0</span> of <span id="total-suggestions">0</span> suggestions
         </div>
       </div>
       <div class="suggestions-list">
@@ -91,15 +109,29 @@ class SuggestionNavigator {
     // Toggle collapse/expand
     const toggleBtn = this.element.querySelector('.navigator-toggle');
     toggleBtn.addEventListener('click', () => this.toggleCollapse());
-    
+
     this.collapseToggle.addEventListener('click', () => this.toggleCollapse());
 
     // Navigation buttons
     const prevBtn = this.element.querySelector('.nav-prev');
     const nextBtn = this.element.querySelector('.nav-next');
-    
+
     prevBtn.addEventListener('click', () => this.goToPrevious());
     nextBtn.addEventListener('click', () => this.goToNext());
+
+    // Level selector radio buttons
+    const levelRadios = this.element.querySelectorAll('input[name="analysis-level"]');
+    levelRadios.forEach(radio => {
+      radio.addEventListener('change', (e) => {
+        if (e.target.checked) {
+          // Dispatch custom event that PRManager can listen for
+          const event = new CustomEvent('levelChanged', {
+            detail: { level: e.target.value }
+          });
+          document.dispatchEvent(event);
+        }
+      });
+    });
   }
 
   /**
