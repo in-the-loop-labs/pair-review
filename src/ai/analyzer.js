@@ -322,6 +322,10 @@ You have full access to the codebase and can run commands like:
 Note: You may optionally use parallel read-only Tasks to examine multiple files simultaneously if that would be helpful.
 
 ## Output Format
+
+### CRITICAL OUTPUT REQUIREMENT
+Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in ```json blocks. The response must start with { and end with }.
+
 Output JSON with this structure:
 {
   "level": 2,
@@ -393,6 +397,10 @@ You have full access to the codebase and can run commands like:
 Note: You may optionally use parallel Tasks to analyze different parts of the changes if that would be helpful.
 
 ## Output Format
+
+### CRITICAL OUTPUT REQUIREMENT
+Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in ```json blocks. The response must start with { and end with }.
+
 Output JSON with this structure:
 {
   "level": 1,
@@ -1337,6 +1345,10 @@ You have full access to the codebase and can run commands like:
 Note: You may optionally use parallel Tasks to explore different areas of the codebase if that would be helpful.
 
 ## Output Format
+
+### CRITICAL OUTPUT REQUIREMENT
+Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in ```json blocks. The response must start with { and end with }.
+
 Output JSON with this structure:
 {
   "level": 3,
