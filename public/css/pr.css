@@ -805,15 +805,13 @@
 }
 
 .diff-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
   margin-bottom: 16px;
 }
 
 .diff-header h2 {
   font-size: 18px;
   font-weight: 600;
+  margin-bottom: 12px;
 }
 
 .diff-stats {
@@ -1185,6 +1183,18 @@ tr.newly-expanded .d2h-code-line-ctn {
   border: 1px solid;
 }
 
+.level-badge.level-final {
+  background: #f6f8fa;
+  color: #24292f;
+  border-color: #d0d7de;
+}
+
+.level-badge.level-1 {
+  background: #dff7e8;
+  color: #116329;
+  border-color: #7ee7a3;
+}
+
 .level-badge.level-2 {
   background: #f0f9ff;
   color: #0284c7;
@@ -1196,6 +1206,31 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: #fef7ed;
   color: #7c2d12;
   border-color: #fed7aa;
+}
+
+/* Dark theme level badge adjustments */
+[data-theme="dark"] .level-badge.level-final {
+  background: #161b22;
+  color: #c9d1d9;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .level-badge.level-1 {
+  background: #0d1c15;
+  color: #3fb950;
+  border-color: #2ea043;
+}
+
+[data-theme="dark"] .level-badge.level-2 {
+  background: #0c1b2b;
+  color: #58a6ff;
+  border-color: #1f6feb;
+}
+
+[data-theme="dark"] .level-badge.level-3 {
+  background: #221a14;
+  color: #f0883e;
+  border-color: #bd561d;
 }
 
 /* Type-specific colors */
@@ -1947,26 +1982,87 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: var(--color-bg-secondary);
 }
 
+/* Level Selector */
+.level-selector {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-primary);
+  background: var(--color-bg-primary);
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  justify-content: space-between;
+}
+
+.level-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  user-select: none;
+  flex: 1;
+  justify-content: center;
+}
+
+.level-option:hover {
+  background: var(--color-bg-secondary);
+}
+
+.level-option input[type="radio"] {
+  margin: 0;
+  cursor: pointer;
+  width: 12px;
+  height: 12px;
+}
+
+.level-option span {
+  font-size: 12px;
+  color: var(--color-text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.level-option:has(input:checked) {
+  background: var(--color-accent-subtle);
+}
+
+.level-option:has(input:checked) span {
+  font-weight: 600;
+  color: var(--color-accent-fg);
+}
+
+/* Dark theme adjustments */
+[data-theme="dark"] .level-option:has(input:checked) {
+  background: rgba(56, 139, 253, 0.15);
+}
+
+[data-theme="dark"] .level-option:has(input:checked) span {
+  color: #58a6ff;
+}
+
 .navigator-controls {
-  padding: 12px 16px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--color-border-primary);
   position: sticky;
   top: 53px;
   background: var(--color-bg-primary);
   z-index: 1;
-}
-
-.suggestion-counter {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  text-align: center;
-  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .navigation-buttons {
   display: flex;
-  gap: 8px;
-  justify-content: center;
+  gap: 4px;
+}
+
+.suggestion-counter {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  flex: 1;
 }
 
 .nav-btn {
