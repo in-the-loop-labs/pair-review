@@ -179,16 +179,19 @@ async function startServer(sharedDb = null) {
     
     // Find available port and start server
     const port = await findAvailablePort(app, config.port);
-    
+
     server = app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
     });
-    
+
     server.on('error', (error) => {
       console.error('Server error:', error);
       process.exit(1);
     });
-    
+
+    // Return the actual port the server started on
+    return port;
+
   } catch (error) {
     console.error('Failed to start server:', error.message);
     

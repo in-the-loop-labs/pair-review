@@ -265,10 +265,10 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
   }
 
   const { startServer } = require('./server');
-  await startServer(db);
+  const actualPort = await startServer(db);
 
-  // Return port from config (server will find available port)
-  return config.port;
+  // Return the actual port the server started on
+  return actualPort;
 }
 
 /**
