@@ -1000,6 +1000,54 @@ router.get('/api/pr/:owner/:repo/:number/analysis-status', async (req, res) => {
 });
 
 /**
+ * Check if a PR has existing AI suggestions
+ */
+router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+
+    // Get PR metadata to find pr_id
+    const prMetadata = await queryOne(req.app.get('db'), `
+      SELECT id FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found`
+      });
+    }
+
+    // Count AI suggestions for this PR
+    const result = await queryOne(req.app.get('db'), `
+      SELECT COUNT(*) as count FROM comments
+      WHERE pr_id = ? AND source = 'ai'
+    `, [prMetadata.id]);
+
+    const count = result?.count || 0;
+
+    res.json({
+      hasSuggestions: count > 0,
+      count: count
+    });
+  } catch (error) {
+    console.error('Error checking for AI suggestions:', error);
+    res.status(500).json({
+      error: 'Failed to check for AI suggestions'
+    });
+  }
+});
+
+/**
  * Get AI suggestions for a PR (compatibility endpoint with owner/repo/number)
  */
 router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {

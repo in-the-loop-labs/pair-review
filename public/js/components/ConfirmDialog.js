@@ -1,0 +1,176 @@
+/**
+ * Generic Confirmation Dialog Component
+ * Displays a confirmation dialog with customizable message and actions
+ */
+class ConfirmDialog {
+  constructor() {
+    this.modal = null;
+    this.isVisible = false;
+    this.onConfirm = null;
+    this.onCancel = null;
+    this.createModal();
+    this.setupEventListeners();
+  }
+
+  /**
+   * Create the modal DOM structure
+   */
+  createModal() {
+    // Remove existing modal if it exists
+    const existing = document.getElementById('confirm-dialog');
+    if (existing) {
+      existing.remove();
+    }
+
+    // Create modal container
+    const modalContainer = document.createElement('div');
+    modalContainer.id = 'confirm-dialog';
+    modalContainer.className = 'modal-overlay confirm-dialog-overlay';
+    modalContainer.style.display = 'none';
+
+    modalContainer.innerHTML = `
+      <div class="modal-backdrop" onclick="confirmDialog.handleCancel()"></div>
+      <div class="modal-container confirm-dialog-container" style="width: 400px; height: auto;">
+        <div class="modal-header">
+          <h3 id="confirm-dialog-title">Confirm Action</h3>
+          <button class="modal-close-btn" onclick="confirmDialog.handleCancel()" title="Close">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <p id="confirm-dialog-message"></p>
+        </div>
+
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="confirmDialog.handleCancel()">Cancel</button>
+          <button class="btn btn-danger" id="confirm-dialog-btn" onclick="confirmDialog.handleConfirm()">
+            Confirm
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modalContainer);
+    this.modal = modalContainer;
+
+    // Store reference globally for onclick handlers
+    window.confirmDialog = this;
+  }
+
+  /**
+   * Setup event listeners
+   */
+  setupEventListeners() {
+    // Handle escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.isVisible) {
+        this.handleCancel();
+      }
+    });
+  }
+
+  /**
+   * Show the confirmation dialog
+   * @param {Object} options - Configuration options
+   * @param {string} options.title - Dialog title
+   * @param {string} options.message - Dialog message
+   * @param {string} options.confirmText - Confirm button text (default: "Confirm")
+   * @param {string} options.confirmClass - Confirm button class (default: "btn-danger")
+   * @param {Function} options.onConfirm - Callback when confirmed
+   * @param {Function} options.onCancel - Callback when cancelled (optional)
+   * @returns {Promise<boolean>} Promise that resolves to true if confirmed, false if cancelled
+   */
+  show(options = {}) {
+    if (!this.modal) return Promise.resolve(false);
+
+    return new Promise((resolve) => {
+      // Set title
+      const titleElement = this.modal.querySelector('#confirm-dialog-title');
+      if (titleElement) {
+        titleElement.textContent = options.title || 'Confirm Action';
+      }
+
+      // Set message
+      const messageElement = this.modal.querySelector('#confirm-dialog-message');
+      if (messageElement) {
+        messageElement.textContent = options.message || 'Are you sure?';
+      }
+
+      // Set confirm button text and style
+      const confirmBtn = this.modal.querySelector('#confirm-dialog-btn');
+      if (confirmBtn) {
+        confirmBtn.textContent = options.confirmText || 'Confirm';
+        // Remove all btn-* classes except btn
+        confirmBtn.className = 'btn';
+        // Add new style class
+        const confirmClass = options.confirmClass || 'btn-danger';
+        confirmBtn.classList.add(confirmClass);
+      }
+
+      // Store callbacks with promise resolution
+      this.onConfirm = () => {
+        if (options.onConfirm) {
+          options.onConfirm();
+        }
+        resolve(true);
+      };
+
+      this.onCancel = () => {
+        if (options.onCancel) {
+          options.onCancel();
+        }
+        resolve(false);
+      };
+
+      // Show modal
+      this.modal.style.display = 'flex';
+      this.isVisible = true;
+    });
+  }
+
+  /**
+   * Handle confirm action
+   */
+  handleConfirm() {
+    if (this.onConfirm) {
+      this.onConfirm();
+    }
+    this.hide();
+  }
+
+  /**
+   * Handle cancel action
+   */
+  handleCancel() {
+    if (this.onCancel) {
+      this.onCancel();
+    }
+    this.hide();
+  }
+
+  /**
+   * Hide the modal
+   */
+  hide() {
+    if (!this.modal) return;
+
+    this.modal.style.display = 'none';
+    this.isVisible = false;
+    this.onConfirm = null;
+    this.onCancel = null;
+  }
+}
+
+// Initialize global instance
+if (typeof window !== 'undefined' && !window.confirmDialog) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      window.confirmDialog = new ConfirmDialog();
+    });
+  } else {
+    window.confirmDialog = new ConfirmDialog();
+  }
+}
