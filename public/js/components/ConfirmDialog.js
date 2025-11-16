@@ -8,6 +8,7 @@ class ConfirmDialog {
     this.isVisible = false;
     this.onConfirm = null;
     this.onCancel = null;
+    this.escapeHandler = null;
     this.createModal();
     this.setupEventListeners();
   }
@@ -29,11 +30,11 @@ class ConfirmDialog {
     modalContainer.style.display = 'none';
 
     modalContainer.innerHTML = `
-      <div class="modal-backdrop" onclick="confirmDialog.handleCancel()"></div>
+      <div class="modal-backdrop" data-action="cancel"></div>
       <div class="modal-container confirm-dialog-container" style="width: 400px; height: auto;">
         <div class="modal-header">
           <h3 id="confirm-dialog-title">Confirm Action</h3>
-          <button class="modal-close-btn" onclick="confirmDialog.handleCancel()" title="Close">
+          <button class="modal-close-btn" data-action="cancel" title="Close">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
             </svg>
@@ -45,8 +46,8 @@ class ConfirmDialog {
         </div>
 
         <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="confirmDialog.handleCancel()">Cancel</button>
-          <button class="btn btn-danger" id="confirm-dialog-btn" onclick="confirmDialog.handleConfirm()">
+          <button class="btn btn-secondary" data-action="cancel">Cancel</button>
+          <button class="btn btn-danger" id="confirm-dialog-btn" data-action="confirm">
             Confirm
           </button>
         </div>
@@ -55,21 +56,29 @@ class ConfirmDialog {
 
     document.body.appendChild(modalContainer);
     this.modal = modalContainer;
-
-    // Store reference globally for onclick handlers
-    window.confirmDialog = this;
   }
 
   /**
    * Setup event listeners
    */
   setupEventListeners() {
-    // Handle escape key
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.isVisible) {
+    // Use event delegation for click events
+    this.modal.addEventListener('click', (e) => {
+      const action = e.target.closest('[data-action]')?.dataset.action;
+      if (action === 'confirm') {
+        this.handleConfirm();
+      } else if (action === 'cancel') {
         this.handleCancel();
       }
     });
+
+    // Handle escape key with a stored reference for cleanup
+    this.escapeHandler = (e) => {
+      if (e.key === 'Escape' && this.isVisible) {
+        this.handleCancel();
+      }
+    };
+    document.addEventListener('keydown', this.escapeHandler);
   }
 
   /**
