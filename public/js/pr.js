@@ -1285,8 +1285,30 @@ class PRManager {
     }
 
     const { owner, repo, number } = this.currentPR;
-    
+
     try {
+      // Check if there are existing AI suggestions
+      const checkResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`);
+
+      if (checkResponse.ok) {
+        const { hasSuggestions, count } = await checkResponse.json();
+
+        if (hasSuggestions) {
+          // Show confirmation dialog
+          const confirmed = await window.confirmDialog.show({
+            title: 'Replace Existing Analysis?',
+            message: `This will replace all ${count} existing AI suggestion${count !== 1 ? 's' : ''} for this PR. Continue?`,
+            confirmText: 'Continue',
+            confirmClass: 'btn-danger'
+          });
+
+          if (!confirmed) {
+            // User cancelled
+            return;
+          }
+        }
+      }
+
       // Update button to show loading state
       const btn = document.querySelector('button[onclick*="triggerAIAnalysis"]');
       if (btn) {
