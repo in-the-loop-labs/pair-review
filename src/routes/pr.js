@@ -1027,12 +1027,11 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       });
     }
 
-    // Check if any AI suggestions exist for this PR (optimized with LIMIT 1)
+    // Check if any AI suggestions exist for this PR
     const result = await queryOne(req.app.get('db'), `
       SELECT EXISTS(
         SELECT 1 FROM comments
         WHERE pr_id = ? AND source = 'ai'
-        LIMIT 1
       ) as has_suggestions
     `, [prMetadata.id]);
 

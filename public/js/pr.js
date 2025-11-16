@@ -1286,7 +1286,21 @@ class PRManager {
 
     const { owner, repo, number } = this.currentPR;
 
+    // Get button reference early to prevent concurrent clicks
+    const btn = document.querySelector('button[onclick*="triggerAIAnalysis"]');
+
+    // Prevent concurrent analysis requests
+    if (btn && btn.disabled) {
+      return;
+    }
+
     try {
+      // Disable button immediately to prevent concurrent requests
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Checking...';
+      }
+
       // Check if there are existing AI suggestions
       try {
         const checkResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`);
@@ -1297,6 +1311,19 @@ class PRManager {
           const { hasSuggestions } = await checkResponse.json();
 
           if (hasSuggestions) {
+            // Re-enable button while waiting for user confirmation
+            if (btn) {
+              btn.disabled = false;
+              btn.innerHTML = 'Analyze with AI';
+            }
+
+            // Check that confirmDialog is available
+            if (!window.confirmDialog) {
+              console.error('ConfirmDialog not loaded');
+              this.showError('Confirmation dialog unavailable. Please refresh the page.');
+              return;
+            }
+
             // Show confirmation dialog
             const confirmed = await window.confirmDialog.show({
               title: 'Replace Existing Analysis?',
@@ -1309,6 +1336,12 @@ class PRManager {
               // User cancelled
               return;
             }
+
+            // Re-disable button after confirmation
+            if (btn) {
+              btn.disabled = true;
+              btn.innerHTML = '<span class="spinner"></span> Starting...';
+            }
           }
         }
       } catch (checkError) {
@@ -1316,10 +1349,8 @@ class PRManager {
         console.warn('Error checking for existing AI suggestions:', checkError);
       }
 
-      // Update button to show loading state
-      const btn = document.querySelector('button[onclick*="triggerAIAnalysis"]');
-      if (btn) {
-        btn.disabled = true;
+      // Update button to show starting state (if not already set)
+      if (btn && btn.innerHTML.includes('Checking...')) {
         btn.innerHTML = '<span class="spinner"></span> Starting...';
       }
 

@@ -112,9 +112,8 @@ class ConfirmDialog {
       const confirmBtn = this.modal.querySelector('#confirm-dialog-btn');
       if (confirmBtn) {
         confirmBtn.textContent = options.confirmText || 'Confirm';
-        // Remove all btn-* classes except btn
-        confirmBtn.className = 'btn';
-        // Add new style class
+        // Remove previous style classes and add new one
+        confirmBtn.classList.remove('btn-primary', 'btn-secondary', 'btn-danger');
         const confirmClass = options.confirmClass || 'btn-danger';
         confirmBtn.classList.add(confirmClass);
       }
