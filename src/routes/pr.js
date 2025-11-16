@@ -1027,17 +1027,19 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       });
     }
 
-    // Count AI suggestions for this PR
+    // Check if any AI suggestions exist for this PR (optimized with LIMIT 1)
     const result = await queryOne(req.app.get('db'), `
-      SELECT COUNT(*) as count FROM comments
-      WHERE pr_id = ? AND source = 'ai'
+      SELECT EXISTS(
+        SELECT 1 FROM comments
+        WHERE pr_id = ? AND source = 'ai'
+        LIMIT 1
+      ) as has_suggestions
     `, [prMetadata.id]);
 
-    const count = result?.count || 0;
+    const hasSuggestions = result?.has_suggestions === 1;
 
     res.json({
-      hasSuggestions: count > 0,
-      count: count
+      hasSuggestions: hasSuggestions
     });
   } catch (error) {
     console.error('Error checking for AI suggestions:', error);

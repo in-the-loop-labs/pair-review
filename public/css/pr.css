@@ -454,6 +454,17 @@
   border-color: var(--color-border-primary);
 }
 
+.btn-danger {
+  color: #ffffff;
+  background-color: #d1242f;
+  border-color: #d1242f;
+}
+
+.btn-danger:hover {
+  background-color: #b62324;
+  border-color: #b62324;
+}
+
 
 /* Theme toggle button specific styling */
 #theme-toggle {

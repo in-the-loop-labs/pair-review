@@ -1288,25 +1288,32 @@ class PRManager {
 
     try {
       // Check if there are existing AI suggestions
-      const checkResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`);
+      try {
+        const checkResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`);
 
-      if (checkResponse.ok) {
-        const { hasSuggestions, count } = await checkResponse.json();
+        if (!checkResponse.ok) {
+          console.warn('Failed to check for existing AI suggestions, proceeding with analysis');
+        } else {
+          const { hasSuggestions } = await checkResponse.json();
 
-        if (hasSuggestions) {
-          // Show confirmation dialog
-          const confirmed = await window.confirmDialog.show({
-            title: 'Replace Existing Analysis?',
-            message: `This will replace all ${count} existing AI suggestion${count !== 1 ? 's' : ''} for this PR. Continue?`,
-            confirmText: 'Continue',
-            confirmClass: 'btn-danger'
-          });
+          if (hasSuggestions) {
+            // Show confirmation dialog
+            const confirmed = await window.confirmDialog.show({
+              title: 'Replace Existing Analysis?',
+              message: 'This will replace all existing AI suggestions for this PR. Continue?',
+              confirmText: 'Continue',
+              confirmClass: 'btn-danger'
+            });
 
-          if (!confirmed) {
-            // User cancelled
-            return;
+            if (!confirmed) {
+              // User cancelled
+              return;
+            }
           }
         }
+      } catch (checkError) {
+        // If check fails, log warning but proceed with analysis
+        console.warn('Error checking for existing AI suggestions:', checkError);
       }
 
       // Update button to show loading state
