@@ -157,6 +157,33 @@
   position: relative;
 }
 
+/* PR Page Icon */
+.pr-icon-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 12px;
+  flex-shrink: 0;
+  text-decoration: none;
+}
+
+.pr-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 6px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.pr-icon-link:hover .pr-icon {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* Dark theme for PR icon */
+[data-theme="dark"] .pr-icon-link:hover .pr-icon {
+  box-shadow: 0 4px 12px rgba(255, 255, 255, 0.2);
+}
+
 /* PR Stats */
 .pr-stats {
   display: flex;
@@ -1073,12 +1100,21 @@
     flex-direction: column;
     align-items: stretch;
   }
-  
+
+  .pr-icon {
+    width: 48px;
+    height: 48px;
+  }
+
+  .pr-icon-link {
+    margin-right: 8px;
+  }
+
   .pr-title-section {
     margin-right: 0;
     margin-bottom: 16px;
   }
-  
+
   .pr-meta {
     gap: 4px;
   }
