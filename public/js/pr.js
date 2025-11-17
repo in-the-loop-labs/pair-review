@@ -237,7 +237,7 @@ class PRManager {
       headerContainer.innerHTML = `
         <div class="pr-header">
           <a href="/" class="pr-icon-link" title="Back to home">
-            <img src="/assets/pair-review-36.png" alt="Pair Review" class="pr-icon">
+            <img src="/assets/pair-review.png" alt="Pair Review" class="pr-icon">
           </a>
           <div class="pr-title-section">
             <h1 class="pr-title">
