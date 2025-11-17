@@ -38,9 +38,29 @@
         }
         
         .welcome-section {
-            display: block;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
         }
-        
+
+        .welcome-icon {
+            width: 96px;
+            height: 96px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .welcome-icon:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+        }
+
+        body[data-theme="dark"] .welcome-icon:hover {
+            box-shadow: 0 4px 16px rgba(255, 255, 255, 0.2);
+        }
+
         .welcome-section h1 {
             font-size: 32px;
             font-weight: 600;
@@ -94,11 +114,21 @@
             background: none;
             padding: 0;
         }
+
+        /* Responsive: smaller icon on mobile */
+        @media (max-width: 768px) {
+            .welcome-icon {
+                width: 72px;
+                height: 72px;
+                margin-bottom: 16px;
+            }
+        }
     </style>
 </head>
 <body>
     <!-- Welcome section - shown when no PR is loaded -->
     <div class="container welcome-section" id="welcome-section">
+        <img src="/assets/pair-review-36.png" alt="Pair Review" class="welcome-icon">
         <h1>Pair Review</h1>
         <p>AI-powered GitHub pull request review assistant</p>
         
