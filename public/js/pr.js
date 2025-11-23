@@ -132,6 +132,73 @@ class PRManager {
   }
 
   /**
+   * Refresh pull request data
+   */
+  async refreshPR() {
+    if (!this.currentPR) {
+      console.error('No PR loaded to refresh');
+      return;
+    }
+
+    const refreshButton = document.getElementById('refresh-pr');
+    if (!refreshButton) {
+      return;
+    }
+
+    try {
+      // Show spinner
+      refreshButton.classList.add('refreshing');
+      refreshButton.disabled = true;
+
+      const { owner, repo, pr_number } = this.currentPR;
+
+      // Call refresh API endpoint
+      const response = await fetch(`/api/pr/${owner}/${repo}/${pr_number}/refresh`, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to refresh pull request');
+      }
+
+      const data = await response.json();
+
+      // Update current PR data
+      if (data.success && data.data) {
+        this.currentPR = data.data;
+
+        // Save scroll position and expanded state
+        const scrollPosition = window.scrollY;
+        const expandedFolders = new Set(this.expandedFolders);
+
+        // Redisplay PR with new data
+        this.displayPR({ pr: data.data });
+
+        // Restore expanded folders
+        this.expandedFolders = expandedFolders;
+
+        // Restore scroll position after a short delay to allow rendering
+        setTimeout(() => {
+          window.scrollTo(0, scrollPosition);
+        }, 100);
+
+        console.log('PR refreshed successfully');
+      }
+
+    } catch (error) {
+      console.error('Error refreshing PR:', error);
+      alert(`Failed to refresh PR: ${error.message}`);
+    } finally {
+      // Hide spinner
+      if (refreshButton) {
+        refreshButton.classList.remove('refreshing');
+        refreshButton.disabled = false;
+      }
+    }
+  }
+
+  /**
    * Show loading state
    */
   showLoadingState() {
@@ -259,6 +326,15 @@ class PRManager {
             <button class="btn btn-secondary" id="theme-toggle" onclick="prManager.toggleTheme()" title="Toggle theme">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
+              </svg>
+            </button>
+            <button class="btn btn-secondary" id="refresh-pr" onclick="prManager.refreshPR()" title="Refresh PR">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" class="refresh-icon">
+                <path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/>
+              </svg>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" class="spinner-icon" style="display: none;">
+                <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z" opacity="0.25"/>
+                <path d="M8 0a8 8 0 0 1 8 8h-2A6 6 0 0 0 8 2V0Z"/>
               </svg>
             </button>
             <button class="btn btn-primary" onclick="prManager.triggerAIAnalysis()">

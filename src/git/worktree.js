@@ -109,6 +109,58 @@ class GitWorktreeManager {
   }
 
   /**
+   * Update an existing worktree with latest PR changes
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} number - PR number
+   * @param {string} baseRef - Base branch reference
+   * @param {string} headSha - Head commit SHA
+   * @returns {Promise<string>} Path to updated worktree
+   */
+  async updateWorktree(owner, repo, number, baseRef, headSha) {
+    const prInfo = { owner, repo, number };
+    const worktreePath = await this.getWorktreePath(prInfo);
+
+    try {
+      // Check if worktree exists
+      const exists = await this.worktreeExists(prInfo);
+      if (!exists) {
+        throw new Error(`Worktree does not exist at ${worktreePath}`);
+      }
+
+      console.log(`Updating worktree for PR #${number} at ${worktreePath}`);
+
+      // Create git instance for the worktree
+      const worktreeGit = simpleGit(worktreePath);
+
+      // Fetch the latest from origin
+      console.log(`Fetching latest changes from origin...`);
+      await worktreeGit.fetch(['origin']);
+
+      // Fetch the PR head using GitHub's pull request refs
+      console.log(`Fetching PR #${number} head...`);
+      await worktreeGit.fetch(['origin', `+refs/pull/${number}/head:refs/remotes/origin/pr-${number}`]);
+
+      // Checkout to PR head commit
+      console.log(`Checking out to PR head commit ${headSha}...`);
+      await worktreeGit.checkout([`origin/pr-${number}`]);
+
+      // Verify we're at the correct commit
+      const currentCommit = await worktreeGit.revparse(['HEAD']);
+      if (currentCommit.trim() !== headSha) {
+        console.warn(`Warning: Expected commit ${headSha}, but got ${currentCommit.trim()}`);
+      }
+
+      console.log(`Worktree updated successfully at ${worktreePath}`);
+      return worktreePath;
+
+    } catch (error) {
+      console.error('Error updating worktree:', error);
+      throw new Error(`Failed to update git worktree: ${error.message}`);
+    }
+  }
+
+  /**
    * Generate unified diff between base and head branches
    * @param {string} worktreePath - Path to worktree
    * @param {Object} prData - PR data from GitHub API
