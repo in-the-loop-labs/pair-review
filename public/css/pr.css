@@ -463,6 +463,19 @@
   }
 }
 
+/* Refresh button spinner animation */
+#refresh-pr .spinner-icon {
+  animation: spin 1s linear infinite;
+}
+
+#refresh-pr.refreshing .refresh-icon {
+  display: none;
+}
+
+#refresh-pr.refreshing .spinner-icon {
+  display: inline-block;
+}
+
 /* Completion state */
 .btn-primary.btn-complete {
   background-color: #1a7f37;

@@ -185,6 +185,141 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
 });
 
 /**
+ * Refresh pull request data from GitHub
+ */
+router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+    const config = req.app.get('config');
+
+    logger.info(`Refreshing PR #${prNumber} for ${repository}`);
+
+    // Check if PR exists in database
+    const existingPR = await queryOne(db, `
+      SELECT id FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!existingPR) {
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found in repository ${repository}`
+      });
+    }
+
+    // Fetch fresh PR data from GitHub
+    const githubClient = new GitHubClient(config.github_token);
+    const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
+
+    // Update worktree with latest changes
+    const worktreeManager = new GitWorktreeManager();
+    const worktreePath = await worktreeManager.updateWorktree(owner, repo, prNumber, prData.base.ref, prData.head.sha);
+
+    // Generate fresh diff
+    const diff = await worktreeManager.generateUnifiedDiff(worktreePath, {
+      base_sha: prData.base.sha,
+      head_sha: prData.head.sha
+    });
+
+    // Prepare extended data
+    const extendedData = {
+      state: prData.state,
+      diff: diff,
+      changed_files: prData.changed_files || [],
+      additions: prData.additions || 0,
+      deletions: prData.deletions || 0,
+      html_url: prData.html_url,
+      base_sha: prData.base.sha,
+      head_sha: prData.head.sha
+    };
+
+    // Update database with new data
+    await run(db, `
+      UPDATE pr_metadata
+      SET
+        title = ?,
+        description = ?,
+        base_branch = ?,
+        head_branch = ?,
+        updated_at = CURRENT_TIMESTAMP,
+        pr_data = ?
+      WHERE pr_number = ? AND repository = ?
+    `, [
+      prData.title,
+      prData.body || '',
+      prData.base.ref,
+      prData.head.ref,
+      JSON.stringify(extendedData),
+      prNumber,
+      repository
+    ]);
+
+    logger.info(`Successfully refreshed PR #${prNumber} for ${repository}`);
+
+    // Fetch and return updated PR data (reuse the same structure as GET endpoint)
+    const prMetadata = await queryOne(db, `
+      SELECT
+        id,
+        pr_number,
+        repository,
+        title,
+        description,
+        author,
+        base_branch,
+        head_branch,
+        created_at,
+        updated_at,
+        pr_data
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    const parsedData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    const [repoOwner, repoName] = repository.split('/');
+
+    const response = {
+      success: true,
+      data: {
+        id: prMetadata.id,
+        owner: repoOwner,
+        repo: repoName,
+        pr_number: prMetadata.pr_number,
+        title: prMetadata.title,
+        body: prMetadata.description,
+        author: prMetadata.author,
+        state: parsedData.state || 'open',
+        base_branch: prMetadata.base_branch,
+        head_branch: prMetadata.head_branch,
+        created_at: prMetadata.created_at,
+        updated_at: prMetadata.updated_at,
+        file_changes: parsedData.changed_files ? parsedData.changed_files.length : 0,
+        additions: parsedData.additions || 0,
+        deletions: parsedData.deletions || 0,
+        diff_content: parsedData.diff || '',
+        html_url: parsedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`
+      }
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    logger.error('Error refreshing PR:', error);
+    res.status(500).json({
+      error: 'Failed to refresh pull request: ' + error.message
+    });
+  }
+});
+
+/**
  * Get list of pull requests
  */
 router.get('/api/prs', async (req, res) => {
