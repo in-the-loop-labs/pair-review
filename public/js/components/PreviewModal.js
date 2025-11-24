@@ -45,6 +45,13 @@ class PreviewModal {
         </div>
 
         <div class="modal-footer preview-modal-footer">
+          <button class="btn btn-danger" id="clear-all-comments-btn" onclick="previewModal.clearAllComments()" title="Delete all user comments">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
+              <path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.748 1.748 0 0 1 10.595 15h-5.19a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25Z"/>
+            </svg>
+            Clear All
+          </button>
+          <div style="flex: 1;"></div>
           <button class="btn btn-secondary" onclick="previewModal.hide()">Close</button>
           <button class="btn btn-primary" id="copy-preview-btn" onclick="previewModal.copyToClipboard()">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
@@ -195,6 +202,22 @@ class PreviewModal {
     });
 
     return text;
+  }
+
+  /**
+   * Clear all user comments
+   */
+  async clearAllComments() {
+    // Hide the modal first so the confirmation dialog is visible
+    this.hide();
+
+    // Delegate to prManager to handle the actual deletion
+    if (window.prManager && typeof window.prManager.clearAllUserComments === 'function') {
+      await window.prManager.clearAllUserComments();
+    } else {
+      console.error('prManager.clearAllUserComments not available');
+      alert('Unable to clear comments. Please refresh the page.');
+    }
   }
 
   /**

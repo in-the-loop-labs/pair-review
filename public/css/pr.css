@@ -526,6 +526,28 @@
   height: 16px;
 }
 
+/* Clear Comments button styling */
+#clear-comments-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#clear-comments-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+#clear-comments-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#clear-comments-btn:disabled:hover {
+  background-color: var(--color-bg-secondary);
+  border-color: var(--color-border-primary);
+}
+
 /* Empty States */
 .empty-state, .loading-placeholder {
   text-align: center;

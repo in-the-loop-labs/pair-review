@@ -356,6 +356,12 @@ class PRManager {
             <button class="btn btn-secondary" onclick="prManager.openPreviewModal()" title="Preview comments for copying">
               Preview Comments
             </button>
+            <button class="btn btn-secondary" id="clear-comments-btn" onclick="prManager.clearAllUserComments()" title="Clear all user comments" disabled>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.748 1.748 0 0 1 10.595 15h-5.19a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25Z"/>
+              </svg>
+              Clear Comments
+            </button>
             <button class="btn review-button" id="review-button" onclick="prManager.openReviewModal()">
               <span class="review-button-text">0 comments</span>
             </button>
@@ -3046,16 +3052,16 @@ class PRManager {
     if (!confirm('Are you sure you want to delete this comment?')) {
       return;
     }
-    
+
     try {
       const response = await fetch(`/api/user-comment/${commentId}`, {
         method: 'DELETE'
       });
-      
+
       if (!response.ok) {
         throw new Error('Failed to delete comment');
       }
-      
+
       // Remove comment from UI
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       if (commentRow) {
@@ -3063,13 +3069,65 @@ class PRManager {
         // Update comment count
         this.updateCommentCount();
       }
-      
+
     } catch (error) {
       console.error('Error deleting comment:', error);
       alert('Failed to delete comment');
     }
   }
-  
+
+  /**
+   * Clear all user comments for the current PR
+   */
+  async clearAllUserComments() {
+    // Count existing user comments
+    const userComments = document.querySelectorAll('.user-comment-row');
+    const commentCount = userComments.length;
+
+    if (commentCount === 0) {
+      return;
+    }
+
+    // Check that confirmDialog is available
+    if (!window.confirmDialog) {
+      console.error('ConfirmDialog not loaded');
+      alert('Confirmation dialog unavailable. Please refresh the page.');
+      return;
+    }
+
+    // Show confirmation dialog
+    const confirmed = await window.confirmDialog.show({
+      title: 'Clear All Comments?',
+      message: `This will delete all ${commentCount} user comment${commentCount !== 1 ? 's' : ''} from this PR. This action cannot be undone.`,
+      confirmText: 'Delete All',
+      confirmClass: 'btn-danger'
+    });
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete comments');
+      }
+
+      // Remove all user comment rows from UI
+      userComments.forEach(row => row.remove());
+
+      // Update comment count and button state
+      this.updateCommentCount();
+
+    } catch (error) {
+      console.error('Error clearing user comments:', error);
+      alert('Failed to clear comments');
+    }
+  }
+
   /**
    * Toggle visibility of original AI suggestion for adopted comments
    */
@@ -3141,19 +3199,25 @@ class PRManager {
   updateCommentCount() {
     const userComments = document.querySelectorAll('.user-comment-row').length;
     const reviewButton = document.getElementById('review-button');
-    
+
     if (reviewButton) {
       const buttonText = reviewButton.querySelector('.review-button-text');
       if (buttonText) {
         buttonText.textContent = `${userComments} ${userComments === 1 ? 'comment' : 'comments'}`;
       }
-      
+
       // Update button styling based on comment count
       if (userComments > 0) {
         reviewButton.classList.add('has-comments');
       } else {
         reviewButton.classList.remove('has-comments');
       }
+    }
+
+    // Update Clear Comments button state
+    const clearButton = document.getElementById('clear-comments-btn');
+    if (clearButton) {
+      clearButton.disabled = userComments === 0;
     }
   }
   

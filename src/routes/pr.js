@@ -1822,6 +1822,64 @@ router.delete('/api/user-comment/:id', async (req, res) => {
 });
 
 /**
+ * Bulk delete all user comments for a PR
+ */
+router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const db = req.app.get('db');
+    const repository = `${owner}/${repo}`;
+
+    // Get the PR ID to verify it exists
+    const prMetadata = await queryOne(db, `
+      SELECT id FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({
+        error: 'Pull request not found'
+      });
+    }
+
+    // Count active user comments before deletion
+    const countResult = await queryOne(db, `
+      SELECT COUNT(*) as count FROM comments
+      WHERE pr_id = ? AND source = 'user' AND status = 'active'
+    `, [prMetadata.id]);
+
+    const commentCount = countResult.count;
+
+    // Soft delete all active user comments for this PR
+    await run(db, `
+      UPDATE comments
+      SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+      WHERE pr_id = ? AND source = 'user' AND status = 'active'
+    `, [prMetadata.id]);
+
+    res.json({
+      success: true,
+      deletedCount: commentCount,
+      message: `Deleted ${commentCount} user comment${commentCount !== 1 ? 's' : ''}`
+    });
+
+  } catch (error) {
+    console.error('Error deleting user comments:', error);
+    res.status(500).json({
+      error: 'Failed to delete comments'
+    });
+  }
+});
+
+/**
  * Submit review to GitHub
  */
 router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
