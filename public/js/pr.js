@@ -146,9 +146,15 @@ class PRManager {
     }
 
     try {
-      // Show spinner
+      // Show spinner on button
       refreshButton.classList.add('refreshing');
       refreshButton.disabled = true;
+
+      // Show loading state in diff container
+      const diffContainer = document.getElementById('diff-container');
+      if (diffContainer) {
+        diffContainer.innerHTML = '<div class="loading">Refreshing pull request...</div>';
+      }
 
       const { owner, repo, number } = this.currentPR;
 
@@ -172,8 +178,8 @@ class PRManager {
         const scrollPosition = window.scrollY;
         const expandedFolders = new Set(this.expandedFolders);
 
-        // Redisplay PR with new data
-        this.displayPR({ pr: data.data });
+        // Just reload the files/diff without re-rendering the whole page
+        await this.loadAndDisplayFiles();
 
         // Restore expanded folders
         this.expandedFolders = expandedFolders;
@@ -188,12 +194,16 @@ class PRManager {
 
     } catch (error) {
       console.error('Error refreshing PR:', error);
-      alert(`Failed to refresh PR: ${error.message}`);
+      const diffContainer = document.getElementById('diff-container');
+      if (diffContainer) {
+        diffContainer.innerHTML = `<div class="loading">Failed to refresh: ${error.message}</div>`;
+      }
     } finally {
       // Hide spinner
-      if (refreshButton) {
-        refreshButton.classList.remove('refreshing');
-        refreshButton.disabled = false;
+      const btn = document.getElementById('refresh-pr');
+      if (btn) {
+        btn.classList.remove('refreshing');
+        btn.disabled = false;
       }
     }
   }
