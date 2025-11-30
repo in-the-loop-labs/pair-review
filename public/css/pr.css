@@ -469,11 +469,11 @@
 }
 
 #refresh-pr.refreshing .refresh-icon {
-  display: none;
+  display: none !important;
 }
 
 #refresh-pr.refreshing .spinner-icon {
-  display: inline-block;
+  display: inline-block !important;
 }
 
 /* Completion state */

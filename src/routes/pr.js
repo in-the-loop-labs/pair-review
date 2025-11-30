@@ -222,24 +222,26 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
 
     // Update worktree with latest changes
     const worktreeManager = new GitWorktreeManager();
-    const worktreePath = await worktreeManager.updateWorktree(owner, repo, prNumber, prData.base.ref, prData.head.sha);
+    const worktreePath = await worktreeManager.updateWorktree(owner, repo, prNumber, prData.base_branch, prData.head_sha);
 
-    // Generate fresh diff
-    const diff = await worktreeManager.generateUnifiedDiff(worktreePath, {
-      base_sha: prData.base.sha,
-      head_sha: prData.head.sha
-    });
+    // Generate fresh diff and get changed files
+    const diffPrData = {
+      base_sha: prData.base_sha,
+      head_sha: prData.head_sha
+    };
+    const diff = await worktreeManager.generateUnifiedDiff(worktreePath, diffPrData);
+    const changedFiles = await worktreeManager.getChangedFiles(worktreePath, diffPrData);
 
     // Prepare extended data
     const extendedData = {
       state: prData.state,
       diff: diff,
-      changed_files: prData.changed_files || [],
+      changed_files: changedFiles,
       additions: prData.additions || 0,
       deletions: prData.deletions || 0,
       html_url: prData.html_url,
-      base_sha: prData.base.sha,
-      head_sha: prData.head.sha
+      base_sha: prData.base_sha,
+      head_sha: prData.head_sha
     };
 
     // Update database with new data
@@ -256,8 +258,8 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     `, [
       prData.title,
       prData.body || '',
-      prData.base.ref,
-      prData.head.ref,
+      prData.base_branch,
+      prData.head_branch,
       JSON.stringify(extendedData),
       prNumber,
       repository
@@ -292,7 +294,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
         id: prMetadata.id,
         owner: repoOwner,
         repo: repoName,
-        pr_number: prMetadata.pr_number,
+        number: prMetadata.pr_number,
         title: prMetadata.title,
         body: prMetadata.description,
         author: prMetadata.author,

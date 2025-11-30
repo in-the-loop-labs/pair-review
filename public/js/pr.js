@@ -150,10 +150,10 @@ class PRManager {
       refreshButton.classList.add('refreshing');
       refreshButton.disabled = true;
 
-      const { owner, repo, pr_number } = this.currentPR;
+      const { owner, repo, number } = this.currentPR;
 
       // Call refresh API endpoint
-      const response = await fetch(`/api/pr/${owner}/${repo}/${pr_number}/refresh`, {
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/refresh`, {
         method: 'POST'
       });
 
