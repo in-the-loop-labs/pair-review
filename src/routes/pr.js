@@ -1850,26 +1850,34 @@ router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => 
       });
     }
 
-    // Count active user comments before deletion
-    const countResult = await queryOne(db, `
-      SELECT COUNT(*) as count FROM comments
-      WHERE pr_id = ? AND source = 'user' AND status = 'active'
-    `, [prMetadata.id]);
+    // Begin transaction to ensure atomicity
+    await run(db, 'BEGIN TRANSACTION');
 
-    const commentCount = countResult.count;
+    try {
+      // Soft delete all active user comments for this PR
+      const result = await run(db, `
+        UPDATE comments
+        SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+        WHERE pr_id = ? AND source = 'user' AND status = 'active'
+      `, [prMetadata.id]);
 
-    // Soft delete all active user comments for this PR
-    await run(db, `
-      UPDATE comments
-      SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-      WHERE pr_id = ? AND source = 'user' AND status = 'active'
-    `, [prMetadata.id]);
+      // Commit transaction
+      await run(db, 'COMMIT');
 
-    res.json({
-      success: true,
-      deletedCount: commentCount,
-      message: `Deleted ${commentCount} user comment${commentCount !== 1 ? 's' : ''}`
-    });
+      // Use actual number of affected rows from the UPDATE
+      const deletedCount = result.changes;
+
+      res.json({
+        success: true,
+        deletedCount: deletedCount,
+        message: `Deleted ${deletedCount} user comment${deletedCount !== 1 ? 's' : ''}`
+      });
+
+    } catch (transactionError) {
+      // Rollback transaction on error
+      await run(db, 'ROLLBACK');
+      throw transactionError;
+    }
 
   } catch (error) {
     console.error('Error deleting user comments:', error);

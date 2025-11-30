@@ -3049,7 +3049,22 @@ class PRManager {
    * Delete user comment
    */
   async deleteUserComment(commentId) {
-    if (!confirm('Are you sure you want to delete this comment?')) {
+    // Check that confirmDialog is available
+    if (!window.confirmDialog) {
+      console.error('ConfirmDialog not loaded');
+      alert('Confirmation dialog unavailable. Please refresh the page.');
+      return;
+    }
+
+    // Show confirmation dialog
+    const confirmed = await window.confirmDialog.show({
+      title: 'Delete Comment?',
+      message: 'Are you sure you want to delete this comment? This action cannot be undone.',
+      confirmText: 'Delete',
+      confirmClass: 'btn-danger'
+    });
+
+    if (!confirmed) {
       return;
     }
 
