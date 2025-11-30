@@ -208,16 +208,18 @@ class PreviewModal {
    * Clear all user comments
    */
   async clearAllComments() {
+    // Check that prManager is available before hiding modal
+    if (!window.prManager || typeof window.prManager.clearAllUserComments !== 'function') {
+      console.error('prManager.clearAllUserComments not available');
+      alert('Unable to clear comments. Please refresh the page.');
+      return;
+    }
+
     // Hide the modal first so the confirmation dialog is visible
     this.hide();
 
     // Delegate to prManager to handle the actual deletion
-    if (window.prManager && typeof window.prManager.clearAllUserComments === 'function') {
-      await window.prManager.clearAllUserComments();
-    } else {
-      console.error('prManager.clearAllUserComments not available');
-      alert('Unable to clear comments. Please refresh the page.');
-    }
+    await window.prManager.clearAllUserComments();
   }
 
   /**
