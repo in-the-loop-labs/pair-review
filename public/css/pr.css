@@ -2644,16 +2644,7 @@ tr.line-range-start .d2h-code-line-ctn {
   font-size: 16px;
 }
 
-/* Comment toolbar with suggestion button */
-.comment-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 8px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid #d1d9e0;
-}
-
+/* Suggestion button - inline with actions or header */
 .btn-suggestion {
   display: inline-flex;
   align-items: center;
@@ -3131,10 +3122,6 @@ body {
 
 [data-theme="dark"] .comment-form-header {
   color: #e6edf3;
-}
-
-[data-theme="dark"] .comment-toolbar {
-  border-bottom-color: #30363d;
 }
 
 [data-theme="dark"] .btn-suggestion {

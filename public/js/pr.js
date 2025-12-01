@@ -2579,8 +2579,6 @@ class PRManager {
           <span class="comment-icon">💬</span>
           <span class="comment-title">Add comment</span>
           ${isRange ? `<span class="line-range-indicator">${lineRangeText}</span>` : ''}
-        </div>
-        <div class="comment-toolbar">
           <button class="btn-suggestion" title="Add a suggestion" data-line="${lineNumber}" data-line-end="${endLineNumber || lineNumber}" data-file="${fileName}">
             <svg class="octicon octicon-file-diff" viewBox="0 0 16 16" width="16" height="16">
               <path fill="currentColor" d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 10 4.25V1.5Zm8 .75v1.75c0 .138.112.25.25.25h1.75Zm-6.5 6a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5h-3.5a.75.75 0 0 1-.75-.75Zm.75 2.25a.75.75 0 0 0 0 1.5h2a.75.75 0 0 0 0-1.5Z"></path>
@@ -2610,10 +2608,11 @@ class PRManager {
     // Insert form after the target row
     targetRow.parentNode.insertBefore(formRow, targetRow.nextSibling);
     
-    // Focus on textarea
+    // Focus on textarea and set initial size
     const textarea = td.querySelector('.comment-textarea');
     textarea.focus();
-    
+    this.autoResizeTextarea(textarea);
+
     // Add event listeners
     const saveBtn = td.querySelector('.save-comment-btn');
     const cancelBtn = td.querySelector('.cancel-comment-btn');
@@ -2857,13 +2856,6 @@ class PRManager {
         <!-- Hidden body div for saving - pre-populate with markdown rendered content and store original -->
         <div class="user-comment-body" style="display: none;" data-original-markdown="${this.escapeHtml(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : this.escapeHtml(comment.body)}</div>
         <div class="user-comment-edit-form">
-          <div class="comment-toolbar">
-            <button class="btn-suggestion" title="Add a suggestion" data-line="${comment.line_start}" data-line-end="${comment.line_end || comment.line_start}" data-file="${comment.file}">
-              <svg class="octicon octicon-file-diff" viewBox="0 0 16 16" width="16" height="16">
-                <path fill="currentColor" d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 10 4.25V1.5Zm8 .75v1.75c0 .138.112.25.25.25h1.75Zm-6.5 6a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5h-3.5a.75.75 0 0 1-.75-.75Zm.75 2.25a.75.75 0 0 0 0 1.5h2a.75.75 0 0 0 0-1.5Z"></path>
-              </svg>
-            </button>
-          </div>
           <textarea
             id="edit-comment-${comment.id}"
             class="comment-edit-textarea"
@@ -2873,6 +2865,11 @@ class PRManager {
             data-file="${comment.file}"
             rows="3">${this.escapeHtml(comment.body)}</textarea>
           <div class="comment-edit-actions">
+            <button class="btn-suggestion" title="Add a suggestion" data-line="${comment.line_start}" data-line-end="${comment.line_end || comment.line_start}" data-file="${comment.file}">
+              <svg class="octicon octicon-file-diff" viewBox="0 0 16 16" width="16" height="16">
+                <path fill="currentColor" d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 10 4.25V1.5Zm8 .75v1.75c0 .138.112.25.25.25h1.75Zm-6.5 6a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5h-3.5a.75.75 0 0 1-.75-.75Zm.75 2.25a.75.75 0 0 0 0 1.5h2a.75.75 0 0 0 0-1.5Z"></path>
+              </svg>
+            </button>
             <button class="btn btn-sm btn-primary" onclick="prManager.saveEditedUserComment(${comment.id})">
               Save comment
             </button>
@@ -2914,10 +2911,9 @@ class PRManager {
         }
       });
 
-      // Update suggestion button state and auto-resize on input
+      // Update suggestion button state on input (no auto-resize during typing)
       textarea.addEventListener('input', () => {
         this.updateSuggestionButtonState(textarea);
-        this.autoResizeTextarea(textarea);
       });
 
       // Initial suggestion button state
@@ -2979,13 +2975,6 @@ class PRManager {
       // Replace body with edit form
       const editFormHTML = `
         <div class="user-comment-edit-form">
-          <div class="comment-toolbar">
-            <button class="btn-suggestion" title="Add a suggestion" data-line="${lineStart}" data-line-end="${lineEnd}" data-file="${fileName}">
-              <svg class="octicon octicon-file-diff" viewBox="0 0 16 16" width="16" height="16">
-                <path fill="currentColor" d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 10 4.25V1.5Zm8 .75v1.75c0 .138.112.25.25.25h1.75Zm-6.5 6a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5h-3.5a.75.75 0 0 1-.75-.75Zm.75 2.25a.75.75 0 0 0 0 1.5h2a.75.75 0 0 0 0-1.5Z"></path>
-              </svg>
-            </button>
-          </div>
           <textarea
             id="edit-comment-${commentId}"
             class="comment-edit-textarea"
@@ -2995,6 +2984,11 @@ class PRManager {
             data-file="${fileName}"
             rows="3">${this.escapeHtml(currentText)}</textarea>
           <div class="comment-edit-actions">
+            <button class="btn-suggestion" title="Add a suggestion" data-line="${lineStart}" data-line-end="${lineEnd}" data-file="${fileName}">
+              <svg class="octicon octicon-file-diff" viewBox="0 0 16 16" width="16" height="16">
+                <path fill="currentColor" d="M1 1.75C1 .784 1.784 0 2.75 0h7.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16H2.75A1.75 1.75 0 0 1 1 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 10 4.25V1.5Zm8 .75v1.75c0 .138.112.25.25.25h1.75Zm-6.5 6a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5h-3.5a.75.75 0 0 1-.75-.75Zm.75 2.25a.75.75 0 0 0 0 1.5h2a.75.75 0 0 0 0-1.5Z"></path>
+              </svg>
+            </button>
             <button class="btn btn-sm btn-primary" onclick="prManager.saveEditedUserComment(${commentId})">
               Save comment
             </button>
@@ -3015,7 +3009,7 @@ class PRManager {
         textarea.focus();
         textarea.select();
 
-        // Auto-resize textarea to fit content
+        // Auto-resize textarea to fit content (only on open, not during typing)
         this.autoResizeTextarea(textarea);
 
         // Add keyboard shortcuts
@@ -3029,10 +3023,9 @@ class PRManager {
           }
         });
 
-        // Update suggestion button state and auto-resize on input
+        // Update suggestion button state on input (no auto-resize during typing)
         textarea.addEventListener('input', () => {
           this.updateSuggestionButtonState(textarea);
-          this.autoResizeTextarea(textarea);
         });
 
         // Initial suggestion button state
@@ -3803,8 +3796,14 @@ class PRManager {
     const before = textarea.value.substring(0, cursorPos);
     const after = textarea.value.substring(textarea.selectionEnd);
 
-    // Add a newline before if we're not at the start and there's no newline
-    const prefix = cursorPos > 0 && !before.endsWith('\n') ? '\n' : '';
+    // Add newlines before: always add a blank line before the suggestion block for readability
+    // If we're not at the start, ensure there's at least one blank line before the suggestion
+    let prefix = '';
+    if (cursorPos > 0) {
+      if (!before.endsWith('\n\n')) {
+        prefix = before.endsWith('\n') ? '\n' : '\n\n';
+      }
+    }
     // Add a newline after if there's more content and it doesn't start with newline
     const suffix = after.length > 0 && !after.startsWith('\n') ? '\n' : '';
 
