@@ -2644,9 +2644,49 @@ tr.line-range-start .d2h-code-line-ctn {
   font-size: 16px;
 }
 
+/* Comment toolbar with suggestion button */
+.comment-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #d1d9e0;
+}
+
+.btn-suggestion {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  color: #656d76;
+  transition: all 0.15s ease;
+}
+
+.btn-suggestion:hover:not(.disabled):not(:disabled) {
+  background: #f6f8fa;
+  border-color: #1f2328;
+  color: #1f2328;
+}
+
+.btn-suggestion.disabled,
+.btn-suggestion:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-suggestion .octicon {
+  width: 16px;
+  height: 16px;
+}
+
 .comment-textarea {
   width: 100%;
-  min-height: 60px;
+  min-height: 100px;
   padding: 8px 12px;
   border: 1px solid #d1d9e0;
   border-radius: 6px;
@@ -2937,7 +2977,7 @@ tr.line-range-start .d2h-code-line-ctn {
 }
 
 .comment-edit-textarea {
-  min-height: 60px;
+  min-height: 100px;
   padding: 8px;
   border: 2px solid #8b5cf6;
   border-radius: 6px;
@@ -2946,6 +2986,11 @@ tr.line-range-start .d2h-code-line-ctn {
   resize: vertical;
   background: white;
   transition: border-color 0.2s;
+}
+
+/* Larger minimum height for adopted comments */
+.adopted-comment .comment-edit-textarea {
+  min-height: 150px;
 }
 
 .comment-edit-textarea:focus {
@@ -3085,6 +3130,21 @@ body {
 }
 
 [data-theme="dark"] .comment-form-header {
+  color: #e6edf3;
+}
+
+[data-theme="dark"] .comment-toolbar {
+  border-bottom-color: #30363d;
+}
+
+[data-theme="dark"] .btn-suggestion {
+  border-color: #30363d;
+  color: #8b949e;
+}
+
+[data-theme="dark"] .btn-suggestion:hover:not(.disabled):not(:disabled) {
+  background: #21262d;
+  border-color: #8b949e;
   color: #e6edf3;
 }
 
