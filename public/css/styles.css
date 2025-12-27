@@ -224,7 +224,9 @@ mark.d2h-code-line-ctn {
 .d2h-code-line-ctn {
     padding-left: 10px !important;  /* Small buffer between line numbers and code */
     padding-right: 10px !important;
-    white-space: pre !important;  /* Preserve all whitespace and indentation */
+    white-space: pre-wrap !important;  /* Preserve whitespace but allow wrapping for long lines */
+    word-wrap: anywhere !important;
+    overflow-wrap: anywhere !important;
     font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace !important;
     font-size: 12px !important;
     tab-size: 4 !important;  /* Ensure tabs display correctly */
