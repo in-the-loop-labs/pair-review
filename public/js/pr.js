@@ -578,7 +578,7 @@ class PRManager {
           if (blockIndex === 0 && block.lines.length > 0 && (block.lines[0].oldNumber > 1 || block.lines[0].newNumber > 1)) {
             const startLine = Math.min(block.lines[0].oldNumber || 1, block.lines[0].newNumber || 1);
             if (startLine > 1) {
-              this.createGapSection(tbody, file.newName || file.oldName, 1, startLine - 1, startLine - 1);
+              this.createGapSection(tbody, file.newName || file.oldName, 1, startLine - 1, startLine - 1, 'above');
             }
           }
           
@@ -597,9 +597,9 @@ class PRManager {
             if (currentLastLine && nextFirstLine) {
               const currentEnd = Math.max(currentLastLine.oldNumber || 0, currentLastLine.newNumber || 0);
               const nextStart = Math.min(nextFirstLine.oldNumber || Infinity, nextFirstLine.newNumber || Infinity);
-              
+
               if (nextStart - currentEnd > 1) {
-                this.createGapSection(tbody, file.newName || file.oldName, currentEnd + 1, nextStart - 1, nextStart - currentEnd - 1);
+                this.createGapSection(tbody, file.newName || file.oldName, currentEnd + 1, nextStart - 1, nextStart - currentEnd - 1, 'between');
               }
             }
           }
@@ -761,10 +761,11 @@ class PRManager {
    * @param {HTMLElement} tbody - Table body element
    * @param {string} fileName - File name
    * @param {number} startLine - Start line number
-   * @param {number} endLine - End line number  
+   * @param {number} endLine - End line number
    * @param {number} gapSize - Number of hidden lines
+   * @param {string} position - Position ('above', 'below', or 'between')
    */
-  createGapSection(tbody, fileName, startLine, endLine, gapSize) {
+  createGapSection(tbody, fileName, startLine, endLine, gapSize, position = 'between') {
     // Create a row for the gap between diff blocks
     const row = document.createElement('tr');
     row.className = 'context-expand-row';
@@ -796,67 +797,108 @@ class PRManager {
     expandControls.dataset.isGap = 'true'; // Mark this as a gap section
     
     // Create the expand buttons with GitHub Octicons
-    const expandAbove = document.createElement('button');
-    expandAbove.className = 'expand-button expand-up';
-    expandAbove.title = 'Expand up';
-    expandAbove.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path fill-rule="evenodd" d="M7.47 5.47a.75.75 0 0 1 1.06 0l3.75 3.75a.75.75 0 0 1-1.06 1.06L8 7.06 4.78 10.28a.75.75 0 0 1-1.06-1.06l3.75-3.75Z"/>
-      </svg>
-    `;
-    
-    const expandBelow = document.createElement('button');
-    expandBelow.className = 'expand-button expand-down';
-    expandBelow.title = 'Expand down';
-    expandBelow.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path fill-rule="evenodd" d="M8.53 10.53a.75.75 0 0 1-1.06 0l-3.75-3.75a.75.75 0 0 1 1.06-1.06L8 8.94l3.22-3.22a.75.75 0 1 1 1.06 1.06l-3.75 3.75Z"/>
-      </svg>
-    `;
-    
-    // Stack only up/down buttons compactly in the gutter
-    buttonContainer.appendChild(expandAbove);
-    buttonContainer.appendChild(expandBelow);
+    // For short sections (≤10 lines) or single-direction, show single button
+    // For larger sections with both directions, show stacked buttons
+    if (gapSize <= 10 || position !== 'between') {
+      // Single button - either fold-up, fold-down, or fold-up-down
+      const expandBtn = document.createElement('button');
+      expandBtn.className = 'expand-button expand-all-short';
+
+      if (position === 'above') {
+        // At top - expand up to reveal lines above first visible line
+        expandBtn.title = 'Expand up';
+        expandBtn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/>
+          </svg>
+        `;
+        expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'up', 20));
+      } else if (position === 'below') {
+        // At bottom - expand down to reveal lines below last visible line
+        expandBtn.title = 'Expand down';
+        expandBtn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
+          </svg>
+        `;
+        expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'down', 20));
+      } else {
+        // Between - short section, expand all
+        expandBtn.title = 'Expand all';
+        expandBtn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M8.177.677 11.073 3.573a.25.25 0 0 1-.177.427H8.75v8h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896a.25.25 0 0 1 .177-.427H7.25v-8H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0Z"/>
+          </svg>
+        `;
+        expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'all'));
+      }
+      buttonContainer.appendChild(expandBtn);
+    } else {
+      // Large gap between changes - show separate up/down buttons with GitHub fold icons
+      const expandAbove = document.createElement('button');
+      expandAbove.className = 'expand-button expand-up';
+      expandAbove.title = 'Expand up';
+      expandAbove.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/>
+        </svg>
+      `;
+
+      const expandBelow = document.createElement('button');
+      expandBelow.className = 'expand-button expand-down';
+      expandBelow.title = 'Expand down';
+      expandBelow.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
+        </svg>
+      `;
+
+      // Stack buttons: down on top (visually), up below - matches GitHub behavior
+      buttonContainer.appendChild(expandBelow);
+      buttonContainer.appendChild(expandAbove);
+
+      // Add event listeners
+      expandAbove.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandGapContext(row.expandControls, 'up', 20);
+      });
+      expandBelow.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandGapContext(row.expandControls, 'down', 20);
+      });
+    }
     oldLineCell.appendChild(buttonContainer);
-    
-    // Create content cell for hidden lines text with inline expand-all
+
+    // Create content cell for hidden lines text - clickable to expand all
     const contentCell = document.createElement('td');
-    contentCell.className = 'diff-code expand-content';
+    contentCell.className = 'diff-code expand-content clickable-expand';
     contentCell.colSpan = 2;
-    
+    contentCell.title = 'Expand all';
+
     const contentWrapper = document.createElement('div');
     contentWrapper.className = 'expand-content-wrapper';
-    
-    const expandInfo = document.createElement('span');
-    expandInfo.className = 'expand-info';
-    expandInfo.innerHTML = `${gapSize} hidden lines`;
-    
-    const expandAll = document.createElement('button');
-    expandAll.className = 'expand-button-inline expand-all';
-    expandAll.title = `Expand all ${gapSize} lines`;
-    expandAll.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path fill-rule="evenodd" d="M8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0ZM8 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 1 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
+
+    const expandIcon = document.createElement('span');
+    expandIcon.className = 'expand-icon';
+    expandIcon.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8.177.677 11.073 3.573a.25.25 0 0 1-.177.427H8.75v8h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896a.25.25 0 0 1 .177-.427H7.25v-8H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0Z"/>
       </svg>
     `;
-    
+
+    const expandInfo = document.createElement('span');
+    expandInfo.className = 'expand-info';
+    expandInfo.textContent = `${gapSize} hidden lines`;
+
+    contentWrapper.appendChild(expandIcon);
     contentWrapper.appendChild(expandInfo);
-    contentWrapper.appendChild(expandAll);
     contentCell.appendChild(contentWrapper);
-    
-    // Add event listeners for gap expansion
-    expandAbove.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandGapContext(row.expandControls, 'up', 20);
-    });
-    expandAll.addEventListener('click', (e) => {
+
+    // Make content cell clickable to expand all
+    contentCell.addEventListener('click', (e) => {
       const row = e.currentTarget.closest('tr');
       const hiddenCount = parseInt(expandControls.dataset.hiddenCount) || gapSize;
       this.expandGapContext(row.expandControls, 'all', hiddenCount);
-    });
-    expandBelow.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandGapContext(row.expandControls, 'down', 20);
     });
     
     // Store expand controls reference on row
@@ -928,84 +970,113 @@ class PRManager {
     expandControls.dataset.sectionKey = sectionKey;
     
     // Create the expand buttons with GitHub Octicons
-    const expandAbove = position !== 'above' ? document.createElement('button') : null;
-    if (expandAbove) {
+    // For short sections (≤10 lines) or single-direction, show single button
+    // For larger sections with both directions, show stacked buttons
+    const showBoth = position === 'between' && hiddenCount > 10;
+
+    if (hiddenCount <= 10 || position !== 'between') {
+      // Single button - either fold-up, fold-down, or fold-up-down
+      const expandBtn = document.createElement('button');
+      expandBtn.className = 'expand-button expand-all-short';
+
+      if (position === 'above') {
+        // At top - expand up to reveal lines above first visible line
+        expandBtn.title = 'Expand up';
+        expandBtn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/>
+          </svg>
+        `;
+        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'up', 20));
+      } else if (position === 'below') {
+        // At bottom - expand down to reveal lines below last visible line
+        expandBtn.title = 'Expand down';
+        expandBtn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
+          </svg>
+        `;
+        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'down', 20));
+      } else {
+        // Between - short section, expand all
+        expandBtn.title = 'Expand all';
+        expandBtn.innerHTML = `
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M8.177.677 11.073 3.573a.25.25 0 0 1-.177.427H8.75v8h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896a.25.25 0 0 1 .177-.427H7.25v-8H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0Z"/>
+          </svg>
+        `;
+        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'all', hiddenCount));
+      }
+      buttonContainer.appendChild(expandBtn);
+    } else {
+      // Large section between changes - show both up and down buttons
+      const expandAbove = document.createElement('button');
       expandAbove.className = 'expand-button expand-up';
       expandAbove.title = 'Expand up';
       expandAbove.innerHTML = `
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path fill-rule="evenodd" d="M7.47 5.47a.75.75 0 0 1 1.06 0l3.75 3.75a.75.75 0 0 1-1.06 1.06L8 7.06 4.78 10.28a.75.75 0 0 1-1.06-1.06l3.75-3.75Z"/>
+          <path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/>
         </svg>
       `;
-    }
-    
-    const expandBelow = position !== 'below' ? document.createElement('button') : null;
-    if (expandBelow) {
+
+      const expandBelow = document.createElement('button');
       expandBelow.className = 'expand-button expand-down';
       expandBelow.title = 'Expand down';
       expandBelow.innerHTML = `
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path fill-rule="evenodd" d="M8.53 10.53a.75.75 0 0 1-1.06 0l-3.75-3.75a.75.75 0 0 1 1.06-1.06L8 8.94l3.22-3.22a.75.75 0 1 1 1.06 1.06l-3.75 3.75Z"/>
+          <path d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
         </svg>
       `;
-    }
-    
-    // Stack only up/down buttons compactly in the gutter based on position
-    if (position === 'above') {
-      // At the top - only show expand below
+
+      // Stack buttons: down on top, up below - matches GitHub behavior
       buttonContainer.appendChild(expandBelow);
-    } else if (position === 'below') {
-      // At the bottom - only show expand above
       buttonContainer.appendChild(expandAbove);
-    } else {
-      // Between changes - show both buttons
-      buttonContainer.appendChild(expandAbove);
-      buttonContainer.appendChild(expandBelow);
+
+      expandAbove.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandContext(row.expandControls, 'up', 20);
+      });
+      expandBelow.addEventListener('click', (e) => {
+        const row = e.currentTarget.closest('tr');
+        this.expandContext(row.expandControls, 'down', 20);
+      });
     }
-    
+
     oldLineCell.appendChild(buttonContainer);
-    
-    // Create content cell for hidden lines text with inline expand-all
+
+    // Create content cell for hidden lines text - clickable to expand all
     const contentCell = document.createElement('td');
-    contentCell.className = 'diff-code expand-content';
+    contentCell.className = 'diff-code expand-content clickable-expand';
     contentCell.colSpan = 2;
-    
+    contentCell.title = 'Expand all';
+
     const contentWrapper = document.createElement('div');
     contentWrapper.className = 'expand-content-wrapper';
-    
-    const expandInfo = document.createElement('span');
-    expandInfo.className = 'expand-info';
-    expandInfo.innerHTML = `${hiddenCount} hidden lines`;
-    
-    const expandAll = document.createElement('button');
-    expandAll.className = 'expand-button-inline expand-all';
-    expandAll.title = `Expand all ${hiddenCount} lines`;
-    expandAll.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-        <path fill-rule="evenodd" d="M8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0ZM8 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 1 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
+
+    const expandIcon = document.createElement('span');
+    expandIcon.className = 'expand-icon';
+    expandIcon.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M8.177.677 11.073 3.573a.25.25 0 0 1-.177.427H8.75v8h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896a.25.25 0 0 1 .177-.427H7.25v-8H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0Z"/>
       </svg>
     `;
-    
+
+    const expandInfo = document.createElement('span');
+    expandInfo.className = 'expand-info';
+    expandInfo.textContent = `${hiddenCount} hidden lines`;
+
+    contentWrapper.appendChild(expandIcon);
     contentWrapper.appendChild(expandInfo);
-    contentWrapper.appendChild(expandAll);
     contentCell.appendChild(contentWrapper);
-    
+
     // Store the hidden lines data for expansion
     expandControls.hiddenLines = allLines.slice(startIdx, endIdx);
-    
-    // Add click handlers for collapsed section expansion
-    expandAbove?.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandContext(row.expandControls, 'up', 20);
-    });
-    expandAll.addEventListener('click', (e) => {
+
+    // Make content cell clickable to expand all
+    contentCell.addEventListener('click', (e) => {
       const row = e.currentTarget.closest('tr');
       const hiddenCountValue = parseInt(expandControls.dataset.hiddenCount) || hiddenCount;
       this.expandContext(row.expandControls, 'all', hiddenCountValue);
-    });
-    expandBelow?.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      this.expandContext(row.expandControls, 'down', 20);
     });
     
     // Store expand controls reference on row

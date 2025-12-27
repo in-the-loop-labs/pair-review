@@ -926,15 +926,15 @@
 .expand-button {
   background: transparent;
   border: none;
-  padding: 0;
+  padding: 2px 0;
   margin: 0;
   cursor: pointer;
   color: #0969da;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 10px;
+  width: 20px;
+  height: 20px;
   border-radius: 2px;
   transition: background-color 0.2s ease;
   position: relative;
@@ -946,8 +946,8 @@
 }
 
 .expand-button svg {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   fill: currentColor;
 }
 
@@ -991,9 +991,10 @@
   display: inline-flex;
   flex-direction: column;
   align-items: center;
-  gap: 0;
+  gap: 2px;
   line-height: 0;
   margin: 0 auto;
+  padding: 2px 0;
 }
 
 /* Expand content cell */
@@ -1009,11 +1010,37 @@
 .expand-content-wrapper {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   position: relative;
   z-index: 1;
   background: var(--color-bg-secondary);
   padding: 0 8px;
+}
+
+/* Make expand content clickable */
+.expand-content.clickable-expand {
+  cursor: pointer;
+}
+
+.expand-content.clickable-expand:hover {
+  background: var(--color-accent-light);
+}
+
+.expand-content.clickable-expand:hover .expand-content-wrapper {
+  background: var(--color-accent-light);
+}
+
+/* Icon in expand content area */
+.expand-icon {
+  display: inline-flex;
+  align-items: center;
+  color: #0969da;
+}
+
+.expand-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 /* Add divider line effect */
