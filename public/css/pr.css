@@ -305,7 +305,7 @@
 .file-name {
   font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
   font-size: 13px;
-  color: #0969da;
+  color: var(--color-accent-primary);
 }
 
 .file-stats {
@@ -929,7 +929,7 @@
   padding: 2px 0;
   margin: 0;
   cursor: pointer;
-  color: #0969da;
+  color: var(--color-accent-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -967,7 +967,7 @@
   padding: 0 4px;
   margin: 0;
   cursor: pointer;
-  color: #0969da;
+  color: var(--color-accent-primary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1034,7 +1034,7 @@
 .expand-icon {
   display: inline-flex;
   align-items: center;
-  color: #0969da;
+  color: var(--color-accent-primary);
 }
 
 .expand-icon svg {
@@ -1356,7 +1356,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 .ai-type-improvement .type-badge,
 .type-improvement { 
   background: #ddf4ff;
-  color: #0969da;
+  color: var(--color-accent-primary);
 }
 
 .ai-type-improvement {
@@ -2069,7 +2069,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-radius: 6px;
   padding: 10px;
   cursor: pointer;
-  color: #0969da;
+  color: var(--color-accent-primary);
   z-index: 100;
   transition: all 0.2s;
   display: flex;
@@ -2809,7 +2809,7 @@ tr.line-range-start .d2h-code-line-ctn {
 
 .adopted-type-badge.type-improvement {
   background: rgba(9, 105, 218, 0.1);
-  color: #0969da;
+  color: var(--color-accent-primary);
   border-color: rgba(9, 105, 218, 0.2);
 }
 
@@ -2851,12 +2851,12 @@ tr.line-range-start .d2h-code-line-ctn {
 }
 
 .btn-toggle-original:hover {
-  color: #0969da;
+  color: var(--color-accent-primary);
   transform: scale(1.1);
 }
 
 .btn-toggle-original.showing-original {
-  color: #0969da;
+  color: var(--color-accent-primary);
 }
 
 .btn-toggle-original svg {
@@ -3202,7 +3202,7 @@ body {
 }
 
 .github-link:hover {
-  color: #0969da;
+  color: var(--color-accent-primary);
 }
 
 [data-theme="dark"] .github-link {

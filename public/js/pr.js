@@ -14,6 +14,29 @@ class PRManager {
     'suggestion': '💬'
   };
 
+  // SVG icons for diff expansion controls (GitHub Octicons)
+  static FOLD_UP_ICON = `
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/>
+    </svg>
+  `;
+
+  static FOLD_DOWN_ICON = `
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
+    </svg>
+  `;
+
+  // GitHub Octicons "unfold" icon - arrows pointing outward with dotted line between
+  static UNFOLD_ICON = `
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="m8.177.677 2.896 2.896a.25.25 0 0 1-.177.427H8.75v1.25a.75.75 0 0 1-1.5 0V4H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0ZM7.25 10.75a.75.75 0 0 1 1.5 0V12h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896A.25.25 0 0 1 5.104 12H7.25v-1.25Zm-5-2a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 6 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 8a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5A.75.75 0 0 1 12 8Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
+    </svg>
+  `;
+
+  // Keep old name as alias for backward compatibility
+  static FOLD_UP_DOWN_ICON = PRManager.UNFOLD_ICON;
+
   constructor() {
     this.currentPR = null;
     this.loadingState = false;
@@ -794,6 +817,7 @@ class PRManager {
     expandControls.dataset.startLine = startLine;
     expandControls.dataset.endLine = endLine;
     expandControls.dataset.hiddenCount = gapSize;
+    expandControls.dataset.position = position;
     expandControls.dataset.isGap = 'true'; // Mark this as a gap section
     
     // Create the expand buttons with GitHub Octicons
@@ -807,29 +831,17 @@ class PRManager {
       if (position === 'above') {
         // At top - expand up to reveal lines above first visible line
         expandBtn.title = 'Expand up';
-        expandBtn.innerHTML = `
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-            <path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/>
-          </svg>
-        `;
+        expandBtn.innerHTML = PRManager.FOLD_UP_ICON;
         expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'up', 20));
       } else if (position === 'below') {
         // At bottom - expand down to reveal lines below last visible line
         expandBtn.title = 'Expand down';
-        expandBtn.innerHTML = `
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-            <path d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
-          </svg>
-        `;
+        expandBtn.innerHTML = PRManager.FOLD_DOWN_ICON;
         expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'down', 20));
       } else {
         // Between - short section, expand all
         expandBtn.title = 'Expand all';
-        expandBtn.innerHTML = `
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-            <path d="M8.177.677 11.073 3.573a.25.25 0 0 1-.177.427H8.75v8h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896a.25.25 0 0 1 .177-.427H7.25v-8H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0Z"/>
-          </svg>
-        `;
+        expandBtn.innerHTML = PRManager.FOLD_UP_DOWN_ICON;
         expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'all'));
       }
       buttonContainer.appendChild(expandBtn);
@@ -838,34 +850,20 @@ class PRManager {
       const expandAbove = document.createElement('button');
       expandAbove.className = 'expand-button expand-up';
       expandAbove.title = 'Expand up';
-      expandAbove.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/>
-        </svg>
-      `;
+      expandAbove.innerHTML = PRManager.FOLD_UP_ICON;
 
       const expandBelow = document.createElement('button');
       expandBelow.className = 'expand-button expand-down';
       expandBelow.title = 'Expand down';
-      expandBelow.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
-        </svg>
-      `;
+      expandBelow.innerHTML = PRManager.FOLD_DOWN_ICON;
 
       // Stack buttons: down on top (visually), up below - matches GitHub behavior
       buttonContainer.appendChild(expandBelow);
       buttonContainer.appendChild(expandAbove);
 
-      // Add event listeners
-      expandAbove.addEventListener('click', (e) => {
-        const row = e.currentTarget.closest('tr');
-        this.expandGapContext(row.expandControls, 'up', 20);
-      });
-      expandBelow.addEventListener('click', (e) => {
-        const row = e.currentTarget.closest('tr');
-        this.expandGapContext(row.expandControls, 'down', 20);
-      });
+      // Add event listeners - capture expandControls in closure at creation time
+      expandAbove.addEventListener('click', () => this.expandGapContext(expandControls, 'up', 20));
+      expandBelow.addEventListener('click', () => this.expandGapContext(expandControls, 'down', 20));
     }
     oldLineCell.appendChild(buttonContainer);
 
@@ -880,11 +878,7 @@ class PRManager {
 
     const expandIcon = document.createElement('span');
     expandIcon.className = 'expand-icon';
-    expandIcon.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M8.177.677 11.073 3.573a.25.25 0 0 1-.177.427H8.75v8h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896a.25.25 0 0 1 .177-.427H7.25v-8H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0Z"/>
-      </svg>
-    `;
+    expandIcon.innerHTML = PRManager.FOLD_UP_DOWN_ICON;
 
     const expandInfo = document.createElement('span');
     expandInfo.className = 'expand-info';
@@ -972,8 +966,6 @@ class PRManager {
     // Create the expand buttons with GitHub Octicons
     // For short sections (≤10 lines) or single-direction, show single button
     // For larger sections with both directions, show stacked buttons
-    const showBoth = position === 'between' && hiddenCount > 10;
-
     if (hiddenCount <= 10 || position !== 'between') {
       // Single button - either fold-up, fold-down, or fold-up-down
       const expandBtn = document.createElement('button');
@@ -982,29 +974,17 @@ class PRManager {
       if (position === 'above') {
         // At top - expand up to reveal lines above first visible line
         expandBtn.title = 'Expand up';
-        expandBtn.innerHTML = `
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-            <path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/>
-          </svg>
-        `;
+        expandBtn.innerHTML = PRManager.FOLD_UP_ICON;
         expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'up', 20));
       } else if (position === 'below') {
         // At bottom - expand down to reveal lines below last visible line
         expandBtn.title = 'Expand down';
-        expandBtn.innerHTML = `
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-            <path d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
-          </svg>
-        `;
+        expandBtn.innerHTML = PRManager.FOLD_DOWN_ICON;
         expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'down', 20));
       } else {
         // Between - short section, expand all
         expandBtn.title = 'Expand all';
-        expandBtn.innerHTML = `
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-            <path d="M8.177.677 11.073 3.573a.25.25 0 0 1-.177.427H8.75v8h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896a.25.25 0 0 1 .177-.427H7.25v-8H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0Z"/>
-          </svg>
-        `;
+        expandBtn.innerHTML = PRManager.FOLD_UP_DOWN_ICON;
         expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'all', hiddenCount));
       }
       buttonContainer.appendChild(expandBtn);
@@ -1013,33 +993,20 @@ class PRManager {
       const expandAbove = document.createElement('button');
       expandAbove.className = 'expand-button expand-up';
       expandAbove.title = 'Expand up';
-      expandAbove.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0ZM13.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Zm-3.75.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM7.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5ZM4 11.75a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75ZM1.75 11a.75.75 0 0 0 0 1.5h.5a.75.75 0 0 0 0-1.5h-.5Z"/>
-        </svg>
-      `;
+      expandAbove.innerHTML = PRManager.FOLD_UP_ICON;
 
       const expandBelow = document.createElement('button');
       expandBelow.className = 'expand-button expand-down';
       expandBelow.title = 'Expand down';
-      expandBelow.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-          <path d="m8.177 14.323 2.896-2.896a.25.25 0 0 0-.177-.427H8.75V7.764a.75.75 0 1 0-1.5 0V11H5.104a.25.25 0 0 0-.177.427l2.896 2.896a.25.25 0 0 0 .354 0ZM2.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM6 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75ZM8.25 5a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5ZM12 4.25a.75.75 0 0 1-.75.75h-.5a.75.75 0 0 1 0-1.5h.5a.75.75 0 0 1 .75.75Zm2.25.75a.75.75 0 0 0 0-1.5h-.5a.75.75 0 0 0 0 1.5h.5Z"/>
-        </svg>
-      `;
+      expandBelow.innerHTML = PRManager.FOLD_DOWN_ICON;
 
       // Stack buttons: down on top, up below - matches GitHub behavior
       buttonContainer.appendChild(expandBelow);
       buttonContainer.appendChild(expandAbove);
 
-      expandAbove.addEventListener('click', (e) => {
-        const row = e.currentTarget.closest('tr');
-        this.expandContext(row.expandControls, 'up', 20);
-      });
-      expandBelow.addEventListener('click', (e) => {
-        const row = e.currentTarget.closest('tr');
-        this.expandContext(row.expandControls, 'down', 20);
-      });
+      // Capture expandControls in closure at creation time
+      expandAbove.addEventListener('click', () => this.expandContext(expandControls, 'up', 20));
+      expandBelow.addEventListener('click', () => this.expandContext(expandControls, 'down', 20));
     }
 
     oldLineCell.appendChild(buttonContainer);
@@ -1055,11 +1022,7 @@ class PRManager {
 
     const expandIcon = document.createElement('span');
     expandIcon.className = 'expand-icon';
-    expandIcon.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M8.177.677 11.073 3.573a.25.25 0 0 1-.177.427H8.75v8h2.146a.25.25 0 0 1 .177.427l-2.896 2.896a.25.25 0 0 1-.354 0l-2.896-2.896a.25.25 0 0 1 .177-.427H7.25v-8H5.104a.25.25 0 0 1-.177-.427L7.823.677a.25.25 0 0 1 .354 0Z"/>
-      </svg>
-    `;
+    expandIcon.innerHTML = PRManager.FOLD_UP_DOWN_ICON;
 
     const expandInfo = document.createElement('span');
     expandInfo.className = 'expand-info';
