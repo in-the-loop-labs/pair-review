@@ -40,6 +40,9 @@ class PRManager {
   // Default number of lines to expand when clicking up/down buttons
   static DEFAULT_EXPAND_LINES = 20;
 
+  // Threshold for small gaps - show single "expand all" button instead of directional buttons
+  static SMALL_GAP_THRESHOLD = 10;
+
   constructor() {
     this.currentPR = null;
     this.loadingState = false;
@@ -824,9 +827,9 @@ class PRManager {
     expandControls.dataset.isGap = 'true'; // Mark this as a gap section
     
     // Create the expand buttons with GitHub Octicons
-    // For short sections (≤10 lines) or single-direction, show single button
+    // For short sections (≤SMALL_GAP_THRESHOLD lines) or single-direction, show single button
     // For larger sections with both directions, show stacked buttons
-    if (gapSize <= 10 || position !== 'between') {
+    if (gapSize <= PRManager.SMALL_GAP_THRESHOLD || position !== 'between') {
       // Single button - either fold-up, fold-down, or fold-up-down
       const expandBtn = document.createElement('button');
       expandBtn.className = 'expand-button expand-all-short';
@@ -967,9 +970,9 @@ class PRManager {
     expandControls.dataset.sectionKey = sectionKey;
     
     // Create the expand buttons with GitHub Octicons
-    // For short sections (≤10 lines) or single-direction, show single button
+    // For short sections (≤SMALL_GAP_THRESHOLD lines) or single-direction, show single button
     // For larger sections with both directions, show stacked buttons
-    if (hiddenCount <= 10 || position !== 'between') {
+    if (hiddenCount <= PRManager.SMALL_GAP_THRESHOLD || position !== 'between') {
       // Single button - either fold-up, fold-down, or fold-up-down
       const expandBtn = document.createElement('button');
       expandBtn.className = 'expand-button expand-all-short';
