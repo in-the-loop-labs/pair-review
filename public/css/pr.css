@@ -960,32 +960,6 @@
   user-select: none;
 }
 
-/* Inline expand-all button */
-.expand-button-inline {
-  background: transparent;
-  border: none;
-  padding: 0 4px;
-  margin: 0;
-  cursor: pointer;
-  color: var(--color-accent-primary);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 16px;
-  border-radius: 3px;
-  transition: all 0.2s ease;
-}
-
-.expand-button-inline:hover {
-  background: var(--color-accent-light);
-}
-
-.expand-button-inline svg {
-  width: 14px;
-  height: 14px;
-  fill: currentColor;
-}
-
 /* Container for vertically stacked expand buttons */
 .expand-button-container {
   display: inline-flex;

@@ -37,6 +37,9 @@ class PRManager {
   // Keep old name as alias for backward compatibility
   static FOLD_UP_DOWN_ICON = PRManager.UNFOLD_ICON;
 
+  // Default number of lines to expand when clicking up/down buttons
+  static DEFAULT_EXPAND_LINES = 20;
+
   constructor() {
     this.currentPR = null;
     this.loadingState = false;
@@ -832,17 +835,17 @@ class PRManager {
         // At top - expand up to reveal lines above first visible line
         expandBtn.title = 'Expand up';
         expandBtn.innerHTML = PRManager.FOLD_UP_ICON;
-        expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'up', 20));
+        expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'up', PRManager.DEFAULT_EXPAND_LINES));
       } else if (position === 'below') {
         // At bottom - expand down to reveal lines below last visible line
         expandBtn.title = 'Expand down';
         expandBtn.innerHTML = PRManager.FOLD_DOWN_ICON;
-        expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'down', 20));
+        expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'down', PRManager.DEFAULT_EXPAND_LINES));
       } else {
         // Between - short section, expand all
         expandBtn.title = 'Expand all';
         expandBtn.innerHTML = PRManager.FOLD_UP_DOWN_ICON;
-        expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'all'));
+        expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'all', gapSize));
       }
       buttonContainer.appendChild(expandBtn);
     } else {
@@ -862,8 +865,8 @@ class PRManager {
       buttonContainer.appendChild(expandAbove);
 
       // Add event listeners - capture expandControls in closure at creation time
-      expandAbove.addEventListener('click', () => this.expandGapContext(expandControls, 'up', 20));
-      expandBelow.addEventListener('click', () => this.expandGapContext(expandControls, 'down', 20));
+      expandAbove.addEventListener('click', () => this.expandGapContext(expandControls, 'up', PRManager.DEFAULT_EXPAND_LINES));
+      expandBelow.addEventListener('click', () => this.expandGapContext(expandControls, 'down', PRManager.DEFAULT_EXPAND_LINES));
     }
     oldLineCell.appendChild(buttonContainer);
 
@@ -975,12 +978,12 @@ class PRManager {
         // At top - expand up to reveal lines above first visible line
         expandBtn.title = 'Expand up';
         expandBtn.innerHTML = PRManager.FOLD_UP_ICON;
-        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'up', 20));
+        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'up', PRManager.DEFAULT_EXPAND_LINES));
       } else if (position === 'below') {
         // At bottom - expand down to reveal lines below last visible line
         expandBtn.title = 'Expand down';
         expandBtn.innerHTML = PRManager.FOLD_DOWN_ICON;
-        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'down', 20));
+        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'down', PRManager.DEFAULT_EXPAND_LINES));
       } else {
         // Between - short section, expand all
         expandBtn.title = 'Expand all';
@@ -1005,8 +1008,8 @@ class PRManager {
       buttonContainer.appendChild(expandAbove);
 
       // Capture expandControls in closure at creation time
-      expandAbove.addEventListener('click', () => this.expandContext(expandControls, 'up', 20));
-      expandBelow.addEventListener('click', () => this.expandContext(expandControls, 'down', 20));
+      expandAbove.addEventListener('click', () => this.expandContext(expandControls, 'up', PRManager.DEFAULT_EXPAND_LINES));
+      expandBelow.addEventListener('click', () => this.expandContext(expandControls, 'down', PRManager.DEFAULT_EXPAND_LINES));
     }
 
     oldLineCell.appendChild(buttonContainer);
