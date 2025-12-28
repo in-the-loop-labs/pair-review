@@ -3673,3 +3673,237 @@ body {
   color: #ffca28;
 }
 
+/* ============================
+   Split Button Component
+   ============================ */
+
+.split-button-container {
+  display: inline-flex;
+  position: relative;
+}
+
+.split-button-main {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid;
+  border-radius: 6px 0 0 6px;
+  appearance: none;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+
+  /* Default state (no comments) */
+  background-color: #f6f8fa;
+  color: #656d76;
+  border-color: #d1d9e0;
+}
+
+.split-button-main:hover:not(:disabled) {
+  background-color: #f3f4f6;
+  border-color: #d0d7de;
+}
+
+/* With comments state */
+.split-button-main.has-comments {
+  background-color: #2ea043;
+  color: white;
+  border-color: #2b9c3a;
+}
+
+.split-button-main.has-comments:hover:not(:disabled) {
+  background-color: #2c974b;
+  border-color: #298e3d;
+}
+
+.split-button-dropdown-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 8px;
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid;
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  appearance: none;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+
+  /* Default state */
+  background-color: #f6f8fa;
+  color: #656d76;
+  border-color: #d1d9e0;
+}
+
+.split-button-dropdown-toggle:hover:not(:disabled) {
+  background-color: #f3f4f6;
+  border-color: #d0d7de;
+}
+
+/* With comments state */
+.split-button-dropdown-toggle.has-comments {
+  background-color: #2b9c3a;
+  color: white;
+  border-color: #2b9c3a;
+}
+
+.split-button-dropdown-toggle.has-comments:hover:not(:disabled) {
+  background-color: #268d34;
+  border-color: #298e3d;
+}
+
+.split-button-dropdown-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Dropdown menu */
+.split-button-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 160px;
+  background-color: #ffffff;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(140, 149, 159, 0.2);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.split-button-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 20px;
+  text-align: left;
+  color: #24292f;
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.split-button-menu-item:hover:not(:disabled) {
+  background-color: #f6f8fa;
+}
+
+.split-button-menu-item:disabled {
+  color: #8c959f;
+  cursor: not-allowed;
+}
+
+.split-button-menu-item-danger {
+  color: #cf222e;
+}
+
+.split-button-menu-item-danger:hover:not(:disabled) {
+  background-color: #ffebe9;
+  color: #cf222e;
+}
+
+.menu-item-check {
+  width: 20px;
+  font-size: 14px;
+  text-align: center;
+  color: #1f883d;
+}
+
+.menu-item-text {
+  flex: 1;
+}
+
+.split-button-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background-color: #d1d9e0;
+}
+
+/* Dark theme for split button */
+[data-theme="dark"] .split-button-main {
+  background-color: #21262d;
+  color: #7d8590;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .split-button-main:hover:not(:disabled) {
+  background-color: #292e36;
+  border-color: #3d434b;
+}
+
+[data-theme="dark"] .split-button-main.has-comments {
+  background-color: #238636;
+  color: white;
+  border-color: #2ea043;
+}
+
+[data-theme="dark"] .split-button-main.has-comments:hover:not(:disabled) {
+  background-color: #2ea043;
+  border-color: #3fb950;
+}
+
+[data-theme="dark"] .split-button-dropdown-toggle {
+  background-color: #21262d;
+  color: #7d8590;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .split-button-dropdown-toggle:hover:not(:disabled) {
+  background-color: #292e36;
+  border-color: #3d434b;
+}
+
+[data-theme="dark"] .split-button-dropdown-toggle.has-comments {
+  background-color: #1f7a30;
+  color: white;
+  border-color: #2ea043;
+}
+
+[data-theme="dark"] .split-button-dropdown-toggle.has-comments:hover:not(:disabled) {
+  background-color: #238636;
+  border-color: #3fb950;
+}
+
+[data-theme="dark"] .split-button-dropdown {
+  background-color: #161b22;
+  border-color: #30363d;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .split-button-menu-item {
+  color: #c9d1d9;
+}
+
+[data-theme="dark"] .split-button-menu-item:hover:not(:disabled) {
+  background-color: #21262d;
+}
+
+[data-theme="dark"] .split-button-menu-item:disabled {
+  color: #484f58;
+}
+
+[data-theme="dark"] .split-button-menu-item-danger {
+  color: #f85149;
+}
+
+[data-theme="dark"] .split-button-menu-item-danger:hover:not(:disabled) {
+  background-color: rgba(248, 81, 73, 0.1);
+  color: #f85149;
+}
+
+[data-theme="dark"] .menu-item-check {
+  color: #3fb950;
+}
+
+[data-theme="dark"] .split-button-menu-separator {
+  background-color: #30363d;
+}
+

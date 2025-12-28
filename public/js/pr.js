@@ -146,6 +146,8 @@ class PRManager {
     this.potentialDragStart = null;
     // Level filter state - default to 'final' (orchestrated suggestions)
     this.selectedLevel = 'final';
+    // Split button for comment actions
+    this.splitButton = null;
     this.init();
     this.initTheme();
     this.initSuggestionNavigator();
@@ -466,18 +468,7 @@ class PRManager {
             <button class="btn btn-primary" onclick="prManager.triggerAIAnalysis()">
               Analyze with AI
             </button>
-            <button class="btn btn-secondary" onclick="prManager.openPreviewModal()" title="Preview comments for copying">
-              Preview Comments
-            </button>
-            <button class="btn btn-secondary" id="clear-comments-btn" onclick="prManager.clearAllUserComments()" title="Clear all user comments" disabled>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.748 1.748 0 0 1 10.595 15h-5.19a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25Z"/>
-              </svg>
-              Clear Comments
-            </button>
-            <button class="btn review-button" id="review-button" onclick="prManager.openReviewModal()">
-              <span class="review-button-text">0 comments</span>
-            </button>
+            <div id="split-button-placeholder"></div>
           </div>
         </div>
         
@@ -512,7 +503,10 @@ class PRManager {
     if (!this.reviewModal) {
       this.reviewModal = new ReviewModal();
     }
-    
+
+    // Initialize split button for comment actions
+    this.initializeSplitButton();
+
     container.style.display = 'block';
   }
 
@@ -545,6 +539,55 @@ class PRManager {
         ${pr.deletions ? `<span class="stat-item deletions">-${pr.deletions}</span>` : ''}
       </div>
     `;
+  }
+
+  /**
+   * Initialize the split button for comment actions
+   */
+  async initializeSplitButton() {
+    const placeholder = document.getElementById('split-button-placeholder');
+    if (!placeholder) {
+      console.warn('[UI] Split button placeholder not found');
+      return;
+    }
+
+    // Fetch user config to get default action preference
+    let defaultAction = 'submit';
+    try {
+      const response = await fetch('/api/config');
+      if (response.ok) {
+        const config = await response.json();
+        defaultAction = config.comment_button_action || 'submit';
+      }
+    } catch (error) {
+      console.warn('[UI] Could not fetch config, using default action:', error);
+    }
+
+    // Create split button instance
+    this.splitButton = new SplitButton({
+      defaultAction: defaultAction,
+      onSubmit: () => this.openReviewModal(),
+      onPreview: () => this.openPreviewModal(),
+      onClear: () => this.clearAllUserComments(),
+      onSetDefault: async (action) => {
+        // Save default action preference to config
+        try {
+          await fetch('/api/config', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ comment_button_action: action })
+          });
+        } catch (error) {
+          console.warn('[UI] Could not save config preference:', error);
+        }
+      }
+    });
+
+    // Render and insert into placeholder
+    const buttonElement = this.splitButton.render();
+    placeholder.replaceWith(buttonElement);
+
+    console.log('[UI] Split button initialized with default action:', defaultAction);
   }
 
 
@@ -3351,8 +3394,14 @@ class PRManager {
    */
   updateCommentCount() {
     const userComments = document.querySelectorAll('.user-comment-row').length;
-    const reviewButton = document.getElementById('review-button');
 
+    // Update split button if available
+    if (this.splitButton) {
+      this.splitButton.updateCommentCount(userComments);
+    }
+
+    // Fallback: Update legacy review button if it exists (for compatibility)
+    const reviewButton = document.getElementById('review-button');
     if (reviewButton) {
       const buttonText = reviewButton.querySelector('.review-button-text');
       if (buttonText) {
@@ -3367,7 +3416,7 @@ class PRManager {
       }
     }
 
-    // Update Clear Comments button state
+    // Fallback: Update legacy Clear Comments button state if it exists
     const clearButton = document.getElementById('clear-comments-btn');
     if (clearButton) {
       clearButton.disabled = userComments === 0;

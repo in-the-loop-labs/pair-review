@@ -2091,11 +2091,73 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
  * Health check for PR API
  */
 router.get('/api/pr/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     service: 'pr-api',
-    timestamp: new Date().toISOString() 
+    timestamp: new Date().toISOString()
   });
+});
+
+/**
+ * Get user configuration (for frontend use)
+ * Returns safe-to-expose configuration values
+ */
+router.get('/api/config', (req, res) => {
+  const config = req.app.get('config') || {};
+
+  // Only return safe configuration values (not secrets like github_token)
+  res.json({
+    theme: config.theme || 'light',
+    comment_button_action: config.comment_button_action || 'submit'
+  });
+});
+
+/**
+ * Update user configuration
+ * Updates safe configuration values
+ */
+router.patch('/api/config', async (req, res) => {
+  try {
+    const { comment_button_action } = req.body;
+
+    // Validate comment_button_action if provided
+    if (comment_button_action !== undefined) {
+      if (!['submit', 'preview'].includes(comment_button_action)) {
+        return res.status(400).json({
+          error: 'Invalid comment_button_action. Must be "submit" or "preview"'
+        });
+      }
+    }
+
+    // Get current config
+    const config = req.app.get('config') || {};
+
+    // Update allowed fields
+    if (comment_button_action !== undefined) {
+      config.comment_button_action = comment_button_action;
+    }
+
+    // Save config to file
+    const { saveConfig } = require('../config');
+    await saveConfig(config);
+
+    // Update app config
+    req.app.set('config', config);
+
+    res.json({
+      success: true,
+      config: {
+        theme: config.theme || 'light',
+        comment_button_action: config.comment_button_action || 'submit'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error updating config:', error);
+    res.status(500).json({
+      error: 'Failed to update configuration'
+    });
+  }
 });
 
 module.exports = router;
