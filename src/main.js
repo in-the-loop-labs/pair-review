@@ -10,6 +10,24 @@ const open = (...args) => import('open').then(({default: open}) => open(...args)
 let db = null;
 
 /**
+ * Asynchronously cleanup stale worktrees (runs in background, doesn't block)
+ * @param {Object} config - Application configuration
+ */
+function cleanupStaleWorktreesAsync(config) {
+  // Run cleanup asynchronously - don't await, don't block startup
+  setImmediate(async () => {
+    try {
+      const retentionDays = config.worktree_retention_days || 7;
+      const worktreeManager = new GitWorktreeManager(db);
+      await worktreeManager.cleanupStaleWorktrees(retentionDays);
+    } catch (error) {
+      // Silently log error - cleanup failure shouldn't affect user experience
+      console.error('[pair-review] Background worktree cleanup error:', error.message);
+    }
+  });
+}
+
+/**
  * Parse command line arguments to separate PR arguments from flags
  * @param {Array<string>} args - Raw command line arguments
  * @returns {Object} { prArgs: Array<string>, flags: Object }
@@ -253,6 +271,9 @@ async function handlePullRequest(args, config, db, flags = {}) {
  */
 async function startServerOnly(config) {
   await startServer(db);
+
+  // Async cleanup of stale worktrees (don't block startup)
+  cleanupStaleWorktreesAsync(config);
 }
 
 /**
@@ -278,6 +299,9 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
 
   const { startServer } = require('./server');
   const actualPort = await startServer(db);
+
+  // Async cleanup of stale worktrees (don't block startup)
+  cleanupStaleWorktreesAsync(config);
 
   // Return the actual port the server started on
   return actualPort;

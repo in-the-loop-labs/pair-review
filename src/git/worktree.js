@@ -513,6 +513,83 @@ class GitWorktreeManager {
   }
 
   /**
+   * Cleanup stale worktrees that haven't been accessed within the retention period
+   * @param {number} retentionDays - Number of days to retain worktrees (default: 7)
+   * @returns {Promise<Object>} Cleanup result with count and details
+   */
+  async cleanupStaleWorktrees(retentionDays = 7) {
+    const result = {
+      cleaned: 0,
+      failed: 0,
+      errors: []
+    };
+
+    if (!this.worktreeRepo) {
+      console.log('[pair-review] No database connection, skipping stale worktree cleanup');
+      return result;
+    }
+
+    try {
+      // Calculate the cutoff date
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+      // Find stale worktrees from database
+      const staleWorktrees = await this.worktreeRepo.findStale(cutoffDate);
+
+      if (staleWorktrees.length === 0) {
+        return result;
+      }
+
+      console.log(`[pair-review] Found ${staleWorktrees.length} stale worktrees older than ${retentionDays} days`);
+
+      for (const worktree of staleWorktrees) {
+        try {
+          // Try to remove via git worktree remove first
+          try {
+            const git = simpleGit(path.dirname(worktree.path));
+            await git.raw(['worktree', 'remove', '--force', worktree.path]);
+            console.log(`[pair-review] Removed worktree via git: ${worktree.path}`);
+          } catch (gitError) {
+            // If git worktree remove fails, try manual directory removal
+            const exists = await this.pathExists(worktree.path);
+            if (exists) {
+              await this.removeDirectory(worktree.path);
+              console.log(`[pair-review] Removed worktree directory manually: ${worktree.path}`);
+            }
+          }
+
+          // Delete the database record
+          await this.worktreeRepo.delete(worktree.id);
+          result.cleaned++;
+
+        } catch (error) {
+          result.failed++;
+          result.errors.push({
+            id: worktree.id,
+            path: worktree.path,
+            error: error.message
+          });
+          console.warn(`[pair-review] Failed to cleanup worktree ${worktree.id}: ${error.message}`);
+        }
+      }
+
+      // Run git worktree prune to clean up orphaned registrations
+      await this.pruneWorktrees();
+
+      if (result.cleaned > 0) {
+        console.log(`[pair-review] Cleaned up ${result.cleaned} stale worktrees (older than ${retentionDays} days)`);
+      }
+
+    } catch (error) {
+      console.error('[pair-review] Error during stale worktree cleanup:', error.message);
+      result.errors.push({ error: error.message });
+    }
+
+    return result;
+  }
+
+  /**
    * Get worktree information
    * @param {string} worktreePath - Path to worktree
    * @returns {Promise<Object>} Worktree information
