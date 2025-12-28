@@ -1998,11 +1998,11 @@ class PRManager {
   }
 
   /**
-   * Helper function to dismiss/adopt and collapse AI suggestion
+   * Helper function to update status and collapse AI suggestion
    */
-  async dismissAndCollapseAISuggestion(suggestionId, suggestionRow, adoptedText = 'Suggestion adopted', status = 'dismissed') {
+  async collapseAISuggestion(suggestionId, suggestionRow, collapsedText = 'Suggestion adopted', status = 'dismissed') {
     // Update the AI suggestion status via API
-    const dismissResponse = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+    const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -2010,8 +2010,8 @@ class PRManager {
       body: JSON.stringify({ status })
     });
 
-    if (!dismissResponse.ok) {
-      throw new Error('Failed to dismiss suggestion');
+    if (!response.ok) {
+      throw new Error('Failed to update suggestion status');
     }
 
     // Collapse the AI suggestion in the UI
@@ -2022,7 +2022,7 @@ class PRManager {
         // Update collapsed content text
         const collapsedContent = suggestionDiv.querySelector('.collapsed-text');
         if (collapsedContent) {
-          collapsedContent.textContent = adoptedText;
+          collapsedContent.textContent = collapsedText;
         }
         // Update restore button for adopted suggestions
         const restoreButton = suggestionDiv.querySelector('.btn-restore');
@@ -2120,7 +2120,7 @@ class PRManager {
       const { suggestionRow, lineNumber, fileName } = this.getFileAndLineInfo(suggestionDiv);
 
       // Collapse the AI suggestion and mark as adopted
-      await this.dismissAndCollapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
+      await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
 
       // Create user comment from suggestion
       const newComment = await this.createUserCommentFromSuggestion(
@@ -2165,7 +2165,7 @@ class PRManager {
       const { suggestionRow, lineNumber, fileName } = this.getFileAndLineInfo(suggestionDiv);
 
       // Collapse the AI suggestion and mark as adopted
-      await this.dismissAndCollapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
+      await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
 
       // Create user comment from suggestion
       const newComment = await this.createUserCommentFromSuggestion(

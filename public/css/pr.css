@@ -2208,7 +2208,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .suggestion-item.dismissed {
   opacity: 0.5;
-  cursor: default;
+  background: var(--color-neutral-subtle, rgba(128, 128, 128, 0.1));
 }
 
 .suggestion-item.dismissed .suggestion-preview {
