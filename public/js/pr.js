@@ -43,6 +43,90 @@ class PRManager {
   // Threshold for small gaps - show single "expand all" button instead of directional buttons
   static SMALL_GAP_THRESHOLD = 10;
 
+  // Map of file extensions to highlight.js language names
+  static LANGUAGE_MAP = {
+    // JavaScript/TypeScript
+    'js': 'javascript',
+    'jsx': 'javascript',
+    'ts': 'typescript',
+    'tsx': 'typescript',
+    'mjs': 'javascript',
+    'cjs': 'javascript',
+    // Web
+    'html': 'html',
+    'htm': 'html',
+    'xml': 'xml',
+    'css': 'css',
+    'scss': 'scss',
+    'sass': 'sass',
+    'less': 'less',
+    // Python
+    'py': 'python',
+    'pyw': 'python',
+    // Ruby
+    'rb': 'ruby',
+    'erb': 'erb',
+    // PHP
+    'php': 'php',
+    // Java/Kotlin/Scala
+    'java': 'java',
+    'kt': 'kotlin',
+    'kts': 'kotlin',
+    'scala': 'scala',
+    // C/C++
+    'c': 'c',
+    'h': 'c',
+    'cpp': 'cpp',
+    'cc': 'cpp',
+    'cxx': 'cpp',
+    'hpp': 'cpp',
+    'hh': 'cpp',
+    // C#
+    'cs': 'csharp',
+    // Go
+    'go': 'go',
+    // Rust
+    'rs': 'rust',
+    // Swift
+    'swift': 'swift',
+    // Shell
+    'sh': 'bash',
+    'bash': 'bash',
+    'zsh': 'bash',
+    // SQL
+    'sql': 'sql',
+    // JSON/YAML
+    'json': 'json',
+    'yaml': 'yaml',
+    'yml': 'yaml',
+    // Markdown
+    'md': 'markdown',
+    'markdown': 'markdown',
+    // Config files
+    'toml': 'toml',
+    'ini': 'ini',
+    'conf': 'ini',
+    // Docker
+    'dockerfile': 'dockerfile',
+    // Others
+    'r': 'r',
+    'lua': 'lua',
+    'perl': 'perl',
+    'pl': 'perl',
+    'vim': 'vim'
+  };
+
+  /**
+   * Detect language from file name for syntax highlighting
+   * @param {string} fileName - The file name
+   * @returns {string} The highlight.js language name
+   */
+  static detectLanguage(fileName) {
+    if (!fileName) return 'plaintext';
+    const extension = fileName.split('.').pop().toLowerCase();
+    return PRManager.LANGUAGE_MAP[extension] || 'plaintext';
+  }
+
   constructor() {
     this.currentPR = null;
     this.loadingState = false;
@@ -777,7 +861,21 @@ class PRManager {
     if (content.length > 0 && (content[0] === '+' || content[0] === '-' || content[0] === ' ')) {
       content = content.substring(1);
     }
-    contentCell.textContent = content;
+
+    // Apply syntax highlighting if highlight.js is available
+    if (window.hljs && fileName) {
+      try {
+        const language = PRManager.detectLanguage(fileName);
+        const highlighted = hljs.highlight(content, { language, ignoreIllegals: true });
+        contentCell.innerHTML = highlighted.value;
+      } catch (e) {
+        // If highlighting fails, fall back to plain text
+        console.warn('Syntax highlighting failed:', e);
+        contentCell.textContent = content;
+      }
+    } else {
+      contentCell.textContent = content;
+    }
     
     row.appendChild(lineNumCell);
     row.appendChild(contentCell);
