@@ -251,6 +251,157 @@
             font-size: 14px;
         }
 
+        /* Start Review Section */
+        .start-review-section {
+            max-width: 600px;
+            margin: 0 auto 32px;
+            text-align: left;
+        }
+
+        .start-review-header {
+            margin-bottom: 12px;
+        }
+
+        .start-review-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--color-text-primary, #24292f);
+            margin: 0;
+        }
+
+        .start-review-form {
+            display: flex;
+            gap: 8px;
+        }
+
+        .start-review-input {
+            flex: 1;
+            padding: 8px 12px;
+            font-size: 14px;
+            line-height: 20px;
+            color: var(--color-text-primary, #24292f);
+            background-color: var(--color-bg-primary, #ffffff);
+            border: 1px solid var(--color-border-primary, #d1d9e0);
+            border-radius: 6px;
+            outline: none;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .start-review-input:focus {
+            border-color: #0969da;
+            box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+        }
+
+        .start-review-input::placeholder {
+            color: var(--color-text-tertiary, #656d76);
+        }
+
+        .start-review-input:disabled {
+            background-color: var(--color-bg-secondary, #f6f8fa);
+            cursor: not-allowed;
+        }
+
+        body[data-theme="dark"] .start-review-input {
+            background-color: #0d1117;
+            border-color: #30363d;
+            color: #c9d1d9;
+        }
+
+        body[data-theme="dark"] .start-review-input:focus {
+            border-color: #58a6ff;
+            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+        }
+
+        body[data-theme="dark"] .start-review-input::placeholder {
+            color: #8b949e;
+        }
+
+        .start-review-btn {
+            padding: 8px 16px;
+            font-size: 14px;
+            font-weight: 500;
+            line-height: 20px;
+            color: #ffffff;
+            background-color: #238636;
+            border: 1px solid rgba(27, 31, 36, 0.15);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background-color 0.15s ease;
+            white-space: nowrap;
+        }
+
+        .start-review-btn:hover:not(:disabled) {
+            background-color: #2ea043;
+        }
+
+        .start-review-btn:disabled {
+            background-color: #94d3a2;
+            cursor: not-allowed;
+        }
+
+        .start-review-error {
+            margin-top: 8px;
+            padding: 8px 12px;
+            font-size: 13px;
+            color: #cf222e;
+            background-color: #ffebe9;
+            border: 1px solid rgba(255, 129, 130, 0.4);
+            border-radius: 6px;
+            display: none;
+        }
+
+        body[data-theme="dark"] .start-review-error {
+            color: #f85149;
+            background-color: rgba(248, 81, 73, 0.1);
+            border-color: rgba(248, 81, 73, 0.4);
+        }
+
+        .start-review-error.visible {
+            display: block;
+        }
+
+        .start-review-loading {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+            font-size: 13px;
+            color: var(--color-text-secondary, #57606a);
+        }
+
+        .start-review-loading.visible {
+            display: flex;
+        }
+
+        .start-review-loading .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid #d1d9e0;
+            border-top-color: #0969da;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        body[data-theme="dark"] .start-review-loading .spinner {
+            border-color: #30363d;
+            border-top-color: #58a6ff;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .divider {
+            max-width: 600px;
+            margin: 0 auto 32px;
+            border: 0;
+            border-top: 1px solid var(--color-border-secondary, #e1e4e8);
+        }
+
+        body[data-theme="dark"] .divider {
+            border-top-color: #30363d;
+        }
+
         /* Responsive: smaller icon on mobile */
         @media (max-width: 768px) {
             .welcome-icon {
@@ -291,6 +442,33 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
   "theme": "light"
 }</code></pre>
         </div>
+
+        <!-- Start Review Section -->
+        <div class="start-review-section" id="start-review-section">
+            <div class="start-review-header">
+                <h3>Start a Review</h3>
+            </div>
+            <form class="start-review-form" id="start-review-form">
+                <input
+                    type="text"
+                    class="start-review-input"
+                    id="pr-url-input"
+                    placeholder="Enter GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)"
+                    autocomplete="off"
+                    spellcheck="false"
+                >
+                <button type="submit" class="start-review-btn" id="start-review-btn">
+                    Start Review
+                </button>
+            </form>
+            <div class="start-review-error" id="start-review-error"></div>
+            <div class="start-review-loading" id="start-review-loading">
+                <div class="spinner"></div>
+                <span id="start-review-loading-text">Creating worktree and fetching PR data...</span>
+            </div>
+        </div>
+
+        <hr class="divider" id="recent-reviews-divider">
 
         <!-- Recent Reviews Section -->
         <div class="recent-reviews-section" id="recent-reviews-section">
@@ -455,6 +633,7 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
         async function loadRecentReviews() {
             const container = document.getElementById('recent-reviews-container');
             const section = document.getElementById('recent-reviews-section');
+            const divider = document.getElementById('recent-reviews-divider');
 
             try {
                 const response = await fetch('/api/worktrees/recent?limit=10');
@@ -466,8 +645,9 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
                 const data = await response.json();
 
                 if (!data.success || !data.worktrees || data.worktrees.length === 0) {
-                    // Hide the section if there are no recent reviews
+                    // Hide the section and divider if there are no recent reviews
                     section.style.display = 'none';
+                    if (divider) divider.style.display = 'none';
                     return;
                 }
 
@@ -482,8 +662,174 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
 
             } catch (error) {
                 console.error('Error loading recent reviews:', error);
-                // Hide the section on error rather than showing an error message
+                // Hide the section and divider on error rather than showing an error message
                 section.style.display = 'none';
+                if (divider) divider.style.display = 'none';
+            }
+        }
+
+        /**
+         * Parse a GitHub PR URL and extract owner, repo, and PR number
+         * Supports:
+         *   - https://github.com/owner/repo/pull/123
+         *   - https://github.com/owner/repo/pull/123/files
+         *   - github.com/owner/repo/pull/123 (no protocol)
+         * @param {string} url - The PR URL to parse
+         * @returns {Object|null} { owner, repo, prNumber } or null if invalid
+         */
+        function parsePRUrl(url) {
+            if (!url || typeof url !== 'string') {
+                return null;
+            }
+
+            // Clean up the URL - trim whitespace
+            url = url.trim();
+
+            // Add https:// if no protocol is present
+            if (url.startsWith('github.com')) {
+                url = 'https://' + url;
+            }
+
+            try {
+                const urlObj = new URL(url);
+
+                // Verify it's a GitHub URL
+                if (urlObj.hostname !== 'github.com' && urlObj.hostname !== 'www.github.com') {
+                    return null;
+                }
+
+                // Parse the path: /owner/repo/pull/123[/files]
+                const pathParts = urlObj.pathname.split('/').filter(Boolean);
+
+                // Need at least: owner, repo, 'pull', number
+                if (pathParts.length < 4) {
+                    return null;
+                }
+
+                const [owner, repo, pullKeyword, prNumberStr] = pathParts;
+
+                // Verify 'pull' is in the correct position
+                if (pullKeyword !== 'pull') {
+                    return null;
+                }
+
+                // Parse PR number
+                const prNumber = parseInt(prNumberStr, 10);
+                if (isNaN(prNumber) || prNumber <= 0) {
+                    return null;
+                }
+
+                return { owner, repo, prNumber };
+            } catch (e) {
+                // Invalid URL
+                return null;
+            }
+        }
+
+        /**
+         * Set loading state for the start review form
+         * @param {boolean} loading - Whether to show loading state
+         * @param {string} text - Optional loading text
+         */
+        function setStartReviewLoading(loading, text = 'Creating worktree and fetching PR data...') {
+            const form = document.getElementById('start-review-form');
+            const input = document.getElementById('pr-url-input');
+            const btn = document.getElementById('start-review-btn');
+            const loadingEl = document.getElementById('start-review-loading');
+            const loadingText = document.getElementById('start-review-loading-text');
+            const errorEl = document.getElementById('start-review-error');
+
+            if (loading) {
+                input.disabled = true;
+                btn.disabled = true;
+                btn.textContent = 'Starting...';
+                loadingEl.classList.add('visible');
+                loadingText.textContent = text;
+                errorEl.classList.remove('visible');
+            } else {
+                input.disabled = false;
+                btn.disabled = false;
+                btn.textContent = 'Start Review';
+                loadingEl.classList.remove('visible');
+            }
+        }
+
+        /**
+         * Show error message for the start review form
+         * @param {string} message - Error message to display
+         */
+        function showStartReviewError(message) {
+            const errorEl = document.getElementById('start-review-error');
+            errorEl.textContent = message;
+            errorEl.classList.add('visible');
+        }
+
+        /**
+         * Handle start review form submission
+         * @param {Event} event - Form submit event
+         */
+        async function handleStartReview(event) {
+            event.preventDefault();
+
+            const input = document.getElementById('pr-url-input');
+            const url = input.value.trim();
+
+            // Clear previous errors
+            const errorEl = document.getElementById('start-review-error');
+            errorEl.classList.remove('visible');
+
+            // Validate input
+            if (!url) {
+                showStartReviewError('Please enter a GitHub PR URL');
+                input.focus();
+                return;
+            }
+
+            // Parse the URL
+            const parsed = parsePRUrl(url);
+            if (!parsed) {
+                showStartReviewError('Invalid PR URL. Please enter a valid GitHub pull request URL (e.g., https://github.com/owner/repo/pull/123)');
+                input.focus();
+                return;
+            }
+
+            // Show loading state
+            setStartReviewLoading(true, 'Fetching PR data from GitHub...');
+
+            try {
+                // Call the API to create the worktree
+                const response = await fetch('/api/worktrees/create', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        owner: parsed.owner,
+                        repo: parsed.repo,
+                        prNumber: parsed.prNumber
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to create worktree');
+                }
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to create worktree');
+                }
+
+                // Update loading text before redirect
+                setStartReviewLoading(true, 'Redirecting to review...');
+
+                // Redirect to the review page
+                window.location.href = data.reviewUrl;
+
+            } catch (error) {
+                console.error('Error starting review:', error);
+                setStartReviewLoading(false);
+                showStartReviewError(error.message || 'An unexpected error occurred. Please try again.');
             }
         }
 
@@ -496,6 +842,22 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
 
             if (isLandingPage && !urlParams.get('pr')) {
                 loadRecentReviews();
+
+                // Set up start review form handler
+                const form = document.getElementById('start-review-form');
+                if (form) {
+                    form.addEventListener('submit', handleStartReview);
+                }
+
+                // Allow Enter key to submit
+                const input = document.getElementById('pr-url-input');
+                if (input) {
+                    input.addEventListener('keypress', function(e) {
+                        if (e.key === 'Enter') {
+                            form.dispatchEvent(new Event('submit'));
+                        }
+                    });
+                }
             }
         });
     </script>
