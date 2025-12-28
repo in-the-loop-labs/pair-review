@@ -158,6 +158,7 @@ class SuggestionNavigator {
    * Update suggestions and rebuild the list
    */
   updateSuggestions(suggestions) {
+    // Keep adopted suggestions visible (de-emphasized), only filter out dismissed ones
     this.suggestions = suggestions.filter(s => s.status !== 'dismissed');
     this.currentSuggestionIndex = -1;
     this.renderSuggestionsList();
@@ -186,10 +187,12 @@ class SuggestionNavigator {
     listContainer.innerHTML = this.suggestions.map((suggestion, index) => {
       const typeIcon = this.getTypeIcon(suggestion.type);
       const preview = this.truncateText(suggestion.title || suggestion.body || '', 60);
-      
+
       const isDismissed = suggestion.status === 'dismissed';
+      const isAdopted = suggestion.status === 'adopted';
+      const statusClass = isAdopted ? 'adopted' : (isDismissed ? 'dismissed' : '');
       return `
-        <div class="suggestion-item ${isDismissed ? 'dismissed' : ''}" data-index="${index}" data-id="${suggestion.id}" data-type="${suggestion.type}" data-status="${suggestion.status || 'active'}">
+        <div class="suggestion-item ${statusClass}" data-index="${index}" data-id="${suggestion.id}" data-type="${suggestion.type}" data-status="${suggestion.status || 'active'}">
           <div class="suggestion-type-icon">${typeIcon}</div>
           <div class="suggestion-content">
             <div class="suggestion-preview">${this.escapeHtml(preview)}</div>
@@ -259,20 +262,27 @@ class SuggestionNavigator {
   }
 
   /**
+   * Check if a suggestion should be skipped during navigation
+   */
+  shouldSkipSuggestion(suggestion) {
+    return suggestion?.status === 'dismissed' || suggestion?.status === 'adopted';
+  }
+
+  /**
    * Navigate to next suggestion
    */
   goToNext() {
     if (this.suggestions.length === 0) return;
-    
-    // Find next non-dismissed suggestion
+
+    // Find next active suggestion (skip dismissed and adopted)
     let nextIndex = this.currentSuggestionIndex;
     let attempts = 0;
     do {
       nextIndex = (nextIndex + 1) % this.suggestions.length;
       attempts++;
-      if (attempts > this.suggestions.length) return; // All dismissed
-    } while (this.suggestions[nextIndex]?.status === 'dismissed');
-    
+      if (attempts > this.suggestions.length) return; // All dismissed or adopted
+    } while (this.shouldSkipSuggestion(this.suggestions[nextIndex]));
+
     this.goToSuggestion(nextIndex);
   }
 
@@ -281,18 +291,18 @@ class SuggestionNavigator {
    */
   goToPrevious() {
     if (this.suggestions.length === 0) return;
-    
-    // Find previous non-dismissed suggestion
+
+    // Find previous active suggestion (skip dismissed and adopted)
     let prevIndex = this.currentSuggestionIndex;
     let attempts = 0;
     do {
-      prevIndex = prevIndex <= 0 
-        ? this.suggestions.length - 1 
+      prevIndex = prevIndex <= 0
+        ? this.suggestions.length - 1
         : prevIndex - 1;
       attempts++;
-      if (attempts > this.suggestions.length) return; // All dismissed
-    } while (this.suggestions[prevIndex]?.status === 'dismissed');
-    
+      if (attempts > this.suggestions.length) return; // All dismissed or adopted
+    } while (this.shouldSkipSuggestion(this.suggestions[prevIndex]));
+
     this.goToSuggestion(prevIndex);
   }
 
