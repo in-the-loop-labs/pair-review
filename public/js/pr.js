@@ -318,14 +318,14 @@ class PRManager {
             </div>
             <div id="file-list" class="file-list"></div>
           </div>
-          <button class="sidebar-toggle-collapsed" id="sidebar-toggle-collapsed" title="Show sidebar" style="display: none;">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <path d="m4.177 7.823 2.396-2.396A.25.25 0 0 1 7 5.604v4.792a.25.25 0 0 1-.427.177L4.177 8.177a.25.25 0 0 1 0-.354Z"></path>
-              <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25H9.5v-13Zm12.5 13a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11v13Z"></path>
-            </svg>
-          </button>
           <div class="main-content">
             <div class="diff-header">
+              <button class="sidebar-toggle-collapsed" id="sidebar-toggle-collapsed" title="Show file tree">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="m4.177 7.823 2.396-2.396A.25.25 0 0 1 7 5.604v4.792a.25.25 0 0 1-.427.177L4.177 8.177a.25.25 0 0 1 0-.354Z"></path>
+                  <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25H9.5v-13Zm12.5 13a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11v13Z"></path>
+                </svg>
+              </button>
               <h2>Changes</h2>
               <div class="diff-stats" id="diff-stats"></div>
             </div>
@@ -3655,21 +3655,18 @@ class PRManager {
     const isCollapsed = localStorage.getItem('file-sidebar-collapsed') === 'true';
     if (isCollapsed) {
       sidebar.style.display = 'none';
-      collapsedBtn.style.display = 'flex';
-      mainContent.classList.add('sidebar-collapsed');
+      collapsedBtn.classList.add('visible');
     }
-    
+
     toggleBtn.addEventListener('click', () => {
       sidebar.style.display = 'none';
-      collapsedBtn.style.display = 'flex';
-      mainContent.classList.add('sidebar-collapsed');
+      collapsedBtn.classList.add('visible');
       localStorage.setItem('file-sidebar-collapsed', 'true');
     });
-    
+
     collapsedBtn.addEventListener('click', () => {
       sidebar.style.display = 'block';
-      collapsedBtn.style.display = 'none';
-      mainContent.classList.remove('sidebar-collapsed');
+      collapsedBtn.classList.remove('visible');
       localStorage.setItem('file-sidebar-collapsed', 'false');
     });
   }

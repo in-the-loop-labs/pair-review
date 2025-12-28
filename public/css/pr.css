@@ -668,6 +668,13 @@
   gap: 8px;
 }
 
+/* PR container layout - full width, no centering */
+#pr-container .container {
+  text-align: left;
+  max-width: none;
+  padding: 0 32px;
+}
+
 /* Files Sidebar */
 .files-sidebar {
   width: 240px;
@@ -718,19 +725,26 @@
 }
 
 .sidebar-toggle-collapsed {
-  position: fixed;
-  left: 24px;
-  top: 80px;
-  background: var(--color-bg-primary);
+  /* Display - hidden by default, use .visible class to show */
+  display: none;
+  align-items: center;
+  flex-shrink: 0;
+
+  /* Box model */
+  margin-right: 12px;
+  padding: 6px 10px;
   border: 1px solid var(--color-border-primary);
   border-radius: 6px;
-  padding: 8px;
-  cursor: pointer;
+
+  /* Visual */
+  background: var(--color-bg-primary);
   color: var(--color-text-secondary);
-  z-index: 1000;
+  cursor: pointer;
   transition: all 0.2s;
+}
+
+.sidebar-toggle-collapsed.visible {
   display: flex;
-  align-items: center;
 }
 
 .sidebar-toggle-collapsed svg {
@@ -870,21 +884,20 @@
 .main-content {
   flex: 1;
   min-width: 0;
-  transition: max-width 0.2s ease, margin-left 0.2s ease;
-}
-
-.main-content.sidebar-collapsed {
-  margin-left: 40px;
+  transition: max-width 0.2s ease;
 }
 
 .diff-header {
+  display: flex;
+  align-items: center;
   margin-bottom: 16px;
 }
 
 .diff-header h2 {
   font-size: 18px;
   font-weight: 600;
-  margin-bottom: 12px;
+  margin: 0;
+  margin-right: 16px;
 }
 
 .diff-stats {
@@ -1110,22 +1123,14 @@
 
 /* Responsive Design */
 
-.main-content.sidebar-collapsed {
-  margin-left: 40px;
-}
-
 /* Hide sidebar by default on small screens */
 @media (max-width: 768px) {
   .files-sidebar {
     display: none;
   }
-  
+
   .sidebar-toggle-collapsed {
-    display: block !important;
-  }
-  
-  .main-content {
-    margin-left: 40px !important;
+    display: flex !important;
   }
 
   #pr-container {
