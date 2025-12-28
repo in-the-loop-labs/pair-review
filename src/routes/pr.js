@@ -1,5 +1,5 @@
 const express = require('express');
-const { query, queryOne, run } = require('../database');
+const { query, queryOne, run, WorktreeRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const Analyzer = require('../ai/analyzer');
@@ -2100,6 +2100,55 @@ router.get('/api/pr/health', (req, res) => {
     service: 'pr-api',
     timestamp: new Date().toISOString()
   });
+});
+
+/**
+ * Get recently accessed worktrees
+ * Returns list of recently reviewed PRs with metadata
+ */
+router.get('/api/worktrees/recent', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Default 10, max 50
+    const db = req.app.get('db');
+
+    const worktreeRepo = new WorktreeRepository(db);
+    const recentWorktrees = await worktreeRepo.listRecent(limit);
+
+    // Enrich worktree data with PR metadata (title from pr_metadata table)
+    const enrichedWorktrees = await Promise.all(
+      recentWorktrees.map(async (worktree) => {
+        // Get PR metadata for title
+        const prMetadata = await queryOne(db, `
+          SELECT title, author, head_branch
+          FROM pr_metadata
+          WHERE pr_number = ? AND repository = ?
+        `, [worktree.pr_number, worktree.repository]);
+
+        return {
+          id: worktree.id,
+          repository: worktree.repository,
+          pr_number: worktree.pr_number,
+          pr_title: prMetadata?.title || `PR #${worktree.pr_number}`,
+          author: prMetadata?.author || null,
+          branch: worktree.branch,
+          head_branch: prMetadata?.head_branch || worktree.branch,
+          last_accessed_at: worktree.last_accessed_at,
+          created_at: worktree.created_at
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      worktrees: enrichedWorktrees
+    });
+
+  } catch (error) {
+    console.error('Error fetching recent worktrees:', error);
+    res.status(500).json({
+      error: 'Failed to fetch recent worktrees'
+    });
+  }
 });
 
 /**

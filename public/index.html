@@ -60,6 +60,33 @@
             box-shadow: 0 4px 16px rgba(255, 255, 255, 0.2);
         }
 
+        /* Dark theme overrides */
+        body[data-theme="dark"] {
+            background-color: #0d1117;
+            color: #c9d1d9;
+        }
+
+        body[data-theme="dark"] .welcome-section h1 {
+            color: #c9d1d9;
+        }
+
+        body[data-theme="dark"] .welcome-section p {
+            color: #8b949e;
+        }
+
+        body[data-theme="dark"] .usage-info {
+            background-color: #161b22;
+            border-color: #30363d;
+        }
+
+        body[data-theme="dark"] .usage-info h3 {
+            color: #c9d1d9;
+        }
+
+        body[data-theme="dark"] .usage-info code {
+            background-color: rgba(110, 118, 129, 0.2);
+        }
+
         .welcome-section h1 {
             font-size: 32px;
             font-weight: 600;
@@ -114,12 +141,127 @@
             padding: 0;
         }
 
+        /* Recent Reviews Section */
+        .recent-reviews-section {
+            max-width: 600px;
+            margin: 32px auto 0;
+            text-align: left;
+        }
+
+        .recent-reviews-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--color-border-secondary, #e1e4e8);
+        }
+
+        .recent-reviews-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--color-text-primary, #24292f);
+            margin: 0;
+        }
+
+        .recent-reviews-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .recent-review-item {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            padding: 12px 16px;
+            border: 1px solid var(--color-border-secondary, #e1e4e8);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            background: var(--color-bg-primary, #ffffff);
+            transition: background-color 0.15s ease, border-color 0.15s ease;
+            text-decoration: none;
+            color: inherit;
+            cursor: pointer;
+        }
+
+        .recent-review-item:hover {
+            background: var(--color-bg-secondary, #f6f8fa);
+            border-color: var(--color-border-primary, #d1d9e0);
+        }
+
+        .recent-review-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .recent-review-repo {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--color-text-link, #0969da);
+            margin-bottom: 2px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .recent-review-repo .pr-number {
+            color: var(--color-text-secondary, #57606a);
+            font-weight: 500;
+        }
+
+        .recent-review-title {
+            font-size: 14px;
+            color: var(--color-text-primary, #24292f);
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .recent-review-meta {
+            font-size: 12px;
+            color: var(--color-text-tertiary, #656d76);
+        }
+
+        .recent-review-arrow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            color: var(--color-text-tertiary, #656d76);
+            margin-left: 12px;
+            flex-shrink: 0;
+        }
+
+        .recent-reviews-empty {
+            text-align: center;
+            padding: 24px 16px;
+            color: var(--color-text-tertiary, #656d76);
+            font-size: 14px;
+            border: 1px dashed var(--color-border-secondary, #e1e4e8);
+            border-radius: 6px;
+        }
+
+        .recent-reviews-loading {
+            text-align: center;
+            padding: 24px 16px;
+            color: var(--color-text-tertiary, #656d76);
+            font-size: 14px;
+        }
+
         /* Responsive: smaller icon on mobile */
         @media (max-width: 768px) {
             .welcome-icon {
                 width: 72px;
                 height: 72px;
                 margin-bottom: 16px;
+            }
+
+            .recent-reviews-section {
+                margin-left: 10px;
+                margin-right: 10px;
             }
         }
     </style>
@@ -148,6 +290,16 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
   "port": 3000,
   "theme": "light"
 }</code></pre>
+        </div>
+
+        <!-- Recent Reviews Section -->
+        <div class="recent-reviews-section" id="recent-reviews-section">
+            <div class="recent-reviews-header">
+                <h3>Recent Reviews</h3>
+            </div>
+            <div id="recent-reviews-container" class="recent-reviews-loading">
+                Loading recent reviews...
+            </div>
         </div>
     </div>
 
@@ -225,6 +377,127 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
         if (urlParams.get('pr')) {
             document.getElementById('welcome-section').style.display = 'none';
         }
+
+        /**
+         * Format a relative time string from a date
+         * @param {string} dateString - ISO date string
+         * @returns {string} Human-readable relative time
+         */
+        function formatRelativeTime(dateString) {
+            const date = new Date(dateString);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffSecs = Math.floor(diffMs / 1000);
+            const diffMins = Math.floor(diffSecs / 60);
+            const diffHours = Math.floor(diffMins / 60);
+            const diffDays = Math.floor(diffHours / 24);
+
+            if (diffSecs < 60) {
+                return 'Just now';
+            } else if (diffMins < 60) {
+                return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
+            } else if (diffHours < 24) {
+                return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+            } else if (diffDays < 7) {
+                return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+            } else if (diffDays < 30) {
+                const weeks = Math.floor(diffDays / 7);
+                return `${weeks} week${weeks !== 1 ? 's' : ''} ago`;
+            } else {
+                const months = Math.floor(diffDays / 30);
+                return `${months} month${months !== 1 ? 's' : ''} ago`;
+            }
+        }
+
+        /**
+         * Render a single recent review item
+         * @param {Object} worktree - Worktree data
+         * @returns {string} HTML string for the item
+         */
+        function renderRecentReviewItem(worktree) {
+            const [owner, repo] = worktree.repository.split('/');
+            const link = `/pr/${owner}/${repo}/${worktree.pr_number}`;
+            const relativeTime = formatRelativeTime(worktree.last_accessed_at);
+
+            return `
+                <a href="${link}" class="recent-review-item">
+                    <div class="recent-review-content">
+                        <div class="recent-review-repo">
+                            <span>${worktree.repository}</span>
+                            <span class="pr-number">#${worktree.pr_number}</span>
+                        </div>
+                        <div class="recent-review-title">${escapeHtml(worktree.pr_title)}</div>
+                        <div class="recent-review-meta">Last opened: ${relativeTime}</div>
+                    </div>
+                    <div class="recent-review-arrow">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path fill-rule="evenodd" d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"></path>
+                        </svg>
+                    </div>
+                </a>
+            `;
+        }
+
+        /**
+         * Escape HTML special characters
+         * @param {string} text - Text to escape
+         * @returns {string} Escaped text
+         */
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text || '';
+            return div.innerHTML;
+        }
+
+        /**
+         * Fetch and display recent reviews
+         */
+        async function loadRecentReviews() {
+            const container = document.getElementById('recent-reviews-container');
+            const section = document.getElementById('recent-reviews-section');
+
+            try {
+                const response = await fetch('/api/worktrees/recent?limit=10');
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch recent reviews');
+                }
+
+                const data = await response.json();
+
+                if (!data.success || !data.worktrees || data.worktrees.length === 0) {
+                    // Hide the section if there are no recent reviews
+                    section.style.display = 'none';
+                    return;
+                }
+
+                // Render the list of recent reviews
+                const html = `
+                    <ul class="recent-reviews-list">
+                        ${data.worktrees.map(renderRecentReviewItem).join('')}
+                    </ul>
+                `;
+                container.innerHTML = html;
+                container.classList.remove('recent-reviews-loading');
+
+            } catch (error) {
+                console.error('Error loading recent reviews:', error);
+                // Hide the section on error rather than showing an error message
+                section.style.display = 'none';
+            }
+        }
+
+        // Load recent reviews when the page loads (only on landing page)
+        document.addEventListener('DOMContentLoaded', function() {
+            // Only load recent reviews if we're on the landing page (not viewing a specific PR)
+            const pathParts = window.location.pathname.split('/').filter(Boolean);
+            const isLandingPage = pathParts.length === 0 ||
+                                  (pathParts[0] !== 'pr' || pathParts.length < 4);
+
+            if (isLandingPage && !urlParams.get('pr')) {
+                loadRecentReviews();
+            }
+        });
     </script>
 </body>
 </html>
