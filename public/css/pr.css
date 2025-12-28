@@ -2211,7 +2211,11 @@ tr.newly-expanded .d2h-code-line-ctn {
   cursor: default;
 }
 
-.suggestion-item.dismissed .suggestion-preview,
+.suggestion-item.dismissed .suggestion-preview {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
 .suggestion-item.dismissed .type-badge {
   opacity: 0.6;
 }
@@ -2226,7 +2230,6 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .suggestion-item.adopted .suggestion-preview {
-  text-decoration: line-through;
   opacity: 0.7;
 }
 
