@@ -1998,16 +1998,16 @@ class PRManager {
   }
 
   /**
-   * Helper function to dismiss and collapse AI suggestion
+   * Helper function to dismiss/adopt and collapse AI suggestion
    */
-  async dismissAndCollapseAISuggestion(suggestionId, suggestionRow, adoptedText = 'Suggestion adopted') {
-    // Dismiss the AI suggestion via API
+  async dismissAndCollapseAISuggestion(suggestionId, suggestionRow, adoptedText = 'Suggestion adopted', status = 'dismissed') {
+    // Update the AI suggestion status via API
     const dismissResponse = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ status: 'dismissed' })
+      body: JSON.stringify({ status })
     });
 
     if (!dismissResponse.ok) {
@@ -2119,14 +2119,14 @@ class PRManager {
       // Get file and line information using helper
       const { suggestionRow, lineNumber, fileName } = this.getFileAndLineInfo(suggestionDiv);
 
-      // Dismiss and collapse the AI suggestion
-      await this.dismissAndCollapseAISuggestion(suggestionId, suggestionRow);
-      
+      // Collapse the AI suggestion and mark as adopted
+      await this.dismissAndCollapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
+
       // Create user comment from suggestion
       const newComment = await this.createUserCommentFromSuggestion(
         suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle
       );
-      
+
       // Display the new user comment in edit mode BELOW the suggestion row
       this.displayUserCommentInEditMode(newComment, suggestionRow);
 
@@ -2164,14 +2164,14 @@ class PRManager {
       // Get file and line information using helper
       const { suggestionRow, lineNumber, fileName } = this.getFileAndLineInfo(suggestionDiv);
 
-      // Dismiss and collapse the AI suggestion
-      await this.dismissAndCollapseAISuggestion(suggestionId, suggestionRow);
-      
+      // Collapse the AI suggestion and mark as adopted
+      await this.dismissAndCollapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
+
       // Create user comment from suggestion
       const newComment = await this.createUserCommentFromSuggestion(
         suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle
       );
-      
+
       // Display the new user comment in read-only mode (not edit mode)
       this.displayUserComment(newComment, suggestionRow);
 
