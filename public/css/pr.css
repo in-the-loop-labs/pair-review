@@ -2220,6 +2220,30 @@ tr.newly-expanded .d2h-code-line-ctn {
   opacity: 0.4;
 }
 
+.suggestion-item.adopted {
+  opacity: 0.6;
+  cursor: default;
+  background: var(--color-success-subtle, rgba(46, 160, 67, 0.1));
+}
+
+.suggestion-item.adopted .suggestion-preview {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.suggestion-item.adopted .type-badge {
+  opacity: 0.6;
+}
+
+.suggestion-item.adopted .suggestion-type-icon svg {
+  fill: var(--color-success-fg, #3fb950);
+  opacity: 0.6;
+}
+
+.suggestion-item.adopted:hover {
+  background: var(--color-success-subtle, rgba(46, 160, 67, 0.15));
+}
+
 .suggestion-item.current {
   background: var(--color-accent-light);
   box-shadow: inset 3px 0 0 var(--color-accent-primary);

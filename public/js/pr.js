@@ -2129,15 +2129,15 @@ class PRManager {
       
       // Display the new user comment in edit mode BELOW the suggestion row
       this.displayUserCommentInEditMode(newComment, suggestionRow);
-      
-      // Update the suggestion navigator
+
+      // Update the suggestion navigator - mark as 'adopted' (not 'dismissed') to keep visible but de-emphasized
       if (this.suggestionNavigator && this.suggestionNavigator.suggestions) {
-        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s => 
-          s.id === suggestionId ? { ...s, status: 'dismissed' } : s
+        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
+          s.id === suggestionId ? { ...s, status: 'adopted' } : s
         );
         this.suggestionNavigator.updateSuggestions(updatedSuggestions);
       }
-      
+
       // Update comment count
       this.updateCommentCount();
 
@@ -2174,15 +2174,15 @@ class PRManager {
       
       // Display the new user comment in read-only mode (not edit mode)
       this.displayUserComment(newComment, suggestionRow);
-      
-      // Update the suggestion navigator
+
+      // Update the suggestion navigator - mark as 'adopted' (not 'dismissed') to keep visible but de-emphasized
       if (this.suggestionNavigator && this.suggestionNavigator.suggestions) {
-        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s => 
-          s.id === suggestionId ? { ...s, status: 'dismissed' } : s
+        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
+          s.id === suggestionId ? { ...s, status: 'adopted' } : s
         );
         this.suggestionNavigator.updateSuggestions(updatedSuggestions);
       }
-      
+
       // Update comment count
       this.updateCommentCount();
 
