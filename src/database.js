@@ -84,6 +84,19 @@ const SCHEMA_SQL = {
       pr_data TEXT,
       UNIQUE(pr_number, repository)
     )
+  `,
+
+  worktrees: `
+    CREATE TABLE IF NOT EXISTS worktrees (
+      id TEXT PRIMARY KEY,
+      pr_number INTEGER NOT NULL,
+      repository TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_accessed_at TEXT NOT NULL,
+      UNIQUE(pr_number, repository)
+    )
   `
 };
 
@@ -95,7 +108,9 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start)',
   'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
   'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)'
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
+  'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
+  'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)'
 ];
 
 /**
@@ -373,6 +388,310 @@ async function getDatabaseStatus(db) {
   }
 }
 
+/**
+ * Generate a random alphanumeric ID (beads-style)
+ * @param {number} length - Length of the ID (default: 3)
+ * @returns {string} Random alphanumeric ID
+ */
+function generateWorktreeId(length = 3) {
+  const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+/**
+ * WorktreeRepository class for managing worktree database records
+ */
+class WorktreeRepository {
+  /**
+   * Create a new WorktreeRepository instance
+   * @param {sqlite3.Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a new worktree record
+   * @param {Object} prInfo - PR information { prNumber, repository, branch, path }
+   * @returns {Promise<Object>} Created worktree record
+   */
+  async create(prInfo) {
+    const { prNumber, repository, branch, path: worktreePath } = prInfo;
+
+    // Generate unique ID (retry if collision)
+    let id;
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      id = generateWorktreeId();
+      const existing = await queryOne(this.db,
+        'SELECT id FROM worktrees WHERE id = ?',
+        [id]
+      );
+      if (!existing) break;
+      attempts++;
+    }
+
+    if (attempts >= maxAttempts) {
+      throw new Error('Failed to generate unique worktree ID after maximum attempts');
+    }
+
+    const now = new Date().toISOString();
+
+    await run(this.db, `
+      INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [id, prNumber, repository, branch, worktreePath, now, now]);
+
+    return {
+      id,
+      pr_number: prNumber,
+      repository,
+      branch,
+      path: worktreePath,
+      created_at: now,
+      last_accessed_at: now
+    };
+  }
+
+  /**
+   * Find a worktree by PR number and repository
+   * @param {number} prNumber - Pull request number
+   * @param {string} repository - Repository in owner/repo format
+   * @returns {Promise<Object|null>} Worktree record or null if not found
+   */
+  async findByPR(prNumber, repository) {
+    const row = await queryOne(this.db, `
+      SELECT id, pr_number, repository, branch, path, created_at, last_accessed_at
+      FROM worktrees
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    return row || null;
+  }
+
+  /**
+   * Find a worktree by its ID
+   * @param {string} id - Worktree ID
+   * @returns {Promise<Object|null>} Worktree record or null if not found
+   */
+  async findById(id) {
+    const row = await queryOne(this.db, `
+      SELECT id, pr_number, repository, branch, path, created_at, last_accessed_at
+      FROM worktrees
+      WHERE id = ?
+    `, [id]);
+
+    return row || null;
+  }
+
+  /**
+   * Update the last_accessed_at timestamp for a worktree
+   * @param {string} id - Worktree ID
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async updateLastAccessed(id) {
+    const now = new Date().toISOString();
+    const result = await run(this.db, `
+      UPDATE worktrees
+      SET last_accessed_at = ?
+      WHERE id = ?
+    `, [now, id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Find worktrees that haven't been accessed since a given date
+   * @param {Date|string} olderThan - Date threshold (worktrees not accessed since this date)
+   * @returns {Promise<Array<Object>>} Array of stale worktree records
+   */
+  async findStale(olderThan) {
+    const dateStr = olderThan instanceof Date ? olderThan.toISOString() : olderThan;
+
+    const rows = await query(this.db, `
+      SELECT id, pr_number, repository, branch, path, created_at, last_accessed_at
+      FROM worktrees
+      WHERE last_accessed_at < ?
+      ORDER BY last_accessed_at ASC
+    `, [dateStr]);
+
+    return rows;
+  }
+
+  /**
+   * Delete a worktree record by ID
+   * @param {string} id - Worktree ID
+   * @returns {Promise<boolean>} True if record was deleted
+   */
+  async delete(id) {
+    const result = await run(this.db, `
+      DELETE FROM worktrees WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * List recently accessed worktrees
+   * @param {number} limit - Maximum number of records to return (default: 10)
+   * @returns {Promise<Array<Object>>} Array of worktree records ordered by last_accessed_at DESC
+   */
+  async listRecent(limit = 10) {
+    const rows = await query(this.db, `
+      SELECT id, pr_number, repository, branch, path, created_at, last_accessed_at
+      FROM worktrees
+      ORDER BY last_accessed_at DESC
+      LIMIT ?
+    `, [limit]);
+
+    return rows;
+  }
+
+  /**
+   * Update the path of an existing worktree record
+   * @param {string} id - Worktree ID
+   * @param {string} newPath - New filesystem path
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async updatePath(id, newPath) {
+    const now = new Date().toISOString();
+    const result = await run(this.db, `
+      UPDATE worktrees
+      SET path = ?, last_accessed_at = ?
+      WHERE id = ?
+    `, [newPath, now, id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Get or create a worktree record (upsert-like behavior)
+   * If a worktree exists for the PR, update its last_accessed_at and return it
+   * Otherwise, create a new record
+   * @param {Object} prInfo - PR information { prNumber, repository, branch, path }
+   * @returns {Promise<Object>} Worktree record (existing or newly created)
+   */
+  async getOrCreate(prInfo) {
+    const { prNumber, repository } = prInfo;
+
+    // Check if worktree already exists
+    const existing = await this.findByPR(prNumber, repository);
+
+    if (existing) {
+      // Update last_accessed_at and potentially the path
+      const now = new Date().toISOString();
+      await run(this.db, `
+        UPDATE worktrees
+        SET path = ?, branch = ?, last_accessed_at = ?
+        WHERE id = ?
+      `, [prInfo.path, prInfo.branch, now, existing.id]);
+
+      return {
+        ...existing,
+        path: prInfo.path,
+        branch: prInfo.branch,
+        last_accessed_at: now
+      };
+    }
+
+    // Create new record
+    return this.create(prInfo);
+  }
+
+  /**
+   * Count total worktrees in the database
+   * @returns {Promise<number>} Total count
+   */
+  async count() {
+    const result = await queryOne(this.db, 'SELECT COUNT(*) as count FROM worktrees');
+    return result ? result.count : 0;
+  }
+}
+
+/**
+ * Migrate existing worktrees from filesystem to database
+ * Scans the worktrees directory and creates records for any worktrees not in the DB
+ * @param {sqlite3.Database} db - Database instance
+ * @param {string} worktreeBaseDir - Base directory for worktrees
+ * @returns {Promise<Object>} Migration result with counts
+ */
+async function migrateExistingWorktrees(db, worktreeBaseDir) {
+  const result = { migrated: 0, skipped: 0, errors: [] };
+
+  try {
+    // Check if worktree directory exists
+    try {
+      await fs.access(worktreeBaseDir);
+    } catch (e) {
+      // Directory doesn't exist, nothing to migrate
+      return result;
+    }
+
+    // Get list of existing worktree directories
+    const entries = await fs.readdir(worktreeBaseDir, { withFileTypes: true });
+    const repo = new WorktreeRepository(db);
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      // Parse directory name: expected format is owner-repo-number
+      const match = entry.name.match(/^(.+)-(.+)-(\d+)$/);
+      if (!match) {
+        console.log(`Skipping non-matching directory: ${entry.name}`);
+        result.skipped++;
+        continue;
+      }
+
+      const [, owner, repoName, numberStr] = match;
+      const prNumber = parseInt(numberStr, 10);
+      const repository = `${owner}/${repoName}`;
+      const worktreePath = path.join(worktreeBaseDir, entry.name);
+
+      // Check if already in database
+      const existing = await repo.findByPR(prNumber, repository);
+      if (existing) {
+        result.skipped++;
+        continue;
+      }
+
+      // Try to get branch info from the worktree's git state
+      let branch = 'unknown';
+      try {
+        const headFile = path.join(worktreePath, '.git');
+        const headContent = await fs.readFile(headFile, 'utf8');
+        // .git file in worktree contains: gitdir: /path/to/main/repo/.git/worktrees/name
+        // We'd need to read the actual HEAD to get branch, but 'unknown' is acceptable for migration
+      } catch (e) {
+        // Ignore errors reading git state
+      }
+
+      // Create record for this worktree
+      try {
+        await repo.create({
+          prNumber,
+          repository,
+          branch,
+          path: worktreePath
+        });
+        console.log(`Migrated worktree: ${entry.name} -> PR #${prNumber} in ${repository}`);
+        result.migrated++;
+      } catch (createError) {
+        result.errors.push({ directory: entry.name, error: createError.message });
+      }
+    }
+  } catch (error) {
+    result.errors.push({ directory: 'root', error: error.message });
+  }
+
+  return result;
+}
+
 module.exports = {
   initializeDatabase,
   closeDatabase,
@@ -380,5 +699,8 @@ module.exports = {
   queryOne,
   run,
   getDatabaseStatus,
-  DB_PATH
+  DB_PATH,
+  WorktreeRepository,
+  generateWorktreeId,
+  migrateExistingWorktrees
 };

@@ -1,5 +1,5 @@
 const { loadConfig } = require('./config');
-const { initializeDatabase, run, queryOne, query } = require('./database');
+const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
@@ -66,6 +66,18 @@ async function main() {
     // Initialize database
     console.log('Initializing database...');
     db = await initializeDatabase();
+
+    // Migrate existing worktrees to database (if any)
+    const { getConfigDir } = require('./config');
+    const path = require('path');
+    const worktreeBaseDir = path.join(getConfigDir(), 'worktrees');
+    const migrationResult = await migrateExistingWorktrees(db, worktreeBaseDir);
+    if (migrationResult.migrated > 0) {
+      console.log(`Migrated ${migrationResult.migrated} existing worktrees to database`);
+    }
+    if (migrationResult.errors.length > 0) {
+      console.warn('Some worktrees could not be migrated:', migrationResult.errors);
+    }
 
     // Parse command line arguments including flags
     const { prArgs, flags } = parseArgs(args);
@@ -287,7 +299,16 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
   await run(db, 'BEGIN TRANSACTION');
 
   try {
-    // Prepare extended PR data
+    // Store or update worktree record
+    const worktreeRepo = new WorktreeRepository(db);
+    await worktreeRepo.getOrCreate({
+      prNumber: prInfo.number,
+      repository,
+      branch: prData.head_branch,
+      path: worktreePath
+    });
+
+    // Prepare extended PR data (keep worktree_path for backward compat, but DB is source of truth)
     const extendedPRData = {
       ...prData,
       diff: diff,
