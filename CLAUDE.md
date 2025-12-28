@@ -106,6 +106,7 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 - Offline mode
 
 ## Development Notes
+- **Git workflow**: Ask before committing to main or pushing to remote
 - Package name: `pair-review`
 - No specific Node version requirement (use modern/recent)
 - Adapter pattern for AI providers to enable future extensibility
