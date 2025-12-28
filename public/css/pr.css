@@ -2222,7 +2222,6 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .suggestion-item.adopted {
   opacity: 0.6;
-  cursor: default;
   background: var(--color-success-subtle, rgba(46, 160, 67, 0.1));
 }
 

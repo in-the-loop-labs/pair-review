@@ -158,8 +158,8 @@ class SuggestionNavigator {
    * Update suggestions and rebuild the list
    */
   updateSuggestions(suggestions) {
-    // Keep adopted suggestions visible (de-emphasized), only filter out dismissed ones
-    this.suggestions = suggestions.filter(s => s.status !== 'dismissed');
+    // Keep all suggestions visible (adopted and dismissed are de-emphasized but navigatable)
+    this.suggestions = suggestions;
     this.currentSuggestionIndex = -1;
     this.renderSuggestionsList();
     this.updateCounter();
@@ -191,8 +191,15 @@ class SuggestionNavigator {
       const isDismissed = suggestion.status === 'dismissed';
       const isAdopted = suggestion.status === 'adopted';
       const statusClass = isAdopted ? 'adopted' : (isDismissed ? 'dismissed' : '');
+
+      // Build tooltip with file location info
+      const locationInfo = suggestion.file
+        ? `${suggestion.file}${suggestion.line_start ? ':' + suggestion.line_start : ''}`
+        : '';
+      const tooltip = locationInfo || 'Location unknown';
+
       return `
-        <div class="suggestion-item ${statusClass}" data-index="${index}" data-id="${suggestion.id}" data-type="${suggestion.type}" data-status="${suggestion.status || 'active'}">
+        <div class="suggestion-item ${statusClass}" data-index="${index}" data-id="${suggestion.id}" data-type="${suggestion.type}" data-status="${suggestion.status || 'active'}" title="${this.escapeHtml(tooltip)}">
           <div class="suggestion-type-icon">${typeIcon}</div>
           <div class="suggestion-content">
             <div class="suggestion-preview">${this.escapeHtml(preview)}</div>
