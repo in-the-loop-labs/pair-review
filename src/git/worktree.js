@@ -39,6 +39,26 @@ class GitWorktreeManager {
     if (worktreeRecord) {
       // Use existing worktree path from DB
       worktreePath = worktreeRecord.path;
+
+      // Check if the directory still exists on disk
+      const directoryExists = await this.pathExists(worktreePath);
+
+      if (directoryExists) {
+        // Try to reuse existing worktree by refreshing it
+        console.log(`Found existing worktree for PR #${prInfo.number} at ${worktreePath}`);
+        try {
+          return await this.refreshWorktree(worktreeRecord, prInfo.number);
+        } catch (refreshError) {
+          // If refresh fails due to uncommitted changes, propagate that error
+          if (refreshError.message.includes('uncommitted changes')) {
+            throw refreshError;
+          }
+          // For other errors, log and fall through to recreate
+          console.log(`Could not refresh existing worktree, will recreate: ${refreshError.message}`);
+        }
+      } else {
+        console.log(`Worktree directory no longer exists at ${worktreePath}, will recreate`);
+      }
     } else {
       // Generate new random ID for worktree directory
       const worktreeId = generateWorktreeId();
@@ -47,10 +67,10 @@ class GitWorktreeManager {
 
     try {
       console.log(`Creating worktree for PR #${prInfo.number} at ${worktreePath}`);
-      
+
       // Ensure worktree base directory exists
       await this.ensureWorktreeBaseDir();
-      
+
       // Clean up existing worktree if it exists
       await this.cleanupWorktree(worktreePath);
       
@@ -425,6 +445,70 @@ class GitWorktreeManager {
       console.log('Pruned stale worktree registrations');
     } catch (error) {
       console.log('Could not prune worktrees (this is normal if not in a git repo):', error.message);
+    }
+  }
+
+  /**
+   * Check if a worktree has uncommitted local changes
+   * @param {string} worktreePath - Path to worktree
+   * @returns {Promise<boolean>} True if there are uncommitted changes
+   */
+  async hasLocalChanges(worktreePath) {
+    try {
+      const git = simpleGit(worktreePath);
+      const status = await git.raw(['status', '--porcelain']);
+      return status.trim().length > 0;
+    } catch (error) {
+      console.error('Error checking for local changes:', error);
+      throw new Error(`Failed to check for local changes: ${error.message}`);
+    }
+  }
+
+  /**
+   * Refresh an existing worktree with latest PR changes from remote
+   * @param {Object} worktreeRecord - Database record for the worktree
+   * @param {number} prNumber - PR number to refresh
+   * @returns {Promise<string>} Path to the refreshed worktree
+   * @throws {Error} If worktree has uncommitted changes
+   */
+  async refreshWorktree(worktreeRecord, prNumber) {
+    const worktreePath = worktreeRecord.path;
+
+    try {
+      console.log(`Refreshing existing worktree for PR #${prNumber} at ${worktreePath}`);
+
+      // Check for uncommitted changes
+      const hasChanges = await this.hasLocalChanges(worktreePath);
+      if (hasChanges) {
+        throw new Error(`Worktree has uncommitted changes. Please resolve manually at: ${worktreePath}`);
+      }
+
+      const git = simpleGit(worktreePath);
+
+      // Fetch the latest PR head from remote
+      console.log(`Fetching PR #${prNumber} head from remote...`);
+      await git.fetch(['origin', `pull/${prNumber}/head`]);
+
+      // Reset to the fetched PR head
+      console.log(`Resetting worktree to PR head...`);
+      await git.raw(['reset', '--hard', 'FETCH_HEAD']);
+
+      // Update last_accessed_at in database
+      if (this.worktreeRepo) {
+        await this.worktreeRepo.updateLastAccessed(worktreeRecord.id);
+        console.log(`Updated last_accessed_at timestamp for worktree`);
+      }
+
+      console.log(`Worktree refreshed successfully at ${worktreePath}`);
+      return worktreePath;
+
+    } catch (error) {
+      // Re-throw errors about uncommitted changes as-is
+      if (error.message.includes('uncommitted changes')) {
+        throw error;
+      }
+      console.error('Error refreshing worktree:', error);
+      throw new Error(`Failed to refresh worktree: ${error.message}`);
     }
   }
 
