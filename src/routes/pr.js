@@ -221,7 +221,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     const prData = await githubClient.fetchPullRequest(owner, repo, prNumber);
 
     // Update worktree with latest changes
-    const worktreeManager = new GitWorktreeManager();
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.updateWorktree(owner, repo, prNumber, prData.base_branch, prData.head_sha);
 
     // Generate fresh diff and get changed files
@@ -487,21 +487,22 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
     
     const prNumber = parseInt(number);
     if (isNaN(prNumber) || prNumber <= 0) {
-      return res.status(400).json({ 
-        error: 'Invalid pull request number' 
+      return res.status(400).json({
+        error: 'Invalid pull request number'
       });
     }
 
-    const worktreeManager = new GitWorktreeManager();
+    const db = req.app.get('db');
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
-    
+
     // Check if worktree exists
     if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
-      return res.status(404).json({ 
-        error: 'Worktree not found for this PR. The PR may need to be reloaded.' 
+      return res.status(404).json({
+        error: 'Worktree not found for this PR. The PR may need to be reloaded.'
       });
     }
-    
+
     // Construct file path in worktree (use base branch version)
     const filePath = path.join(worktreePath, fileName);
     
@@ -562,7 +563,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     const repository = `${owner}/${repo}`;
 
     // Check if PR exists in database
-    const prMetadata = await queryOne(req.app.get('db'), `
+    const db = req.app.get('db');
+    const prMetadata = await queryOne(db, `
       SELECT id, base_branch, title, description, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
@@ -586,13 +588,13 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     prMetadata.head_sha = prData.head_sha;
 
     // Get worktree path
-    const worktreeManager = new GitWorktreeManager();
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
-    
+
     // Check if worktree exists
     if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
-      return res.status(404).json({ 
-        error: 'Worktree not found for this PR. Please reload the PR.' 
+      return res.status(404).json({
+        error: 'Worktree not found for this PR. Please reload the PR.'
       });
     }
 
@@ -796,7 +798,8 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
     const repository = `${owner}/${repo}`;
 
     // Check if PR exists in database
-    const prMetadata = await queryOne(req.app.get('db'), `
+    const db = req.app.get('db');
+    const prMetadata = await queryOne(db, `
       SELECT id, base_branch, title, description, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
@@ -820,19 +823,19 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
     prMetadata.head_sha = prData.head_sha;
 
     // Get worktree path
-    const worktreeManager = new GitWorktreeManager();
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
-    
+
     // Check if worktree exists
     if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
-      return res.status(404).json({ 
-        error: 'Worktree not found for this PR. Please reload the PR.' 
+      return res.status(404).json({
+        error: 'Worktree not found for this PR. Please reload the PR.'
       });
     }
 
     // Create analysis ID
     const analysisId = uuidv4();
-    
+
     // Store analysis status
     const initialStatus = {
       id: analysisId,
@@ -930,17 +933,18 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
   try {
     const { owner, repo, pr } = req.params;
     const prNumber = parseInt(pr);
-    
+
     if (isNaN(prNumber) || prNumber <= 0) {
-      return res.status(400).json({ 
-        error: 'Invalid pull request number' 
+      return res.status(400).json({
+        error: 'Invalid pull request number'
       });
     }
 
     const repository = `${owner}/${repo}`;
 
     // Check if PR exists in database
-    const prMetadata = await queryOne(req.app.get('db'), `
+    const db = req.app.get('db');
+    const prMetadata = await queryOne(db, `
       SELECT id, base_branch, title, description, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
@@ -964,13 +968,13 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
     prMetadata.head_sha = prData.head_sha;
 
     // Get worktree path
-    const worktreeManager = new GitWorktreeManager();
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
 
     // Check if worktree exists
     if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
-      return res.status(404).json({ 
-        error: 'Worktree not found for this PR. Please reload the PR.' 
+      return res.status(404).json({
+        error: 'Worktree not found for this PR. Please reload the PR.'
       });
     }
 
@@ -1957,9 +1961,9 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     }
 
     // Get worktree path and generate diff for position calculation
-    const worktreeManager = new GitWorktreeManager();
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
-    
+
     let diffContent = '';
     try {
       diffContent = await worktreeManager.generateUnifiedDiff(worktreePath, prData);

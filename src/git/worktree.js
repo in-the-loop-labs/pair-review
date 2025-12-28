@@ -3,13 +3,20 @@ const path = require('path');
 const fs = require('fs').promises;
 const os = require('os');
 const { getConfigDir } = require('../config');
+const { WorktreeRepository, generateWorktreeId } = require('../database');
 
 /**
  * Git worktree manager for handling PR branch checkouts and diffs
  */
 class GitWorktreeManager {
-  constructor() {
+  /**
+   * Create a new GitWorktreeManager instance
+   * @param {sqlite3.Database} [db] - Optional database instance for worktree tracking
+   */
+  constructor(db = null) {
     this.worktreeBaseDir = path.join(getConfigDir(), 'worktrees');
+    this.db = db;
+    this.worktreeRepo = db ? new WorktreeRepository(db) : null;
   }
 
   /**
@@ -20,8 +27,24 @@ class GitWorktreeManager {
    * @returns {Promise<string>} Path to created worktree
    */
   async createWorktreeForPR(prInfo, prData, repositoryPath) {
-    const worktreePath = await this.getWorktreePath(prInfo);
-    
+    // Check if worktree already exists in DB
+    const repository = `${prInfo.owner}/${prInfo.repo}`;
+    let worktreePath;
+    let worktreeRecord = null;
+
+    if (this.worktreeRepo) {
+      worktreeRecord = await this.worktreeRepo.findByPR(prInfo.number, repository);
+    }
+
+    if (worktreeRecord) {
+      // Use existing worktree path from DB
+      worktreePath = worktreeRecord.path;
+    } else {
+      // Generate new random ID for worktree directory
+      const worktreeId = generateWorktreeId();
+      worktreePath = path.join(this.worktreeBaseDir, worktreeId);
+    }
+
     try {
       console.log(`Creating worktree for PR #${prInfo.number} at ${worktreePath}`);
       
@@ -90,10 +113,21 @@ class GitWorktreeManager {
       if (currentCommit.trim() !== prData.head_sha) {
         console.warn(`Warning: Expected commit ${prData.head_sha}, but got ${currentCommit.trim()}`);
       }
-      
+
+      // Store/update worktree record in database
+      if (this.worktreeRepo) {
+        await this.worktreeRepo.getOrCreate({
+          prNumber: prInfo.number,
+          repository,
+          branch: prData.head_branch || prData.base_branch,
+          path: worktreePath
+        });
+        console.log(`Worktree record stored in database`);
+      }
+
       console.log(`Worktree created successfully at ${worktreePath}`);
       return worktreePath;
-      
+
     } catch (error) {
       console.error('Error creating worktree:', error);
       
@@ -217,10 +251,22 @@ class GitWorktreeManager {
 
   /**
    * Get worktree path for a PR
+   * Looks up path from database if available, otherwise falls back to legacy naming
    * @param {Object} prInfo - PR information { owner, repo, number }
    * @returns {Promise<string>} Worktree path
    */
   async getWorktreePath(prInfo) {
+    // Try to look up from database first
+    if (this.worktreeRepo) {
+      const repository = `${prInfo.owner}/${prInfo.repo}`;
+      const record = await this.worktreeRepo.findByPR(prInfo.number, repository);
+      if (record) {
+        return record.path;
+      }
+    }
+
+    // Fallback to legacy naming for backwards compatibility
+    // This handles worktrees created before random ID implementation
     const dirName = `${prInfo.owner}-${prInfo.repo}-${prInfo.number}`;
     return path.join(this.worktreeBaseDir, dirName);
   }

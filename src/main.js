@@ -156,10 +156,10 @@ async function handlePullRequest(args, config, db, flags = {}) {
 
     // Get current repository path
     const currentDir = parser.getCurrentDirectory();
-    
+
     // Setup git worktree
     console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager();
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
 
     // Generate unified diff
@@ -485,7 +485,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
 
     // Setup git worktree
     console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager();
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
 
     // Generate unified diff
