@@ -2395,36 +2395,40 @@ router.get('/api/worktrees/recent', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Default 10, max 50
     const db = req.app.get('db');
 
-    const worktreeRepo = new WorktreeRepository(db);
-    const recentWorktrees = await worktreeRepo.listRecent(limit);
+    // Get worktrees with PR metadata in a single JOIN query
+    const enrichedWorktrees = await query(db, `
+      SELECT
+        w.id,
+        w.repository,
+        w.pr_number,
+        w.branch,
+        w.last_accessed_at,
+        w.created_at,
+        pm.title as pr_title,
+        pm.author,
+        pm.head_branch
+      FROM worktrees w
+      LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository
+      ORDER BY w.last_accessed_at DESC
+      LIMIT ?
+    `, [limit]);
 
-    // Enrich worktree data with PR metadata (title from pr_metadata table)
-    const enrichedWorktrees = await Promise.all(
-      recentWorktrees.map(async (worktree) => {
-        // Get PR metadata for title
-        const prMetadata = await queryOne(db, `
-          SELECT title, author, head_branch
-          FROM pr_metadata
-          WHERE pr_number = ? AND repository = ?
-        `, [worktree.pr_number, worktree.repository]);
-
-        return {
-          id: worktree.id,
-          repository: worktree.repository,
-          pr_number: worktree.pr_number,
-          pr_title: prMetadata?.title || `PR #${worktree.pr_number}`,
-          author: prMetadata?.author || null,
-          branch: worktree.branch,
-          head_branch: prMetadata?.head_branch || worktree.branch,
-          last_accessed_at: worktree.last_accessed_at,
-          created_at: worktree.created_at
-        };
-      })
-    );
+    // Format the results with fallback values
+    const formattedWorktrees = enrichedWorktrees.map(w => ({
+      id: w.id,
+      repository: w.repository,
+      pr_number: w.pr_number,
+      pr_title: w.pr_title || `PR #${w.pr_number}`,
+      author: w.author || null,
+      branch: w.branch,
+      head_branch: w.head_branch || w.branch,
+      last_accessed_at: w.last_accessed_at,
+      created_at: w.created_at
+    }));
 
     res.json({
       success: true,
-      worktrees: enrichedWorktrees
+      worktrees: formattedWorktrees
     });
 
   } catch (error) {
@@ -2441,9 +2445,9 @@ router.get('/api/worktrees/recent', async (req, res) => {
  */
 router.delete('/api/worktrees/:id', async (req, res) => {
   try {
-    const worktreeId = parseInt(req.params.id, 10);
+    const worktreeId = req.params.id;
 
-    if (isNaN(worktreeId) || worktreeId <= 0) {
+    if (!worktreeId) {
       return res.status(400).json({
         success: false,
         error: 'Invalid worktree ID'
