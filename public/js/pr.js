@@ -205,6 +205,12 @@ class PRManager {
       return;
     }
 
+    // Hide welcome section when loading a PR
+    const welcomeSection = document.getElementById('welcome-section');
+    if (welcomeSection) {
+      welcomeSection.style.display = 'none';
+    }
+
     try {
       this.showLoadingState();
       

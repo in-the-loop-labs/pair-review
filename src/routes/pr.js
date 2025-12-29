@@ -2436,6 +2436,75 @@ router.get('/api/worktrees/recent', async (req, res) => {
 });
 
 /**
+ * Delete a worktree
+ * Removes the worktree record from the database and optionally deletes the directory
+ */
+router.delete('/api/worktrees/:id', async (req, res) => {
+  try {
+    const worktreeId = parseInt(req.params.id, 10);
+
+    if (isNaN(worktreeId) || worktreeId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid worktree ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const worktreeRepo = new WorktreeRepository(db);
+
+    // Get worktree info before deletion
+    const worktree = await queryOne(db, `
+      SELECT id, path, pr_number, repository FROM worktrees WHERE id = ?
+    `, [worktreeId]);
+
+    if (!worktree) {
+      return res.status(404).json({
+        success: false,
+        error: 'Worktree not found'
+      });
+    }
+
+    logger.info(`Deleting worktree ID ${worktreeId} for ${worktree.repository} #${worktree.pr_number}`);
+
+    // Delete the worktree directory if it exists
+    if (worktree.path) {
+      try {
+        await fs.access(worktree.path);
+        // Directory exists, try to remove it
+        await fs.rm(worktree.path, { recursive: true, force: true });
+        logger.info(`Deleted worktree directory: ${worktree.path}`);
+      } catch (pathError) {
+        // Directory doesn't exist or can't be accessed - that's okay
+        logger.warn(`Could not delete worktree directory (may not exist): ${worktree.path}`);
+      }
+    }
+
+    // Delete the worktree record from the database
+    await run(db, `DELETE FROM worktrees WHERE id = ?`, [worktreeId]);
+
+    // Also delete associated PR metadata and comments (optional cleanup)
+    // Keep PR metadata for now as user might want to reload the PR later
+    // await run(db, `DELETE FROM pr_metadata WHERE pr_number = ? AND repository = ?`,
+    //   [worktree.pr_number, worktree.repository]);
+
+    logger.success(`Deleted worktree ID ${worktreeId}`);
+
+    res.json({
+      success: true,
+      message: `Worktree for ${worktree.repository} #${worktree.pr_number} deleted`
+    });
+
+  } catch (error) {
+    logger.error('Error deleting worktree:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete worktree: ' + error.message
+    });
+  }
+});
+
+/**
  * Get user configuration (for frontend use)
  * Returns safe-to-expose configuration values
  */
