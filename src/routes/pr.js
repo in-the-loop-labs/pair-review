@@ -2389,19 +2389,21 @@ router.post('/api/worktrees/create', async (req, res) => {
 /**
  * Get recently accessed worktrees
  * Returns list of recently reviewed PRs with metadata
+ * Filters out stale worktrees where the directory no longer exists
  */
 router.get('/api/worktrees/recent', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Default 10, max 50
     const db = req.app.get('db');
 
-    // Get worktrees with PR metadata in a single JOIN query
+    // Get more worktrees than requested to account for stale ones we'll filter out
     const enrichedWorktrees = await query(db, `
       SELECT
         w.id,
         w.repository,
         w.pr_number,
         w.branch,
+        w.path,
         w.last_accessed_at,
         w.created_at,
         pm.title as pr_title,
@@ -2411,10 +2413,38 @@ router.get('/api/worktrees/recent', async (req, res) => {
       LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository
       ORDER BY w.last_accessed_at DESC
       LIMIT ?
-    `, [limit]);
+    `, [limit * 2]); // Fetch extra to account for stale entries
 
-    // Format the results with fallback values
-    const formattedWorktrees = enrichedWorktrees.map(w => ({
+    // Filter out worktrees where the directory no longer exists
+    // and collect stale IDs for cleanup
+    const staleIds = [];
+    const validWorktrees = [];
+
+    for (const w of enrichedWorktrees) {
+      try {
+        await fs.access(w.path);
+        validWorktrees.push(w);
+      } catch {
+        // Path doesn't exist - mark for cleanup
+        staleIds.push(w.id);
+      }
+    }
+
+    // Cleanup stale worktree records in background (don't block response)
+    if (staleIds.length > 0) {
+      setImmediate(async () => {
+        try {
+          const placeholders = staleIds.map(() => '?').join(',');
+          await run(db, `DELETE FROM worktrees WHERE id IN (${placeholders})`, staleIds);
+          logger.info(`Cleaned up ${staleIds.length} stale worktree records`);
+        } catch (err) {
+          logger.warn(`Failed to cleanup stale worktrees: ${err.message}`);
+        }
+      });
+    }
+
+    // Format the results with fallback values, limited to requested count
+    const formattedWorktrees = validWorktrees.slice(0, limit).map(w => ({
       id: w.id,
       repository: w.repository,
       pr_number: w.pr_number,
