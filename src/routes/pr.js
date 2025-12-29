@@ -2415,12 +2415,20 @@ router.get('/api/worktrees/recent', async (req, res) => {
       LIMIT ?
     `, [limit * 2]); // Fetch extra to account for stale entries
 
-    // Filter out worktrees where the directory no longer exists
-    // and collect stale IDs for cleanup
+    // Filter out worktrees where:
+    // 1. The directory no longer exists
+    // 2. The data is incomplete/corrupted (no author, unknown branch)
     const staleIds = [];
     const validWorktrees = [];
 
     for (const w of enrichedWorktrees) {
+      // Check for corrupted/incomplete data
+      if (w.branch === 'unknown' || !w.pr_title || w.pr_title === `PR #${w.pr_number}`) {
+        staleIds.push(w.id);
+        continue;
+      }
+
+      // Check if path still exists
       try {
         await fs.access(w.path);
         validWorktrees.push(w);

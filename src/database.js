@@ -635,55 +635,16 @@ async function migrateExistingWorktrees(db, worktreeBaseDir) {
 
     // Get list of existing worktree directories
     const entries = await fs.readdir(worktreeBaseDir, { withFileTypes: true });
-    const repo = new WorktreeRepository(db);
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
 
-      // Parse directory name: expected format is owner-repo-number
-      const match = entry.name.match(/^(.+)-(.+)-(\d+)$/);
-      if (!match) {
-        console.log(`Skipping non-matching directory: ${entry.name}`);
-        result.skipped++;
-        continue;
-      }
-
-      const [, owner, repoName, numberStr] = match;
-      const prNumber = parseInt(numberStr, 10);
-      const repository = `${owner}/${repoName}`;
-      const worktreePath = path.join(worktreeBaseDir, entry.name);
-
-      // Check if already in database
-      const existing = await repo.findByPR(prNumber, repository);
-      if (existing) {
-        result.skipped++;
-        continue;
-      }
-
-      // Try to get branch info from the worktree's git state
-      let branch = 'unknown';
-      try {
-        const headFile = path.join(worktreePath, '.git');
-        const headContent = await fs.readFile(headFile, 'utf8');
-        // .git file in worktree contains: gitdir: /path/to/main/repo/.git/worktrees/name
-        // We'd need to read the actual HEAD to get branch, but 'unknown' is acceptable for migration
-      } catch (e) {
-        // Ignore errors reading git state
-      }
-
-      // Create record for this worktree
-      try {
-        await repo.create({
-          prNumber,
-          repository,
-          branch,
-          path: worktreePath
-        });
-        console.log(`Migrated worktree: ${entry.name} -> PR #${prNumber} in ${repository}`);
-        result.migrated++;
-      } catch (createError) {
-        result.errors.push({ directory: entry.name, error: createError.message });
-      }
+      // New format worktrees use short alphanumeric IDs (like 'dfa', 'peh')
+      // and are created with proper database records at creation time.
+      // Legacy owner-repo-number directories can't be reliably migrated
+      // because repos with dashes (like 'pair-review') are ambiguous.
+      // Just skip everything - migration is no longer needed.
+      result.skipped++;
     }
   } catch (error) {
     result.errors.push({ directory: 'root', error: error.message });
