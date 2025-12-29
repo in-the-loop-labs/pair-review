@@ -5,22 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="AI-powered GitHub pull request review assistant">
     <title>Pair Review</title>
-    
-    <!-- PR Display Styles -->
-    <link rel="stylesheet" href="/css/pr.css">
-    <link rel="stylesheet" href="/css/styles.css">
 
-    <!-- Highlight.js for syntax highlighting -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
-    
     <style>
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
         }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
             background-color: #ffffff;
@@ -28,14 +20,14 @@
             line-height: 1.5;
             font-size: 14px;
         }
-        
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
             padding: 40px 20px;
             text-align: center;
         }
-        
+
         .welcome-section {
             display: flex;
             flex-direction: column;
@@ -93,13 +85,13 @@
             margin-bottom: 16px;
             color: #24292f;
         }
-        
+
         .welcome-section p {
             font-size: 16px;
             color: #656d76;
             margin-bottom: 20px;
         }
-        
+
         .usage-info {
             background-color: #f6f8fa;
             border: 1px solid #d1d9e0;
@@ -111,14 +103,14 @@
             margin-left: auto;
             margin-right: auto;
         }
-        
+
         .usage-info h3 {
             font-size: 18px;
             font-weight: 600;
             margin-bottom: 12px;
             color: #24292f;
         }
-        
+
         .usage-info code {
             background-color: #afb8c133;
             padding: 2px 4px;
@@ -126,7 +118,7 @@
             font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
             font-size: 13px;
         }
-        
+
         .usage-info pre {
             background-color: #24292f;
             color: #f6f8fa;
@@ -135,7 +127,7 @@
             margin: 8px 0;
             overflow-x: auto;
         }
-        
+
         .usage-info pre code {
             background: none;
             padding: 0;
@@ -208,7 +200,7 @@
 
         .recent-reviews-table .col-repo {
             font-weight: 600;
-            color: var(--color-text-link, #0969da);
+            color: var(--color-text-primary, #24292f);
         }
 
         .recent-reviews-table .col-pr {
@@ -292,7 +284,7 @@
         }
 
         body[data-theme="dark"] .recent-reviews-table .col-repo {
-            color: #58a6ff;
+            color: #c9d1d9;
         }
 
         body[data-theme="dark"] .recent-reviews-table .col-pr a {
@@ -329,6 +321,7 @@
 
         .start-review-input {
             flex: 1;
+            min-width: 600px;
             padding: 8px 12px;
             font-size: 14px;
             line-height: 20px;
@@ -467,26 +460,34 @@
                 margin-left: 10px;
                 margin-right: 10px;
             }
+
+            .start-review-input {
+                min-width: 200px;
+            }
+
+            .start-review-form {
+                flex-direction: column;
+            }
         }
     </style>
 </head>
 <body>
-    <!-- Welcome section - shown when no PR is loaded -->
+    <!-- Welcome section - landing page -->
     <div class="container welcome-section" id="welcome-section">
         <img src="/assets/pair-review.png" alt="Pair Review" class="welcome-icon">
         <h1>Pair Review</h1>
         <p>AI-powered GitHub pull request review assistant</p>
-        
+
         <div class="usage-info">
             <h3>Usage</h3>
             <p>To review a pull request, use one of these commands:</p>
-            
+
             <pre><code># Review by PR number (from repository directory)
 npx pair-review 123
 
-# Review by full GitHub URL  
+# Review by full GitHub URL
 npx pair-review https://github.com/owner/repo/pull/123</code></pre>
-            
+
             <p><strong>Configuration:</strong></p>
             <p>Set your GitHub token in <code>~/.pair-review/config.json</code>:</p>
             <pre><code>{
@@ -531,82 +532,7 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
         </div>
     </div>
 
-    <!-- PR container - shown when PR is loaded -->
-    <div id="pr-container">
-        <!-- PR header and metadata will be loaded here by JavaScript -->
-        <div id="pr-header-container">
-            <!-- PR header content loaded by JavaScript -->
-        </div>
-        
-        <!-- Main layout with sidebar and content -->
-        <div class="container">
-            <div class="files-sidebar" id="files-sidebar">
-                <div class="sidebar-header">
-                    <h3>Files Changed</h3>
-                    <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M6.823 7.823a.25.25 0 0 1 0 .354l-2.396 2.396A.25.25 0 0 1 4 10.396V5.604a.25.25 0 0 1 .427-.177Z"></path>
-                            <path d="M1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25V1.75C0 .784.784 0 1.75 0ZM1.5 1.75v12.5c0 .138.112.25.25.25H9.5v-13H1.75a.25.25 0 0 0-.25.25ZM11 14.5h3.25a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11Z"></path>
-                        </svg>
-                    </button>
-                </div>
-                <div id="file-list" class="file-list">
-                    <!-- File tree will be loaded here -->
-                </div>
-            </div>
-            
-            <div class="main-content">
-                <div class="diff-header">
-                    <button class="sidebar-toggle-collapsed" id="sidebar-toggle-collapsed" title="Show file tree">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="m4.177 7.823 2.396-2.396A.25.25 0 0 1 7 5.604v4.792a.25.25 0 0 1-.427.177L4.177 8.177a.25.25 0 0 1 0-.354Z"></path>
-                            <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25H9.5v-13Zm12.5 13a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11v13Z"></path>
-                        </svg>
-                    </button>
-                    <h2>Changes</h2>
-                    <div class="diff-stats" id="diff-stats"></div>
-                </div>
-                
-                <div id="diff-container" class="diff-container">
-                    <div class="loading">Loading changes...</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Diff2Html Library -->
-    <script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.47/bundles/js/diff2html.min.js"></script>
-
-    <!-- Highlight.js for syntax highlighting -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    
-    <!-- Markdown-it Library for rendering markdown in comments -->
-    <script src="https://cdn.jsdelivr.net/npm/markdown-it@13.0.2/dist/markdown-it.min.js"></script>
-    
-    <!-- Markdown renderer utility -->
-    <script src="/js/utils/markdown.js"></script>
-    
-    <!-- Components -->
-    <script src="/js/components/Toast.js"></script>
-    <script src="/js/components/ConfirmDialog.js"></script>
-    <script src="/js/components/ProgressModal.js"></script>
-    <script src="/js/components/StatusIndicator.js"></script>
-    <script src="/js/components/SuggestionNavigator.js"></script>
-    <script src="/js/components/ReviewModal.js"></script>
-    <script src="/js/components/PreviewModal.js"></script>
-    <script src="/js/components/SplitButton.js"></script>
-
-    <!-- PR JavaScript -->
-    <script src="/js/pr.js"></script>
-    
     <script>
-        // Hide welcome section if PR parameter is present or path-based PR URL
-        const urlParams = new URLSearchParams(window.location.search);
-        const pathMatch = window.location.pathname.match(/^\/pr\/([^\/]+)\/([^\/]+)\/(\d+)$/);
-        if (urlParams.get('pr') || pathMatch) {
-            document.getElementById('welcome-section').style.display = 'none';
-        }
-
         /**
          * Format a relative time string from a date
          * @param {string} dateString - ISO date string
@@ -940,31 +866,24 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
             }
         }
 
-        // Load recent reviews when the page loads (only on landing page)
+        // Load recent reviews when the page loads
         document.addEventListener('DOMContentLoaded', function() {
-            // Only load recent reviews if we're on the landing page (not viewing a specific PR)
-            const pathParts = window.location.pathname.split('/').filter(Boolean);
-            const isLandingPage = pathParts.length === 0 ||
-                                  (pathParts[0] !== 'pr' || pathParts.length < 4);
+            loadRecentReviews();
 
-            if (isLandingPage && !urlParams.get('pr')) {
-                loadRecentReviews();
+            // Set up start review form handler
+            const form = document.getElementById('start-review-form');
+            if (form) {
+                form.addEventListener('submit', handleStartReview);
+            }
 
-                // Set up start review form handler
-                const form = document.getElementById('start-review-form');
-                if (form) {
-                    form.addEventListener('submit', handleStartReview);
-                }
-
-                // Allow Enter key to submit
-                const input = document.getElementById('pr-url-input');
-                if (input) {
-                    input.addEventListener('keypress', function(e) {
-                        if (e.key === 'Enter') {
-                            form.dispatchEvent(new Event('submit'));
-                        }
-                    });
-                }
+            // Allow Enter key to submit
+            const input = document.getElementById('pr-url-input');
+            if (input) {
+                input.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        form.dispatchEvent(new Event('submit'));
+                    }
+                });
             }
         });
     </script>
