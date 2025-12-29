@@ -60,6 +60,39 @@ class GitWorktreeManager {
         console.log(`Worktree directory no longer exists at ${worktreePath}, will recreate`);
       }
     } else {
+      // Check for legacy worktree before generating new ID
+      // Legacy worktrees used naming format: owner-repo-number
+      const legacyDirName = `${prInfo.owner}-${prInfo.repo}-${prInfo.number}`;
+      const legacyPath = path.join(this.worktreeBaseDir, legacyDirName);
+      const legacyExists = await this.pathExists(legacyPath);
+
+      if (legacyExists && await this.isValidGitWorktree(legacyPath)) {
+        console.log(`Found legacy worktree for PR #${prInfo.number} at ${legacyPath}, adopting it`);
+
+        // Create DB record for the legacy worktree
+        if (this.worktreeRepo) {
+          worktreeRecord = await this.worktreeRepo.getOrCreate({
+            prNumber: prInfo.number,
+            repository,
+            branch: prData.head_branch || prData.base_branch,
+            path: legacyPath
+          });
+          console.log(`Created database record for legacy worktree`);
+        }
+
+        // Try to refresh and reuse the legacy worktree
+        try {
+          return await this.refreshWorktree({ path: legacyPath, id: worktreeRecord?.id }, prInfo.number);
+        } catch (refreshError) {
+          // If refresh fails due to uncommitted changes, propagate that error
+          if (refreshError.message.includes('uncommitted changes')) {
+            throw refreshError;
+          }
+          // For other errors, log and fall through to recreate with new ID
+          console.log(`Could not refresh legacy worktree, will create new one: ${refreshError.message}`);
+        }
+      }
+
       // Generate new random ID for worktree directory
       const worktreeId = generateWorktreeId();
       worktreePath = path.join(this.worktreeBaseDir, worktreeId);
@@ -383,6 +416,32 @@ class GitWorktreeManager {
     try {
       await fs.access(path);
       return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * Check if a directory is a valid git worktree
+   * @param {string} dirPath - Directory path to check
+   * @returns {Promise<boolean>} Whether directory is a valid git worktree
+   */
+  async isValidGitWorktree(dirPath) {
+    try {
+      // A git worktree has a .git file (not directory) that points to the main repo
+      const gitPath = path.join(dirPath, '.git');
+      const stat = await fs.stat(gitPath);
+
+      // In a worktree, .git is a file containing "gitdir: <path>"
+      // In a regular repo, .git is a directory
+      if (stat.isFile()) {
+        // Verify it's actually a git repo by trying to get the HEAD
+        const git = simpleGit(dirPath);
+        await git.revparse(['HEAD']);
+        return true;
+      }
+
+      return false;
     } catch (error) {
       return false;
     }
