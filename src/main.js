@@ -1,5 +1,5 @@
 const { loadConfig } = require('./config');
-const { initializeDatabase, run, queryOne, query } = require('./database');
+const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
@@ -8,6 +8,24 @@ const Analyzer = require('./ai/analyzer');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
+
+/**
+ * Asynchronously cleanup stale worktrees (runs in background, doesn't block)
+ * @param {Object} config - Application configuration
+ */
+function cleanupStaleWorktreesAsync(config) {
+  // Run cleanup asynchronously - don't await, don't block startup
+  setImmediate(async () => {
+    try {
+      const retentionDays = config.worktree_retention_days || 7;
+      const worktreeManager = new GitWorktreeManager(db);
+      await worktreeManager.cleanupStaleWorktrees(retentionDays);
+    } catch (error) {
+      // Silently log error - cleanup failure shouldn't affect user experience
+      console.error('[pair-review] Background worktree cleanup error:', error.message);
+    }
+  });
+}
 
 /**
  * Parse command line arguments to separate PR arguments from flags
@@ -66,6 +84,18 @@ async function main() {
     // Initialize database
     console.log('Initializing database...');
     db = await initializeDatabase();
+
+    // Migrate existing worktrees to database (if any)
+    const { getConfigDir } = require('./config');
+    const path = require('path');
+    const worktreeBaseDir = path.join(getConfigDir(), 'worktrees');
+    const migrationResult = await migrateExistingWorktrees(db, worktreeBaseDir);
+    if (migrationResult.migrated > 0) {
+      console.log(`Migrated ${migrationResult.migrated} existing worktrees to database`);
+    }
+    if (migrationResult.errors.length > 0) {
+      console.warn('Some worktrees could not be migrated:', migrationResult.errors);
+    }
 
     // Parse command line arguments including flags
     const { prArgs, flags } = parseArgs(args);
@@ -144,10 +174,10 @@ async function handlePullRequest(args, config, db, flags = {}) {
 
     // Get current repository path
     const currentDir = parser.getCurrentDirectory();
-    
+
     // Setup git worktree
     console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager();
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
 
     // Generate unified diff
@@ -203,8 +233,8 @@ async function handlePullRequest(args, config, db, flags = {}) {
       }
     }
 
-    // Open browser to PR view (clean URL without auto-ai parameter)
-    const url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
+    // Open browser to PR view
+    const url = `http://localhost:${port}/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
 
     console.log(`Opening browser to: ${url}`);
     await open(url);
@@ -240,7 +270,15 @@ async function handlePullRequest(args, config, db, flags = {}) {
  * @param {Object} config - Application configuration
  */
 async function startServerOnly(config) {
-  await startServer(db);
+  const port = await startServer(db);
+
+  // Async cleanup of stale worktrees (don't block startup)
+  cleanupStaleWorktreesAsync(config);
+
+  // Open browser to landing page
+  const url = `http://localhost:${port}/`;
+  console.log(`Opening browser to: ${url}`);
+  await open(url);
 }
 
 /**
@@ -267,6 +305,9 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
   const { startServer } = require('./server');
   const actualPort = await startServer(db);
 
+  // Async cleanup of stale worktrees (don't block startup)
+  cleanupStaleWorktreesAsync(config);
+
   // Return the actual port the server started on
   return actualPort;
 }
@@ -287,7 +328,16 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
   await run(db, 'BEGIN TRANSACTION');
 
   try {
-    // Prepare extended PR data
+    // Store or update worktree record
+    const worktreeRepo = new WorktreeRepository(db);
+    await worktreeRepo.getOrCreate({
+      prNumber: prInfo.number,
+      repository,
+      branch: prData.head_branch,
+      path: worktreePath
+    });
+
+    // Prepare extended PR data (keep worktree_path for backward compat, but DB is source of truth)
     const extendedPRData = {
       ...prData,
       diff: diff,
@@ -464,7 +514,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
 
     // Setup git worktree
     console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager();
+    const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
 
     // Generate unified diff

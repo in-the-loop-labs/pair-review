@@ -9,7 +9,8 @@ const DEFAULT_CONFIG = {
   github_token: "",
   port: 3000,
   theme: "light",
-  model: "sonnet"
+  model: "sonnet",
+  worktree_retention_days: 7
 };
 
 /**
