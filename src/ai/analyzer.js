@@ -7,6 +7,7 @@ const util = require('util');
 const execPromise = util.promisify(exec);
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
+const { getGeneratedFilePatterns } = require('../git/gitattributes');
 
 class Analyzer {
   constructor(database, model = 'sonnet') {
@@ -55,6 +56,14 @@ class Analyzer {
     logger.info(`PR ID: ${prId}`);
     logger.info(`Analysis run ID: ${runId}`);
     logger.info(`Worktree path: ${worktreePath}`);
+
+    // Load generated file patterns to skip during analysis
+    const generatedPatterns = await this.loadGeneratedFilePatterns(worktreePath);
+    if (generatedPatterns.length > 0) {
+      logger.info(`Found ${generatedPatterns.length} generated file patterns to skip: ${generatedPatterns.join(', ')}`);
+    }
+    // Store patterns for use by prompt builders
+    prMetadata._generatedPatterns = generatedPatterns;
 
     try {
       // Step 1: Delete old AI suggestions before starting new analysis
@@ -155,6 +164,42 @@ class Analyzer {
       logger.error(`Error stack: ${error.stack}`);
       throw error;
     }
+  }
+
+  /**
+   * Load generated file patterns from .gitattributes
+   * @param {string} worktreePath - Path to the git worktree
+   * @returns {Promise<Array<string>>} Array of generated file patterns
+   */
+  async loadGeneratedFilePatterns(worktreePath) {
+    try {
+      const parser = await getGeneratedFilePatterns(worktreePath);
+      return parser.getPatterns();
+    } catch (error) {
+      logger.warn(`Could not load generated file patterns: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Build the section of the prompt that instructs to skip generated files
+   * @param {Array<string>} generatedPatterns - Patterns of generated files
+   * @returns {string} Prompt section or empty string
+   */
+  buildGeneratedFilesExclusionSection(generatedPatterns) {
+    if (!generatedPatterns || generatedPatterns.length === 0) {
+      return '';
+    }
+
+    return `
+## Generated Files - DO NOT ANALYZE
+The following files are marked as generated in .gitattributes and should be SKIPPED entirely:
+${generatedPatterns.map(p => `- ${p}`).join('\n')}
+
+These are auto-generated files (like package-lock.json, build outputs, etc.) that should not be reviewed.
+When running git diff, you can exclude these with: git diff ${'{base}'}...${'{head}'} -- ':!pattern' for each pattern.
+Or simply ignore any changes to files matching these patterns in your analysis.
+`;
   }
 
   /**
@@ -287,10 +332,12 @@ ${prMetadata.description || '(No description provided)'}
 - Inconsistencies between stated goals and implementation patterns
 - Scope creep beyond what was described`);
 
+    const generatedFilesSection = this.buildGeneratedFilesExclusionSection(prMetadata._generatedPatterns);
+
     return `You are reviewing pull request #${prId} in the current working directory.
 ${prContext}
 # Level 2 Review - Analyze File Context
-
+${generatedFilesSection}
 ## Analysis Process
 For each file with changes:
    - Read the full file content to understand context
@@ -364,13 +411,15 @@ Output JSON with this structure:
 - Undocumented changes or side effects not mentioned in the description
 - Overstated or understated scope`);
 
+    const generatedFilesSection = this.buildGeneratedFilesExclusionSection(prMetadata._generatedPatterns);
+
     return `You are reviewing pull request #${prId} in the current working directory.
 ${prContext}
 # Level 1 Review - Analyze Changes in Isolation
 
 ## Speed and Scope Expectations
 **This level should be fast** - focusing only on the diff itself without exploring file context or surrounding unchanged code. That analysis is reserved for Level 2.
-
+${generatedFilesSection}
 ## Initial Setup
 1. Run 'git diff ${prMetadata.base_sha}...${prMetadata.head_sha}' to see what changed in this PR
 2. Focus ONLY on the changed lines in the diff
@@ -1299,10 +1348,12 @@ Output JSON with this structure:
 - **Impact inconsistencies:** Does the actual codebase impact match what the author claimed?
 - **Undocumented side effects:** Are there broader impacts not mentioned in the description?`);
 
+    const generatedFilesSection = this.buildGeneratedFilesExclusionSection(prMetadata._generatedPatterns);
+
     return `You are reviewing pull request #${prId} in the current working directory.
 ${prContext}
 # Level 3 Review - Analyze Change Impact on Codebase
-
+${generatedFilesSection}
 ## Purpose
 Level 3 analyzes how the PR changes connect to and impact the broader codebase.
 This is NOT a general codebase review or architectural audit.

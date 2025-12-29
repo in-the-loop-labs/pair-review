@@ -148,6 +148,9 @@ class PRManager {
     this.selectedLevel = 'final';
     // Split button for comment actions
     this.splitButton = null;
+    // Generated files - collapsed by default, stores map of filename -> generated info
+    this.generatedFiles = new Map();
+    this.expandedGeneratedFiles = new Set();
     this.init();
     this.initTheme();
     this.initSuggestionNavigator();
@@ -607,26 +610,37 @@ class PRManager {
       const owner = this.currentPR.owner || this.currentPR.repository?.split('/')[0];
       const repo = this.currentPR.repo || this.currentPR.repository?.split('/')[1];
       const response = await fetch(`/api/pr/${owner}/${repo}/${this.currentPR.number}/diff`);
-      
+
       if (response.ok) {
         const data = await response.json();
         const files = data.changed_files || [];
-        
+
+        // Build map of generated files for quick lookup
+        this.generatedFiles.clear();
+        files.forEach(file => {
+          if (file.generated) {
+            this.generatedFiles.set(file.file, {
+              insertions: file.insertions || 0,
+              deletions: file.deletions || 0
+            });
+          }
+        });
+
         // Update sidebar with file tree
         this.updateFileList(files);
-        
+
         // Update diff stats
         this.updateDiffStats(files);
-        
+
         // Update theme icon after rendering new content
         this.updateThemeIcon();
-        
+
         // Display diff in main content
         this.displayDiff(data.diff || '');
-        
+
         // Load user comments after displaying diff
         await this.loadUserComments();
-        
+
       } else {
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
@@ -668,57 +682,98 @@ class PRManager {
     console.log('displayDiff called with:', { hasDiff: !!diffText });
     const container = document.getElementById('diff-container');
     container.innerHTML = '';
-    
+
     if (!diffText) {
       container.innerHTML = '<div class="loading">No diff available</div>';
       return;
     }
-    
+
     // Check if diff2html is available
     if (typeof Diff2Html === 'undefined') {
       console.error('Diff2Html library not loaded!');
       container.innerHTML = '<div class="loading">Error: Diff2Html library not loaded</div>';
       return;
     }
-    
+
     // Use diff2html to parse the diff
     const diffJson = Diff2Html.parse(diffText);
     console.log('Parsed diff files:', diffJson.length, diffJson);
-    
+
     // Create our own simple unified diff display
     container.innerHTML = '';
-    
+
     try {
       diffJson.forEach(file => {
+        const filePath = file.newName || file.oldName;
+        const isGenerated = this.generatedFiles.has(filePath);
+        const isExpanded = this.expandedGeneratedFiles.has(filePath);
+
         // Track diff position per file (resets for each file, matches GitHub behavior)
         let fileDiffPosition = 0;
         let foundFirstHunk = false;
         const fileWrapper = document.createElement('div');
         fileWrapper.className = 'd2h-file-wrapper';
-        fileWrapper.dataset.fileName = file.newName || file.oldName;
-        fileWrapper.setAttribute('data-file-name', file.newName || file.oldName);
-        
+        if (isGenerated) {
+          fileWrapper.classList.add('generated-file');
+          if (!isExpanded) {
+            fileWrapper.classList.add('collapsed');
+          }
+        }
+        fileWrapper.dataset.fileName = filePath;
+        fileWrapper.setAttribute('data-file-name', filePath);
+
         // File header
         const fileHeader = document.createElement('div');
         fileHeader.className = 'd2h-file-header';
+
+        // Add generated badge and expand/collapse toggle if this is a generated file
+        if (isGenerated) {
+          const generatedInfo = this.generatedFiles.get(filePath);
+          const statsText = `+${generatedInfo.insertions} -${generatedInfo.deletions}`;
+
+          // Create toggle button
+          const toggleBtn = document.createElement('button');
+          toggleBtn.className = 'generated-toggle';
+          toggleBtn.title = isExpanded ? 'Collapse generated file' : 'Expand generated file';
+          toggleBtn.innerHTML = isExpanded ? PRManager.FOLD_UP_ICON : PRManager.FOLD_DOWN_ICON;
+          toggleBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleGeneratedFile(filePath);
+          });
+          fileHeader.appendChild(toggleBtn);
+
+          // Add generated badge
+          const badge = document.createElement('span');
+          badge.className = 'generated-badge';
+          badge.textContent = 'Generated';
+          badge.title = 'This file is marked as generated in .gitattributes';
+          fileHeader.appendChild(badge);
+
+          // Add stats summary for collapsed view
+          const statsSummary = document.createElement('span');
+          statsSummary.className = 'generated-stats';
+          statsSummary.textContent = statsText;
+          fileHeader.appendChild(statsSummary);
+        }
+
         const fileName = document.createElement('span');
         fileName.className = 'd2h-file-name';
-        fileName.textContent = file.newName || file.oldName;
+        fileName.textContent = filePath;
         fileHeader.appendChild(fileName);
-        
+
         fileWrapper.appendChild(fileHeader);
-        
+
         // Create simple table for diff
         const table = document.createElement('table');
         table.className = 'd2h-diff-table';
         const tbody = document.createElement('tbody');
         tbody.className = 'd2h-diff-tbody';
-        
+
         // Add file class for styling new files
         if (file.isNew) {
           fileWrapper.classList.add('d2h-file-addition');
         }
-        
+
         // Process blocks with context expansion
         file.blocks.forEach((block, blockIndex) => {
           // Add block header
@@ -726,7 +781,7 @@ class PRManager {
           headerRow.className = 'd2h-info';
           headerRow.innerHTML = `<td colspan="2" class="d2h-info">${block.header}</td>`;
           tbody.appendChild(headerRow);
-          
+
           // Reset position counter for the first hunk in the file only
           if (!foundFirstHunk) {
             fileDiffPosition = 0;
@@ -735,38 +790,38 @@ class PRManager {
             // Subsequent block headers (@@) count as positions according to GitHub spec
             fileDiffPosition++;
           }
-          
+
           // Add expandable context at the beginning of first block if not starting at line 1
           if (blockIndex === 0 && block.lines.length > 0 && (block.lines[0].oldNumber > 1 || block.lines[0].newNumber > 1)) {
             const startLine = Math.min(block.lines[0].oldNumber || 1, block.lines[0].newNumber || 1);
             if (startLine > 1) {
-              this.createGapSection(tbody, file.newName || file.oldName, 1, startLine - 1, startLine - 1, 'above');
+              this.createGapSection(tbody, filePath, 1, startLine - 1, startLine - 1, 'above');
             }
           }
-          
+
           // Process lines within block and track positions
           block.lines.forEach((line) => {
             fileDiffPosition++; // Increment position for each diff line within this file
-            this.renderDiffLine(tbody, line, file.newName || file.oldName, fileDiffPosition);
+            this.renderDiffLine(tbody, line, filePath, fileDiffPosition);
           });
-          
+
           // Add expandable context between blocks
           if (blockIndex < file.blocks.length - 1) {
             const nextBlock = file.blocks[blockIndex + 1];
             const currentLastLine = block.lines[block.lines.length - 1];
             const nextFirstLine = nextBlock.lines[0];
-            
+
             if (currentLastLine && nextFirstLine) {
               const currentEnd = Math.max(currentLastLine.oldNumber || 0, currentLastLine.newNumber || 0);
               const nextStart = Math.min(nextFirstLine.oldNumber || Infinity, nextFirstLine.newNumber || Infinity);
 
               if (nextStart - currentEnd > 1) {
-                this.createGapSection(tbody, file.newName || file.oldName, currentEnd + 1, nextStart - 1, nextStart - currentEnd - 1, 'between');
+                this.createGapSection(tbody, filePath, currentEnd + 1, nextStart - 1, nextStart - currentEnd - 1, 'between');
               }
             }
           }
         });
-        
+
         table.appendChild(tbody);
         fileWrapper.appendChild(table);
         container.appendChild(fileWrapper);
@@ -774,6 +829,34 @@ class PRManager {
     } catch (error) {
       console.error('Error rendering diff:', error);
       container.innerHTML = '<div class="loading">Error rendering diff</div>';
+    }
+  }
+
+  /**
+   * Toggle expansion of a generated file's diff content
+   * @param {string} filePath - Path of the file to toggle
+   */
+  toggleGeneratedFile(filePath) {
+    const fileWrapper = document.querySelector(`[data-file-name="${filePath}"]`);
+    if (!fileWrapper) return;
+
+    const isCurrentlyExpanded = this.expandedGeneratedFiles.has(filePath);
+
+    if (isCurrentlyExpanded) {
+      // Collapse
+      this.expandedGeneratedFiles.delete(filePath);
+      fileWrapper.classList.add('collapsed');
+    } else {
+      // Expand
+      this.expandedGeneratedFiles.add(filePath);
+      fileWrapper.classList.remove('collapsed');
+    }
+
+    // Update toggle button icon
+    const toggleBtn = fileWrapper.querySelector('.generated-toggle');
+    if (toggleBtn) {
+      toggleBtn.innerHTML = isCurrentlyExpanded ? PRManager.FOLD_DOWN_ICON : PRManager.FOLD_UP_ICON;
+      toggleBtn.title = isCurrentlyExpanded ? 'Expand generated file' : 'Collapse generated file';
     }
   }
 
@@ -3523,15 +3606,15 @@ class PRManager {
    */
   buildFileTree(files) {
     const tree = {};
-    
+
     files.forEach(file => {
       const parts = file.file.split('/');
       let current = tree;
-      
+
       for (let i = 0; i < parts.length; i++) {
         const part = parts[i];
         const isFile = i === parts.length - 1;
-        
+
         if (isFile) {
           if (!current._files) current._files = [];
           current._files.push({
@@ -3540,7 +3623,8 @@ class PRManager {
             status: this.getFileStatus(file),
             additions: file.insertions,
             deletions: file.deletions,
-            binary: file.binary
+            binary: file.binary,
+            generated: file.generated || false
           });
         } else {
           if (!current[part]) {
@@ -3550,7 +3634,7 @@ class PRManager {
         }
       }
     });
-    
+
     return tree;
   }
 
@@ -3667,12 +3751,15 @@ class PRManager {
           node._files.forEach(file => {
             const fileDiv = document.createElement('div');
             fileDiv.className = 'tree-item tree-file';
+            if (file.generated) {
+              fileDiv.classList.add('generated');
+            }
             fileDiv.style.paddingLeft = `${(level + 1) * 16}px`;
             fileDiv.dataset.path = file.fullPath;
-            
+
             const fileContent = document.createElement('div');
             fileContent.className = 'tree-item-content';
-            
+
             // File icon
             const fileIcon = document.createElement('span');
             fileIcon.className = 'tree-icon file-icon';
@@ -3681,27 +3768,40 @@ class PRManager {
                 <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
               </svg>
             `;
-            
+
             const fileName = document.createElement('span');
             fileName.className = 'tree-name';
             fileName.textContent = file.name;
-            
+
+            // Generated indicator (shows before status)
+            if (file.generated) {
+              const generatedIndicator = document.createElement('span');
+              generatedIndicator.className = 'file-generated-indicator';
+              generatedIndicator.title = 'Generated file';
+              generatedIndicator.innerHTML = `
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M9.585.52a2.678 2.678 0 0 0-3.17 0l-.928.68a1.178 1.178 0 0 1-.518.215L3.83 1.59a2.678 2.678 0 0 0-2.24 2.24l-.175 1.14a1.178 1.178 0 0 1-.215.518l-.68.928a2.678 2.678 0 0 0 0 3.17l.68.928c.113.153.186.33.215.518l.175 1.138a2.678 2.678 0 0 0 2.24 2.24l1.138.175c.187.029.365.102.518.215l.928.68a2.678 2.678 0 0 0 3.17 0l.928-.68a1.17 1.17 0 0 1 .518-.215l1.138-.175a2.678 2.678 0 0 0 2.241-2.241l.175-1.138c.029-.187.102-.365.215-.518l.68-.928a2.678 2.678 0 0 0 0-3.17l-.68-.928a1.179 1.179 0 0 1-.215-.518L14.41 3.83a2.678 2.678 0 0 0-2.24-2.24l-1.138-.175a1.179 1.179 0 0 1-.518-.215L9.585.52ZM7.303 1.728c.415-.305.979-.305 1.394 0l.928.68c.348.256.752.423 1.18.489l1.136.174c.51.078.909.478.987.987l.174 1.137c.066.427.233.831.489 1.18l.68.927c.305.415.305.98 0 1.394l-.68.928a2.678 2.678 0 0 0-.489 1.18l-.174 1.136a1.178 1.178 0 0 1-.987.987l-1.137.174a2.678 2.678 0 0 0-1.18.489l-.927.68c-.415.305-.98.305-1.394 0l-.928-.68a2.678 2.678 0 0 0-1.18-.489l-1.136-.174a1.178 1.178 0 0 1-.987-.987l-.174-1.137a2.678 2.678 0 0 0-.489-1.18l-.68-.927a1.178 1.178 0 0 1 0-1.394l.68-.928c.256-.348.423-.752.489-1.18l.174-1.136c.078-.51.478-.909.987-.987l1.137-.174a2.678 2.678 0 0 0 1.18-.489l.927-.68ZM8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4Z"/>
+                </svg>
+              `;
+              fileContent.appendChild(generatedIndicator);
+            }
+
             // File status indicator
             const statusIndicator = document.createElement('span');
             statusIndicator.className = `file-status ${file.status}`;
-            
+
             fileContent.appendChild(fileIcon);
             fileContent.appendChild(fileName);
             fileContent.appendChild(statusIndicator);
             fileDiv.appendChild(fileContent);
-            
+
             // Add click handler to scroll to file
             fileContent.addEventListener('click', (e) => {
               e.stopPropagation();
               this.scrollToFile(file.fullPath);
               this.setActiveFile(file.fullPath);
             });
-            
+
             childContainer.appendChild(fileDiv);
           });
         }
