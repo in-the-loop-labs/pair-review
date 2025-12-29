@@ -270,10 +270,15 @@ async function handlePullRequest(args, config, db, flags = {}) {
  * @param {Object} config - Application configuration
  */
 async function startServerOnly(config) {
-  await startServer(db);
+  const port = await startServer(db);
 
   // Async cleanup of stale worktrees (don't block startup)
   cleanupStaleWorktreesAsync(config);
+
+  // Open browser to landing page
+  const url = `http://localhost:${port}/`;
+  console.log(`Opening browser to: ${url}`);
+  await open(url);
 }
 
 /**
