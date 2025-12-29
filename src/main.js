@@ -233,8 +233,8 @@ async function handlePullRequest(args, config, db, flags = {}) {
       }
     }
 
-    // Open browser to PR view (clean URL without auto-ai parameter)
-    const url = `http://localhost:${port}/?pr=${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
+    // Open browser to PR view
+    const url = `http://localhost:${port}/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
 
     console.log(`Opening browser to: ${url}`);
     await open(url);
