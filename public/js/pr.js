@@ -2870,10 +2870,16 @@ class PRManager {
           <span class="comment-title">Add comment</span>
           ${isRange ? `<span class="line-range-indicator">${lineRangeText}</span>` : ''}
         </div>
+        <div class="comment-form-toolbar">
+          <button type="button" class="btn btn-sm suggestion-btn" title="Insert a suggestion">
+            <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
+              <path fill-rule="evenodd" d="M14.064 0a8.75 8.75 0 00-6.187 2.563l-.459.458c-.314.314-.616.641-.904.979H3.31a1.75 1.75 0 00-1.49.833L.11 7.607a.75.75 0 00.418 1.11l3.102.954c.037.051.079.1.124.145l2.429 2.428c.046.046.094.088.145.125l.954 3.102a.75.75 0 001.11.418l2.774-1.707a1.75 1.75 0 00.833-1.49V9.485c.338-.288.665-.59.979-.904l.458-.459A8.75 8.75 0 0016 1.936V1.75A1.75 1.75 0 0014.25 0h-.186zM10.5 10.625c-.088.06-.177.118-.266.175l-2.35 1.521.548 1.783 1.949-1.2a.25.25 0 00.119-.213v-2.066zM3.678 8.116L5.2 5.766c.058-.09.117-.178.176-.266H3.31a.25.25 0 00-.213.119l-1.2 1.95 1.782.547zm5.26-4.493A7.25 7.25 0 0114.063 1.5h.186a.25.25 0 01.25.25v.186a7.25 7.25 0 01-2.123 5.127l-.459.458a15.21 15.21 0 01-2.499 2.02l-2.317 1.5-2.143-2.143 1.5-2.317a15.25 15.25 0 012.02-2.5l.458-.458h.002zM12 5a1 1 0 11-2 0 1 1 0 012 0zm-8.44 9.56a1.5 1.5 0 10-2.12-2.12c-.734.73-1.047 2.332-1.15 3.003a.23.23 0 00.265.265c.671-.103 2.273-.416 3.005-1.148z"></path>
+            </svg>
+          </button>
+        </div>
         <textarea
           class="comment-textarea"
           placeholder="Leave a comment..."
-          rows="3"
           data-line="${lineNumber}"
           data-line-end="${endLineNumber || lineNumber}"
           data-file="${fileName}"
@@ -2886,30 +2892,46 @@ class PRManager {
         </div>
       </div>
     `;
-    
+
     td.innerHTML = formHTML;
     formRow.appendChild(td);
-    
+
     // Insert form after the target row
     targetRow.parentNode.insertBefore(formRow, targetRow.nextSibling);
-    
+
     // Focus on textarea
     const textarea = td.querySelector('.comment-textarea');
     textarea.focus();
-    
+
     // Add event listeners
     const saveBtn = td.querySelector('.save-comment-btn');
     const cancelBtn = td.querySelector('.cancel-comment-btn');
+    const suggestionBtn = td.querySelector('.suggestion-btn');
 
     saveBtn.addEventListener('click', () => this.saveUserComment(textarea, formRow));
     cancelBtn.addEventListener('click', () => {
       this.hideCommentForm();
       this.clearRangeSelection();
     });
-    
-    // Auto-save on input
-    textarea.addEventListener('input', () => this.autoSaveComment(textarea));
-    
+
+    // Suggestion button handler
+    suggestionBtn.addEventListener('click', () => {
+      if (!suggestionBtn.disabled) {
+        this.insertSuggestionBlock(textarea, suggestionBtn);
+      }
+    });
+
+    // Initialize textarea height and suggestion button state
+    this.autoResizeTextarea(textarea);
+    this.updateSuggestionButtonState(textarea, suggestionBtn);
+
+    // Auto-save on input, auto-resize textarea, and update suggestion button state
+    textarea.addEventListener('input', () => {
+      this.autoSaveComment(textarea);
+      this.autoResizeTextarea(textarea);
+      this.updateSuggestionButtonState(textarea, suggestionBtn);
+    });
+
     // Store reference for cleanup
     this.currentCommentForm = formRow;
   }
@@ -2940,13 +2962,162 @@ class PRManager {
     localStorage.setItem(draftKey, content);
     
     // Show draft indicator
-    const indicator = textarea.closest('.user-comment-form').querySelector('.draft-indicator');
-    indicator.style.display = 'inline';
-    setTimeout(() => {
-      indicator.style.display = 'none';
-    }, 2000);
+    const indicator = textarea.closest('.user-comment-form, .user-comment')?.querySelector('.draft-indicator');
+    if (indicator) {
+      indicator.style.display = 'inline';
+      setTimeout(() => {
+        indicator.style.display = 'none';
+      }, 2000);
+    }
   }
-  
+
+  /**
+   * Auto-resize textarea to fit content
+   * @param {HTMLTextAreaElement} textarea - The textarea to resize
+   * @param {number} minRows - Minimum number of rows (default 4)
+   */
+  autoResizeTextarea(textarea, minRows = 4) {
+    // Reset height to auto to get accurate scrollHeight
+    textarea.style.height = 'auto';
+
+    // Get line height from computed styles
+    const computedStyle = window.getComputedStyle(textarea);
+    const lineHeight = parseFloat(computedStyle.lineHeight) || 20;
+    const paddingTop = parseFloat(computedStyle.paddingTop) || 0;
+    const paddingBottom = parseFloat(computedStyle.paddingBottom) || 0;
+    const borderTop = parseFloat(computedStyle.borderTopWidth) || 0;
+    const borderBottom = parseFloat(computedStyle.borderBottomWidth) || 0;
+
+    // Calculate minimum height based on minRows
+    const minHeight = (lineHeight * minRows) + paddingTop + paddingBottom + borderTop + borderBottom;
+
+    // Set height to max of scrollHeight or minHeight
+    const newHeight = Math.max(textarea.scrollHeight, minHeight);
+    textarea.style.height = `${newHeight}px`;
+  }
+
+  /**
+   * Get code content from diff lines in a range
+   * @param {string} fileName - The file name
+   * @param {number} startLine - Start line number
+   * @param {number} endLine - End line number
+   * @returns {string} The code content from the lines
+   */
+  getCodeFromLines(fileName, startLine, endLine) {
+    // Find the file wrapper
+    const fileWrappers = document.querySelectorAll('.d2h-file-wrapper');
+    let targetWrapper = null;
+
+    for (const wrapper of fileWrappers) {
+      if (wrapper.dataset.fileName === fileName) {
+        targetWrapper = wrapper;
+        break;
+      }
+    }
+
+    if (!targetWrapper) {
+      console.warn(`[Suggestion] Could not find file wrapper for ${fileName}`);
+      return '';
+    }
+
+    // Find all rows in the line range
+    const rows = targetWrapper.querySelectorAll('tr[data-line-number]');
+    const codeLines = [];
+
+    for (const row of rows) {
+      const lineNum = parseInt(row.dataset.lineNumber, 10);
+      if (lineNum >= startLine && lineNum <= endLine && row.dataset.fileName === fileName) {
+        // Get the code content cell
+        const codeCell = row.querySelector('.d2h-code-line-ctn');
+        if (codeCell) {
+          // Get text content, preserving whitespace but removing any HTML
+          codeLines.push(codeCell.textContent);
+        }
+      }
+    }
+
+    return codeLines.join('\n');
+  }
+
+  /**
+   * Check if a suggestion block already exists in the textarea
+   * @param {string} text - The textarea content
+   * @returns {boolean} True if a suggestion block exists
+   */
+  hasSuggestionBlock(text) {
+    // Match both ``` and ```` suggestion blocks, allowing leading whitespace
+    return /^\s*(`{3,})suggestion\s*$/m.test(text);
+  }
+
+  /**
+   * Update the suggestion button state based on textarea content
+   * Disables the button if a suggestion block already exists
+   * @param {HTMLTextAreaElement} textarea - The textarea to check
+   * @param {HTMLButtonElement} button - The suggestion button
+   */
+  updateSuggestionButtonState(textarea, button) {
+    if (!button) return;
+    const hasSuggestion = this.hasSuggestionBlock(textarea.value);
+    button.disabled = hasSuggestion;
+    button.title = hasSuggestion ? 'Only one suggestion per comment' : 'Insert a suggestion';
+  }
+
+  /**
+   * Insert a suggestion block into the textarea at cursor position
+   * Pre-fills with code from the selected lines
+   * @param {HTMLTextAreaElement} textarea - The textarea to insert into
+   * @param {HTMLButtonElement} [button] - Optional suggestion button to disable after insert
+   */
+  insertSuggestionBlock(textarea, button) {
+    // Check if suggestion already exists
+    if (this.hasSuggestionBlock(textarea.value)) {
+      return;
+    }
+
+    const fileName = textarea.dataset.file;
+    const startLine = parseInt(textarea.dataset.line, 10);
+    const endLine = parseInt(textarea.dataset.lineEnd, 10) || startLine;
+
+    // Get the code from the selected lines
+    const code = this.getCodeFromLines(fileName, startLine, endLine);
+
+    // Build the suggestion block
+    // Use 4 backticks if the code contains triple backticks
+    const backticks = code.includes('```') ? '````' : '```';
+    const suggestionBlock = `${backticks}suggestion\n${code}\n${backticks}`;
+
+    // Get current cursor position
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = textarea.value;
+
+    // Insert at cursor position (or replace selection)
+    const before = text.substring(0, start);
+    const after = text.substring(end);
+
+    // Add newlines if needed for clean formatting
+    const needsNewlineBefore = before.length > 0 && !before.endsWith('\n');
+    const needsNewlineAfter = after.length > 0 && !after.startsWith('\n');
+
+    const prefix = needsNewlineBefore ? '\n' : '';
+    const suffix = needsNewlineAfter ? '\n' : '';
+
+    textarea.value = before + prefix + suggestionBlock + suffix + after;
+
+    // Position cursor inside the suggestion block (at the start of the code)
+    const newCursorPos = start + prefix.length + backticks.length + 'suggestion\n'.length;
+    textarea.setSelectionRange(newCursorPos, newCursorPos + code.length);
+    textarea.focus();
+
+    // Trigger auto-resize
+    this.autoResizeTextarea(textarea);
+
+    // Disable the suggestion button
+    if (button) {
+      this.updateSuggestionButtonState(textarea, button);
+    }
+  }
+
   /**
    * Save user comment
    */
@@ -3020,7 +3191,11 @@ class PRManager {
     const commentRow = document.createElement('tr');
     commentRow.className = 'user-comment-row';
     commentRow.dataset.commentId = comment.id;
-    
+    // Store file/line data for editing
+    commentRow.dataset.file = comment.file;
+    commentRow.dataset.lineStart = comment.line_start;
+    commentRow.dataset.lineEnd = comment.line_end || comment.line_start;
+
     const td = document.createElement('td');
     td.colSpan = 4;
     td.className = 'user-comment-cell';
@@ -3086,11 +3261,19 @@ class PRManager {
     const commentRow = document.createElement('tr');
     commentRow.className = 'user-comment-row';
     commentRow.dataset.commentId = comment.id;
-    
+    // Store file/line data for editing
+    commentRow.dataset.file = comment.file;
+    commentRow.dataset.lineStart = comment.line_start;
+    commentRow.dataset.lineEnd = comment.line_end || comment.line_start;
+
     const td = document.createElement('td');
     td.colSpan = 4;
     td.className = 'user-comment-cell';
-    
+
+    const lineInfo = comment.line_end && comment.line_end !== comment.line_start
+      ? `Lines ${comment.line_start}-${comment.line_end}`
+      : `Line ${comment.line_start}`;
+
     const commentHTML = `
       <div class="user-comment editing-mode ${comment.parent_id ? 'adopted-comment' : ''}">
         <div class="user-comment-header">
@@ -3099,7 +3282,7 @@ class PRManager {
               <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"></path>
             </svg>
           </span>
-          <span class="user-comment-line-info">Line ${comment.line_start}</span>
+          <span class="user-comment-line-info">${lineInfo}</span>
           ${comment.type && comment.type !== 'comment' ? `
             <button class="btn-toggle-original" onclick="prManager.toggleOriginalSuggestion(${comment.parent_id}, ${comment.id})" title="Show/hide original AI suggestion">
               <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="20" height="20">
@@ -3126,39 +3309,78 @@ class PRManager {
         <!-- Hidden body div for saving - pre-populate with markdown rendered content and store original -->
         <div class="user-comment-body" style="display: none;" data-original-markdown="${this.escapeHtml(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : this.escapeHtml(comment.body)}</div>
         <div class="user-comment-edit-form">
-          <textarea 
-            id="edit-comment-${comment.id}" 
+          <div class="comment-form-toolbar">
+            <button type="button" class="btn btn-sm suggestion-btn" title="Insert a suggestion (Ctrl+G)">
+              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
+                <path fill-rule="evenodd" d="M14.064 0a8.75 8.75 0 00-6.187 2.563l-.459.458c-.314.314-.616.641-.904.979H3.31a1.75 1.75 0 00-1.49.833L.11 7.607a.75.75 0 00.418 1.11l3.102.954c.037.051.079.1.124.145l2.429 2.428c.046.046.094.088.145.125l.954 3.102a.75.75 0 001.11.418l2.774-1.707a1.75 1.75 0 00.833-1.49V9.485c.338-.288.665-.59.979-.904l.458-.459A8.75 8.75 0 0016 1.936V1.75A1.75 1.75 0 0014.25 0h-.186zM10.5 10.625c-.088.06-.177.118-.266.175l-2.35 1.521.548 1.783 1.949-1.2a.25.25 0 00.119-.213v-2.066zM3.678 8.116L5.2 5.766c.058-.09.117-.178.176-.266H3.31a.25.25 0 00-.213.119l-1.2 1.95 1.782.547zm5.26-4.493A7.25 7.25 0 0114.063 1.5h.186a.25.25 0 01.25.25v.186a7.25 7.25 0 01-2.123 5.127l-.459.458a15.21 15.21 0 01-2.499 2.02l-2.317 1.5-2.143-2.143 1.5-2.317a15.25 15.25 0 012.02-2.5l.458-.458h.002zM12 5a1 1 0 11-2 0 1 1 0 012 0zm-8.44 9.56a1.5 1.5 0 10-2.12-2.12c-.734.73-1.047 2.332-1.15 3.003a.23.23 0 00.265.265c.671-.103 2.273-.416 3.005-1.148z"></path>
+              </svg>
+            </button>
+          </div>
+          <textarea
+            id="edit-comment-${comment.id}"
             class="comment-edit-textarea"
             placeholder="Enter your comment..."
-            rows="3">${this.escapeHtml(comment.body)}</textarea>
+            data-file="${comment.file}"
+            data-line="${comment.line_start}"
+            data-line-end="${comment.line_end || comment.line_start}"
+          >${this.escapeHtml(comment.body)}</textarea>
           <div class="comment-edit-actions">
-            <button class="btn btn-sm btn-primary" onclick="prManager.saveEditedUserComment(${comment.id})">
+            <button class="btn btn-sm btn-primary save-edit-btn">
               Save comment
             </button>
-            <button class="btn btn-sm btn-secondary" onclick="prManager.cancelEditUserComment(${comment.id})">
+            <button class="btn btn-sm btn-secondary cancel-edit-btn">
               Cancel
             </button>
           </div>
         </div>
       </div>
     `;
-    
+
     td.innerHTML = commentHTML;
     commentRow.appendChild(td);
-    
+
     // Insert comment immediately after the target row (suggestion row)
     if (targetRow.nextSibling) {
       targetRow.parentNode.insertBefore(commentRow, targetRow.nextSibling);
     } else {
       targetRow.parentNode.appendChild(commentRow);
     }
-    
-    // Focus and select the textarea
+
+    // Get references
+    const editForm = td.querySelector('.user-comment-edit-form');
     const textarea = document.getElementById(`edit-comment-${comment.id}`);
+    const suggestionBtn = editForm.querySelector('.suggestion-btn');
+    const saveBtn = editForm.querySelector('.save-edit-btn');
+    const cancelBtn = editForm.querySelector('.cancel-edit-btn');
+
     if (textarea) {
+      // Auto-resize to fit content
+      this.autoResizeTextarea(textarea);
+
       textarea.focus();
-      textarea.select();
-      
+      // Position cursor at end of text instead of selecting all
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+      // Update suggestion button state based on content
+      this.updateSuggestionButtonState(textarea, suggestionBtn);
+
+      // Suggestion button handler
+      suggestionBtn.addEventListener('click', () => {
+        if (!suggestionBtn.disabled) {
+          this.insertSuggestionBlock(textarea, suggestionBtn);
+        }
+      });
+
+      // Save/cancel handlers
+      saveBtn.addEventListener('click', () => this.saveEditedUserComment(comment.id));
+      cancelBtn.addEventListener('click', () => this.cancelEditUserComment(comment.id));
+
+      // Auto-resize on input and update suggestion button state
+      textarea.addEventListener('input', () => {
+        this.autoResizeTextarea(textarea);
+        this.updateSuggestionButtonState(textarea, suggestionBtn);
+      });
+
       // Add keyboard shortcuts
       textarea.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
@@ -3171,7 +3393,7 @@ class PRManager {
       });
     }
   }
-  
+
   /**
    * Edit user comment
    */
@@ -3200,38 +3422,88 @@ class PRManager {
         }
       }
       
+      // Prevent double editor - check if already in editing mode
+      if (commentDiv.classList.contains('editing-mode')) {
+        console.log('[UI] Already in editing mode, ignoring');
+        return;
+      }
+
       // Add editing mode
       commentDiv.classList.add('editing-mode');
-      
+
+      // Get file/line data from comment row
+      const fileName = commentRow.dataset.file || '';
+      const lineStart = commentRow.dataset.lineStart || '';
+      const lineEnd = commentRow.dataset.lineEnd || lineStart;
+
       // Replace body with edit form
       const editFormHTML = `
         <div class="user-comment-edit-form">
-          <textarea 
-            id="edit-comment-${commentId}" 
+          <div class="comment-form-toolbar">
+            <button type="button" class="btn btn-sm suggestion-btn" title="Insert a suggestion (Ctrl+G)">
+              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
+                <path fill-rule="evenodd" d="M14.064 0a8.75 8.75 0 00-6.187 2.563l-.459.458c-.314.314-.616.641-.904.979H3.31a1.75 1.75 0 00-1.49.833L.11 7.607a.75.75 0 00.418 1.11l3.102.954c.037.051.079.1.124.145l2.429 2.428c.046.046.094.088.145.125l.954 3.102a.75.75 0 001.11.418l2.774-1.707a1.75 1.75 0 00.833-1.49V9.485c.338-.288.665-.59.979-.904l.458-.459A8.75 8.75 0 0016 1.936V1.75A1.75 1.75 0 0014.25 0h-.186zM10.5 10.625c-.088.06-.177.118-.266.175l-2.35 1.521.548 1.783 1.949-1.2a.25.25 0 00.119-.213v-2.066zM3.678 8.116L5.2 5.766c.058-.09.117-.178.176-.266H3.31a.25.25 0 00-.213.119l-1.2 1.95 1.782.547zm5.26-4.493A7.25 7.25 0 0114.063 1.5h.186a.25.25 0 01.25.25v.186a7.25 7.25 0 01-2.123 5.127l-.459.458a15.21 15.21 0 01-2.499 2.02l-2.317 1.5-2.143-2.143 1.5-2.317a15.25 15.25 0 012.02-2.5l.458-.458h.002zM12 5a1 1 0 11-2 0 1 1 0 012 0zm-8.44 9.56a1.5 1.5 0 10-2.12-2.12c-.734.73-1.047 2.332-1.15 3.003a.23.23 0 00.265.265c.671-.103 2.273-.416 3.005-1.148z"></path>
+              </svg>
+            </button>
+          </div>
+          <textarea
+            id="edit-comment-${commentId}"
             class="comment-edit-textarea"
             placeholder="Enter your comment..."
-            rows="3">${this.escapeHtml(currentText)}</textarea>
+            data-file="${fileName}"
+            data-line="${lineStart}"
+            data-line-end="${lineEnd}"
+          >${this.escapeHtml(currentText)}</textarea>
           <div class="comment-edit-actions">
-            <button class="btn btn-sm btn-primary" onclick="prManager.saveEditedUserComment(${commentId})">
+            <button class="btn btn-sm btn-primary save-edit-btn">
               Save comment
             </button>
-            <button class="btn btn-sm btn-secondary" onclick="prManager.cancelEditUserComment(${commentId})">
+            <button class="btn btn-sm btn-secondary cancel-edit-btn">
               Cancel
             </button>
           </div>
         </div>
       `;
-      
+
       // Hide body and insert edit form
       bodyDiv.style.display = 'none';
       bodyDiv.insertAdjacentHTML('afterend', editFormHTML);
-      
-      // Focus textarea
+
+      // Get references
+      const editForm = commentDiv.querySelector('.user-comment-edit-form');
       const textarea = document.getElementById(`edit-comment-${commentId}`);
+      const suggestionBtn = editForm.querySelector('.suggestion-btn');
+      const saveBtn = editForm.querySelector('.save-edit-btn');
+      const cancelBtn = editForm.querySelector('.cancel-edit-btn');
+
       if (textarea) {
+        // Auto-resize to fit content
+        this.autoResizeTextarea(textarea);
+
         textarea.focus();
-        textarea.select();
-        
+        // Position cursor at end of text instead of selecting all
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+        // Update suggestion button state based on content
+        this.updateSuggestionButtonState(textarea, suggestionBtn);
+
+        // Suggestion button handler
+        suggestionBtn.addEventListener('click', () => {
+          if (!suggestionBtn.disabled) {
+            this.insertSuggestionBlock(textarea, suggestionBtn);
+          }
+        });
+
+        // Save/cancel handlers
+        saveBtn.addEventListener('click', () => this.saveEditedUserComment(commentId));
+        cancelBtn.addEventListener('click', () => this.cancelEditUserComment(commentId));
+
+        // Auto-resize on input and update suggestion button state
+        textarea.addEventListener('input', () => {
+          this.autoResizeTextarea(textarea);
+          this.updateSuggestionButtonState(textarea, suggestionBtn);
+        });
+
         // Add keyboard shortcuts
         textarea.addEventListener('keydown', (e) => {
           if (e.key === 'Escape') {
