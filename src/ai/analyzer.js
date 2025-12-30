@@ -7,6 +7,7 @@ const util = require('util');
 const execPromise = util.promisify(exec);
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
+const { getGeneratedFilePatterns } = require('../git/gitattributes');
 
 class Analyzer {
   constructor(database, model = 'sonnet') {
@@ -56,6 +57,12 @@ class Analyzer {
     logger.info(`Analysis run ID: ${runId}`);
     logger.info(`Worktree path: ${worktreePath}`);
 
+    // Load generated file patterns to skip during analysis
+    const generatedPatterns = await this.loadGeneratedFilePatterns(worktreePath);
+    if (generatedPatterns.length > 0) {
+      logger.info(`Found ${generatedPatterns.length} generated file patterns to skip: ${generatedPatterns.join(', ')}`);
+    }
+
     try {
       // Step 1: Delete old AI suggestions before starting new analysis
       logger.info('Clearing previous AI suggestions...');
@@ -64,9 +71,9 @@ class Analyzer {
       // Step 2: Run all 3 levels in parallel
       logger.info('Starting all 3 analysis levels in parallel...');
       const results = await Promise.allSettled([
-        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, progressCallback),
-        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, progressCallback),
-        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, progressCallback)
+        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback),
+        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback),
+        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback)
       ]);
 
       // Step 3: Collect successful results
@@ -158,6 +165,42 @@ class Analyzer {
   }
 
   /**
+   * Load generated file patterns from .gitattributes
+   * @param {string} worktreePath - Path to the git worktree
+   * @returns {Promise<Array<string>>} Array of generated file patterns
+   */
+  async loadGeneratedFilePatterns(worktreePath) {
+    try {
+      const parser = await getGeneratedFilePatterns(worktreePath);
+      return parser.getPatterns();
+    } catch (error) {
+      logger.warn(`Could not load generated file patterns: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Build the section of the prompt that instructs to skip generated files
+   * @param {Array<string>} generatedPatterns - Patterns of generated files
+   * @returns {string} Prompt section or empty string
+   */
+  buildGeneratedFilesExclusionSection(generatedPatterns) {
+    if (!generatedPatterns || generatedPatterns.length === 0) {
+      return '';
+    }
+
+    return `
+## Generated Files - DO NOT ANALYZE
+The following files are marked as generated in .gitattributes and should be SKIPPED entirely:
+${generatedPatterns.map(p => `- ${p}`).join('\n')}
+
+These are auto-generated files (like package-lock.json, build outputs, etc.) that should not be reviewed.
+When running git diff, you can exclude these with: git diff ${'{base}'}...${'{head}'} -- ':!pattern' for each pattern.
+Or simply ignore any changes to files matching these patterns in your analysis.
+`;
+  }
+
+  /**
    * Perform Level 1 analysis on a PR (backwards compatibility wrapper)
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
@@ -179,7 +222,7 @@ class Analyzer {
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, progressCallback = null) {
+  async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null) {
     logger.info('[Level 1] Analysis Starting');
 
     try {
@@ -201,7 +244,7 @@ class Analyzer {
 
       // Build the Level 1 prompt
       updateProgress('Building prompt for Claude to analyze changes');
-      const prompt = this.buildLevel1Prompt(prId, worktreePath, prMetadata);
+      const prompt = this.buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns);
 
       // Execute Claude CLI in the worktree directory
       updateProgress('Running Claude to analyze changes in isolation');
@@ -279,18 +322,21 @@ ${prMetadata.description || '(No description provided)'}
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Array<string>} generatedPatterns - Patterns for generated files to skip
    */
-  buildLevel2Prompt(prId, worktreePath, prMetadata) {
+  buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns = []) {
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. As you analyze file-level consistency, verify if the actual changes align with this description. Be alert for:
 - Significant functionality changes not mentioned in the description
 - Inconsistencies between stated goals and implementation patterns
 - Scope creep beyond what was described`);
 
+    const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
+
     return `You are reviewing pull request #${prId} in the current working directory.
 ${prContext}
 # Level 2 Review - Analyze File Context
-
+${generatedFilesSection}
 ## Analysis Process
 For each file with changes:
    - Read the full file content to understand context
@@ -356,13 +402,16 @@ Output JSON with this structure:
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
+   * @param {Array<string>} generatedPatterns - Patterns for generated files to skip
    */
-  buildLevel1Prompt(prId, worktreePath, prMetadata) {
+  buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns = []) {
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. Your job is to independently verify if the actual code changes align with this description. As you analyze, be alert for:
 - Discrepancies between the description and actual implementation
 - Undocumented changes or side effects not mentioned in the description
 - Overstated or understated scope`);
+
+    const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
 
     return `You are reviewing pull request #${prId} in the current working directory.
 ${prContext}
@@ -370,7 +419,7 @@ ${prContext}
 
 ## Speed and Scope Expectations
 **This level should be fast** - focusing only on the diff itself without exploring file context or surrounding unchanged code. That analysis is reserved for Level 2.
-
+${generatedFilesSection}
 ## Initial Setup
 1. Run 'git diff ${prMetadata.base_sha}...${prMetadata.head_sha}' to see what changed in this PR
 2. Focus ONLY on the changed lines in the diff
@@ -694,7 +743,7 @@ Output JSON with this structure:
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, progressCallback = null) {
+  async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null) {
     logger.info('[Level 2] Analysis Starting');
 
     try {
@@ -716,7 +765,7 @@ Output JSON with this structure:
 
       // Build the Level 2 prompt
       updateProgress('Building prompt for Claude to analyze file context');
-      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata);
+      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns);
 
       // Execute Claude CLI in the worktree directory
       updateProgress('Running Claude to analyze files in context');
@@ -775,7 +824,7 @@ Output JSON with this structure:
    * @param {Function} progressCallback - Callback for progress updates
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, progressCallback = null) {
+  async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null) {
     logger.info('[Level 3] Analysis Starting');
 
     try {
@@ -801,7 +850,7 @@ Output JSON with this structure:
 
       // Build the Level 3 prompt with test context
       updateProgress('Building prompt for Claude to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext);
+      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns);
 
       // Execute Claude CLI for Level 3 analysis
       updateProgress('Running Claude to analyze codebase-wide implications');
@@ -1291,7 +1340,7 @@ Output JSON with this structure:
     }
   }
 
-  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null) {
+  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null, generatedPatterns = []) {
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. At this architectural level, it's especially important to verify alignment between stated intent and actual implementation. Flag any:
 - **Architectural discrepancies:** Does the implementation match the architectural approach described?
@@ -1299,10 +1348,12 @@ Output JSON with this structure:
 - **Impact inconsistencies:** Does the actual codebase impact match what the author claimed?
 - **Undocumented side effects:** Are there broader impacts not mentioned in the description?`);
 
+    const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
+
     return `You are reviewing pull request #${prId} in the current working directory.
 ${prContext}
 # Level 3 Review - Analyze Change Impact on Codebase
-
+${generatedFilesSection}
 ## Purpose
 Level 3 analyzes how the PR changes connect to and impact the broader codebase.
 This is NOT a general codebase review or architectural audit.

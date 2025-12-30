@@ -4,6 +4,7 @@ const fs = require('fs').promises;
 const os = require('os');
 const { getConfigDir } = require('../config');
 const { WorktreeRepository, generateWorktreeId } = require('../database');
+const { getGeneratedFilePatterns } = require('./gitattributes');
 
 /**
  * Git worktree manager for handling PR branch checkouts and diffs
@@ -276,7 +277,7 @@ class GitWorktreeManager {
 
   /**
    * Get list of changed files in the PR
-   * @param {string} worktreePath - Path to worktree  
+   * @param {string} worktreePath - Path to worktree
    * @param {Object} prData - PR data from GitHub API
    * @returns {Promise<Array>} Array of changed file information
    */
@@ -288,12 +289,16 @@ class GitWorktreeManager {
       // This ensures we get the exact files changed in the PR, even if the base branch has moved
       const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`]);
 
+      // Parse .gitattributes to identify generated files
+      const gitattributes = await getGeneratedFilePatterns(worktreePath);
+
       return diffSummary.files.map(file => ({
         file: file.file,
         insertions: file.insertions,
         deletions: file.deletions,
         changes: file.changes,
-        binary: file.binary || false
+        binary: file.binary || false,
+        generated: gitattributes.isGenerated(file.file)
       }));
 
     } catch (error) {

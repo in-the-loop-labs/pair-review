@@ -2,6 +2,7 @@ const express = require('express');
 const { query, queryOne, run, WorktreeRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
+const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const Analyzer = require('../ai/analyzer');
 const fs = require('fs').promises;
 const path = require('path');
@@ -395,18 +396,39 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
     try {
       prData = JSON.parse(prMetadata.pr_data);
     } catch (error) {
-      return res.status(500).json({ 
-        error: 'Error parsing PR data' 
+      return res.status(500).json({
+        error: 'Error parsing PR data'
       });
+    }
+
+    // Add generated flag to changed files based on .gitattributes
+    let changedFiles = prData.changed_files || [];
+
+    // Look up worktree path to read .gitattributes
+    const db = req.app.get('db');
+    const worktreeRepo = new WorktreeRepository(db);
+    const worktreeRecord = await worktreeRepo.findByPR(prNumber, repository);
+
+    if (worktreeRecord && worktreeRecord.path) {
+      try {
+        const gitattributes = await getGeneratedFilePatterns(worktreeRecord.path);
+        changedFiles = changedFiles.map(file => ({
+          ...file,
+          generated: gitattributes.isGenerated(file.file)
+        }));
+      } catch (error) {
+        console.warn('Could not load .gitattributes:', error.message);
+        // Continue without generated flags
+      }
     }
 
     res.json({
       diff: prData.diff || '',
-      changed_files: prData.changed_files || [],
+      changed_files: changedFiles,
       stats: {
         additions: prData.additions || 0,
         deletions: prData.deletions || 0,
-        changed_files: prData.changed_files || 0
+        changed_files: changedFiles.length
       }
     });
     

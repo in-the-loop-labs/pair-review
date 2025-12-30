@@ -3907,3 +3907,142 @@ body {
   background-color: #30363d;
 }
 
+/* ============================================
+   Generated Files Styles
+   ============================================ */
+
+/* Generated file wrapper - collapsed state hides diff content */
+.d2h-file-wrapper.generated-file.collapsed .d2h-diff-table {
+  display: none;
+}
+
+/* Generated file header styling */
+.d2h-file-wrapper.generated-file .d2h-file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: var(--color-bg-secondary, #f6f8fa);
+  cursor: pointer;
+}
+
+.d2h-file-wrapper.generated-file.collapsed .d2h-file-header {
+  border-bottom: none;
+}
+
+/* Generated toggle button */
+.generated-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--color-text-secondary, #656d76);
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.generated-toggle:hover {
+  background-color: var(--color-bg-hover, rgba(0, 0, 0, 0.05));
+  color: var(--color-text-primary, #1f2328);
+}
+
+.generated-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* Generated badge */
+.generated-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #656d76;
+  background-color: #eaeef2;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Generated file stats (visible in collapsed mode) */
+.generated-stats {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+.generated-stats .additions {
+  color: var(--color-success-fg, #1a7f37);
+}
+
+.generated-stats .deletions {
+  color: var(--color-danger-fg, #cf222e);
+}
+
+/* Hide stats when expanded */
+.d2h-file-wrapper.generated-file:not(.collapsed) .generated-stats {
+  display: none;
+}
+
+/* File tree - generated file indicator */
+.tree-file.generated {
+  opacity: 0.7;
+}
+
+.tree-file.generated .tree-name {
+  font-style: italic;
+}
+
+.file-generated-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  color: var(--color-text-secondary, #656d76);
+}
+
+.file-generated-indicator svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Dark theme overrides for generated files */
+[data-theme="dark"] .generated-badge {
+  color: #8b949e;
+  background-color: #30363d;
+}
+
+[data-theme="dark"] .generated-toggle {
+  color: #8b949e;
+}
+
+[data-theme="dark"] .generated-toggle:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #c9d1d9;
+}
+
+[data-theme="dark"] .d2h-file-wrapper.generated-file .d2h-file-header {
+  background-color: #161b22;
+}
+
+[data-theme="dark"] .tree-file.generated {
+  opacity: 0.65;
+}
+
+[data-theme="dark"] .file-generated-indicator {
+  color: #8b949e;
+}
+
+[data-theme="dark"] .generated-stats .additions {
+  color: #3fb950;
+}
+
+[data-theme="dark"] .generated-stats .deletions {
+  color: #f85149;
+}
+
