@@ -3973,8 +3973,15 @@ body {
 /* Generated file stats (visible in collapsed mode) */
 .generated-stats {
   font-size: 12px;
-  color: var(--color-text-secondary, #656d76);
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+.generated-stats .additions {
+  color: var(--color-success-fg, #1a7f37);
+}
+
+.generated-stats .deletions {
+  color: var(--color-danger-fg, #cf222e);
 }
 
 /* Hide stats when expanded */
@@ -4029,5 +4036,13 @@ body {
 
 [data-theme="dark"] .file-generated-indicator {
   color: #8b949e;
+}
+
+[data-theme="dark"] .generated-stats .additions {
+  color: #3fb950;
+}
+
+[data-theme="dark"] .generated-stats .deletions {
+  color: #f85149;
 }
 

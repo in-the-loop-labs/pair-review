@@ -37,6 +37,27 @@ class PRManager {
   // Keep old name as alias for backward compatibility
   static FOLD_UP_DOWN_ICON = PRManager.UNFOLD_ICON;
 
+  // Eye icon for showing hidden content (GitHub Octicons "eye")
+  static EYE_ICON = `
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M8 2c1.981 0 3.671.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.45.678-1.367 1.932-2.637 3.023C11.67 13.008 9.981 14 8 14c-1.981 0-3.671-.992-4.933-2.078C1.797 10.831.88 9.577.43 8.899a1.62 1.62 0 0 1 0-1.798c.45-.678 1.367-1.932 2.637-3.023C4.33 2.992 6.019 2 8 2ZM1.679 7.932a.12.12 0 0 0 0 .136c.411.622 1.241 1.75 2.366 2.717C5.176 11.758 6.527 12.5 8 12.5c1.473 0 2.825-.742 3.955-1.715 1.124-.967 1.954-2.096 2.366-2.717a.12.12 0 0 0 0-.136c-.412-.621-1.242-1.75-2.366-2.717C10.824 4.242 9.473 3.5 8 3.5c-1.473 0-2.824.742-3.955 1.715-1.124.967-1.954 2.096-2.366 2.717ZM8 10a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 10Z"/>
+    </svg>
+  `;
+
+  // Eye-closed icon for hiding content (GitHub Octicons "eye-closed")
+  static EYE_CLOSED_ICON = `
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M.143 2.31a.75.75 0 0 1 1.047-.167l14.5 10.5a.75.75 0 1 1-.88 1.214l-2.248-1.628C11.346 13.19 9.792 14 8 14c-1.981 0-3.67-.992-4.933-2.078C1.797 10.83.88 9.576.43 8.898a1.62 1.62 0 0 1 0-1.797c.353-.533 1.063-1.502 2.063-2.487L.31 3.357A.75.75 0 0 1 .143 2.31Zm3.386 3.378a14.21 14.21 0 0 0-1.85 2.244.12.12 0 0 0 0 .136c.412.621 1.242 1.75 2.366 2.717C5.175 11.758 6.527 12.5 8 12.5c1.195 0 2.31-.488 3.29-1.191L9.063 9.695A2 2 0 0 1 6.058 7.52L3.529 5.688Zm6.728 4.873-1.676-1.214a.5.5 0 1 0 .798.59l.878.624ZM8 3.5c-.516 0-1.017.09-1.499.251a.75.75 0 0 1-.473-1.423A6.23 6.23 0 0 1 8 2c1.981 0 3.67.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.11.166-.248.365-.41.587a.75.75 0 1 1-1.21-.887c.148-.201.272-.382.371-.53a.119.119 0 0 0 0-.137c-.412-.621-1.242-1.75-2.366-2.717C10.825 4.242 9.473 3.5 8 3.5Z"/>
+    </svg>
+  `;
+
+  // Generated file indicator icon (gear/cog icon)
+  static GENERATED_FILE_ICON = `
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M9.585.52a2.678 2.678 0 0 0-3.17 0l-.928.68a1.178 1.178 0 0 1-.518.215L3.83 1.59a2.678 2.678 0 0 0-2.24 2.24l-.175 1.14a1.178 1.178 0 0 1-.215.518l-.68.928a2.678 2.678 0 0 0 0 3.17l.68.928c.113.153.186.33.215.518l.175 1.138a2.678 2.678 0 0 0 2.24 2.24l1.138.175c.187.029.365.102.518.215l.928.68a2.678 2.678 0 0 0 3.17 0l.928-.68a1.17 1.17 0 0 1 .518-.215l1.138-.175a2.678 2.678 0 0 0 2.241-2.241l.175-1.138c.029-.187.102-.365.215-.518l.68-.928a2.678 2.678 0 0 0 0-3.17l-.68-.928a1.179 1.179 0 0 1-.215-.518L14.41 3.83a2.678 2.678 0 0 0-2.24-2.24l-1.138-.175a1.179 1.179 0 0 1-.518-.215L9.585.52ZM7.303 1.728c.415-.305.979-.305 1.394 0l.928.68c.348.256.752.423 1.18.489l1.136.174c.51.078.909.478.987.987l.174 1.137c.066.427.233.831.489 1.18l.68.927c.305.415.305.98 0 1.394l-.68.928a2.678 2.678 0 0 0-.489 1.18l-.174 1.136a1.178 1.178 0 0 1-.987.987l-1.137.174a2.678 2.678 0 0 0-1.18.489l-.927.68c-.415.305-.98.305-1.394 0l-.928-.68a2.678 2.678 0 0 0-1.18-.489l-1.136-.174a1.178 1.178 0 0 1-.987-.987l-.174-1.137a2.678 2.678 0 0 0-.489-1.18l-.68-.927a1.178 1.178 0 0 1 0-1.394l.68-.928c.256-.348.423-.752.489-1.18l.174-1.136c.078-.51.478-.909.987-.987l1.137-.174a2.678 2.678 0 0 0 1.18-.489l.927-.68ZM8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4Z"/>
+    </svg>
+  `;
+
   // Default number of lines to expand when clicking up/down buttons
   static DEFAULT_EXPAND_LINES = 20;
 
@@ -729,13 +750,12 @@ class PRManager {
         // Add generated badge and expand/collapse toggle if this is a generated file
         if (isGenerated) {
           const generatedInfo = this.generatedFiles.get(filePath);
-          const statsText = `+${generatedInfo.insertions} -${generatedInfo.deletions}`;
 
-          // Create toggle button
+          // Create toggle button with eye icon
           const toggleBtn = document.createElement('button');
           toggleBtn.className = 'generated-toggle';
-          toggleBtn.title = isExpanded ? 'Collapse generated file' : 'Expand generated file';
-          toggleBtn.innerHTML = isExpanded ? PRManager.FOLD_UP_ICON : PRManager.FOLD_DOWN_ICON;
+          toggleBtn.title = isExpanded ? 'Hide generated file diff' : 'Show generated file diff';
+          toggleBtn.innerHTML = isExpanded ? PRManager.EYE_CLOSED_ICON : PRManager.EYE_ICON;
           toggleBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this.toggleGeneratedFile(filePath);
@@ -745,14 +765,14 @@ class PRManager {
           // Add generated badge
           const badge = document.createElement('span');
           badge.className = 'generated-badge';
-          badge.textContent = 'Generated';
+          badge.textContent = 'Generated file';
           badge.title = 'This file is marked as generated in .gitattributes';
           fileHeader.appendChild(badge);
 
-          // Add stats summary for collapsed view
+          // Add stats summary for collapsed view (colored like other diff stats)
           const statsSummary = document.createElement('span');
           statsSummary.className = 'generated-stats';
-          statsSummary.textContent = statsText;
+          statsSummary.innerHTML = `<span class="additions">+${generatedInfo.insertions}</span> <span class="deletions">-${generatedInfo.deletions}</span>`;
           fileHeader.appendChild(statsSummary);
         }
 
@@ -855,8 +875,8 @@ class PRManager {
     // Update toggle button icon
     const toggleBtn = fileWrapper.querySelector('.generated-toggle');
     if (toggleBtn) {
-      toggleBtn.innerHTML = isCurrentlyExpanded ? PRManager.FOLD_DOWN_ICON : PRManager.FOLD_UP_ICON;
-      toggleBtn.title = isCurrentlyExpanded ? 'Expand generated file' : 'Collapse generated file';
+      toggleBtn.innerHTML = isCurrentlyExpanded ? PRManager.EYE_ICON : PRManager.EYE_CLOSED_ICON;
+      toggleBtn.title = isCurrentlyExpanded ? 'Show generated file diff' : 'Hide generated file diff';
     }
   }
 
@@ -3778,11 +3798,7 @@ class PRManager {
               const generatedIndicator = document.createElement('span');
               generatedIndicator.className = 'file-generated-indicator';
               generatedIndicator.title = 'Generated file';
-              generatedIndicator.innerHTML = `
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M9.585.52a2.678 2.678 0 0 0-3.17 0l-.928.68a1.178 1.178 0 0 1-.518.215L3.83 1.59a2.678 2.678 0 0 0-2.24 2.24l-.175 1.14a1.178 1.178 0 0 1-.215.518l-.68.928a2.678 2.678 0 0 0 0 3.17l.68.928c.113.153.186.33.215.518l.175 1.138a2.678 2.678 0 0 0 2.24 2.24l1.138.175c.187.029.365.102.518.215l.928.68a2.678 2.678 0 0 0 3.17 0l.928-.68a1.17 1.17 0 0 1 .518-.215l1.138-.175a2.678 2.678 0 0 0 2.241-2.241l.175-1.138c.029-.187.102-.365.215-.518l.68-.928a2.678 2.678 0 0 0 0-3.17l-.68-.928a1.179 1.179 0 0 1-.215-.518L14.41 3.83a2.678 2.678 0 0 0-2.24-2.24l-1.138-.175a1.179 1.179 0 0 1-.518-.215L9.585.52ZM7.303 1.728c.415-.305.979-.305 1.394 0l.928.68c.348.256.752.423 1.18.489l1.136.174c.51.078.909.478.987.987l.174 1.137c.066.427.233.831.489 1.18l.68.927c.305.415.305.98 0 1.394l-.68.928a2.678 2.678 0 0 0-.489 1.18l-.174 1.136a1.178 1.178 0 0 1-.987.987l-1.137.174a2.678 2.678 0 0 0-1.18.489l-.927.68c-.415.305-.98.305-1.394 0l-.928-.68a2.678 2.678 0 0 0-1.18-.489l-1.136-.174a1.178 1.178 0 0 1-.987-.987l-.174-1.137a2.678 2.678 0 0 0-.489-1.18l-.68-.927a1.178 1.178 0 0 1 0-1.394l.68-.928c.256-.348.423-.752.489-1.18l.174-1.136c.078-.51.478-.909.987-.987l1.137-.174a2.678 2.678 0 0 0 1.18-.489l.927-.68ZM8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4Z"/>
-                </svg>
-              `;
+              generatedIndicator.innerHTML = PRManager.GENERATED_FILE_ICON;
               fileContent.appendChild(generatedIndicator);
             }
 
