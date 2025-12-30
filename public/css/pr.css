@@ -2737,6 +2737,31 @@ tr.line-range-start .d2h-code-line-ctn {
   flex: 1;
 }
 
+/* Toolbar above textarea for formatting buttons */
+.comment-form-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: #f6f8fa;
+  border: 1px solid #d1d9e0;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+}
+
+[data-theme="dark"] .comment-form-toolbar {
+  background: #161b22;
+  border-color: #30363d;
+}
+
+/* When toolbar is present, adjust textarea to connect with toolbar */
+.comment-form-toolbar + .comment-textarea,
+.comment-form-toolbar + textarea {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-top-color: transparent;
+}
+
 .comment-form-actions {
   display: flex;
   align-items: center;
@@ -2966,6 +2991,11 @@ tr.line-range-start .d2h-code-line-ctn {
   gap: 4px;
 }
 
+/* Hide edit/delete buttons when in editing mode */
+.user-comment.editing-mode .user-comment-actions {
+  display: none;
+}
+
 .btn-edit-comment,
 .btn-delete-comment {
   background: transparent;
@@ -3022,10 +3052,28 @@ tr.line-range-start .d2h-code-line-ctn {
   transition: border-color 0.2s;
 }
 
+/* When toolbar is present, connect textarea to it */
+.comment-form-toolbar + .comment-edit-textarea {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  border-top-color: transparent;
+}
+
 .comment-edit-textarea:focus {
   outline: none;
   border-color: #7c3aed;
   box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+}
+
+/* Style toolbar inside edit form with purple accent */
+.user-comment-edit-form .comment-form-toolbar {
+  background: #f5f0ff;
+  border-color: #8b5cf6;
+}
+
+[data-theme="dark"] .user-comment-edit-form .comment-form-toolbar {
+  background: #1e1a2e;
+  border-color: #6d28d9;
 }
 
 /* Style suggestion button inside edit form with purple accent */
