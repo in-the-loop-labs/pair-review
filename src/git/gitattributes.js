@@ -150,7 +150,7 @@ class GitAttributesParser {
       regexStr = '(^|.*/)'+ regexStr + '$';
     } else if (pattern.startsWith('/')) {
       // Pattern starting with / matches from root only
-      regexStr = '^' + regexStr.slice(2) + '$';
+      regexStr = '^' + regexStr.slice(1) + '$';
     } else {
       // Pattern with slashes must match the exact path structure
       regexStr = '(^|.*/)'+ regexStr + '$';
