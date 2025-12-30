@@ -2695,74 +2695,46 @@ tr.line-range-start .d2h-code-line-ctn {
   box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
 }
 
-/* Comment Toolbar */
-.comment-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 8px;
-  background: linear-gradient(to bottom, #f6f8fa 0%, #eef1f4 100%);
-  border: 1px solid #d1d9e0;
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
-  margin-bottom: -1px;
-}
-
-.toolbar-btn {
+/* Suggestion button - inline with action buttons */
+.suggestion-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  background: linear-gradient(to bottom, #ffffff 0%, #f6f8fa 100%);
+  justify-content: center;
+  padding: 5px 8px;
+  background: transparent;
   border: 1px solid #d1d9e0;
   border-radius: 6px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #24292f;
+  color: #0969da;
   cursor: pointer;
   transition: all 0.15s ease;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
 }
 
-.toolbar-btn:hover {
-  background: linear-gradient(to bottom, #f3f4f6 0%, #ebecef 100%);
-  border-color: #c7ced6;
-  color: #1f2328;
+.suggestion-btn:hover:not(:disabled) {
+  color: #0550ae;
+  background: #eef6ff;
+  border-color: #0969da;
 }
 
-.toolbar-btn:active {
-  background: #e1e4e8;
+.suggestion-btn:active:not(:disabled) {
+  background: #dbeafe;
   transform: translateY(1px);
 }
 
-.toolbar-btn .octicon {
-  fill: currentColor;
-  flex-shrink: 0;
-}
-
-.toolbar-btn .toolbar-btn-text {
-  white-space: nowrap;
-}
-
-/* Suggestion button specific styling */
-.suggestion-btn {
-  color: #0969da;
-}
-
-.suggestion-btn:hover {
-  color: #0550ae;
-  background: linear-gradient(to bottom, #eef6ff 0%, #dbeafe 100%);
-  border-color: #0969da;
+.suggestion-btn:disabled {
+  color: #8c959f;
+  border-color: #d1d9e0;
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .suggestion-btn .octicon {
   fill: currentColor;
+  flex-shrink: 0;
 }
 
-/* Ensure textarea has rounded top when toolbar present */
-.comment-toolbar + .comment-textarea,
-.comment-toolbar + textarea {
-  border-radius: 0 0 6px 6px;
+/* Action spacer - pushes buttons to the right */
+.action-spacer {
+  flex: 1;
 }
 
 .comment-form-actions {
@@ -3056,42 +3028,37 @@ tr.line-range-start .d2h-code-line-ctn {
   box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
 }
 
-/* When toolbar is present, adjust textarea border radius */
-.user-comment-edit-form .comment-toolbar + .comment-edit-textarea {
-  border-radius: 0 0 6px 6px;
-  border-top-color: transparent;
-}
-
-/* Style toolbar inside edit form with purple accent to match comment */
-.user-comment-edit-form .comment-toolbar {
-  background: linear-gradient(to bottom, #f5f0ff 0%, #ede9fe 100%);
-  border-color: #8b5cf6;
-  border-width: 2px;
-}
-
+/* Style suggestion button inside edit form with purple accent */
 .user-comment-edit-form .suggestion-btn {
   color: #7c3aed;
-}
-
-.user-comment-edit-form .suggestion-btn:hover {
-  color: #6d28d9;
-  background: linear-gradient(to bottom, #f5f0ff 0%, #ede9fe 100%);
   border-color: #8b5cf6;
 }
 
-[data-theme="dark"] .user-comment-edit-form .comment-toolbar {
-  background: linear-gradient(to bottom, #1e1b2e 0%, #161422 100%);
-  border-color: #a78bfa;
+.user-comment-edit-form .suggestion-btn:hover:not(:disabled) {
+  color: #6d28d9;
+  background: #f5f0ff;
+  border-color: #8b5cf6;
+}
+
+.user-comment-edit-form .suggestion-btn:disabled {
+  color: #9ca3af;
+  border-color: #d1d5db;
 }
 
 [data-theme="dark"] .user-comment-edit-form .suggestion-btn {
   color: #a78bfa;
+  border-color: #a78bfa;
 }
 
-[data-theme="dark"] .user-comment-edit-form .suggestion-btn:hover {
+[data-theme="dark"] .user-comment-edit-form .suggestion-btn:hover:not(:disabled) {
   color: #c4b5fd;
-  background: linear-gradient(to bottom, #2d2840 0%, #1e1b2e 100%);
+  background: #2d2840;
   border-color: #a78bfa;
+}
+
+[data-theme="dark"] .user-comment-edit-form .suggestion-btn:disabled {
+  color: #484f58;
+  border-color: #30363d;
 }
 
 [data-theme="dark"] .comment-edit-textarea {
@@ -3228,36 +3195,21 @@ body {
   color: #e6edf3;
 }
 
-/* Dark theme toolbar */
-[data-theme="dark"] .comment-toolbar {
-  background: linear-gradient(to bottom, #21262d 0%, #161b22 100%);
-  border-color: #30363d;
-}
-
-[data-theme="dark"] .toolbar-btn {
-  background: linear-gradient(to bottom, #21262d 0%, #161b22 100%);
-  border-color: #30363d;
-  color: #c9d1d9;
-}
-
-[data-theme="dark"] .toolbar-btn:hover {
-  background: linear-gradient(to bottom, #30363d 0%, #21262d 100%);
-  border-color: #484f58;
-  color: #e6edf3;
-}
-
-[data-theme="dark"] .toolbar-btn:active {
-  background: #0d1117;
-}
-
+/* Dark theme suggestion button */
 [data-theme="dark"] .suggestion-btn {
   color: #58a6ff;
+  border-color: #30363d;
 }
 
-[data-theme="dark"] .suggestion-btn:hover {
+[data-theme="dark"] .suggestion-btn:hover:not(:disabled) {
   color: #79c0ff;
-  background: linear-gradient(to bottom, #1c2c40 0%, #132339 100%);
+  background: #1c2c40;
   border-color: #2f81f7;
+}
+
+[data-theme="dark"] .suggestion-btn:disabled {
+  color: #484f58;
+  border-color: #30363d;
 }
 
 [data-theme="dark"] .comment-textarea {
