@@ -1401,7 +1401,7 @@ router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
 router.post('/api/ai-suggestion/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, userComment } = req.body;
+    const { status } = req.body;
     
     if (!['adopted', 'dismissed', 'active'].includes(status)) {
       return res.status(400).json({ 
@@ -1422,52 +1422,27 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
       });
     }
 
-    let adoptedAsId = null;
-    
-    // If adopting, create a user comment
-    if (status === 'adopted') {
-      const commentBody = userComment || suggestion.body;
-      const result = await run(db, `
-        INSERT INTO comments (
-          pr_id, source, author, file, line_start, line_end, 
-          type, title, body, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        suggestion.pr_id,
-        'user',
-        'Current User', // TODO: Get actual user from session/config
-        suggestion.file,
-        suggestion.line_start,
-        suggestion.line_end,
-        'comment',
-        suggestion.title,
-        commentBody,
-        'active'
-      ]);
-      
-      adoptedAsId = result.lastID;
-    }
-
     // Update suggestion status
     // When restoring to active, we need to clear adopted_as_id
+    // Note: User comment creation for adopted suggestions is handled separately
+    // by the frontend via /api/user-comment endpoint to avoid duplicate comments
     if (status === 'active') {
       await run(db, `
-        UPDATE comments 
+        UPDATE comments
         SET status = ?, adopted_as_id = NULL, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `, [status, id]);
     } else {
       await run(db, `
-        UPDATE comments 
-        SET status = ?, adopted_as_id = ?, updated_at = CURRENT_TIMESTAMP
+        UPDATE comments
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `, [status, adoptedAsId, id]);
+      `, [status, id]);
     }
 
-    res.json({ 
+    res.json({
       success: true,
-      status,
-      adoptedAsId 
+      status
     });
     
   } catch (error) {
