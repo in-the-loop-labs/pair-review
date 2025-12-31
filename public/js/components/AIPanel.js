@@ -166,6 +166,7 @@ class AIPanel {
     }
 
     onFindingClick(item) {
+        const findingId = item.dataset.id;
         const file = item.dataset.file;
         const line = item.dataset.line;
 
@@ -174,18 +175,41 @@ class AIPanel {
         item.classList.add('active');
 
         // Scroll to the suggestion in the diff view
-        if (file) {
-            // Try to find the corresponding suggestion element
+        let targetSuggestion = null;
+
+        // First, try to find by exact ID match (most reliable)
+        if (findingId) {
+            targetSuggestion = document.querySelector(`.ai-suggestion[data-suggestion-id="${findingId}"]`);
+        }
+
+        // Fallback: match by file and line (for suggestions without IDs)
+        if (!targetSuggestion && file) {
             const suggestions = document.querySelectorAll('.ai-suggestion');
             for (const suggestion of suggestions) {
                 const suggestionFile = suggestion.closest('[data-file-name]')?.dataset?.fileName;
                 if (suggestionFile && suggestionFile.includes(file)) {
-                    suggestion.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    suggestion.classList.add('current-suggestion');
-                    setTimeout(() => suggestion.classList.remove('current-suggestion'), 2000);
-                    break;
+                    // If we have a line number, try to match more precisely
+                    if (line) {
+                        const row = suggestion.closest('tr');
+                        const prevRow = row?.previousElementSibling;
+                        const rowLine = prevRow?.querySelector('.line-num2')?.textContent?.trim();
+                        if (rowLine === line) {
+                            targetSuggestion = suggestion;
+                            break;
+                        }
+                    } else {
+                        // No line specified, take first match in file
+                        targetSuggestion = suggestion;
+                        break;
+                    }
                 }
             }
+        }
+
+        if (targetSuggestion) {
+            targetSuggestion.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            targetSuggestion.classList.add('current-suggestion');
+            setTimeout(() => targetSuggestion.classList.remove('current-suggestion'), 2000);
         }
     }
 
