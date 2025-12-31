@@ -2051,6 +2051,11 @@ class PRManager {
       // Display suggestions inline with the diff
       this.displayAISuggestions(suggestions);
 
+      // Update AI Panel with findings
+      if (window.aiPanel) {
+        window.aiPanel.addFindings(suggestions);
+      }
+
     } catch (error) {
       console.error('Error loading AI suggestions:', error);
     }
