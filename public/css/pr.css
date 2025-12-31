@@ -5454,38 +5454,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
   display: inline;
 }
 
-/* AI Quick Actions */
-.ai-actions {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.ai-quick-action {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px;
-  font-family: inherit;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-primary);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.ai-quick-action:hover {
-  background: var(--color-bg-tertiary);
-  color: var(--ai-primary);
-  border-color: var(--ai-border);
-}
-
 /* --------------------------------------------------------------------------
    Responsive Design for New Layout
    -------------------------------------------------------------------------- */

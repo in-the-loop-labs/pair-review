@@ -10,7 +10,6 @@ class AIPanel {
         this.isCollapsed = false;
         this.findings = [];
         this.selectedLevel = 'final';
-        this.analysisComplete = false;
 
         this.initElements();
         this.bindEvents();
@@ -28,9 +27,6 @@ class AIPanel {
         // Findings
         this.findingsCount = document.getElementById('findings-count');
         this.findingsList = document.getElementById('findings-list');
-
-        // Quick actions
-        this.clearSuggestionsBtn = document.getElementById('clear-suggestions-btn');
 
         // Sidebar status
         this.sidebarStatus = document.getElementById('ai-sidebar-status');
@@ -52,13 +48,6 @@ class AIPanel {
         if (this.levelPills) {
             this.levelPills.forEach(pill => {
                 pill.addEventListener('click', () => this.onLevelSelect(pill));
-            });
-        }
-
-        // Clear suggestions
-        if (this.clearSuggestionsBtn) {
-            this.clearSuggestionsBtn.addEventListener('click', () => {
-                this.clearAllFindings();
             });
         }
     }
@@ -105,24 +94,9 @@ class AIPanel {
     }
 
     /**
-     * Show level filter (call after analysis completes)
+     * Reset level filter to default
      */
-    showLevelFilter() {
-        if (this.levelFilter) {
-            this.levelFilter.style.display = 'flex';
-        }
-        this.analysisComplete = true;
-    }
-
-    /**
-     * Hide level filter
-     */
-    hideLevelFilter() {
-        if (this.levelFilter) {
-            this.levelFilter.style.display = 'none';
-        }
-        this.analysisComplete = false;
-        // Reset to default level
+    resetLevelFilter() {
         this.selectedLevel = 'final';
         this.levelPills?.forEach(p => {
             p.classList.toggle('active', p.dataset.level === 'final');
@@ -258,7 +232,7 @@ class AIPanel {
         this.findings = [];
         this.renderFindings();
         this.updateFindingsBadge();
-        this.hideLevelFilter();
+        this.resetLevelFilter();
 
         // Also clear suggestions from the diff view
         document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());

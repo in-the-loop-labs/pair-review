@@ -2061,10 +2061,6 @@ class PRManager {
       // Update AI Panel with findings
       if (window.aiPanel) {
         window.aiPanel.addFindings(suggestions);
-        // Show level filter if we have suggestions
-        if (suggestions.length > 0) {
-          window.aiPanel.showLevelFilter();
-        }
       }
 
     } catch (error) {
