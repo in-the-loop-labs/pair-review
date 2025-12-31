@@ -548,16 +548,25 @@ class PRManager {
       aiPanelClose._eventBound = true;
     }
 
-    // Sidebar toggle (collapse)
-    const sidebarToggle = document.getElementById('sidebar-toggle-collapsed');
+    // Sidebar collapse/expand
     const sidebar = document.getElementById('files-sidebar');
+    const sidebarCollapseBtn = document.getElementById('sidebar-collapse-btn');
+    const sidebarExpandBtn = document.getElementById('sidebar-toggle-collapsed');
 
-    if (sidebarToggle && sidebar && !sidebarToggle._eventBound) {
-      sidebarToggle.addEventListener('click', () => {
-        sidebar.style.display = sidebar.style.display === 'none' ? 'flex' : 'none';
-        sidebarToggle.style.display = sidebar.style.display === 'none' ? 'flex' : 'none';
+    // Collapse button in sidebar header
+    if (sidebarCollapseBtn && sidebar && !sidebarCollapseBtn._eventBound) {
+      sidebarCollapseBtn.addEventListener('click', () => {
+        sidebar.classList.add('collapsed');
       });
-      sidebarToggle._eventBound = true;
+      sidebarCollapseBtn._eventBound = true;
+    }
+
+    // Expand button in diff toolbar
+    if (sidebarExpandBtn && sidebar && !sidebarExpandBtn._eventBound) {
+      sidebarExpandBtn.addEventListener('click', () => {
+        sidebar.classList.remove('collapsed');
+      });
+      sidebarExpandBtn._eventBound = true;
     }
   }
 
