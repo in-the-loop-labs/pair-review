@@ -1659,8 +1659,6 @@ class PRManager {
       btn.innerHTML = '<span class="analyzing-icon">✨</span> Analyzing...';
     }
 
-    // Change click handler to reopen modal
-    btn.onclick = () => this.reopenProgressModal();
   }
 
   /**
@@ -1704,9 +1702,6 @@ class PRManager {
     } else {
       btn.innerHTML = 'Analyze with AI';
     }
-
-    // Restore original click handler
-    btn.onclick = () => this.triggerAIAnalysis();
   }
 
   /**
@@ -1722,6 +1717,12 @@ class PRManager {
    * Trigger AI analysis
    */
   async triggerAIAnalysis() {
+    // If analysis is already running, just reopen the progress modal
+    if (this.isAnalyzing) {
+      this.reopenProgressModal();
+      return;
+    }
+
     if (!this.currentPR) {
       this.showError('No PR loaded');
       return;
