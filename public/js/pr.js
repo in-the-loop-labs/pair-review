@@ -2062,8 +2062,8 @@ class PRManager {
 
       console.log(`Loaded ${suggestions.length} AI suggestions for level: ${this.selectedLevel}`);
 
-      // Display suggestions inline with the diff
-      this.displayAISuggestions(suggestions);
+      // Display suggestions inline with the diff (async - auto-expands hidden lines)
+      await this.displayAISuggestions(suggestions);
 
       // Update AI Panel with findings
       if (window.aiPanel) {
@@ -2076,15 +2076,200 @@ class PRManager {
   }
 
   /**
+   * Find suggestions that target lines not currently visible in the DOM
+   * @param {Array} suggestions - Array of AI suggestions
+   * @returns {Array} Array of { file, line, suggestions } for hidden lines
+   */
+  findHiddenSuggestions(suggestions) {
+    const hiddenSuggestions = [];
+
+    // Group suggestions by file and line first
+    const suggestionsByLocation = new Map();
+    suggestions.forEach(suggestion => {
+      const key = `${suggestion.file}:${suggestion.line_start}`;
+      if (!suggestionsByLocation.has(key)) {
+        suggestionsByLocation.set(key, {
+          file: suggestion.file,
+          line: suggestion.line_start,
+          suggestions: []
+        });
+      }
+      suggestionsByLocation.get(key).suggestions.push(suggestion);
+    });
+
+    // Check each unique location
+    for (const [, location] of suggestionsByLocation) {
+      const { file, line } = location;
+
+      // Find the file wrapper
+      let fileElement = document.querySelector(`[data-file-name="${file}"]`);
+      if (!fileElement) {
+        fileElement = document.querySelector(`[data-file-path="${file}"]`);
+      }
+      if (!fileElement) {
+        // Try partial match
+        const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
+        for (const wrapper of allFileWrappers) {
+          const fileName = wrapper.dataset.fileName;
+          if (fileName && (fileName === file || fileName.endsWith('/' + file) || file.endsWith('/' + fileName))) {
+            fileElement = wrapper;
+            break;
+          }
+        }
+      }
+
+      if (!fileElement) {
+        console.warn(`[findHiddenSuggestions] Could not find file element for: ${file}`);
+        continue;
+      }
+
+      // Check if the line is visible
+      let lineVisible = false;
+      const lineRows = fileElement.querySelectorAll('tr');
+      for (const row of lineRows) {
+        // Check various line number selectors
+        let lineNum = row.querySelector('.line-num2')?.textContent?.trim();
+        if (!lineNum) {
+          lineNum = row.querySelector('.line-num-new')?.textContent?.trim();
+        }
+        if (!lineNum) {
+          const lineNumCell = row.querySelector('.d2h-code-linenumber');
+          if (lineNumCell) {
+            const lineNum2 = lineNumCell.querySelector('.line-num2');
+            if (lineNum2) {
+              lineNum = lineNum2.textContent?.trim();
+            }
+          }
+        }
+
+        if (lineNum && parseInt(lineNum) === line) {
+          lineVisible = true;
+          break;
+        }
+      }
+
+      if (!lineVisible) {
+        hiddenSuggestions.push(location);
+      }
+    }
+
+    return hiddenSuggestions;
+  }
+
+  /**
+   * Expand a gap section to reveal a specific line for an AI suggestion
+   * @param {string} file - File path
+   * @param {number} line - Line number to reveal
+   * @returns {Promise<boolean>} True if expansion occurred, false otherwise
+   */
+  async expandForSuggestion(file, line) {
+    // Find the file wrapper
+    let fileElement = document.querySelector(`[data-file-name="${file}"]`);
+    if (!fileElement) {
+      fileElement = document.querySelector(`[data-file-path="${file}"]`);
+    }
+    if (!fileElement) {
+      const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
+      for (const wrapper of allFileWrappers) {
+        const fileName = wrapper.dataset.fileName;
+        if (fileName && (fileName === file || fileName.endsWith('/' + file) || file.endsWith('/' + fileName))) {
+          fileElement = wrapper;
+          break;
+        }
+      }
+    }
+
+    if (!fileElement) {
+      console.warn(`[expandForSuggestion] Could not find file element for: ${file}`);
+      return false;
+    }
+
+    // Check if the file is collapsed (generated files)
+    if (fileElement.classList.contains('collapsed')) {
+      // Expand the generated file first
+      const filePath = fileElement.dataset.fileName;
+      if (filePath && this.generatedFiles.has(filePath)) {
+        this.toggleGeneratedFile(filePath);
+        // Wait a moment for the UI to update
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+
+    // Find all gap sections in this file
+    const gapRows = fileElement.querySelectorAll('tr.context-expand-row');
+    let targetGapRow = null;
+    let targetControls = null;
+
+    for (const row of gapRows) {
+      const controls = row.expandControls;
+      if (!controls) continue;
+
+      const startLine = parseInt(controls.dataset.startLine);
+      const endLine = parseInt(controls.dataset.endLine);
+
+      // Check if the target line falls within this gap
+      if (line >= startLine && line <= endLine) {
+        targetGapRow = row;
+        targetControls = controls;
+        break;
+      }
+    }
+
+    if (!targetGapRow || !targetControls) {
+      console.warn(`[expandForSuggestion] Could not find gap containing line ${line} in file ${file}`);
+      return false;
+    }
+
+    // Calculate the range to expand around the target line
+    // Use a context radius of 3 lines
+    const contextRadius = 3;
+    const gapStart = parseInt(targetControls.dataset.startLine);
+    const gapEnd = parseInt(targetControls.dataset.endLine);
+    const gapSize = gapEnd - gapStart + 1;
+
+    // Determine how many lines to expand
+    // We want lines from (line - contextRadius) to (line + contextRadius)
+    // but bounded by the gap boundaries
+    const expandStart = Math.max(gapStart, line - contextRadius);
+    const expandEnd = Math.min(gapEnd, line + contextRadius);
+    const linesToExpand = expandEnd - expandStart + 1;
+
+    console.log(`[expandForSuggestion] Expanding gap ${gapStart}-${gapEnd} to show line ${line} (${expandStart}-${expandEnd})`);
+
+    // If the gap is small or we're expanding most of it, just expand all
+    if (gapSize <= 10 || linesToExpand >= gapSize * 0.7) {
+      await this.expandGapContext(targetControls, 'all', gapSize);
+    } else {
+      // Otherwise, expand just the section around the target line
+      // We need to use 'all' with a modified range since the existing
+      // expandGapContext doesn't support arbitrary range expansion
+      // For now, expand all to ensure the line is visible
+      await this.expandGapContext(targetControls, 'all', gapSize);
+    }
+
+    return true;
+  }
+
+  /**
    * Display AI suggestions inline with diff
    */
-  displayAISuggestions(suggestions) {
+  async displayAISuggestions(suggestions) {
     console.log(`[UI] Displaying ${suggestions.length} AI suggestions`);
 
     // Clear existing AI suggestion rows before displaying new ones
     const existingSuggestionRows = document.querySelectorAll('.ai-suggestion-row');
     existingSuggestionRows.forEach(row => row.remove());
     console.log(`[UI] Removed ${existingSuggestionRows.length} existing suggestion rows`);
+
+    // Auto-expand hidden lines for suggestions that target non-visible lines
+    const hiddenSuggestions = this.findHiddenSuggestions(suggestions);
+    if (hiddenSuggestions.length > 0) {
+      console.log(`[UI] Found ${hiddenSuggestions.length} suggestions targeting hidden lines, expanding...`);
+      for (const hidden of hiddenSuggestions) {
+        await this.expandForSuggestion(hidden.file, hidden.line);
+      }
+      console.log(`[UI] Finished expanding hidden lines`);
+    }
 
     // Create suggestion navigator if not already created
     if (!this.suggestionNavigator && window.SuggestionNavigator) {

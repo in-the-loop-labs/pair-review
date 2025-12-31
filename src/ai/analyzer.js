@@ -388,10 +388,9 @@ Output JSON with this structure:
 }
 
 ## Important Guidelines
-- Only attach suggestions to lines that were ADDED or MODIFIED in this PR
+- You may attach suggestions to any line within modified files, including context lines when they reveal file-level issues.
 - Focus on issues that require understanding the full file context
 - Focus on file-level patterns and consistency
-- If you find an issue on an unchanged line, mention it but attach to the nearest changed line
 - For "praise" type: Omit the suggestion field entirely to save tokens
 - For other types: Include specific, actionable suggestions`;
   }
@@ -476,7 +475,7 @@ Output JSON with this structure:
 - code-style: Formatting, naming conventions, and code style
 
 ## Important Guidelines
-- Only comment on lines that were actually changed in this PR
+- You may comment on any line in files modified by this PR. Prioritize changed lines, but include unchanged lines when they reveal issues (missing error handling, inconsistent patterns, etc.)
 - Focus on issues visible in the diff itself - do not analyze file context
 - Do not review unchanged code or missing tests (that's for Level 3)
 - Do not analyze file-level patterns or consistency (that's for Level 2)
@@ -1416,7 +1415,7 @@ Output JSON with this structure:
 }
 
 ## Important Guidelines
-- Only attach suggestions to lines that were ADDED or MODIFIED in this PR
+- You may attach suggestions to any line within files touched by this PR, including unchanged context lines when codebase-level analysis reveals issues.
 - Focus on how these changes interact with the broader codebase
 - Look especially for ${testingContext?.shouldCheckTests ? 'missing tests,' : ''} documentation, and integration issues
 - For "praise" type: Omit the suggestion field entirely to save tokens
@@ -1592,7 +1591,7 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
 - **Cross-level validation** - Higher confidence for issues found in multiple levels
 - **Preserve actionability** - Every suggestion should give clear next steps
 - **Maintain context** - Don't lose important details when merging
-- **Only comment on changed lines** - Attach suggestions only to lines modified in this PR`;
+- **Suggestions may target any line in modified files** - Context lines can reveal issues too`;
   }
 
 
