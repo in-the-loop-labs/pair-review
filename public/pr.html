@@ -6,6 +6,11 @@
     <meta name="description" content="AI-powered GitHub pull request review assistant">
     <title>Pair Review - PR Review</title>
 
+    <!-- Google Fonts: DM Sans and JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
     <!-- PR Display Styles -->
     <link rel="stylesheet" href="/css/pr.css">
     <link rel="stylesheet" href="/css/styles.css">
@@ -22,8 +27,8 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-            background-color: #ffffff;
+            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+            background-color: #f6f8fa;
             color: #24292f;
             line-height: 1.5;
             font-size: 14px;
@@ -42,46 +47,236 @@
     </style>
 </head>
 <body>
-    <!-- PR container - main content for PR review -->
-    <div id="pr-container">
-        <!-- PR header and metadata will be loaded here by JavaScript -->
-        <div id="pr-header-container">
-            <!-- PR header content loaded by JavaScript -->
-        </div>
-
-        <!-- Main layout with sidebar and content -->
-        <div class="container">
-            <div class="files-sidebar" id="files-sidebar">
-                <div class="sidebar-header">
-                    <h3>Files Changed</h3>
-                    <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                            <path d="M6.823 7.823a.25.25 0 0 1 0 .354l-2.396 2.396A.25.25 0 0 1 4 10.396V5.604a.25.25 0 0 1 .427-.177Z"></path>
-                            <path d="M1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25V1.75C0 .784.784 0 1.75 0ZM1.5 1.75v12.5c0 .138.112.25.25.25H9.5v-13H1.75a.25.25 0 0 0-.25.25ZM11 14.5h3.25a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11Z"></path>
-                        </svg>
-                    </button>
+    <!-- App wrapper -->
+    <div class="app" id="pr-container">
+        <!-- Sticky Header -->
+        <header class="header" id="pr-header">
+            <div class="header-left">
+                <div class="logo">
+                    <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
+                        <path d="M16 18l2-2-2-2M8 18l-2-2 2-2M12 4v16"/>
+                    </svg>
+                    <span class="logo-text">pair<span class="logo-accent">review</span></span>
                 </div>
-                <div id="file-list" class="file-list">
-                    <!-- File tree will be loaded here -->
+                <div class="breadcrumb" id="pr-breadcrumb">
+                    <span class="breadcrumb-org">--</span>
+                    <span class="breadcrumb-sep">/</span>
+                    <span class="breadcrumb-repo">--</span>
+                    <span class="breadcrumb-pr">#--</span>
                 </div>
             </div>
+            <div class="header-center">
+                <h1 class="pr-title" id="pr-title-text">Loading...</h1>
+                <div class="pr-meta" id="pr-meta">
+                    <span class="pr-branch" id="pr-branch">
+                        <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                            <path d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"/>
+                        </svg>
+                        <span id="pr-branch-name">--</span>
+                    </span>
+                    <span class="pr-stat pr-stat-additions" id="pr-additions">+0</span>
+                    <span class="pr-stat pr-stat-deletions" id="pr-deletions">-0</span>
+                    <span class="pr-files" id="pr-files-count">0 files</span>
+                </div>
+            </div>
+            <div class="header-right">
+                <button class="btn btn-icon" id="theme-toggle" title="Toggle theme">
+                    <svg class="theme-icon-light" viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
+                        <path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13Zm8-5a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM0 8a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5H.75A.75.75 0 0 1 0 8Zm11.535-5.535a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Zm-9.192 9.192a.75.75 0 0 1 0 1.06l-.353.354a.75.75 0 0 1-1.061-1.06l.353-.354a.75.75 0 0 1 1.06 0Zm9.192 0a.75.75 0 0 1 1.06 0l.354.354a.75.75 0 0 1-1.06 1.06l-.354-.354a.75.75 0 0 1 0-1.06ZM3.404 3.404a.75.75 0 0 1 1.06 0l.354.353a.75.75 0 0 1-1.06 1.061l-.354-.353a.75.75 0 0 1 0-1.06Z"/>
+                    </svg>
+                    <svg class="theme-icon-dark" viewBox="0 0 16 16" fill="currentColor" width="16" height="16" style="display: none;">
+                        <path d="M9.598 1.591a.749.749 0 0 1 .785-.175 7.001 7.001 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Z"/>
+                    </svg>
+                </button>
+                <a class="btn btn-secondary" id="github-link" href="#" target="_blank">
+                    <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+                    </svg>
+                    View on GitHub
+                </a>
+                <button class="btn btn-primary" id="submit-review-btn">
+                    <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                        <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
+                    </svg>
+                    Submit Review
+                </button>
+            </div>
+        </header>
 
-            <div class="main-content">
-                <div class="diff-header">
+        <!-- Main Three-Panel Layout -->
+        <div class="main-layout">
+            <!-- File Tree Sidebar (Left) -->
+            <aside class="sidebar files-sidebar" id="files-sidebar">
+                <div class="sidebar-header">
+                    <span class="sidebar-title">Changed Files</span>
+                    <span class="sidebar-count" id="sidebar-file-count">0</span>
+                </div>
+                <nav class="file-tree" id="file-list">
+                    <!-- File tree will be loaded here -->
+                </nav>
+
+                <!-- AI Status in Sidebar -->
+                <div class="ai-sidebar-status" id="ai-sidebar-status">
+                    <div class="ai-avatar">
+                        <div class="ai-avatar-ring"></div>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="20" height="20">
+                            <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+                            <path d="M18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/>
+                        </svg>
+                    </div>
+                    <div class="ai-status-info">
+                        <span class="ai-status-label">AI Co-reviewer</span>
+                        <span class="ai-status-text" id="ai-status-text">Ready to analyze</span>
+                    </div>
+                    <div class="ai-findings-badge" id="ai-findings-badge" style="display: none;">0</div>
+                </div>
+            </aside>
+
+            <!-- Diff View (Center) -->
+            <main class="diff-view">
+                <div class="diff-toolbar">
                     <button class="sidebar-toggle-collapsed" id="sidebar-toggle-collapsed" title="Show file tree">
                         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                             <path d="m4.177 7.823 2.396-2.396A.25.25 0 0 1 7 5.604v4.792a.25.25 0 0 1-.427.177L4.177 8.177a.25.25 0 0 1 0-.354Z"></path>
                             <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25H9.5v-13Zm12.5 13a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11v13Z"></path>
                         </svg>
                     </button>
-                    <h2>Changes</h2>
                     <div class="diff-stats" id="diff-stats"></div>
+                    <div class="toolbar-actions">
+                        <button class="btn btn-sm btn-secondary" id="analyze-btn" title="Analyze with AI">
+                            <svg class="analyze-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                                <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+                            </svg>
+                            <span class="btn-text">Analyze</span>
+                        </button>
+                        <button class="btn btn-sm btn-icon" id="ai-panel-toggle" title="Toggle AI panel">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                                <path d="M6.823 7.823a.25.25 0 0 1 0 .354l-2.396 2.396A.25.25 0 0 1 4 10.396V5.604a.25.25 0 0 1 .427-.177Z"></path>
+                                <path d="M1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25V1.75C0 .784.784 0 1.75 0ZM1.5 1.75v12.5c0 .138.112.25.25.25H9.5v-13H1.75a.25.25 0 0 0-.25.25ZM11 14.5h3.25a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11Z"></path>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
-
                 <div id="diff-container" class="diff-container">
                     <div class="loading">Loading changes...</div>
                 </div>
-            </div>
+            </main>
+
+            <!-- AI Analysis Panel (Right) -->
+            <aside class="ai-panel" id="ai-panel">
+                <div class="ai-panel-header">
+                    <div class="ai-panel-title">
+                        <div class="ai-avatar-small">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
+                                <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+                                <path d="M18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/>
+                            </svg>
+                        </div>
+                        <span>AI Analysis</span>
+                    </div>
+                    <button class="ai-panel-close" id="ai-panel-close" title="Close panel">
+                        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                            <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- Analysis Depth Indicator -->
+                <div class="analysis-depth" id="analysis-depth">
+                    <div class="depth-header">
+                        <span class="depth-label">Analysis Depth</span>
+                        <span class="depth-status" id="depth-status">Not started</span>
+                    </div>
+                    <div class="depth-levels">
+                        <div class="depth-level" id="depth-level-1">
+                            <div class="depth-level-indicator">
+                                <div class="depth-level-icon">
+                                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                                        <path d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/>
+                                    </svg>
+                                </div>
+                                <span class="depth-level-label">Line</span>
+                            </div>
+                            <div class="depth-level-desc">Changes in isolation</div>
+                        </div>
+                        <div class="depth-level" id="depth-level-2">
+                            <div class="depth-level-indicator">
+                                <div class="depth-level-icon">
+                                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                                        <path d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/>
+                                    </svg>
+                                </div>
+                                <span class="depth-level-label">File</span>
+                            </div>
+                            <div class="depth-level-desc">Consistency within file</div>
+                        </div>
+                        <div class="depth-level" id="depth-level-3">
+                            <div class="depth-level-indicator">
+                                <div class="depth-level-icon">
+                                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                                        <path d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/>
+                                    </svg>
+                                </div>
+                                <span class="depth-level-label">Codebase</span>
+                            </div>
+                            <div class="depth-level-desc">Architectural consistency</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Findings Summary -->
+                <div class="findings-summary" id="findings-summary">
+                    <div class="findings-header">
+                        <span class="findings-label">Findings</span>
+                        <span class="findings-count" id="findings-count">0 items</span>
+                    </div>
+                    <div class="findings-list" id="findings-list">
+                        <div class="findings-empty">
+                            <p>No AI analysis yet. Click "Analyze" to get started.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Review Progress -->
+                <div class="review-progress" id="review-progress">
+                    <div class="progress-header">
+                        <span class="progress-label">Review Progress</span>
+                        <span class="progress-count" id="progress-count">0 of 0 addressed</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- Quick Actions -->
+                <div class="ai-actions">
+                    <button class="ai-quick-action" id="reanalyze-btn">
+                        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                            <path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/>
+                        </svg>
+                        Re-analyze
+                    </button>
+                    <button class="ai-quick-action" id="clear-suggestions-btn">
+                        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                            <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
+                        </svg>
+                        Clear Suggestions
+                    </button>
+                </div>
+
+                <!-- Future: Chat input -->
+                <div class="ai-chat-preview">
+                    <div class="chat-input-wrapper">
+                        <input type="text" class="chat-input" placeholder="Ask about this PR..." disabled>
+                        <button class="chat-send" disabled>
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                                <path d="M.989 8 6.063 6.04 5.106.386a.75.75 0 0 1 1.212-.592l9.5 7.5a.75.75 0 0 1 0 1.2l-9.5 7.5a.75.75 0 0 1-1.212-.59l.956-5.656L.989 8Z"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <span class="chat-coming-soon">Chat coming soon</span>
+                </div>
+            </aside>
         </div>
     </div>
 
@@ -106,6 +301,7 @@
     <script src="/js/components/ReviewModal.js"></script>
     <script src="/js/components/PreviewModal.js"></script>
     <script src="/js/components/SplitButton.js"></script>
+    <script src="/js/components/AIPanel.js"></script>
 
     <!-- PR JavaScript -->
     <script src="/js/pr.js"></script>

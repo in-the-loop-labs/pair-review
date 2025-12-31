@@ -405,113 +405,12 @@ class PRManager {
     if (!container) return;
 
     const pr = data.pr || data;
-    
-    // Format dates
-    const createdDate = this.formatDate(pr.created_at);
-    const updatedDate = this.formatDate(pr.updated_at);
-    
-    // Create state badge
-    const stateBadge = this.createStateBadge(pr.state);
-    
-    // Create stats display
-    const stats = this.createStatsDisplay(pr);
-    
-    // First, ensure the container has the proper structure
-    if (!document.getElementById('pr-header-container')) {
-      // Create the full structure if it doesn't exist
-      container.innerHTML = `
-        <div id="pr-header-container"></div>
-        <div class="container">
-          <div class="files-sidebar" id="files-sidebar">
-            <div class="sidebar-header">
-              <h3>Files Changed</h3>
-              <button class="sidebar-toggle" id="sidebar-toggle" title="Toggle sidebar">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M6.823 7.823a.25.25 0 0 1 0 .354l-2.396 2.396A.25.25 0 0 1 4 10.396V5.604a.25.25 0 0 1 .427-.177Z"></path>
-                  <path d="M1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25V1.75C0 .784.784 0 1.75 0ZM1.5 1.75v12.5c0 .138.112.25.25.25H9.5v-13H1.75a.25.25 0 0 0-.25.25ZM11 14.5h3.25a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11Z"></path>
-                </svg>
-              </button>
-            </div>
-            <div id="file-list" class="file-list"></div>
-          </div>
-          <div class="main-content">
-            <div class="diff-header">
-              <button class="sidebar-toggle-collapsed" id="sidebar-toggle-collapsed" title="Show file tree">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="m4.177 7.823 2.396-2.396A.25.25 0 0 1 7 5.604v4.792a.25.25 0 0 1-.427.177L4.177 8.177a.25.25 0 0 1 0-.354Z"></path>
-                  <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25H9.5v-13Zm12.5 13a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11v13Z"></path>
-                </svg>
-              </button>
-              <h2>Changes</h2>
-              <div class="diff-stats" id="diff-stats"></div>
-            </div>
-            <div id="diff-container" class="diff-container">
-              <div class="loading">Loading changes...</div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-    
-    // Update the header container
-    const headerContainer = document.getElementById('pr-header-container');
-    if (headerContainer) {
-      headerContainer.innerHTML = `
-        <div class="pr-header">
-          <a href="/" class="pr-icon-link" title="Back to home">
-            <img src="/assets/pair-review.png" alt="Pair Review" class="pr-icon">
-          </a>
-          <div class="pr-title-section">
-            <h1 class="pr-title">
-              ${this.escapeHtml(pr.title)}
-              <span class="pr-number">#${pr.number}</span>
-              ${pr.html_url ? `
-                <a href="${pr.html_url}" target="_blank" class="github-link" title="View on GitHub">
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
-                  </svg>
-                </a>
-              ` : ''}
-            </h1>
-            <div class="pr-meta">
-              ${stateBadge}
-              <span class="pr-author">opened by <strong>${this.escapeHtml(pr.author)}</strong></span>
-              <span class="pr-dates">on ${createdDate}</span>
-              ${updatedDate !== createdDate ? `<span class="pr-updated">• updated ${updatedDate}</span>` : ''}
-            </div>
-          </div>
-          <div class="pr-actions">
-            <button class="btn btn-secondary" id="theme-toggle" onclick="prManager.toggleTheme()" title="Toggle theme">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
-              </svg>
-            </button>
-            <button class="btn btn-secondary" id="refresh-pr" onclick="prManager.refreshPR()" title="Refresh PR">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" class="refresh-icon">
-                <path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/>
-              </svg>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" class="spinner-icon" style="display: none;">
-                <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Z" opacity="0.25"/>
-                <path d="M8 0a8 8 0 0 1 8 8h-2A6 6 0 0 0 8 2V0Z"/>
-              </svg>
-            </button>
-            <button class="btn btn-primary" onclick="prManager.triggerAIAnalysis()">
-              Analyze with AI
-            </button>
-            <div id="split-button-placeholder"></div>
-          </div>
-        </div>
-        
-        ${stats}
-        
-        ${pr.description ? `
-          <div class="pr-description">
-            <h3>Description</h3>
-            <div class="pr-description-content">${this.formatDescription(pr.description)}</div>
-          </div>
-        ` : ''}
-      `;
-    }
+
+    // Update the new header elements
+    this.updateHeader(pr);
+
+    // Wire up event handlers for the new layout
+    this.initializeLayoutEvents();
 
     // Load files and display them in sidebar and main content
     this.loadAndDisplayFiles();
@@ -538,6 +437,128 @@ class PRManager {
     this.initializeSplitButton();
 
     container.style.display = 'block';
+  }
+
+  /**
+   * Update the redesigned header with PR information
+   * @param {Object} pr - PR data
+   */
+  updateHeader(pr) {
+    // Parse owner/repo from base_repo or html_url
+    let owner = '--';
+    let repo = '--';
+
+    if (pr.base_repo) {
+      const parts = pr.base_repo.split('/');
+      if (parts.length === 2) {
+        owner = parts[0];
+        repo = parts[1];
+      }
+    } else if (pr.html_url) {
+      const match = pr.html_url.match(/github\.com\/([^/]+)\/([^/]+)/);
+      if (match) {
+        owner = match[1];
+        repo = match[2];
+      }
+    }
+
+    // Update breadcrumb
+    const breadcrumbOrg = document.querySelector('.breadcrumb-org');
+    const breadcrumbRepo = document.querySelector('.breadcrumb-repo');
+    const breadcrumbPr = document.querySelector('.breadcrumb-pr');
+    if (breadcrumbOrg) breadcrumbOrg.textContent = owner;
+    if (breadcrumbRepo) breadcrumbRepo.textContent = repo;
+    if (breadcrumbPr) breadcrumbPr.textContent = `#${pr.number}`;
+
+    // Update title
+    const titleEl = document.getElementById('pr-title-text');
+    if (titleEl) {
+      titleEl.textContent = pr.title || 'Pull Request';
+    }
+
+    // Update branch
+    const branchName = document.getElementById('pr-branch-name');
+    if (branchName) {
+      branchName.textContent = pr.head_ref || pr.head_branch || '--';
+    }
+
+    // Update stats
+    const additions = document.getElementById('pr-additions');
+    const deletions = document.getElementById('pr-deletions');
+    const filesCount = document.getElementById('pr-files-count');
+
+    if (additions) additions.textContent = `+${pr.additions || 0}`;
+    if (deletions) deletions.textContent = `-${pr.deletions || 0}`;
+    if (filesCount) filesCount.textContent = `${pr.file_changes || 0} files`;
+
+    // Update GitHub link
+    const githubLink = document.getElementById('github-link');
+    if (githubLink && pr.html_url) {
+      githubLink.href = pr.html_url;
+    }
+
+    // Update sidebar file count
+    const sidebarCount = document.getElementById('sidebar-file-count');
+    if (sidebarCount) {
+      sidebarCount.textContent = pr.file_changes || '0';
+    }
+  }
+
+  /**
+   * Initialize event handlers for the new layout
+   */
+  initializeLayoutEvents() {
+    // Theme toggle
+    const themeToggle = document.getElementById('theme-toggle');
+    if (themeToggle && !themeToggle._eventBound) {
+      themeToggle.addEventListener('click', () => this.toggleTheme());
+      themeToggle._eventBound = true;
+    }
+
+    // Submit review button
+    const submitReviewBtn = document.getElementById('submit-review-btn');
+    if (submitReviewBtn && !submitReviewBtn._eventBound) {
+      submitReviewBtn.addEventListener('click', () => this.openReviewModal());
+      submitReviewBtn._eventBound = true;
+    }
+
+    // Analyze button in toolbar
+    const analyzeBtn = document.getElementById('analyze-btn');
+    if (analyzeBtn && !analyzeBtn._eventBound) {
+      analyzeBtn.addEventListener('click', () => this.triggerAIAnalysis());
+      analyzeBtn._eventBound = true;
+    }
+
+    // AI Panel toggle
+    const aiPanelToggle = document.getElementById('ai-panel-toggle');
+    const aiPanel = document.getElementById('ai-panel');
+    const aiPanelClose = document.getElementById('ai-panel-close');
+
+    if (aiPanelToggle && aiPanel && !aiPanelToggle._eventBound) {
+      aiPanelToggle.addEventListener('click', () => {
+        aiPanel.classList.toggle('collapsed');
+      });
+      aiPanelToggle._eventBound = true;
+    }
+
+    if (aiPanelClose && aiPanel && !aiPanelClose._eventBound) {
+      aiPanelClose.addEventListener('click', () => {
+        aiPanel.classList.add('collapsed');
+      });
+      aiPanelClose._eventBound = true;
+    }
+
+    // Sidebar toggle (collapse)
+    const sidebarToggle = document.getElementById('sidebar-toggle-collapsed');
+    const sidebar = document.getElementById('files-sidebar');
+
+    if (sidebarToggle && sidebar && !sidebarToggle._eventBound) {
+      sidebarToggle.addEventListener('click', () => {
+        sidebar.style.display = sidebar.style.display === 'none' ? 'flex' : 'none';
+        sidebarToggle.style.display = sidebar.style.display === 'none' ? 'flex' : 'none';
+      });
+      sidebarToggle._eventBound = true;
+    }
   }
 
   /**
@@ -1596,7 +1617,9 @@ class PRManager {
    * Get the Analyze with AI button
    */
   getAnalyzeButton() {
-    return document.querySelector('button[onclick*="triggerAIAnalysis"]');
+    // Try new layout button first, fall back to old layout
+    return document.getElementById('analyze-btn') ||
+           document.querySelector('button[onclick*="triggerAIAnalysis"]');
   }
 
   /**
@@ -1611,10 +1634,22 @@ class PRManager {
 
     btn.classList.add('btn-analyzing');
     btn.disabled = false; // Keep clickable to reopen modal
-    btn.innerHTML = '<span class="analyzing-icon">✨</span> Analyzing...';
+
+    // Update button content based on layout
+    const btnText = btn.querySelector('.btn-text');
+    if (btnText) {
+      btnText.textContent = 'Analyzing...';
+    } else {
+      btn.innerHTML = '<span class="analyzing-icon">✨</span> Analyzing...';
+    }
 
     // Change click handler to reopen modal
     btn.onclick = () => this.reopenProgressModal();
+
+    // Update AI panel status if available
+    if (window.aiPanel) {
+      window.aiPanel.updateDepthStatus(1, 'In progress...');
+    }
   }
 
   /**
@@ -1626,8 +1661,19 @@ class PRManager {
 
     btn.classList.remove('btn-analyzing');
     btn.classList.add('btn-complete');
-    btn.innerHTML = '✓ Analysis Complete';
+
+    const btnText = btn.querySelector('.btn-text');
+    if (btnText) {
+      btnText.textContent = 'Complete';
+    } else {
+      btn.innerHTML = '✓ Analysis Complete';
+    }
     btn.disabled = true;
+
+    // Update AI panel status if available
+    if (window.aiPanel) {
+      window.aiPanel.updateDepthStatus(3, 'Complete');
+    }
 
     // Revert to normal after 2 seconds
     setTimeout(() => this.resetButton(), 2000);
@@ -1645,7 +1691,13 @@ class PRManager {
 
     btn.classList.remove('btn-analyzing', 'btn-complete');
     btn.disabled = false;
-    btn.innerHTML = 'Analyze with AI';
+
+    const btnText = btn.querySelector('.btn-text');
+    if (btnText) {
+      btnText.textContent = 'Analyze';
+    } else {
+      btn.innerHTML = 'Analyze with AI';
+    }
 
     // Restore original click handler
     btn.onclick = () => this.triggerAIAnalysis();
@@ -1672,7 +1724,9 @@ class PRManager {
     const { owner, repo, number } = this.currentPR;
 
     // Get button reference early to prevent concurrent clicks
-    const btn = document.querySelector('button[onclick*="triggerAIAnalysis"]');
+    // Try new layout button first, fall back to old layout
+    const btn = document.getElementById('analyze-btn') ||
+                document.querySelector('button[onclick*="triggerAIAnalysis"]');
 
     // Prevent concurrent analysis requests
     if (btn && btn.disabled) {
@@ -1683,7 +1737,14 @@ class PRManager {
       // Disable button immediately to prevent concurrent requests
       if (btn) {
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span> Checking...';
+        btn.classList.add('btn-analyzing');
+        // Update button text while preserving icon
+        const btnText = btn.querySelector('.btn-text');
+        if (btnText) {
+          btnText.textContent = 'Checking...';
+        } else {
+          btn.innerHTML = '<span class="spinner"></span> Checking...';
+        }
       }
 
       // Check if there are existing AI suggestions
@@ -1699,7 +1760,13 @@ class PRManager {
             // Re-enable button while waiting for user confirmation
             if (btn) {
               btn.disabled = false;
-              btn.innerHTML = 'Analyze with AI';
+              btn.classList.remove('btn-analyzing');
+              const btnText = btn.querySelector('.btn-text');
+              if (btnText) {
+                btnText.textContent = 'Analyze';
+              } else {
+                btn.innerHTML = 'Analyze with AI';
+              }
             }
 
             // Check that confirmDialog is available
@@ -1725,7 +1792,13 @@ class PRManager {
             // Re-disable button after confirmation
             if (btn) {
               btn.disabled = true;
-              btn.innerHTML = '<span class="spinner"></span> Starting...';
+              btn.classList.add('btn-analyzing');
+              const btnText = btn.querySelector('.btn-text');
+              if (btnText) {
+                btnText.textContent = 'Starting...';
+              } else {
+                btn.innerHTML = '<span class="spinner"></span> Starting...';
+              }
             }
           }
         }
@@ -1735,8 +1808,13 @@ class PRManager {
       }
 
       // Update button to show starting state (if not already set)
-      if (btn && btn.innerHTML.includes('Checking...')) {
-        btn.innerHTML = '<span class="spinner"></span> Starting...';
+      if (btn) {
+        const btnText = btn.querySelector('.btn-text');
+        if (btnText && btnText.textContent === 'Checking...') {
+          btnText.textContent = 'Starting...';
+        } else if (btn.innerHTML.includes('Checking...')) {
+          btn.innerHTML = '<span class="spinner"></span> Starting...';
+        }
       }
 
       // Start AI analysis
