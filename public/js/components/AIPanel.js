@@ -28,11 +28,6 @@ class AIPanel {
         // Findings
         this.findingsCount = document.getElementById('findings-count');
         this.findingsList = document.getElementById('findings-list');
-
-        // Sidebar status
-        this.sidebarStatus = document.getElementById('ai-sidebar-status');
-        this.sidebarStatusText = document.getElementById('ai-status-text');
-        this.findingsBadge = document.getElementById('ai-findings-badge');
     }
 
     bindEvents() {
@@ -111,7 +106,6 @@ class AIPanel {
     addFindings(suggestions) {
         this.findings = suggestions || [];
         this.renderFindings();
-        this.updateFindingsBadge();
     }
 
     renderFindings() {
@@ -241,18 +235,6 @@ class AIPanel {
         }
     }
 
-    updateFindingsBadge() {
-        if (!this.findingsBadge) return;
-
-        const count = this.findings.length;
-        if (count > 0) {
-            this.findingsBadge.textContent = count;
-            this.findingsBadge.style.display = 'flex';
-        } else {
-            this.findingsBadge.style.display = 'none';
-        }
-    }
-
     /**
      * Update finding status by ID
      * @param {number} findingId - The finding ID
@@ -283,7 +265,6 @@ class AIPanel {
     clearAllFindings() {
         this.findings = [];
         this.renderFindings();
-        this.updateFindingsBadge();
         this.resetLevelFilter();
 
         // Also clear suggestions from the diff view
