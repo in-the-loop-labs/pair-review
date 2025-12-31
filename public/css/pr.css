@@ -3365,7 +3365,12 @@ tr.line-range-start .d2h-code-line-ctn {
 
 [data-theme="dark"] .btn-edit-comment,
 [data-theme="dark"] .btn-delete-comment {
-  color: var(--color-text-primary, #c9d1d9);
+  color: #c9d1d9;
+}
+
+.btn-edit-comment svg,
+.btn-delete-comment svg {
+  fill: currentColor;
 }
 
 .btn-edit-comment:hover {
