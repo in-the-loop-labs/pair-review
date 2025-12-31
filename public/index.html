@@ -6,126 +6,400 @@
     <meta name="description" content="AI-powered GitHub pull request review assistant">
     <title>Pair Review</title>
 
+    <!-- Google Fonts: DM Sans and JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
     <style>
+        :root {
+            /* Typography */
+            --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            --font-mono: 'JetBrains Mono', 'SF Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+
+            /* Layout dimensions */
+            --header-height: 64px;
+
+            /* Transitions */
+            --transition-fast: 0.1s ease;
+            --transition-default: 0.2s ease;
+
+            /* Radii */
+            --radius-sm: 4px;
+            --radius-md: 6px;
+            --radius-lg: 8px;
+            --radius-xl: 12px;
+
+            /* Light theme colors */
+            --color-bg-primary: #ffffff;
+            --color-bg-secondary: #f6f8fa;
+            --color-bg-tertiary: #f3f4f6;
+            --color-bg-page: #f6f8fa;
+
+            --color-text-primary: #24292f;
+            --color-text-secondary: #57606a;
+            --color-text-tertiary: #656d76;
+            --color-text-link: #0969da;
+
+            --color-border-primary: #d1d9e0;
+            --color-border-secondary: #e1e4e8;
+
+            --color-accent-primary: #0969da;
+            --color-accent-hover: #0860ca;
+            --color-accent-emphasis: #238636;
+            --color-accent-emphasis-hover: #2ea043;
+
+            --color-danger: #d1242f;
+            --color-danger-hover: #b91c1c;
+
+            --color-shadow: rgba(27, 31, 36, 0.04);
+
+            /* AI Identity - Amber/Gold accent */
+            --ai-primary: #d97706;
+            --ai-secondary: #f59e0b;
+            --ai-subtle: rgba(217, 119, 6, 0.08);
+            --ai-glow: rgba(217, 119, 6, 0.15);
+            --ai-border: rgba(217, 119, 6, 0.3);
+        }
+
+        [data-theme="dark"] {
+            /* Dark theme colors */
+            --color-bg-primary: #0d1117;
+            --color-bg-secondary: #161b22;
+            --color-bg-tertiary: #1c2128;
+            --color-bg-page: #0d1117;
+
+            --color-text-primary: #c9d1d9;
+            --color-text-secondary: #8b949e;
+            --color-text-tertiary: #6e7681;
+            --color-text-link: #58a6ff;
+
+            --color-border-primary: #30363d;
+            --color-border-secondary: #21262d;
+
+            --color-accent-primary: #58a6ff;
+            --color-accent-hover: #1f6feb;
+            --color-accent-emphasis: #238636;
+            --color-accent-emphasis-hover: #2ea043;
+
+            --color-danger: #f85149;
+            --color-danger-hover: #da3633;
+
+            --color-shadow: rgba(0, 0, 0, 0.3);
+
+            /* AI Identity - Amber/Gold accent for dark theme */
+            --ai-primary: #f59e0b;
+            --ai-secondary: #fbbf24;
+            --ai-subtle: rgba(245, 158, 11, 0.1);
+            --ai-glow: rgba(245, 158, 11, 0.2);
+            --ai-border: rgba(245, 158, 11, 0.3);
+        }
+
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
         }
 
+        html, body {
+            height: 100%;
+        }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-            background-color: #ffffff;
-            color: #24292f;
+            font-family: var(--font-sans);
+            background-color: var(--color-bg-page);
+            color: var(--color-text-primary);
             line-height: 1.5;
             font-size: 14px;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 40px 20px;
-            text-align: center;
+        /* App container */
+        .app {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
         }
 
+        /* Sticky Header */
+        .header {
+            height: var(--header-height);
+            background: var(--color-bg-primary);
+            border-bottom: 1px solid var(--color-border-primary);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            gap: 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 1px 3px var(--color-shadow);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .logo-icon {
+            width: 24px;
+            height: 24px;
+            color: var(--ai-primary);
+        }
+
+        .logo-text {
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            color: var(--color-text-secondary);
+        }
+
+        .logo-accent {
+            color: var(--color-text-primary);
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        /* Theme toggle button */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            font-family: inherit;
+            font-size: 0.875rem;
+            font-weight: 500;
+            border-radius: var(--radius-md);
+            border: none;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            white-space: nowrap;
+            text-decoration: none;
+        }
+
+        .btn-icon {
+            padding: 8px;
+            width: 36px;
+            height: 36px;
+            justify-content: center;
+        }
+
+        #theme-toggle {
+            background: transparent;
+            border: 1px solid var(--color-border-primary);
+            color: var(--color-text-secondary);
+        }
+
+        #theme-toggle:hover {
+            background: var(--color-bg-secondary);
+            color: var(--color-text-primary);
+        }
+
+        [data-theme="dark"] .theme-icon-light {
+            display: none !important;
+        }
+
+        [data-theme="dark"] .theme-icon-dark {
+            display: block !important;
+        }
+
+        [data-theme="light"] .theme-icon-dark,
+        body:not([data-theme="dark"]) .theme-icon-dark {
+            display: none !important;
+        }
+
+        [data-theme="light"] .theme-icon-light,
+        body:not([data-theme="dark"]) .theme-icon-light {
+            display: block !important;
+        }
+
+        /* Main content area */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 48px 20px;
+        }
+
+        /* Welcome section */
         .welcome-section {
             display: flex;
             flex-direction: column;
             align-items: center;
+            text-align: center;
+            max-width: 960px;
+            width: 100%;
         }
 
-        .welcome-icon {
-            width: 96px;
-            height: 96px;
-            border-radius: 12px;
-            margin-bottom: 24px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        /* Start Review Section */
+        .start-review-section {
+            width: 100%;
+            max-width: 720px;
+            margin-bottom: 48px;
+            padding-top: 24px;
         }
 
-        .welcome-icon:hover {
-            transform: scale(1.05);
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+        .start-review-form {
+            display: flex;
+            gap: 8px;
         }
 
-        body[data-theme="dark"] .welcome-icon:hover {
-            box-shadow: 0 4px 16px rgba(255, 255, 255, 0.2);
+        .start-review-input {
+            flex: 1;
+            padding: 12px 16px;
+            font-family: var(--font-sans);
+            font-size: 15px;
+            line-height: 20px;
+            color: var(--color-text-primary);
+            background-color: var(--color-bg-primary);
+            border: 2px solid var(--ai-primary);
+            border-radius: var(--radius-md);
+            outline: none;
+            box-shadow: 0 0 0 3px var(--ai-glow);
+            transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
         }
 
-        /* Dark theme overrides */
-        body[data-theme="dark"] {
-            background-color: #0d1117;
-            color: #c9d1d9;
+        .start-review-input:focus {
+            box-shadow: 0 0 0 4px var(--ai-glow), 0 0 12px var(--ai-glow);
         }
 
-        body[data-theme="dark"] .welcome-section h1 {
-            color: #c9d1d9;
+        .start-review-input::placeholder {
+            color: var(--color-text-tertiary);
         }
 
-        body[data-theme="dark"] .welcome-section p {
-            color: #8b949e;
+        .start-review-input:disabled {
+            background-color: var(--color-bg-secondary);
+            cursor: not-allowed;
         }
 
-        body[data-theme="dark"] .usage-info {
-            background-color: #161b22;
-            border-color: #30363d;
+        .start-review-btn {
+            padding: 10px 20px;
+            font-family: var(--font-sans);
+            font-size: 14px;
+            font-weight: 500;
+            line-height: 20px;
+            color: #ffffff;
+            background-color: var(--ai-primary);
+            border: none;
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: background-color var(--transition-fast);
+            white-space: nowrap;
         }
 
-        body[data-theme="dark"] .usage-info h3 {
-            color: #c9d1d9;
+        .start-review-btn:hover:not(:disabled) {
+            background-color: #b45309;
         }
 
-        body[data-theme="dark"] .usage-info code {
-            background-color: rgba(110, 118, 129, 0.2);
+        .start-review-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
         }
 
-        .welcome-section h1 {
-            font-size: 32px;
-            font-weight: 600;
-            margin-bottom: 16px;
-            color: #24292f;
+        .start-review-error {
+            margin-top: 12px;
+            padding: 10px 14px;
+            font-size: 13px;
+            color: var(--color-danger);
+            background-color: rgba(208, 36, 47, 0.08);
+            border: 1px solid rgba(208, 36, 47, 0.3);
+            border-radius: var(--radius-md);
+            display: none;
         }
 
-        .welcome-section p {
-            font-size: 16px;
-            color: #656d76;
-            margin-bottom: 20px;
+        [data-theme="dark"] .start-review-error {
+            background-color: rgba(248, 81, 73, 0.1);
+            border-color: rgba(248, 81, 73, 0.3);
         }
 
+        .start-review-error.visible {
+            display: block;
+        }
+
+        .start-review-loading {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            margin-top: 12px;
+            font-size: 13px;
+            color: var(--color-text-secondary);
+        }
+
+        .start-review-loading.visible {
+            display: flex;
+        }
+
+        .start-review-loading .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--color-border-primary);
+            border-top-color: var(--color-accent-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Usage Info (shown when no reviews) */
         .usage-info {
-            background-color: #f6f8fa;
-            border: 1px solid #d1d9e0;
-            border-radius: 6px;
-            padding: 20px;
-            margin-top: 20px;
+            background-color: var(--color-bg-primary);
+            border: 1px solid var(--color-border-primary);
+            border-radius: var(--radius-lg);
+            padding: 24px;
             text-align: left;
             max-width: 600px;
-            margin-left: auto;
-            margin-right: auto;
+            width: 100%;
+            margin-bottom: 32px;
         }
 
         .usage-info h3 {
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--color-text-primary);
+        }
+
+        .usage-info p {
+            color: var(--color-text-secondary);
             margin-bottom: 12px;
-            color: #24292f;
         }
 
         .usage-info code {
-            background-color: #afb8c133;
-            padding: 2px 4px;
-            border-radius: 3px;
-            font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+            background-color: var(--color-bg-secondary);
+            padding: 2px 6px;
+            border-radius: var(--radius-sm);
+            font-family: var(--font-mono);
             font-size: 13px;
         }
 
         .usage-info pre {
-            background-color: #24292f;
-            color: #f6f8fa;
-            padding: 12px;
-            border-radius: 6px;
-            margin: 8px 0;
+            background-color: var(--color-bg-tertiary);
+            color: var(--color-text-primary);
+            padding: 16px;
+            border-radius: var(--radius-md);
+            margin: 12px 0;
             overflow-x: auto;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            line-height: 1.5;
         }
 
         .usage-info pre code {
@@ -135,54 +409,55 @@
 
         /* Recent Reviews Section */
         .recent-reviews-section {
-            max-width: 900px;
-            margin: 32px auto 0;
-            text-align: left;
+            width: 100%;
+            max-width: 960px;
         }
 
-        .recent-reviews-header {
+        .section-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            margin-bottom: 12px;
-            padding-bottom: 8px;
-            border-bottom: 1px solid var(--color-border-secondary, #e1e4e8);
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--color-border-secondary);
         }
 
-        .recent-reviews-header h3 {
-            font-size: 16px;
+        .section-title {
+            font-size: 14px;
             font-weight: 600;
-            color: var(--color-text-primary, #24292f);
-            margin: 0;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--color-text-tertiary);
         }
 
-        /* Recent Reviews Table Styles */
+        /* Recent Reviews Table */
         .recent-reviews-table {
             width: 100%;
             border-collapse: collapse;
-            border: 1px solid var(--color-border-secondary, #e1e4e8);
-            border-radius: 6px;
+            background: var(--color-bg-primary);
+            border: 1px solid var(--color-border-primary);
+            border-radius: var(--radius-lg);
             overflow: hidden;
         }
 
         .recent-reviews-table thead {
-            background: var(--color-bg-secondary, #f6f8fa);
+            background: var(--color-bg-secondary);
         }
 
         .recent-reviews-table th {
             text-align: left;
-            padding: 10px 12px;
+            padding: 12px 16px;
             font-size: 12px;
             font-weight: 600;
-            color: var(--color-text-secondary, #57606a);
-            border-bottom: 1px solid var(--color-border-secondary, #e1e4e8);
+            color: var(--color-text-tertiary);
+            border-bottom: 1px solid var(--color-border-primary);
             white-space: nowrap;
         }
 
         .recent-reviews-table td {
-            padding: 10px 12px;
+            padding: 12px 16px;
             font-size: 14px;
-            border-bottom: 1px solid var(--color-border-secondary, #e1e4e8);
+            border-bottom: 1px solid var(--color-border-secondary);
             vertical-align: middle;
         }
 
@@ -191,16 +466,16 @@
         }
 
         .recent-reviews-table tbody tr {
-            transition: background-color 0.15s ease;
+            transition: background-color var(--transition-fast);
         }
 
         .recent-reviews-table tbody tr:hover {
-            background: var(--color-bg-secondary, #f6f8fa);
+            background: var(--color-bg-secondary);
         }
 
         .recent-reviews-table .col-repo {
-            font-weight: 600;
-            color: var(--color-text-primary, #24292f);
+            font-weight: 500;
+            color: var(--color-text-primary);
         }
 
         .recent-reviews-table .col-pr {
@@ -208,24 +483,27 @@
         }
 
         .recent-reviews-table .col-pr a {
-            color: var(--color-text-link, #0969da);
+            color: var(--ai-primary);
             text-decoration: none;
             font-weight: 500;
+            font-family: var(--font-mono);
         }
 
         .recent-reviews-table .col-pr a:hover {
+            color: var(--ai-secondary);
             text-decoration: underline;
         }
 
         .recent-reviews-table .col-title {
-            max-width: 300px;
+            max-width: 320px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            color: var(--color-text-secondary);
         }
 
         .recent-reviews-table .col-time {
-            color: var(--color-text-tertiary, #656d76);
+            color: var(--color-text-tertiary);
             font-size: 13px;
             white-space: nowrap;
         }
@@ -239,300 +517,196 @@
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 28px;
-            height: 28px;
+            width: 32px;
+            height: 32px;
             padding: 0;
             background: transparent;
             border: 1px solid transparent;
-            border-radius: 6px;
-            color: var(--color-text-tertiary, #656d76);
+            border-radius: var(--radius-md);
+            color: var(--color-text-tertiary);
             cursor: pointer;
-            transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+            transition: all var(--transition-fast);
         }
 
         .btn-delete-worktree:hover {
-            background-color: #ffebe9;
-            border-color: rgba(255, 129, 130, 0.4);
-            color: #cf222e;
+            background-color: rgba(208, 36, 47, 0.08);
+            border-color: rgba(208, 36, 47, 0.3);
+            color: var(--color-danger);
         }
 
-        body[data-theme="dark"] .btn-delete-worktree:hover {
+        [data-theme="dark"] .btn-delete-worktree:hover {
             background-color: rgba(248, 81, 73, 0.1);
-            border-color: rgba(248, 81, 73, 0.4);
-            color: #f85149;
-        }
-
-        body[data-theme="dark"] .recent-reviews-table {
-            border-color: #30363d;
-        }
-
-        body[data-theme="dark"] .recent-reviews-table thead {
-            background: #161b22;
-        }
-
-        body[data-theme="dark"] .recent-reviews-table th {
-            color: #8b949e;
-            border-bottom-color: #30363d;
-        }
-
-        body[data-theme="dark"] .recent-reviews-table td {
-            border-bottom-color: #21262d;
-        }
-
-        body[data-theme="dark"] .recent-reviews-table tbody tr:hover {
-            background: #161b22;
-        }
-
-        body[data-theme="dark"] .recent-reviews-table .col-repo {
-            color: #c9d1d9;
-        }
-
-        body[data-theme="dark"] .recent-reviews-table .col-pr a {
-            color: #58a6ff;
+            border-color: rgba(248, 81, 73, 0.3);
         }
 
         .recent-reviews-empty {
             text-align: center;
-            padding: 24px 16px;
-            color: var(--color-text-tertiary, #656d76);
+            padding: 40px 20px;
+            color: var(--color-text-secondary);
             font-size: 14px;
-            border: 1px dashed var(--color-border-secondary, #e1e4e8);
-            border-radius: 6px;
+            background: var(--color-bg-primary);
+            border: 1px dashed var(--color-border-primary);
+            border-radius: var(--radius-lg);
+        }
+
+        .recent-reviews-empty p {
+            margin: 0;
+            line-height: 1.6;
         }
 
         .recent-reviews-loading {
             text-align: center;
-            padding: 24px 16px;
-            color: var(--color-text-tertiary, #656d76);
+            padding: 32px 20px;
+            color: var(--color-text-tertiary);
             font-size: 14px;
         }
 
-        /* Start Review Section */
-        .start-review-section {
-            max-width: 900px;
-            margin: 0 auto 32px;
-            text-align: left;
-        }
-
-        .start-review-form {
-            display: flex;
-            gap: 8px;
-        }
-
-        .start-review-input {
-            flex: 1;
-            min-width: 600px;
-            padding: 8px 12px;
-            font-size: 14px;
-            line-height: 20px;
-            color: var(--color-text-primary, #24292f);
-            background-color: var(--color-bg-primary, #ffffff);
-            border: 1px solid var(--color-border-primary, #d1d9e0);
-            border-radius: 6px;
-            outline: none;
-            transition: border-color 0.15s ease, box-shadow 0.15s ease;
-        }
-
-        .start-review-input:focus {
-            border-color: #0969da;
-            box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
-        }
-
-        .start-review-input::placeholder {
-            color: var(--color-text-tertiary, #656d76);
-        }
-
-        .start-review-input:disabled {
-            background-color: var(--color-bg-secondary, #f6f8fa);
-            cursor: not-allowed;
-        }
-
-        body[data-theme="dark"] .start-review-input {
-            background-color: #0d1117;
-            border-color: #30363d;
-            color: #c9d1d9;
-        }
-
-        body[data-theme="dark"] .start-review-input:focus {
-            border-color: #58a6ff;
-            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
-        }
-
-        body[data-theme="dark"] .start-review-input::placeholder {
-            color: #8b949e;
-        }
-
-        .start-review-btn {
-            padding: 8px 16px;
-            font-size: 14px;
-            font-weight: 500;
-            line-height: 20px;
-            color: #ffffff;
-            background-color: #238636;
-            border: 1px solid rgba(27, 31, 36, 0.15);
-            border-radius: 6px;
-            cursor: pointer;
-            transition: background-color 0.15s ease;
-            white-space: nowrap;
-        }
-
-        .start-review-btn:hover:not(:disabled) {
-            background-color: #2ea043;
-        }
-
-        .start-review-btn:disabled {
-            background-color: #94d3a2;
-            cursor: not-allowed;
-        }
-
-        .start-review-error {
-            margin-top: 8px;
-            padding: 8px 12px;
-            font-size: 13px;
-            color: #cf222e;
-            background-color: #ffebe9;
-            border: 1px solid rgba(255, 129, 130, 0.4);
-            border-radius: 6px;
-            display: none;
-        }
-
-        body[data-theme="dark"] .start-review-error {
-            color: #f85149;
-            background-color: rgba(248, 81, 73, 0.1);
-            border-color: rgba(248, 81, 73, 0.4);
-        }
-
-        .start-review-error.visible {
-            display: block;
-        }
-
-        .start-review-loading {
-            display: none;
-            align-items: center;
-            gap: 8px;
-            margin-top: 8px;
-            font-size: 13px;
-            color: var(--color-text-secondary, #57606a);
-        }
-
-        .start-review-loading.visible {
-            display: flex;
-        }
-
-        .start-review-loading .spinner {
-            width: 16px;
-            height: 16px;
-            border: 2px solid #d1d9e0;
-            border-top-color: #0969da;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-
-        body[data-theme="dark"] .start-review-loading .spinner {
-            border-color: #30363d;
-            border-top-color: #58a6ff;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        .divider {
-            max-width: 600px;
-            margin: 0 auto 32px;
-            border: 0;
-            border-top: 1px solid var(--color-border-secondary, #e1e4e8);
-        }
-
-        body[data-theme="dark"] .divider {
-            border-top-color: #30363d;
-        }
-
-        /* Responsive: smaller icon on mobile */
+        /* Responsive */
         @media (max-width: 768px) {
-            .welcome-icon {
-                width: 72px;
-                height: 72px;
-                margin-bottom: 16px;
-            }
-
-            .recent-reviews-section {
-                margin-left: 10px;
-                margin-right: 10px;
-            }
-
-            .start-review-input {
-                min-width: 200px;
+            .main-content {
+                padding: 32px 16px;
             }
 
             .start-review-form {
                 flex-direction: column;
             }
+
+            .start-review-input {
+                width: 100%;
+            }
+
+            .usage-info {
+                padding: 20px;
+            }
+
+            .recent-reviews-table {
+                font-size: 13px;
+            }
+
+            .recent-reviews-table th,
+            .recent-reviews-table td {
+                padding: 10px 12px;
+            }
+
+            .recent-reviews-table .col-title {
+                max-width: 180px;
+            }
         }
     </style>
 </head>
 <body>
-    <!-- Welcome section - landing page -->
-    <div class="container welcome-section" id="welcome-section">
-        <img src="/assets/pair-review.png" alt="Pair Review" class="welcome-icon">
-        <h1>Pair Review</h1>
-        <p>AI-powered GitHub pull request review assistant</p>
+    <div class="app">
+        <!-- Sticky Header -->
+        <header class="header">
+            <div class="header-left">
+                <a href="/" class="logo">
+                    <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24">
+                        <path transform="rotate(-50 12 12)" d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.356-8-5.096 0-5.096 8 0 8 5.223 0 7.26-8 12.356-8z"/>
+                    </svg>
+                    <span class="logo-text">pair<span class="logo-accent">review</span></span>
+                </a>
+            </div>
+            <div class="header-right">
+                <button class="btn btn-icon" id="theme-toggle" title="Toggle theme">
+                    <svg class="theme-icon-light" viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
+                        <path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13Zm8-5a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM0 8a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5H.75A.75.75 0 0 1 0 8Zm11.535-5.535a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Zm-9.192 9.192a.75.75 0 0 1 0 1.06l-.353.354a.75.75 0 0 1-1.061-1.06l.353-.354a.75.75 0 0 1 1.06 0Zm9.192 0a.75.75 0 0 1 1.06 0l.354.354a.75.75 0 0 1-1.06 1.06l-.354-.354a.75.75 0 0 1 0-1.06ZM3.404 3.404a.75.75 0 0 1 1.06 0l.354.353a.75.75 0 0 1-1.06 1.061l-.354-.353a.75.75 0 0 1 0-1.06Z"/>
+                    </svg>
+                    <svg class="theme-icon-dark" viewBox="0 0 16 16" fill="currentColor" width="16" height="16" style="display: none;">
+                        <path d="M9.598 1.591a.749.749 0 0 1 .785-.175 7.001 7.001 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Z"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
 
-        <div class="usage-info">
-            <h3>Usage</h3>
-            <p>To review a pull request, use one of these commands:</p>
+        <!-- Main Content -->
+        <main class="main-content">
+            <div class="welcome-section" id="welcome-section">
+                <!-- Start Review Section -->
+                <div class="start-review-section" id="start-review-section">
+                    <form class="start-review-form" id="start-review-form">
+                        <input
+                            type="text"
+                            class="start-review-input"
+                            id="pr-url-input"
+                            placeholder="Enter GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)"
+                            autocomplete="off"
+                            spellcheck="false"
+                        >
+                        <button type="submit" class="start-review-btn" id="start-review-btn">
+                            Start Review
+                        </button>
+                    </form>
+                    <div class="start-review-error" id="start-review-error"></div>
+                    <div class="start-review-loading" id="start-review-loading">
+                        <div class="spinner"></div>
+                        <span id="start-review-loading-text">Creating worktree and fetching PR data...</span>
+                    </div>
+                </div>
 
-            <pre><code># Review by PR number (from repository directory)
+                <!-- Usage Info (shown when no reviews) -->
+                <div class="usage-info" id="usage-info">
+                    <h3>Getting Started</h3>
+                    <p>To review a pull request, use one of these commands:</p>
+
+                    <pre><code># Review by PR number (from repository directory)
 npx pair-review 123
 
 # Review by full GitHub URL
 npx pair-review https://github.com/owner/repo/pull/123</code></pre>
 
-            <p><strong>Configuration:</strong></p>
-            <p>Set your GitHub token in <code>~/.pair-review/config.json</code>:</p>
-            <pre><code>{
+                    <p><strong>Configuration:</strong></p>
+                    <p>Set your GitHub token in <code>~/.pair-review/config.json</code>:</p>
+                    <pre><code>{
   "github_token": "your_github_token_here",
   "port": 3000,
   "theme": "light"
 }</code></pre>
-        </div>
+                </div>
 
-        <!-- Start Review Section - Placed at top when reviews exist -->
-        <div class="start-review-section" id="start-review-section">
-            <form class="start-review-form" id="start-review-form">
-                <input
-                    type="text"
-                    class="start-review-input"
-                    id="pr-url-input"
-                    placeholder="Enter GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)"
-                    autocomplete="off"
-                    spellcheck="false"
-                >
-                <button type="submit" class="start-review-btn" id="start-review-btn">
-                    Start Review
-                </button>
-            </form>
-            <div class="start-review-error" id="start-review-error"></div>
-            <div class="start-review-loading" id="start-review-loading">
-                <div class="spinner"></div>
-                <span id="start-review-loading-text">Creating worktree and fetching PR data...</span>
+                <!-- Recent Reviews Section -->
+                <div class="recent-reviews-section" id="recent-reviews-section">
+                    <div class="section-header">
+                        <h3 class="section-title">Recent Reviews</h3>
+                    </div>
+                    <div id="recent-reviews-container" class="recent-reviews-loading">
+                        Loading recent reviews...
+                    </div>
+                </div>
             </div>
-        </div>
-
-        <hr class="divider" id="recent-reviews-divider">
-
-        <!-- Recent Reviews Section -->
-        <div class="recent-reviews-section" id="recent-reviews-section">
-            <div class="recent-reviews-header">
-                <h3>Recent Reviews</h3>
-            </div>
-            <div id="recent-reviews-container" class="recent-reviews-loading">
-                Loading recent reviews...
-            </div>
-        </div>
+        </main>
     </div>
 
     <script>
+        /**
+         * Theme Management
+         */
+        function initTheme() {
+            const savedTheme = localStorage.getItem('pair-review-theme');
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const theme = savedTheme || (prefersDark ? 'dark' : 'light');
+            document.body.setAttribute('data-theme', theme);
+        }
+
+        function toggleTheme() {
+            const currentTheme = document.body.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            document.body.setAttribute('data-theme', newTheme);
+            localStorage.setItem('pair-review-theme', newTheme);
+        }
+
+        // Initialize theme on page load
+        initTheme();
+
+        // Set up theme toggle button
+        document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+
+        // Listen for system theme changes
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+            if (!localStorage.getItem('pair-review-theme')) {
+                document.body.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+            }
+        });
+
         /**
          * Format a relative time string from a date
          * @param {string} dateString - ISO date string
@@ -656,8 +830,7 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
         async function loadRecentReviews() {
             const container = document.getElementById('recent-reviews-container');
             const section = document.getElementById('recent-reviews-section');
-            const divider = document.getElementById('recent-reviews-divider');
-            const usageInfo = document.querySelector('.usage-info');
+            const usageInfo = document.getElementById('usage-info');
 
             try {
                 const response = await fetch('/api/worktrees/recent?limit=10');
@@ -669,11 +842,15 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
                 const data = await response.json();
 
                 if (!data.success || !data.worktrees || data.worktrees.length === 0) {
-                    // Hide the section and divider if there are no recent reviews
-                    section.style.display = 'none';
-                    if (divider) divider.style.display = 'none';
-                    // Show usage info when there are no reviews
-                    if (usageInfo) usageInfo.style.display = 'block';
+                    // Show friendly empty state
+                    container.innerHTML = `
+                        <div class="recent-reviews-empty">
+                            <p>No reviews yet. Paste a PR URL above to get started.</p>
+                        </div>
+                    `;
+                    container.classList.remove('recent-reviews-loading');
+                    // Hide usage info when showing empty state
+                    if (usageInfo) usageInfo.style.display = 'none';
                     return;
                 }
 
@@ -702,9 +879,8 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
 
             } catch (error) {
                 console.error('Error loading recent reviews:', error);
-                // Hide the section and divider on error rather than showing an error message
+                // Hide the section on error rather than showing an error message
                 section.style.display = 'none';
-                if (divider) divider.style.display = 'none';
             }
         }
 
