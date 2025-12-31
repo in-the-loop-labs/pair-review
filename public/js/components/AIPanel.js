@@ -112,7 +112,7 @@ class AIPanel {
             if (!level) return;
 
             // Remove all state classes
-            level.classList.remove('complete', 'active', 'depth-level-complete');
+            level.classList.remove('complete', 'active', 'pending', 'depth-level-complete');
 
             // Determine level state (index is 0-based, levels are 1-based)
             const levelNum = index + 1;
@@ -120,11 +120,13 @@ class AIPanel {
             // When in progress, levels below currentLevel are done, currentLevel is active
             const isLevelComplete = isComplete ? (levelNum <= currentLevel) : (levelNum < currentLevel);
             const isLevelActive = !isComplete && (levelNum === currentLevel);
+            const isLevelPending = !isLevelComplete && !isLevelActive;
+
+            const icon = level.querySelector('.depth-level-icon');
 
             if (isLevelComplete) {
                 level.classList.add('complete', 'depth-level-complete');
-                // Update icon to checkmark
-                const icon = level.querySelector('.depth-level-icon');
+                // Green checkmark icon for completed levels
                 if (icon) {
                     icon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
                         <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
@@ -132,19 +134,18 @@ class AIPanel {
                 }
             } else if (isLevelActive) {
                 level.classList.add('active');
-                // Show pulsing circle for active state
-                const icon = level.querySelector('.depth-level-icon');
+                // Pulsing amber filled circle for active/in-progress state
                 if (icon) {
                     icon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
                         <path d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/>
                     </svg>`;
                 }
-            } else {
-                // Reset to default empty circle icon
-                const icon = level.querySelector('.depth-level-icon');
+            } else if (isLevelPending) {
+                level.classList.add('pending');
+                // Gray unfilled circle for pending state
                 if (icon) {
                     icon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                        <path d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/>
+                        <path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Z"/>
                     </svg>`;
                 }
             }

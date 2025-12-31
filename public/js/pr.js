@@ -2228,30 +2228,48 @@ class PRManager {
         suggestionDiv.classList.add('collapsed');
       }
       
+      // Determine level label based on ai_level
+      const levelLabels = {
+        1: 'LINE ANALYSIS',
+        2: 'FILE ANALYSIS',
+        3: 'ARCHITECTURE ANALYSIS'
+      };
+      const levelLabel = levelLabels[suggestion.ai_level] || '';
+      const aiLevel = suggestion.ai_level || 1;
+
+      // Use star icon for praise suggestions, sparkle for others
+      const aiIndicatorIcon = suggestion.type === 'praise'
+        ? '<svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>'
+        : '<svg viewBox="0 0 16 16"><path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901l-.203.556a.213.213 0 0 1-.4 0l-.203-.556a3.2 3.2 0 0 0-1.901-1.901l-.556-.203a.213.213 0 0 1 0-.4l.556-.203a3.2 3.2 0 0 0 1.901-1.901L2.8.14Z"/></svg>';
+
       suggestionDiv.innerHTML = `
         <div class="ai-suggestion-header">
           <div class="ai-suggestion-header-left">
             <span class="ai-indicator">
-              <svg viewBox="0 0 16 16">
-                <path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901l-.203.556a.213.213 0 0 1-.4 0l-.203-.556a3.2 3.2 0 0 0-1.901-1.901l-.556-.203a.213.213 0 0 1 0-.4l.556-.203a3.2 3.2 0 0 0 1.901-1.901L2.8.14Z"/>
-              </svg>
+              ${aiIndicatorIcon}
             </span>
-            <span class="type-badge type-${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">${suggestion.type}</span>
-            ${suggestion.ai_level === 1 ? '<span class="level-badge level-1">L1: Diff Analysis</span>' : ''}
-            ${suggestion.ai_level === 2 ? '<span class="level-badge level-2">L2: File Context</span>' : ''}
-            ${suggestion.ai_level === 3 ? '<span class="level-badge level-3">L3: Codebase Context</span>' : ''}
+            ${suggestion.type === 'praise'
+              ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
+              : `<span class="ai-suggestion-badge" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>AI Suggestion</span>`}
             <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
-            ${suggestion.ai_confidence ? `<span class="confidence">${Math.round(suggestion.ai_confidence * 100)}% confident</span>` : ''}
+          </div>
+          <div class="ai-suggestion-level">
+            <span class="level-label">${levelLabel}</span>
+            <div class="level-dots">
+              <span class="level-dot${aiLevel === 1 ? ' active' : ''}" title="Line Analysis"></span>
+              <span class="level-dot${aiLevel === 2 ? ' active' : ''}" title="File Analysis"></span>
+              <span class="level-dot${aiLevel === 3 ? ' active' : ''}" title="Architecture Analysis"></span>
+            </div>
           </div>
         </div>
         <div class="ai-suggestion-collapsed-content">
           <span class="ai-indicator">
-            <svg viewBox="0 0 16 16">
-              <path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901l-.203.556a.213.213 0 0 1-.4 0l-.203-.556a3.2 3.2 0 0 0-1.901-1.901l-.556-.203a.213.213 0 0 1 0-.4l.556-.203a3.2 3.2 0 0 0 1.901-1.901L2.8.14Z"/>
-            </svg>
+            ${aiIndicatorIcon}
           </span>
           <span class="collapsed-text">${wasAdopted ? 'Suggestion adopted' : 'Hidden AI suggestion'}</span>
-          <span class="type-badge type-${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">${suggestion.type}</span>
+          ${suggestion.type === 'praise'
+            ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
+            : `<span class="ai-suggestion-badge collapsed" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">AI Suggestion</span>`}
           <span class="collapsed-title">${this.escapeHtml(suggestion.title || '')}</span>
           <button class="btn-restore" onclick="prManager.restoreSuggestion(${suggestion.id})" title="${wasAdopted ? 'Hide suggestion' : 'Show suggestion'}">
             <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="16" height="16">
@@ -2269,13 +2287,16 @@ class PRManager {
           })()}
         </div>
         <div class="ai-suggestion-actions">
-          <button class="btn btn-sm btn-primary" onclick="prManager.adoptSuggestion(${suggestion.id})">
+          <button class="ai-action ai-action-adopt" onclick="prManager.adoptSuggestion(${suggestion.id})">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
             Adopt
           </button>
-          <button class="btn btn-sm btn-primary" onclick="prManager.adoptAndEditSuggestion(${suggestion.id})">
-            Adopt & Edit
+          <button class="ai-action ai-action-edit" onclick="prManager.adoptAndEditSuggestion(${suggestion.id})">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"/></svg>
+            Edit
           </button>
-          <button class="btn btn-sm btn-secondary" onclick="prManager.dismissSuggestion(${suggestion.id})">
+          <button class="ai-action ai-action-dismiss" onclick="prManager.dismissSuggestion(${suggestion.id})">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
             Dismiss
           </button>
         </div>
@@ -2292,14 +2313,15 @@ class PRManager {
    * Helper function to extract suggestion data from DOM
    */
   extractSuggestionData(suggestionDiv) {
-    const suggestionText = suggestionDiv.dataset?.originalBody ? 
+    const suggestionText = suggestionDiv.dataset?.originalBody ?
       JSON.parse(suggestionDiv.dataset.originalBody) : '';
-    
-    const typeElement = suggestionDiv.querySelector('.type-badge');
+
+    // Get type from ai-suggestion-badge data-type attribute or praise-badge
+    const badgeElement = suggestionDiv.querySelector('.ai-suggestion-badge, .praise-badge');
     const titleElement = suggestionDiv.querySelector('.ai-title');
-    const suggestionType = typeElement?.textContent?.trim() || '';
+    const suggestionType = badgeElement?.dataset?.type || (badgeElement?.classList?.contains('praise-badge') ? 'praise' : '');
     const suggestionTitle = titleElement?.textContent?.trim() || '';
-    
+
     return { suggestionText, suggestionType, suggestionTitle };
   }
 
@@ -3291,13 +3313,17 @@ class PRManager {
     // Build metadata display for adopted comments
     let metadataHTML = '';
     if (comment.parent_id && comment.type && comment.type !== 'comment') {
+      // Use "Nice Work" badge for praise, "AI Suggestion" for other types (issue pair_review-pqb)
+      const badgeHTML = comment.type === 'praise'
+        ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
+        : `<span class="adopted-ai-badge" data-type="${comment.type}" title="Adopted AI Suggestion">AI Suggestion</span>`;
       metadataHTML = `
         <button class="btn-toggle-original" onclick="prManager.toggleOriginalSuggestion(${comment.parent_id}, ${comment.id})" title="Show/hide original AI suggestion">
           <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="20" height="20">
             <path fill-rule="evenodd" d="M1.679 7.932c.412-.621 1.242-1.75 2.366-2.717C5.175 4.242 6.527 3.5 8 3.5c1.473 0 2.824.742 3.955 1.715 1.124.967 1.954 2.096 2.366 2.717a.119.119 0 010 .136c-.412.621-1.242 1.75-2.366 2.717C10.825 11.758 9.473 12.5 8 12.5c-1.473 0-2.824-.742-3.955-1.715C2.92 9.818 2.09 8.69 1.679 8.068a.119.119 0 010-.136zM8 2c-1.981 0-3.67.992-4.933 2.078C1.797 5.169.88 6.423.43 7.1a1.619 1.619 0 000 1.798c.45.678 1.367 1.932 2.637 3.024C4.329 13.008 6.019 14 8 14c1.981 0 3.67-.992 4.933-2.078 1.27-1.091 2.187-2.345 2.637-3.023a1.619 1.619 0 000-1.798c-.45-.678-1.367-1.932-2.637-3.023C11.671 2.992 9.981 2 8 2zm0 8a2 2 0 100-4 2 2 0 000 4z"></path>
           </svg>
         </button>
-        <span class="adopted-type-badge type-${comment.type}">${comment.type}</span>
+        ${badgeHTML}
         ${comment.title ? `<span class="adopted-title">${this.escapeHtml(comment.title)}</span>` : ''}
       `;
     }
@@ -3372,7 +3398,9 @@ class PRManager {
                 <path fill-rule="evenodd" d="M1.679 7.932c.412-.621 1.242-1.75 2.366-2.717C5.175 4.242 6.527 3.5 8 3.5c1.473 0 2.824.742 3.955 1.715 1.124.967 1.954 2.096 2.366 2.717a.119.119 0 010 .136c-.412.621-1.242 1.75-2.366 2.717C10.825 11.758 9.473 12.5 8 12.5c-1.473 0-2.824-.742-3.955-1.715C2.92 9.818 2.09 8.69 1.679 8.068a.119.119 0 010-.136zM8 2c-1.981 0-3.67.992-4.933 2.078C1.797 5.169.88 6.423.43 7.1a1.619 1.619 0 000 1.798c.45.678 1.367 1.932 2.637 3.024C4.329 13.008 6.019 14 8 14c1.981 0 3.67-.992 4.933-2.078 1.27-1.091 2.187-2.345 2.637-3.023a1.619 1.619 0 000-1.798c-.45-.678-1.367-1.932-2.637-3.023C11.671 2.992 9.981 2 8 2zm0 8a2 2 0 100-4 2 2 0 000 4z"></path>
               </svg>
             </button>
-            <span class="adopted-type-badge type-${comment.type}">${comment.type}</span>
+            ${comment.type === 'praise'
+              ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
+              : `<span class="adopted-ai-badge" data-type="${comment.type}" title="Adopted AI Suggestion">AI Suggestion</span>`}
             ${comment.title ? `<span class="adopted-title">${this.escapeHtml(comment.title)}</span>` : ''}
           ` : ''}
           <span class="user-comment-timestamp">Editing comment...</span>
@@ -4245,23 +4273,192 @@ class PRManager {
   updateFileList(files) {
     const fileListContainer = document.getElementById('file-list');
     if (!fileListContainer) return;
-    
+
     if (files.length === 0) {
       fileListContainer.innerHTML = '<div style="padding: 16px; text-align: center; color: var(--color-text-secondary);">No files changed</div>';
       return;
     }
-    
-    // Build tree and render
-    const tree = this.buildFileTree(files);
-    const elements = this.renderTreeNode('', tree);
-    
+
+    // Group files by directory using the new prototype-style layout
+    const groupedFiles = this.groupFilesByDirectory(files);
+
     fileListContainer.innerHTML = '';
-    elements.forEach(element => {
-      fileListContainer.appendChild(element);
-    });
-    
+
+    // Render each directory group
+    for (const [dirPath, dirFiles] of Object.entries(groupedFiles)) {
+      const groupElement = this.renderFileGroup(dirPath, dirFiles);
+      fileListContainer.appendChild(groupElement);
+    }
+
     // Setup sidebar toggle
     this.setupSidebarToggle();
+  }
+
+  /**
+   * Group files by their parent directory
+   * @param {Array} files - Array of file objects
+   * @returns {Object} Files grouped by directory path
+   */
+  groupFilesByDirectory(files) {
+    const groups = {};
+
+    files.forEach(file => {
+      const filePath = file.file;
+      const lastSlashIndex = filePath.lastIndexOf('/');
+
+      // Get directory path, or '.' for root-level files
+      const dirPath = lastSlashIndex === -1 ? '.' : filePath.substring(0, lastSlashIndex);
+      const fileName = lastSlashIndex === -1 ? filePath : filePath.substring(lastSlashIndex + 1);
+
+      if (!groups[dirPath]) {
+        groups[dirPath] = [];
+      }
+
+      groups[dirPath].push({
+        name: fileName,
+        fullPath: filePath,
+        status: this.getFileStatus(file),
+        additions: file.insertions,
+        deletions: file.deletions,
+        binary: file.binary,
+        generated: file.generated || false
+      });
+    });
+
+    // Sort groups by directory path
+    const sortedGroups = {};
+    Object.keys(groups).sort().forEach(key => {
+      sortedGroups[key] = groups[key];
+    });
+
+    return sortedGroups;
+  }
+
+  /**
+   * Render a file group with header and file items
+   * @param {string} dirPath - Directory path
+   * @param {Array} files - Files in this directory
+   * @returns {HTMLElement} The file group element
+   */
+  renderFileGroup(dirPath, files) {
+    const group = document.createElement('div');
+    group.className = 'file-group';
+    group.dataset.path = dirPath;
+
+    // Create group header with chevron and folder icon
+    const header = document.createElement('div');
+    header.className = 'file-group-header';
+
+    // Chevron for expand/collapse
+    const chevron = document.createElement('span');
+    chevron.className = 'file-group-chevron';
+    chevron.innerHTML = `
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+        <path d="M4.7 10c-.2 0-.4-.1-.5-.2-.3-.3-.3-.8 0-1.1L6.9 6 4.2 3.3c-.3-.3-.3-.8 0-1.1.3-.3.8-.3 1.1 0l3.3 3.3c.3.3.3.8 0 1.1L5.3 9.8c-.2.1-.4.2-.6.2Z"/>
+      </svg>
+    `;
+
+    const folderIcon = document.createElement('span');
+    folderIcon.className = 'folder-icon';
+    folderIcon.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+        <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/>
+      </svg>
+    `;
+
+    const dirName = document.createElement('span');
+    dirName.textContent = dirPath === '.' ? '(root)' : dirPath;
+
+    header.appendChild(chevron);
+    header.appendChild(folderIcon);
+    header.appendChild(dirName);
+    group.appendChild(header);
+
+    // Create file list container
+    const fileList = document.createElement('div');
+    fileList.className = 'file-group-items';
+
+    // Render each file item
+    files.forEach(file => {
+      const fileItem = this.renderFileItem(file);
+      fileList.appendChild(fileItem);
+    });
+
+    group.appendChild(fileList);
+
+    // Default to expanded
+    group.classList.add('expanded');
+
+    // Add click handler for collapse/expand
+    header.addEventListener('click', () => {
+      group.classList.toggle('expanded');
+    });
+
+    return group;
+  }
+
+  /**
+   * Render a single file item
+   * @param {Object} file - File data
+   * @returns {HTMLElement} The file item element
+   */
+  renderFileItem(file) {
+    const item = document.createElement('a');
+    item.className = 'file-item';
+    item.href = `#${file.fullPath}`;
+    item.dataset.path = file.fullPath;
+    item.dataset.status = file.status;
+
+    if (file.generated) {
+      item.classList.add('generated');
+    }
+
+    // File name
+    const fileName = document.createElement('span');
+    fileName.className = 'file-name';
+    fileName.textContent = file.name;
+
+    // File changes indicator
+    const changes = document.createElement('span');
+    changes.className = 'file-changes';
+
+    if (file.binary) {
+      changes.textContent = 'BIN';
+    } else {
+      const parts = [];
+      if (file.additions > 0) parts.push(`+${file.additions}`);
+      if (file.deletions > 0) parts.push(`-${file.deletions}`);
+      changes.textContent = parts.join(' ') || '';
+    }
+
+    item.appendChild(fileName);
+    item.appendChild(changes);
+
+    // Add click handler
+    item.addEventListener('click', (e) => {
+      e.preventDefault();
+      this.scrollToFile(file.fullPath);
+      this.setActiveFileItem(file.fullPath);
+    });
+
+    return item;
+  }
+
+  /**
+   * Set active state on file item
+   * @param {string} filePath - Path of the active file
+   */
+  setActiveFileItem(filePath) {
+    // Remove previous active states
+    document.querySelectorAll('.file-item.active').forEach(item => {
+      item.classList.remove('active');
+    });
+
+    // Add active state to clicked file
+    const fileItem = document.querySelector(`.file-item[data-path="${filePath}"]`);
+    if (fileItem) {
+      fileItem.classList.add('active');
+    }
   }
 
   /**
@@ -4311,12 +4508,14 @@ class PRManager {
    * @param {string} filePath - Path of active file
    */
   setActiveFile(filePath) {
-    // Remove previous active states
+    // Use the new setActiveFileItem for new grouped layout
+    this.setActiveFileItem(filePath);
+
+    // Also handle old tree-file elements for backwards compatibility
     document.querySelectorAll('.tree-file.active').forEach(file => {
       file.classList.remove('active');
     });
-    
-    // Add active state to clicked file
+
     const fileElement = document.querySelector(`.tree-file[data-path="${filePath}"]`);
     if (fileElement) {
       fileElement.classList.add('active');

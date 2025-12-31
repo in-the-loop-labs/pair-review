@@ -576,15 +576,19 @@
   --color-bg-primary: #ffffff;
   --color-bg-secondary: #f6f8fa;
   --color-bg-tertiary: #f3f4f6;
+  --color-bg-elevated: #ffffff;
   --color-bg-overlay: rgba(0, 0, 0, 0.5);
-  
+
   --color-text-primary: #24292f;
   --color-text-secondary: #57606a;
   --color-text-tertiary: #656d76;
+  --color-text-muted: #8c959f;
   --color-text-link: #0969da;
-  
+
   --color-border-primary: #d1d9e0;
   --color-border-secondary: #e1e4e8;
+  --color-border-subtle: rgba(0, 0, 0, 0.06);
+  --color-border-default: rgba(0, 0, 0, 0.1);
   
   --color-accent-primary: #0969da;
   --color-accent-hover: #0860ca;
@@ -649,15 +653,19 @@
   --color-bg-primary: #0d1117;
   --color-bg-secondary: #161b22;
   --color-bg-tertiary: #1c2128;
+  --color-bg-elevated: #1e2329;
   --color-bg-overlay: rgba(0, 0, 0, 0.7);
-  
+
   --color-text-primary: #c9d1d9;
   --color-text-secondary: #8b949e;
   --color-text-tertiary: #6e7681;
+  --color-text-muted: #484f58;
   --color-text-link: #58a6ff;
-  
+
   --color-border-primary: #30363d;
   --color-border-secondary: #21262d;
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-default: rgba(255, 255, 255, 0.1);
   
   --color-accent-primary: #58a6ff;
   --color-accent-hover: #1f6feb;
@@ -832,6 +840,139 @@
   overflow-y: auto;
   padding: 8px;
   text-align: left;
+}
+
+/* File group styles - matching prototype design */
+.file-group {
+  margin-bottom: 8px;
+}
+
+.file-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+
+.file-group-header:hover {
+  background: var(--color-bg-secondary);
+}
+
+.file-group-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  transition: transform 0.15s ease;
+}
+
+.file-group-chevron svg {
+  width: 12px;
+  height: 12px;
+}
+
+.file-group.expanded .file-group-chevron {
+  transform: rotate(90deg);
+}
+
+.file-group-header .folder-icon {
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.file-group-header .folder-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.file-group-items {
+  margin-left: 16px;
+}
+
+/* Hide file items when group is collapsed */
+.file-group:not(.expanded) .file-group-items {
+  display: none;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  border-radius: 4px;
+  transition: all 0.1s;
+  cursor: pointer;
+  position: relative;
+}
+
+.file-item:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.file-item.active {
+  background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
+  color: var(--ai-secondary, #fbbf24);
+}
+
+.file-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ai-primary, #f59e0b);
+}
+
+.file-item .file-name {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-item .file-changes {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.file-item[data-status="added"] .file-changes {
+  color: var(--diff-addition-marker, #3fb950);
+}
+
+.file-item[data-status="modified"] .file-changes {
+  color: var(--color-warning, #d29922);
+}
+
+.file-item[data-status="deleted"] .file-changes {
+  color: var(--diff-deletion-marker, #f85149);
+}
+
+.file-item.generated {
+  opacity: 0.6;
+}
+
+.file-item.generated .file-name {
+  font-style: italic;
 }
 
 /* Tree view styles */
@@ -1009,51 +1150,54 @@
   color: var(--color-text-secondary);
 }
 
-/* Context Expansion Controls */
+/* Context Expansion Controls - matches prototype .diff-hunk-header layout */
 .context-expand-row {
-  background: var(--color-bg-secondary);
-  border-top: 1px solid var(--color-border-primary);
-  border-bottom: 1px solid var(--color-border-primary);
+  background: var(--color-bg-tertiary);
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
 }
 
 .context-expand-cell {
   padding: 0;
-  background: var(--color-bg-secondary);
+  background: var(--color-bg-tertiary);
   text-align: center;
   position: relative;
 }
 
+/* Expand context button - matches prototype .expand-context-btn */
 .expand-button {
-  background: transparent;
-  border: none;
-  padding: 2px 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
   margin: 0;
   cursor: pointer;
-  color: var(--color-accent-primary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 2px;
-  transition: background-color 0.2s ease;
-  position: relative;
-  line-height: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  font-size: 11px;
+  color: var(--color-text-tertiary, #6e7681);
+  background: var(--color-bg-elevated, #1e2329);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
+  border-radius: 4px;
+  transition: all 0.1s ease;
+  line-height: 1;
 }
 
 .expand-button:hover {
-  background: var(--color-accent-light);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  border-color: var(--color-border-default, rgba(255, 255, 255, 0.1));
 }
 
 .expand-button svg {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   fill: currentColor;
 }
 
+/* Expand info text - muted color for line count */
 .expand-info {
-  color: #656d76;
-  font-size: 12px;
+  color: var(--color-text-muted, #484f58);
+  font-size: 11px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1071,24 +1215,27 @@
   padding: 2px 0;
 }
 
-/* Expand content cell */
+/* Expand content cell - matches prototype tertiary background */
 .expand-content {
-  padding: 1px 0;
-  background: var(--color-bg-secondary);
+  padding: 8px 16px;
+  background: var(--color-bg-tertiary);
   text-align: center;
   line-height: 20px;
-  font-size: 12px;
+  font-size: 11px;
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .expand-content-wrapper {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   position: relative;
   z-index: 1;
-  background: var(--color-bg-secondary);
-  padding: 0 8px;
+  background: transparent;
+  padding: 0;
 }
 
 /* Make expand content clickable */
@@ -1097,27 +1244,27 @@
 }
 
 .expand-content.clickable-expand:hover {
-  background: var(--color-accent-light);
+  background: var(--color-bg-elevated, #1e2329);
 }
 
 .expand-content.clickable-expand:hover .expand-content-wrapper {
-  background: var(--color-accent-light);
+  background: transparent;
 }
 
 /* Icon in expand content area */
 .expand-icon {
   display: inline-flex;
   align-items: center;
-  color: var(--color-accent-primary);
+  color: var(--color-text-tertiary, #6e7681);
 }
 
 .expand-icon svg {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   fill: currentColor;
 }
 
-/* Add divider line effect */
+/* Divider line effect - subtle in tertiary background */
 .expand-content::before {
   content: '';
   position: absolute;
@@ -1125,13 +1272,13 @@
   left: 16px;
   right: 16px;
   height: 1px;
-  background: linear-gradient(to right, 
-    var(--color-border-primary) 0%, 
-    var(--color-border-primary) calc(50% - 90px), 
-    transparent calc(50% - 90px), 
-    transparent calc(50% + 90px), 
-    var(--color-border-primary) calc(50% + 90px), 
-    var(--color-border-primary) 100%);
+  background: linear-gradient(to right,
+    var(--color-border-subtle, rgba(255, 255, 255, 0.06)) 0%,
+    var(--color-border-subtle, rgba(255, 255, 255, 0.06)) calc(50% - 100px),
+    transparent calc(50% - 100px),
+    transparent calc(50% + 100px),
+    var(--color-border-subtle, rgba(255, 255, 255, 0.06)) calc(50% + 100px),
+    var(--color-border-subtle, rgba(255, 255, 255, 0.06)) 100%);
   z-index: 0;
 }
 
@@ -1197,15 +1344,25 @@
   background-color: var(--color-diff-deletion-num);
 }
 
+/* Hunk headers - matches prototype .diff-hunk-header */
 .d2h-info {
-  background: var(--color-bg-secondary);
+  background: var(--color-bg-tertiary);
   color: var(--color-text-secondary);
   font-weight: 600;
 }
 
 .d2h-info td {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--color-border-primary);
+  padding: 8px 16px;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
+}
+
+/* Hunk info - the @@ line location display in muted color */
+.hunk-info,
+.d2h-info .d2h-code-line-ctn {
+  font-size: 12px;
+  color: var(--color-text-muted, #484f58);
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
 }
 
 /* Responsive Design */
@@ -1302,14 +1459,14 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .ai-suggestion {
-  background: var(--color-bg-tertiary, #181c23);
-  border: 1px solid var(--ai-border);
-  border-left: 3px solid var(--ai-primary);
+  background: #181c23; /* Consistent dark tertiary background from prototype */
+  border: 1px solid var(--ai-border, rgba(245, 158, 11, 0.3));
+  border-left: 3px solid var(--ai-primary, #f59e0b); /* Amber left border */
   margin: 12px 16px;
   border-radius: 6px;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 0 20px var(--ai-glow, rgba(245, 158, 11, 0.2));
+  box-shadow: 0 0 20px var(--ai-glow, rgba(245, 158, 11, 0.2)); /* Amber glow shadow */
   transition: all 0.2s ease;
   animation: slideUp 0.3s ease;
 }
@@ -1331,8 +1488,8 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .ai-suggestion.adopted {
   opacity: 0.6;
-  background: var(--color-bg-tertiary);
-  border-left-color: var(--color-text-tertiary);
+  background: #181c23; /* Consistent with prototype --bg-tertiary */
+  border-left-color: var(--color-text-tertiary, #6e7681);
 }
 
 .ai-suggestion-header {
@@ -1341,8 +1498,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   justify-content: space-between;
   gap: 8px;
   padding: 12px 16px;
-  background: linear-gradient(to right, var(--ai-subtle), transparent);
-  border-bottom: 1px solid var(--color-border-secondary, rgba(255, 255, 255, 0.06));
+  background: linear-gradient(to right, var(--ai-subtle, rgba(245, 158, 11, 0.1)), transparent); /* Amber-subtle gradient from prototype */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06); /* Subtle border matching prototype */
 }
 
 .ai-indicator {
@@ -1367,19 +1524,73 @@ tr.newly-expanded .d2h-code-line-ctn {
   gap: 8px;
 }
 
-/* Category label badge for AI suggestions */
+/* Category label badge for AI suggestions - HIDDEN in favor of unified AI Suggestion badge (issue pair_review-pqb) */
 .type-badge {
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: capitalize;
-  letter-spacing: 0.01em;
+  display: none;
 }
 
-/* Hide level badges - focus on consolidated suggestions */
+/* Unified AI Suggestion badge - matches prototype design (issue pair_review-pqb) */
+.ai-suggestion-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
+  color: var(--ai-primary, #f59e0b);
+}
+
+.ai-suggestion-badge svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0.8;
+}
+
+/* Collapsed state - smaller badge without icon */
+.ai-suggestion-badge.collapsed {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+/* Hide old level badges - replaced by level indicator dots */
 .level-badge {
   display: none;
+}
+
+/* AI Suggestion Level Indicator - matches prototype design */
+.ai-suggestion-level {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.level-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.level-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted, #484f58);
+  transition: all 0.15s ease;
+}
+
+.level-dot.active {
+  background: var(--ai-primary, #f59e0b);
+  box-shadow: 0 0 6px var(--ai-primary, #f59e0b);
+}
+
+.level-label {
+  font-size: 0.65rem;
+  color: var(--color-text-tertiary, #6e7681);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 500;
 }
 
 /* Type-specific colors - using CSS variables for theme support */
@@ -1411,6 +1622,95 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .ai-type-praise {
   border-left-color: var(--category-praise);
+}
+
+/* Praise suggestion purple theme styling (issue pair_review-11e) */
+.ai-suggestion.ai-type-praise {
+  border-left-color: var(--color-praise, #a371f7);
+  border-color: rgba(163, 113, 247, 0.3);
+  box-shadow: 0 0 20px rgba(163, 113, 247, 0.2);
+}
+
+.ai-suggestion.ai-type-praise:hover {
+  box-shadow: 0 4px 24px rgba(163, 113, 247, 0.3);
+}
+
+.ai-suggestion.ai-type-praise .ai-suggestion-header {
+  background: linear-gradient(to right, rgba(163, 113, 247, 0.1), transparent);
+}
+
+.ai-suggestion.ai-type-praise .ai-indicator {
+  color: var(--color-praise, #a371f7);
+}
+
+.ai-suggestion.ai-type-praise .praise-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(163, 113, 247, 0.15);
+  color: var(--color-praise, #a371f7);
+}
+
+.ai-suggestion.ai-type-praise .praise-badge svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+/* Hide type badge for praise, show praise-badge instead */
+.ai-suggestion.ai-type-praise .type-badge {
+  display: none;
+}
+
+/* Level indicator dots use purple for praise suggestions */
+.ai-suggestion.ai-type-praise .level-dot.active {
+  background: var(--color-praise, #a371f7);
+  box-shadow: 0 0 6px var(--color-praise, #a371f7);
+}
+
+/* Dark theme adjustments for praise suggestions */
+[data-theme="dark"] .ai-suggestion.ai-type-praise {
+  border-left-color: var(--color-praise, #a371f7);
+  border-color: rgba(163, 113, 247, 0.3);
+  box-shadow: 0 0 20px rgba(163, 113, 247, 0.2);
+}
+
+[data-theme="dark"] .ai-suggestion.ai-type-praise .ai-suggestion-header {
+  background: linear-gradient(to right, rgba(163, 113, 247, 0.1), transparent);
+}
+
+/* Collapsed state for praise suggestions - maintain purple accent */
+.ai-suggestion.ai-type-praise.collapsed {
+  border-left-color: rgba(163, 113, 247, 0.5);
+  box-shadow: none;
+}
+
+/* Praise badge in collapsed content */
+.ai-suggestion.ai-type-praise .ai-suggestion-collapsed-content .praise-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(163, 113, 247, 0.15);
+  color: var(--color-praise, #a371f7);
+}
+
+.ai-suggestion.ai-type-praise .ai-suggestion-collapsed-content .praise-badge svg {
+  width: 10px;
+  height: 10px;
+  fill: currentColor;
+}
+
+/* Also hide type-badge in collapsed content for praise */
+.ai-suggestion.ai-type-praise.collapsed .type-badge {
+  display: none;
 }
 
 .ai-type-suggestion .type-badge,
@@ -1471,11 +1771,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   color: var(--color-text-primary);
 }
 
-.confidence {
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  margin-left: auto;
-}
+/* Confidence display removed to match cleaner prototype design (issue pair_review-7g5) */
 
 .ai-suggestion-body {
   color: var(--color-text-secondary, #8b949e);
@@ -1564,6 +1860,62 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: var(--color-bg-secondary, #12151a);
 }
 
+/* Base action button styles matching prototype .ai-action */
+.ai-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+/* Adopt button: green background, white text, checkmark icon */
+.ai-action-adopt {
+  background: #3fb950;
+  color: #0d0f12;
+}
+
+.ai-action-adopt:hover {
+  background: #46c969;
+}
+
+/* Edit button: gray background with border, pencil icon */
+.ai-action-edit {
+  background: var(--color-bg-elevated, #1e2329);
+  color: var(--color-text-secondary, #8b949e);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.1));
+}
+
+.ai-action-edit:hover {
+  background: var(--color-bg-tertiary, #181c23);
+  color: var(--color-text-primary, #e6edf3);
+}
+
+/* Dismiss button: transparent, gray text turns red on hover, X icon */
+.ai-action-dismiss {
+  background: transparent;
+  color: var(--color-text-tertiary, #6e7681);
+}
+
+.ai-action-dismiss:hover {
+  color: var(--color-danger, #f85149);
+  background: rgba(248, 81, 73, 0.1);
+}
+
+/* Icon styling inside action buttons */
+.ai-action svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+/* Legacy .btn classes for backwards compatibility */
 .ai-suggestion-actions .btn {
   display: inline-flex;
   align-items: center;
@@ -1620,13 +1972,13 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 /* Collapsed AI Suggestion Styles */
 .ai-suggestion.collapsed {
-  background: var(--color-bg-secondary);
+  background: #12151a; /* Prototype --bg-secondary for collapsed state */
   opacity: 0.7;
-  border-left-color: var(--color-text-tertiary);
+  border-left-color: var(--color-text-tertiary, #6e7681);
   padding: 4px 8px;
   margin: 2px 16px;
   min-height: 28px;
-  border: 1px solid var(--color-border-primary);
+  border: 1px solid rgba(255, 255, 255, 0.06); /* Subtle border from prototype */
   display: flex;
   align-items: center;
 }
@@ -1716,18 +2068,20 @@ tr.newly-expanded .d2h-code-line-ctn {
   fill: var(--color-text-primary);
 }
 
-/* Dark theme adjustments for AI suggestions - uses CSS variables already set */
+/* Dark theme adjustments for AI suggestions - matches prototype styling */
 [data-theme="dark"] .ai-suggestion {
-  background: var(--color-bg-tertiary);
-  border-color: var(--ai-border);
-  border-left-color: var(--ai-primary);
-  box-shadow: 0 0 20px var(--ai-glow);
+  background: #181c23; /* Exact prototype --bg-tertiary value */
+  border: 1px solid var(--ai-border, rgba(245, 158, 11, 0.3));
+  border-left: 3px solid var(--ai-primary, #f59e0b);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 0 20px var(--ai-glow, rgba(245, 158, 11, 0.2));
 }
 
 [data-theme="dark"] .ai-suggestion.collapsed {
-  background: var(--color-bg-tertiary);
-  border-left-color: var(--color-text-tertiary);
-  border-color: var(--color-border-secondary);
+  background: #181c23; /* Consistent with prototype --bg-tertiary */
+  border-left-color: var(--color-text-tertiary, #6e7681);
+  border-color: rgba(255, 255, 255, 0.06); /* Subtle border from prototype */
 }
 
 [data-theme="dark"] .ai-suggestion.collapsed .ai-suggestion-collapsed-content {
@@ -2922,49 +3276,39 @@ tr.line-range-start .d2h-code-line-ctn {
   color: #8b949e;
 }
 
-/* Adopted comment badges */
+/* Adopted comment badges - HIDDEN in favor of unified badges (issue pair_review-pqb) */
 .adopted-type-badge {
+  display: none;
+}
+
+/* Unified AI Suggestion badge for adopted comments (issue pair_review-pqb) */
+.adopted-ai-badge {
   display: inline-block;
   padding: 2px 6px;
-  border-radius: 12px;
-  font-size: 11px;
+  border-radius: 4px;
+  font-size: 10px;
   font-weight: 600;
-  text-transform: uppercase;
   margin-left: 8px;
-  background: rgba(139, 92, 246, 0.1);
-  color: #8b5cf6;
-  border: 1px solid rgba(139, 92, 246, 0.2);
+  background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
+  color: var(--ai-primary, #f59e0b);
 }
 
-/* Type-specific colors for adopted badges */
-.adopted-type-badge.type-bug {
-  background: rgba(207, 34, 46, 0.1);
-  color: #cf222e;
-  border-color: rgba(207, 34, 46, 0.2);
+/* Nice Work badge for adopted praise comments */
+.adopted-praise-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 8px;
+  background: rgba(163, 113, 247, 0.15);
+  color: var(--color-praise, #a371f7);
 }
 
-.adopted-type-badge.type-improvement {
-  background: rgba(9, 105, 218, 0.1);
-  color: var(--color-accent-primary);
-  border-color: rgba(9, 105, 218, 0.2);
-}
-
-.adopted-type-badge.type-praise {
-  background: rgba(26, 127, 55, 0.1);
-  color: #1a7f37;
-  border-color: rgba(26, 127, 55, 0.2);
-}
-
-.adopted-type-badge.type-security {
-  background: rgba(251, 133, 0, 0.1);
-  color: #fb8500;
-  border-color: rgba(251, 133, 0, 0.2);
-}
-
-.adopted-type-badge.type-performance {
-  background: rgba(3, 102, 214, 0.1);
-  color: #0366d6;
-  border-color: rgba(3, 102, 214, 0.2);
+.adopted-praise-badge svg {
+  fill: currentColor;
 }
 
 .adopted-title {
@@ -3008,11 +3352,7 @@ tr.line-range-start .d2h-code-line-ctn {
   color: #58a6ff;
 }
 
-[data-theme="dark"] .adopted-type-badge {
-  background: rgba(167, 139, 250, 0.15);
-  color: #a78bfa;
-  border-color: rgba(167, 139, 250, 0.3);
-}
+/* Dark mode styles for adopted badges are handled via CSS variables */
 
 [data-theme="dark"] .adopted-title {
   color: #8b949e;
@@ -4324,10 +4664,25 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Subtle grid pattern overlay */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.01) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.01) 1px, transparent 1px);
+  background-size: 24px 24px;
+  pointer-events: none;
+  z-index: 0;
+}
+
 /* --------------------------------------------------------------------------
    App Container
    -------------------------------------------------------------------------- */
 .app {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -4962,10 +5317,29 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--color-success);
 }
 
+/* Active/in-progress level with pulsing amber dot */
 .depth-level.active .depth-level-icon {
   background: var(--ai-subtle);
   color: var(--ai-primary);
-  animation: pulse 1.5s ease-in-out infinite;
+  animation: pulse-amber 1.5s ease-in-out infinite;
+}
+
+/* Pending level with gray circle */
+.depth-level.pending .depth-level-icon {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted, #484f58);
+}
+
+/* Pulsing amber animation for active level */
+@keyframes pulse-amber {
+  0%, 100% {
+    background: var(--ai-subtle);
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
+  }
+  50% {
+    background: rgba(245, 158, 11, 0.25);
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0);
+  }
 }
 
 .depth-level-label {
