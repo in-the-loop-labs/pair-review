@@ -7,7 +7,8 @@
 class AIPanel {
     constructor() {
         this.panel = document.getElementById('ai-panel');
-        this.isCollapsed = false;
+        // Check actual DOM state for collapsed status
+        this.isCollapsed = this.panel?.classList.contains('collapsed') ?? false;
         this.findings = [];
         this.selectedLevel = 'final';
 
@@ -139,9 +140,11 @@ class AIPanel {
             const fileName = finding.file ? finding.file.split('/').pop() : null;
             const location = fileName ? `${fileName}${finding.line ? ':' + finding.line : ''}` : '';
             const category = finding.type || finding.category || '';
+            const statusClass = finding.status === 'dismissed' ? 'finding-dismissed' :
+                               finding.status === 'adopted' ? 'finding-adopted' : '';
 
             return `
-                <button class="finding-item finding-${type}" data-index="${index}" data-file="${finding.file || ''}" data-line="${finding.line || ''}">
+                <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${finding.line || ''}" title="${location}">
                     <div class="finding-icon">${iconSvg}</div>
                     <div class="finding-content">
                         <span class="finding-title">${this.escapeHtml(title)}</span>
@@ -222,6 +225,30 @@ class AIPanel {
             this.findingsBadge.style.display = 'flex';
         } else {
             this.findingsBadge.style.display = 'none';
+        }
+    }
+
+    /**
+     * Update finding status by ID
+     * @param {number} findingId - The finding ID
+     * @param {string} status - The new status ('dismissed' or 'adopted')
+     */
+    updateFindingStatus(findingId, status) {
+        // Update in our findings array
+        const finding = this.findings.find(f => f.id === findingId);
+        if (finding) {
+            finding.status = status;
+        }
+
+        // Update the DOM directly for performance (avoid full re-render)
+        const findingEl = this.findingsList?.querySelector(`[data-id="${findingId}"]`);
+        if (findingEl) {
+            findingEl.classList.remove('finding-dismissed', 'finding-adopted');
+            if (status === 'dismissed') {
+                findingEl.classList.add('finding-dismissed');
+            } else if (status === 'adopted') {
+                findingEl.classList.add('finding-adopted');
+            }
         }
     }
 

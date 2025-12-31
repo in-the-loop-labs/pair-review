@@ -2206,7 +2206,7 @@ class PRManager {
       // Store original markdown body for adopt functionality
       // Use JSON.stringify to preserve newlines and special characters
       suggestionDiv.dataset.originalBody = JSON.stringify(suggestion.body || '');
-      
+
       // Convert suggestion.id to number for comparison since parent_id might be a number
       const suggestionIdNum = parseInt(suggestion.id);
       
@@ -2238,32 +2238,21 @@ class PRManager {
       // Get category label for display
       const categoryLabel = suggestion.type || suggestion.category || '';
 
-      // Use star icon for praise suggestions, sparkle for others
-      const aiIndicatorIcon = suggestion.type === 'praise'
-        ? '<svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>'
-        : '<svg viewBox="0 0 16 16"><path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901l-.203.556a.213.213 0 0 1-.4 0l-.203-.556a3.2 3.2 0 0 0-1.901-1.901l-.556-.203a.213.213 0 0 1 0-.4l.556-.203a3.2 3.2 0 0 0 1.901-1.901L2.8.14Z"/></svg>';
-
       suggestionDiv.innerHTML = `
         <div class="ai-suggestion-header">
           <div class="ai-suggestion-header-left">
-            <span class="ai-indicator">
-              ${aiIndicatorIcon}
-            </span>
             ${suggestion.type === 'praise'
               ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
-              : `<span class="ai-suggestion-badge" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>AI Suggestion</span>`}
+              : `<span class="ai-suggestion-badge" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}"><svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M7.53 1.282a.5.5 0 01.94 0l.478 1.306a7.492 7.492 0 004.464 4.464l1.305.478a.5.5 0 010 .94l-1.305.478a7.492 7.492 0 00-4.464 4.464l-.478 1.305a.5.5 0 01-.94 0l-.478-1.305a7.492 7.492 0 00-4.464-4.464L1.282 8.47a.5.5 0 010-.94l1.306-.478a7.492 7.492 0 004.464-4.464l.478-1.306z"/></svg>AI Suggestion</span>`}
             <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
           </div>
           ${categoryLabel ? `<span class="ai-suggestion-category">${this.escapeHtml(categoryLabel)}</span>` : ''}
         </div>
         <div class="ai-suggestion-collapsed-content">
-          <span class="ai-indicator">
-            ${aiIndicatorIcon}
-          </span>
-          <span class="collapsed-text">${wasAdopted ? 'Suggestion adopted' : 'Hidden AI suggestion'}</span>
           ${suggestion.type === 'praise'
             ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
-            : `<span class="ai-suggestion-badge collapsed" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">AI Suggestion</span>`}
+            : `<span class="ai-suggestion-badge collapsed" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}"><svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10"><path d="M7.53 1.282a.5.5 0 01.94 0l.478 1.306a7.492 7.492 0 004.464 4.464l1.305.478a.5.5 0 010 .94l-1.305.478a7.492 7.492 0 00-4.464 4.464l-.478 1.305a.5.5 0 01-.94 0l-.478-1.305a7.492 7.492 0 00-4.464-4.464L1.282 8.47a.5.5 0 010-.94l1.306-.478a7.492 7.492 0 004.464-4.464l.478-1.306z"/></svg>AI Suggestion</span>`}
+          <span class="collapsed-text">${wasAdopted ? 'Suggestion adopted' : 'Hidden AI suggestion'}</span>
           <span class="collapsed-title">${this.escapeHtml(suggestion.title || '')}</span>
           <button class="btn-restore" onclick="prManager.restoreSuggestion(${suggestion.id})" title="${wasAdopted ? 'Hide suggestion' : 'Show suggestion'}">
             <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="16" height="16">
@@ -2487,6 +2476,11 @@ class PRManager {
         this.suggestionNavigator.updateSuggestions(updatedSuggestions);
       }
 
+      // Update AIPanel sidebar to show as adopted
+      if (window.aiPanel) {
+        window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
+      }
+
       // Update comment count
       this.updateCommentCount();
 
@@ -2532,6 +2526,11 @@ class PRManager {
         this.suggestionNavigator.updateSuggestions(updatedSuggestions);
       }
 
+      // Update AIPanel sidebar to show as adopted
+      if (window.aiPanel) {
+        window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
+      }
+
       // Update comment count
       this.updateCommentCount();
 
@@ -2567,11 +2566,16 @@ class PRManager {
 
       // Update the suggestion navigator to mark as dismissed
       if (this.suggestionNavigator && this.suggestionNavigator.suggestions) {
-        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s => 
+        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
           s.id === suggestionId ? { ...s, status: 'dismissed' } : s
         );
         this.suggestionNavigator.updateSuggestions(updatedSuggestions);
         console.log(`[UI] Updated navigator with suggestion marked as dismissed`);
+      }
+
+      // Update AIPanel sidebar to show as dismissed
+      if (window.aiPanel) {
+        window.aiPanel.updateFindingStatus(suggestionId, 'dismissed');
       }
 
     } catch (error) {
@@ -3697,19 +3701,25 @@ class PRManager {
   cancelEditUserComment(commentId) {
     const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
     if (!commentRow) return;
-    
+
     const commentDiv = commentRow.querySelector('.user-comment');
     const bodyDiv = commentDiv.querySelector('.user-comment-body');
     const editForm = commentDiv.querySelector('.user-comment-edit-form');
-    
+
     // Show body and remove edit form
     bodyDiv.style.display = '';
     if (editForm) {
       editForm.remove();
     }
-    
+
     // Remove editing class
     commentDiv.classList.remove('editing-mode');
+
+    // Fix stale "Editing comment..." timestamp if present
+    const timestamp = commentDiv.querySelector('.user-comment-timestamp');
+    if (timestamp && timestamp.textContent === 'Editing comment...') {
+      timestamp.textContent = 'Draft';
+    }
   }
   
   /**
