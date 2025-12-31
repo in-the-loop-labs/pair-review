@@ -1557,43 +1557,21 @@ tr.newly-expanded .d2h-code-line-ctn {
   font-size: 10px;
 }
 
-/* Hide old level badges - replaced by level indicator dots */
+/* Hide old level badges */
 .level-badge {
   display: none;
 }
 
-/* AI Suggestion Level Indicator - matches prototype design */
-.ai-suggestion-level {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.level-dots {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.level-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-muted, #484f58);
-  transition: all 0.15s ease;
-}
-
-.level-dot.active {
-  background: var(--ai-primary, #f59e0b);
-  box-shadow: 0 0 6px var(--ai-primary, #f59e0b);
-}
-
-.level-label {
-  font-size: 0.65rem;
+/* AI Suggestion Category Label */
+.ai-suggestion-category {
+  font-size: 0.7rem;
   color: var(--color-text-tertiary, #6e7681);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 500;
+  text-transform: lowercase;
+  font-weight: 400;
+  padding: 2px 8px;
+  background: var(--color-bg-tertiary, rgba(110, 118, 129, 0.1));
+  border-radius: var(--radius-sm, 4px);
+  flex-shrink: 0;
 }
 
 /* Type-specific colors - using CSS variables for theme support */
@@ -1667,12 +1645,6 @@ tr.newly-expanded .d2h-code-line-ctn {
 /* Hide type badge for praise, show praise-badge instead */
 .ai-suggestion.ai-type-praise .type-badge {
   display: none;
-}
-
-/* Level indicator dots use purple for praise suggestions */
-.ai-suggestion.ai-type-praise .level-dot.active {
-  background: var(--color-praise, #a371f7);
-  box-shadow: 0 0 6px var(--color-praise, #a371f7);
 }
 
 /* Dark theme adjustments for praise suggestions */
@@ -5312,110 +5284,40 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--color-text-primary);
 }
 
-/* Analysis Depth */
-.analysis-depth {
-  padding: 16px;
+/* Level Filter Pills */
+.level-filter {
+  display: flex;
+  gap: 4px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--color-border-primary);
   flex-shrink: 0;
 }
 
-.depth-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.depth-label {
+.level-pill {
+  flex: 1;
+  padding: 6px 8px;
+  font-family: inherit;
   font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-text-tertiary);
-}
-
-.depth-status {
-  font-size: 0.7rem;
-  color: var(--color-text-tertiary);
   font-weight: 500;
-}
-
-.depth-status.complete {
-  color: var(--color-success);
-}
-
-.depth-levels {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.depth-level {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 8px;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: 1px solid var(--color-border-primary);
   border-radius: var(--radius-sm);
+  cursor: pointer;
   transition: all var(--transition-fast);
+  white-space: nowrap;
 }
 
-.depth-level-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.depth-level-icon {
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--color-bg-tertiary);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-tertiary);
-}
-
-.depth-level.complete .depth-level-icon,
-.depth-level-complete .depth-level-icon {
-  background: rgba(63, 185, 80, 0.15);
-  color: var(--color-success);
-}
-
-/* Active/in-progress level with pulsing amber dot */
-.depth-level.active .depth-level-icon {
-  background: var(--ai-subtle);
-  color: var(--ai-primary);
-  animation: pulse-amber 1.5s ease-in-out infinite;
-}
-
-/* Pending level with gray circle */
-.depth-level.pending .depth-level-icon {
-  background: var(--color-bg-tertiary);
-  color: var(--color-text-muted, #484f58);
-}
-
-/* Pulsing amber animation for active level */
-@keyframes pulse-amber {
-  0%, 100% {
-    background: var(--ai-subtle);
-    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
-  }
-  50% {
-    background: rgba(245, 158, 11, 0.25);
-    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0);
-  }
-}
-
-.depth-level-label {
-  font-size: 0.75rem;
-  font-weight: 500;
+.level-pill:hover {
   color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-secondary);
 }
 
-.depth-level-desc {
-  font-size: 0.7rem;
-  color: var(--color-text-tertiary);
+.level-pill.active {
+  color: var(--ai-primary);
+  background: var(--ai-subtle);
+  border-color: var(--ai-border);
 }
 
 /* Findings Summary */
@@ -5530,45 +5432,26 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--color-text-tertiary);
 }
 
-/* Review Progress */
-.review-progress {
-  padding: 16px;
-  border-bottom: 1px solid var(--color-border-primary);
-  flex-shrink: 0;
-}
-
-.progress-header {
+.finding-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
+  gap: 6px;
+  margin-top: 2px;
 }
 
-.progress-label {
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.finding-category {
+  font-size: 0.65rem;
   color: var(--color-text-tertiary);
+  text-transform: lowercase;
 }
 
-.progress-count {
-  font-size: 0.7rem;
-  color: var(--color-text-tertiary);
+.finding-separator {
+  font-size: 0.65rem;
+  color: var(--color-text-muted);
 }
 
-.review-progress .progress-bar {
-  height: 4px;
-  background: var(--color-bg-tertiary);
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.review-progress .progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--ai-primary), var(--ai-secondary));
-  border-radius: 2px;
-  transition: width var(--transition-slow);
+.finding-meta .finding-location {
+  display: inline;
 }
 
 /* AI Quick Actions */
@@ -5601,74 +5484,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
   background: var(--color-bg-tertiary);
   color: var(--ai-primary);
   border-color: var(--ai-border);
-}
-
-/* AI Chat Preview */
-.ai-chat-preview {
-  padding: 16px;
-  margin-top: auto;
-  border-top: 1px solid var(--color-border-primary);
-  flex-shrink: 0;
-}
-
-.chat-input-wrapper {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.chat-input {
-  flex: 1;
-  padding: 12px;
-  font-family: inherit;
-  font-size: 0.8125rem;
-  color: var(--color-text-primary);
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-primary);
-  border-radius: var(--radius-md);
-  outline: none;
-  transition: all var(--transition-fast);
-}
-
-.chat-input:focus {
-  border-color: var(--ai-border);
-  box-shadow: 0 0 0 2px var(--ai-subtle);
-}
-
-.chat-input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.chat-input::placeholder {
-  color: var(--color-text-tertiary);
-}
-
-.chat-send {
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-primary);
-  border-radius: var(--radius-md);
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.chat-send:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.chat-coming-soon {
-  display: block;
-  margin-top: 8px;
-  font-size: 0.65rem;
-  color: var(--color-text-tertiary);
-  text-align: center;
 }
 
 /* --------------------------------------------------------------------------

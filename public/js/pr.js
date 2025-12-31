@@ -1661,11 +1661,6 @@ class PRManager {
 
     // Change click handler to reopen modal
     btn.onclick = () => this.reopenProgressModal();
-
-    // Update AI panel status if available
-    if (window.aiPanel) {
-      window.aiPanel.updateDepthStatus(1, 'In progress...');
-    }
   }
 
   /**
@@ -1685,11 +1680,6 @@ class PRManager {
       btn.innerHTML = '✓ Analysis Complete';
     }
     btn.disabled = true;
-
-    // Update AI panel status if available
-    if (window.aiPanel) {
-      window.aiPanel.updateDepthStatus(3, 'Complete');
-    }
 
     // Revert to normal after 2 seconds
     setTimeout(() => this.resetButton(), 2000);
@@ -2070,6 +2060,10 @@ class PRManager {
       // Update AI Panel with findings
       if (window.aiPanel) {
         window.aiPanel.addFindings(suggestions);
+        // Show level filter if we have suggestions
+        if (suggestions.length > 0) {
+          window.aiPanel.showLevelFilter();
+        }
       }
 
     } catch (error) {
@@ -2244,14 +2238,8 @@ class PRManager {
         suggestionDiv.classList.add('collapsed');
       }
       
-      // Determine level label based on ai_level
-      const levelLabels = {
-        1: 'LINE ANALYSIS',
-        2: 'FILE ANALYSIS',
-        3: 'ARCHITECTURE ANALYSIS'
-      };
-      const levelLabel = levelLabels[suggestion.ai_level] || '';
-      const aiLevel = suggestion.ai_level || 1;
+      // Get category label for display
+      const categoryLabel = suggestion.type || suggestion.category || '';
 
       // Use star icon for praise suggestions, sparkle for others
       const aiIndicatorIcon = suggestion.type === 'praise'
@@ -2269,14 +2257,7 @@ class PRManager {
               : `<span class="ai-suggestion-badge" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>AI Suggestion</span>`}
             <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
           </div>
-          <div class="ai-suggestion-level">
-            <span class="level-label">${levelLabel}</span>
-            <div class="level-dots">
-              <span class="level-dot${aiLevel === 1 ? ' active' : ''}" title="Line Analysis"></span>
-              <span class="level-dot${aiLevel === 2 ? ' active' : ''}" title="File Analysis"></span>
-              <span class="level-dot${aiLevel === 3 ? ' active' : ''}" title="Architecture Analysis"></span>
-            </div>
-          </div>
+          ${categoryLabel ? `<span class="ai-suggestion-category">${this.escapeHtml(categoryLabel)}</span>` : ''}
         </div>
         <div class="ai-suggestion-collapsed-content">
           <span class="ai-indicator">

@@ -188,47 +188,12 @@
                     </button>
                 </div>
 
-                <!-- Analysis Depth Indicator -->
-                <div class="analysis-depth" id="analysis-depth">
-                    <div class="depth-header">
-                        <span class="depth-label">Analysis Depth</span>
-                        <span class="depth-status" id="depth-status">Not started</span>
-                    </div>
-                    <div class="depth-levels">
-                        <div class="depth-level pending" id="depth-level-1">
-                            <div class="depth-level-indicator">
-                                <div class="depth-level-icon">
-                                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                                        <path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Z"/>
-                                    </svg>
-                                </div>
-                                <span class="depth-level-label">Line</span>
-                            </div>
-                            <div class="depth-level-desc">Changes in isolation</div>
-                        </div>
-                        <div class="depth-level pending" id="depth-level-2">
-                            <div class="depth-level-indicator">
-                                <div class="depth-level-icon">
-                                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                                        <path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Z"/>
-                                    </svg>
-                                </div>
-                                <span class="depth-level-label">File</span>
-                            </div>
-                            <div class="depth-level-desc">Consistency within file</div>
-                        </div>
-                        <div class="depth-level pending" id="depth-level-3">
-                            <div class="depth-level-indicator">
-                                <div class="depth-level-icon">
-                                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                                        <path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Z"/>
-                                    </svg>
-                                </div>
-                                <span class="depth-level-label">Codebase</span>
-                            </div>
-                            <div class="depth-level-desc">Architectural consistency</div>
-                        </div>
-                    </div>
+                <!-- Level Filter (shown after analysis completes) -->
+                <div class="level-filter" id="level-filter" style="display: none;">
+                    <button class="level-pill active" data-level="final" title="Curated suggestions from all levels">Overall</button>
+                    <button class="level-pill" data-level="1" title="Line-level analysis">Line</button>
+                    <button class="level-pill" data-level="2" title="File-level analysis">File</button>
+                    <button class="level-pill" data-level="3" title="Codebase-level analysis">Codebase</button>
                 </div>
 
                 <!-- Findings Summary -->
@@ -244,44 +209,14 @@
                     </div>
                 </div>
 
-                <!-- Review Progress -->
-                <div class="review-progress" id="review-progress">
-                    <div class="progress-header">
-                        <span class="progress-label">Review Progress</span>
-                        <span class="progress-count" id="progress-count">0 of 0 addressed</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
-                    </div>
-                </div>
-
                 <!-- Quick Actions -->
                 <div class="ai-actions">
-                    <button class="ai-quick-action" id="reanalyze-btn">
-                        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                            <path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/>
-                        </svg>
-                        Re-analyze
-                    </button>
                     <button class="ai-quick-action" id="clear-suggestions-btn">
                         <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
                             <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
                         </svg>
                         Clear Suggestions
                     </button>
-                </div>
-
-                <!-- Future: Chat input -->
-                <div class="ai-chat-preview">
-                    <div class="chat-input-wrapper">
-                        <input type="text" class="chat-input" placeholder="Ask about this PR..." disabled>
-                        <button class="chat-send" disabled>
-                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                                <path d="M.989 8 6.063 6.04 5.106.386a.75.75 0 0 1 1.212-.592l9.5 7.5a.75.75 0 0 1 0 1.2l-9.5 7.5a.75.75 0 0 1-1.212-.59l.956-5.656L.989 8Z"/>
-                            </svg>
-                        </button>
-                    </div>
-                    <span class="chat-coming-soon">Chat coming soon</span>
                 </div>
             </aside>
         </div>

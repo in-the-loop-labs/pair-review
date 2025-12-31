@@ -1,7 +1,7 @@
 /**
  * AIPanel.js - AI Analysis Panel Component
- * Manages the right sidebar panel that displays AI analysis status,
- * findings summary, and review progress.
+ * Manages the right sidebar panel that displays AI analysis findings
+ * with level filtering and navigation.
  */
 
 class AIPanel {
@@ -9,7 +9,8 @@ class AIPanel {
         this.panel = document.getElementById('ai-panel');
         this.isCollapsed = false;
         this.findings = [];
-        this.addressedCount = 0;
+        this.selectedLevel = 'final';
+        this.analysisComplete = false;
 
         this.initElements();
         this.bindEvents();
@@ -20,22 +21,15 @@ class AIPanel {
         this.closeBtn = document.getElementById('ai-panel-close');
         this.toggleBtn = document.getElementById('ai-panel-toggle');
 
-        // Depth indicators
-        this.depthStatus = document.getElementById('depth-status');
-        this.depthLevel1 = document.getElementById('depth-level-1');
-        this.depthLevel2 = document.getElementById('depth-level-2');
-        this.depthLevel3 = document.getElementById('depth-level-3');
+        // Level filter
+        this.levelFilter = document.getElementById('level-filter');
+        this.levelPills = this.levelFilter?.querySelectorAll('.level-pill');
 
         // Findings
         this.findingsCount = document.getElementById('findings-count');
         this.findingsList = document.getElementById('findings-list');
 
-        // Progress
-        this.progressCount = document.getElementById('progress-count');
-        this.progressFill = document.getElementById('progress-fill');
-
         // Quick actions
-        this.reanalyzeBtn = document.getElementById('reanalyze-btn');
         this.clearSuggestionsBtn = document.getElementById('clear-suggestions-btn');
 
         // Sidebar status
@@ -54,15 +48,14 @@ class AIPanel {
             this.toggleBtn.addEventListener('click', () => this.toggle());
         }
 
-        // Quick actions
-        if (this.reanalyzeBtn) {
-            this.reanalyzeBtn.addEventListener('click', () => {
-                // Trigger re-analysis via analyze button
-                const analyzeBtn = document.getElementById('analyze-btn');
-                if (analyzeBtn) analyzeBtn.click();
+        // Level filter pills
+        if (this.levelPills) {
+            this.levelPills.forEach(pill => {
+                pill.addEventListener('click', () => this.onLevelSelect(pill));
             });
         }
 
+        // Clear suggestions
         if (this.clearSuggestionsBtn) {
             this.clearSuggestionsBtn.addEventListener('click', () => {
                 this.clearAllFindings();
@@ -93,84 +86,47 @@ class AIPanel {
     }
 
     /**
-     * Update the analysis depth status
-     * @param {number} currentLevel - 0 = not started, 1 = line, 2 = file, 3 = codebase
-     * @param {string} status - Status text to display
+     * Handle level pill selection
      */
-    updateDepthStatus(currentLevel, status) {
-        const isComplete = status.toLowerCase().includes('complete');
+    onLevelSelect(pill) {
+        const level = pill.dataset.level;
+        if (level === this.selectedLevel) return;
 
-        // Update status text
-        if (this.depthStatus) {
-            this.depthStatus.textContent = status;
-            this.depthStatus.classList.toggle('complete', isComplete);
-        }
+        // Update UI
+        this.levelPills.forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        this.selectedLevel = level;
 
-        // Update level indicators
-        const levels = [this.depthLevel1, this.depthLevel2, this.depthLevel3];
-        levels.forEach((level, index) => {
-            if (!level) return;
-
-            // Remove all state classes
-            level.classList.remove('complete', 'active', 'pending', 'depth-level-complete');
-
-            // Determine level state (index is 0-based, levels are 1-based)
-            const levelNum = index + 1;
-            // When complete, all levels up to currentLevel are done
-            // When in progress, levels below currentLevel are done, currentLevel is active
-            const isLevelComplete = isComplete ? (levelNum <= currentLevel) : (levelNum < currentLevel);
-            const isLevelActive = !isComplete && (levelNum === currentLevel);
-            const isLevelPending = !isLevelComplete && !isLevelActive;
-
-            const icon = level.querySelector('.depth-level-icon');
-
-            if (isLevelComplete) {
-                level.classList.add('complete', 'depth-level-complete');
-                // Green checkmark icon for completed levels
-                if (icon) {
-                    icon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                        <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
-                    </svg>`;
-                }
-            } else if (isLevelActive) {
-                level.classList.add('active');
-                // Pulsing amber filled circle for active/in-progress state
-                if (icon) {
-                    icon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                        <path d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/>
-                    </svg>`;
-                }
-            } else if (isLevelPending) {
-                level.classList.add('pending');
-                // Gray unfilled circle for pending state
-                if (icon) {
-                    icon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                        <path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Z"/>
-                    </svg>`;
-                }
-            }
+        // Dispatch event for PRManager to reload suggestions
+        const event = new CustomEvent('levelChanged', {
+            detail: { level }
         });
-
-        // Update sidebar status
-        this.updateSidebarStatus(currentLevel, status);
+        document.dispatchEvent(event);
     }
 
     /**
-     * Update the sidebar AI status indicator
+     * Show level filter (call after analysis completes)
      */
-    updateSidebarStatus(currentLevel, status) {
-        if (!this.sidebarStatus || !this.sidebarStatusText) return;
-
-        if (currentLevel > 0 && !status.toLowerCase().includes('complete')) {
-            this.sidebarStatus.classList.add('analyzing');
-            this.sidebarStatusText.textContent = `Analyzing (Level ${currentLevel})...`;
-        } else if (status.toLowerCase().includes('complete')) {
-            this.sidebarStatus.classList.remove('analyzing');
-            this.sidebarStatusText.textContent = 'Analysis complete';
-        } else {
-            this.sidebarStatus.classList.remove('analyzing');
-            this.sidebarStatusText.textContent = 'Ready to analyze';
+    showLevelFilter() {
+        if (this.levelFilter) {
+            this.levelFilter.style.display = 'flex';
         }
+        this.analysisComplete = true;
+    }
+
+    /**
+     * Hide level filter
+     */
+    hideLevelFilter() {
+        if (this.levelFilter) {
+            this.levelFilter.style.display = 'none';
+        }
+        this.analysisComplete = false;
+        // Reset to default level
+        this.selectedLevel = 'final';
+        this.levelPills?.forEach(p => {
+            p.classList.toggle('active', p.dataset.level === 'final');
+        });
     }
 
     /**
@@ -206,14 +162,20 @@ class AIPanel {
             const type = this.getFindingType(finding);
             const iconSvg = this.getTypeIcon(type);
             const title = this.truncateText(finding.title || finding.body || 'Suggestion', 40);
-            const location = finding.file ? `${finding.file}${finding.line ? ':' + finding.line : ''}` : 'General';
+            const fileName = finding.file ? finding.file.split('/').pop() : null;
+            const location = fileName ? `${fileName}${finding.line ? ':' + finding.line : ''}` : '';
+            const category = finding.type || finding.category || '';
 
             return `
                 <button class="finding-item finding-${type}" data-index="${index}" data-file="${finding.file || ''}" data-line="${finding.line || ''}">
                     <div class="finding-icon">${iconSvg}</div>
                     <div class="finding-content">
                         <span class="finding-title">${this.escapeHtml(title)}</span>
-                        <span class="finding-location">${this.escapeHtml(location)}</span>
+                        <div class="finding-meta">
+                            ${category ? `<span class="finding-category">${this.escapeHtml(category)}</span>` : ''}
+                            ${category && location ? '<span class="finding-separator">·</span>' : ''}
+                            ${location ? `<span class="finding-location">${this.escapeHtml(location)}</span>` : ''}
+                        </div>
                     </div>
                 </button>
             `;
@@ -290,32 +252,13 @@ class AIPanel {
     }
 
     /**
-     * Update review progress
-     * @param {number} addressed - Number of addressed suggestions
-     * @param {number} total - Total number of suggestions
-     */
-    updateProgress(addressed, total) {
-        this.addressedCount = addressed;
-
-        if (this.progressCount) {
-            this.progressCount.textContent = `${addressed} of ${total} addressed`;
-        }
-
-        if (this.progressFill) {
-            const percentage = total > 0 ? (addressed / total) * 100 : 0;
-            this.progressFill.style.width = `${percentage}%`;
-        }
-    }
-
-    /**
      * Clear all findings
      */
     clearAllFindings() {
         this.findings = [];
         this.renderFindings();
         this.updateFindingsBadge();
-        this.updateProgress(0, 0);
-        this.updateDepthStatus(0, 'Not started');
+        this.hideLevelFilter();
 
         // Also clear suggestions from the diff view
         document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
