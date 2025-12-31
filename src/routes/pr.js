@@ -1279,7 +1279,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'ai' AND ${levelFilter} AND status IN ('active', 'dismissed')
+      WHERE pr_id = ? AND source = 'ai' AND ${levelFilter} AND status IN ('active', 'dismissed', 'adopted')
       ORDER BY
         CASE
           WHEN ai_level IS NULL THEN 0
