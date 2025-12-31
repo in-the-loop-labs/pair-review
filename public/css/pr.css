@@ -470,6 +470,7 @@
 
 /* Refresh button spinner animation */
 #refresh-pr .spinner-icon {
+  display: none;
   animation: spin 1s linear infinite;
 }
 
@@ -3364,7 +3365,7 @@ tr.line-range-start .d2h-code-line-ctn {
 
 [data-theme="dark"] .btn-edit-comment,
 [data-theme="dark"] .btn-delete-comment {
-  color: var(--color-text-secondary, #8b949e);
+  color: var(--color-text-primary, #c9d1d9);
 }
 
 .btn-edit-comment:hover {
@@ -4854,6 +4855,18 @@ body::before {
 }
 
 .header #theme-toggle:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+/* Refresh button in header */
+.header #refresh-pr {
+  background: transparent;
+  border: 1px solid var(--color-border-primary);
+  color: var(--color-text-secondary);
+}
+
+.header #refresh-pr:hover {
   background: var(--color-bg-secondary);
   color: var(--color-text-primary);
 }

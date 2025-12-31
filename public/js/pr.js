@@ -522,18 +522,18 @@ class PRManager {
       themeToggle._eventBound = true;
     }
 
-    // Submit review button
-    const submitReviewBtn = document.getElementById('submit-review-btn');
-    if (submitReviewBtn && !submitReviewBtn._eventBound) {
-      submitReviewBtn.addEventListener('click', () => this.openReviewModal());
-      submitReviewBtn._eventBound = true;
-    }
-
     // Analyze button in toolbar
     const analyzeBtn = document.getElementById('analyze-btn');
     if (analyzeBtn && !analyzeBtn._eventBound) {
       analyzeBtn.addEventListener('click', () => this.triggerAIAnalysis());
       analyzeBtn._eventBound = true;
+    }
+
+    // Refresh PR button
+    const refreshBtn = document.getElementById('refresh-pr');
+    if (refreshBtn && !refreshBtn._eventBound) {
+      refreshBtn.addEventListener('click', () => this.refreshPR());
+      refreshBtn._eventBound = true;
     }
 
     // AI Panel toggle

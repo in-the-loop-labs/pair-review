@@ -42,7 +42,7 @@ class SplitButton {
     const buttonText = document.createElement('span');
     buttonText.className = 'split-button-text';
     buttonText.id = 'split-button-text';
-    buttonText.textContent = '0 comments';
+    buttonText.textContent = this.getButtonText();
     mainButton.appendChild(buttonText);
 
     // Create dropdown toggle button
@@ -232,7 +232,30 @@ class SplitButton {
 
     this.defaultAction = action;
     this.updateDropdownMenu();
+    this.updateButtonText();
     this.onSetDefault(action);
+  }
+
+  /**
+   * Get the button text based on default action and comment count
+   * @returns {string} Button text
+   */
+  getButtonText() {
+    const actionText = this.defaultAction === 'submit' ? 'Submit Review' : 'Preview';
+    if (this.commentCount > 0) {
+      return `${actionText} (${this.commentCount})`;
+    }
+    return actionText;
+  }
+
+  /**
+   * Update the button text display
+   */
+  updateButtonText() {
+    const textSpan = this.container?.querySelector('#split-button-text');
+    if (textSpan) {
+      textSpan.textContent = this.getButtonText();
+    }
   }
 
   /**
@@ -241,11 +264,7 @@ class SplitButton {
    */
   updateCommentCount(count) {
     this.commentCount = count;
-
-    const textSpan = this.container?.querySelector('#split-button-text');
-    if (textSpan) {
-      textSpan.textContent = `${count} ${count === 1 ? 'comment' : 'comments'}`;
-    }
+    this.updateButtonText();
 
     // Update button styling based on count
     const mainButton = this.container?.querySelector('#split-button-main');

@@ -53,12 +53,18 @@ class PreviewModal {
           </button>
           <div style="flex: 1;"></div>
           <button class="btn btn-secondary" onclick="previewModal.hide()">Close</button>
-          <button class="btn btn-primary" id="copy-preview-btn" onclick="previewModal.copyToClipboard()">
+          <button class="btn btn-secondary" id="copy-preview-btn" onclick="previewModal.copyToClipboard()">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
               <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
               <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
             </svg>
-            Copy to Clipboard
+            Copy
+          </button>
+          <button class="btn btn-primary" onclick="previewModal.submitReview()">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
+              <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
+            </svg>
+            Submit Review
           </button>
         </div>
       </div>
@@ -202,6 +208,16 @@ class PreviewModal {
     });
 
     return text;
+  }
+
+  /**
+   * Submit review - opens the review modal
+   */
+  submitReview() {
+    this.hide();
+    if (window.prManager && typeof window.prManager.openReviewModal === 'function') {
+      window.prManager.openReviewModal();
+    }
   }
 
   /**

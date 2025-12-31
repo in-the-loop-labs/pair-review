@@ -138,13 +138,14 @@ class AIPanel {
             const iconSvg = this.getTypeIcon(type);
             const title = this.truncateText(finding.title || finding.body || 'Suggestion', 40);
             const fileName = finding.file ? finding.file.split('/').pop() : null;
-            const location = fileName ? `${fileName}${finding.line ? ':' + finding.line : ''}` : '';
+            const lineNum = finding.line_start || finding.line;
+            const location = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
             const category = finding.type || finding.category || '';
             const statusClass = finding.status === 'dismissed' ? 'finding-dismissed' :
                                finding.status === 'adopted' ? 'finding-adopted' : '';
 
             return `
-                <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${finding.line || ''}" title="${location}">
+                <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" title="${location}">
                     <div class="finding-icon">${iconSvg}</div>
                     <div class="finding-content">
                         <span class="finding-title">${this.escapeHtml(title)}</span>
