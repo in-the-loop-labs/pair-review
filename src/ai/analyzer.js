@@ -1591,7 +1591,8 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
 - **Cross-level validation** - Higher confidence for issues found in multiple levels
 - **Preserve actionability** - Every suggestion should give clear next steps
 - **Maintain context** - Don't lose important details when merging
-- **Suggestions may target any line in modified files** - Context lines can reveal issues too`;
+- **Suggestions may target any line in modified files** - Context lines can reveal issues too
+- **Only include files from the PR diff** - Discard any suggestions for files not modified in this PR`;
   }
 
 

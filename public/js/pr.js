@@ -2076,80 +2076,148 @@ class PRManager {
   }
 
   /**
+   * Find a file wrapper element by file path
+   * Tries multiple selectors and partial path matching for robustness
+   * @param {string} filePath - File path to find
+   * @returns {Element|null} The file wrapper element or null if not found
+   */
+  findFileElement(filePath) {
+    // Try exact match first
+    let fileElement = document.querySelector(`[data-file-name="${filePath}"]`);
+    if (fileElement) return fileElement;
+
+    fileElement = document.querySelector(`[data-file-path="${filePath}"]`);
+    if (fileElement) return fileElement;
+
+    // Try partial match for path segments
+    const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
+    for (const wrapper of allFileWrappers) {
+      const fileName = wrapper.dataset.fileName;
+      if (fileName && (fileName === filePath || fileName.endsWith('/' + filePath) || filePath.endsWith('/' + fileName))) {
+        return wrapper;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the line number from a diff row
+   * Handles multiple selector patterns used in different diff rendering modes:
+   * - .line-num2: Primary selector for new/modified line numbers
+   * - .line-num-new: Alternative selector in some diff views
+   * - .d2h-code-linenumber .line-num2: Nested selector in custom diff rendering
+   * @param {Element} row - Table row element
+   * @returns {number|null} The line number or null if not found
+   */
+  getLineNumber(row) {
+    // Primary: direct .line-num2 (most common)
+    let lineNum = row.querySelector('.line-num2')?.textContent?.trim();
+    if (lineNum) return parseInt(lineNum);
+
+    // Alternative: .line-num-new
+    lineNum = row.querySelector('.line-num-new')?.textContent?.trim();
+    if (lineNum) return parseInt(lineNum);
+
+    // Nested: inside .d2h-code-linenumber container
+    const lineNumCell = row.querySelector('.d2h-code-linenumber');
+    if (lineNumCell) {
+      const lineNum2 = lineNumCell.querySelector('.line-num2');
+      if (lineNum2) {
+        lineNum = lineNum2.textContent?.trim();
+        if (lineNum) return parseInt(lineNum);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Build a set of visible line numbers for a file element
+   * This is more efficient than checking each line individually when processing multiple suggestions
+   * @param {Element} fileElement - The file wrapper element
+   * @returns {Set<number>} Set of visible line numbers
+   */
+  buildVisibleLinesSet(fileElement) {
+    const visibleLines = new Set();
+    const lineRows = fileElement.querySelectorAll('tr');
+
+    for (const row of lineRows) {
+      const lineNum = this.getLineNumber(row);
+      if (lineNum !== null) {
+        visibleLines.add(lineNum);
+      }
+    }
+
+    return visibleLines;
+  }
+
+  /**
    * Find suggestions that target lines not currently visible in the DOM
    * @param {Array} suggestions - Array of AI suggestions
-   * @returns {Array} Array of { file, line, suggestions } for hidden lines
+   * @returns {Array} Array of { file, line, lineEnd, suggestions } for hidden lines
    */
   findHiddenSuggestions(suggestions) {
     const hiddenSuggestions = [];
 
-    // Group suggestions by file and line first
-    const suggestionsByLocation = new Map();
+    // Group suggestions by file first, then by line range
+    const suggestionsByFile = new Map();
     suggestions.forEach(suggestion => {
-      const key = `${suggestion.file}:${suggestion.line_start}`;
-      if (!suggestionsByLocation.has(key)) {
-        suggestionsByLocation.set(key, {
-          file: suggestion.file,
-          line: suggestion.line_start,
-          suggestions: []
-        });
+      if (!suggestionsByFile.has(suggestion.file)) {
+        suggestionsByFile.set(suggestion.file, []);
       }
-      suggestionsByLocation.get(key).suggestions.push(suggestion);
+      suggestionsByFile.get(suggestion.file).push(suggestion);
     });
 
-    // Check each unique location
-    for (const [, location] of suggestionsByLocation) {
-      const { file, line } = location;
-
-      // Find the file wrapper
-      let fileElement = document.querySelector(`[data-file-name="${file}"]`);
-      if (!fileElement) {
-        fileElement = document.querySelector(`[data-file-path="${file}"]`);
-      }
-      if (!fileElement) {
-        // Try partial match
-        const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
-        for (const wrapper of allFileWrappers) {
-          const fileName = wrapper.dataset.fileName;
-          if (fileName && (fileName === file || fileName.endsWith('/' + file) || file.endsWith('/' + fileName))) {
-            fileElement = wrapper;
-            break;
-          }
-        }
-      }
+    // Process each file once, building visibility set once per file (O(m) per file)
+    for (const [file, fileSuggestions] of suggestionsByFile) {
+      const fileElement = this.findFileElement(file);
 
       if (!fileElement) {
         console.warn(`[findHiddenSuggestions] Could not find file element for: ${file}`);
+        // All suggestions for this file are "hidden" (file not in diff)
         continue;
       }
 
-      // Check if the line is visible
-      let lineVisible = false;
-      const lineRows = fileElement.querySelectorAll('tr');
-      for (const row of lineRows) {
-        // Check various line number selectors
-        let lineNum = row.querySelector('.line-num2')?.textContent?.trim();
-        if (!lineNum) {
-          lineNum = row.querySelector('.line-num-new')?.textContent?.trim();
+      // Build visibility set once for this file - O(m) where m is rows
+      const visibleLines = this.buildVisibleLinesSet(fileElement);
+      console.log(`[findHiddenSuggestions] File ${file}: ${visibleLines.size} visible lines`);
+
+      // Group suggestions by their line range
+      const suggestionsByRange = new Map();
+      for (const suggestion of fileSuggestions) {
+        const lineStart = suggestion.line_start;
+        const lineEnd = suggestion.line_end || lineStart;
+        const key = `${lineStart}:${lineEnd}`;
+
+        if (!suggestionsByRange.has(key)) {
+          suggestionsByRange.set(key, {
+            file,
+            line: lineStart,
+            lineEnd: lineEnd,
+            suggestions: []
+          });
         }
-        if (!lineNum) {
-          const lineNumCell = row.querySelector('.d2h-code-linenumber');
-          if (lineNumCell) {
-            const lineNum2 = lineNumCell.querySelector('.line-num2');
-            if (lineNum2) {
-              lineNum = lineNum2.textContent?.trim();
-            }
+        suggestionsByRange.get(key).suggestions.push(suggestion);
+      }
+
+      // Check each unique line range - O(1) lookup per suggestion
+      for (const [, location] of suggestionsByRange) {
+        const { line, lineEnd } = location;
+
+        // Check if any line in the range is visible
+        let anyLineVisible = false;
+        for (let l = line; l <= lineEnd; l++) {
+          if (visibleLines.has(l)) {
+            anyLineVisible = true;
+            break;
           }
         }
 
-        if (lineNum && parseInt(lineNum) === line) {
-          lineVisible = true;
-          break;
+        if (!anyLineVisible) {
+          console.log(`[findHiddenSuggestions] Hidden: ${file}:${line}-${lineEnd}`);
+          hiddenSuggestions.push(location);
         }
-      }
-
-      if (!lineVisible) {
-        hiddenSuggestions.push(location);
       }
     }
 
@@ -2157,36 +2225,28 @@ class PRManager {
   }
 
   /**
-   * Expand a gap section to reveal a specific line for an AI suggestion
+   * Expand a gap section to reveal a specific line range for an AI suggestion
    * @param {string} file - File path
-   * @param {number} line - Line number to reveal
+   * @param {number} lineStart - Start line number to reveal
+   * @param {number} lineEnd - End line number to reveal (optional, defaults to lineStart)
    * @returns {Promise<boolean>} True if expansion occurred, false otherwise
    */
-  async expandForSuggestion(file, line) {
-    // Find the file wrapper
-    let fileElement = document.querySelector(`[data-file-name="${file}"]`);
-    if (!fileElement) {
-      fileElement = document.querySelector(`[data-file-path="${file}"]`);
-    }
-    if (!fileElement) {
-      const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
-      for (const wrapper of allFileWrappers) {
-        const fileName = wrapper.dataset.fileName;
-        if (fileName && (fileName === file || fileName.endsWith('/' + file) || file.endsWith('/' + fileName))) {
-          fileElement = wrapper;
-          break;
-        }
-      }
-    }
+  async expandForSuggestion(file, lineStart, lineEnd = lineStart) {
+    console.log(`[expandForSuggestion] Attempting to reveal ${file}:${lineStart}-${lineEnd}`);
+
+    // Find the file wrapper using helper method
+    const fileElement = this.findFileElement(file);
 
     if (!fileElement) {
       console.warn(`[expandForSuggestion] Could not find file element for: ${file}`);
+      console.log(`[expandForSuggestion] Available files:`,
+        Array.from(document.querySelectorAll('.d2h-file-wrapper')).map(w => w.dataset.fileName));
       return false;
     }
 
     // Check if the file is collapsed (generated files)
     if (fileElement.classList.contains('collapsed')) {
-      // Expand the generated file first
+      console.log(`[expandForSuggestion] File is collapsed, expanding first`);
       const filePath = fileElement.dataset.fileName;
       if (filePath && this.generatedFiles.has(filePath)) {
         this.toggleGeneratedFile(filePath);
@@ -2197,18 +2257,25 @@ class PRManager {
 
     // Find all gap sections in this file
     const gapRows = fileElement.querySelectorAll('tr.context-expand-row');
+    console.log(`[expandForSuggestion] Found ${gapRows.length} gap sections in file`);
+
     let targetGapRow = null;
     let targetControls = null;
 
     for (const row of gapRows) {
       const controls = row.expandControls;
-      if (!controls) continue;
+      if (!controls) {
+        console.log(`[expandForSuggestion] Gap row missing expandControls`);
+        continue;
+      }
 
-      const startLine = parseInt(controls.dataset.startLine);
-      const endLine = parseInt(controls.dataset.endLine);
+      const gapStart = parseInt(controls.dataset.startLine);
+      const gapEnd = parseInt(controls.dataset.endLine);
 
-      // Check if the target line falls within this gap
-      if (line >= startLine && line <= endLine) {
+      // Check if any part of the target line range falls within this gap
+      // A range overlaps if: lineStart <= gapEnd AND lineEnd >= gapStart
+      if (lineStart <= gapEnd && lineEnd >= gapStart) {
+        console.log(`[expandForSuggestion] Found matching gap: ${gapStart}-${gapEnd}`);
         targetGapRow = row;
         targetControls = controls;
         break;
@@ -2216,34 +2283,40 @@ class PRManager {
     }
 
     if (!targetGapRow || !targetControls) {
-      console.warn(`[expandForSuggestion] Could not find gap containing line ${line} in file ${file}`);
+      console.warn(`[expandForSuggestion] Could not find gap containing lines ${lineStart}-${lineEnd} in file ${file}`);
+      // Log all gaps for debugging
+      for (const row of gapRows) {
+        const controls = row.expandControls;
+        if (controls) {
+          console.log(`[expandForSuggestion] Available gap: ${controls.dataset.startLine}-${controls.dataset.endLine}`);
+        }
+      }
       return false;
     }
 
-    // Calculate the range to expand around the target line
+    // Calculate the range to expand around the target lines
     // Use a context radius of 3 lines
     const contextRadius = 3;
     const gapStart = parseInt(targetControls.dataset.startLine);
     const gapEnd = parseInt(targetControls.dataset.endLine);
     const gapSize = gapEnd - gapStart + 1;
 
-    // Determine how many lines to expand
-    // We want lines from (line - contextRadius) to (line + contextRadius)
+    // We want lines from (lineStart - contextRadius) to (lineEnd + contextRadius)
     // but bounded by the gap boundaries
-    const expandStart = Math.max(gapStart, line - contextRadius);
-    const expandEnd = Math.min(gapEnd, line + contextRadius);
+    const expandStart = Math.max(gapStart, lineStart - contextRadius);
+    const expandEnd = Math.min(gapEnd, lineEnd + contextRadius);
     const linesToExpand = expandEnd - expandStart + 1;
 
-    console.log(`[expandForSuggestion] Expanding gap ${gapStart}-${gapEnd} to show line ${line} (${expandStart}-${expandEnd})`);
+    console.log(`[expandForSuggestion] Gap ${gapStart}-${gapEnd} (${gapSize} lines), expanding ${expandStart}-${expandEnd} (${linesToExpand} lines)`);
 
     // If the gap is small or we're expanding most of it, just expand all
     if (gapSize <= 10 || linesToExpand >= gapSize * 0.7) {
+      console.log(`[expandForSuggestion] Expanding entire gap`);
       await this.expandGapContext(targetControls, 'all', gapSize);
     } else {
-      // Otherwise, expand just the section around the target line
-      // We need to use 'all' with a modified range since the existing
-      // expandGapContext doesn't support arbitrary range expansion
+      // TODO: Implement partial gap expansion
       // For now, expand all to ensure the line is visible
+      console.log(`[expandForSuggestion] Expanding entire gap (partial expansion not yet implemented)`);
       await this.expandGapContext(targetControls, 'all', gapSize);
     }
 
@@ -2266,7 +2339,7 @@ class PRManager {
     if (hiddenSuggestions.length > 0) {
       console.log(`[UI] Found ${hiddenSuggestions.length} suggestions targeting hidden lines, expanding...`);
       for (const hidden of hiddenSuggestions) {
-        await this.expandForSuggestion(hidden.file, hidden.line);
+        await this.expandForSuggestion(hidden.file, hidden.line, hidden.lineEnd);
       }
       console.log(`[UI] Finished expanding hidden lines`);
     }
@@ -2296,7 +2369,7 @@ class PRManager {
     
     // Group suggestions by file and line
     const suggestionsByLocation = {};
-    
+
     suggestions.forEach(suggestion => {
       const key = `${suggestion.file}:${suggestion.line_start}`;
       if (!suggestionsByLocation[key]) {
@@ -2311,68 +2384,33 @@ class PRManager {
     Object.entries(suggestionsByLocation).forEach(([location, locationSuggestions]) => {
       const [file, lineStr] = location.split(':');
       const line = parseInt(lineStr);
-      
-      console.log(`[UI] Looking for file: ${file}, line: ${line}`);
-      
-      // Debug: Log all available file wrappers
-      const allWrappers = document.querySelectorAll('.d2h-file-wrapper');
-      console.log(`[UI] Available file wrappers:`, Array.from(allWrappers).map(w => w.dataset.fileName));
-      
-      // Find the diff wrapper for this file - try multiple selectors
-      let fileElement = document.querySelector(`[data-file-name="${file}"]`);
+
+      // Use helper method for file lookup
+      const fileElement = this.findFileElement(file);
+
       if (!fileElement) {
-        fileElement = document.querySelector(`[data-file-path="${file}"]`);
-      }
-      if (!fileElement) {
-        // Try to find by partial match in the file wrapper
-        const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
-        for (const wrapper of allFileWrappers) {
-          const fileName = wrapper.dataset.fileName;
-          if (fileName && (fileName === file || fileName.endsWith('/' + file) || file.endsWith('/' + fileName))) {
-            fileElement = wrapper;
-            break;
-          }
-        }
-      }
-      
-      if (!fileElement) {
-        console.warn(`[UI] Could not find file element for: ${file}. Available files:`, Array.from(allWrappers).map(w => w.dataset.fileName));
+        console.warn(`[UI] Could not find file element for: ${file}. Available files:`,
+          Array.from(document.querySelectorAll('.d2h-file-wrapper')).map(w => w.dataset.fileName));
         return;
       }
 
-      console.log(`[UI] Found file element for: ${file}`);
-
-      // Find the line in the diff - check both line-num2 and line-num-new
+      // Find the line in the diff using helper method
       const lineRows = fileElement.querySelectorAll('tr');
       let suggestionInserted = false;
-      
-      lineRows.forEach(row => {
-        if (suggestionInserted) return;
-        
-        // Try different selectors for line numbers
-        let lineNum = row.querySelector('.line-num2')?.textContent?.trim();
-        if (!lineNum) {
-          lineNum = row.querySelector('.line-num-new')?.textContent?.trim();
-        }
-        if (!lineNum) {
-          // For custom diff rendering, check the line number cell
-          const lineNumCell = row.querySelector('.d2h-code-linenumber');
-          if (lineNumCell) {
-            const lineNum2 = lineNumCell.querySelector('.line-num2');
-            if (lineNum2) {
-              lineNum = lineNum2.textContent?.trim();
-            }
-          }
-        }
-        
-        if (lineNum && parseInt(lineNum) === line) {
+
+      for (const row of lineRows) {
+        if (suggestionInserted) break;
+
+        const lineNum = this.getLineNumber(row);
+
+        if (lineNum === line) {
           console.log(`[UI] Found line ${line} in file ${file}, inserting suggestion`);
           // Insert suggestion after this row
           const suggestionRow = this.createSuggestionRow(locationSuggestions);
           row.parentNode.insertBefore(suggestionRow, row.nextSibling);
           suggestionInserted = true;
         }
-      });
+      }
       
       if (!suggestionInserted) {
         console.warn(`[UI] Could not find line ${line} in file ${file}`);
