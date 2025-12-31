@@ -98,14 +98,12 @@ class AIPanel {
      * @param {string} status - Status text to display
      */
     updateDepthStatus(currentLevel, status) {
+        const isComplete = status.toLowerCase().includes('complete');
+
         // Update status text
         if (this.depthStatus) {
             this.depthStatus.textContent = status;
-            if (currentLevel === 3 && status.toLowerCase().includes('complete')) {
-                this.depthStatus.classList.add('complete');
-            } else {
-                this.depthStatus.classList.remove('complete');
-            }
+            this.depthStatus.classList.toggle('complete', isComplete);
         }
 
         // Update level indicators
@@ -113,10 +111,18 @@ class AIPanel {
         levels.forEach((level, index) => {
             if (!level) return;
 
-            level.classList.remove('complete', 'active');
+            // Remove all state classes
+            level.classList.remove('complete', 'active', 'depth-level-complete');
 
-            if (index < currentLevel) {
-                level.classList.add('complete');
+            // Determine level state (index is 0-based, levels are 1-based)
+            const levelNum = index + 1;
+            // When complete, all levels up to currentLevel are done
+            // When in progress, levels below currentLevel are done, currentLevel is active
+            const isLevelComplete = isComplete ? (levelNum <= currentLevel) : (levelNum < currentLevel);
+            const isLevelActive = !isComplete && (levelNum === currentLevel);
+
+            if (isLevelComplete) {
+                level.classList.add('complete', 'depth-level-complete');
                 // Update icon to checkmark
                 const icon = level.querySelector('.depth-level-icon');
                 if (icon) {
@@ -124,11 +130,17 @@ class AIPanel {
                         <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
                     </svg>`;
                 }
-            } else if (index === currentLevel - 1 && currentLevel > 0) {
-                // Mark the current level as active if still in progress
+            } else if (isLevelActive) {
                 level.classList.add('active');
+                // Show pulsing circle for active state
+                const icon = level.querySelector('.depth-level-icon');
+                if (icon) {
+                    icon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                        <path d="M8 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z"/>
+                    </svg>`;
+                }
             } else {
-                // Reset to default circle icon
+                // Reset to default empty circle icon
                 const icon = level.querySelector('.depth-level-icon');
                 if (icon) {
                     icon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">

@@ -636,6 +636,12 @@
   --category-performance-bg: #fefce8;
   --category-security: #be123c;
   --category-security-bg: #fff1f2;
+
+  /* Semantic colors from design-refresh */
+  --color-success: #1a7f37;
+  --color-warning: #d29922;
+  --color-info: #0969da;
+  --color-praise: #8250df;
 }
 
 [data-theme="dark"] {
@@ -703,6 +709,12 @@
   --category-performance-bg: rgba(251, 191, 36, 0.1);
   --category-security: #fb7185;
   --category-security-bg: rgba(251, 113, 133, 0.1);
+
+  /* Semantic colors from design-refresh - dark theme */
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-info: #58a6ff;
+  --color-praise: #a371f7;
 }
 
 /* Update PR container styles */
@@ -4774,6 +4786,51 @@ body:not([data-theme="dark"]) .theme-icon-light {
   overflow: hidden;
 }
 
+/* Hide AI panel toggle button when panel is visible */
+#ai-panel-toggle {
+  display: none;
+}
+
+.ai-panel.collapsed ~ .diff-view #ai-panel-toggle,
+.main-layout:has(.ai-panel.collapsed) #ai-panel-toggle {
+  display: flex;
+}
+
+/* Ensure toggle button shows when panel is collapsed via responsive rules */
+@media (max-width: 900px) {
+  #ai-panel-toggle {
+    display: flex;
+  }
+}
+
+/* Toolbar button styling (for AI panel toggle and other toolbar buttons) */
+.toolbar-actions .btn-icon {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.toolbar-actions .btn-icon:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-secondary);
+}
+
+/* Dark theme toolbar button fixes */
+[data-theme="dark"] .toolbar-actions .btn-icon {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-secondary);
+  color: var(--color-text-secondary);
+}
+
+[data-theme="dark"] .toolbar-actions .btn-icon:hover {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
 .ai-panel-header {
   display: flex;
   align-items: center;
@@ -4857,11 +4914,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
 }
 
 .depth-status.complete {
-  color: #1a7f37;
-}
-
-[data-theme="dark"] .depth-status.complete {
-  color: #3fb950;
+  color: var(--color-success);
 }
 
 .depth-levels {
@@ -4896,14 +4949,10 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--color-text-tertiary);
 }
 
-.depth-level.complete .depth-level-icon {
-  background: rgba(26, 127, 55, 0.15);
-  color: #1a7f37;
-}
-
-[data-theme="dark"] .depth-level.complete .depth-level-icon {
+.depth-level.complete .depth-level-icon,
+.depth-level-complete .depth-level-icon {
   background: rgba(63, 185, 80, 0.15);
-  color: #3fb950;
+  color: var(--color-success);
 }
 
 .depth-level.active .depth-level-icon {
@@ -5004,15 +5053,15 @@ body:not([data-theme="dark"]) .theme-icon-light {
 }
 
 .finding-item.finding-issue .finding-icon {
-  color: var(--category-bug);
+  color: var(--color-warning, #d29922);
 }
 
 .finding-item.finding-praise .finding-icon {
-  color: var(--category-praise);
+  color: var(--color-praise, #a371f7);
 }
 
 .finding-item.finding-info .finding-icon {
-  color: var(--category-improvement);
+  color: var(--color-info, #58a6ff);
 }
 
 .finding-content {
