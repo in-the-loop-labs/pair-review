@@ -1396,7 +1396,10 @@ router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
 });
 
 /**
- * Update AI suggestion status (adopt/dismiss)
+ * Update AI suggestion status
+ * Sets status to 'adopted', 'dismissed', or 'active' (restored)
+ * Note: This only updates the status flag. For 'adopted' status, the actual
+ * user comment creation is handled separately via /api/user-comment endpoint.
  */
 router.post('/api/ai-suggestion/:id/status', async (req, res) => {
   try {
