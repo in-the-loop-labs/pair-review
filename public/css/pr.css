@@ -2039,23 +2039,9 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: var(--color-bg-tertiary);
 }
 
-/* AI Suggestion Navigator Styles */
+/* Old AI Suggestion Navigator - hidden, replaced by new AI Panel */
 .suggestion-navigator {
-  position: fixed;
-  right: 0;
-  top: 60px;
-  width: min(320px, 25vw);
-  min-width: 240px;
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-border-primary);
-  border-radius: 6px 0 0 6px;
-  border-right: none;
-  max-height: calc(100vh - 80px);
-  overflow: hidden;
-  z-index: 100;
-  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.1);
-  display: none;
-  flex-direction: column;
+  display: none !important;
 }
 
 .navigator-header {
@@ -2097,21 +2083,9 @@ tr.newly-expanded .d2h-code-line-ctn {
   height: 16px;
 }
 
+/* Hide the old SuggestionNavigator toggle - replaced by new AI Panel */
 .navigator-toggle-collapsed {
-  position: fixed;
-  right: 16px;
-  top: 100px;
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-border-primary);
-  border-radius: 6px;
-  padding: 10px;
-  cursor: pointer;
-  color: var(--color-accent-primary);
-  z-index: 100;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  box-shadow: -2px 2px 8px rgba(0, 0, 0, 0.1);
+  display: none !important;
 }
 
 .navigator-toggle-collapsed svg {
