@@ -3867,6 +3867,7 @@ tr.line-range-start .d2h-code-line-ctn {
   box-shadow: 0 24px 48px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05);
   max-width: 580px;
   width: 90%;
+  height: auto;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
@@ -3888,17 +3889,18 @@ tr.line-range-start .d2h-code-line-ctn {
   padding: 16px 24px;
   overflow-y: auto;
   flex: 1;
+  min-height: 0;
 }
 
 .review-form {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px;
 }
 
 .review-label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   font-weight: 600;
   font-size: 14px;
   color: #24292f;
@@ -3914,8 +3916,8 @@ tr.line-range-start .d2h-code-line-ctn {
   border: 1px solid #d1d9e0;
   border-radius: 6px;
   resize: vertical;
-  min-height: 80px;
-  max-height: 200px;
+  min-height: 60px;
+  max-height: 150px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 
@@ -3928,14 +3930,14 @@ tr.line-range-start .d2h-code-line-ctn {
 .review-type-options {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .review-type-option {
   display: flex;
   align-items: flex-start;
   cursor: pointer;
-  padding: 12px 14px;
+  padding: 10px 12px;
   border: 1px solid var(--color-border-primary, #d1d9e0);
   border-radius: 10px;
   transition: all 0.15s ease;
@@ -3978,6 +3980,7 @@ tr.line-range-start .d2h-code-line-ctn {
   font-size: 12px;
   color: var(--color-text-tertiary, #656d76);
   line-height: 1.4;
+  display: block;
 }
 
 .review-comment-summary {
@@ -4721,13 +4724,19 @@ body::before {
   display: flex;
   align-items: center;
   gap: 20px;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.header-left .logo {
   flex-shrink: 0;
 }
 
 .logo {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 .logo-icon {
@@ -4753,6 +4762,16 @@ body::before {
   gap: 8px;
   font-size: 0.875rem;
   color: var(--color-text-secondary);
+  max-width: 300px;
+  overflow: hidden;
+}
+
+.breadcrumb-org,
+.breadcrumb-repo {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
 }
 
 .breadcrumb-sep {

@@ -43,11 +43,11 @@ class ReviewModal {
           <div class="review-form">
             <div class="review-summary-section">
               <label for="review-body-modal" class="review-label">Review Summary</label>
-              <textarea 
-                class="review-body-textarea" 
-                id="review-body-modal" 
+              <textarea
+                class="review-body-textarea"
+                id="review-body-modal"
                 placeholder="Leave a comment about this pull request..."
-                rows="4"
+                rows="2"
               ></textarea>
             </div>
             
@@ -56,26 +56,34 @@ class ReviewModal {
               <div class="review-type-options">
                 <label class="review-type-option">
                   <input type="radio" name="review-event" value="COMMENT" checked>
-                  <span class="review-type-label">Comment</span>
-                  <span class="review-type-desc">Submit general feedback without explicit approval.</span>
+                  <div class="review-type-content">
+                    <span class="review-type-label">Comment</span>
+                    <span class="review-type-desc">Submit general feedback without explicit approval.</span>
+                  </div>
                 </label>
-                
+
                 <label class="review-type-option">
                   <input type="radio" name="review-event" value="APPROVE">
-                  <span class="review-type-label">Approve</span>
-                  <span class="review-type-desc">Submit feedback and approve merging these changes.</span>
+                  <div class="review-type-content">
+                    <span class="review-type-label">Approve</span>
+                    <span class="review-type-desc">Submit feedback and approve merging these changes.</span>
+                  </div>
                 </label>
-                
+
                 <label class="review-type-option">
                   <input type="radio" name="review-event" value="REQUEST_CHANGES">
-                  <span class="review-type-label">Request changes</span>
-                  <span class="review-type-desc">Submit feedback suggesting changes.</span>
+                  <div class="review-type-content">
+                    <span class="review-type-label">Request changes</span>
+                    <span class="review-type-desc">Submit feedback suggesting changes.</span>
+                  </div>
                 </label>
-                
+
                 <label class="review-type-option">
                   <input type="radio" name="review-event" value="DRAFT">
-                  <span class="review-type-label">Save as Draft</span>
-                  <span class="review-type-desc">Save your review as a draft on GitHub to finish later</span>
+                  <div class="review-type-content">
+                    <span class="review-type-label">Save as Draft</span>
+                    <span class="review-type-desc">Save your review as a draft on GitHub to finish later.</span>
+                  </div>
                 </label>
               </div>
             </div>
