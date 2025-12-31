@@ -544,6 +544,7 @@ class PRManager {
     if (aiPanelToggle && aiPanel && !aiPanelToggle._eventBound) {
       aiPanelToggle.addEventListener('click', () => {
         aiPanel.classList.toggle('collapsed');
+        this.savePanelStates();
       });
       aiPanelToggle._eventBound = true;
     }
@@ -551,6 +552,7 @@ class PRManager {
     if (aiPanelClose && aiPanel && !aiPanelClose._eventBound) {
       aiPanelClose.addEventListener('click', () => {
         aiPanel.classList.add('collapsed');
+        this.savePanelStates();
       });
       aiPanelClose._eventBound = true;
     }
@@ -564,6 +566,7 @@ class PRManager {
     if (sidebarCollapseBtn && sidebar && !sidebarCollapseBtn._eventBound) {
       sidebarCollapseBtn.addEventListener('click', () => {
         sidebar.classList.add('collapsed');
+        this.savePanelStates();
       });
       sidebarCollapseBtn._eventBound = true;
     }
@@ -572,9 +575,13 @@ class PRManager {
     if (sidebarExpandBtn && sidebar && !sidebarExpandBtn._eventBound) {
       sidebarExpandBtn.addEventListener('click', () => {
         sidebar.classList.remove('collapsed');
+        this.savePanelStates();
       });
       sidebarExpandBtn._eventBound = true;
     }
+
+    // Restore panel states from localStorage
+    this.restorePanelStates();
   }
 
   /**
@@ -2244,7 +2251,7 @@ class PRManager {
           <div class="ai-suggestion-header-left">
             ${suggestion.type === 'praise'
               ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
-              : `<span class="ai-suggestion-badge" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}"><svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M7.53 1.282a.5.5 0 01.94 0l.478 1.306a7.492 7.492 0 004.464 4.464l1.305.478a.5.5 0 010 .94l-1.305.478a7.492 7.492 0 00-4.464 4.464l-.478 1.305a.5.5 0 01-.94 0l-.478-1.305a7.492 7.492 0 00-4.464-4.464L1.282 8.47a.5.5 0 010-.94l1.306-.478a7.492 7.492 0 004.464-4.464l.478-1.306z"/></svg>AI Suggestion</span>`}
+              : `<span class="ai-suggestion-badge" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}"><svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901L3.2 5.86a.213.213 0 0 1-.4 0l-.203-.556A3.2 3.2 0 0 0 .696 3.403L.14 3.2a.213.213 0 0 1 0-.4l.556-.203A3.2 3.2 0 0 0 2.597.696L2.8.14Z"/></svg>AI Suggestion</span>`}
             ${categoryLabel ? `<span class="ai-suggestion-category">${this.escapeHtml(categoryLabel)}</span>` : ''}
             <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
           </div>
@@ -2252,7 +2259,7 @@ class PRManager {
         <div class="ai-suggestion-collapsed-content">
           ${suggestion.type === 'praise'
             ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
-            : `<span class="ai-suggestion-badge collapsed" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}"><svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10"><path d="M7.53 1.282a.5.5 0 01.94 0l.478 1.306a7.492 7.492 0 004.464 4.464l1.305.478a.5.5 0 010 .94l-1.305.478a7.492 7.492 0 00-4.464 4.464l-.478 1.305a.5.5 0 01-.94 0l-.478-1.305a7.492 7.492 0 00-4.464-4.464L1.282 8.47a.5.5 0 010-.94l1.306-.478a7.492 7.492 0 004.464-4.464l.478-1.306z"/></svg>AI Suggestion</span>`}
+            : `<span class="ai-suggestion-badge collapsed" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}"><svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10"><path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901L3.2 5.86a.213.213 0 0 1-.4 0l-.203-.556A3.2 3.2 0 0 0 .696 3.403L.14 3.2a.213.213 0 0 1 0-.4l.556-.203A3.2 3.2 0 0 0 2.597.696L2.8.14Z"/></svg>AI Suggestion</span>`}
           <span class="collapsed-text">${isAdopted ? 'Suggestion adopted' : 'Hidden AI suggestion'}</span>
           <span class="collapsed-title">${this.escapeHtml(suggestion.title || '')}</span>
           <button class="btn-restore" onclick="prManager.restoreSuggestion(${suggestion.id})" title="${isAdopted ? 'Hide suggestion' : 'Show suggestion'}">
@@ -4563,6 +4570,46 @@ class PRManager {
       
       themeButton.innerHTML = icon;
       themeButton.title = `Switch to ${this.currentTheme === 'light' ? 'dark' : 'light'} mode`;
+    }
+  }
+
+  /**
+   * Save panel collapsed/expanded states to localStorage
+   */
+  savePanelStates() {
+    const sidebar = document.getElementById('files-sidebar');
+    const aiPanel = document.getElementById('ai-panel');
+
+    const panelStates = {
+      filesSidebar: sidebar ? sidebar.classList.contains('collapsed') : false,
+      aiPanel: aiPanel ? aiPanel.classList.contains('collapsed') : false
+    };
+
+    localStorage.setItem('pair-review-panel-states', JSON.stringify(panelStates));
+  }
+
+  /**
+   * Restore panel collapsed/expanded states from localStorage
+   */
+  restorePanelStates() {
+    const savedStates = localStorage.getItem('pair-review-panel-states');
+    if (!savedStates) return;
+
+    try {
+      const panelStates = JSON.parse(savedStates);
+
+      const sidebar = document.getElementById('files-sidebar');
+      const aiPanel = document.getElementById('ai-panel');
+
+      if (sidebar && panelStates.filesSidebar) {
+        sidebar.classList.add('collapsed');
+      }
+
+      if (aiPanel && panelStates.aiPanel) {
+        aiPanel.classList.add('collapsed');
+      }
+    } catch (e) {
+      console.error('Failed to restore panel states:', e);
     }
   }
 }
