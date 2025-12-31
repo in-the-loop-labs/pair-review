@@ -46,7 +46,7 @@ class ProgressModal {
           <div class="progress-levels">
             <div class="progress-level" id="level-1">
               <div class="level-icon">
-                <span class="icon pending">⏸</span>
+                <span class="icon pending">○</span>
               </div>
               <div class="level-content">
                 <div class="level-title">Level 1: Analyzing diff</div>
@@ -61,7 +61,7 @@ class ProgressModal {
             
             <div class="progress-level" id="level-2">
               <div class="level-icon">
-                <span class="icon pending">⏸</span>
+                <span class="icon pending">○</span>
               </div>
               <div class="level-content">
                 <div class="level-title">Level 2: File context</div>
@@ -76,7 +76,7 @@ class ProgressModal {
             
             <div class="progress-level" id="level-3">
               <div class="level-icon">
-                <span class="icon pending">⏸</span>
+                <span class="icon pending">○</span>
               </div>
               <div class="level-content">
                 <div class="level-title">Level 3: Codebase context</div>
@@ -91,7 +91,7 @@ class ProgressModal {
 
             <div class="progress-level" id="level-4">
               <div class="level-icon">
-                <span class="icon pending">⏸</span>
+                <span class="icon pending">○</span>
               </div>
               <div class="level-content">
                 <div class="level-title">Finalizing Results</div>
@@ -236,7 +236,7 @@ class ProgressModal {
       const progressContainer = level4.querySelector('.progress-bar-container');
 
       icon.className = 'icon pending';
-      icon.textContent = '⏸';
+      icon.textContent = '○';
       status.textContent = 'Pending';
       status.style.display = 'block';
 
@@ -445,7 +445,7 @@ class ProgressModal {
       // For pending or other states
       console.warn('Unexpected level status:', levelStatus.status, 'for level', level);
       icon.className = 'icon pending';
-      icon.textContent = '⏸';
+      icon.textContent = '○';
       statusText.textContent = levelStatus.progress || 'Pending';
       statusText.style.display = 'block';
 
