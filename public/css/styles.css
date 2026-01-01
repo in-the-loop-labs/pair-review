@@ -78,6 +78,9 @@
     
     --color-shadow: rgba(0, 0, 0, 0.3);
     --color-shadow-large: rgba(0, 0, 0, 0.5);
+
+    /* Syntax highlighting colors */
+    --syntax-blue: #a5d6ff;
 }
 
 /* Diff2html overrides and custom styles */
@@ -415,13 +418,13 @@ mark.d2h-code-line-ctn {
 [data-theme="dark"] .hljs-selector-attr,
 [data-theme="dark"] .hljs-selector-class,
 [data-theme="dark"] .hljs-selector-id {
-    color: #a5d6ff;
+    color: var(--syntax-blue);
 }
 
 [data-theme="dark"] .hljs-regexp,
 [data-theme="dark"] .hljs-string,
 [data-theme="dark"] .hljs-meta .hljs-string {
-    color: #a5d6ff;
+    color: var(--syntax-blue);
 }
 
 [data-theme="dark"] .hljs-built_in,

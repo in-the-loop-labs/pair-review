@@ -3385,7 +3385,6 @@ class PRManager {
     // Get diff position from the end row (GitHub uses position at end of range)
     const diffPosition = endRow.dataset.diffPosition;
 
-    // Show comment form with range (side already set above for highlighting)
     this.showCommentForm(endRow, minLine, fileName, diffPosition, maxLine, side || 'RIGHT');
   }
 
@@ -3396,7 +3395,7 @@ class PRManager {
    * @param {string} fileName - The file name
    * @param {number} minLine - The minimum line number
    * @param {number} maxLine - The maximum line number
-   * @param {string} [side] - The side of the diff ('LEFT' for deleted lines, 'RIGHT' for added/context)
+   * @param {string} side - The side of the diff ('LEFT' for deleted lines, 'RIGHT' for added/context)
    */
   highlightLineRange(startRow, endRow, fileName, minLine, maxLine, side) {
     // Find all rows in the file between minLine and maxLine
@@ -3407,12 +3406,12 @@ class PRManager {
 
     allRows.forEach(row => {
       const lineNum = parseInt(row.dataset.lineNumber);
-      const rowSide = row.dataset.side;
-      // Match by line number range, file name, and side (if specified)
+      const rowSide = row.dataset.side || 'RIGHT';
+      // Match by line number range, file name, and side
       // This prevents deleted lines (LEFT) from matching added/context lines (RIGHT) with same line number
       if (lineNum >= minLine && lineNum <= maxLine &&
           row.dataset.fileName === fileName &&
-          (!side || rowSide === side)) {
+          rowSide === side) {
         row.classList.add('line-range-selected');
       }
     });
