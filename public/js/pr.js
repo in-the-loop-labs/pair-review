@@ -1067,6 +1067,9 @@ class PRManager {
       // Lines without diff_position (expanded context) may not be submittable to GitHub
       // GitHub's position-based API only works for lines in the original diff
       const hasDiffPosition = diffPosition !== undefined && diffPosition !== null;
+      if (!hasDiffPosition) {
+        console.log('[DEBUG] No diffPosition for line:', lineNumber, 'in', fileName, 'type:', line.type, 'diffPosition:', diffPosition);
+      }
       if (hasDiffPosition) {
         commentButton.title = 'Add comment (drag to select range)';
       } else {
@@ -2904,25 +2907,29 @@ class PRManager {
   getFileAndLineInfo(suggestionDiv) {
     const suggestionRow = suggestionDiv.closest('tr');
     let targetRow = suggestionRow?.previousElementSibling;
-    
+
     // Find the actual diff line row (skip other suggestion/comment rows)
     while (targetRow && (targetRow.classList.contains('ai-suggestion-row') || targetRow.classList.contains('user-comment-row'))) {
       targetRow = targetRow.previousElementSibling;
     }
-    
+
     if (!targetRow) {
       throw new Error('Could not find target line for comment');
     }
-    
+
     const lineNumber = targetRow.querySelector('.line-num2')?.textContent?.trim();
     const fileWrapper = targetRow.closest('.d2h-file-wrapper');
     const fileName = fileWrapper?.dataset?.fileName || '';
-    
+
+    // Get diff position and side from the target row (for GitHub API)
+    const diffPosition = targetRow.dataset.diffPosition;
+    const side = targetRow.dataset.side || 'RIGHT';
+
     if (!lineNumber || !fileName) {
       throw new Error('Could not determine file and line information');
     }
-    
-    return { targetRow, suggestionRow, lineNumber, fileName };
+
+    return { targetRow, suggestionRow, lineNumber, fileName, diffPosition, side };
   }
 
   /**
@@ -2992,9 +2999,12 @@ class PRManager {
   /**
    * Helper function to create user comment from AI suggestion
    */
-  async createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle) {
+  async createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side) {
     // Format the comment text with emoji and category prefix
     const formattedText = this.formatAdoptedComment(suggestionText, suggestionType);
+
+    // Parse diff_position if it's a string (from dataset)
+    const parsedDiffPosition = diffPosition ? parseInt(diffPosition) : null;
 
     const createResponse = await fetch('/api/user-comment', {
       method: 'POST',
@@ -3006,6 +3016,8 @@ class PRManager {
         file: fileName,
         line_start: parseInt(lineNumber),
         line_end: parseInt(lineNumber),
+        diff_position: parsedDiffPosition,  // For GitHub API line-level comments
+        side: side || 'RIGHT',              // For GitHub API (LEFT for deleted, RIGHT for added/context)
         body: formattedText,
         parent_id: suggestionId,  // Link to original AI suggestion
         type: suggestionType,     // Preserve the type
@@ -3046,14 +3058,14 @@ class PRManager {
       const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
       
       // Get file and line information using helper
-      const { suggestionRow, lineNumber, fileName } = this.getFileAndLineInfo(suggestionDiv);
+      const { suggestionRow, lineNumber, fileName, diffPosition, side } = this.getFileAndLineInfo(suggestionDiv);
 
       // Collapse the AI suggestion and mark as adopted
       await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
 
-      // Create user comment from suggestion
+      // Create user comment from suggestion (with diff position for GitHub API)
       const newComment = await this.createUserCommentFromSuggestion(
-        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle
+        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side
       );
 
       // Display the new user comment in edit mode BELOW the suggestion row
@@ -3096,14 +3108,14 @@ class PRManager {
       const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
       
       // Get file and line information using helper
-      const { suggestionRow, lineNumber, fileName } = this.getFileAndLineInfo(suggestionDiv);
+      const { suggestionRow, lineNumber, fileName, diffPosition, side } = this.getFileAndLineInfo(suggestionDiv);
 
       // Collapse the AI suggestion and mark as adopted
       await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
 
-      // Create user comment from suggestion
+      // Create user comment from suggestion (with diff position for GitHub API)
       const newComment = await this.createUserCommentFromSuggestion(
-        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle
+        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side
       );
 
       // Display the new user comment in read-only mode (not edit mode)

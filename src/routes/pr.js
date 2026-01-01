@@ -1357,11 +1357,13 @@ router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
     }
 
     // Create a user comment with the edited text
+    // Preserve diff_position and side from the original suggestion if available
     const result = await run(db, `
       INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end, 
-        type, title, body, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        pr_id, source, author, file, line_start, line_end,
+        diff_position, side, commit_sha,
+        type, title, body, status, parent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       suggestion.pr_id,
       'user',
@@ -1369,10 +1371,14 @@ router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
       suggestion.file,
       suggestion.line_start,
       suggestion.line_end,
+      suggestion.diff_position || null,  // Preserve for GitHub API
+      suggestion.side || 'RIGHT',        // Default to RIGHT for added/context lines
+      suggestion.commit_sha || null,     // Preserve commit SHA
       'comment',
       suggestion.title,
       editedText.trim(),
-      'active'
+      'active',
+      id  // Link to parent AI suggestion
     ]);
     
     const userCommentId = result.lastID;
