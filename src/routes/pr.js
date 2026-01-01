@@ -311,7 +311,10 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
         additions: parsedData.additions || 0,
         deletions: parsedData.deletions || 0,
         diff_content: parsedData.diff || '',
-        html_url: parsedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`
+        html_url: parsedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`,
+        head_sha: parsedData.head_sha,
+        base_sha: parsedData.base_sha,
+        node_id: parsedData.node_id
       }
     };
 
