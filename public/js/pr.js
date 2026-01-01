@@ -3371,8 +3371,9 @@ class PRManager {
     const minLine = Math.min(startLine, endLine);
     const maxLine = Math.max(startLine, endLine);
 
-    // Highlight all rows in range
-    this.highlightLineRange(this.rangeSelectionStart.row, endRow, fileName, minLine, maxLine);
+    // Highlight all rows in range (pass side to avoid highlighting both deleted and added lines with same line number)
+    const side = this.rangeSelectionStart.side;
+    this.highlightLineRange(this.rangeSelectionStart.row, endRow, fileName, minLine, maxLine, side);
 
     // Store end of range
     this.rangeSelectionEnd = {
@@ -3384,17 +3385,20 @@ class PRManager {
     // Get diff position from the end row (GitHub uses position at end of range)
     const diffPosition = endRow.dataset.diffPosition;
 
-    // Get side from the range start (for GitHub API)
-    const side = this.rangeSelectionStart.side || 'RIGHT';
-
-    // Show comment form with range
-    this.showCommentForm(endRow, minLine, fileName, diffPosition, maxLine, side);
+    // Show comment form with range (side already set above for highlighting)
+    this.showCommentForm(endRow, minLine, fileName, diffPosition, maxLine, side || 'RIGHT');
   }
 
   /**
    * Highlight all lines in a range
+   * @param {HTMLElement} startRow - The starting row element
+   * @param {HTMLElement} endRow - The ending row element
+   * @param {string} fileName - The file name
+   * @param {number} minLine - The minimum line number
+   * @param {number} maxLine - The maximum line number
+   * @param {string} [side] - The side of the diff ('LEFT' for deleted lines, 'RIGHT' for added/context)
    */
-  highlightLineRange(startRow, endRow, fileName, minLine, maxLine) {
+  highlightLineRange(startRow, endRow, fileName, minLine, maxLine, side) {
     // Find all rows in the file between minLine and maxLine
     const fileWrapper = startRow.closest('.d2h-file-wrapper');
     if (!fileWrapper) return;
@@ -3403,7 +3407,12 @@ class PRManager {
 
     allRows.forEach(row => {
       const lineNum = parseInt(row.dataset.lineNumber);
-      if (lineNum >= minLine && lineNum <= maxLine && row.dataset.fileName === fileName) {
+      const rowSide = row.dataset.side;
+      // Match by line number range, file name, and side (if specified)
+      // This prevents deleted lines (LEFT) from matching added/context lines (RIGHT) with same line number
+      if (lineNum >= minLine && lineNum <= maxLine &&
+          row.dataset.fileName === fileName &&
+          (!side || rowSide === side)) {
         row.classList.add('line-range-selected');
       }
     });
@@ -3490,10 +3499,11 @@ class PRManager {
       r.classList.remove('line-range-selected');
     });
 
-    // Highlight all rows in range
+    // Highlight all rows in range (pass side to avoid highlighting both deleted and added lines with same line number)
     const minLine = Math.min(this.dragStartLine, lineNumber);
     const maxLine = Math.max(this.dragStartLine, lineNumber);
-    this.highlightLineRange(this.rangeSelectionStart.row, row, fileName, minLine, maxLine);
+    const side = this.rangeSelectionStart.side;
+    this.highlightLineRange(this.rangeSelectionStart.row, row, fileName, minLine, maxLine, side);
   }
 
   /**
@@ -3565,8 +3575,8 @@ class PRManager {
         side: side
       };
 
-      // Highlight the line(s)
-      this.highlightLineRange(targetRow, targetRow, fileName, minLine, maxLine);
+      // Highlight the line(s) (pass side to avoid highlighting both deleted and added lines with same line number)
+      this.highlightLineRange(targetRow, targetRow, fileName, minLine, maxLine, side);
     }
 
     // Create comment form row
