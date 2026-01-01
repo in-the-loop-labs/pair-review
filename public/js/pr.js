@@ -1941,8 +1941,8 @@ class PRManager {
       this.userComments = comments;
       console.log(`[UI] Stored user comments for adoption detection:`, comments.filter(c => c.parent_id));
 
-      // Display comments inline with the diff
-      this.displayUserComments(comments);
+      // Display comments inline with the diff (async - auto-expands hidden lines)
+      await this.displayUserComments(comments);
 
     } catch (error) {
       console.error('Error loading user comments:', error);
@@ -1952,16 +1952,27 @@ class PRManager {
   /**
    * Display user comments inline with diff
    */
-  displayUserComments(comments) {
+  async displayUserComments(comments) {
     console.log(`[UI] Displaying ${comments.length} user comments`);
-    
+
     // Clear existing user comment rows before displaying new ones
     const existingCommentRows = document.querySelectorAll('.user-comment-row');
     existingCommentRows.forEach(row => row.remove());
-    
+
+    // Auto-expand hidden lines for comments that target non-visible lines
+    // Reuse the same logic as AI suggestions - comments have the same structure
+    const hiddenComments = this.findHiddenSuggestions(comments);
+    if (hiddenComments.length > 0) {
+      console.log(`[UI] Found ${hiddenComments.length} user comments targeting hidden lines, expanding...`);
+      for (const hidden of hiddenComments) {
+        await this.expandForSuggestion(hidden.file, hidden.line, hidden.lineEnd);
+      }
+      console.log(`[UI] Finished expanding hidden lines for user comments`);
+    }
+
     // Group comments by file and line
     const commentsByLocation = {};
-    
+
     comments.forEach(comment => {
       const key = `${comment.file}:${comment.line_start}`;
       if (!commentsByLocation[key]) {
@@ -1974,59 +1985,38 @@ class PRManager {
     Object.entries(commentsByLocation).forEach(([location, locationComments]) => {
       const [file, lineStr] = location.split(':');
       const line = parseInt(lineStr);
-      
-      // Find the diff wrapper for this file
-      let fileElement = document.querySelector(`[data-file-name="${file}"]`);
-      if (!fileElement) {
-        // Try to find by partial match
-        const allFileWrappers = document.querySelectorAll('.d2h-file-wrapper');
-        for (const wrapper of allFileWrappers) {
-          const fileName = wrapper.dataset.fileName;
-          if (fileName && (fileName === file || fileName.endsWith('/' + file) || file.endsWith('/' + fileName))) {
-            fileElement = wrapper;
-            break;
-          }
-        }
-      }
-      
+
+      // Use helper method for file lookup
+      const fileElement = this.findFileElement(file);
+
       if (!fileElement) {
         console.warn(`[UI] Could not find file element for user comment: ${file}`);
         return;
       }
 
-      // Find the line in the diff
+      // Find the line in the diff using helper method
       const lineRows = fileElement.querySelectorAll('tr');
       let commentInserted = false;
-      
-      lineRows.forEach(row => {
-        if (commentInserted) return;
-        
-        // Try different selectors for line numbers
-        let lineNum = row.querySelector('.line-num2')?.textContent?.trim();
-        if (!lineNum) {
-          const lineNumCell = row.querySelector('.d2h-code-linenumber');
-          if (lineNumCell) {
-            const lineNum2 = lineNumCell.querySelector('.line-num2');
-            if (lineNum2) {
-              lineNum = lineNum2.textContent?.trim();
-            }
-          }
-        }
-        
-        if (lineNum && parseInt(lineNum) === line) {
+
+      for (const row of lineRows) {
+        if (commentInserted) break;
+
+        const lineNum = this.getLineNumber(row);
+
+        if (lineNum === line) {
           // Insert comments after this row
           locationComments.forEach(comment => {
             this.displayUserComment(comment, row);
           });
           commentInserted = true;
         }
-      });
-      
+      }
+
       if (!commentInserted) {
         console.warn(`[UI] Could not find line ${line} in file ${file} for user comment`);
       }
     });
-    
+
     // Update the comment count in the review button
     this.updateCommentCount();
   }
