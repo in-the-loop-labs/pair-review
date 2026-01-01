@@ -180,7 +180,7 @@ class GitHubClient {
         if (!comment.path || !comment.body) {
           throw new Error('Each comment must have a path and body');
         }
-        
+
         // Skip binary files - GitHub doesn't allow comments on them
         const isBinary = binaryExtensions.some(ext => comment.path.toLowerCase().endsWith(ext));
         if (isBinary) {
@@ -188,30 +188,48 @@ class GitHubClient {
           continue;
         }
 
-        // Use stored diff position if available, otherwise calculate it
-        let position = comment.diff_position;
-        if (!position || position === null) {
-          position = this.calculateDiffPosition(diffContent, comment.path, comment.line);
-        }
-        
-        if (position === -1 || position === null) {
-          // If we can't calculate position and don't have a stored one, try using line-based comment
-          // This requires the PR to be based on a commit that's in the base branch
-          console.warn(`Could not calculate diff position for ${comment.path}:${comment.line}, using line-based comment`);
+        // Use the new line/side/commit_id approach for all comments
+        // This is more stable than position-based comments and works for lines
+        // outside the diff context (e.g., expanded context lines)
+        const side = comment.side || 'RIGHT';  // LEFT for deleted lines, RIGHT for added/context
+        const commitId = comment.commit_id;
+
+        if (commitId) {
+          // New approach: use line/side/commit_id (preferred)
+          // This works for any line in the file, not just lines in diff hunks
+          console.log(`Using line-based comment for ${comment.path}:${comment.line} (side: ${side}, commit: ${commitId.substring(0, 7)})`);
           formattedComments.push({
             path: comment.path,
             line: comment.line,
-            side: 'RIGHT',
+            side: side,
+            commit_id: commitId,
             body: comment.body
           });
         } else {
-          // Use position-based comment (preferred for PR reviews)
-          console.log(`Using ${comment.diff_position ? 'stored' : 'calculated'} diff position ${position} for ${comment.path}:${comment.line}`);
-          formattedComments.push({
-            path: comment.path,
-            position: position,
-            body: comment.body
-          });
+          // Legacy fallback: try position-based if no commit_id available
+          let position = comment.diff_position;
+          if (!position || position === null) {
+            position = this.calculateDiffPosition(diffContent, comment.path, comment.line);
+          }
+
+          if (position === -1 || position === null) {
+            // If we can't calculate position and don't have commit_id, use line-based without commit
+            console.warn(`No commit_id or diff position for ${comment.path}:${comment.line}, using line-based comment without commit anchor`);
+            formattedComments.push({
+              path: comment.path,
+              line: comment.line,
+              side: side,
+              body: comment.body
+            });
+          } else {
+            // Legacy: use position-based comment
+            console.log(`Using legacy diff position ${position} for ${comment.path}:${comment.line}`);
+            formattedComments.push({
+              path: comment.path,
+              position: position,
+              body: comment.body
+            });
+          }
         }
       }
 

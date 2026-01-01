@@ -54,6 +54,7 @@ const SCHEMA_SQL = {
       line_end INTEGER,
       diff_position INTEGER,
       side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT')),
+      commit_sha TEXT,
       type TEXT,
       title TEXT,
       body TEXT,
@@ -241,6 +242,39 @@ function checkCommentsSideMigration(db, callback) {
           return callback(alterError);
         }
         console.log('Successfully added side column');
+        checkCommentsCommitShaMigration(db, callback);
+      });
+    } else {
+      // Check for commit_sha migration
+      checkCommentsCommitShaMigration(db, callback);
+    }
+  });
+}
+
+/**
+ * Check and run migration for commit_sha column in comments table
+ * The commit_sha field anchors comments to a specific commit for the new GitHub API
+ * which uses line/side/commit_id instead of the legacy position-based approach
+ * @param {sqlite3.Database} db - Database instance
+ * @param {Function} callback - Callback function
+ */
+function checkCommentsCommitShaMigration(db, callback) {
+  db.all(`PRAGMA table_info(comments)`, (error, columns) => {
+    if (error) {
+      return callback(error);
+    }
+
+    // Check if commit_sha column exists
+    const hasCommitSha = columns && columns.some(col => col.name === 'commit_sha');
+
+    if (!hasCommitSha) {
+      console.log('Adding commit_sha column to comments table...');
+      db.run(`ALTER TABLE comments ADD COLUMN commit_sha TEXT`, (alterError) => {
+        if (alterError && !alterError.message.includes('duplicate column name')) {
+          console.error('Error adding commit_sha column:', alterError.message);
+          return callback(alterError);
+        }
+        console.log('Successfully added commit_sha column');
         callback(null);
       });
     } else {

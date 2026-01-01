@@ -165,6 +165,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         state: extendedData.state || 'open',
         base_branch: prMetadata.base_branch,
         head_branch: prMetadata.head_branch,
+        head_sha: extendedData.head_sha || null,  // Head commit SHA for GitHub API comments
         created_at: prMetadata.created_at,
         updated_at: prMetadata.updated_at,
         file_changes: extendedData.changed_files ? extendedData.changed_files.length : 0,
@@ -1546,24 +1547,24 @@ function broadcastProgress(analysisId, progressData) {
  */
 router.post('/api/user-comment', async (req, res) => {
   try {
-    const { pr_id, file, line_start, line_end, diff_position, side, body, parent_id, type, title } = req.body;
-    
+    const { pr_id, file, line_start, line_end, diff_position, side, commit_sha, body, parent_id, type, title } = req.body;
+
     if (!pr_id || !file || !line_start || !body) {
-      return res.status(400).json({ 
-        error: 'Missing required fields: pr_id, file, line_start, body' 
+      return res.status(400).json({
+        error: 'Missing required fields: pr_id, file, line_start, body'
       });
     }
 
     const db = req.app.get('db');
-    
+
     // Verify PR exists
     const pr = await queryOne(db, `
       SELECT id FROM pr_metadata WHERE id = ?
     `, [pr_id]);
 
     if (!pr) {
-      return res.status(404).json({ 
-        error: 'Pull request not found' 
+      return res.status(404).json({
+        error: 'Pull request not found'
       });
     }
 
@@ -1573,9 +1574,9 @@ router.post('/api/user-comment', async (req, res) => {
 
     const result = await run(db, `
       INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end, diff_position, side,
+        pr_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
         type, title, body, status, parent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       pr_id,
       'user',
@@ -1583,8 +1584,9 @@ router.post('/api/user-comment', async (req, res) => {
       file,
       line_start,
       line_end || line_start,
-      diff_position || null,  // Store diff position for GitHub API
+      diff_position || null,  // Store diff position for legacy fallback
       validSide,              // LEFT for deleted lines, RIGHT for added/context
+      commit_sha || null,     // Commit SHA for new GitHub API (line/side/commit_id)
       type || 'comment',  // Use provided type or default to 'comment'
       title || null,       // Optional title from AI suggestion
       body.trim(),
@@ -1946,12 +1948,14 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
     // Get all active user comments for this PR
     const comments = await query(db, `
-      SELECT 
+      SELECT
         id,
         file,
         line_start,
         body,
-        diff_position
+        diff_position,
+        side,
+        commit_sha
       FROM comments
       WHERE pr_id = ? AND source = 'user' AND status = 'active'
       ORDER BY file, line_start
@@ -1976,13 +1980,17 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Continue without diff - GitHub client will handle missing positions
     }
 
-    // Format comments for GitHub API
-    // GitHubClient expects: path, line, body, and optionally diff_position
+    // Format comments for GitHub API using new line/side/commit_id approach
+    // The new API uses absolute line numbers anchored to a specific commit
+    // instead of the legacy position-based approach
+    const headSha = prData.head?.sha || null;
     const githubComments = comments.map(comment => ({
-      path: comment.file,      // file path
-      line: comment.line_start, // line number in the file (fallback)
-      body: comment.body,       // comment text
-      diff_position: comment.diff_position  // stored diff position from UI
+      path: comment.file,                // file path
+      line: comment.line_start,          // absolute line number in the file
+      body: comment.body,                // comment text
+      side: comment.side || 'RIGHT',     // LEFT for deleted lines, RIGHT for added/context
+      commit_id: comment.commit_sha || headSha,  // commit SHA for anchoring the comment
+      diff_position: comment.diff_position  // legacy fallback (deprecated)
     }));
 
     // Begin database transaction for submission tracking

@@ -2947,6 +2947,17 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: #0860ca;
 }
 
+/* Expanded context comment button - slightly different style to indicate limitation */
+.add-comment-btn.expanded-context-comment {
+  background: #6e7781;
+  opacity: 0.7;
+}
+
+.add-comment-btn.expanded-context-comment:hover {
+  background: #57606a;
+  opacity: 1;
+}
+
 /* Show comment button on hover */
 tr:hover .add-comment-btn {
   display: block;
@@ -3029,6 +3040,23 @@ tr.line-range-start .d2h-code-line-ctn {
   border: 1px solid #d1d9e0;
   border-radius: 8px;
   padding: 16px;
+}
+
+/* Warning for comments on expanded context lines without diff position */
+.expanded-context-warning {
+  background: #fff8c5;
+  border: 1px solid #d4a72c;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #6f5e00;
+}
+
+[data-theme="dark"] .expanded-context-warning {
+  background: #3b2e00;
+  border-color: #7d6600;
+  color: #e3b341;
 }
 
 .comment-form-header {

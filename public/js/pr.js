@@ -975,7 +975,16 @@ class PRManager {
       const commentButton = document.createElement('button');
       commentButton.className = 'add-comment-btn';
       commentButton.innerHTML = '+';
-      commentButton.title = 'Add comment (drag to select range)';
+
+      // Lines without diff_position (expanded context) may not be submittable to GitHub
+      // GitHub's position-based API only works for lines in the original diff
+      const hasDiffPosition = diffPosition !== undefined && diffPosition !== null;
+      if (hasDiffPosition) {
+        commentButton.title = 'Add comment (drag to select range)';
+      } else {
+        commentButton.title = 'Add comment (expanded context - may not submit to GitHub)';
+        commentButton.classList.add('expanded-context-comment');
+      }
 
       let dragStarted = false;
       let mouseDownTime = 0;
@@ -1954,7 +1963,19 @@ class PRManager {
       }
 
       const data = await response.json();
-      const comments = data.comments || [];
+      const rawComments = data.comments || [];
+
+      // Validate and sanitize side field for each comment
+      // Legacy data may have missing or invalid side values
+      const comments = rawComments.map(comment => {
+        if (comment.side !== 'LEFT' && comment.side !== 'RIGHT') {
+          if (comment.side) {
+            console.warn(`[loadUserComments] Invalid side value "${comment.side}" for comment ${comment.id}, defaulting to RIGHT`);
+          }
+          return { ...comment, side: 'RIGHT' };
+        }
+        return comment;
+      });
 
       console.log(`Loaded ${comments.length} user comments`);
 
@@ -2900,7 +2921,8 @@ class PRManager {
         body: formattedText,
         parent_id: suggestionId,  // Link to original AI suggestion
         type: suggestionType,     // Preserve the type
-        title: suggestionTitle    // Preserve the title
+        title: suggestionTitle,   // Preserve the title
+        commit_sha: this.currentPR.head_sha  // Anchor comment to PR head commit
       })
     });
 
@@ -3449,6 +3471,11 @@ class PRManager {
     const isRange = endLineNumber && endLineNumber !== lineNumber;
     const lineRangeText = isRange ? `Lines ${lineNumber}-${endLineNumber}` : `Line ${lineNumber}`;
 
+    // Check if this line has a diff position (needed for GitHub submission)
+    const hasDiffPosition = diffPosition !== undefined && diffPosition !== null && diffPosition !== '';
+    const expandedContextWarning = hasDiffPosition ? '' :
+      `<div class="expanded-context-warning">⚠️ Expanded context line - may not submit to GitHub</div>`;
+
     const formHTML = `
       <div class="user-comment-form">
         <div class="comment-form-header">
@@ -3456,6 +3483,7 @@ class PRManager {
           <span class="comment-title">Add comment</span>
           ${isRange ? `<span class="line-range-indicator">${lineRangeText}</span>` : ''}
         </div>
+        ${expandedContextWarning}
         <div class="comment-form-toolbar">
           <button type="button" class="btn btn-sm suggestion-btn" title="Insert a suggestion">
             <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
@@ -3737,6 +3765,7 @@ class PRManager {
           line_end: endLineNumber,
           diff_position: diffPosition,
           side: side,
+          commit_sha: this.currentPR.head_sha,  // Anchor comment to PR head commit
           body: content
         })
       });
