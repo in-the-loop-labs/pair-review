@@ -1662,7 +1662,7 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'user' AND status = 'active'
+      WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
       ORDER BY file, line_start, created_at
     `, [prMetadata.id]);
 
@@ -1709,7 +1709,7 @@ router.get('/api/pr/:id/user-comments', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'user' AND status = 'active'
+      WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
       ORDER BY file, line_start, created_at
     `, [prId]);
 
