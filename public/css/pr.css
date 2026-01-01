@@ -1918,13 +1918,13 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 /* Collapsed AI Suggestion Styles */
 .ai-suggestion.collapsed {
-  background: #12151a; /* Prototype --bg-secondary for collapsed state */
+  background: var(--color-bg-secondary, #f6f8fa); /* Use CSS variable for proper light/dark mode */
   opacity: 0.7;
   border-left-color: var(--color-text-tertiary, #6e7681);
   padding: 4px 8px;
   margin: 2px 16px;
   min-height: 28px;
-  border: 1px solid rgba(255, 255, 255, 0.06); /* Subtle border from prototype */
+  border: 1px solid var(--color-border-primary, rgba(0, 0, 0, 0.1)); /* Use CSS variable for border */
   display: flex;
   align-items: center;
 }
@@ -2025,9 +2025,9 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 [data-theme="dark"] .ai-suggestion.collapsed {
-  background: #181c23; /* Consistent with prototype --bg-tertiary */
+  background: var(--color-bg-secondary, #161b22); /* Use CSS variable for dark mode */
   border-left-color: var(--color-text-tertiary, #6e7681);
-  border-color: rgba(255, 255, 255, 0.06); /* Subtle border from prototype */
+  border-color: var(--color-border-primary, rgba(255, 255, 255, 0.1)); /* Use CSS variable for border */
 }
 
 [data-theme="dark"] .ai-suggestion.collapsed .ai-suggestion-collapsed-content {
