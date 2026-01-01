@@ -498,6 +498,18 @@ class PRManager {
     if (deletions) deletions.textContent = `-${pr.deletions || 0}`;
     if (filesCount) filesCount.textContent = `${pr.file_changes || 0} files`;
 
+    // Update commit SHA
+    const commitSha = document.getElementById('pr-commit-sha');
+    const commitContainer = document.getElementById('pr-commit');
+    if (commitSha && pr.head_sha) {
+      // Display short SHA (7 characters, like GitHub)
+      commitSha.textContent = pr.head_sha.substring(0, 7);
+      // Store full SHA for copying
+      if (commitContainer) {
+        commitContainer.dataset.fullSha = pr.head_sha;
+      }
+    }
+
     // Update GitHub link
     const githubLink = document.getElementById('github-link');
     if (githubLink && pr.html_url) {
@@ -534,6 +546,26 @@ class PRManager {
     if (refreshBtn && !refreshBtn._eventBound) {
       refreshBtn.addEventListener('click', () => this.refreshPR());
       refreshBtn._eventBound = true;
+    }
+
+    // Commit SHA copy button
+    const commitCopyBtn = document.getElementById('pr-commit-copy');
+    const commitContainer = document.getElementById('pr-commit');
+    if (commitCopyBtn && commitContainer && !commitCopyBtn._eventBound) {
+      commitCopyBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const fullSha = commitContainer.dataset.fullSha;
+        if (fullSha) {
+          try {
+            await navigator.clipboard.writeText(fullSha);
+            Toast.show('Commit SHA copied to clipboard', 'success');
+          } catch (err) {
+            console.error('Failed to copy SHA:', err);
+            Toast.show('Failed to copy SHA', 'error');
+          }
+        }
+      });
+      commitCopyBtn._eventBound = true;
     }
 
     // AI Panel toggle

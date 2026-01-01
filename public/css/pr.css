@@ -4848,6 +4848,54 @@ body::before {
   color: var(--color-text-tertiary);
 }
 
+/* Commit SHA display */
+.pr-commit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  background-color: var(--color-bg-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.pr-commit:hover {
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+
+.pr-commit svg {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.pr-commit-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-xs);
+  transition: all var(--transition-fast);
+  opacity: 0;
+}
+
+.pr-commit:hover .pr-commit-copy {
+  opacity: 1;
+}
+
+.pr-commit-copy:hover {
+  background-color: var(--color-bg-primary);
+  color: var(--color-accent-primary);
+}
+
 .header-right {
   display: flex;
   align-items: center;
