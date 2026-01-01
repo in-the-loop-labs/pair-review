@@ -2183,26 +2183,30 @@ class PRManager {
       const visibleLines = this.buildVisibleLinesSet(fileElement);
       console.log(`[findHiddenSuggestions] File ${file}: ${visibleLines.size} visible lines`);
 
-      // Group suggestions by their line range
-      const suggestionsByRange = new Map();
+      // Group suggestions by line_start, using max line_end for each group
+      // This ensures multi-line suggestions at the same start line are handled together
+      const suggestionsByStart = new Map();
       for (const suggestion of fileSuggestions) {
         const lineStart = suggestion.line_start;
         const lineEnd = suggestion.line_end || lineStart;
-        const key = `${lineStart}:${lineEnd}`;
+        const key = `${lineStart}`;
 
-        if (!suggestionsByRange.has(key)) {
-          suggestionsByRange.set(key, {
+        if (!suggestionsByStart.has(key)) {
+          suggestionsByStart.set(key, {
             file,
             line: lineStart,
             lineEnd: lineEnd,
             suggestions: []
           });
         }
-        suggestionsByRange.get(key).suggestions.push(suggestion);
+        // Use max lineEnd to cover all suggestions at this start line
+        const existing = suggestionsByStart.get(key);
+        existing.lineEnd = Math.max(existing.lineEnd, lineEnd);
+        existing.suggestions.push(suggestion);
       }
 
       // Check each unique line range - O(1) lookup per suggestion
-      for (const [, location] of suggestionsByRange) {
+      for (const [, location] of suggestionsByStart) {
         const { line, lineEnd } = location;
 
         // Check if any line in the range is visible
@@ -2314,13 +2318,183 @@ class PRManager {
       console.log(`[expandForSuggestion] Expanding entire gap`);
       await this.expandGapContext(targetControls, 'all', gapSize);
     } else {
-      // TODO: Implement partial gap expansion
-      // For now, expand all to ensure the line is visible
-      console.log(`[expandForSuggestion] Expanding entire gap (partial expansion not yet implemented)`);
-      await this.expandGapContext(targetControls, 'all', gapSize);
+      // Partial expansion: show only the needed range, keep gaps above/below
+      console.log(`[expandForSuggestion] Partial expansion: ${expandStart}-${expandEnd} within gap ${gapStart}-${gapEnd}`);
+      await this.expandGapRange(targetGapRow, targetControls, expandStart, expandEnd);
     }
 
     return true;
+  }
+
+  /**
+   * Expand a specific range within a gap, creating new gaps above/below as needed
+   * @param {Element} gapRow - The gap row element
+   * @param {Element} controls - The expand controls element with gap metadata
+   * @param {number} expandStart - First line to reveal
+   * @param {number} expandEnd - Last line to reveal
+   */
+  async expandGapRange(gapRow, controls, expandStart, expandEnd) {
+    const fileName = controls.dataset.fileName;
+    const gapStart = parseInt(controls.dataset.startLine);
+    const gapEnd = parseInt(controls.dataset.endLine);
+    const tbody = gapRow.closest('tbody');
+
+    if (!tbody) {
+      console.error('[expandGapRange] Could not find tbody');
+      return;
+    }
+
+    try {
+      if (!this.currentPR) {
+        throw new Error('No current PR data');
+      }
+
+      // Fetch the file content
+      const { owner, repo, number } = this.currentPR;
+      const response = await fetch(`/api/file-content-original/${encodeURIComponent(fileName)}?owner=${owner}&repo=${repo}&number=${number}`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to fetch file content');
+      }
+
+      if (!data.lines || data.lines.length === 0) {
+        console.error('[expandGapRange] Could not fetch file content');
+        return;
+      }
+
+      // Create a fragment to hold all new elements
+      const fragment = document.createDocumentFragment();
+
+      // 1. Create gap section ABOVE the expanded range (if needed)
+      const gapAboveStart = gapStart;
+      const gapAboveEnd = expandStart - 1;
+      const gapAboveSize = gapAboveEnd - gapAboveStart + 1;
+
+      if (gapAboveSize > 0) {
+        console.log(`[expandGapRange] Creating gap above: ${gapAboveStart}-${gapAboveEnd} (${gapAboveSize} lines)`);
+        const aboveRow = this.createGapRowElement(fileName, gapAboveStart, gapAboveEnd, gapAboveSize, 'above');
+        fragment.appendChild(aboveRow);
+      }
+
+      // 2. Create the expanded lines
+      const linesToShow = data.lines.slice(expandStart - 1, expandEnd);
+      linesToShow.forEach((content, idx) => {
+        const lineNumber = expandStart + idx;
+        const lineData = {
+          type: 'context',
+          oldNumber: lineNumber,
+          newNumber: lineNumber,
+          content: content || ''
+        };
+
+        const lineRow = this.renderDiffLine(fragment, lineData, fileName, null);
+        if (lineRow) {
+          lineRow.classList.add('newly-expanded');
+          setTimeout(() => {
+            if (lineRow && lineRow.classList) {
+              lineRow.classList.remove('newly-expanded');
+            }
+          }, 800);
+        }
+      });
+
+      // 3. Create gap section BELOW the expanded range (if needed)
+      const gapBelowStart = expandEnd + 1;
+      const gapBelowEnd = gapEnd;
+      const gapBelowSize = gapBelowEnd - gapBelowStart + 1;
+
+      if (gapBelowSize > 0) {
+        console.log(`[expandGapRange] Creating gap below: ${gapBelowStart}-${gapBelowEnd} (${gapBelowSize} lines)`);
+        const belowRow = this.createGapRowElement(fileName, gapBelowStart, gapBelowEnd, gapBelowSize, 'below');
+        fragment.appendChild(belowRow);
+      }
+
+      // Replace the original gap row with our new content
+      if (gapRow.parentNode) {
+        gapRow.parentNode.insertBefore(fragment, gapRow);
+        gapRow.remove();
+      }
+
+      console.log(`[expandGapRange] Expanded ${linesToShow.length} lines, created ${gapAboveSize > 0 ? 1 : 0} gap above, ${gapBelowSize > 0 ? 1 : 0} gap below`);
+
+    } catch (error) {
+      console.error('[expandGapRange] Error:', error);
+    }
+  }
+
+  /**
+   * Create a gap row element for partial expansion
+   * Similar to createGapSection but returns the element instead of appending to tbody
+   */
+  createGapRowElement(fileName, startLine, endLine, gapSize, position = 'between') {
+    const row = document.createElement('tr');
+    row.className = 'context-expand-row';
+
+    // Create line number cells
+    const oldLineCell = document.createElement('td');
+    oldLineCell.className = 'diff-line-num';
+    oldLineCell.style.padding = '0';
+    oldLineCell.style.textAlign = 'center';
+
+    const newLineCell = document.createElement('td');
+    newLineCell.className = 'diff-line-num';
+    newLineCell.style.padding = '0';
+    newLineCell.style.textAlign = 'center';
+
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'expand-button-container';
+
+    // Create expand controls with metadata
+    const expandControls = document.createElement('div');
+    expandControls.className = 'context-expand-controls';
+    expandControls.dataset.fileName = fileName;
+    expandControls.dataset.startLine = startLine;
+    expandControls.dataset.endLine = endLine;
+    expandControls.dataset.hiddenCount = gapSize;
+    expandControls.dataset.position = position;
+    expandControls.dataset.isGap = 'true';
+
+    // Create expand button
+    const expandBtn = document.createElement('button');
+    expandBtn.className = 'expand-button expand-all-short';
+    expandBtn.title = `Expand ${gapSize} lines`;
+    expandBtn.innerHTML = PRManager.FOLD_UP_DOWN_ICON;
+    expandBtn.addEventListener('click', () => this.expandGapContext(expandControls, 'all', gapSize));
+    buttonContainer.appendChild(expandBtn);
+    oldLineCell.appendChild(buttonContainer);
+
+    // Create content cell
+    const contentCell = document.createElement('td');
+    contentCell.className = 'diff-code expand-content clickable-expand';
+    contentCell.colSpan = 2;
+    contentCell.title = 'Expand all';
+
+    const contentWrapper = document.createElement('div');
+    contentWrapper.className = 'expand-content-wrapper';
+
+    const expandIcon = document.createElement('span');
+    expandIcon.className = 'expand-icon';
+    expandIcon.innerHTML = PRManager.FOLD_UP_DOWN_ICON;
+
+    const expandInfo = document.createElement('span');
+    expandInfo.className = 'expand-info';
+    expandInfo.textContent = `${gapSize} hidden lines`;
+
+    contentWrapper.appendChild(expandIcon);
+    contentWrapper.appendChild(expandInfo);
+    contentCell.appendChild(contentWrapper);
+
+    contentCell.addEventListener('click', () => {
+      this.expandGapContext(expandControls, 'all', gapSize);
+    });
+
+    row.expandControls = expandControls;
+    row.appendChild(oldLineCell);
+    row.appendChild(newLineCell);
+    row.appendChild(contentCell);
+
+    return row;
   }
 
   /**
