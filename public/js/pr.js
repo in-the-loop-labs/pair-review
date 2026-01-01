@@ -384,6 +384,9 @@ class PRManager {
         const scrollPosition = window.scrollY;
         const expandedFolders = new Set(this.expandedFolders);
 
+        // Update header with new PR data (includes commit SHA)
+        this.updateHeader(this.currentPR);
+
         // Just reload the files/diff without re-rendering the whole page
         await this.loadAndDisplayFiles();
 
