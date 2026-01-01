@@ -160,7 +160,12 @@ async function startServer(sharedDb = null) {
     app.get('/pr/:owner/:repo/:number', (req, res) => {
       res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
     });
-    
+
+    // Repository settings route - serves repo-settings.html
+    app.get('/settings/:owner/:repo', (req, res) => {
+      res.sendFile(path.join(__dirname, '..', 'public', 'repo-settings.html'));
+    });
+
     // Health check endpoint
     app.get('/health', (req, res) => {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
