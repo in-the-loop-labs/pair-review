@@ -188,49 +188,39 @@ class GitHubClient {
           continue;
         }
 
-        // Use the new line/side/commit_id approach for all comments
+        // Use the new line/side/commit_id approach for ALL comments
         // This is more stable than position-based comments and works for lines
         // outside the diff context (e.g., expanded context lines)
         const side = comment.side || 'RIGHT';  // LEFT for deleted lines, RIGHT for added/context
         const commitId = comment.commit_id;
 
-        if (commitId) {
-          // New approach: use line/side/commit_id (preferred)
-          // This works for any line in the file, not just lines in diff hunks
-          console.log(`Using line-based comment for ${comment.path}:${comment.line} (side: ${side}, commit: ${commitId.substring(0, 7)})`);
-          formattedComments.push({
-            path: comment.path,
-            line: comment.line,
-            side: side,
-            commit_id: commitId,
-            body: comment.body
-          });
-        } else {
-          // Legacy fallback: try position-based if no commit_id available
-          let position = comment.diff_position;
-          if (!position || position === null) {
-            position = this.calculateDiffPosition(diffContent, comment.path, comment.line);
-          }
-
-          if (position === -1 || position === null) {
-            // If we can't calculate position and don't have commit_id, use line-based without commit
-            console.warn(`No commit_id or diff position for ${comment.path}:${comment.line}, using line-based comment without commit anchor`);
-            formattedComments.push({
-              path: comment.path,
-              line: comment.line,
-              side: side,
-              body: comment.body
-            });
-          } else {
-            // Legacy: use position-based comment
-            console.log(`Using legacy diff position ${position} for ${comment.path}:${comment.line}`);
-            formattedComments.push({
-              path: comment.path,
-              position: position,
-              body: comment.body
-            });
-          }
+        if (!commitId) {
+          console.error(`Missing commit_id for comment on ${comment.path}:${comment.line} - comment will likely fail`);
         }
+
+        // Always use line/side approach (GitHub's modern API)
+        // Note: commit_id is set at the review level, not per-comment
+        const isRange = comment.start_line && comment.start_line !== comment.line;
+        if (isRange) {
+          console.log(`Formatting range comment for ${comment.path}:${comment.start_line}-${comment.line} (side: ${side})`);
+        } else {
+          console.log(`Formatting comment for ${comment.path}:${comment.line} (side: ${side})`);
+        }
+
+        const formatted = {
+          path: comment.path,
+          line: comment.line,
+          side: side,
+          body: comment.body
+        };
+
+        // For multi-line comments, add start_line and start_side
+        if (isRange) {
+          formatted.start_line = comment.start_line;
+          formatted.start_side = comment.start_side || side;
+        }
+
+        formattedComments.push(formatted);
       }
 
       console.log(`Formatted ${formattedComments.length} comments for ${reviewType}`);
@@ -247,6 +237,14 @@ class GitHubClient {
         }
       }
 
+      // Extract commit_id from first comment (all comments should have the same one)
+      const commitId = comments.length > 0 ? comments[0].commit_id : null;
+      if (commitId) {
+        console.log(`Using commit_id for review: ${commitId.substring(0, 7)}`);
+      } else {
+        console.warn('No commit_id available - review may fail for lines outside diff');
+      }
+
       // Build GitHub API payload
       const payload = {
         owner,
@@ -255,7 +253,12 @@ class GitHubClient {
         body: body || '',
         comments: formattedComments
       };
-      
+
+      // Add commit_id at review level (required for line/side comments)
+      if (commitId) {
+        payload.commit_id = commitId;
+      }
+
       // Only include event field for non-DRAFT reviews
       if (event !== 'DRAFT') {
         payload.event = event;

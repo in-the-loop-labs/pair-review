@@ -1952,6 +1952,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         id,
         file,
         line_start,
+        line_end,
         body,
         diff_position,
         side,
@@ -1982,16 +1983,35 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
     // Format comments for GitHub API using new line/side/commit_id approach
     // The new API uses absolute line numbers anchored to a specific commit
-    // instead of the legacy position-based approach
-    const headSha = prData.head?.sha || null;
-    const githubComments = comments.map(comment => ({
-      path: comment.file,                // file path
-      line: comment.line_start,          // absolute line number in the file
-      body: comment.body,                // comment text
-      side: comment.side || 'RIGHT',     // LEFT for deleted lines, RIGHT for added/context
-      commit_id: comment.commit_sha || headSha,  // commit SHA for anchoring the comment
-      diff_position: comment.diff_position  // legacy fallback (deprecated)
-    }));
+    // This works for ANY line in the file, including expanded context lines
+    const headSha = prData.head_sha || null;
+    if (!headSha) {
+      console.warn('No head_sha found in PR data - comments may fail to submit');
+    }
+
+    const githubComments = comments.map(comment => {
+      const side = comment.side || 'RIGHT';
+      const commitId = comment.commit_sha || headSha;
+      const isRange = comment.line_end && comment.line_end !== comment.line_start;
+
+      console.log(`Formatting comment: ${comment.file}:${comment.line_start} side=${side} commit=${commitId?.substring(0, 7)}`);
+
+      const formatted = {
+        path: comment.file,
+        line: isRange ? comment.line_end : comment.line_start,
+        body: comment.body,
+        side: side,
+        commit_id: commitId
+      };
+
+      // For multi-line comments, add start_line and start_side
+      if (isRange) {
+        formatted.start_line = comment.line_start;
+        formatted.start_side = side;
+      }
+
+      return formatted;
+    });
 
     // Begin database transaction for submission tracking
     await run(db, 'BEGIN TRANSACTION');
@@ -2043,7 +2063,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
       console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
 
-      res.json({ 
+      res.json({
         success: true,
         message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} GitHub`,
         github_url: githubReview.html_url,

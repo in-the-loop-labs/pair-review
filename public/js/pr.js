@@ -3231,15 +3231,16 @@ class PRManager {
   /**
    * Start line range selection
    */
-  startRangeSelection(row, lineNumber, fileName) {
+  startRangeSelection(row, lineNumber, fileName, side = 'RIGHT') {
     // Clear any existing selection
     this.clearRangeSelection();
 
-    // Set start of range
+    // Set start of range (including side for GitHub API)
     this.rangeSelectionStart = {
       row: row,
       lineNumber: lineNumber,
-      fileName: fileName
+      fileName: fileName,
+      side: side
     };
 
     // Add visual indicator
@@ -3279,8 +3280,11 @@ class PRManager {
     // Get diff position from the end row (GitHub uses position at end of range)
     const diffPosition = endRow.dataset.diffPosition;
 
+    // Get side from the range start (for GitHub API)
+    const side = this.rangeSelectionStart.side || 'RIGHT';
+
     // Show comment form with range
-    this.showCommentForm(endRow, minLine, fileName, diffPosition, maxLine);
+    this.showCommentForm(endRow, minLine, fileName, diffPosition, maxLine, side);
   }
 
   /**
@@ -3443,16 +3447,18 @@ class PRManager {
       const minLine = Math.min(lineNumber, actualEndLine);
       const maxLine = Math.max(lineNumber, actualEndLine);
 
-      // Set selection state
+      // Set selection state (including side for GitHub API)
       this.rangeSelectionStart = {
         row: targetRow,
         lineNumber: minLine,
-        fileName: fileName
+        fileName: fileName,
+        side: side
       };
       this.rangeSelectionEnd = {
         row: targetRow,
         lineNumber: maxLine,
-        fileName: fileName
+        fileName: fileName,
+        side: side
       };
 
       // Highlight the line(s)
