@@ -5405,9 +5405,12 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--ai-primary, #f59e0b);
 }
 
-/* Dismissed findings - grayed out with strikethrough */
+/* Dismissed findings - grayed out with strikethrough and gray left border */
 .finding-item.finding-dismissed {
-  opacity: 0.5;
+  opacity: 0.6;
+  border-left: 3px dashed var(--color-border-secondary, #444c56);
+  padding-left: 9px; /* Compensate for border width */
+  position: relative;
 }
 
 .finding-item.finding-dismissed .finding-title {
@@ -5419,10 +5422,28 @@ body:not([data-theme="dark"]) .theme-icon-light {
   opacity: 0.5;
 }
 
-/* Adopted findings - faint green success state */
+/* Status indicator icon in lower right corner for dismissed - no-entry symbol (circle with diagonal line) */
+.finding-item.finding-dismissed::after {
+  content: '';
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  width: 14px;
+  height: 14px;
+  /* No-entry / prohibition symbol - circle with diagonal line like Ghostbusters */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%236e7681' stroke-width='1.5'%3E%3Ccircle cx='8' cy='8' r='6.5'/%3E%3Cline x1='3.4' y1='12.6' x2='12.6' y2='3.4'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  opacity: 0.8;
+}
+
+/* Adopted findings - brighter green success state with solid left border */
 .finding-item.finding-adopted {
-  background: rgba(46, 160, 67, 0.08);
-  border-color: rgba(46, 160, 67, 0.2);
+  background: rgba(46, 160, 67, 0.15);
+  border-color: rgba(46, 160, 67, 0.35);
+  border-left: 3px solid var(--color-success, #2ea043);
+  padding-left: 9px; /* Compensate for border width */
+  position: relative;
 }
 
 .finding-item.finding-adopted .finding-title {
@@ -5431,7 +5452,20 @@ body:not([data-theme="dark"]) .theme-icon-light {
 
 .finding-item.finding-adopted .finding-icon {
   color: var(--color-success, #2ea043);
-  opacity: 0.7;
+  opacity: 0.85;
+}
+
+/* Status indicator icon in lower right corner for adopted */
+.finding-item.finding-adopted::after {
+  content: '';
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  width: 14px;
+  height: 14px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%232ea043'%3E%3Cpath d='M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
 }
 
 .finding-item.finding-info .finding-icon {
