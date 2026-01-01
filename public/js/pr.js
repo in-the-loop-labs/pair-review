@@ -555,14 +555,16 @@ class PRManager {
       commitCopyBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const fullSha = commitContainer.dataset.fullSha;
-        if (fullSha) {
-          try {
-            await navigator.clipboard.writeText(fullSha);
-            Toast.show('Commit SHA copied to clipboard', 'success');
-          } catch (err) {
-            console.error('Failed to copy SHA:', err);
-            Toast.show('Failed to copy SHA', 'error');
-          }
+        if (!fullSha) {
+          window.toast.showError('Commit SHA not available yet');
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(fullSha);
+          window.toast.showSuccess('Commit SHA copied to clipboard');
+        } catch (err) {
+          console.error('Failed to copy SHA:', err);
+          window.toast.showError('Failed to copy SHA');
         }
       });
       commitCopyBtn._eventBound = true;
