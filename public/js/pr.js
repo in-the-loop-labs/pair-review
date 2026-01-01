@@ -956,8 +956,10 @@ class PRManager {
     lineNumContent.className = 'line-number-content';
     lineNumContent.innerHTML = `<span class="line-num1">${line.oldNumber || ''}</span><span class="line-num2">${line.newNumber || ''}</span>`;
     
-    // Add comment button (only for insert and context lines)
-    if (line.type === 'insert' || line.type === 'context') {
+    // Add comment button for all line types (insert, context, delete)
+    // Use newNumber for insert/context, oldNumber for delete
+    const lineNumber = line.newNumber || line.oldNumber;
+    if (lineNumber) {
       const commentButton = document.createElement('button');
       commentButton.className = 'add-comment-btn';
       commentButton.innerHTML = '+';
@@ -976,9 +978,10 @@ class PRManager {
         // Only start drag selection on mousemove, not on mousedown
         this.potentialDragStart = {
           row: row,
-          lineNumber: line.newNumber,
+          lineNumber: lineNumber,
           fileName: fileName,
-          button: commentButton
+          button: commentButton,
+          isDeletedLine: line.type === 'delete'
         };
       };
 
@@ -997,7 +1000,7 @@ class PRManager {
         } else {
           // Single line comment (clear any single-line selection first)
           this.clearRangeSelection();
-          this.showCommentForm(row, line.newNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos);
+          this.showCommentForm(row, lineNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos);
         }
 
         this.potentialDragStart = null;
@@ -1006,15 +1009,15 @@ class PRManager {
       lineNumContent.appendChild(commentButton);
     }
 
-    // Add mouseover handler to rows for drag selection
-    if (line.newNumber && (line.type === 'insert' || line.type === 'context')) {
+    // Add mouseover handler to rows for drag selection (all line types with a line number)
+    if (lineNumber) {
       row.style.userSelect = 'none';
 
       // Track drag on mouseover the entire row
       row.onmouseover = (e) => {
         // Start drag if we have a potential drag and mouse moved to different row
         if (this.potentialDragStart && !this.isDraggingRange &&
-            this.potentialDragStart.lineNumber !== line.newNumber) {
+            this.potentialDragStart.lineNumber !== lineNumber) {
           this.startDragSelection(
             this.potentialDragStart.row,
             this.potentialDragStart.lineNumber,
@@ -1025,7 +1028,7 @@ class PRManager {
 
         if (this.isDraggingRange) {
           e.preventDefault();
-          this.updateDragSelection(row, line.newNumber, fileName);
+          this.updateDragSelection(row, lineNumber, fileName);
         }
       };
 
@@ -1034,7 +1037,7 @@ class PRManager {
         if (this.isDraggingRange) {
           e.preventDefault();
           const diffPos = row.dataset.diffPosition;
-          this.completeDragSelection(row, line.newNumber, fileName);
+          this.completeDragSelection(row, lineNumber, fileName);
 
           // Show comment form after completing drag
           if (this.rangeSelectionStart && this.rangeSelectionEnd) {
