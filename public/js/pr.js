@@ -189,6 +189,9 @@ class PRManager {
    * Initialize PR manager
    */
   init() {
+    // Setup delegated event handlers for comment forms
+    this.setupCommentFormDelegation();
+
     // Check if we have PR context from URL path (e.g., /pr/owner/repo/number)
     const pathMatch = window.location.pathname.match(/^\/pr\/([^\/]+)\/([^\/]+)\/(\d+)$/);
     if (pathMatch) {
@@ -211,6 +214,57 @@ class PRManager {
         this.showError('Invalid PR format in URL parameter');
       }
     }
+  }
+
+  /**
+   * Setup delegated event handler for comment form keyboard shortcuts.
+   * Uses event delegation on #diff-container to avoid memory leaks from
+   * attaching listeners directly to dynamically created textareas.
+   */
+  setupCommentFormDelegation() {
+    const diffContainer = document.getElementById('diff-container');
+    if (!diffContainer) {
+      // Will be set up when diff container is available
+      return;
+    }
+
+    diffContainer.addEventListener('keydown', (e) => {
+      const target = e.target;
+
+      // Handle new comment form textarea (.comment-textarea)
+      if (target.classList.contains('comment-textarea')) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this.hideCommentForm();
+          this.clearRangeSelection();
+        } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          const formRow = target.closest('.comment-form-row');
+          if (formRow) {
+            this.saveUserComment(target, formRow);
+          }
+        }
+        return;
+      }
+
+      // Handle edit comment textarea (.comment-edit-textarea)
+      if (target.classList.contains('comment-edit-textarea')) {
+        // Extract comment ID from the textarea id (format: edit-comment-{id})
+        const textareaId = target.id;
+        const match = textareaId.match(/^edit-comment-(.+)$/);
+        if (match) {
+          const commentId = match[1];
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            this.cancelEditUserComment(commentId);
+          } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            this.saveEditedUserComment(commentId);
+          }
+        }
+        return;
+      }
+    });
   }
 
   /**
@@ -3533,7 +3587,7 @@ class PRManager {
         </div>
         <textarea
           class="comment-textarea"
-          placeholder="Leave a comment..."
+          placeholder="Leave a comment... (Cmd/Ctrl+Enter to save)"
           data-line="${lineNumber}"
           data-line-end="${endLineNumber || lineNumber}"
           data-file="${fileName}"
@@ -3587,17 +3641,8 @@ class PRManager {
       this.updateSuggestionButtonState(textarea, suggestionBtn);
     });
 
-    // Add keyboard shortcuts for Cmd/Ctrl+Enter to save and Escape to cancel
-    textarea.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        this.hideCommentForm();
-        this.clearRangeSelection();
-      } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        this.saveUserComment(textarea, formRow);
-      }
-    });
+    // Keyboard shortcuts (Escape, Cmd/Ctrl+Enter) are handled by delegated
+    // event listener in setupCommentFormDelegation() to avoid memory leaks
 
     // Store reference for cleanup
     this.currentCommentForm = formRow;
@@ -4071,16 +4116,8 @@ class PRManager {
         this.updateSuggestionButtonState(textarea, suggestionBtn);
       });
 
-      // Add keyboard shortcuts
-      textarea.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          this.cancelEditUserComment(comment.id);
-        } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-          e.preventDefault();
-          this.saveEditedUserComment(comment.id);
-        }
-      });
+      // Keyboard shortcuts (Escape, Cmd/Ctrl+Enter) are handled by delegated
+      // event listener in setupCommentFormDelegation() to avoid memory leaks
     }
   }
 
@@ -4194,23 +4231,15 @@ class PRManager {
           this.updateSuggestionButtonState(textarea, suggestionBtn);
         });
 
-        // Add keyboard shortcuts
-        textarea.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape') {
-            e.preventDefault();
-            this.cancelEditUserComment(commentId);
-          } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-            e.preventDefault();
-            this.saveEditedUserComment(commentId);
-          }
-        });
+        // Keyboard shortcuts (Escape, Cmd/Ctrl+Enter) are handled by delegated
+        // event listener in setupCommentFormDelegation() to avoid memory leaks
       }
     } catch (error) {
       console.error('Error editing comment:', error);
       alert('Failed to edit comment');
     }
   }
-  
+
   /**
    * Save edited user comment
    */
