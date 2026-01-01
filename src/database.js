@@ -44,26 +44,27 @@ const SCHEMA_SQL = {
       pr_id INTEGER,
       source TEXT,
       author TEXT,
-      
+
       ai_run_id TEXT,
       ai_level INTEGER,
       ai_confidence REAL,
-      
+
       file TEXT,
       line_start INTEGER,
       line_end INTEGER,
       diff_position INTEGER,
+      side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT')),
       type TEXT,
       title TEXT,
       body TEXT,
-      
+
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
       adopted_as_id INTEGER,
       parent_id INTEGER,
-      
+
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      
+
       FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
       FOREIGN KEY (parent_id) REFERENCES comments(id)
     )
@@ -194,10 +195,10 @@ function checkReviewsTableMigrations(db, callback) {
     if (error) {
       return callback(error);
     }
-    
+
     // Check if review_id column exists
     const hasReviewId = columns && columns.some(col => col.name === 'review_id');
-    
+
     if (!hasReviewId) {
       console.log('Adding review_id column to reviews table...');
       db.run(`ALTER TABLE reviews ADD COLUMN review_id INTEGER`, (alterError) => {
@@ -206,6 +207,40 @@ function checkReviewsTableMigrations(db, callback) {
           return callback(alterError);
         }
         console.log('Successfully added review_id column');
+        checkCommentsSideMigration(db, callback);
+      });
+    } else {
+      // Continue to next migration
+      checkCommentsSideMigration(db, callback);
+    }
+  });
+}
+
+/**
+ * Check and run migration for side column in comments table
+ * The side field indicates LEFT (deleted lines) or RIGHT (added/context lines)
+ * for proper GitHub API submission
+ * @param {sqlite3.Database} db - Database instance
+ * @param {Function} callback - Callback function
+ */
+function checkCommentsSideMigration(db, callback) {
+  db.all(`PRAGMA table_info(comments)`, (error, columns) => {
+    if (error) {
+      return callback(error);
+    }
+
+    // Check if side column exists
+    const hasSide = columns && columns.some(col => col.name === 'side');
+
+    if (!hasSide) {
+      console.log('Adding side column to comments table...');
+      // Default to RIGHT since most comments are on added/context lines
+      db.run(`ALTER TABLE comments ADD COLUMN side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT'))`, (alterError) => {
+        if (alterError && !alterError.message.includes('duplicate column name')) {
+          console.error('Error adding side column:', alterError.message);
+          return callback(alterError);
+        }
+        console.log('Successfully added side column');
         callback(null);
       });
     } else {

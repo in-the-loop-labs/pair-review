@@ -938,10 +938,22 @@ class PRManager {
                    'd2h-cntx';
     
     // Add data attributes for comment functionality
-    if (line.newNumber) {
-      row.dataset.lineNumber = line.newNumber;
+    // Track side (LEFT for deleted lines, RIGHT for added/context lines) for GitHub API
+    if (line.type === 'delete') {
+      // Deleted lines: use oldNumber and LEFT side
+      row.dataset.lineNumber = line.oldNumber;
+      row.dataset.oldLineNumber = line.oldNumber;
+      row.dataset.side = 'LEFT';
       row.dataset.fileName = fileName;
-      // Add diff position for GitHub API positioning
+      if (diffPosition !== undefined) {
+        row.dataset.diffPosition = diffPosition;
+      }
+    } else if (line.newNumber) {
+      // Added/context lines: use newNumber and RIGHT side
+      row.dataset.lineNumber = line.newNumber;
+      row.dataset.newLineNumber = line.newNumber;
+      row.dataset.side = 'RIGHT';
+      row.dataset.fileName = fileName;
       if (diffPosition !== undefined) {
         row.dataset.diffPosition = diffPosition;
       }
@@ -976,12 +988,15 @@ class PRManager {
         mouseDownTime = Date.now();
 
         // Only start drag selection on mousemove, not on mousedown
+        // Track side for GitHub API (LEFT for deleted lines, RIGHT for added/context)
+        const side = line.type === 'delete' ? 'LEFT' : 'RIGHT';
         this.potentialDragStart = {
           row: row,
           lineNumber: lineNumber,
           fileName: fileName,
           button: commentButton,
-          isDeletedLine: line.type === 'delete'
+          isDeletedLine: line.type === 'delete',
+          side: side
         };
       };
 
@@ -990,17 +1005,20 @@ class PRManager {
         e.preventDefault();
         e.stopPropagation();
         const diffPos = row.dataset.diffPosition;
+        const side = row.dataset.side || 'RIGHT';
 
         // If we have a completed drag selection, use it
         if (this.rangeSelectionStart?.lineNumber && this.rangeSelectionEnd?.lineNumber &&
             this.rangeSelectionStart.lineNumber !== this.rangeSelectionEnd.lineNumber) {
           const minLine = Math.min(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
           const maxLine = Math.max(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
-          this.showCommentForm(row, minLine, fileName, diffPos, maxLine);
+          // Use the side from the range selection if available
+          const rangeSide = this.rangeSelectionStart.side || side;
+          this.showCommentForm(row, minLine, fileName, diffPos, maxLine, rangeSide);
         } else {
           // Single line comment (clear any single-line selection first)
           this.clearRangeSelection();
-          this.showCommentForm(row, lineNumber, fileName, diffPos);
+          this.showCommentForm(row, lineNumber, fileName, diffPos, null, side);
         }
 
         this.potentialDragStart = null;
@@ -1021,7 +1039,8 @@ class PRManager {
           this.startDragSelection(
             this.potentialDragStart.row,
             this.potentialDragStart.lineNumber,
-            this.potentialDragStart.fileName
+            this.potentialDragStart.fileName,
+            this.potentialDragStart.side
           );
           this.potentialDragStart = null;
         }
@@ -1043,7 +1062,9 @@ class PRManager {
           if (this.rangeSelectionStart && this.rangeSelectionEnd) {
             const minLine = Math.min(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
             const maxLine = Math.max(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
-            this.showCommentForm(row, minLine, fileName, diffPos, maxLine);
+            // Use the side from the range selection start
+            const side = this.rangeSelectionStart.side || 'RIGHT';
+            this.showCommentForm(row, minLine, fileName, diffPos, maxLine, side);
           }
         }
       };
@@ -1953,22 +1974,30 @@ class PRManager {
    * Display user comments inline with diff
    */
   async displayUserComments(comments) {
-    console.log(`[UI] Displaying ${comments.length} user comments`);
-
-    // Clear existing user comment rows before displaying new ones
-    const existingCommentRows = document.querySelectorAll('.user-comment-row');
-    existingCommentRows.forEach(row => row.remove());
-
-    // Auto-expand hidden lines for comments that target non-visible lines
-    // Reuse the same logic as AI suggestions - comments have the same structure
-    const hiddenComments = this.findHiddenSuggestions(comments);
-    if (hiddenComments.length > 0) {
-      console.log(`[UI] Found ${hiddenComments.length} user comments targeting hidden lines, expanding...`);
-      for (const hidden of hiddenComments) {
-        await this.expandForSuggestion(hidden.file, hidden.line, hidden.lineEnd);
-      }
-      console.log(`[UI] Finished expanding hidden lines for user comments`);
+    // Concurrency guard: prevent multiple simultaneous executions
+    if (this._isDisplayingComments) {
+      console.log('[UI] displayUserComments already in progress, skipping');
+      return;
     }
+    this._isDisplayingComments = true;
+
+    try {
+      console.log(`[UI] Displaying ${comments.length} user comments`);
+
+      // Clear existing user comment rows before displaying new ones
+      const existingCommentRows = document.querySelectorAll('.user-comment-row');
+      existingCommentRows.forEach(row => row.remove());
+
+      // Auto-expand hidden lines for comments that target non-visible lines
+      // Reuse the same logic as AI suggestions - comments have the same structure
+      const hiddenComments = this.findHiddenSuggestions(comments);
+      if (hiddenComments.length > 0) {
+        console.log(`[UI] Found ${hiddenComments.length} user comments targeting hidden lines, expanding...`);
+        for (const hidden of hiddenComments) {
+          await this.expandForSuggestion(hidden.file, hidden.line, hidden.lineEnd);
+        }
+        console.log(`[UI] Finished expanding hidden lines for user comments`);
+      }
 
     // Group comments by file and line
     const commentsByLocation = {};
@@ -2017,8 +2046,12 @@ class PRManager {
       }
     });
 
-    // Update the comment count in the review button
-    this.updateCommentCount();
+      // Update the comment count in the review button
+      this.updateCommentCount();
+    } finally {
+      // Always clear the guard, even if an error occurred
+      this._isDisplayingComments = false;
+    }
   }
 
   /**
@@ -2096,16 +2129,30 @@ class PRManager {
 
   /**
    * Get the line number from a diff row
-   * Handles multiple selector patterns used in different diff rendering modes:
-   * - .line-num2: Primary selector for new/modified line numbers
-   * - .line-num-new: Alternative selector in some diff views
-   * - .d2h-code-linenumber .line-num2: Nested selector in custom diff rendering
+   * Handles both added/context lines (new line numbers) and deleted lines (old line numbers).
+   * Priority order:
+   * 1. dataset.lineNumber - most reliable, set during renderDiffLine
+   * 2. .line-num2: new line numbers for added/context lines
+   * 3. .line-num1: old line numbers for deleted lines
+   * 4. Nested selectors as fallback
    * @param {Element} row - Table row element
    * @returns {number|null} The line number or null if not found
    */
   getLineNumber(row) {
-    // Primary: direct .line-num2 (most common)
+    // Primary: use dataset.lineNumber if available (set during renderDiffLine)
+    // This correctly handles both deleted lines (uses oldNumber) and added/context lines (uses newNumber)
+    if (row.dataset?.lineNumber) {
+      const datasetNum = parseInt(row.dataset.lineNumber);
+      if (!isNaN(datasetNum)) return datasetNum;
+    }
+
+    // Fallback: check span elements
+    // For added/context lines, check .line-num2 (new line number)
     let lineNum = row.querySelector('.line-num2')?.textContent?.trim();
+    if (lineNum) return parseInt(lineNum);
+
+    // For deleted lines, check .line-num1 (old line number)
+    lineNum = row.querySelector('.line-num1')?.textContent?.trim();
     if (lineNum) return parseInt(lineNum);
 
     // Alternative: .line-num-new
@@ -2146,29 +2193,38 @@ class PRManager {
   }
 
   /**
-   * Find suggestions that target lines not currently visible in the DOM
-   * @param {Array} suggestions - Array of AI suggestions
+   * Find items (suggestions or comments) that target lines not currently visible in the DOM.
+   * This method is used for both AI suggestions and user comments since they share the same
+   * structure (file, line_start, line_end) and both need auto-expansion of collapsed diff sections.
+   *
+   * Items are considered "hidden" when they target lines that are:
+   * - Inside a collapsed gap between diff hunks
+   * - Inside a collapsed generated file section
+   *
+   * @param {Array} items - Array of items with {file, line_start, line_end} properties
+   *                        Works with both AI suggestions and user comments
    * @returns {Array} Array of { file, line, lineEnd, suggestions } for hidden lines
+   *                  Note: property named "suggestions" for backwards compatibility but contains items
    */
-  findHiddenSuggestions(suggestions) {
-    const hiddenSuggestions = [];
+  findHiddenSuggestions(items) {
+    const hiddenItems = [];
 
-    // Group suggestions by file first, then by line range
-    const suggestionsByFile = new Map();
-    suggestions.forEach(suggestion => {
-      if (!suggestionsByFile.has(suggestion.file)) {
-        suggestionsByFile.set(suggestion.file, []);
+    // Group items by file first, then by line range
+    const itemsByFile = new Map();
+    items.forEach(item => {
+      if (!itemsByFile.has(item.file)) {
+        itemsByFile.set(item.file, []);
       }
-      suggestionsByFile.get(suggestion.file).push(suggestion);
+      itemsByFile.get(item.file).push(item);
     });
 
     // Process each file once, building visibility set once per file (O(m) per file)
-    for (const [file, fileSuggestions] of suggestionsByFile) {
+    for (const [file, fileItems] of itemsByFile) {
       const fileElement = this.findFileElement(file);
 
       if (!fileElement) {
         console.warn(`[findHiddenSuggestions] Could not find file element for: ${file}`);
-        // All suggestions for this file are "hidden" (file not in diff)
+        // All items for this file are "hidden" (file not in diff)
         continue;
       }
 
@@ -2176,30 +2232,30 @@ class PRManager {
       const visibleLines = this.buildVisibleLinesSet(fileElement);
       console.log(`[findHiddenSuggestions] File ${file}: ${visibleLines.size} visible lines`);
 
-      // Group suggestions by line_start, using max line_end for each group
-      // This ensures multi-line suggestions at the same start line are handled together
-      const suggestionsByStart = new Map();
-      for (const suggestion of fileSuggestions) {
-        const lineStart = suggestion.line_start;
-        const lineEnd = suggestion.line_end || lineStart;
+      // Group items by line_start, using max line_end for each group
+      // This ensures multi-line items at the same start line are handled together
+      const itemsByStart = new Map();
+      for (const item of fileItems) {
+        const lineStart = item.line_start;
+        const lineEnd = item.line_end || lineStart;
         const key = `${lineStart}`;
 
-        if (!suggestionsByStart.has(key)) {
-          suggestionsByStart.set(key, {
+        if (!itemsByStart.has(key)) {
+          itemsByStart.set(key, {
             file,
             line: lineStart,
             lineEnd: lineEnd,
-            suggestions: []
+            suggestions: []  // Named "suggestions" for backwards compatibility
           });
         }
-        // Use max lineEnd to cover all suggestions at this start line
-        const existing = suggestionsByStart.get(key);
+        // Use max lineEnd to cover all items at this start line
+        const existing = itemsByStart.get(key);
         existing.lineEnd = Math.max(existing.lineEnd, lineEnd);
-        existing.suggestions.push(suggestion);
+        existing.suggestions.push(item);
       }
 
-      // Check each unique line range - O(1) lookup per suggestion
-      for (const [, location] of suggestionsByStart) {
+      // Check each unique line range - O(1) lookup per item
+      for (const [, location] of itemsByStart) {
         const { line, lineEnd } = location;
 
         // Check if any line in the range is visible
@@ -2213,12 +2269,12 @@ class PRManager {
 
         if (!anyLineVisible) {
           console.log(`[findHiddenSuggestions] Hidden: ${file}:${line}-${lineEnd}`);
-          hiddenSuggestions.push(location);
+          hiddenItems.push(location);
         }
       }
     }
 
-    return hiddenSuggestions;
+    return hiddenItems;
   }
 
   /**
@@ -2492,14 +2548,24 @@ class PRManager {
 
   /**
    * Display AI suggestions inline with diff
+   * Uses a concurrency guard to prevent multiple simultaneous executions
    */
   async displayAISuggestions(suggestions) {
-    console.log(`[UI] Displaying ${suggestions.length} AI suggestions`);
+    // Concurrency guard: prevent multiple simultaneous executions
+    // This avoids duplicated/interleaved suggestions when called rapidly
+    if (this._isDisplayingSuggestions) {
+      console.log('[UI] displayAISuggestions already in progress, skipping');
+      return;
+    }
+    this._isDisplayingSuggestions = true;
 
-    // Clear existing AI suggestion rows before displaying new ones
-    const existingSuggestionRows = document.querySelectorAll('.ai-suggestion-row');
-    existingSuggestionRows.forEach(row => row.remove());
-    console.log(`[UI] Removed ${existingSuggestionRows.length} existing suggestion rows`);
+    try {
+      console.log(`[UI] Displaying ${suggestions.length} AI suggestions`);
+
+      // Clear existing AI suggestion rows before displaying new ones
+      const existingSuggestionRows = document.querySelectorAll('.ai-suggestion-row');
+      existingSuggestionRows.forEach(row => row.remove());
+      console.log(`[UI] Removed ${existingSuggestionRows.length} existing suggestion rows`);
 
     // Auto-expand hidden lines for suggestions that target non-visible lines
     const hiddenSuggestions = this.findHiddenSuggestions(suggestions);
@@ -2556,8 +2622,14 @@ class PRManager {
       const fileElement = this.findFileElement(file);
 
       if (!fileElement) {
-        console.warn(`[UI] Could not find file element for: ${file}. Available files:`,
-          Array.from(document.querySelectorAll('.d2h-file-wrapper')).map(w => w.dataset.fileName));
+        // This can happen when AI suggests a file path that doesn't exist in the diff
+        // Common with level 3 (codebase context) analysis which may reference files outside the PR
+        const availableFiles = Array.from(document.querySelectorAll('.d2h-file-wrapper')).map(w => w.dataset.fileName);
+        console.warn(`[UI] File not found in diff: "${file}". This suggestion may reference a file outside the PR or an incorrectly analyzed path. Available files:`, availableFiles);
+        // Mark these suggestions as needing attention - they'll appear in the navigator but not inline
+        locationSuggestions.forEach(s => {
+          if (!s._displayError) s._displayError = `File "${file}" not found in diff`;
+        });
         return;
       }
 
@@ -2580,9 +2652,20 @@ class PRManager {
       }
       
       if (!suggestionInserted) {
-        console.warn(`[UI] Could not find line ${line} in file ${file}`);
+        // Line not found - this could happen if:
+        // 1. The expansion didn't reveal the target line
+        // 2. The line number is outside the diff hunks
+        // 3. The AI suggested an incorrect line number
+        console.warn(`[UI] Line ${line} not found in file "${file}" after expansion. The line may be outside the diff context or the AI may have suggested an incorrect line number.`);
+        locationSuggestions.forEach(s => {
+          if (!s._displayError) s._displayError = `Line ${line} not found in diff for file "${file}"`;
+        });
       }
     });
+    } finally {
+      // Always clear the guard, even if an error occurred
+      this._isDisplayingSuggestions = false;
+    }
   }
 
   /**
@@ -3223,7 +3306,7 @@ class PRManager {
   /**
    * Start drag selection
    */
-  startDragSelection(row, lineNumber, fileName) {
+  startDragSelection(row, lineNumber, fileName, side = 'RIGHT') {
     // Clear any existing selection and ensure cleanup
     this.clearRangeSelection();
 
@@ -3232,11 +3315,12 @@ class PRManager {
     this.dragStartLine = lineNumber;
     this.dragEndLine = lineNumber;
 
-    // Set start of range
+    // Set start of range, including side for GitHub API
     this.rangeSelectionStart = {
       row: row,
       lineNumber: lineNumber,
-      fileName: fileName
+      fileName: fileName,
+      side: side
     };
 
     // Add visual indicator
@@ -3324,8 +3408,9 @@ class PRManager {
    * @param {string} fileName - The file name
    * @param {number} diffPosition - The diff position for GitHub API
    * @param {number} [endLineNumber] - Optional ending line number for multi-line comments
+   * @param {string} [side='RIGHT'] - The side of the diff ('LEFT' for deleted lines, 'RIGHT' for added/context)
    */
-  showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber) {
+  showCommentForm(targetRow, lineNumber, fileName, diffPosition, endLineNumber, side = 'RIGHT') {
     // Close any existing comment forms
     this.hideCommentForm();
 
@@ -3385,6 +3470,7 @@ class PRManager {
           data-line-end="${endLineNumber || lineNumber}"
           data-file="${fileName}"
           data-diff-position="${diffPosition || ''}"
+          data-side="${side}"
         ></textarea>
         <div class="comment-form-actions">
           <button class="btn btn-sm btn-primary save-comment-btn">Save</button>
@@ -3629,6 +3715,8 @@ class PRManager {
     const parsedEndLine = parseInt(textarea.dataset.lineEnd);
     const endLineNumber = !isNaN(parsedEndLine) ? parsedEndLine : lineNumber;
     const diffPosition = textarea.dataset.diffPosition ? parseInt(textarea.dataset.diffPosition) : null;
+    // Get the side for GitHub API (LEFT for deleted lines, RIGHT for added/context)
+    const side = textarea.dataset.side || 'RIGHT';
     const content = textarea.value.trim();
 
     if (!content) {
@@ -3648,6 +3736,7 @@ class PRManager {
           line_start: lineNumber,
           line_end: endLineNumber,
           diff_position: diffPosition,
+          side: side,
           body: content
         })
       });

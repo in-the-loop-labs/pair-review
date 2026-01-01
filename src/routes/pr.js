@@ -1546,7 +1546,7 @@ function broadcastProgress(analysisId, progressData) {
  */
 router.post('/api/user-comment', async (req, res) => {
   try {
-    const { pr_id, file, line_start, line_end, diff_position, body, parent_id, type, title } = req.body;
+    const { pr_id, file, line_start, line_end, diff_position, side, body, parent_id, type, title } = req.body;
     
     if (!pr_id || !file || !line_start || !body) {
       return res.status(400).json({ 
@@ -1568,11 +1568,14 @@ router.post('/api/user-comment', async (req, res) => {
     }
 
     // Create user comment with optional parent_id and metadata
+    // Validate side if provided (must be LEFT or RIGHT)
+    const validSide = side === 'LEFT' ? 'LEFT' : 'RIGHT';
+
     const result = await run(db, `
       INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end, diff_position,
+        pr_id, source, author, file, line_start, line_end, diff_position, side,
         type, title, body, status, parent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       pr_id,
       'user',
@@ -1581,6 +1584,7 @@ router.post('/api/user-comment', async (req, res) => {
       line_start,
       line_end || line_start,
       diff_position || null,  // Store diff position for GitHub API
+      validSide,              // LEFT for deleted lines, RIGHT for added/context
       type || 'comment',  // Use provided type or default to 'comment'
       title || null,       // Optional title from AI suggestion
       body.trim(),
