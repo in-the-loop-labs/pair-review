@@ -3039,6 +3039,7 @@ class PRManager {
       type: suggestionType,
       title: suggestionTitle,
       parent_id: suggestionId,
+      diff_position: parsedDiffPosition,  // Include for expanded context warning logic
       created_at: new Date().toISOString()
     };
   }
@@ -3895,6 +3896,7 @@ class PRManager {
         file: fileName,
         line_start: lineNumber,
         line_end: endLineNumber,
+        diff_position: diffPosition,  // Include for expanded context warning logic
         body: content,
         created_at: new Date().toISOString()
       }, formRow.previousElementSibling);
