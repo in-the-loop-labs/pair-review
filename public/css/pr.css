@@ -5405,6 +5405,19 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--ai-primary, #f59e0b);
 }
 
+/* Active findings - amber accent to highlight actionable items */
+.finding-item.finding-active {
+  border-left: 3px solid var(--ai-primary, #f59e0b);
+  padding-left: 9px; /* Compensate for border width */
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+.finding-item.finding-active:hover {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
 /* Dismissed findings - grayed out with strikethrough and gray left border */
 .finding-item.finding-dismissed {
   opacity: 0.6;

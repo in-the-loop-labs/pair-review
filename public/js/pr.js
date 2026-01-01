@@ -3170,6 +3170,15 @@ class PRManager {
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (suggestionDiv) {
         suggestionDiv.classList.add('collapsed');
+        // Update button text to "Show" since suggestion is now collapsed
+        const restoreButton = suggestionDiv.querySelector('.btn-restore');
+        if (restoreButton) {
+          restoreButton.title = 'Show suggestion';
+          const btnText = restoreButton.querySelector('.btn-text');
+          if (btnText) {
+            btnText.textContent = 'Show';
+          }
+        }
         console.log(`[UI] Collapsed suggestion ${suggestionId}`);
       }
 
@@ -3962,13 +3971,12 @@ class PRManager {
       : '';
 
     // Build metadata display for adopted comments
+    // Only show "Nice Work" badge for praise - skip "AI Suggestion" badge since collapsed original is visible above
     let metadataHTML = '';
     if (comment.parent_id && comment.type && comment.type !== 'comment') {
-      // Use "Nice Work" badge for praise, "AI Suggestion" for other types (issue pair_review-pqb)
-      // Note: Eye icon button removed since the collapsed original suggestion is already visible above
       const badgeHTML = comment.type === 'praise'
         ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
-        : `<span class="adopted-ai-badge" data-type="${comment.type}" title="Adopted AI Suggestion">AI Suggestion</span>`;
+        : '';
       metadataHTML = `
         ${badgeHTML}
         ${comment.title ? `<span class="adopted-title">${this.escapeHtml(comment.title)}</span>` : ''}
@@ -4040,12 +4048,8 @@ class PRManager {
             </svg>
           </span>
           <span class="user-comment-line-info">${lineInfo}</span>
-          ${comment.type && comment.type !== 'comment' ? `
-            ${comment.type === 'praise'
-              ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
-              : `<span class="adopted-ai-badge" data-type="${comment.type}" title="Adopted AI Suggestion">AI Suggestion</span>`}
-            ${comment.title ? `<span class="adopted-title">${this.escapeHtml(comment.title)}</span>` : ''}
-          ` : ''}
+          ${comment.type === 'praise' ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>` : ''}
+          ${comment.title ? `<span class="adopted-title">${this.escapeHtml(comment.title)}</span>` : ''}
           <span class="user-comment-timestamp">Editing comment...</span>
           <div class="user-comment-actions">
             <button class="btn-edit-comment" onclick="prManager.editUserComment(${comment.id})" title="Edit comment">

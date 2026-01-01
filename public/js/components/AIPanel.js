@@ -136,7 +136,7 @@ class AIPanel {
             const location = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
             const category = finding.type || finding.category || '';
             const statusClass = finding.status === 'dismissed' ? 'finding-dismissed' :
-                               finding.status === 'adopted' ? 'finding-adopted' : '';
+                               finding.status === 'adopted' ? 'finding-adopted' : 'finding-active';
 
             return `
                 <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" title="${location}">
@@ -250,11 +250,13 @@ class AIPanel {
         // Update the DOM directly for performance (avoid full re-render)
         const findingEl = this.findingsList?.querySelector(`[data-id="${findingId}"]`);
         if (findingEl) {
-            findingEl.classList.remove('finding-dismissed', 'finding-adopted');
+            findingEl.classList.remove('finding-dismissed', 'finding-adopted', 'finding-active');
             if (status === 'dismissed') {
                 findingEl.classList.add('finding-dismissed');
             } else if (status === 'adopted') {
                 findingEl.classList.add('finding-adopted');
+            } else {
+                findingEl.classList.add('finding-active');
             }
         }
     }
