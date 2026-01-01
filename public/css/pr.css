@@ -3254,6 +3254,25 @@ tr.line-range-start .d2h-code-line-ctn {
   color: #8b949e;
 }
 
+/* WORKAROUND indicator: Comments on expanded context lines will be posted as file-level
+   comments since GitHub's API doesn't support line-level comments outside diff hunks.
+   When GitHub opens their API for this, remove this indicator. */
+.expanded-context-indicator {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  color: #bf8700;
+  cursor: help;
+}
+
+.expanded-context-indicator svg {
+  fill: currentColor;
+}
+
+[data-theme="dark"] .expanded-context-indicator {
+  color: #d29922;
+}
+
 /* Adopted comment badges - HIDDEN in favor of unified badges (issue pair_review-pqb) */
 .adopted-type-badge {
   display: none;

@@ -1638,13 +1638,14 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
     }
 
     const comments = await query(req.app.get('db'), `
-      SELECT 
+      SELECT
         id,
         source,
         author,
         file,
         line_start,
         line_end,
+        diff_position,
         type,
         title,
         body,
@@ -1684,13 +1685,14 @@ router.get('/api/pr/:id/user-comments', async (req, res) => {
     }
 
     const comments = await query(req.app.get('db'), `
-      SELECT 
+      SELECT
         id,
         source,
         author,
         file,
         line_start,
         line_end,
+        diff_position,
         type,
         title,
         body,
@@ -1983,7 +1985,12 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
     // Format comments for GitHub API using new line/side/commit_id approach
     // The new API uses absolute line numbers anchored to a specific commit
-    // This works for ANY line in the file, including expanded context lines
+    //
+    // WORKAROUND: GitHub's API does not support line-level comments on expanded context
+    // lines (lines outside the diff hunks). We detect these via diff_position IS NULL
+    // and convert them to file-level comments with a "(Ref Line X)" prefix.
+    // When GitHub opens their internal API for expanded line comments, remove this
+    // workaround and treat all comments as line-level comments.
     const headSha = prData.head_sha || null;
     if (!headSha) {
       console.warn('No head_sha found in PR data - comments may fail to submit');
@@ -1994,7 +2001,28 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       const commitId = comment.commit_sha || headSha;
       const isRange = comment.line_end && comment.line_end !== comment.line_start;
 
-      console.log(`Formatting comment: ${comment.file}:${comment.line_start} side=${side} commit=${commitId?.substring(0, 7)}`);
+      // WORKAROUND: Detect expanded context comments (no diff_position)
+      // These must be submitted as file-level comments since GitHub API rejects
+      // line-level comments on lines outside diff hunks.
+      const isExpandedContext = comment.diff_position === null || comment.diff_position === undefined;
+
+      if (isExpandedContext) {
+        // File-level comment with line reference prefix
+        const lineRef = isRange
+          ? `(Ref Lines ${comment.line_start}-${comment.line_end})`
+          : `(Ref Line ${comment.line_start})`;
+
+        console.log(`Formatting file-level comment (expanded context): ${comment.file} ${lineRef}`);
+
+        return {
+          path: comment.file,
+          body: `${lineRef} ${comment.body}`,
+          // No 'line' parameter = file-level comment
+          commit_id: commitId
+        };
+      }
+
+      console.log(`Formatting line comment: ${comment.file}:${comment.line_start} side=${side} commit=${commitId?.substring(0, 7)}`);
 
       const formatted = {
         path: comment.file,

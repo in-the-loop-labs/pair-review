@@ -3826,10 +3826,22 @@ class PRManager {
     td.className = 'user-comment-cell';
     
     // Format line info
-    const lineInfo = comment.line_end && comment.line_end !== comment.line_start 
+    const lineInfo = comment.line_end && comment.line_end !== comment.line_start
       ? `Lines ${comment.line_start}-${comment.line_end}`
       : `Line ${comment.line_start}`;
-    
+
+    // WORKAROUND: Comments on expanded context lines (outside diff hunks) will be
+    // submitted as file-level comments since GitHub's API doesn't support line-level
+    // comments on these lines. Show an indicator to inform the user.
+    const isExpandedContext = comment.diff_position === null || comment.diff_position === undefined;
+    const expandedContextIndicator = isExpandedContext
+      ? `<span class="expanded-context-indicator" title="This expanded context comment will be posted to GitHub as a file-level comment">
+           <svg viewBox="0 0 16 16" width="14" height="14">
+             <path fill-rule="evenodd" d="M3.75 1.5a.25.25 0 00-.25.25v11.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25V6H9.75A1.75 1.75 0 018 4.25V1.5H3.75zm5.75.56v2.19c0 .138.112.25.25.25h2.19L9.5 2.06zM2 1.75C2 .784 2.784 0 3.75 0h5.086c.464 0 .909.184 1.237.513l3.414 3.414c.329.328.513.773.513 1.237v8.086A1.75 1.75 0 0112.25 15h-8.5A1.75 1.75 0 012 13.25V1.75z"></path>
+           </svg>
+         </span>`
+      : '';
+
     // Build metadata display for adopted comments
     let metadataHTML = '';
     if (comment.parent_id && comment.type && comment.type !== 'comment') {
@@ -3857,6 +3869,7 @@ class PRManager {
             </svg>
           </span>
           <span class="user-comment-line-info">${lineInfo}</span>
+          ${expandedContextIndicator}
           ${metadataHTML}
           <span class="user-comment-timestamp">${new Date(comment.created_at).toLocaleString()}</span>
           <div class="user-comment-actions">
