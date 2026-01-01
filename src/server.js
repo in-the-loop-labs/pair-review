@@ -131,10 +131,19 @@ async function startServer(sharedDb = null) {
     app.use(express.json());
     
     // Static files with cache control headers
+    // In dev_mode, all caching is disabled to avoid stale resources during development
+    const devMode = config.dev_mode === true;
+    if (devMode) {
+      console.log('Dev mode enabled: static file caching disabled');
+    }
     app.use(express.static(path.join(__dirname, '..', 'public'), {
-      setHeaders: (res, path) => {
-        // Set cache control headers for static files
-        if (path.endsWith('.html')) {
+      setHeaders: (res, filePath) => {
+        if (devMode) {
+          // No caching in dev mode
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        } else if (filePath.endsWith('.html')) {
           res.setHeader('Cache-Control', 'no-cache');
         } else {
           res.setHeader('Cache-Control', 'public, max-age=3600');

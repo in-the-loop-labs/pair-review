@@ -10,7 +10,8 @@ const DEFAULT_CONFIG = {
   port: 3000,
   theme: "light",
   model: "sonnet",
-  worktree_retention_days: 7
+  worktree_retention_days: 7,
+  dev_mode: false  // When true, disables static file caching for development
 };
 
 /**

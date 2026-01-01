@@ -166,6 +166,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         base_branch: prMetadata.base_branch,
         head_branch: prMetadata.head_branch,
         head_sha: extendedData.head_sha || null,  // Head commit SHA for GitHub API comments
+        node_id: extendedData.node_id || null,  // GraphQL node ID for review submission
         created_at: prMetadata.created_at,
         updated_at: prMetadata.updated_at,
         file_changes: extendedData.changed_files ? extendedData.changed_files.length : 0,
@@ -243,7 +244,8 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       deletions: prData.deletions || 0,
       html_url: prData.html_url,
       base_sha: prData.base_sha,
-      head_sha: prData.head_sha
+      head_sha: prData.head_sha,
+      node_id: prData.node_id  // GraphQL node ID for PR (required for GraphQL review submission)
     };
 
     // Update database with new data
@@ -1983,26 +1985,25 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Continue without diff - GitHub client will handle missing positions
     }
 
-    // Format comments for GitHub API using new line/side/commit_id approach
-    // The new API uses absolute line numbers anchored to a specific commit
+    // Format comments for GraphQL API
+    // GraphQL supports both line-level comments (within diff hunks) and file-level comments
+    // (for expanded context lines outside diff hunks via subjectType: FILE).
     //
-    // WORKAROUND: GitHub's API does not support line-level comments on expanded context
-    // lines (lines outside the diff hunks). We detect these via diff_position IS NULL
-    // and convert them to file-level comments with a "(Ref Line X)" prefix.
-    // When GitHub opens their internal API for expanded line comments, remove this
-    // workaround and treat all comments as line-level comments.
-    const headSha = prData.head_sha || null;
-    if (!headSha) {
-      console.warn('No head_sha found in PR data - comments may fail to submit');
+    // Comments on expanded context lines (diff_position IS NULL) are formatted as file-level
+    // comments with a "(Ref Line X)" prefix in the body.
+    const prNodeId = prData.node_id;
+    if (!prNodeId) {
+      return res.status(400).json({
+        error: 'PR node_id not available. Please refresh the PR data and try again.'
+      });
     }
 
-    const githubComments = comments.map(comment => {
+    const graphqlComments = comments.map(comment => {
       const side = comment.side || 'RIGHT';
-      const commitId = comment.commit_sha || headSha;
       const isRange = comment.line_end && comment.line_end !== comment.line_start;
 
-      // WORKAROUND: Detect expanded context comments (no diff_position)
-      // These must be submitted as file-level comments since GitHub API rejects
+      // Detect expanded context comments (no diff_position)
+      // These are submitted as file-level comments since GitHub API rejects
       // line-level comments on lines outside diff hunks.
       const isExpandedContext = comment.diff_position === null || comment.diff_position === undefined;
 
@@ -2017,45 +2018,36 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         return {
           path: comment.file,
           body: `${lineRef} ${comment.body}`,
-          // No 'line' parameter = file-level comment
-          commit_id: commitId
+          isFileLevel: true
         };
       }
 
-      console.log(`Formatting line comment: ${comment.file}:${comment.line_start} side=${side} commit=${commitId?.substring(0, 7)}`);
+      console.log(`Formatting line comment: ${comment.file}:${comment.line_start} side=${side}`);
 
-      const formatted = {
+      return {
         path: comment.file,
         line: isRange ? comment.line_end : comment.line_start,
         body: comment.body,
         side: side,
-        commit_id: commitId
+        isFileLevel: false
       };
-
-      // For multi-line comments, add start_line and start_side
-      if (isRange) {
-        formatted.start_line = comment.line_start;
-        formatted.start_side = side;
-      }
-
-      return formatted;
     });
 
     // Begin database transaction for submission tracking
     await run(db, 'BEGIN TRANSACTION');
-    
+
     try {
-      // Submit review using single method that handles both drafts and final reviews
+      // Submit review using GraphQL API (supports file-level comments)
       console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
-      const githubReview = await githubClient.createReview(
-        owner, 
-        repo, 
-        prNumber, 
-        event, 
-        body || '', 
-        githubComments, 
-        diffContent
-      );
+
+      let githubReview;
+      if (event === 'DRAFT') {
+        // For drafts, create pending review and add comments but don't submit
+        githubReview = await githubClient.createDraftReviewGraphQL(prNodeId, body || '', graphqlComments);
+      } else {
+        // For non-drafts, create, add comments, and submit
+        githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments);
+      }
       
       // Update reviews table with appropriate status
       const reviewStatus = event === 'DRAFT' ? 'draft' : 'submitted';

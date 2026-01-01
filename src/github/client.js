@@ -34,6 +34,7 @@ class GitHubClient {
 
       return {
         number: data.number,
+        node_id: data.node_id,  // GraphQL node ID for PR (e.g., "PR_kwDOM...")
         title: data.title,
         body: data.body || '',
         author: data.user.login,
@@ -287,6 +288,288 @@ class GitHubClient {
 
     } catch (error) {
       await this.handleReviewError(error, owner, repo, pullNumber);
+    }
+  }
+
+  /**
+   * Submit a review using GraphQL API
+   * This supports both line-level comments (within diff hunks) and file-level comments
+   * (for expanded context lines outside diff hunks).
+   *
+   * @param {string} prNodeId - GraphQL node ID for the PR (e.g., "PR_kwDOM...")
+   * @param {string} event - Review event (APPROVE, REQUEST_CHANGES, COMMENT)
+   * @param {string} body - Overall review body/summary
+   * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
+   * @returns {Promise<Object>} Review submission result
+   */
+  async createReviewGraphQL(prNodeId, event, body, comments = []) {
+    try {
+      console.log(`Creating GraphQL review for PR ${prNodeId} with ${comments.length} comments`);
+
+      // Validate event type
+      const validEvents = ['APPROVE', 'REQUEST_CHANGES', 'COMMENT'];
+      if (!validEvents.includes(event)) {
+        throw new Error(`Invalid review event: ${event}. Must be one of: ${validEvents.join(', ')}`);
+      }
+
+      // Step 1: Create a pending review
+      console.log('Step 1: Creating pending review...');
+      const createReviewResult = await this.octokit.graphql(`
+        mutation AddPendingReview($prId: ID!) {
+          addPullRequestReview(input: {
+            pullRequestId: $prId
+          }) {
+            pullRequestReview {
+              id
+            }
+          }
+        }
+      `, {
+        prId: prNodeId
+      });
+
+      const reviewId = createReviewResult.addPullRequestReview.pullRequestReview.id;
+      console.log(`Created pending review: ${reviewId}`);
+
+      // Step 2: Add all comments
+      // Build a batched mutation for all comments
+      if (comments.length > 0) {
+        console.log(`Step 2: Adding ${comments.length} comments...`);
+
+        // Build mutation with all comments
+        const commentMutations = comments.map((comment, index) => {
+          const isFileLevel = comment.isFileLevel || !comment.line;
+
+          if (isFileLevel) {
+            // File-level comment (for expanded context lines)
+            return `
+              comment${index}: addPullRequestReviewThread(input: {
+                pullRequestId: $prId
+                pullRequestReviewId: $reviewId
+                path: "${comment.path}"
+                subjectType: FILE
+                body: ${JSON.stringify(comment.body)}
+              }) {
+                thread { id }
+              }
+            `;
+          } else {
+            // Line-level comment
+            const side = comment.side || 'RIGHT';
+            return `
+              comment${index}: addPullRequestReviewThread(input: {
+                pullRequestId: $prId
+                pullRequestReviewId: $reviewId
+                path: "${comment.path}"
+                line: ${comment.line}
+                side: ${side}
+                body: ${JSON.stringify(comment.body)}
+              }) {
+                thread { id }
+              }
+            `;
+          }
+        }).join('\n');
+
+        const addCommentsMutation = `
+          mutation AddReviewComments($prId: ID!, $reviewId: ID!) {
+            ${commentMutations}
+          }
+        `;
+
+        try {
+          await this.octokit.graphql(addCommentsMutation, {
+            prId: prNodeId,
+            reviewId: reviewId
+          });
+          console.log(`Added ${comments.length} comments to review`);
+        } catch (commentError) {
+          console.error('Error adding comments:', commentError.message);
+          // Try to delete the pending review to clean up
+          try {
+            await this.octokit.graphql(`
+              mutation DeleteReview($reviewId: ID!) {
+                deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
+                  pullRequestReview { id }
+                }
+              }
+            `, { reviewId });
+            console.log('Cleaned up pending review after comment failure');
+          } catch (cleanupError) {
+            console.warn('Failed to clean up pending review:', cleanupError.message);
+          }
+          throw commentError;
+        }
+      }
+
+      // Step 3: Submit the review
+      console.log(`Step 3: Submitting review with event ${event}...`);
+      const submitResult = await this.octokit.graphql(`
+        mutation SubmitReview($reviewId: ID!, $event: PullRequestReviewEvent!, $body: String) {
+          submitPullRequestReview(input: {
+            pullRequestReviewId: $reviewId
+            event: $event
+            body: $body
+          }) {
+            pullRequestReview {
+              id
+              url
+              state
+            }
+          }
+        }
+      `, {
+        reviewId: reviewId,
+        event: event,
+        body: body || null
+      });
+
+      const result = submitResult.submitPullRequestReview.pullRequestReview;
+      console.log(`Review submitted successfully: ${result.url}`);
+
+      return {
+        id: result.id,
+        html_url: result.url,
+        state: result.state,
+        comments_count: comments.length
+      };
+
+    } catch (error) {
+      console.error('GraphQL review error:', error);
+
+      // Parse GraphQL errors
+      if (error.errors) {
+        const messages = error.errors.map(e => e.message).join(', ');
+        throw new Error(`GitHub GraphQL error: ${messages}`);
+      }
+
+      throw new Error(`Failed to submit review via GraphQL: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create a draft (pending) review using GraphQL API
+   * This creates a review and adds comments but does NOT submit it.
+   * The review remains as PENDING on GitHub for later submission.
+   *
+   * @param {string} prNodeId - GraphQL node ID for the PR (e.g., "PR_kwDOM...")
+   * @param {string} body - Overall review body/summary
+   * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
+   * @returns {Promise<Object>} Draft review result
+   */
+  async createDraftReviewGraphQL(prNodeId, body, comments = []) {
+    try {
+      console.log(`Creating GraphQL draft review for PR ${prNodeId} with ${comments.length} comments`);
+
+      // Step 1: Create a pending review
+      console.log('Step 1: Creating pending review...');
+      const createReviewResult = await this.octokit.graphql(`
+        mutation AddPendingReview($prId: ID!, $body: String) {
+          addPullRequestReview(input: {
+            pullRequestId: $prId
+            body: $body
+          }) {
+            pullRequestReview {
+              id
+              url
+            }
+          }
+        }
+      `, {
+        prId: prNodeId,
+        body: body || null
+      });
+
+      const review = createReviewResult.addPullRequestReview.pullRequestReview;
+      const reviewId = review.id;
+      console.log(`Created pending review: ${reviewId}`);
+
+      // Step 2: Add all comments (same as createReviewGraphQL)
+      if (comments.length > 0) {
+        console.log(`Step 2: Adding ${comments.length} comments...`);
+
+        const commentMutations = comments.map((comment, index) => {
+          const isFileLevel = comment.isFileLevel || !comment.line;
+
+          if (isFileLevel) {
+            return `
+              comment${index}: addPullRequestReviewThread(input: {
+                pullRequestId: $prId
+                pullRequestReviewId: $reviewId
+                path: "${comment.path}"
+                subjectType: FILE
+                body: ${JSON.stringify(comment.body)}
+              }) {
+                thread { id }
+              }
+            `;
+          } else {
+            const side = comment.side || 'RIGHT';
+            return `
+              comment${index}: addPullRequestReviewThread(input: {
+                pullRequestId: $prId
+                pullRequestReviewId: $reviewId
+                path: "${comment.path}"
+                line: ${comment.line}
+                side: ${side}
+                body: ${JSON.stringify(comment.body)}
+              }) {
+                thread { id }
+              }
+            `;
+          }
+        }).join('\n');
+
+        const addCommentsMutation = `
+          mutation AddReviewComments($prId: ID!, $reviewId: ID!) {
+            ${commentMutations}
+          }
+        `;
+
+        try {
+          await this.octokit.graphql(addCommentsMutation, {
+            prId: prNodeId,
+            reviewId: reviewId
+          });
+          console.log(`Added ${comments.length} comments to draft review`);
+        } catch (commentError) {
+          console.error('Error adding comments to draft:', commentError.message);
+          // Try to delete the pending review to clean up
+          try {
+            await this.octokit.graphql(`
+              mutation DeleteReview($reviewId: ID!) {
+                deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
+                  pullRequestReview { id }
+                }
+              }
+            `, { reviewId });
+            console.log('Cleaned up pending review after comment failure');
+          } catch (cleanupError) {
+            console.warn('Failed to clean up pending review:', cleanupError.message);
+          }
+          throw commentError;
+        }
+      }
+
+      // Note: We do NOT submit the review - it stays as PENDING (draft)
+      console.log(`Draft review created successfully (pending): ${review.url || reviewId}`);
+
+      return {
+        id: reviewId,
+        html_url: review.url,
+        state: 'PENDING',
+        comments_count: comments.length
+      };
+
+    } catch (error) {
+      console.error('GraphQL draft review error:', error);
+
+      if (error.errors) {
+        const messages = error.errors.map(e => e.message).join(', ');
+        throw new Error(`GitHub GraphQL error: ${messages}`);
+      }
+
+      throw new Error(`Failed to create draft review via GraphQL: ${error.message}`);
     }
   }
 
