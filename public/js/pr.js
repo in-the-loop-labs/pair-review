@@ -179,10 +179,13 @@ class PRManager {
     // Generated files - collapsed by default, stores map of filename -> generated info
     this.generatedFiles = new Map();
     this.expandedGeneratedFiles = new Set();
+    // Analysis config modal
+    this.analysisConfigModal = null;
     this.init();
     this.initTheme();
     this.initSuggestionNavigator();
     this.setupLevelChangeListener();
+    this.initAnalysisConfigModal();
   }
 
   /**
@@ -277,6 +280,64 @@ class PRManager {
       this.selectedLevel = newLevel;
       await this.loadAISuggestions();
     });
+  }
+
+  /**
+   * Initialize the analysis config modal
+   */
+  initAnalysisConfigModal() {
+    if (window.AnalysisConfigModal) {
+      this.analysisConfigModal = new window.AnalysisConfigModal();
+      window.analysisConfigModal = this.analysisConfigModal;
+    } else {
+      console.warn('AnalysisConfigModal not loaded');
+    }
+  }
+
+  /**
+   * Fetch repo settings (default instructions and model)
+   * @returns {Promise<Object|null>} Repo settings or null
+   */
+  async fetchRepoSettings() {
+    if (!this.currentPR) return null;
+
+    const { owner, repo } = this.currentPR;
+    try {
+      const response = await fetch(`/api/repos/${owner}/${repo}/settings`);
+      if (!response.ok) {
+        if (response.status === 404) {
+          // No settings for this repo, that's fine
+          return null;
+        }
+        console.warn('Failed to fetch repo settings:', response.statusText);
+        return null;
+      }
+      return await response.json();
+    } catch (error) {
+      console.warn('Error fetching repo settings:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch last used custom instructions from review record
+   * @returns {Promise<string>} Last custom instructions or empty string
+   */
+  async fetchLastCustomInstructions() {
+    if (!this.currentPR) return '';
+
+    const { owner, repo, number } = this.currentPR;
+    try {
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/review-settings`);
+      if (!response.ok) {
+        return '';
+      }
+      const data = await response.json();
+      return data.custom_instructions || '';
+    } catch (error) {
+      console.warn('Error fetching last custom instructions:', error);
+      return '';
+    }
   }
 
   /**
@@ -1875,92 +1936,127 @@ class PRManager {
     }
 
     try {
-      // Disable button immediately to prevent concurrent requests
-      if (btn) {
-        btn.disabled = true;
-        btn.classList.add('btn-analyzing');
-        // Update button text while preserving icon
-        const btnText = btn.querySelector('.btn-text');
-        if (btnText) {
-          btnText.textContent = 'Checking...';
-        } else {
-          btn.innerHTML = '<span class="spinner"></span> Checking...';
-        }
-      }
-
-      // Check if there are existing AI suggestions
+      // Check if there are existing AI suggestions first (before showing modal)
+      let hasSuggestions = false;
       try {
         const checkResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`);
-
-        if (!checkResponse.ok) {
-          console.warn('Failed to check for existing AI suggestions, proceeding with analysis');
-        } else {
-          const { hasSuggestions } = await checkResponse.json();
-
-          if (hasSuggestions) {
-            // Re-enable button while waiting for user confirmation
-            if (btn) {
-              btn.disabled = false;
-              btn.classList.remove('btn-analyzing');
-              const btnText = btn.querySelector('.btn-text');
-              if (btnText) {
-                btnText.textContent = 'Analyze';
-              } else {
-                btn.innerHTML = 'Analyze with AI';
-              }
-            }
-
-            // Check that confirmDialog is available
-            if (!window.confirmDialog) {
-              console.error('ConfirmDialog not loaded');
-              this.showError('Confirmation dialog unavailable. Please refresh the page.');
-              return;
-            }
-
-            // Show confirmation dialog
-            const confirmed = await window.confirmDialog.show({
-              title: 'Replace Existing Analysis?',
-              message: 'This will replace all existing AI suggestions for this PR. Continue?',
-              confirmText: 'Continue',
-              confirmClass: 'btn-danger'
-            });
-
-            if (!confirmed) {
-              // User cancelled
-              return;
-            }
-
-            // Re-disable button after confirmation
-            if (btn) {
-              btn.disabled = true;
-              btn.classList.add('btn-analyzing');
-              const btnText = btn.querySelector('.btn-text');
-              if (btnText) {
-                btnText.textContent = 'Starting...';
-              } else {
-                btn.innerHTML = '<span class="spinner"></span> Starting...';
-              }
-            }
-          }
+        if (checkResponse.ok) {
+          const data = await checkResponse.json();
+          hasSuggestions = data.hasSuggestions;
         }
       } catch (checkError) {
-        // If check fails, log warning but proceed with analysis
         console.warn('Error checking for existing AI suggestions:', checkError);
       }
 
-      // Update button to show starting state (if not already set)
+      // If there are existing suggestions, confirm replacement before showing modal
+      if (hasSuggestions) {
+        if (!window.confirmDialog) {
+          console.error('ConfirmDialog not loaded');
+          this.showError('Confirmation dialog unavailable. Please refresh the page.');
+          return;
+        }
+
+        const confirmed = await window.confirmDialog.show({
+          title: 'Replace Existing Analysis?',
+          message: 'This will replace all existing AI suggestions for this PR. Continue?',
+          confirmText: 'Continue',
+          confirmClass: 'btn-danger'
+        });
+
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      // Show analysis config modal
+      if (!this.analysisConfigModal) {
+        console.warn('AnalysisConfigModal not initialized, proceeding without config');
+        await this.startAnalysis(owner, repo, number, btn, {});
+        return;
+      }
+
+      // Fetch repo settings and last used instructions in parallel
+      const [repoSettings, lastInstructions] = await Promise.all([
+        this.fetchRepoSettings(),
+        this.fetchLastCustomInstructions()
+      ]);
+
+      // Determine the model to use (priority: remembered > repo default > 'sonnet')
+      const rememberedModel = localStorage.getItem(`pair-review-model-${owner}/${repo}`);
+      const currentModel = rememberedModel || repoSettings?.default_model || 'sonnet';
+
+      // Show the config modal
+      const config = await this.analysisConfigModal.show({
+        currentModel,
+        repoInstructions: repoSettings?.default_instructions || '',
+        lastInstructions: lastInstructions,
+        rememberModel: !!rememberedModel
+      });
+
+      // If user cancelled, do nothing
+      if (!config) {
+        return;
+      }
+
+      // Save remembered model preference if requested
+      if (config.rememberModel) {
+        localStorage.setItem(`pair-review-model-${owner}/${repo}`, config.model);
+      } else {
+        localStorage.removeItem(`pair-review-model-${owner}/${repo}`);
+      }
+
+      // Start the analysis with the selected config
+      await this.startAnalysis(owner, repo, number, btn, config);
+
+    } catch (error) {
+      console.error('Error triggering AI analysis:', error);
+      this.showError(`Failed to start AI analysis: ${error.message}`);
+      this.resetButton();
+    }
+  }
+
+  /**
+   * Start the actual AI analysis with the given config
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} number - PR number
+   * @param {HTMLElement} btn - Analyze button element
+   * @param {Object} config - Analysis config from modal
+   */
+  async startAnalysis(owner, repo, number, btn, config) {
+    try {
+      // Disable button and show starting state
       if (btn) {
+        btn.disabled = true;
+        btn.classList.add('btn-analyzing');
         const btnText = btn.querySelector('.btn-text');
-        if (btnText && btnText.textContent === 'Checking...') {
+        if (btnText) {
           btnText.textContent = 'Starting...';
-        } else if (btn.innerHTML.includes('Checking...')) {
+        } else {
           btn.innerHTML = '<span class="spinner"></span> Starting...';
         }
       }
 
-      // Start AI analysis
+      // Combine repo instructions and custom instructions
+      const allInstructions = [];
+      if (config.repoInstructions) {
+        allInstructions.push(config.repoInstructions);
+      }
+      if (config.instructions) {
+        allInstructions.push(config.instructions);
+      }
+      const combinedInstructions = allInstructions.join('\n\n');
+
+      // Start AI analysis with model and instructions
       const response = await fetch(`/api/analyze/${owner}/${repo}/${number}`, {
-        method: 'POST'
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: config.model || 'sonnet',
+          customInstructions: combinedInstructions
+        })
       });
 
       if (!response.ok) {
@@ -1976,12 +2072,10 @@ class PRManager {
       if (window.progressModal) {
         window.progressModal.show(result.analysisId);
       }
-      
-    } catch (error) {
-      console.error('Error triggering AI analysis:', error);
-      this.showError(`Failed to start AI analysis: ${error.message}`);
 
-      // Reset button state properly
+    } catch (error) {
+      console.error('Error starting AI analysis:', error);
+      this.showError(`Failed to start AI analysis: ${error.message}`);
       this.resetButton();
     }
   }

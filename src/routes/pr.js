@@ -1,5 +1,5 @@
 const express = require('express');
-const { query, queryOne, run, WorktreeRepository } = require('../database');
+const { query, queryOne, run, WorktreeRepository, RepoSettingsRepository, ReviewRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
@@ -582,6 +582,9 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     const { owner, repo, pr } = req.params;
     const prNumber = parseInt(pr);
 
+    // Extract optional model and customInstructions from request body
+    const { model: requestModel, customInstructions: requestInstructions } = req.body || {};
+
     if (isNaN(prNumber) || prNumber <= 0) {
       return res.status(400).json({
         error: 'Invalid pull request number'
@@ -626,6 +629,45 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       });
     }
 
+    // Fetch repo settings for default instructions and model
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+
+    // Determine model: request body > repo settings > config/CLI > default
+    let model;
+    if (requestModel) {
+      model = requestModel;
+    } else if (repoSettings && repoSettings.default_model) {
+      model = repoSettings.default_model;
+    } else {
+      model = getModel(req);
+    }
+
+    // Combine custom instructions: repo defaults first, then PR-specific
+    let combinedInstructions = null;
+    const repoInstructions = repoSettings?.default_instructions;
+    if (repoInstructions || requestInstructions) {
+      const parts = [];
+      if (repoInstructions) {
+        parts.push(repoInstructions);
+      }
+      if (requestInstructions) {
+        parts.push(requestInstructions);
+      }
+      combinedInstructions = parts.join('\n\n');
+    }
+
+    // Save custom instructions to the review record
+    if (requestInstructions) {
+      const reviewRepo = new ReviewRepository(db);
+      const existingReview = await reviewRepo.getReviewByPR(prNumber, repository);
+      if (existingReview) {
+        await reviewRepo.updateReview(existingReview.id, { customInstructions: requestInstructions });
+      } else {
+        await reviewRepo.createReview({ prNumber, repository, customInstructions: requestInstructions });
+      }
+    }
+
     // Create analysis ID
     const analysisId = uuidv4();
 
@@ -656,8 +698,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
-    // Create analyzer instance with model from config/CLI
-    const model = getModel(req);
+    // Create analyzer instance with model
     const analyzer = new Analyzer(req.app.get('db'), model);
 
     // Log analysis start with colorful output
@@ -666,6 +707,9 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
     logger.log('API', `Model: ${model}`, 'cyan');
+    if (combinedInstructions) {
+      logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
+    }
 
     // Create progress callback function that tracks each level separately
     const progressCallback = (progressUpdate) => {
@@ -699,8 +743,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       broadcastProgress(analysisId, currentStatus);
     };
     
-    // Start analysis asynchronously with progress callback
-    analyzer.analyzeLevel1(prMetadata.id, worktreePath, prMetadata, progressCallback)
+    // Start analysis asynchronously with progress callback and custom instructions
+    analyzer.analyzeLevel1(prMetadata.id, worktreePath, prMetadata, progressCallback, combinedInstructions)
       .then(result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -2665,6 +2709,127 @@ router.patch('/api/config', async (req, res) => {
     console.error('Error updating config:', error);
     res.status(500).json({
       error: 'Failed to update configuration'
+    });
+  }
+});
+
+/**
+ * Get repository-specific settings
+ * Returns default_instructions and default_model for the repository
+ */
+router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const settings = await repoSettingsRepo.getRepoSettings(repository);
+
+    if (!settings) {
+      // Return empty object if no settings exist
+      return res.json({
+        repository,
+        default_instructions: null,
+        default_model: null
+      });
+    }
+
+    res.json({
+      repository: settings.repository,
+      default_instructions: settings.default_instructions,
+      default_model: settings.default_model,
+      created_at: settings.created_at,
+      updated_at: settings.updated_at
+    });
+
+  } catch (error) {
+    console.error('Error fetching repo settings:', error);
+    res.status(500).json({
+      error: 'Failed to fetch repository settings'
+    });
+  }
+});
+
+/**
+ * Save repository-specific settings
+ * Saves default_instructions and/or default_model for the repository
+ */
+router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const { default_instructions, default_model } = req.body;
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+
+    // Validate that at least one setting is provided
+    if (default_instructions === undefined && default_model === undefined) {
+      return res.status(400).json({
+        error: 'At least one setting (default_instructions or default_model) must be provided'
+      });
+    }
+
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const settings = await repoSettingsRepo.saveRepoSettings(repository, {
+      default_instructions,
+      default_model
+    });
+
+    logger.info(`Saved repo settings for ${repository}`);
+
+    res.json({
+      success: true,
+      settings: {
+        repository: settings.repository,
+        default_instructions: settings.default_instructions,
+        default_model: settings.default_model,
+        updated_at: settings.updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('Error saving repo settings:', error);
+    res.status(500).json({
+      error: 'Failed to save repository settings'
+    });
+  }
+});
+
+/**
+ * Get review settings for a PR
+ * Returns the custom_instructions from the most recent review
+ */
+router.get('/api/pr/:owner/:repo/:number/review-settings', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
+
+    if (!review) {
+      return res.json({
+        custom_instructions: null
+      });
+    }
+
+    res.json({
+      custom_instructions: review.custom_instructions || null
+    });
+
+  } catch (error) {
+    console.error('Error fetching review settings:', error);
+    res.status(500).json({
+      error: 'Failed to fetch review settings'
     });
   }
 });

@@ -20,6 +20,7 @@ const SCHEMA_SQL = {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       submitted_at DATETIME,
       review_data TEXT,
+      custom_instructions TEXT,
       UNIQUE(pr_number, repository)
     )
   `,
@@ -99,6 +100,17 @@ const SCHEMA_SQL = {
       last_accessed_at TEXT NOT NULL,
       UNIQUE(pr_number, repository)
     )
+  `,
+
+  repo_settings: `
+    CREATE TABLE IF NOT EXISTS repo_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repository TEXT NOT NULL UNIQUE,
+      default_instructions TEXT,
+      default_model TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -112,7 +124,8 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
-  'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)'
+  'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)'
 ];
 
 /**
@@ -275,6 +288,38 @@ function checkCommentsCommitShaMigration(db, callback) {
           return callback(alterError);
         }
         console.log('Successfully added commit_sha column');
+        checkReviewsCustomInstructionsMigration(db, callback);
+      });
+    } else {
+      // Continue to next migration
+      checkReviewsCustomInstructionsMigration(db, callback);
+    }
+  });
+}
+
+/**
+ * Check and run migration for custom_instructions column in reviews table
+ * The custom_instructions field stores per-analysis instructions used for AI review
+ * @param {sqlite3.Database} db - Database instance
+ * @param {Function} callback - Callback function
+ */
+function checkReviewsCustomInstructionsMigration(db, callback) {
+  db.all(`PRAGMA table_info(reviews)`, (error, columns) => {
+    if (error) {
+      return callback(error);
+    }
+
+    // Check if custom_instructions column exists
+    const hasCustomInstructions = columns && columns.some(col => col.name === 'custom_instructions');
+
+    if (!hasCustomInstructions) {
+      console.log('Adding custom_instructions column to reviews table...');
+      db.run(`ALTER TABLE reviews ADD COLUMN custom_instructions TEXT`, (alterError) => {
+        if (alterError && !alterError.message.includes('duplicate column name')) {
+          console.error('Error adding custom_instructions column:', alterError.message);
+          return callback(alterError);
+        }
+        console.log('Successfully added custom_instructions column');
         callback(null);
       });
     } else {
@@ -684,6 +729,307 @@ class WorktreeRepository {
 }
 
 /**
+ * RepoSettingsRepository class for managing per-repository AI settings
+ */
+class RepoSettingsRepository {
+  /**
+   * Create a new RepoSettingsRepository instance
+   * @param {sqlite3.Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Get settings for a repository
+   * @param {string} repository - Repository in owner/repo format
+   * @returns {Promise<Object|null>} Settings object or null if not found
+   */
+  async getRepoSettings(repository) {
+    const row = await queryOne(this.db, `
+      SELECT id, repository, default_instructions, default_model, created_at, updated_at
+      FROM repo_settings
+      WHERE repository = ?
+    `, [repository]);
+
+    return row || null;
+  }
+
+  /**
+   * Save settings for a repository (upsert)
+   * @param {string} repository - Repository in owner/repo format
+   * @param {Object} settings - Settings object { default_instructions?, default_model? }
+   * @returns {Promise<Object>} Saved settings object
+   */
+  async saveRepoSettings(repository, settings) {
+    const { default_instructions, default_model } = settings;
+    const now = new Date().toISOString();
+
+    // Check if settings already exist
+    const existing = await this.getRepoSettings(repository);
+
+    if (existing) {
+      // Update existing settings
+      await run(this.db, `
+        UPDATE repo_settings
+        SET default_instructions = ?,
+            default_model = ?,
+            updated_at = ?
+        WHERE repository = ?
+      `, [
+        default_instructions !== undefined ? default_instructions : existing.default_instructions,
+        default_model !== undefined ? default_model : existing.default_model,
+        now,
+        repository
+      ]);
+
+      return {
+        ...existing,
+        default_instructions: default_instructions !== undefined ? default_instructions : existing.default_instructions,
+        default_model: default_model !== undefined ? default_model : existing.default_model,
+        updated_at: now
+      };
+    } else {
+      // Insert new settings
+      const result = await run(this.db, `
+        INSERT INTO repo_settings (repository, default_instructions, default_model, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `, [repository, default_instructions || null, default_model || null, now, now]);
+
+      return {
+        id: result.lastID,
+        repository,
+        default_instructions: default_instructions || null,
+        default_model: default_model || null,
+        created_at: now,
+        updated_at: now
+      };
+    }
+  }
+
+  /**
+   * Delete settings for a repository
+   * @param {string} repository - Repository in owner/repo format
+   * @returns {Promise<boolean>} True if settings were deleted
+   */
+  async deleteRepoSettings(repository) {
+    const result = await run(this.db, `
+      DELETE FROM repo_settings WHERE repository = ?
+    `, [repository]);
+
+    return result.changes > 0;
+  }
+}
+
+/**
+ * ReviewRepository class for managing review database records
+ */
+class ReviewRepository {
+  /**
+   * Create a new ReviewRepository instance
+   * @param {sqlite3.Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a new review record
+   * @param {Object} reviewInfo - Review information
+   * @param {number} reviewInfo.prNumber - Pull request number
+   * @param {string} reviewInfo.repository - Repository in owner/repo format
+   * @param {string} [reviewInfo.status='draft'] - Review status
+   * @param {Object} [reviewInfo.reviewData] - Additional review data (will be JSON stringified)
+   * @param {string} [reviewInfo.customInstructions] - Custom instructions used for AI analysis
+   * @returns {Promise<Object>} Created review record
+   */
+  async createReview({ prNumber, repository, status = 'draft', reviewData = null, customInstructions = null }) {
+    const result = await run(this.db, `
+      INSERT INTO reviews (pr_number, repository, status, review_data, custom_instructions)
+      VALUES (?, ?, ?, ?, ?)
+    `, [
+      prNumber,
+      repository,
+      status,
+      reviewData ? JSON.stringify(reviewData) : null,
+      customInstructions
+    ]);
+
+    return {
+      id: result.lastID,
+      pr_number: prNumber,
+      repository,
+      status,
+      review_data: reviewData,
+      custom_instructions: customInstructions,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Update an existing review record
+   * @param {number} id - Review ID
+   * @param {Object} updates - Fields to update
+   * @param {string} [updates.status] - Review status
+   * @param {number} [updates.reviewId] - GitHub review ID after submission
+   * @param {Object} [updates.reviewData] - Additional review data (will be JSON stringified)
+   * @param {string} [updates.customInstructions] - Custom instructions used for AI analysis
+   * @param {Date|string} [updates.submittedAt] - Submission timestamp
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async updateReview(id, updates) {
+    const setClauses = [];
+    const params = [];
+
+    if (updates.status !== undefined) {
+      setClauses.push('status = ?');
+      params.push(updates.status);
+    }
+
+    if (updates.reviewId !== undefined) {
+      setClauses.push('review_id = ?');
+      params.push(updates.reviewId);
+    }
+
+    if (updates.reviewData !== undefined) {
+      setClauses.push('review_data = ?');
+      params.push(updates.reviewData ? JSON.stringify(updates.reviewData) : null);
+    }
+
+    if (updates.customInstructions !== undefined) {
+      setClauses.push('custom_instructions = ?');
+      params.push(updates.customInstructions);
+    }
+
+    if (updates.submittedAt !== undefined) {
+      setClauses.push('submitted_at = ?');
+      const submittedAt = updates.submittedAt instanceof Date
+        ? updates.submittedAt.toISOString()
+        : updates.submittedAt;
+      params.push(submittedAt);
+    }
+
+    if (setClauses.length === 0) {
+      return false;
+    }
+
+    // Always update updated_at
+    setClauses.push('updated_at = CURRENT_TIMESTAMP');
+    params.push(id);
+
+    const result = await run(this.db, `
+      UPDATE reviews
+      SET ${setClauses.join(', ')}
+      WHERE id = ?
+    `, params);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Get a review by its ID
+   * @param {number} id - Review ID
+   * @returns {Promise<Object|null>} Review record or null if not found
+   */
+  async getReview(id) {
+    const row = await queryOne(this.db, `
+      SELECT id, pr_number, repository, status, review_id,
+             created_at, updated_at, submitted_at, review_data, custom_instructions
+      FROM reviews
+      WHERE id = ?
+    `, [id]);
+
+    if (!row) return null;
+
+    // Parse review_data JSON if present
+    return {
+      ...row,
+      review_data: row.review_data ? JSON.parse(row.review_data) : null
+    };
+  }
+
+  /**
+   * Get a review by PR number and repository
+   * @param {number} prNumber - Pull request number
+   * @param {string} repository - Repository in owner/repo format
+   * @returns {Promise<Object|null>} Review record or null if not found
+   */
+  async getReviewByPR(prNumber, repository) {
+    const row = await queryOne(this.db, `
+      SELECT id, pr_number, repository, status, review_id,
+             created_at, updated_at, submitted_at, review_data, custom_instructions
+      FROM reviews
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!row) return null;
+
+    // Parse review_data JSON if present
+    return {
+      ...row,
+      review_data: row.review_data ? JSON.parse(row.review_data) : null
+    };
+  }
+
+  /**
+   * Get or create a review record (upsert-like behavior)
+   * If a review exists for the PR, return it
+   * Otherwise, create a new record
+   * @param {Object} reviewInfo - Review information
+   * @param {number} reviewInfo.prNumber - Pull request number
+   * @param {string} reviewInfo.repository - Repository in owner/repo format
+   * @param {Object} [reviewInfo.reviewData] - Additional review data
+   * @param {string} [reviewInfo.customInstructions] - Custom instructions
+   * @returns {Promise<Object>} Review record (existing or newly created)
+   */
+  async getOrCreate({ prNumber, repository, reviewData = null, customInstructions = null }) {
+    const existing = await this.getReviewByPR(prNumber, repository);
+
+    if (existing) {
+      return existing;
+    }
+
+    return this.createReview({ prNumber, repository, reviewData, customInstructions });
+  }
+
+  /**
+   * Delete a review record by ID
+   * @param {number} id - Review ID
+   * @returns {Promise<boolean>} True if record was deleted
+   */
+  async deleteReview(id) {
+    const result = await run(this.db, `
+      DELETE FROM reviews WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * List reviews for a repository
+   * @param {string} repository - Repository in owner/repo format
+   * @param {number} [limit=50] - Maximum number of records to return
+   * @returns {Promise<Array<Object>>} Array of review records
+   */
+  async listByRepository(repository, limit = 50) {
+    const rows = await query(this.db, `
+      SELECT id, pr_number, repository, status, review_id,
+             created_at, updated_at, submitted_at, review_data, custom_instructions
+      FROM reviews
+      WHERE repository = ?
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `, [repository, limit]);
+
+    return rows.map(row => ({
+      ...row,
+      review_data: row.review_data ? JSON.parse(row.review_data) : null
+    }));
+  }
+}
+
+/**
  * Migrate existing worktrees from filesystem to database
  * Scans the worktrees directory and creates records for any worktrees not in the DB
  * @param {sqlite3.Database} db - Database instance
@@ -731,6 +1077,8 @@ module.exports = {
   getDatabaseStatus,
   DB_PATH,
   WorktreeRepository,
+  RepoSettingsRepository,
+  ReviewRepository,
   generateWorktreeId,
   migrateExistingWorktrees
 };
