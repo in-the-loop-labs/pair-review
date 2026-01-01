@@ -2920,13 +2920,15 @@ class PRManager {
       throw new Error('Could not find target line for comment');
     }
 
-    const lineNumber = targetRow.querySelector('.line-num2')?.textContent?.trim();
-    const fileWrapper = targetRow.closest('.d2h-file-wrapper');
-    const fileName = fileWrapper?.dataset?.fileName || '';
-
     // Get diff position and side from the target row (for GitHub API)
     const diffPosition = targetRow.dataset.diffPosition;
     const side = targetRow.dataset.side || 'RIGHT';
+
+    // Get line number based on side - deleted lines (LEFT) use .line-num1, others use .line-num2
+    const lineNumSelector = side === 'LEFT' ? '.line-num1' : '.line-num2';
+    const lineNumber = targetRow.querySelector(lineNumSelector)?.textContent?.trim();
+    const fileWrapper = targetRow.closest('.d2h-file-wrapper');
+    const fileName = fileWrapper?.dataset?.fileName || '';
 
     if (!lineNumber || !fileName) {
       throw new Error('Could not determine file and line information');
