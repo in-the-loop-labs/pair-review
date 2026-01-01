@@ -996,11 +996,11 @@ class PRManager {
             this.rangeSelectionStart.lineNumber !== this.rangeSelectionEnd.lineNumber) {
           const minLine = Math.min(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
           const maxLine = Math.max(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
-          this.showCommentForm(row, minLine, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos, maxLine);
+          this.showCommentForm(row, minLine, fileName, diffPos, maxLine);
         } else {
           // Single line comment (clear any single-line selection first)
           this.clearRangeSelection();
-          this.showCommentForm(row, lineNumber, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos);
+          this.showCommentForm(row, lineNumber, fileName, diffPos);
         }
 
         this.potentialDragStart = null;
@@ -1043,7 +1043,7 @@ class PRManager {
           if (this.rangeSelectionStart && this.rangeSelectionEnd) {
             const minLine = Math.min(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
             const maxLine = Math.max(this.rangeSelectionStart.lineNumber, this.rangeSelectionEnd.lineNumber);
-            this.showCommentForm(row, minLine, tbody.closest('.d2h-file-wrapper').dataset.fileName, diffPos, maxLine);
+            this.showCommentForm(row, minLine, fileName, diffPos, maxLine);
           }
         }
       };
