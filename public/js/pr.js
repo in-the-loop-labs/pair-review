@@ -3587,6 +3587,18 @@ class PRManager {
       this.updateSuggestionButtonState(textarea, suggestionBtn);
     });
 
+    // Add keyboard shortcuts for Cmd/Ctrl+Enter to save and Escape to cancel
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.hideCommentForm();
+        this.clearRangeSelection();
+      } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        this.saveUserComment(textarea, formRow);
+      }
+    });
+
     // Store reference for cleanup
     this.currentCommentForm = formRow;
   }
