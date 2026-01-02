@@ -5636,7 +5636,8 @@ body:not([data-theme="dark"]) .theme-icon-light {
 .analysis-config-container {
   width: 580px;
   max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 64px);
+  height: auto; /* Override fixed height from .modal-container */
+  max-height: min(720px, calc(100vh - 32px));
   display: flex;
   flex-direction: column;
   transform: translateY(8px) scale(0.98);
@@ -5649,6 +5650,8 @@ body:not([data-theme="dark"]) .theme-icon-light {
     0 0 0 1px var(--color-border-primary),
     0 16px 70px -12px rgba(0, 0, 0, 0.35),
     0 4px 16px rgba(0, 0, 0, 0.1);
+  /* Ensure the dialog content is visible from the top */
+  margin: auto;
 }
 
 [data-theme="dark"] .analysis-config-container {
@@ -5716,7 +5719,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
 
 /* Section styling */
 .config-section {
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 .config-section:last-child {
@@ -5727,16 +5730,12 @@ body:not([data-theme="dark"]) .theme-icon-light {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 12px;
+  margin: 0 0 10px;
   font-size: 13px;
   font-weight: 600;
   color: var(--color-text-primary);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-}
-
-.section-icon {
-  font-size: 14px;
 }
 
 .section-hint {
@@ -5817,13 +5816,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
 .badge-power {
   background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   color: white;
-}
-
-.model-icon {
-  font-size: 28px;
-  margin-bottom: 8px;
-  line-height: 1;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
 }
 
 .model-info {
@@ -5970,10 +5962,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
   background: rgba(251, 191, 36, 0.12);
   border-color: #fbbf24;
   color: #fcd34d;
-}
-
-.preset-icon {
-  font-size: 14px;
 }
 
 .preset-label {

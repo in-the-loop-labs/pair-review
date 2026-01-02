@@ -21,7 +21,6 @@ class AnalysisConfigModal {
         name: 'Haiku',
         tagline: 'Lightning Fast',
         description: 'Quick analysis for simple changes',
-        icon: '⚡',
         badge: 'Fastest',
         badgeClass: 'badge-speed'
       },
@@ -30,7 +29,6 @@ class AnalysisConfigModal {
         name: 'Sonnet',
         tagline: 'Best Balance',
         description: 'Recommended for most reviews',
-        icon: '✦',
         badge: 'Recommended',
         badgeClass: 'badge-recommended',
         default: true
@@ -40,17 +38,16 @@ class AnalysisConfigModal {
         name: 'Opus',
         tagline: 'Most Capable',
         description: 'Deep analysis for complex code',
-        icon: '◆',
         badge: 'Most Thorough',
         badgeClass: 'badge-power'
       }
     ];
 
     this.presets = [
-      { id: 'security', label: 'Security', icon: '🔒', instruction: 'Focus on security vulnerabilities, injection risks, and authentication issues.' },
-      { id: 'performance', label: 'Performance', icon: '🚀', instruction: 'Focus on performance bottlenecks, memory issues, and optimization opportunities.' },
-      { id: 'quality', label: 'Code Quality', icon: '✨', instruction: 'Focus on code clarity, maintainability, and best practices.' },
-      { id: 'bugs', label: 'Bug Detection', icon: '🐛', instruction: 'Focus on potential bugs, edge cases, and error handling.' }
+      { id: 'security', label: 'Security', instruction: 'Focus on security vulnerabilities, injection risks, and authentication issues.' },
+      { id: 'performance', label: 'Performance', instruction: 'Focus on performance bottlenecks, memory issues, and optimization opportunities.' },
+      { id: 'quality', label: 'Code Quality', instruction: 'Focus on code clarity, maintainability, and best practices.' },
+      { id: 'bugs', label: 'Bug Detection', instruction: 'Focus on potential bugs, edge cases, and error handling.' }
     ];
 
     this.createModal();
@@ -101,14 +98,12 @@ class AnalysisConfigModal {
           <!-- Model Selection -->
           <section class="config-section">
             <h4 class="section-title">
-              <span class="section-icon">🤖</span>
               Select Model
             </h4>
             <div class="model-cards">
               ${this.models.map(model => `
                 <button class="model-card ${model.default ? 'selected' : ''}" data-model="${model.id}">
                   <div class="model-badge ${model.badgeClass}">${model.badge}</div>
-                  <div class="model-icon">${model.icon}</div>
                   <div class="model-info">
                     <span class="model-name">${model.name}</span>
                     <span class="model-tagline">${model.tagline}</span>
@@ -132,14 +127,12 @@ class AnalysisConfigModal {
           <!-- Focus Presets - Hidden for now, may reintroduce later -->
           <section class="config-section" style="display: none;">
             <h4 class="section-title">
-              <span class="section-icon">🎯</span>
               Focus Areas
               <span class="section-hint">(optional)</span>
             </h4>
             <div class="preset-chips">
               ${this.presets.map(preset => `
                 <button class="preset-chip" data-preset="${preset.id}" title="${preset.instruction}">
-                  <span class="preset-icon">${preset.icon}</span>
                   <span class="preset-label">${preset.label}</span>
                 </button>
               `).join('')}
@@ -149,7 +142,6 @@ class AnalysisConfigModal {
           <!-- Custom Instructions -->
           <section class="config-section">
             <h4 class="section-title">
-              <span class="section-icon">📝</span>
               Custom Instructions
               <span class="section-hint">(optional)</span>
             </h4>
@@ -395,9 +387,17 @@ class AnalysisConfigModal {
       // Add escape key listener when modal is shown
       document.addEventListener('keydown', this.escapeHandler);
 
-      // Focus the textarea
+      // Focus the textarea without scrolling the modal body
       setTimeout(() => {
-        this.modal.querySelector('#custom-instructions')?.focus();
+        const textarea = this.modal.querySelector('#custom-instructions');
+        const modalBody = this.modal.querySelector('.analysis-config-body');
+        if (textarea) {
+          textarea.focus({ preventScroll: true });
+          // Ensure modal body is scrolled to top
+          if (modalBody) {
+            modalBody.scrollTop = 0;
+          }
+        }
       }, 200);
     });
   }

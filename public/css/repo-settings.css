@@ -79,6 +79,8 @@ html, body {
 /* Breadcrumb */
 .breadcrumb {
   flex: 1;
+  max-width: none;
+  overflow: visible;
 }
 
 .breadcrumb ol {
