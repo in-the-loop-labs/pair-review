@@ -153,6 +153,37 @@ html, body {
   margin: 0 auto;
 }
 
+/* Back to PR Link */
+.back-to-pr {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 20px;
+  padding: 6px 12px 6px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.back-to-pr:hover {
+  color: var(--color-accent-primary);
+  border-color: var(--color-accent-primary);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+[data-theme="dark"] .back-to-pr:hover {
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.back-to-pr svg {
+  flex-shrink: 0;
+}
+
 /* Page Header */
 .page-header {
   display: flex;

@@ -687,6 +687,18 @@ class PRManager {
 
       // Insert before the GitHub link
       githubLink.parentNode.insertBefore(settingsLink, githubLink);
+
+      // Add click handler to store PR context for back navigation
+      settingsLink.addEventListener('click', () => {
+        const prNumber = this.prNumber || window.currentPR?.number;
+        if (prNumber) {
+          localStorage.setItem('settingsReferrer', JSON.stringify({
+            prNumber,
+            owner,
+            repo
+          }));
+        }
+      });
     }
 
     // Update the href

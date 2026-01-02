@@ -21,11 +21,48 @@ class RepoSettingsPage {
     // Initialize theme
     this.initTheme();
 
+    // Check for and display back to PR link
+    this.initBackLink();
+
     // Setup event listeners
     this.setupEventListeners();
 
     // Load settings
     await this.loadSettings();
+  }
+
+  /**
+   * Initialize back-to-PR link if user navigated from a PR page
+   */
+  initBackLink() {
+    const backLink = document.getElementById('back-to-pr');
+    const backLinkText = document.getElementById('back-to-pr-text');
+    if (!backLink || !backLinkText) return;
+
+    try {
+      const referrerData = localStorage.getItem('settingsReferrer');
+      if (!referrerData) return;
+
+      const { prNumber, owner, repo } = JSON.parse(referrerData);
+
+      // Only show the link if it matches the current repo
+      if (owner === this.owner && repo === this.repo && prNumber) {
+        backLink.href = `/pr/${owner}/${repo}/${prNumber}`;
+        backLinkText.textContent = `Return to PR #${prNumber}`;
+        backLink.style.display = 'inline-flex';
+
+        // Clear the referrer when clicking the back link
+        backLink.addEventListener('click', () => {
+          localStorage.removeItem('settingsReferrer');
+        });
+      } else {
+        // Different repo, clear the stale referrer
+        localStorage.removeItem('settingsReferrer');
+      }
+    } catch (error) {
+      console.warn('Error parsing settings referrer:', error);
+      localStorage.removeItem('settingsReferrer');
+    }
   }
 
   parseUrl() {
