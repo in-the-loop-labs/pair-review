@@ -2099,7 +2099,7 @@ class PRManager {
         },
         body: JSON.stringify({
           model: config.model || 'sonnet',
-          customInstructions: config.instructions || null
+          customInstructions: config.customInstructions || null
         })
       });
 
