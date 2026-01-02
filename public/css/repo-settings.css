@@ -8,6 +8,17 @@
   --action-bar-height: 72px;
 }
 
+/* Override global html/body styles from pr.css for settings page */
+html, body {
+  height: auto;
+  min-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg-primary);
+}
+
 /* Base Page Styles */
 .settings-page {
   min-height: 100vh;
