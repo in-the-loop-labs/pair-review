@@ -38,6 +38,21 @@ class PRManager {
   static FOLD_UP_DOWN_ICON = PRManager.UNFOLD_ICON;
 
   /**
+   * Extract function context from a unified diff hunk header.
+   * Hunk headers have the format: "@@ -old,count +new,count @@ optional context"
+   * The context (function/class/selector name) provides orientation.
+   * @param {string} header - The raw hunk header string
+   * @returns {string|null} The function context, or null if none present
+   */
+  static extractFunctionContext(header) {
+    if (!header) return null;
+    // Match: @@ followed by line info, then @@ and optional trailing context
+    const match = header.match(/^@@[^@]+@@\s*(.*)$/);
+    const context = match ? match[1].trim() : null;
+    return context || null; // Return null for empty strings too
+  }
+
+  /**
    * Generate a safe localStorage key for repository-specific settings
    * Uses base64 encoding to handle special characters in owner/repo names
    * @param {string} prefix - Key prefix (e.g., 'pair-review-model')
@@ -1095,10 +1110,14 @@ class PRManager {
 
         // Process blocks with context expansion
         file.blocks.forEach((block, blockIndex) => {
-          // Add block header
+          // Add block header - extract only function context, hide raw @@ syntax
           const headerRow = document.createElement('tr');
           headerRow.className = 'd2h-info';
-          headerRow.innerHTML = `<td colspan="2" class="d2h-info">${block.header}</td>`;
+          const functionContext = PRManager.extractFunctionContext(block.header);
+          const headerContent = functionContext
+            ? `<span class="hunk-context-icon">ƒ</span>${this.escapeHtml(functionContext)}`
+            : '<span class="hunk-divider">···</span>';
+          headerRow.innerHTML = `<td colspan="2" class="d2h-info">${headerContent}</td>`;
           tbody.appendChild(headerRow);
 
           // Reset position counter for the first hunk in the file only

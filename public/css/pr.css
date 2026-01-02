@@ -577,6 +577,7 @@
   --color-bg-primary: #ffffff;
   --color-bg-secondary: #f6f8fa;
   --color-bg-tertiary: #f3f4f6;
+  --color-bg-subtle: #f6f8fa;
   --color-bg-elevated: #ffffff;
   --color-bg-overlay: rgba(0, 0, 0, 0.5);
 
@@ -655,6 +656,7 @@
   --color-bg-secondary: #161b22;
   --color-bg-tertiary: #1c2128;
   --color-bg-elevated: #1e2329;
+  --color-bg-subtle: #161b22;
   --color-bg-overlay: rgba(0, 0, 0, 0.7);
 
   --color-text-primary: #c9d1d9;
@@ -1336,24 +1338,40 @@
   background-color: var(--color-diff-deletion-num);
 }
 
-/* Hunk headers - matches prototype .diff-hunk-header */
+/* Hunk headers - GitHub-style subtle section dividers */
 .d2h-info {
-  background: var(--color-bg-tertiary);
-  color: var(--color-text-secondary);
-  font-weight: 600;
+  background: var(--color-bg-subtle, #f6f8fa);
+  color: var(--color-text-muted, #656d76);
+  font-weight: 400;
 }
 
 .d2h-info td {
-  padding: 8px 16px;
-  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
-  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.06));
+  padding: 6px 16px;
+  border-top: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+  border-bottom: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+  font-size: 12px;
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
+  font-style: italic;
 }
 
-/* Hunk info - the @@ line location display in muted color */
+/* Function context indicator */
+.hunk-context-icon {
+  margin-right: 8px;
+  opacity: 0.6;
+  font-style: normal;
+}
+
+/* Divider for hunks without function context */
+.hunk-divider {
+  opacity: 0.4;
+  letter-spacing: 2px;
+}
+
+/* Hunk info - legacy support */
 .hunk-info,
 .d2h-info .d2h-code-line-ctn {
   font-size: 12px;
-  color: var(--color-text-muted, #484f58);
+  color: var(--color-text-muted, #656d76);
   font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
 }
 
