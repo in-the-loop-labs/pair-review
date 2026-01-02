@@ -1,5 +1,5 @@
 const express = require('express');
-const { query, queryOne, run, WorktreeRepository, RepoSettingsRepository, ReviewRepository } = require('../database');
+const { query, queryOne, run, withTransaction, WorktreeRepository, RepoSettingsRepository, ReviewRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
@@ -638,40 +638,49 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       });
     }
 
-    // Fetch repo settings for default instructions and model
-    const repoSettingsRepo = new RepoSettingsRepository(db);
-    const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+    // Fetch repo settings and save custom instructions in a transaction
+    // This ensures consistency between reading settings and updating the review record
+    const { model, combinedInstructions } = await withTransaction(db, async () => {
+      // Fetch repo settings for default instructions and model
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      const fetchedRepoSettings = await repoSettingsRepo.getRepoSettings(repository);
 
-    // Determine model: request body > repo settings > config/CLI > default
-    let model;
-    if (requestModel) {
-      model = requestModel;
-    } else if (repoSettings && repoSettings.default_model) {
-      model = repoSettings.default_model;
-    } else {
-      model = getModel(req);
-    }
-
-    // Combine custom instructions with XML-like tags for AI clarity
-    // Server is the single source of truth for how instructions are merged
-    let combinedInstructions = null;
-    const repoInstructions = repoSettings?.default_instructions;
-    if (repoInstructions || requestInstructions) {
-      const parts = [];
-      if (repoInstructions) {
-        parts.push(`These are default instructions for this repository:\n<repo_instructions>\n${repoInstructions}\n</repo_instructions>`);
+      // Determine model: request body > repo settings > config/CLI > default
+      let selectedModel;
+      if (requestModel) {
+        selectedModel = requestModel;
+      } else if (fetchedRepoSettings && fetchedRepoSettings.default_model) {
+        selectedModel = fetchedRepoSettings.default_model;
+      } else {
+        selectedModel = getModel(req);
       }
+
+      // Combine custom instructions with XML-like tags for AI clarity
+      // Server is the single source of truth for how instructions are merged
+      let mergedInstructions = null;
+      const repoInstructions = fetchedRepoSettings?.default_instructions;
+      if (repoInstructions || requestInstructions) {
+        const parts = [];
+        if (repoInstructions) {
+          parts.push(`These are default instructions for this repository:\n<repo_instructions>\n${repoInstructions}\n</repo_instructions>`);
+        }
+        if (requestInstructions) {
+          parts.push(`These are custom instructions for this analysis run. The following instructions take precedence over the repo_instructions in areas where they overlap or conflict:\n<custom_instructions>\n${requestInstructions}\n</custom_instructions>`);
+        }
+        mergedInstructions = parts.join('\n\n');
+      }
+
+      // Save custom instructions to the review record using upsert
       if (requestInstructions) {
-        parts.push(`These are custom instructions for this analysis run. The following instructions take precedence over the repo_instructions in areas where they overlap or conflict:\n<custom_instructions>\n${requestInstructions}\n</custom_instructions>`);
+        const reviewRepo = new ReviewRepository(db);
+        await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
       }
-      combinedInstructions = parts.join('\n\n');
-    }
 
-    // Save custom instructions to the review record using upsert
-    if (requestInstructions) {
-      const reviewRepo = new ReviewRepository(db);
-      await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
-    }
+      return {
+        model: selectedModel,
+        combinedInstructions: mergedInstructions
+      };
+    });
 
     // Create analysis ID
     const analysisId = uuidv4();

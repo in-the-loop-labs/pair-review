@@ -15,6 +15,10 @@ class AnalysisConfigModal {
     this.repoInstructions = '';
     this.lastInstructions = '';
 
+    // Character limit constants (must match backend limit)
+    this.CHAR_LIMIT = 5000;
+    this.CHAR_WARNING_THRESHOLD = 4500;
+
     this.models = [
       {
         id: 'haiku',
@@ -180,7 +184,9 @@ class AnalysisConfigModal {
                 rows="4"
               ></textarea>
               <div class="instructions-footer">
-                <span class="char-count"><span id="char-count">0</span> characters</span>
+                <span class="char-count" id="char-count-container">
+                  <span id="char-count">0</span> / 5,000 characters
+                </span>
               </div>
             </div>
           </section>
@@ -222,11 +228,10 @@ class AnalysisConfigModal {
       this.rememberModel = e.target.checked;
     });
 
-    // Custom instructions character count
+    // Custom instructions character count and validation
     const textarea = this.modal.querySelector('#custom-instructions');
     textarea?.addEventListener('input', () => {
-      const count = textarea.value.length;
-      this.modal.querySelector('#char-count').textContent = count;
+      this.updateCharacterCount(textarea.value.length);
     });
 
     // Repo instructions toggle
@@ -285,6 +290,55 @@ class AnalysisConfigModal {
     this.modal.querySelectorAll('.preset-chip').forEach(chip => {
       chip.classList.toggle('active', this.selectedPresets.has(chip.dataset.preset));
     });
+  }
+
+  /**
+   * Update character count display and validation state
+   * @param {number} count - Current character count
+   */
+  updateCharacterCount(count) {
+    const charCountEl = this.modal.querySelector('#char-count');
+    const charCountContainer = this.modal.querySelector('#char-count-container');
+    const textarea = this.modal.querySelector('#custom-instructions');
+    const submitBtn = this.modal.querySelector('[data-action="submit"]');
+
+    if (charCountEl) {
+      charCountEl.textContent = count.toLocaleString();
+    }
+
+    // Determine validation state
+    const isOverLimit = count > this.CHAR_LIMIT;
+    const isNearLimit = count > this.CHAR_WARNING_THRESHOLD && count <= this.CHAR_LIMIT;
+
+    // Update container styling
+    if (charCountContainer) {
+      charCountContainer.classList.remove('char-count-warning', 'char-count-error');
+      if (isOverLimit) {
+        charCountContainer.classList.add('char-count-error');
+      } else if (isNearLimit) {
+        charCountContainer.classList.add('char-count-warning');
+      }
+    }
+
+    // Update textarea styling
+    if (textarea) {
+      textarea.classList.remove('textarea-warning', 'textarea-error');
+      if (isOverLimit) {
+        textarea.classList.add('textarea-error');
+      } else if (isNearLimit) {
+        textarea.classList.add('textarea-warning');
+      }
+    }
+
+    // Enable/disable submit button
+    if (submitBtn) {
+      submitBtn.disabled = isOverLimit;
+      if (isOverLimit) {
+        submitBtn.title = 'Custom instructions exceed 5,000 character limit';
+      } else {
+        submitBtn.title = '';
+      }
+    }
   }
 
   /**
@@ -360,21 +414,30 @@ class AnalysisConfigModal {
 
       if (options.repoInstructions) {
         this.repoInstructions = options.repoInstructions;
-        this.modal.querySelector('#repo-instructions-banner').style.display = 'flex';
-        this.modal.querySelector('#repo-instructions-text').textContent = options.repoInstructions;
+        const repoBanner = this.modal.querySelector('#repo-instructions-banner');
+        if (repoBanner) repoBanner.style.display = 'flex';
+        const repoText = this.modal.querySelector('#repo-instructions-text');
+        if (repoText) repoText.textContent = options.repoInstructions;
       } else {
-        this.modal.querySelector('#repo-instructions-banner').style.display = 'none';
+        const repoBanner = this.modal.querySelector('#repo-instructions-banner');
+        if (repoBanner) repoBanner.style.display = 'none';
       }
 
       if (options.lastInstructions) {
         const textarea = this.modal.querySelector('#custom-instructions');
-        textarea.value = options.lastInstructions;
-        this.modal.querySelector('#char-count').textContent = options.lastInstructions.length;
+        if (textarea) {
+          textarea.value = options.lastInstructions;
+          this.updateCharacterCount(options.lastInstructions.length);
+        }
+      } else {
+        // Reset character count for fresh modal
+        this.updateCharacterCount(0);
       }
 
       if (options.rememberModel) {
         this.rememberModel = true;
-        this.modal.querySelector('#remember-model').checked = true;
+        const rememberCheckbox = this.modal.querySelector('#remember-model');
+        if (rememberCheckbox) rememberCheckbox.checked = true;
       }
 
       // Show modal with animation
@@ -430,9 +493,11 @@ class AnalysisConfigModal {
       const textarea = this.modal.querySelector('#custom-instructions');
       if (textarea) {
         textarea.value = '';
-        this.modal.querySelector('#char-count').textContent = '0';
       }
-      this.modal.querySelector('#repo-instructions-expanded').style.display = 'none';
+      // Reset character count and validation state
+      this.updateCharacterCount(0);
+      const repoExpanded = this.modal.querySelector('#repo-instructions-expanded');
+      if (repoExpanded) repoExpanded.style.display = 'none';
       // Reset rememberModel state to prevent stale values on next show
       this.rememberModel = false;
       const rememberCheckbox = this.modal.querySelector('#remember-model');

@@ -193,12 +193,10 @@ class Analyzer {
       return '';
     }
 
-    return `
-## Additional Review Instructions
+    return `## Additional Review Instructions
 The following custom instructions have been provided for this review. Please incorporate these guidelines into your analysis:
 
 ${customInstructions.trim()}
-
 `;
   }
 

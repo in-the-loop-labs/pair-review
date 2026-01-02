@@ -6,6 +6,11 @@ const { getConfigDir } = require('./config');
 const DB_PATH = path.join(getConfigDir(), 'database.db');
 
 /**
+ * Current schema version - increment this when adding new migrations
+ */
+const CURRENT_SCHEMA_VERSION = 1;
+
+/**
  * Database schema SQL statements
  */
 const SCHEMA_SQL = {
@@ -129,6 +134,152 @@ const INDEX_SQL = [
 ];
 
 /**
+ * Migration definitions - each migration brings the database from version N-1 to N
+ * Migrations are run sequentially based on schema version
+ *
+ * Migration 0->1: Initial migration for existing databases
+ * - Adds diff_position column to comments table
+ * - Adds review_id column to reviews table
+ * - Adds side column to comments table
+ * - Adds commit_sha column to comments table
+ * - Adds custom_instructions column to reviews table
+ * - Creates repo_settings table if not exists
+ */
+const MIGRATIONS = {
+  // Migration to version 1: handles all legacy column additions
+  1: async (db) => {
+    console.log('Running migration to schema version 1...');
+
+    // Helper to check if column exists
+    const columnExists = async (table, column) => {
+      return new Promise((resolve, reject) => {
+        db.all(`PRAGMA table_info(${table})`, (error, columns) => {
+          if (error) reject(error);
+          else resolve(columns && columns.some(col => col.name === column));
+        });
+      });
+    };
+
+    // Helper to run SQL safely
+    const runSql = (sql) => {
+      return new Promise((resolve, reject) => {
+        db.run(sql, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    };
+
+    // Helper to add column if not exists (idempotent)
+    const addColumnIfNotExists = async (table, column, definition) => {
+      const exists = await columnExists(table, column);
+      if (!exists) {
+        console.log(`  Adding ${column} column to ${table} table...`);
+        try {
+          await runSql(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+          console.log(`  Successfully added ${column} column`);
+        } catch (error) {
+          // Ignore duplicate column errors (race condition protection)
+          if (!error.message.includes('duplicate column name')) {
+            throw error;
+          }
+        }
+      }
+    };
+
+    // Helper to check if table exists
+    const tableExists = async (tableName) => {
+      return new Promise((resolve, reject) => {
+        db.get(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+          [tableName],
+          (error, row) => {
+            if (error) reject(error);
+            else resolve(!!row);
+          }
+        );
+      });
+    };
+
+    // Add columns to comments table
+    await addColumnIfNotExists('comments', 'diff_position', 'INTEGER');
+    await addColumnIfNotExists('comments', 'side', "TEXT DEFAULT 'RIGHT'");
+    await addColumnIfNotExists('comments', 'commit_sha', 'TEXT');
+
+    // Add columns to reviews table
+    await addColumnIfNotExists('reviews', 'review_id', 'INTEGER');
+    await addColumnIfNotExists('reviews', 'custom_instructions', 'TEXT');
+
+    // Create repo_settings table if not exists
+    const hasRepoSettings = await tableExists('repo_settings');
+    if (!hasRepoSettings) {
+      console.log('  Creating repo_settings table...');
+      await runSql(SCHEMA_SQL.repo_settings);
+      console.log('  Successfully created repo_settings table');
+    }
+
+    console.log('Migration to schema version 1 complete');
+  }
+};
+
+/**
+ * Get current schema version from database
+ * @param {sqlite3.Database} db - Database instance
+ * @returns {Promise<number>} Current schema version (0 if not set)
+ */
+function getSchemaVersion(db) {
+  return new Promise((resolve, reject) => {
+    db.get('PRAGMA user_version', (error, row) => {
+      if (error) reject(error);
+      else resolve(row ? row.user_version : 0);
+    });
+  });
+}
+
+/**
+ * Set schema version in database
+ * @param {sqlite3.Database} db - Database instance
+ * @param {number} version - Version to set
+ * @returns {Promise<void>}
+ */
+function setSchemaVersion(db, version) {
+  return new Promise((resolve, reject) => {
+    db.run(`PRAGMA user_version = ${version}`, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+/**
+ * Run all pending migrations
+ * @param {sqlite3.Database} db - Database instance
+ * @returns {Promise<void>}
+ */
+async function runVersionedMigrations(db) {
+  const currentVersion = await getSchemaVersion(db);
+
+  if (currentVersion >= CURRENT_SCHEMA_VERSION) {
+    console.log(`Database schema is up to date (version ${currentVersion})`);
+    return;
+  }
+
+  console.log(`Database schema version: ${currentVersion}, target: ${CURRENT_SCHEMA_VERSION}`);
+
+  // Run migrations sequentially
+  for (let version = currentVersion + 1; version <= CURRENT_SCHEMA_VERSION; version++) {
+    const migration = MIGRATIONS[version];
+    if (migration) {
+      await migration(db);
+      await setSchemaVersion(db, version);
+      console.log(`Database schema updated to version ${version}`);
+    } else {
+      console.warn(`Warning: No migration defined for version ${version}`);
+    }
+  }
+}
+
+/**
  * Initialize database with schema
  * @returns {Promise<sqlite3.Database>} - Database instance
  */
@@ -165,227 +316,58 @@ function initializeDatabase() {
 }
 
 /**
- * Run database migrations for existing databases
- * @param {sqlite3.Database} db - Database instance
- * @param {Function} callback - Callback function
- */
-function runMigrations(db, callback) {
-  // Check if diff_position column exists in comments table
-  db.all(`PRAGMA table_info(comments)`, (error, columns) => {
-    if (error) {
-      return callback(error);
-    }
-    
-    // Check if diff_position column exists
-    const hasDiffPosition = columns && columns.some(col => col.name === 'diff_position');
-    
-    if (!hasDiffPosition) {
-      console.log('Adding diff_position column to comments table...');
-      db.run(`ALTER TABLE comments ADD COLUMN diff_position INTEGER`, (alterError) => {
-        if (alterError && !alterError.message.includes('duplicate column name')) {
-          console.error('Error adding diff_position column:', alterError.message);
-          return callback(alterError);
-        }
-        console.log('Successfully added diff_position column');
-        
-        // Continue to check reviews table
-        checkReviewsTableMigrations(db, callback);
-      });
-    } else {
-      // Check reviews table migrations
-      checkReviewsTableMigrations(db, callback);
-    }
-  });
-}
-
-/**
- * Check and run migrations for reviews table
- * @param {sqlite3.Database} db - Database instance
- * @param {Function} callback - Callback function
- */
-function checkReviewsTableMigrations(db, callback) {
-  // Check if review_id column exists in reviews table
-  db.all(`PRAGMA table_info(reviews)`, (error, columns) => {
-    if (error) {
-      return callback(error);
-    }
-
-    // Check if review_id column exists
-    const hasReviewId = columns && columns.some(col => col.name === 'review_id');
-
-    if (!hasReviewId) {
-      console.log('Adding review_id column to reviews table...');
-      db.run(`ALTER TABLE reviews ADD COLUMN review_id INTEGER`, (alterError) => {
-        if (alterError && !alterError.message.includes('duplicate column name')) {
-          console.error('Error adding review_id column:', alterError.message);
-          return callback(alterError);
-        }
-        console.log('Successfully added review_id column');
-        checkCommentsSideMigration(db, callback);
-      });
-    } else {
-      // Continue to next migration
-      checkCommentsSideMigration(db, callback);
-    }
-  });
-}
-
-/**
- * Check and run migration for side column in comments table
- * The side field indicates LEFT (deleted lines) or RIGHT (added/context lines)
- * for proper GitHub API submission
- * @param {sqlite3.Database} db - Database instance
- * @param {Function} callback - Callback function
- */
-function checkCommentsSideMigration(db, callback) {
-  db.all(`PRAGMA table_info(comments)`, (error, columns) => {
-    if (error) {
-      return callback(error);
-    }
-
-    // Check if side column exists
-    const hasSide = columns && columns.some(col => col.name === 'side');
-
-    if (!hasSide) {
-      console.log('Adding side column to comments table...');
-      // Default to RIGHT since most comments are on added/context lines
-      db.run(`ALTER TABLE comments ADD COLUMN side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT'))`, (alterError) => {
-        if (alterError && !alterError.message.includes('duplicate column name')) {
-          console.error('Error adding side column:', alterError.message);
-          return callback(alterError);
-        }
-        console.log('Successfully added side column');
-        checkCommentsCommitShaMigration(db, callback);
-      });
-    } else {
-      // Check for commit_sha migration
-      checkCommentsCommitShaMigration(db, callback);
-    }
-  });
-}
-
-/**
- * Check and run migration for commit_sha column in comments table
- * The commit_sha field anchors comments to a specific commit for the new GitHub API
- * which uses line/side/commit_id instead of the legacy position-based approach
- * @param {sqlite3.Database} db - Database instance
- * @param {Function} callback - Callback function
- */
-function checkCommentsCommitShaMigration(db, callback) {
-  db.all(`PRAGMA table_info(comments)`, (error, columns) => {
-    if (error) {
-      return callback(error);
-    }
-
-    // Check if commit_sha column exists
-    const hasCommitSha = columns && columns.some(col => col.name === 'commit_sha');
-
-    if (!hasCommitSha) {
-      console.log('Adding commit_sha column to comments table...');
-      db.run(`ALTER TABLE comments ADD COLUMN commit_sha TEXT`, (alterError) => {
-        if (alterError && !alterError.message.includes('duplicate column name')) {
-          console.error('Error adding commit_sha column:', alterError.message);
-          return callback(alterError);
-        }
-        console.log('Successfully added commit_sha column');
-        checkReviewsCustomInstructionsMigration(db, callback);
-      });
-    } else {
-      // Continue to next migration
-      checkReviewsCustomInstructionsMigration(db, callback);
-    }
-  });
-}
-
-/**
- * Check and run migration for custom_instructions column in reviews table
- * The custom_instructions field stores per-analysis instructions used for AI review
- * @param {sqlite3.Database} db - Database instance
- * @param {Function} callback - Callback function
- */
-function checkReviewsCustomInstructionsMigration(db, callback) {
-  db.all(`PRAGMA table_info(reviews)`, (error, columns) => {
-    if (error) {
-      return callback(error);
-    }
-
-    // Check if custom_instructions column exists
-    const hasCustomInstructions = columns && columns.some(col => col.name === 'custom_instructions');
-
-    if (!hasCustomInstructions) {
-      console.log('Adding custom_instructions column to reviews table...');
-      db.run(`ALTER TABLE reviews ADD COLUMN custom_instructions TEXT`, (alterError) => {
-        if (alterError && !alterError.message.includes('duplicate column name')) {
-          console.error('Error adding custom_instructions column:', alterError.message);
-          return callback(alterError);
-        }
-        console.log('Successfully added custom_instructions column');
-        callback(null);
-      });
-    } else {
-      // No more migrations needed
-      callback(null);
-    }
-  });
-}
-
-/**
  * Setup database schema and indexes
  * @param {sqlite3.Database} db - Database instance
  * @param {Function} resolve - Promise resolve function
  * @param {Function} reject - Promise reject function
  */
-function setupSchema(db, resolve, reject) {
-  db.serialize(() => {
-    // Begin transaction
-    db.run('BEGIN TRANSACTION');
-    
-    // Create tables (only if they don't exist)
-    Object.values(SCHEMA_SQL).forEach(sql => {
-      db.run(sql, (error) => {
-        if (error) {
-          console.error('Error creating table:', error.message);
-          db.run('ROLLBACK');
-          reject(error);
-          return;
-        }
-      });
-    });
-    
-    // Run migrations for existing databases
-    runMigrations(db, (migrationError) => {
-      if (migrationError) {
-        console.error('Error running migrations:', migrationError.message);
-        db.run('ROLLBACK');
-        reject(migrationError);
-        return;
-      }
-      
-      // Create indexes (only if they don't exist)
-      INDEX_SQL.forEach(sql => {
+async function setupSchema(db, resolve, reject) {
+  try {
+    // Check current schema version before any changes
+    const currentVersion = await getSchemaVersion(db);
+    const isFreshInstall = currentVersion === 0;
+
+    // Create tables (only if they don't exist) - this is safe for both fresh and existing installs
+    for (const sql of Object.values(SCHEMA_SQL)) {
+      await new Promise((res, rej) => {
         db.run(sql, (error) => {
           if (error) {
-            console.error('Error creating index:', error.message);
-            db.run('ROLLBACK');
-            reject(error);
-            return;
+            console.error('Error creating table:', error.message);
+            rej(error);
+          } else {
+            res();
           }
         });
       });
-      
-      // Commit transaction
-      db.run('COMMIT', (error) => {
-        if (error) {
-          console.error('Error committing schema setup:', error.message);
-          reject(error);
-        } else {
-          const isNew = !require('fs').existsSync(DB_PATH) || require('fs').statSync(DB_PATH).size === 0;
-          console.log(isNew ? `Created new database at: ${DB_PATH}` : `Connected to existing database at: ${DB_PATH}`);
-          resolve(db);
-        }
+    }
+
+    // Run versioned migrations for existing databases
+    // For fresh installs, tables already have all columns, so migrations are no-ops
+    // but we still run them to ensure the schema version gets set correctly
+    await runVersionedMigrations(db);
+
+    // Create indexes (only if they don't exist)
+    for (const sql of INDEX_SQL) {
+      await new Promise((res, rej) => {
+        db.run(sql, (error) => {
+          if (error) {
+            console.error('Error creating index:', error.message);
+            rej(error);
+          } else {
+            res();
+          }
+        });
       });
-    });
-  });
+    }
+
+    console.log(isFreshInstall
+      ? `Created new database at: ${DB_PATH}`
+      : `Connected to existing database at: ${DB_PATH}`);
+    resolve(db);
+  } catch (error) {
+    console.error('Error in schema setup:', error.message);
+    reject(error);
+  }
 }
 
 /**
@@ -475,6 +457,79 @@ function run(db, sql, params = []) {
       }
     });
   });
+}
+
+/**
+ * Begin a database transaction
+ * @param {sqlite3.Database} db - Database instance
+ * @returns {Promise<void>}
+ */
+function beginTransaction(db) {
+  return new Promise((resolve, reject) => {
+    db.run('BEGIN TRANSACTION', (error) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+/**
+ * Commit a database transaction
+ * @param {sqlite3.Database} db - Database instance
+ * @returns {Promise<void>}
+ */
+function commit(db) {
+  return new Promise((resolve, reject) => {
+    db.run('COMMIT', (error) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+/**
+ * Rollback a database transaction
+ * @param {sqlite3.Database} db - Database instance
+ * @returns {Promise<void>}
+ */
+function rollback(db) {
+  return new Promise((resolve, reject) => {
+    db.run('ROLLBACK', (error) => {
+      if (error) {
+        // Log but don't reject - rollback failures are usually because
+        // there's no active transaction (already rolled back or committed)
+        console.warn('Rollback warning:', error.message);
+        resolve();
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+/**
+ * Execute a function within a database transaction
+ * Automatically commits on success or rolls back on error
+ * @param {sqlite3.Database} db - Database instance
+ * @param {Function} fn - Async function to execute within the transaction
+ * @returns {Promise<any>} - Result of the function
+ */
+async function withTransaction(db, fn) {
+  await beginTransaction(db);
+  try {
+    const result = await fn();
+    await commit(db);
+    return result;
+  } catch (error) {
+    await rollback(db);
+    throw error;
+  }
 }
 
 /**
@@ -1093,7 +1148,13 @@ module.exports = {
   query,
   queryOne,
   run,
+  beginTransaction,
+  commit,
+  rollback,
+  withTransaction,
   getDatabaseStatus,
+  getSchemaVersion,
+  CURRENT_SCHEMA_VERSION,
   DB_PATH,
   WorktreeRepository,
   RepoSettingsRepository,

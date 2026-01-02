@@ -690,7 +690,7 @@ class PRManager {
 
       // Add click handler to store PR context for back navigation
       settingsLink.addEventListener('click', () => {
-        const prNumber = this.prNumber || window.currentPR?.number;
+        const prNumber = this.currentPR?.number;
         if (prNumber) {
           localStorage.setItem('settingsReferrer', JSON.stringify({
             prNumber,
