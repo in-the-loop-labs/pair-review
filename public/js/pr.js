@@ -86,6 +86,9 @@ class PRManager {
   // Threshold for small gaps - show single "expand all" button instead of directional buttons
   static SMALL_GAP_THRESHOLD = 10;
 
+  // Auto-expand threshold - gaps smaller than this are expanded automatically (2x standard context of 3 lines)
+  static AUTO_EXPAND_THRESHOLD = 6;
+
   // Map of file extensions to highlight.js language names
   static LANGUAGE_MAP = {
     // JavaScript/TypeScript
@@ -1072,10 +1075,25 @@ class PRManager {
           }
 
           // Add expandable context at the beginning of first block if not starting at line 1
-          if (blockIndex === 0 && block.lines.length > 0 && (block.lines[0].oldNumber > 1 || block.lines[0].newNumber > 1)) {
-            const startLine = Math.min(block.lines[0].oldNumber || 1, block.lines[0].newNumber || 1);
-            if (startLine > 1) {
-              this.createGapSection(tbody, filePath, 1, startLine - 1, startLine - 1, 'above');
+          // Use coordinate separation pattern: find first valid old/new line numbers independently
+          if (blockIndex === 0 && block.lines.length > 0) {
+            let firstOldInBlock = null, firstNewInBlock = null;
+            for (let i = 0; i < block.lines.length; i++) {
+              const line = block.lines[i];
+              if (firstOldInBlock === null && line.oldNumber) firstOldInBlock = line.oldNumber;
+              if (firstNewInBlock === null && line.newNumber) firstNewInBlock = line.newNumber;
+              if (firstOldInBlock !== null && firstNewInBlock !== null) break;
+            }
+
+            // Calculate gaps in both coordinate systems independently
+            const oldGapAbove = firstOldInBlock !== null ? firstOldInBlock - 1 : 0;
+            const newGapAbove = firstNewInBlock !== null ? firstNewInBlock - 1 : 0;
+            const gapSizeAbove = Math.max(oldGapAbove, newGapAbove);
+
+            if (gapSizeAbove > 0) {
+              // Use new file coordinates for display, fall back to old if unavailable
+              const startLineNew = firstNewInBlock !== null ? firstNewInBlock : firstOldInBlock;
+              this.createGapSection(tbody, filePath, 1, startLineNew - 1, gapSizeAbove, 'above');
             }
           }
 
@@ -1090,6 +1108,8 @@ class PRManager {
             const nextBlock = file.blocks[blockIndex + 1];
 
             // Find last valid old/new line numbers in current block (scan backwards)
+            // Note: Deletion-only lines have oldNumber but not newNumber
+            //       Insertion-only lines have newNumber but not oldNumber
             let lastOld = null, lastNew = null;
             for (let i = block.lines.length - 1; i >= 0; i--) {
               const line = block.lines[i];
@@ -1107,16 +1127,26 @@ class PRManager {
               if (firstOld !== null && firstNew !== null) break;
             }
 
-            // Calculate gaps in both coordinate systems
-            const oldGap = (lastOld !== null && firstOld !== null) ? firstOld - lastOld - 1 : 0;
-            const newGap = (lastNew !== null && firstNew !== null) ? firstNew - lastNew - 1 : 0;
-            const gapSize = Math.max(oldGap, newGap);
+            // Edge case: If we couldn't find valid coordinates in either coordinate system,
+            // skip gap detection (e.g., empty blocks or blocks with only context lines)
+            if ((lastOld === null && lastNew === null) || (firstOld === null && firstNew === null)) {
+              // Cannot determine gap - skip
+            } else {
+              // Calculate gaps in both coordinate systems independently
+              // This handles asymmetric diffs where old and new file line counts differ significantly
+              const oldGap = (lastOld !== null && firstOld !== null) ? firstOld - lastOld - 1 : 0;
+              const newGap = (lastNew !== null && firstNew !== null) ? firstNew - lastNew - 1 : 0;
+              // Use maximum gap to ensure no lines are missed (gap may differ due to additions/deletions)
+              const gapSize = Math.max(oldGap, newGap);
 
-            if (gapSize > 0) {
-              // Use new file coordinates for display (startLine, endLine)
-              const startLine = (lastNew !== null ? lastNew : lastOld) + 1;
-              const endLine = startLine + gapSize - 1;
-              this.createGapSection(tbody, filePath, startLine, endLine, gapSize, 'between');
+              if (gapSize > 0) {
+                // Use new-file coordinates for display (startLineNew, endLineNew)
+                // Fall back to old-file coordinates only if new-file coords unavailable
+                // (e.g., block ends with deletion-only lines)
+                const startLineNew = (lastNew !== null ? lastNew : lastOld) + 1;
+                const endLineNew = startLineNew + gapSize - 1;
+                this.createGapSection(tbody, filePath, startLineNew, endLineNew, gapSize, 'between');
+              }
             }
           }
         });
@@ -1468,11 +1498,20 @@ class PRManager {
     
     // Store expand controls reference on row
     row.expandControls = expandControls;
-    
+
     row.appendChild(oldLineCell);
     row.appendChild(newLineCell);
     row.appendChild(contentCell);
     tbody.appendChild(row);
+
+    // Auto-expand small gaps (< AUTO_EXPAND_THRESHOLD lines) to avoid showing "2 hidden lines" etc.
+    // This improves UX by eliminating trivial expand interactions
+    if (gapSize < PRManager.AUTO_EXPAND_THRESHOLD && position === 'between') {
+      // Use setTimeout to let the DOM render first, then expand
+      setTimeout(() => {
+        this.expandGapContext(expandControls, 'all', gapSize);
+      }, 0);
+    }
   }
 
   /**
@@ -2826,6 +2865,10 @@ class PRManager {
     row.appendChild(oldLineCell);
     row.appendChild(newLineCell);
     row.appendChild(contentCell);
+
+    // NOTE: Do NOT auto-expand small gaps here. This function is used by expandGapRange
+    // for partial expansion, and auto-expanding those gaps would cause infinite loops.
+    // Auto-expansion only happens in createGapSection for initial diff rendering.
 
     return row;
   }
