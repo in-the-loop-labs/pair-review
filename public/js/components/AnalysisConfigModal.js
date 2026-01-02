@@ -129,8 +129,8 @@ class AnalysisConfigModal {
             </label>
           </section>
 
-          <!-- Focus Presets -->
-          <section class="config-section">
+          <!-- Focus Presets - Hidden for now, may reintroduce later -->
+          <section class="config-section" style="display: none;">
             <h4 class="section-title">
               <span class="section-icon">🎯</span>
               Focus Areas
@@ -258,13 +258,13 @@ class AnalysisConfigModal {
       }
     });
 
-    // Escape key handler
+    // Escape key handler - bound function for add/remove symmetry
     this.escapeHandler = (e) => {
       if (e.key === 'Escape' && this.isVisible) {
         this.hide();
       }
     };
-    document.addEventListener('keydown', this.escapeHandler);
+    // Note: Event listener is added in show() and removed in hide() to prevent memory leaks
   }
 
   /**
@@ -392,6 +392,9 @@ class AnalysisConfigModal {
       });
       this.isVisible = true;
 
+      // Add escape key listener when modal is shown
+      document.addEventListener('keydown', this.escapeHandler);
+
       // Focus the textarea
       setTimeout(() => {
         this.modal.querySelector('#custom-instructions')?.focus();
@@ -405,6 +408,9 @@ class AnalysisConfigModal {
    */
   hide(wasSubmitted = false) {
     if (!this.modal || !this.isVisible) return;
+
+    // Remove escape key listener when modal is hidden
+    document.removeEventListener('keydown', this.escapeHandler);
 
     // Resolve the promise with null if cancelled (not submitted)
     if (!wasSubmitted && this.onCancel) {
@@ -427,6 +433,12 @@ class AnalysisConfigModal {
         this.modal.querySelector('#char-count').textContent = '0';
       }
       this.modal.querySelector('#repo-instructions-expanded').style.display = 'none';
+      // Reset rememberModel state to prevent stale values on next show
+      this.rememberModel = false;
+      const rememberCheckbox = this.modal.querySelector('#remember-model');
+      if (rememberCheckbox) {
+        rememberCheckbox.checked = false;
+      }
       // Clear callbacks
       this.onSubmit = null;
       this.onCancel = null;

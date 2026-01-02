@@ -46,8 +46,9 @@ class PRManager {
    * @returns {string} Safe localStorage key
    */
   static getRepoStorageKey(prefix, owner, repo) {
-    // Use base64 encoding to safely handle any special characters
-    const repoId = btoa(`${owner}/${repo}`).replace(/=/g, '');
+    // Use encodeURIComponent + btoa to safely handle Unicode characters
+    // btoa() only accepts Latin1, so we encode Unicode first
+    const repoId = btoa(unescape(encodeURIComponent(`${owner}/${repo}`))).replace(/=/g, '');
     return `${prefix}:${repoId}`;
   }
 

@@ -583,7 +583,16 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     const prNumber = parseInt(pr);
 
     // Extract optional model and customInstructions from request body
-    const { model: requestModel, customInstructions: requestInstructions } = req.body || {};
+    const { model: requestModel, customInstructions: rawInstructions } = req.body || {};
+
+    // Trim and validate custom instructions
+    const MAX_INSTRUCTIONS_LENGTH = 5000;
+    let requestInstructions = rawInstructions?.trim() || null;
+    if (requestInstructions && requestInstructions.length > MAX_INSTRUCTIONS_LENGTH) {
+      return res.status(400).json({
+        error: `Custom instructions exceed maximum length of ${MAX_INSTRUCTIONS_LENGTH} characters`
+      });
+    }
 
     if (isNaN(prNumber) || prNumber <= 0) {
       return res.status(400).json({
