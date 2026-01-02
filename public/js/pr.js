@@ -52,6 +52,38 @@ class PRManager {
     return `${prefix}:${repoId}`;
   }
 
+  /**
+   * Extract first/last valid old/new line coordinates from a diff block
+   * Handles asymmetric diffs where deletion-only lines lack newNumber and vice versa
+   * @param {Object} block - Diff block containing lines array
+   * @param {'first' | 'last'} mode - Whether to find first or last valid coordinates
+   * @returns {{ old: number|null, new: number|null }} Line coordinates in each system
+   */
+  static getBlockCoordinateBounds(block, mode) {
+    let foundOld = null, foundNew = null;
+    const lines = block.lines;
+
+    if (mode === 'first') {
+      // Scan forward for first valid coordinates
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (foundOld === null && line.oldNumber) foundOld = line.oldNumber;
+        if (foundNew === null && line.newNumber) foundNew = line.newNumber;
+        if (foundOld !== null && foundNew !== null) break;
+      }
+    } else {
+      // Scan backward for last valid coordinates
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (foundOld === null && line.oldNumber) foundOld = line.oldNumber;
+        if (foundNew === null && line.newNumber) foundNew = line.newNumber;
+        if (foundOld !== null && foundNew !== null) break;
+      }
+    }
+
+    return { old: foundOld, new: foundNew };
+  }
+
   // Eye icon for showing hidden content (GitHub Octicons "eye")
   static EYE_ICON = `
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -1075,24 +1107,17 @@ class PRManager {
           }
 
           // Add expandable context at the beginning of first block if not starting at line 1
-          // Use coordinate separation pattern: find first valid old/new line numbers independently
           if (blockIndex === 0 && block.lines.length > 0) {
-            let firstOldInBlock = null, firstNewInBlock = null;
-            for (let i = 0; i < block.lines.length; i++) {
-              const line = block.lines[i];
-              if (firstOldInBlock === null && line.oldNumber) firstOldInBlock = line.oldNumber;
-              if (firstNewInBlock === null && line.newNumber) firstNewInBlock = line.newNumber;
-              if (firstOldInBlock !== null && firstNewInBlock !== null) break;
-            }
+            const firstCoords = PRManager.getBlockCoordinateBounds(block, 'first');
 
             // Calculate gaps in both coordinate systems independently
-            const oldGapAbove = firstOldInBlock !== null ? firstOldInBlock - 1 : 0;
-            const newGapAbove = firstNewInBlock !== null ? firstNewInBlock - 1 : 0;
+            const oldGapAbove = firstCoords.old !== null ? firstCoords.old - 1 : 0;
+            const newGapAbove = firstCoords.new !== null ? firstCoords.new - 1 : 0;
             const gapSizeAbove = Math.max(oldGapAbove, newGapAbove);
 
             if (gapSizeAbove > 0) {
               // Use new file coordinates for display, fall back to old if unavailable
-              const startLineNew = firstNewInBlock !== null ? firstNewInBlock : firstOldInBlock;
+              const startLineNew = firstCoords.new !== null ? firstCoords.new : firstCoords.old;
               this.createGapSection(tbody, filePath, 1, startLineNew - 1, gapSizeAbove, 'above');
             }
           }
@@ -1106,44 +1131,31 @@ class PRManager {
           // Add expandable context between blocks
           if (blockIndex < file.blocks.length - 1) {
             const nextBlock = file.blocks[blockIndex + 1];
-
-            // Find last valid old/new line numbers in current block (scan backwards)
-            // Note: Deletion-only lines have oldNumber but not newNumber
-            //       Insertion-only lines have newNumber but not oldNumber
-            let lastOld = null, lastNew = null;
-            for (let i = block.lines.length - 1; i >= 0; i--) {
-              const line = block.lines[i];
-              if (lastOld === null && line.oldNumber) lastOld = line.oldNumber;
-              if (lastNew === null && line.newNumber) lastNew = line.newNumber;
-              if (lastOld !== null && lastNew !== null) break;
-            }
-
-            // Find first valid old/new line numbers in next block (scan forwards)
-            let firstOld = null, firstNew = null;
-            for (let i = 0; i < nextBlock.lines.length; i++) {
-              const line = nextBlock.lines[i];
-              if (firstOld === null && line.oldNumber) firstOld = line.oldNumber;
-              if (firstNew === null && line.newNumber) firstNew = line.newNumber;
-              if (firstOld !== null && firstNew !== null) break;
-            }
+            const lastCoords = PRManager.getBlockCoordinateBounds(block, 'last');
+            const firstCoords = PRManager.getBlockCoordinateBounds(nextBlock, 'first');
 
             // Edge case: If we couldn't find valid coordinates in either coordinate system,
             // skip gap detection (e.g., empty blocks or blocks with only context lines)
-            if ((lastOld === null && lastNew === null) || (firstOld === null && firstNew === null)) {
+            if ((lastCoords.old === null && lastCoords.new === null) ||
+                (firstCoords.old === null && firstCoords.new === null)) {
               // Cannot determine gap - skip
             } else {
               // Calculate gaps in both coordinate systems independently
               // This handles asymmetric diffs where old and new file line counts differ significantly
-              const oldGap = (lastOld !== null && firstOld !== null) ? firstOld - lastOld - 1 : 0;
-              const newGap = (lastNew !== null && firstNew !== null) ? firstNew - lastNew - 1 : 0;
+              const oldGap = (lastCoords.old !== null && firstCoords.old !== null)
+                ? firstCoords.old - lastCoords.old - 1 : 0;
+              const newGap = (lastCoords.new !== null && firstCoords.new !== null)
+                ? firstCoords.new - lastCoords.new - 1 : 0;
               // Use maximum gap to ensure no lines are missed (gap may differ due to additions/deletions)
               const gapSize = Math.max(oldGap, newGap);
 
               if (gapSize > 0) {
                 // Use new-file coordinates for display (startLineNew, endLineNew)
-                // Fall back to old-file coordinates only if new-file coords unavailable
-                // (e.g., block ends with deletion-only lines)
-                const startLineNew = (lastNew !== null ? lastNew : lastOld) + 1;
+                // Fall back to old-file coordinates only if new-file coords unavailable.
+                // This fallback is safe because gapSize was calculated using the maximum
+                // of both coordinate systems, so the gap extent is correct even when
+                // old/new coordinates have diverged (e.g., block ends with deletion-only lines)
+                const startLineNew = (lastCoords.new !== null ? lastCoords.new : lastCoords.old) + 1;
                 const endLineNew = startLineNew + gapSize - 1;
                 this.createGapSection(tbody, filePath, startLineNew, endLineNew, gapSize, 'between');
               }
@@ -1505,160 +1517,13 @@ class PRManager {
     tbody.appendChild(row);
 
     // Auto-expand small gaps (< AUTO_EXPAND_THRESHOLD lines) to avoid showing "2 hidden lines" etc.
-    // This improves UX by eliminating trivial expand interactions
-    if (gapSize < PRManager.AUTO_EXPAND_THRESHOLD && position === 'between') {
-      // Use setTimeout to let the DOM render first, then expand
-      setTimeout(() => {
+    // This improves UX by eliminating trivial expand interactions for all gap positions
+    if (gapSize < PRManager.AUTO_EXPAND_THRESHOLD) {
+      // Use requestAnimationFrame to ensure DOM has rendered before expanding
+      requestAnimationFrame(() => {
         this.expandGapContext(expandControls, 'all', gapSize);
-      }, 0);
-    }
-  }
-
-  /**
-   * Create collapsed section for large unchanged blocks
-   * @param {HTMLElement} tbody - Table body element
-   * @param {string} fileName - File name
-   * @param {Array} allLines - All lines in the section
-   * @param {number} startIdx - Start index in allLines
-   * @param {number} endIdx - End index in allLines
-   * @param {string} position - Position ('above', 'below', or 'between')
-   */
-  createCollapsedSection(tbody, fileName, allLines, startIdx, endIdx, position) {
-    const hiddenCount = endIdx - startIdx;
-    const firstLine = allLines[startIdx];
-    const lastLine = allLines[endIdx - 1];
-    
-    // Check if this section was previously expanded
-    const sectionKey = this.getExpandedSectionKey(fileName, 
-      firstLine.oldNumber || firstLine.newNumber, 
-      lastLine.oldNumber || lastLine.newNumber);
-    
-    if (this.expandedSections.has(sectionKey)) {
-      // This section was previously expanded, show all lines
-      allLines.slice(startIdx, endIdx).forEach(line => {
-        // Context expansion lines don't have a specific diff position since they weren't in the original diff
-        this.renderDiffLine(tbody, line, fileName, null);
       });
-      return; // Don't create collapsed section
     }
-    
-    // Create the collapsed section row
-    const row = document.createElement('tr');
-    row.className = 'context-expand-row';
-    
-    // Create separate cells for old and new line numbers
-    const oldLineCell = document.createElement('td');
-    oldLineCell.className = 'diff-line-num';
-    oldLineCell.style.padding = '0';
-    oldLineCell.style.textAlign = 'center';
-    
-    const newLineCell = document.createElement('td');
-    newLineCell.className = 'diff-line-num';  
-    newLineCell.style.padding = '0';
-    newLineCell.style.textAlign = 'center';
-    
-    // Put expand buttons in the first line number cell
-    const buttonContainer = document.createElement('div');
-    buttonContainer.className = 'expand-button-container';
-    
-    // Create expand controls container for metadata
-    const expandControls = document.createElement('div');
-    expandControls.className = 'context-expand-controls';
-    
-    // Store metadata for expansion
-    expandControls.dataset.fileName = fileName;
-    expandControls.dataset.startLine = firstLine.oldNumber || firstLine.newNumber;
-    expandControls.dataset.endLine = lastLine.oldNumber || lastLine.newNumber;
-    expandControls.dataset.hiddenCount = hiddenCount;
-    expandControls.dataset.position = position;
-    expandControls.dataset.sectionKey = sectionKey;
-    
-    // Create the expand buttons with GitHub Octicons
-    // For short sections (≤SMALL_GAP_THRESHOLD lines) or single-direction, show single button
-    // For larger sections with both directions, show stacked buttons
-    if (hiddenCount <= PRManager.SMALL_GAP_THRESHOLD || position !== 'between') {
-      // Single button - either fold-up, fold-down, or fold-up-down
-      const expandBtn = document.createElement('button');
-      expandBtn.className = 'expand-button expand-all-short';
-
-      if (position === 'above') {
-        // At top - expand up to reveal lines above first visible line
-        expandBtn.title = 'Expand up';
-        expandBtn.innerHTML = PRManager.FOLD_UP_ICON;
-        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'up', PRManager.DEFAULT_EXPAND_LINES));
-      } else if (position === 'below') {
-        // At bottom - expand down to reveal lines below last visible line
-        expandBtn.title = 'Expand down';
-        expandBtn.innerHTML = PRManager.FOLD_DOWN_ICON;
-        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'down', PRManager.DEFAULT_EXPAND_LINES));
-      } else {
-        // Between - short section, expand all
-        expandBtn.title = 'Expand all';
-        expandBtn.innerHTML = PRManager.FOLD_UP_DOWN_ICON;
-        expandBtn.addEventListener('click', () => this.expandContext(expandControls, 'all', hiddenCount));
-      }
-      buttonContainer.appendChild(expandBtn);
-    } else {
-      // Large section between changes - show both up and down buttons
-      const expandAbove = document.createElement('button');
-      expandAbove.className = 'expand-button expand-up';
-      expandAbove.title = 'Expand up';
-      expandAbove.innerHTML = PRManager.FOLD_UP_ICON;
-
-      const expandBelow = document.createElement('button');
-      expandBelow.className = 'expand-button expand-down';
-      expandBelow.title = 'Expand down';
-      expandBelow.innerHTML = PRManager.FOLD_DOWN_ICON;
-
-      // Stack buttons: down on top, up below - matches GitHub behavior
-      buttonContainer.appendChild(expandBelow);
-      buttonContainer.appendChild(expandAbove);
-
-      // Capture expandControls in closure at creation time
-      expandAbove.addEventListener('click', () => this.expandContext(expandControls, 'up', PRManager.DEFAULT_EXPAND_LINES));
-      expandBelow.addEventListener('click', () => this.expandContext(expandControls, 'down', PRManager.DEFAULT_EXPAND_LINES));
-    }
-
-    oldLineCell.appendChild(buttonContainer);
-
-    // Create content cell for hidden lines text - clickable to expand all
-    const contentCell = document.createElement('td');
-    contentCell.className = 'diff-code expand-content clickable-expand';
-    contentCell.colSpan = 2;
-    contentCell.title = 'Expand all';
-
-    const contentWrapper = document.createElement('div');
-    contentWrapper.className = 'expand-content-wrapper';
-
-    const expandIcon = document.createElement('span');
-    expandIcon.className = 'expand-icon';
-    expandIcon.innerHTML = PRManager.FOLD_UP_DOWN_ICON;
-
-    const expandInfo = document.createElement('span');
-    expandInfo.className = 'expand-info';
-    expandInfo.textContent = `${hiddenCount} hidden lines`;
-
-    contentWrapper.appendChild(expandIcon);
-    contentWrapper.appendChild(expandInfo);
-    contentCell.appendChild(contentWrapper);
-
-    // Store the hidden lines data for expansion
-    expandControls.hiddenLines = allLines.slice(startIdx, endIdx);
-
-    // Make content cell clickable to expand all
-    contentCell.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      const hiddenCountValue = parseInt(expandControls.dataset.hiddenCount) || hiddenCount;
-      this.expandContext(row.expandControls, 'all', hiddenCountValue);
-    });
-    
-    // Store expand controls reference on row
-    row.expandControls = expandControls;
-    
-    row.appendChild(oldLineCell);
-    row.appendChild(newLineCell);
-    row.appendChild(contentCell);
-    tbody.appendChild(row);
   }
 
   /**
