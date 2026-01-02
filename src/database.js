@@ -994,6 +994,25 @@ class ReviewRepository {
   }
 
   /**
+   * Upsert custom instructions for a review - creates if not exists, updates if exists
+   * Uses SQLite's INSERT OR REPLACE for atomic operation
+   * @param {number} prNumber - Pull request number
+   * @param {string} repository - Repository in owner/repo format
+   * @param {string} customInstructions - Custom instructions to save
+   * @returns {Promise<Object>} The updated or created review record
+   */
+  async upsertCustomInstructions(prNumber, repository, customInstructions) {
+    const existing = await this.getReviewByPR(prNumber, repository);
+
+    if (existing) {
+      await this.updateReview(existing.id, { customInstructions });
+      return { ...existing, custom_instructions: customInstructions };
+    }
+
+    return this.createReview({ prNumber, repository, customInstructions });
+  }
+
+  /**
    * Delete a review record by ID
    * @param {number} id - Review ID
    * @returns {Promise<boolean>} True if record was deleted

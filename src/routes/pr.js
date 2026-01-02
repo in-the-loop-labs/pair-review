@@ -643,29 +643,25 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       model = getModel(req);
     }
 
-    // Combine custom instructions: repo defaults first, then PR-specific
+    // Combine custom instructions with XML-like tags for AI clarity
+    // Server is the single source of truth for how instructions are merged
     let combinedInstructions = null;
     const repoInstructions = repoSettings?.default_instructions;
     if (repoInstructions || requestInstructions) {
       const parts = [];
       if (repoInstructions) {
-        parts.push(repoInstructions);
+        parts.push(`These are default instructions for this repository:\n<repo_instructions>\n${repoInstructions}\n</repo_instructions>`);
       }
       if (requestInstructions) {
-        parts.push(requestInstructions);
+        parts.push(`These are custom instructions for this analysis run. The following instructions take precedence over the repo_instructions in areas where they overlap or conflict:\n<custom_instructions>\n${requestInstructions}\n</custom_instructions>`);
       }
       combinedInstructions = parts.join('\n\n');
     }
 
-    // Save custom instructions to the review record
+    // Save custom instructions to the review record using upsert
     if (requestInstructions) {
       const reviewRepo = new ReviewRepository(db);
-      const existingReview = await reviewRepo.getReviewByPR(prNumber, repository);
-      if (existingReview) {
-        await reviewRepo.updateReview(existingReview.id, { customInstructions: requestInstructions });
-      } else {
-        await reviewRepo.createReview({ prNumber, repository, customInstructions: requestInstructions });
-      }
+      await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
     }
 
     // Create analysis ID

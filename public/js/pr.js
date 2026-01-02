@@ -37,6 +37,20 @@ class PRManager {
   // Keep old name as alias for backward compatibility
   static FOLD_UP_DOWN_ICON = PRManager.UNFOLD_ICON;
 
+  /**
+   * Generate a safe localStorage key for repository-specific settings
+   * Uses base64 encoding to handle special characters in owner/repo names
+   * @param {string} prefix - Key prefix (e.g., 'pair-review-model')
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @returns {string} Safe localStorage key
+   */
+  static getRepoStorageKey(prefix, owner, repo) {
+    // Use base64 encoding to safely handle any special characters
+    const repoId = btoa(`${owner}/${repo}`).replace(/=/g, '');
+    return `${prefix}:${repoId}`;
+  }
+
   // Eye icon for showing hidden content (GitHub Octicons "eye")
   static EYE_ICON = `
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -2019,7 +2033,8 @@ class PRManager {
       ]);
 
       // Determine the model to use (priority: remembered > repo default > 'sonnet')
-      const rememberedModel = localStorage.getItem(`pair-review-model-${owner}/${repo}`);
+      const modelStorageKey = PRManager.getRepoStorageKey('pair-review-model', owner, repo);
+      const rememberedModel = localStorage.getItem(modelStorageKey);
       const currentModel = rememberedModel || repoSettings?.default_model || 'sonnet';
 
       // Show the config modal
@@ -2037,9 +2052,9 @@ class PRManager {
 
       // Save remembered model preference if requested
       if (config.rememberModel) {
-        localStorage.setItem(`pair-review-model-${owner}/${repo}`, config.model);
+        localStorage.setItem(modelStorageKey, config.model);
       } else {
-        localStorage.removeItem(`pair-review-model-${owner}/${repo}`);
+        localStorage.removeItem(modelStorageKey);
       }
 
       // Start the analysis with the selected config
@@ -2074,17 +2089,8 @@ class PRManager {
         }
       }
 
-      // Combine repo instructions and custom instructions
-      const allInstructions = [];
-      if (config.repoInstructions) {
-        allInstructions.push(config.repoInstructions);
-      }
-      if (config.instructions) {
-        allInstructions.push(config.instructions);
-      }
-      const combinedInstructions = allInstructions.join('\n\n');
-
       // Start AI analysis with model and instructions
+      // Note: Server handles combining repo default instructions with custom instructions
       const response = await fetch(`/api/analyze/${owner}/${repo}/${number}`, {
         method: 'POST',
         headers: {
@@ -2092,7 +2098,7 @@ class PRManager {
         },
         body: JSON.stringify({
           model: config.model || 'sonnet',
-          customInstructions: combinedInstructions
+          customInstructions: config.instructions || null
         })
       });
 
