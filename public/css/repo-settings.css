@@ -402,6 +402,7 @@ html, body {
   resize: vertical;
   min-height: 180px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-sizing: border-box;
 }
 
 .instructions-textarea::placeholder {
