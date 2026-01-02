@@ -124,7 +124,7 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata);
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, customInstructions);
 
         // Store orchestrated results with ai_level = NULL (final suggestions)
         logger.info('Storing orchestrated suggestions in database...');
@@ -1458,9 +1458,10 @@ Output JSON with this structure:
    * Orchestrate all suggestions using AI to provide intelligent curation and merging
    * @param {Object} allSuggestions - Object containing suggestions from all levels: {level1: [...], level2: [...], level3: [...]}
    * @param {Object} prMetadata - PR metadata for context
+   * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
    * @returns {Promise<Array>} Curated suggestions array
    */
-  async orchestrateWithAI(allSuggestions, prMetadata) {
+  async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null) {
     logger.section('[Orchestration] AI Orchestration Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
@@ -1474,7 +1475,7 @@ Output JSON with this structure:
       const claude = new ClaudeCLI(this.model);
 
       // Build the orchestration prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata);
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions);
 
       // Execute Claude CLI for orchestration
       logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
@@ -1540,13 +1541,26 @@ Output JSON with this structure:
    * Build orchestration prompt for intelligent suggestion curation
    * @param {Object} allSuggestions - Suggestions from all levels
    * @param {Object} prMetadata - PR metadata for context
+   * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
    * @returns {string} Orchestration prompt
    */
-  buildOrchestrationPrompt(allSuggestions, prMetadata) {
+  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null) {
     const level1Count = allSuggestions.level1?.length || 0;
-    const level2Count = allSuggestions.level2?.length || 0; 
+    const level2Count = allSuggestions.level2?.length || 0;
     const level3Count = allSuggestions.level3?.length || 0;
-    
+
+    // Build custom instructions guidance for orchestration if provided
+    const orchestrationCustomInstructions = customInstructions
+      ? `
+## Review Focus Instructions
+The following custom instructions have been provided by the reviewer. Use these to guide how you prioritize, filter, and curate suggestions:
+
+${customInstructions.trim()}
+
+When curating suggestions, give higher priority to findings that align with these instructions and consider filtering out suggestions that are less relevant to the stated focus areas.
+`
+      : '';
+
     return `You are orchestrating AI-powered code review suggestions for pull request #${prMetadata.number}.
 
 # AI Suggestion Orchestration Task
@@ -1556,7 +1570,7 @@ Output ONLY valid JSON with no additional text, explanations, or markdown code b
 
 ## Your Role
 You are helping a human reviewer by intelligently curating and merging suggestions from a 3-level analysis system. Your goal is to provide the most valuable, non-redundant guidance to accelerate the human review process.
-
+${orchestrationCustomInstructions}
 ## Input: Multi-Level Analysis Results
 **Level 1 - Diff Analysis (${level1Count} suggestions):**
 ${allSuggestions.level1 ? allSuggestions.level1.map(s => 
