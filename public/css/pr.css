@@ -4973,6 +4973,18 @@ body::before {
   color: var(--color-text-primary);
 }
 
+/* Settings link - use amber to match AI theme */
+.header .settings-link {
+  background: transparent;
+  border: 1px solid var(--color-border-primary);
+  color: var(--ai-primary);
+}
+
+.header .settings-link:hover {
+  background: var(--color-bg-secondary);
+  color: var(--ai-secondary);
+}
+
 [data-theme="dark"] .theme-icon-light {
   display: none !important;
 }
