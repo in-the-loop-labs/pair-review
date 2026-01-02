@@ -43,7 +43,6 @@ html, body {
 }
 
 .nav-content {
-  max-width: 1200px;
   margin: 0 auto;
   padding: 12px 24px;
   display: flex;
@@ -80,8 +79,6 @@ html, body {
 /* Breadcrumb */
 .breadcrumb {
   flex: 1;
-  min-width: 0;
-  overflow-x: auto;
 }
 
 .breadcrumb ol {
@@ -126,7 +123,7 @@ html, body {
   justify-content: center;
   width: 36px;
   height: 36px;
-  margin-left: auto;
+  flex-shrink: 0;
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-primary);
   border-radius: 8px;
