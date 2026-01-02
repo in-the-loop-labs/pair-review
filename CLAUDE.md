@@ -115,6 +115,4 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 
 ## Project Documentation Structure
 - **CLAUDE.md**: Stable requirements (this file)
-- **AGENT_TEAM.md**: Agent definitions
-- **MENTAL_MODEL.md**: Software Engineer's understanding of system architecture (maintained by Engineer)
 
