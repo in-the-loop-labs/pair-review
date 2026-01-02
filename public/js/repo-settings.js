@@ -55,7 +55,7 @@ class RepoSettingsPage {
 
   initTheme() {
     // Check for saved theme preference
-    const savedTheme = localStorage.getItem('pair-review-theme') || 'light';
+    const savedTheme = localStorage.getItem('theme') || 'light';
     document.documentElement.setAttribute('data-theme', savedTheme);
 
     // Theme toggle button
@@ -65,7 +65,7 @@ class RepoSettingsPage {
         const currentTheme = document.documentElement.getAttribute('data-theme');
         const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
         document.documentElement.setAttribute('data-theme', newTheme);
-        localStorage.setItem('pair-review-theme', newTheme);
+        localStorage.setItem('theme', newTheme);
       });
     }
   }
