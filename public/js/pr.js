@@ -1779,8 +1779,18 @@ class PRManager {
       if (direction === 'all') {
         // Replace the expand controls with all lines
         if (row && row.parentNode) {
+          // Check if this is a 'between' gap - if so, remove the adjacent hunk header
+          // since the hunks have now merged into continuous code
+          const position = controlsElement.dataset.position;
+          const nextSibling = row.nextElementSibling;
+
           row.parentNode.insertBefore(fragment, row);
           row.remove();
+
+          // Remove redundant hunk header when between-gaps are fully expanded
+          if (position === 'between' && nextSibling && nextSibling.classList.contains('d2h-info')) {
+            nextSibling.remove();
+          }
         }
       } else {
         // Update remaining gap info
@@ -1817,8 +1827,17 @@ class PRManager {
         } else {
           // No more hidden lines, remove the expand controls
           if (row && row.parentNode) {
+            // Check if this is a 'between' gap - if so, remove the adjacent hunk header
+            const position = controlsElement.dataset.position;
+            const nextSibling = row.nextElementSibling;
+
             row.parentNode.insertBefore(fragment, row);
             row.remove();
+
+            // Remove redundant hunk header when between-gaps are fully expanded
+            if (position === 'between' && nextSibling && nextSibling.classList.contains('d2h-info')) {
+              nextSibling.remove();
+            }
           }
         }
       }
