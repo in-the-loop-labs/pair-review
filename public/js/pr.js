@@ -1088,16 +1088,35 @@ class PRManager {
           // Add expandable context between blocks
           if (blockIndex < file.blocks.length - 1) {
             const nextBlock = file.blocks[blockIndex + 1];
-            const currentLastLine = block.lines[block.lines.length - 1];
-            const nextFirstLine = nextBlock.lines[0];
 
-            if (currentLastLine && nextFirstLine) {
-              const currentEnd = Math.max(currentLastLine.oldNumber || 0, currentLastLine.newNumber || 0);
-              const nextStart = Math.min(nextFirstLine.oldNumber || Infinity, nextFirstLine.newNumber || Infinity);
+            // Find last valid old/new line numbers in current block (scan backwards)
+            let lastOld = null, lastNew = null;
+            for (let i = block.lines.length - 1; i >= 0; i--) {
+              const line = block.lines[i];
+              if (lastOld === null && line.oldNumber) lastOld = line.oldNumber;
+              if (lastNew === null && line.newNumber) lastNew = line.newNumber;
+              if (lastOld !== null && lastNew !== null) break;
+            }
 
-              if (nextStart - currentEnd > 1) {
-                this.createGapSection(tbody, filePath, currentEnd + 1, nextStart - 1, nextStart - currentEnd - 1, 'between');
-              }
+            // Find first valid old/new line numbers in next block (scan forwards)
+            let firstOld = null, firstNew = null;
+            for (let i = 0; i < nextBlock.lines.length; i++) {
+              const line = nextBlock.lines[i];
+              if (firstOld === null && line.oldNumber) firstOld = line.oldNumber;
+              if (firstNew === null && line.newNumber) firstNew = line.newNumber;
+              if (firstOld !== null && firstNew !== null) break;
+            }
+
+            // Calculate gaps in both coordinate systems
+            const oldGap = (lastOld !== null && firstOld !== null) ? firstOld - lastOld - 1 : 0;
+            const newGap = (lastNew !== null && firstNew !== null) ? firstNew - lastNew - 1 : 0;
+            const gapSize = Math.max(oldGap, newGap);
+
+            if (gapSize > 0) {
+              // Use new file coordinates for display (startLine, endLine)
+              const startLine = (lastNew !== null ? lastNew : lastOld) + 1;
+              const endLine = startLine + gapSize - 1;
+              this.createGapSection(tbody, filePath, startLine, endLine, gapSize, 'between');
             }
           }
         });
