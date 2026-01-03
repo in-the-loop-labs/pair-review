@@ -1661,13 +1661,15 @@ class PRManager {
    */
   initSplitButton() {
     if (window.SplitButton) {
-      const container = document.getElementById('review-actions');
-      if (container) {
-        this.splitButton = new window.SplitButton(container, {
+      const placeholder = document.getElementById('split-button-placeholder');
+      if (placeholder) {
+        this.splitButton = new window.SplitButton({
           onSubmit: () => this.openReviewModal(),
           onPreview: () => this.openPreviewModal(),
           onClear: () => this.clearAllUserComments()
         });
+        const buttonElement = this.splitButton.render();
+        placeholder.appendChild(buttonElement);
         this.updateCommentCount();
       }
     }
