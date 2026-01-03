@@ -275,7 +275,7 @@ class PRManager {
       // Render PR content
       this.renderPRHeader(prData);
       this.renderDiff(prData);
-      this.updateFileList(prData.files);
+      this.updateFileList(prData.changed_files || []);
 
       // Load saved comments
       await this.loadUserComments();
