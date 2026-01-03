@@ -1332,6 +1332,11 @@ class PRManager {
       const timestamp = commentDiv.querySelector('.user-comment-timestamp');
       if (timestamp) timestamp.textContent = new Date().toLocaleString();
 
+      // Notify AI Panel about the updated comment body
+      if (window.aiPanel?.updateComment) {
+        window.aiPanel.updateComment(commentId, { body: editedText });
+      }
+
     } catch (error) {
       console.error('Error saving comment:', error);
       alert('Failed to save comment');
@@ -1386,6 +1391,11 @@ class PRManager {
         commentRow.remove();
         this.updateCommentCount();
       }
+
+      // Notify AI Panel about the deleted comment
+      if (window.aiPanel?.removeComment) {
+        window.aiPanel.removeComment(commentId);
+      }
     } catch (error) {
       console.error('Error deleting comment:', error);
       alert('Failed to delete comment');
@@ -1428,6 +1438,11 @@ class PRManager {
 
       // Clear internal userComments array
       this.userComments = [];
+
+      // Clear comments from AI Panel
+      if (window.aiPanel?.setComments) {
+        window.aiPanel.setComments([]);
+      }
 
       // Update comment count display
       this.updateCommentCount();
@@ -1473,6 +1488,11 @@ class PRManager {
           }
         }
       });
+
+      // Populate AI Panel with comments
+      if (window.aiPanel?.setComments) {
+        window.aiPanel.setComments(this.userComments);
+      }
 
       this.updateCommentCount();
     } catch (error) {
@@ -1569,6 +1589,11 @@ class PRManager {
 
       this.displayUserCommentInEditMode(newComment, suggestionRow);
 
+      // Notify AI Panel about the new adopted comment
+      if (window.aiPanel?.addComment) {
+        window.aiPanel.addComment(newComment);
+      }
+
       if (this.suggestionNavigator?.suggestions) {
         const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
           s.id === suggestionId ? { ...s, status: 'adopted' } : s
@@ -1605,6 +1630,11 @@ class PRManager {
       );
 
       this.displayUserComment(newComment, suggestionRow);
+
+      // Notify AI Panel about the new adopted comment
+      if (window.aiPanel?.addComment) {
+        window.aiPanel.addComment(newComment);
+      }
 
       if (this.suggestionNavigator?.suggestions) {
         const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>

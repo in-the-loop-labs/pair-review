@@ -382,8 +382,8 @@ class CommentManager {
       const draftKey = `draft_${prNumber}_${fileName}_${lineNumber}`;
       localStorage.removeItem(draftKey);
 
-      // Create comment display row
-      this.displayUserComment({
+      // Build comment object
+      const commentData = {
         id: result.commentId,
         file: fileName,
         line_start: lineNumber,
@@ -391,7 +391,15 @@ class CommentManager {
         diff_position: diffPosition,  // Include for expanded context warning logic
         body: content,
         created_at: new Date().toISOString()
-      }, formRow.previousElementSibling);
+      };
+
+      // Create comment display row
+      this.displayUserComment(commentData, formRow.previousElementSibling);
+
+      // Notify AI Panel about the new comment
+      if (window.aiPanel?.addComment) {
+        window.aiPanel.addComment(commentData);
+      }
 
       // Hide form and clear selection
       this.hideCommentForm();

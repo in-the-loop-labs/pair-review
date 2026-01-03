@@ -5741,6 +5741,59 @@ body:not([data-theme="dark"]) .theme-icon-light {
   display: inline;
 }
 
+/* Comment items in the findings list - blue accent to distinguish from AI suggestions */
+.finding-item.finding-comment {
+  border-left: 3px solid var(--color-info, #58a6ff);
+  padding-left: 9px;
+  background: rgba(88, 166, 255, 0.08);
+  border-color: rgba(88, 166, 255, 0.25);
+}
+
+.finding-item.finding-comment:hover {
+  background: rgba(88, 166, 255, 0.12);
+  border-color: rgba(88, 166, 255, 0.35);
+}
+
+.finding-item.finding-comment .finding-icon {
+  color: var(--color-info, #58a6ff);
+}
+
+/* Badge for adopted comments showing original suggestion type */
+.finding-badge {
+  font-size: 0.6rem;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.finding-badge-praise {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--ai-primary, #f59e0b);
+}
+
+.finding-badge-suggestion {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--color-info, #58a6ff);
+}
+
+/* Highlight flash animation for scrolling to comments */
+.user-comment.highlight-flash {
+  animation: comment-highlight-flash 2s ease-out;
+}
+
+@keyframes comment-highlight-flash {
+  0% {
+    box-shadow: 0 0 0 3px var(--color-info, #58a6ff);
+    background: rgba(88, 166, 255, 0.15);
+  }
+  100% {
+    box-shadow: none;
+    background: var(--color-bg-secondary);
+  }
+}
+
 /* --------------------------------------------------------------------------
    Responsive Design for New Layout
    --------------------------------------------------------------------------

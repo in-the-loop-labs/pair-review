@@ -181,17 +181,30 @@ class AIPanel {
 
     /**
      * Get items to display based on selected segment
+     * @returns {Array} Array of items with an added _itemType property
      */
     getFilteredItems() {
         switch (this.selectedSegment) {
             case 'ai':
-                return this.findings;
+                return this.findings.map(f => ({ ...f, _itemType: 'finding' }));
             case 'comments':
-                return this.comments;
+                return this.comments.map(c => ({ ...c, _itemType: 'comment' }));
             case 'all':
             default:
-                // Combine and return both - for now just findings since comments not implemented
-                return this.findings;
+                // Combine findings and comments, sorted by file and line for logical grouping
+                const allItems = [
+                    ...this.findings.map(f => ({ ...f, _itemType: 'finding' })),
+                    ...this.comments.map(c => ({ ...c, _itemType: 'comment' }))
+                ];
+                // Sort by file, then by line number
+                return allItems.sort((a, b) => {
+                    const fileA = a.file || '';
+                    const fileB = b.file || '';
+                    if (fileA !== fileB) return fileA.localeCompare(fileB);
+                    const lineA = a.line_start || a.line || 0;
+                    const lineB = b.line_start || b.line || 0;
+                    return lineA - lineB;
+                });
         }
     }
 
@@ -226,30 +239,13 @@ class AIPanel {
             this.findingsCount.textContent = `${items.length} item${items.length !== 1 ? 's' : ''}`;
         }
 
-        this.findingsList.innerHTML = items.map((finding, index) => {
-            const type = this.getFindingType(finding);
-            const iconSvg = this.getTypeIcon(type);
-            const title = this.truncateText(finding.title || finding.body || 'Suggestion', 40);
-            const fileName = finding.file ? finding.file.split('/').pop() : null;
-            const lineNum = finding.line_start || finding.line;
-            const location = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
-            const category = finding.type || finding.category || '';
-            const statusClass = finding.status === 'dismissed' ? 'finding-dismissed' :
-                               finding.status === 'adopted' ? 'finding-adopted' : 'finding-active';
-
-            return `
-                <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" title="${location}">
-                    <div class="finding-icon">${iconSvg}</div>
-                    <div class="finding-content">
-                        <span class="finding-title">${this.escapeHtml(title)}</span>
-                        <div class="finding-meta">
-                            ${category ? `<span class="finding-category">${this.escapeHtml(category)}</span>` : ''}
-                            ${category && location ? '<span class="finding-separator">·</span>' : ''}
-                            ${location ? `<span class="finding-location">${this.escapeHtml(location)}</span>` : ''}
-                        </div>
-                    </div>
-                </button>
-            `;
+        this.findingsList.innerHTML = items.map((item, index) => {
+            // Check if this is a comment or a finding
+            if (item._itemType === 'comment') {
+                return this.renderCommentItem(item, index);
+            } else {
+                return this.renderFindingItem(item, index);
+            }
         }).join('');
 
         // Bind click events
@@ -259,7 +255,8 @@ class AIPanel {
     }
 
     onFindingClick(item) {
-        const findingId = item.dataset.id;
+        const itemId = item.dataset.id;
+        const itemType = item.dataset.itemType;
         const file = item.dataset.file;
         const line = item.dataset.line;
 
@@ -267,7 +264,20 @@ class AIPanel {
         this.findingsList.querySelectorAll('.finding-item').forEach(i => i.classList.remove('active'));
         item.classList.add('active');
 
-        // Scroll to the suggestion in the diff view
+        // Handle comments - scroll to user comment row
+        if (itemType === 'comment') {
+            this.scrollToComment(itemId, file, line);
+            return;
+        }
+
+        // Handle findings/suggestions
+        this.scrollToFinding(itemId, file, line);
+    }
+
+    /**
+     * Scroll to an AI finding/suggestion in the diff view
+     */
+    scrollToFinding(findingId, file, line) {
         let targetSuggestion = null;
 
         // First, try to find by exact ID match (most reliable)
@@ -306,6 +316,39 @@ class AIPanel {
         }
     }
 
+    /**
+     * Scroll to a user comment in the diff view
+     */
+    scrollToComment(commentId, file, line) {
+        let targetComment = null;
+
+        // First, try to find by exact comment ID (most reliable)
+        if (commentId) {
+            targetComment = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
+        }
+
+        // Fallback: find by file and line if no direct match
+        if (!targetComment && file && line) {
+            const commentRows = document.querySelectorAll('.user-comment-row');
+            for (const row of commentRows) {
+                if (row.dataset.file === file && row.dataset.lineStart === line) {
+                    targetComment = row;
+                    break;
+                }
+            }
+        }
+
+        if (targetComment) {
+            targetComment.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Add highlight effect
+            const commentDiv = targetComment.querySelector('.user-comment');
+            if (commentDiv) {
+                commentDiv.classList.add('highlight-flash');
+                setTimeout(() => commentDiv.classList.remove('highlight-flash'), 2000);
+            }
+        }
+    }
+
     getFindingType(finding) {
         const type = (finding.type || finding.category || '').toLowerCase();
         if (type.includes('bug') || type.includes('error') || type.includes('security')) {
@@ -327,11 +370,84 @@ class AIPanel {
                 return `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
                     <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/>
                 </svg>`;
+            case 'comment':
+                // Chat bubble icon for comments
+                return `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                    <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"/>
+                </svg>`;
             default:
                 return `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
                     <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0Zm0 4a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 8 4Zm0 9a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/>
                 </svg>`;
         }
+    }
+
+    /**
+     * Render a single finding item (AI suggestion)
+     * @param {Object} finding - The finding data
+     * @param {number} index - The item index
+     * @returns {string} HTML string
+     */
+    renderFindingItem(finding, index) {
+        const type = this.getFindingType(finding);
+        const iconSvg = this.getTypeIcon(type);
+        const title = this.truncateText(finding.title || finding.body || 'Suggestion', 40);
+        const fileName = finding.file ? finding.file.split('/').pop() : null;
+        const lineNum = finding.line_start || finding.line;
+        const location = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
+        const category = finding.type || finding.category || '';
+        const statusClass = finding.status === 'dismissed' ? 'finding-dismissed' :
+                           finding.status === 'adopted' ? 'finding-adopted' : 'finding-active';
+
+        return `
+            <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" data-item-type="finding" title="${location}">
+                <div class="finding-icon">${iconSvg}</div>
+                <div class="finding-content">
+                    <span class="finding-title">${this.escapeHtml(title)}</span>
+                    <div class="finding-meta">
+                        ${category ? `<span class="finding-category">${this.escapeHtml(category)}</span>` : ''}
+                        ${category && location ? '<span class="finding-separator">·</span>' : ''}
+                        ${location ? `<span class="finding-location">${this.escapeHtml(location)}</span>` : ''}
+                    </div>
+                </div>
+            </button>
+        `;
+    }
+
+    /**
+     * Render a single comment item
+     * @param {Object} comment - The comment data
+     * @param {number} index - The item index
+     * @returns {string} HTML string
+     */
+    renderCommentItem(comment, index) {
+        const iconSvg = this.getTypeIcon('comment');
+        const title = this.truncateText(comment.body || 'Comment', 40);
+        const fileName = comment.file ? comment.file.split('/').pop() : null;
+        const lineNum = comment.line_start;
+        const location = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
+
+        // For adopted comments (from AI suggestions), show the original type as a badge
+        let badgeHtml = '';
+        if (comment.parent_id && comment.type) {
+            const badgeType = comment.type === 'praise' ? 'praise' : 'suggestion';
+            const badgeLabel = comment.type === 'praise' ? 'Nice Work' : 'From AI';
+            badgeHtml = `<span class="finding-badge finding-badge-${badgeType}">${this.escapeHtml(badgeLabel)}</span>`;
+        }
+
+        return `
+            <button class="finding-item finding-comment" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-item-type="comment" title="${location}">
+                <div class="finding-icon">${iconSvg}</div>
+                <div class="finding-content">
+                    <span class="finding-title">${this.escapeHtml(title)}</span>
+                    <div class="finding-meta">
+                        ${badgeHtml}
+                        ${badgeHtml && location ? '<span class="finding-separator">·</span>' : ''}
+                        ${location ? `<span class="finding-location">${this.escapeHtml(location)}</span>` : ''}
+                    </div>
+                </div>
+            </button>
+        `;
     }
 
     /**
@@ -372,6 +488,66 @@ class AIPanel {
 
         // Also clear suggestions from the diff view
         document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
+    }
+
+    // ========================================
+    // Comment Management Methods
+    // ========================================
+
+    /**
+     * Add a comment to the panel
+     * @param {Object} comment - Comment data with id, file, line_start, line_end, body, parent_id, type, title
+     */
+    addComment(comment) {
+        if (!comment || !comment.id) return;
+
+        // Avoid duplicates
+        const existingIndex = this.comments.findIndex(c => c.id === comment.id);
+        if (existingIndex >= 0) {
+            // Update existing comment
+            this.comments[existingIndex] = comment;
+        } else {
+            this.comments.push(comment);
+        }
+
+        this.updateSegmentCounts();
+        this.renderFindings();
+    }
+
+    /**
+     * Add multiple comments to the panel (for initial load)
+     * @param {Array} comments - Array of comment objects
+     */
+    setComments(comments) {
+        this.comments = comments || [];
+        this.updateSegmentCounts();
+        this.renderFindings();
+    }
+
+    /**
+     * Update an existing comment
+     * @param {number} commentId - The comment ID
+     * @param {Object} updates - Updated comment properties
+     */
+    updateComment(commentId, updates) {
+        const comment = this.comments.find(c => c.id === commentId);
+        if (comment) {
+            Object.assign(comment, updates);
+            this.renderFindings();
+        }
+    }
+
+    /**
+     * Remove a comment from the panel
+     * @param {number} commentId - The comment ID to remove
+     */
+    removeComment(commentId) {
+        const index = this.comments.findIndex(c => c.id === commentId);
+        if (index >= 0) {
+            this.comments.splice(index, 1);
+            this.updateSegmentCounts();
+            this.renderFindings();
+        }
     }
 
     /**
