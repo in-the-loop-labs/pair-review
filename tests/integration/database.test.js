@@ -109,6 +109,7 @@ function createTestDatabase() {
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               repository TEXT NOT NULL UNIQUE,
               default_instructions TEXT,
+              default_provider TEXT,
               default_model TEXT,
               created_at TEXT DEFAULT CURRENT_TIMESTAMP,
               updated_at TEXT DEFAULT CURRENT_TIMESTAMP

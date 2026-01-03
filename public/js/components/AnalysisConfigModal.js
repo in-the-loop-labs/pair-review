@@ -9,6 +9,7 @@ class AnalysisConfigModal {
     this.onSubmit = null;
     this.onCancel = null;
     this.escapeHandler = null;
+    this.selectedProvider = 'claude';
     this.selectedModel = 'sonnet';
     this.selectedPresets = new Set();
     this.rememberModel = false;
@@ -19,33 +20,80 @@ class AnalysisConfigModal {
     this.CHAR_LIMIT = 5000;
     this.CHAR_WARNING_THRESHOLD = 4500;
 
-    this.models = [
-      {
-        id: 'haiku',
-        name: 'Haiku',
-        tagline: 'Lightning Fast',
-        description: 'Quick analysis for simple changes',
-        badge: 'Fastest',
-        badgeClass: 'badge-speed'
+    // Provider definitions with their models
+    this.providers = {
+      claude: {
+        id: 'claude',
+        name: 'Claude',
+        models: [
+          {
+            id: 'haiku',
+            name: 'Haiku',
+            tier: 'fast',
+            tagline: 'Lightning Fast',
+            description: 'Quick analysis for simple changes',
+            badge: 'Fastest',
+            badgeClass: 'badge-speed'
+          },
+          {
+            id: 'sonnet',
+            name: 'Sonnet',
+            tier: 'balanced',
+            tagline: 'Best Balance',
+            description: 'Recommended for most reviews',
+            badge: 'Recommended',
+            badgeClass: 'badge-recommended',
+            default: true
+          },
+          {
+            id: 'opus',
+            name: 'Opus',
+            tier: 'thorough',
+            tagline: 'Most Capable',
+            description: 'Deep analysis for complex code',
+            badge: 'Most Thorough',
+            badgeClass: 'badge-power'
+          }
+        ]
       },
-      {
-        id: 'sonnet',
-        name: 'Sonnet',
-        tagline: 'Best Balance',
-        description: 'Recommended for most reviews',
-        badge: 'Recommended',
-        badgeClass: 'badge-recommended',
-        default: true
-      },
-      {
-        id: 'opus',
-        name: 'Opus',
-        tagline: 'Most Capable',
-        description: 'Deep analysis for complex code',
-        badge: 'Most Thorough',
-        badgeClass: 'badge-power'
+      gemini: {
+        id: 'gemini',
+        name: 'Gemini',
+        models: [
+          {
+            id: 'gemini-2.5-flash',
+            name: '2.5 Flash',
+            tier: 'fast',
+            tagline: 'Lightning Fast',
+            description: 'Quick analysis for simple changes',
+            badge: 'Fastest',
+            badgeClass: 'badge-speed'
+          },
+          {
+            id: 'gemini-2.5-pro',
+            name: '2.5 Pro',
+            tier: 'balanced',
+            tagline: 'Best Balance',
+            description: 'Recommended for most reviews',
+            badge: 'Recommended',
+            badgeClass: 'badge-recommended',
+            default: true
+          },
+          {
+            id: 'gemini-2.5-pro',
+            name: '2.5 Pro',
+            tier: 'thorough',
+            tagline: 'Most Capable',
+            description: 'Deep analysis for complex code',
+            badge: 'Most Thorough',
+            badgeClass: 'badge-power'
+          }
+        ]
       }
-    ];
+    };
+
+    // Get models for current provider
+    this.models = this.providers[this.selectedProvider].models;
 
     this.presets = [
       { id: 'security', label: 'Security', instruction: 'Focus on security vulnerabilities, injection risks, and authentication issues.' },
@@ -99,32 +147,32 @@ class AnalysisConfigModal {
         </div>
 
         <div class="modal-body analysis-config-body">
+          <!-- Provider Selection -->
+          <section class="config-section">
+            <h4 class="section-title">
+              AI Provider
+            </h4>
+            <div class="provider-toggle">
+              ${Object.values(this.providers).map(provider => `
+                <button class="provider-btn ${provider.id === this.selectedProvider ? 'selected' : ''}" data-provider="${provider.id}">
+                  ${provider.name}
+                </button>
+              `).join('')}
+            </div>
+          </section>
+
           <!-- Model Selection -->
           <section class="config-section">
             <h4 class="section-title">
               Select Model
             </h4>
-            <div class="model-cards">
-              ${this.models.map(model => `
-                <button class="model-card ${model.default ? 'selected' : ''}" data-model="${model.id}">
-                  <div class="model-badge ${model.badgeClass}">${model.badge}</div>
-                  <div class="model-info">
-                    <span class="model-name">${model.name}</span>
-                    <span class="model-tagline">${model.tagline}</span>
-                  </div>
-                  <p class="model-description">${model.description}</p>
-                  <div class="model-selected-indicator">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-                    </svg>
-                  </div>
-                </button>
-              `).join('')}
+            <div class="model-cards" id="model-cards-container">
+              ${this.renderModelCards()}
             </div>
             <label class="remember-toggle">
               <input type="checkbox" id="remember-model" />
               <span class="toggle-switch"></span>
-              <span class="toggle-label">Remember model choice for this repository</span>
+              <span class="toggle-label">Remember choices for this repository</span>
             </label>
           </section>
 
@@ -212,6 +260,11 @@ class AnalysisConfigModal {
    * Setup event listeners
    */
   setupEventListeners() {
+    // Provider button selection
+    this.modal.querySelectorAll('.provider-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.selectProvider(btn.dataset.provider));
+    });
+
     // Model card selection
     this.modal.querySelectorAll('.model-card').forEach(card => {
       card.addEventListener('click', () => this.selectModel(card.dataset.model));
@@ -262,6 +315,69 @@ class AnalysisConfigModal {
       }
     };
     // Note: Event listener is added in show() and removed in hide() to prevent memory leaks
+  }
+
+  /**
+   * Render model cards HTML for current provider
+   */
+  renderModelCards() {
+    return this.models.map(model => `
+      <button class="model-card ${model.default ? 'selected' : ''}" data-model="${model.id}" data-tier="${model.tier}">
+        <div class="model-badge ${model.badgeClass}">${model.badge}</div>
+        <div class="model-info">
+          <span class="model-name">${model.name}</span>
+          <span class="model-tagline">${model.tagline}</span>
+        </div>
+        <p class="model-description">${model.description}</p>
+        <div class="model-selected-indicator">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
+          </svg>
+        </div>
+      </button>
+    `).join('');
+  }
+
+  /**
+   * Select a provider and update model cards
+   */
+  selectProvider(providerId) {
+    if (!this.providers[providerId]) return;
+
+    this.selectedProvider = providerId;
+    this.models = this.providers[providerId].models;
+
+    // Find the model with same tier as currently selected, or use default
+    const currentModel = this.models.find(m => m.id === this.selectedModel);
+    if (!currentModel) {
+      // Current model doesn't exist in new provider, find one with same tier
+      const currentTier = Object.values(this.providers)
+        .flatMap(p => p.models)
+        .find(m => m.id === this.selectedModel)?.tier;
+
+      const matchingModel = this.models.find(m => m.tier === currentTier);
+      const defaultModel = this.models.find(m => m.default) || this.models[0];
+      this.selectedModel = matchingModel?.id || defaultModel.id;
+    }
+
+    // Update provider buttons
+    this.modal.querySelectorAll('.provider-btn').forEach(btn => {
+      btn.classList.toggle('selected', btn.dataset.provider === providerId);
+    });
+
+    // Re-render model cards
+    const container = this.modal.querySelector('#model-cards-container');
+    if (container) {
+      container.innerHTML = this.renderModelCards();
+
+      // Re-attach event listeners to new model cards
+      container.querySelectorAll('.model-card').forEach(card => {
+        card.addEventListener('click', () => this.selectModel(card.dataset.model));
+      });
+
+      // Update selection state
+      this.selectModel(this.selectedModel);
+    }
   }
 
   /**
@@ -369,6 +485,7 @@ class AnalysisConfigModal {
    */
   handleSubmit() {
     const config = {
+      provider: this.selectedProvider,
       model: this.selectedModel,
       instructions: this.buildInstructions(),
       customInstructions: this.modal.querySelector('#custom-instructions')?.value?.trim() || '',
@@ -388,6 +505,7 @@ class AnalysisConfigModal {
   /**
    * Show the modal
    * @param {Object} options - Configuration options
+   * @param {string} options.currentProvider - Currently selected provider
    * @param {string} options.currentModel - Currently selected model
    * @param {string} options.repoInstructions - Default instructions from repo settings
    * @param {string} options.lastInstructions - Last used custom instructions
@@ -407,7 +525,10 @@ class AnalysisConfigModal {
         resolve(null);
       };
 
-      // Set initial values
+      // Set initial provider and model
+      if (options.currentProvider && this.providers[options.currentProvider]) {
+        this.selectProvider(options.currentProvider);
+      }
       if (options.currentModel) {
         this.selectModel(options.currentModel);
       }

@@ -35,8 +35,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     const { owner, repo, pr } = req.params;
     const prNumber = parseInt(pr);
 
-    // Extract optional model and customInstructions from request body
-    const { model: requestModel, customInstructions: rawInstructions } = req.body || {};
+    // Extract optional provider, model and customInstructions from request body
+    const { provider: requestProvider, model: requestModel, customInstructions: rawInstructions } = req.body || {};
 
     // Trim and validate custom instructions
     const MAX_INSTRUCTIONS_LENGTH = 5000;
@@ -93,10 +93,21 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Fetch repo settings and save custom instructions in a transaction
     // This ensures consistency between reading settings and updating the review record
-    const { model, combinedInstructions } = await withTransaction(db, async () => {
-      // Fetch repo settings for default instructions and model
+    const { provider, model, combinedInstructions } = await withTransaction(db, async () => {
+      // Fetch repo settings for default instructions, provider, and model
       const repoSettingsRepo = new RepoSettingsRepository(db);
       const fetchedRepoSettings = await repoSettingsRepo.getRepoSettings(repository);
+
+      // Determine provider: request body > repo settings > config > default ('claude')
+      let selectedProvider;
+      if (requestProvider) {
+        selectedProvider = requestProvider;
+      } else if (fetchedRepoSettings && fetchedRepoSettings.default_provider) {
+        selectedProvider = fetchedRepoSettings.default_provider;
+      } else {
+        const config = req.app.get('config') || {};
+        selectedProvider = config.provider || 'claude';
+      }
 
       // Determine model: request body > repo settings > config/CLI > default
       let selectedModel;
@@ -130,6 +141,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       }
 
       return {
+        provider: selectedProvider,
         model: selectedModel,
         combinedInstructions: mergedInstructions
       };
@@ -165,14 +177,15 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
-    // Create analyzer instance with model
-    const analyzer = new Analyzer(req.app.get('db'), model);
+    // Create analyzer instance with provider and model
+    const analyzer = new Analyzer(req.app.get('db'), model, provider);
 
     // Log analysis start with colorful output
     logger.section(`AI Analysis Request - PR #${prNumber}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
     logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    logger.log('API', `Provider: ${provider}`, 'cyan');
     logger.log('API', `Model: ${model}`, 'cyan');
     if (combinedInstructions) {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');

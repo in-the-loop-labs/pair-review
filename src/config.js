@@ -9,7 +9,8 @@ const DEFAULT_CONFIG = {
   github_token: "",
   port: 3000,
   theme: "light",
-  model: "sonnet",
+  provider: "claude",  // AI provider: 'claude' or 'gemini'
+  model: "sonnet",     // Model within the provider (e.g., 'sonnet' for Claude, 'gemini-2.5-pro' for Gemini)
   worktree_retention_days: 7,
   dev_mode: false  // When true, disables static file caching for development
 };
