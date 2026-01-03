@@ -69,6 +69,8 @@ class PRManager {
         const line = lines[i];
         if (foundOld === null && line.oldNumber) foundOld = line.oldNumber;
         if (foundNew === null && line.newNumber) foundNew = line.newNumber;
+        // Early break is safe: we're finding the first valid coordinate in each system
+        // independently, so subsequent lines can only have higher (not lower) numbers
         if (foundOld !== null && foundNew !== null) break;
       }
     } else {
@@ -77,6 +79,8 @@ class PRManager {
         const line = lines[i];
         if (foundOld === null && line.oldNumber) foundOld = line.oldNumber;
         if (foundNew === null && line.newNumber) foundNew = line.newNumber;
+        // Early break is safe: we're finding the last valid coordinate in each system
+        // independently, so earlier lines can only have lower (not higher) numbers
         if (foundOld !== null && foundNew !== null) break;
       }
     }
@@ -1116,7 +1120,8 @@ class PRManager {
             const gapSizeAbove = Math.max(oldGapAbove, newGapAbove);
 
             if (gapSizeAbove > 0) {
-              // Use new file coordinates for display, fall back to old if unavailable
+              // Use new file coordinates for display; fall back to old for deletion-only blocks
+              // (safe because gapSizeAbove used max of both coordinate systems)
               const startLineNew = firstCoords.new !== null ? firstCoords.new : firstCoords.old;
               this.createGapSection(tbody, filePath, 1, startLineNew - 1, gapSizeAbove, 'above');
             }
