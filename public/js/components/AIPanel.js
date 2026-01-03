@@ -137,6 +137,7 @@ class AIPanel {
 
         // Re-render findings to filter by segment
         this.renderFindings();
+        this.autoSelectFirst();
 
         // Dispatch event for other components to respond
         const event = new CustomEvent('segmentChanged', {
@@ -183,6 +184,19 @@ class AIPanel {
         this.currentIndex = -1; // Reset navigation when findings change
         this.updateSegmentCounts();
         this.renderFindings();
+        this.autoSelectFirst();
+    }
+
+    /**
+     * Auto-select the first navigable item so counter shows "1 of N" instead of "— of N"
+     */
+    autoSelectFirst() {
+        const navigableItems = this.getNavigableItems();
+        if (navigableItems.length > 0 && this.currentIndex < 0) {
+            this.currentIndex = navigableItems[0].index;
+            this.highlightCurrentItem();
+            this.updateNavigationCounter();
+        }
     }
 
     /**
@@ -539,6 +553,7 @@ class AIPanel {
         this.currentIndex = -1; // Reset navigation when comments change
         this.updateSegmentCounts();
         this.renderFindings();
+        this.autoSelectFirst();
     }
 
     /**
