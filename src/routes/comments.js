@@ -496,11 +496,11 @@ router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => 
     await run(db, 'BEGIN TRANSACTION');
 
     try {
-      // Soft delete all active user comments for this PR
+      // Soft delete all user comments for this PR (active, submitted, or draft)
       const result = await run(db, `
         UPDATE comments
         SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-        WHERE pr_id = ? AND source = 'user' AND status = 'active'
+        WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
       `, [prMetadata.id]);
 
       // Commit transaction

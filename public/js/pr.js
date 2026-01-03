@@ -121,6 +121,8 @@ class PRManager {
     this.generatedFiles = new Map();
     // User comments storage
     this.userComments = [];
+    // Analysis config modal
+    this.analysisConfigModal = null;
 
     // Initialize modules
     this.lineTracker = new window.LineTracker();
@@ -156,6 +158,7 @@ class PRManager {
     // Initialize event handlers and UI
     this.setupEventHandlers();
     this.initTheme();
+    this.initAnalysisConfigModal();
     this.init();
   }
 
@@ -169,8 +172,29 @@ class PRManager {
       themeToggle.addEventListener('click', () => this.toggleTheme());
     }
 
+    // Analyze button
+    const analyzeBtn = document.getElementById('analyze-btn');
+    if (analyzeBtn) {
+      analyzeBtn.addEventListener('click', () => this.triggerAIAnalysis());
+    }
+
+    // Refresh PR button
+    const refreshBtn = document.getElementById('refresh-pr');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => this.refreshPR());
+    }
+
     // Setup comment form keyboard shortcut delegation
     this.setupCommentFormDelegation();
+
+    // Listen for level filter changes from AI panel
+    document.addEventListener('levelChanged', (e) => {
+      const level = e.detail?.level;
+      if (level) {
+        this.selectedLevel = level;
+        this.loadAISuggestions(level);
+      }
+    });
   }
 
   /**
@@ -287,12 +311,16 @@ class PRManager {
       this.initSplitButton();
 
       // Initialize AI Panel before loading suggestions so it can receive them
-      if (window.AIPanel) {
+      // Only initialize if not already created (avoid duplicates on refresh)
+      if (window.AIPanel && !window.aiPanel) {
         window.aiPanel = new window.AIPanel();
       }
 
       // Load saved AI suggestions if they exist
       await this.loadAISuggestions();
+
+      // Check if AI analysis is currently running
+      await this.checkRunningAnalysis();
 
     } catch (error) {
       console.error('Error loading PR:', error);
@@ -368,7 +396,6 @@ class PRManager {
     if (!diff) return filePatchMap;
 
     // Split by diff --git headers
-    const filePattern = /^diff --git a\/(.+?) b\/(.+?)$/gm;
     const parts = diff.split(/(?=^diff --git )/m);
 
     for (const part of parts) {
@@ -447,12 +474,17 @@ class PRManager {
     const commitCopy = document.getElementById('pr-commit-copy');
     if (commitSha && pr.head_sha) {
       commitSha.textContent = pr.head_sha.substring(0, 7);
+      // Store full SHA for copying (updates on refresh)
+      commitSha.dataset.fullSha = pr.head_sha;
 
-      if (commitCopy) {
+      if (commitCopy && !commitCopy.hasAttribute('data-listener-added')) {
+        commitCopy.setAttribute('data-listener-added', 'true');
         commitCopy.addEventListener('click', async (e) => {
           e.stopPropagation();
+          const fullSha = commitSha.dataset.fullSha;
+          if (!fullSha) return;
           try {
-            await navigator.clipboard.writeText(pr.head_sha);
+            await navigator.clipboard.writeText(fullSha);
             // Visual feedback
             commitCopy.classList.add('copied');
             setTimeout(() => commitCopy.classList.remove('copied'), 2000);
@@ -467,6 +499,12 @@ class PRManager {
     const githubLink = document.getElementById('github-link');
     if (githubLink && pr.html_url) {
       githubLink.href = pr.html_url;
+    }
+
+    // Update settings link
+    const settingsLink = document.getElementById('settings-link');
+    if (settingsLink && pr.owner && pr.repo) {
+      settingsLink.href = `/repo-settings.html?owner=${encodeURIComponent(pr.owner)}&repo=${encodeURIComponent(pr.repo)}`;
     }
   }
 
@@ -565,7 +603,6 @@ class PRManager {
     const lines = patch.split('\n');
     let diffPosition = 0;  // GitHub diff_position (1-indexed, consecutive)
     let prevBlockEnd = { old: 0, new: 0 };
-    let currentHunkHeader = null;
     let isFirstHunk = true;
 
     // Parse diff into blocks (hunks)
@@ -728,7 +765,7 @@ class PRManager {
    */
   renderDiffLine(container, line, fileName, diffPosition) {
     return window.DiffRenderer.renderDiffLine(container, line, fileName, diffPosition, {
-      onCommentButtonClick: (e, row, lineNumber, file, lineData) => {
+      onCommentButtonClick: (_e, row, lineNumber, file, lineData) => {
         // Handle comment button click
         const side = lineData.type === 'delete' ? 'LEFT' : 'RIGHT';
 
@@ -743,10 +780,10 @@ class PRManager {
           this.showCommentForm(row, lineNumber, file, diffPosition, null, side);
         }
       },
-      onMouseOver: (e, row, lineNumber, file) => {
+      onMouseOver: (_e, row, lineNumber, file) => {
         this.lineTracker.updateDragSelection(row, lineNumber, file);
       },
-      onMouseUp: (e, row, lineNumber, file) => {
+      onMouseUp: (_e, row, lineNumber, file) => {
         if (this.lineTracker.potentialDragStart) {
           const start = this.lineTracker.potentialDragStart;
           this.lineTracker.potentialDragStart = null;
@@ -813,7 +850,18 @@ class PRManager {
     const fileName = controls.dataset.fileName;
     const startLine = parseInt(controls.dataset.startLine);
     const endLine = parseInt(controls.dataset.endLine);
-    const gapRow = controls.closest ? controls.closest('tr') : controls.parentElement?.closest('tr');
+    const position = controls.dataset.position || 'between';
+
+    // Find the gap row by matching the controls element
+    // The controls element is stored on the row as row.expandControls but is NOT in the DOM
+    let gapRow = null;
+    const allGapRows = document.querySelectorAll('tr.context-expand-row');
+    for (const row of allGapRows) {
+      if (row.expandControls === controls) {
+        gapRow = row;
+        break;
+      }
+    }
 
     if (!gapRow || !this.currentPR) return;
 
@@ -856,16 +904,20 @@ class PRManager {
       // Create fragment for new rows
       const fragment = document.createDocumentFragment();
 
-      // If expanding down, add new gap at top first
-      if (direction === 'down' && newGapStart <= endLine) {
-        const remainingGap = endLine - newGapStart + 1;
+      // For 'up' direction: first add remaining gap, then expanded lines
+      // For 'down' direction: first add expanded lines, then remaining gap
+      // This ensures correct visual order when fragment is inserted
+
+      // If expanding up, add remaining gap FIRST (it appears above expanded lines)
+      if (direction === 'up' && newGapEnd >= startLine) {
+        const remainingGap = newGapEnd - startLine + 1;
         if (remainingGap > 0) {
           const newGapRow = window.HunkParser.createGapRowElement(
             fileName,
-            newGapStart,
-            endLine,
+            startLine,
+            newGapEnd,
             remainingGap,
-            'between',
+            position, // Preserve original position (above/between/below)
             (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt)
           );
           fragment.appendChild(newGapRow);
@@ -897,33 +949,26 @@ class PRManager {
         }
       });
 
-      // If expanding up, add new gap at bottom
-      if (direction === 'up' && newGapEnd >= startLine) {
-        const remainingGap = newGapEnd - startLine + 1;
+      // If expanding down, add remaining gap LAST (it appears below expanded lines)
+      if (direction === 'down' && newGapStart <= endLine) {
+        const remainingGap = endLine - newGapStart + 1;
         if (remainingGap > 0) {
           const newGapRow = window.HunkParser.createGapRowElement(
             fileName,
-            startLine,
-            newGapEnd,
+            newGapStart,
+            endLine,
             remainingGap,
-            'between',
+            position, // Preserve original position (above/between/below)
             (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt)
           );
           fragment.appendChild(newGapRow);
         }
       }
 
-      // Replace or insert based on direction
-      if (direction === 'up') {
-        gapRow.parentNode.insertBefore(fragment, gapRow);
-        gapRow.remove();
-      } else if (direction === 'down') {
-        gapRow.parentNode.insertBefore(fragment, gapRow.nextSibling);
-        gapRow.remove();
-      } else {
-        gapRow.parentNode.insertBefore(fragment, gapRow);
-        gapRow.remove();
-      }
+      // Insert fragment before gap row and remove the old gap row
+      // The fragment is already assembled in the correct visual order
+      gapRow.parentNode.insertBefore(fragment, gapRow);
+      gapRow.remove();
 
     } catch (error) {
       console.error('Error expanding gap context:', error);
@@ -1346,8 +1391,8 @@ class PRManager {
    * Clear all user comments
    */
   async clearAllUserComments() {
-    const userComments = document.querySelectorAll('.user-comment-row');
-    if (userComments.length === 0) return;
+    const userCommentRows = document.querySelectorAll('.user-comment-row');
+    if (userCommentRows.length === 0) return;
 
     if (!window.confirmDialog) {
       alert('Confirmation dialog unavailable. Please refresh the page.');
@@ -1356,7 +1401,7 @@ class PRManager {
 
     const confirmed = await window.confirmDialog.show({
       title: 'Clear All Comments?',
-      message: `This will delete all ${userComments.length} user comment${userComments.length !== 1 ? 's' : ''} from this PR. This action cannot be undone.`,
+      message: `This will delete all ${userCommentRows.length} user comment${userCommentRows.length !== 1 ? 's' : ''} from this PR. This action cannot be undone.`,
       confirmText: 'Delete All',
       confirmClass: 'btn-danger'
     });
@@ -1370,11 +1415,29 @@ class PRManager {
 
       if (!response.ok) throw new Error('Failed to delete comments');
 
-      userComments.forEach(row => row.remove());
+      const result = await response.json();
+      const deletedCount = result.deletedCount || userCommentRows.length;
+
+      // Remove comment rows from DOM
+      userCommentRows.forEach(row => row.remove());
+
+      // Clear internal userComments array
+      this.userComments = [];
+
+      // Update comment count display
       this.updateCommentCount();
+
+      // Show success toast notification
+      if (window.toast) {
+        window.toast.showSuccess(`Cleared ${deletedCount} comment${deletedCount !== 1 ? 's' : ''}`);
+      }
     } catch (error) {
       console.error('Error clearing user comments:', error);
-      alert('Failed to clear comments');
+      if (window.toast) {
+        window.toast.showError('Failed to clear comments');
+      } else {
+        alert('Failed to clear comments');
+      }
     }
   }
 
@@ -1414,17 +1477,25 @@ class PRManager {
 
   /**
    * Load AI suggestions from API
+   * @param {string} level - Optional level filter ('final', '1', '2', '3')
    */
-  async loadAISuggestions() {
+  async loadAISuggestions(level = null) {
     if (!this.currentPR) return;
 
     try {
-      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/ai-suggestions`);
+      // Use provided level, or fall back to current selectedLevel
+      const filterLevel = level || this.selectedLevel || 'final';
+      const url = `/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/ai-suggestions?levels=${filterLevel}`;
+
+      const response = await fetch(url);
       if (!response.ok) return;
 
       const data = await response.json();
       if (data.suggestions && data.suggestions.length > 0) {
         await this.displayAISuggestions(data.suggestions);
+      } else {
+        // Clear existing suggestions if none returned for this level
+        await this.displayAISuggestions([]);
       }
     } catch (error) {
       console.error('Error loading AI suggestions:', error);
@@ -1599,7 +1670,6 @@ class PRManager {
       if (suggestionRow?.dataset.hiddenForAdoption === 'true') {
         const div = suggestionRow.querySelector('.ai-suggestion');
         if (div) {
-          const isCollapsed = div.classList.contains('collapsed');
           div.classList.toggle('collapsed');
 
           const button = suggestionRow.querySelector('.btn-restore');
@@ -1669,6 +1739,13 @@ class PRManager {
     if (window.SplitButton) {
       const placeholder = document.getElementById('split-button-placeholder');
       if (placeholder) {
+        // Destroy existing split button if present to prevent duplicates on refresh
+        if (this.splitButton) {
+          this.splitButton.destroy();
+        }
+        // Clear placeholder in case of any orphaned elements
+        placeholder.innerHTML = '';
+
         this.splitButton = new window.SplitButton({
           onSubmit: () => this.openReviewModal(),
           onPreview: () => this.openPreviewModal(),
@@ -2010,26 +2087,26 @@ class PRManager {
 
   setupSidebarToggle() {
     const sidebar = document.getElementById('files-sidebar');
-    const toggleBtn = document.getElementById('sidebar-toggle');
+    const toggleBtn = document.getElementById('sidebar-collapse-btn');
     const collapsedBtn = document.getElementById('sidebar-toggle-collapsed');
 
     if (!sidebar || !toggleBtn || !collapsedBtn) return;
 
+    // Restore collapsed state from localStorage
     const isCollapsed = localStorage.getItem('file-sidebar-collapsed') === 'true';
     if (isCollapsed) {
-      sidebar.style.display = 'none';
-      collapsedBtn.classList.add('visible');
+      sidebar.classList.add('collapsed');
     }
 
+    // Collapse button (X) in sidebar header - collapses sidebar
     toggleBtn.addEventListener('click', () => {
-      sidebar.style.display = 'none';
-      collapsedBtn.classList.add('visible');
+      sidebar.classList.add('collapsed');
       localStorage.setItem('file-sidebar-collapsed', 'true');
     });
 
+    // Expand button in diff toolbar - expands sidebar
     collapsedBtn.addEventListener('click', () => {
-      sidebar.style.display = 'block';
-      collapsedBtn.classList.remove('visible');
+      sidebar.classList.remove('collapsed');
       localStorage.setItem('file-sidebar-collapsed', 'false');
     });
   }
@@ -2066,9 +2143,9 @@ class PRManager {
   updateThemeIcon() {
     const themeButton = document.getElementById('theme-toggle');
     if (themeButton) {
-      // Sun icon for light mode, moon icon for dark mode
+      // Sun icon for light mode (with hollow center), moon icon for dark mode
       const icon = this.currentTheme === 'light' ?
-        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13Zm8-5a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM0 8a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5H.75A.75.75 0 0 1 0 8Zm11.535-5.535a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Zm-9.192 9.192a.75.75 0 0 1 0 1.06l-.353.354a.75.75 0 0 1-1.061-1.06l.353-.354a.75.75 0 0 1 1.06 0Zm9.192 0a.75.75 0 0 1 1.06 0l.354.354a.75.75 0 0 1-1.06 1.06l-.354-.354a.75.75 0 0 1 0-1.06ZM3.404 3.404a.75.75 0 0 1 1.06 0l.354.353a.75.75 0 0 1-1.06 1.061l-.354-.353a.75.75 0 0 1 0-1.06Z"/></svg>` :
+        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/></svg>` :
         `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.598 1.591a.749.749 0 0 1 .785-.175 7.001 7.001 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Z"/></svg>`;
       themeButton.innerHTML = icon;
       themeButton.title = `Switch to ${this.currentTheme === 'light' ? 'dark' : 'light'} mode`;
@@ -2098,6 +2175,411 @@ class PRManager {
       if (aiPanel && panelStates.aiPanel) aiPanel.classList.add('collapsed');
     } catch (e) {
       console.error('Failed to restore panel states:', e);
+    }
+  }
+
+  /**
+   * Initialize the analysis config modal
+   */
+  initAnalysisConfigModal() {
+    if (window.AnalysisConfigModal) {
+      this.analysisConfigModal = new window.AnalysisConfigModal();
+      window.analysisConfigModal = this.analysisConfigModal;
+    } else {
+      console.warn('AnalysisConfigModal not loaded');
+    }
+  }
+
+  /**
+   * Get the Analyze with AI button
+   */
+  getAnalyzeButton() {
+    return document.getElementById('analyze-btn') ||
+           document.querySelector('button[onclick*="triggerAIAnalysis"]');
+  }
+
+  /**
+   * Set button to analyzing state
+   */
+  setButtonAnalyzing(analysisId) {
+    const btn = this.getAnalyzeButton();
+    if (!btn) return;
+
+    this.isAnalyzing = true;
+    this.currentAnalysisId = analysisId;
+
+    btn.classList.add('btn-analyzing');
+    btn.disabled = false; // Keep clickable to reopen modal
+
+    const btnText = btn.querySelector('.btn-text');
+    if (btnText) {
+      btnText.textContent = 'Analyzing...';
+    } else {
+      btn.innerHTML = '<span class="analyzing-icon">✨</span> Analyzing...';
+    }
+  }
+
+  /**
+   * Set button to complete state (briefly)
+   */
+  setButtonComplete() {
+    const btn = this.getAnalyzeButton();
+    if (!btn) return;
+
+    btn.classList.remove('btn-analyzing');
+    btn.classList.add('btn-complete');
+
+    const btnText = btn.querySelector('.btn-text');
+    if (btnText) {
+      btnText.textContent = 'Complete';
+    } else {
+      btn.innerHTML = '✓ Analysis Complete';
+    }
+    btn.disabled = true;
+
+    // Revert to normal after 2 seconds
+    setTimeout(() => this.resetButton(), 2000);
+  }
+
+  /**
+   * Reset button to normal state
+   */
+  resetButton() {
+    const btn = this.getAnalyzeButton();
+    if (!btn) return;
+
+    this.isAnalyzing = false;
+    this.currentAnalysisId = null;
+
+    btn.classList.remove('btn-analyzing', 'btn-complete');
+    btn.disabled = false;
+
+    const btnText = btn.querySelector('.btn-text');
+    if (btnText) {
+      btnText.textContent = 'Analyze';
+    } else {
+      btn.innerHTML = 'Analyze with AI';
+    }
+  }
+
+  /**
+   * Check if AI analysis is currently running for this PR and show progress dialog
+   */
+  async checkRunningAnalysis() {
+    if (!this.currentPR) return;
+
+    try {
+      const { owner, repo, number } = this.currentPR;
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/analysis-status`);
+
+      if (!response.ok) {
+        console.warn('Could not check analysis status:', response.statusText);
+        return;
+      }
+
+      const data = await response.json();
+
+      if (data.running && data.analysisId) {
+        console.log('Found running analysis:', data.analysisId);
+
+        // Set button to analyzing state
+        this.setButtonAnalyzing(data.analysisId);
+
+        // Show progress dialog for the running analysis
+        if (window.progressModal) {
+          window.progressModal.show(data.analysisId);
+        } else {
+          console.warn('Progress modal not yet initialized');
+        }
+      }
+    } catch (error) {
+      console.error('Error checking running analysis:', error);
+      // Don't show error to user - this is a background check
+    }
+  }
+
+  /**
+   * Reopen progress modal when button is clicked during analysis
+   */
+  reopenProgressModal() {
+    if (this.currentAnalysisId && window.progressModal) {
+      window.progressModal.show(this.currentAnalysisId);
+    }
+  }
+
+  /**
+   * Fetch repo settings (default instructions and model)
+   * @returns {Promise<Object|null>} Repo settings or null
+   */
+  async fetchRepoSettings() {
+    if (!this.currentPR) return null;
+
+    const { owner, repo } = this.currentPR;
+    try {
+      const response = await fetch(`/api/repos/${owner}/${repo}/settings`);
+      if (!response.ok) {
+        if (response.status === 404) {
+          return null;
+        }
+        console.warn('Failed to fetch repo settings:', response.statusText);
+        return null;
+      }
+      return await response.json();
+    } catch (error) {
+      console.warn('Error fetching repo settings:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch last used custom instructions from review record
+   * @returns {Promise<string>} Last custom instructions or empty string
+   */
+  async fetchLastCustomInstructions() {
+    if (!this.currentPR) return '';
+
+    const { owner, repo, number } = this.currentPR;
+    try {
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/review-settings`);
+      if (!response.ok) {
+        return '';
+      }
+      const data = await response.json();
+      return data.custom_instructions || '';
+    } catch (error) {
+      console.warn('Error fetching last custom instructions:', error);
+      return '';
+    }
+  }
+
+  /**
+   * Trigger AI analysis
+   */
+  async triggerAIAnalysis() {
+    // If analysis is already running, just reopen the progress modal
+    if (this.isAnalyzing) {
+      this.reopenProgressModal();
+      return;
+    }
+
+    if (!this.currentPR) {
+      this.showError('No PR loaded');
+      return;
+    }
+
+    const { owner, repo, number } = this.currentPR;
+
+    const btn = this.getAnalyzeButton();
+
+    // Prevent concurrent analysis requests
+    if (btn && btn.disabled) {
+      return;
+    }
+
+    try {
+      // Check if there are existing AI suggestions first
+      let hasSuggestions = false;
+      try {
+        const checkResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`);
+        if (checkResponse.ok) {
+          const data = await checkResponse.json();
+          hasSuggestions = data.hasSuggestions;
+        }
+      } catch (checkError) {
+        console.warn('Error checking for existing AI suggestions:', checkError);
+      }
+
+      // If there are existing suggestions, confirm replacement before showing modal
+      if (hasSuggestions) {
+        if (!window.confirmDialog) {
+          console.error('ConfirmDialog not loaded');
+          this.showError('Confirmation dialog unavailable. Please refresh the page.');
+          return;
+        }
+
+        const confirmed = await window.confirmDialog.show({
+          title: 'Replace Existing Analysis?',
+          message: 'This will replace all existing AI suggestions for this PR. Continue?',
+          confirmText: 'Continue',
+          confirmClass: 'btn-danger'
+        });
+
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      // Show analysis config modal
+      if (!this.analysisConfigModal) {
+        console.warn('AnalysisConfigModal not initialized, proceeding without config');
+        await this.startAnalysis(owner, repo, number, btn, {});
+        return;
+      }
+
+      // Fetch repo settings and last used instructions in parallel
+      const [repoSettings, lastInstructions] = await Promise.all([
+        this.fetchRepoSettings(),
+        this.fetchLastCustomInstructions()
+      ]);
+
+      // Determine the model to use (priority: remembered > repo default > 'sonnet')
+      const modelStorageKey = PRManager.getRepoStorageKey('pair-review-model', owner, repo);
+      const rememberedModel = localStorage.getItem(modelStorageKey);
+      const currentModel = rememberedModel || repoSettings?.default_model || 'sonnet';
+
+      // Show the config modal
+      const config = await this.analysisConfigModal.show({
+        currentModel,
+        repoInstructions: repoSettings?.default_instructions || '',
+        lastInstructions: lastInstructions,
+        rememberModel: !!rememberedModel
+      });
+
+      // If user cancelled, do nothing
+      if (!config) {
+        return;
+      }
+
+      // Save remembered model preference if requested
+      if (config.rememberModel) {
+        localStorage.setItem(modelStorageKey, config.model);
+      } else {
+        localStorage.removeItem(modelStorageKey);
+      }
+
+      // Start the analysis with the selected config
+      await this.startAnalysis(owner, repo, number, btn, config);
+
+    } catch (error) {
+      console.error('Error triggering AI analysis:', error);
+      this.showError(`Failed to start AI analysis: ${error.message}`);
+      this.resetButton();
+    }
+  }
+
+  /**
+   * Start the actual AI analysis with the given config
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} number - PR number
+   * @param {HTMLElement} btn - Analyze button element
+   * @param {Object} config - Analysis config from modal
+   */
+  async startAnalysis(owner, repo, number, btn, config) {
+    try {
+      // Disable button and show starting state
+      if (btn) {
+        btn.disabled = true;
+        btn.classList.add('btn-analyzing');
+        const btnText = btn.querySelector('.btn-text');
+        if (btnText) {
+          btnText.textContent = 'Starting...';
+        } else {
+          btn.innerHTML = '<span class="spinner"></span> Starting...';
+        }
+      }
+
+      // Start AI analysis with model and instructions
+      const response = await fetch(`/api/analyze/${owner}/${repo}/${number}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: config.model || 'sonnet',
+          customInstructions: config.customInstructions || null
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to start AI analysis');
+      }
+
+      const result = await response.json();
+
+      // Set analyzing state and show progress modal
+      this.setButtonAnalyzing(result.analysisId);
+
+      if (window.progressModal) {
+        window.progressModal.show(result.analysisId);
+      }
+
+    } catch (error) {
+      console.error('Error starting AI analysis:', error);
+      this.showError(`Failed to start AI analysis: ${error.message}`);
+      this.resetButton();
+    }
+  }
+
+  /**
+   * Refresh the PR data
+   */
+  async refreshPR() {
+    if (!this.currentPR) {
+      console.error('No PR loaded to refresh');
+      return;
+    }
+
+    const { owner, repo, number } = this.currentPR;
+    const refreshBtn = document.getElementById('refresh-pr');
+
+    if (refreshBtn) {
+      refreshBtn.classList.add('refreshing');
+      refreshBtn.disabled = true;
+    }
+
+    // Show loading state in diff container
+    const diffContainer = document.getElementById('diff-container');
+    if (diffContainer) {
+      diffContainer.innerHTML = '<div class="loading">Refreshing pull request...</div>';
+    }
+
+    try {
+      // Call refresh API endpoint to fetch fresh data from GitHub
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/refresh`, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to refresh pull request');
+      }
+
+      const data = await response.json();
+
+      // Update current PR data
+      if (data.success && data.data) {
+        this.currentPR = data.data;
+
+        // Save scroll position and expanded state
+        const scrollPosition = window.scrollY;
+        const expandedFolders = new Set(this.expandedFolders);
+
+        // Update PR header with fresh data (title, description may have changed)
+        this.renderPRHeader(data.data);
+
+        // Reload the files/diff with fresh data
+        await this.loadAndDisplayFiles(owner, repo, number);
+
+        // Restore expanded folders
+        this.expandedFolders = expandedFolders;
+
+        // Restore scroll position after a short delay to allow rendering
+        setTimeout(() => {
+          window.scrollTo(0, scrollPosition);
+        }, 100);
+
+        console.log('PR refreshed successfully');
+      }
+    } catch (error) {
+      console.error('Error refreshing PR:', error);
+      this.showError(error.message);
+    } finally {
+      if (refreshBtn) {
+        refreshBtn.classList.remove('refreshing');
+        refreshBtn.disabled = false;
+      }
     }
   }
 }

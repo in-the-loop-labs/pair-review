@@ -423,15 +423,17 @@ class AnalysisConfigModal {
         if (repoBanner) repoBanner.style.display = 'none';
       }
 
-      if (options.lastInstructions) {
-        const textarea = this.modal.querySelector('#custom-instructions');
-        if (textarea) {
+      // Always get textarea reference and set its value
+      // This ensures any stale content from race conditions is cleared
+      const textarea = this.modal.querySelector('#custom-instructions');
+      if (textarea) {
+        if (options.lastInstructions) {
           textarea.value = options.lastInstructions;
           this.updateCharacterCount(options.lastInstructions.length);
+        } else {
+          textarea.value = '';
+          this.updateCharacterCount(0);
         }
-      } else {
-        // Reset character count for fresh modal
-        this.updateCharacterCount(0);
       }
 
       if (options.rememberModel) {
@@ -484,6 +486,10 @@ class AnalysisConfigModal {
     this.isVisible = false;
 
     setTimeout(() => {
+      // Guard against race condition: if modal was reopened before this timeout fired,
+      // don't reset the state (it would clear the newly populated values)
+      if (this.isVisible) return;
+
       this.modal.style.display = 'none';
       // Reset state
       this.selectedPresets.clear();

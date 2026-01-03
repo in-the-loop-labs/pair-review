@@ -1214,9 +1214,7 @@
   line-height: 20px;
   font-size: 11px;
   position: relative;
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  vertical-align: middle; /* Standard table cell vertical centering */
 }
 
 .expand-content-wrapper {
@@ -4991,16 +4989,17 @@ body::before {
   color: var(--color-text-primary);
 }
 
-/* Settings link - use amber to match AI theme */
+/* Settings link - subtle style matching index.html */
 .header .settings-link {
   background: transparent;
-  border: 1px solid var(--color-border-primary);
-  color: var(--ai-primary);
+  border: 1px solid transparent;
+  color: var(--color-text-tertiary);
 }
 
 .header .settings-link:hover {
   background: var(--color-bg-secondary);
-  color: var(--ai-secondary);
+  border-color: var(--color-border-primary);
+  color: var(--color-text-primary);
 }
 
 [data-theme="dark"] .theme-icon-light {

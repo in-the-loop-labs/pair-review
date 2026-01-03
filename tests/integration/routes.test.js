@@ -704,6 +704,40 @@ describe('User Comment Endpoints', () => {
       expect(response.body.success).toBe(true);
       expect(response.body.deletedCount).toBe(2);
     });
+
+    it('should delete comments with active, submitted, and draft statuses', async () => {
+      // Create comments with different statuses that should all be deleted
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file1.js', 10, 'Active comment', 'active')
+      `, [prId]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file2.js', 20, 'Submitted comment', 'submitted')
+      `, [prId]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file3.js', 30, 'Draft comment', 'draft')
+      `, [prId]);
+      // This inactive comment should NOT be deleted again
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file4.js', 40, 'Already inactive', 'inactive')
+      `, [prId]);
+
+      const response = await request(app)
+        .delete('/api/pr/owner/repo/1/user-comments');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(3); // Only active, submitted, draft
+
+      // Verify all deletable comments are now inactive
+      const comments = await query(db, `
+        SELECT status FROM comments WHERE pr_id = ? AND source = 'user' ORDER BY line_start
+      `, [prId]);
+      expect(comments.every(c => c.status === 'inactive')).toBe(true);
+    });
   });
 });
 

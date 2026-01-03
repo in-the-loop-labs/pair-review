@@ -333,6 +333,7 @@ class GitHubClient {
 
       // Step 2: Add all comments
       // Build a batched mutation for all comments
+      let successfulComments = 0;
       if (comments.length > 0) {
         console.log(`Step 2: Adding ${comments.length} comments...`);
 
@@ -378,27 +379,82 @@ class GitHubClient {
         `;
 
         try {
-          await this.octokit.graphql(addCommentsMutation, {
+          const result = await this.octokit.graphql(addCommentsMutation, {
             prId: prNodeId,
             reviewId: reviewId
           });
-          console.log(`Added ${comments.length} comments to review`);
-        } catch (commentError) {
-          console.error('Error adding comments:', commentError.message);
-          // Try to delete the pending review to clean up
-          try {
-            await this.octokit.graphql(`
-              mutation DeleteReview($reviewId: ID!) {
-                deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
-                  pullRequestReview { id }
-                }
-              }
-            `, { reviewId });
-            console.log('Cleaned up pending review after comment failure');
-          } catch (cleanupError) {
-            console.warn('Failed to clean up pending review:', cleanupError.message);
+
+          // Verify each comment was successfully added by checking for thread.id
+          for (let i = 0; i < comments.length; i++) {
+            const commentResult = result[`comment${i}`];
+            if (commentResult && commentResult.thread && commentResult.thread.id) {
+              successfulComments++;
+            } else {
+              console.warn(`Comment ${i} failed to add: ${comments[i].path}:${comments[i].line || 'file-level'}`);
+            }
           }
-          throw commentError;
+
+          if (successfulComments < comments.length) {
+            const failedCount = comments.length - successfulComments;
+            console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
+            throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub. Check server logs for details.`);
+          } else {
+            console.log(`Added ${successfulComments} comments to review`);
+          }
+        } catch (commentError) {
+          // Check if this is a partial success (error.data contains partial results)
+          // GraphQL may return partial data alongside errors
+          if (commentError.data) {
+            console.warn('GraphQL returned partial results with errors:', commentError.errors || commentError.message);
+            // Count successful comments from partial data
+            for (let i = 0; i < comments.length; i++) {
+              const commentResult = commentError.data[`comment${i}`];
+              if (commentResult && commentResult.thread && commentResult.thread.id) {
+                successfulComments++;
+              } else {
+                console.warn(`Comment ${i} failed to add: ${comments[i].path}:${comments[i].line || 'file-level'}`);
+              }
+            }
+
+            if (successfulComments < comments.length) {
+              const failedCount = comments.length - successfulComments;
+              console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub (partial success)`);
+              // Clean up the pending review since it has incomplete comments
+              try {
+                await this.octokit.graphql(`
+                  mutation DeleteReview($reviewId: ID!) {
+                    deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
+                      pullRequestReview { id }
+                    }
+                  }
+                `, { reviewId });
+                console.log('Cleaned up pending review after partial comment failure');
+              } catch (cleanupError) {
+                console.warn('Failed to clean up pending review:', cleanupError.message);
+              }
+              throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub. Check server logs for details.`);
+            } else {
+              // All comments succeeded despite the error - continue
+              console.log(`Added ${successfulComments} comments to review (recovered from partial error)`);
+            }
+          } else {
+            // Total failure - no partial data
+            console.error('Error adding comments:', commentError.message);
+            // Try to delete the pending review to clean up
+            try {
+              await this.octokit.graphql(`
+                mutation DeleteReview($reviewId: ID!) {
+                  deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
+                    pullRequestReview { id }
+                  }
+                }
+              `, { reviewId });
+              console.log('Cleaned up pending review after comment failure');
+            } catch (cleanupError) {
+              console.warn('Failed to clean up pending review:', cleanupError.message);
+            }
+            throw commentError;
+          }
         }
       }
 
@@ -431,7 +487,7 @@ class GitHubClient {
         id: result.id,
         html_url: result.url,
         state: result.state,
-        comments_count: comments.length
+        comments_count: successfulComments
       };
 
     } catch (error) {
@@ -485,6 +541,7 @@ class GitHubClient {
       console.log(`Created pending review: ${reviewId}`);
 
       // Step 2: Add all comments (same as createReviewGraphQL)
+      let successfulComments = 0;
       if (comments.length > 0) {
         console.log(`Step 2: Adding ${comments.length} comments...`);
 
@@ -527,27 +584,82 @@ class GitHubClient {
         `;
 
         try {
-          await this.octokit.graphql(addCommentsMutation, {
+          const result = await this.octokit.graphql(addCommentsMutation, {
             prId: prNodeId,
             reviewId: reviewId
           });
-          console.log(`Added ${comments.length} comments to draft review`);
-        } catch (commentError) {
-          console.error('Error adding comments to draft:', commentError.message);
-          // Try to delete the pending review to clean up
-          try {
-            await this.octokit.graphql(`
-              mutation DeleteReview($reviewId: ID!) {
-                deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
-                  pullRequestReview { id }
-                }
-              }
-            `, { reviewId });
-            console.log('Cleaned up pending review after comment failure');
-          } catch (cleanupError) {
-            console.warn('Failed to clean up pending review:', cleanupError.message);
+
+          // Verify each comment was successfully added by checking for thread.id
+          for (let i = 0; i < comments.length; i++) {
+            const commentResult = result[`comment${i}`];
+            if (commentResult && commentResult.thread && commentResult.thread.id) {
+              successfulComments++;
+            } else {
+              console.warn(`Comment ${i} failed to add: ${comments[i].path}:${comments[i].line || 'file-level'}`);
+            }
           }
-          throw commentError;
+
+          if (successfulComments < comments.length) {
+            const failedCount = comments.length - successfulComments;
+            console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
+            throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to draft review. Check server logs for details.`);
+          } else {
+            console.log(`Added ${successfulComments} comments to draft review`);
+          }
+        } catch (commentError) {
+          // Check if this is a partial success (error.data contains partial results)
+          // GraphQL may return partial data alongside errors
+          if (commentError.data) {
+            console.warn('GraphQL returned partial results with errors:', commentError.errors || commentError.message);
+            // Count successful comments from partial data
+            for (let i = 0; i < comments.length; i++) {
+              const commentResult = commentError.data[`comment${i}`];
+              if (commentResult && commentResult.thread && commentResult.thread.id) {
+                successfulComments++;
+              } else {
+                console.warn(`Comment ${i} failed to add: ${comments[i].path}:${comments[i].line || 'file-level'}`);
+              }
+            }
+
+            if (successfulComments < comments.length) {
+              const failedCount = comments.length - successfulComments;
+              console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review (partial success)`);
+              // Clean up the pending review since it has incomplete comments
+              try {
+                await this.octokit.graphql(`
+                  mutation DeleteReview($reviewId: ID!) {
+                    deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
+                      pullRequestReview { id }
+                    }
+                  }
+                `, { reviewId });
+                console.log('Cleaned up pending review after partial comment failure');
+              } catch (cleanupError) {
+                console.warn('Failed to clean up pending review:', cleanupError.message);
+              }
+              throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to draft review. Check server logs for details.`);
+            } else {
+              // All comments succeeded despite the error - continue
+              console.log(`Added ${successfulComments} comments to draft review (recovered from partial error)`);
+            }
+          } else {
+            // Total failure - no partial data
+            console.error('Error adding comments to draft:', commentError.message);
+            // Try to delete the pending review to clean up
+            try {
+              await this.octokit.graphql(`
+                mutation DeleteReview($reviewId: ID!) {
+                  deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
+                    pullRequestReview { id }
+                  }
+                }
+              `, { reviewId });
+              console.log('Cleaned up pending review after comment failure');
+            } catch (cleanupError) {
+              console.warn('Failed to clean up pending review:', cleanupError.message);
+            }
+            throw commentError;
+          }
         }
       }
 
@@ -558,7 +670,7 @@ class GitHubClient {
         id: reviewId,
         html_url: review.url,
         state: 'PENDING',
-        comments_count: comments.length
+        comments_count: successfulComments
       };
 
     } catch (error) {
