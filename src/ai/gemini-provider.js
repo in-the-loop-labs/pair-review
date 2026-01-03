@@ -14,8 +14,8 @@ const { extractJSON } = require('../utils/json-extractor');
  */
 const GEMINI_MODELS = [
   {
-    id: 'gemini-3.0-flash-preview',
-    name: '3.0 Flash',
+    id: 'gemini-3-flash-preview',
+    name: '3 Flash',
     tier: 'fast',
     tagline: 'Lightning Fast',
     description: 'Quick analysis for simple changes',
@@ -33,8 +33,8 @@ const GEMINI_MODELS = [
     default: true
   },
   {
-    id: 'gemini-3.0-pro-preview',
-    name: '3.0 Pro',
+    id: 'gemini-3-pro-preview',
+    name: '3 Pro',
     tier: 'thorough',
     tagline: 'Most Capable',
     description: 'Deep analysis for complex code',
@@ -80,7 +80,7 @@ class GeminiProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
-          PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin'
+          PATH: process.env.PATH
         }
       });
 
@@ -220,7 +220,7 @@ class GeminiProvider extends AIProvider {
       const gemini = spawn(this.geminiCmd, ['--version'], {
         env: {
           ...process.env,
-          PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin'
+          PATH: process.env.PATH
         }
       });
 
@@ -264,7 +264,7 @@ class GeminiProvider extends AIProvider {
   }
 
   static getInstallInstructions() {
-    return 'Install Gemini CLI: npm install -g @anthropic-ai/gemini-cli\n' +
+    return 'Install Gemini CLI: npm install -g @google/gemini-cli\n' +
            'Or visit: https://github.com/google-gemini/gemini-cli';
   }
 }

@@ -2491,6 +2491,7 @@ class PRManager {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
+          provider: config.provider || 'claude',
           model: config.model || 'sonnet',
           customInstructions: config.customInstructions || null
         })

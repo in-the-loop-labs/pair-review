@@ -80,7 +80,7 @@ class ClaudeProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
-          PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin'
+          PATH: process.env.PATH
         },
         shell: this.useShell
       });
