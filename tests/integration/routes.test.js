@@ -14,59 +14,63 @@ import sqlite3 from 'sqlite3';
  * mocked to ensure tests are fast, deterministic, and isolated.
  */
 
-// Use vi.hoisted() to define mock objects before vi.mock() runs
-// This is necessary because vi.mock() is hoisted to the top of the file
-const { mockGitHubClient, mockWorktreeManager } = vi.hoisted(() => ({
-  mockGitHubClient: {
-    fetchPullRequest: vi.fn().mockResolvedValue({
-      title: 'Test PR',
-      body: 'Test description',
-      author: 'testuser',
-      base_branch: 'main',
-      head_branch: 'feature-branch',
-      state: 'open',
-      base_sha: 'abc123',
-      head_sha: 'def456',
-      node_id: 'PR_node123',
-      html_url: 'https://github.com/owner/repo/pull/1',
-      additions: 10,
-      deletions: 5
-    }),
-    validateToken: vi.fn().mockResolvedValue(true),
-    repositoryExists: vi.fn().mockResolvedValue(true),
-    createReviewGraphQL: vi.fn().mockResolvedValue({
-      id: 12345,
-      html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
-      comments_count: 2,
-      submitted_at: new Date().toISOString(),
-      state: 'APPROVED'
-    }),
-    createDraftReviewGraphQL: vi.fn().mockResolvedValue({
-      id: 12346,
-      html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
-      comments_count: 2,
-      state: 'PENDING'
-    })
+// Import actual modules for spying (vi.mock doesn't work with CommonJS require())
+// We'll spy on prototype methods instead
+const { GitHubClient } = require('../../src/github/client');
+const { GitWorktreeManager } = require('../../src/git/worktree');
+
+// Define mock response values
+const mockGitHubResponses = {
+  fetchPullRequest: {
+    title: 'Test PR',
+    body: 'Test description',
+    author: 'testuser',
+    base_branch: 'main',
+    head_branch: 'feature-branch',
+    state: 'open',
+    base_sha: 'abc123',
+    head_sha: 'def456',
+    node_id: 'PR_node123',
+    html_url: 'https://github.com/owner/repo/pull/1',
+    additions: 10,
+    deletions: 5
   },
-  mockWorktreeManager: {
-    getWorktreePath: vi.fn().mockResolvedValue('/tmp/worktree/test'),
-    worktreeExists: vi.fn().mockResolvedValue(true),
-    generateUnifiedDiff: vi.fn().mockResolvedValue('diff --git a/file.js b/file.js\n--- a/file.js\n+++ b/file.js\n@@ -1,3 +1,4 @@\n+// New line\n line1\n line2\n line3'),
-    getChangedFiles: vi.fn().mockResolvedValue([{ file: 'file.js', additions: 1, deletions: 0 }]),
-    updateWorktree: vi.fn().mockResolvedValue('/tmp/worktree/test'),
-    createWorktreeForPR: vi.fn().mockResolvedValue('/tmp/worktree/test'),
-    pathExists: vi.fn().mockResolvedValue(true)
+  createReviewGraphQL: {
+    id: 12345,
+    html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
+    comments_count: 2,
+    submitted_at: new Date().toISOString(),
+    state: 'APPROVED'
+  },
+  createDraftReviewGraphQL: {
+    id: 12346,
+    html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
+    comments_count: 2,
+    state: 'PENDING'
   }
-}));
+};
 
-// Mock external dependencies before importing the routes
-vi.mock('../../src/github/client', () => ({
-  GitHubClient: vi.fn().mockImplementation(() => mockGitHubClient)
-}));
+const mockWorktreeResponses = {
+  generateUnifiedDiff: 'diff --git a/file.js b/file.js\n--- a/file.js\n+++ b/file.js\n@@ -1,3 +1,4 @@\n+// New line\n line1\n line2\n line3',
+  getWorktreePath: '/tmp/worktree/test',
+  getChangedFiles: [{ file: 'file.js', additions: 1, deletions: 0 }]
+};
 
-vi.mock('../../src/git/worktree', () => ({
-  GitWorktreeManager: vi.fn().mockImplementation(() => mockWorktreeManager)
-}));
+// Spy on GitHubClient prototype methods
+vi.spyOn(GitHubClient.prototype, 'fetchPullRequest').mockResolvedValue(mockGitHubResponses.fetchPullRequest);
+vi.spyOn(GitHubClient.prototype, 'validateToken').mockResolvedValue(true);
+vi.spyOn(GitHubClient.prototype, 'repositoryExists').mockResolvedValue(true);
+vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue(mockGitHubResponses.createReviewGraphQL);
+vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue(mockGitHubResponses.createDraftReviewGraphQL);
+
+// Spy on GitWorktreeManager prototype methods
+vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
+vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true);
+vi.spyOn(GitWorktreeManager.prototype, 'generateUnifiedDiff').mockResolvedValue(mockWorktreeResponses.generateUnifiedDiff);
+vi.spyOn(GitWorktreeManager.prototype, 'getChangedFiles').mockResolvedValue(mockWorktreeResponses.getChangedFiles);
+vi.spyOn(GitWorktreeManager.prototype, 'updateWorktree').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
+vi.spyOn(GitWorktreeManager.prototype, 'createWorktreeForPR').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
+vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockResolvedValue(true);
 
 vi.mock('../../src/ai/analyzer', () => ({
   default: vi.fn().mockImplementation(() => ({
@@ -330,14 +334,15 @@ describe('PR Management Endpoints', () => {
     }
     // Reset all mock implementations to their defaults
     vi.clearAllMocks();
-    mockGitHubClient.createReviewGraphQL.mockResolvedValue({
+    // Restore default mock responses for GitHub client
+    vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue({
       id: 12345,
       html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
       comments_count: 2,
       submitted_at: new Date().toISOString(),
       state: 'APPROVED'
     });
-    mockGitHubClient.createDraftReviewGraphQL.mockResolvedValue({
+    vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue({
       id: 12346,
       html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
       comments_count: 2,
