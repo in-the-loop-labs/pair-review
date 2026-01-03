@@ -261,7 +261,7 @@ class PRManager {
     this.setLoading(true);
 
     try {
-      // Fetch PR data
+      // Fetch PR metadata
       const response = await fetch(`/api/pr/${owner}/${repo}/${number}`);
 
       if (!response.ok) {
@@ -269,13 +269,16 @@ class PRManager {
         throw new Error(errorData.error || 'Failed to load PR');
       }
 
-      const prData = await response.json();
+      const responseData = await response.json();
+      // API returns { success: true, data: { ... } } wrapper
+      const prData = responseData.data || responseData;
       this.currentPR = prData;
 
-      // Render PR content
+      // Render PR header with metadata
       this.renderPRHeader(prData);
-      this.renderDiff(prData);
-      this.updateFileList(prData.changed_files || []);
+
+      // Fetch diff and file list from diff endpoint
+      await this.loadAndDisplayFiles(owner, repo, number);
 
       // Load saved comments
       await this.loadUserComments();
@@ -297,6 +300,89 @@ class PRManager {
     } finally {
       this.setLoading(false);
     }
+  }
+
+  /**
+   * Load files and diff from the diff endpoint
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} number - PR number
+   */
+  async loadAndDisplayFiles(owner, repo, number) {
+    try {
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/diff`);
+
+      if (response.ok) {
+        const data = await response.json();
+        const files = data.changed_files || [];
+        const fullDiff = data.diff || '';
+
+        // Build map of generated files for quick lookup
+        this.generatedFiles.clear();
+        files.forEach(file => {
+          if (file.generated) {
+            this.generatedFiles.set(file.file, {
+              insertions: file.insertions || 0,
+              deletions: file.deletions || 0
+            });
+          }
+        });
+
+        // Parse the unified diff to extract per-file patches
+        const filePatchMap = this.parseUnifiedDiff(fullDiff);
+
+        // Merge patch data into file objects
+        const filesWithPatches = files.map(file => ({
+          ...file,
+          patch: filePatchMap.get(file.file) || ''
+        }));
+
+        // Update sidebar with file list
+        this.updateFileList(filesWithPatches);
+
+        // Render diff using the existing renderDiff method
+        this.renderDiff({ changed_files: filesWithPatches });
+
+      } else {
+        const diffContainer = document.getElementById('diff-container');
+        if (diffContainer) {
+          diffContainer.innerHTML = '<div class="no-diff">Failed to load changes</div>';
+        }
+      }
+    } catch (error) {
+      console.error('Error loading files:', error);
+      const diffContainer = document.getElementById('diff-container');
+      if (diffContainer) {
+        diffContainer.innerHTML = '<div class="no-diff">Error loading changes</div>';
+      }
+    }
+  }
+
+  /**
+   * Parse unified diff to extract per-file patches
+   * @param {string} diff - Full unified diff
+   * @returns {Map<string, string>} Map of filename to patch content
+   */
+  parseUnifiedDiff(diff) {
+    const filePatchMap = new Map();
+    if (!diff) return filePatchMap;
+
+    // Split by diff --git headers
+    const filePattern = /^diff --git a\/(.+?) b\/(.+?)$/gm;
+    const parts = diff.split(/(?=^diff --git )/m);
+
+    for (const part of parts) {
+      if (!part.trim()) continue;
+
+      // Extract filename from diff --git line
+      const match = part.match(/^diff --git a\/(.+?) b\/(.+)/);
+      if (match) {
+        const fileName = match[2]; // Use the 'b' path (new file path)
+        filePatchMap.set(fileName, part);
+      }
+    }
+
+    return filePatchMap;
   }
 
   /**
@@ -353,7 +439,7 @@ class PRManager {
 
     const filesCount = document.getElementById('pr-files-count');
     if (filesCount) {
-      filesCount.textContent = `${pr.changed_files} files`;
+      filesCount.textContent = `${pr.file_changes || pr.changed_files?.length || 0} files`;
     }
 
     // Update commit SHA with copy functionality
@@ -388,9 +474,12 @@ class PRManager {
 
     diffContainer.innerHTML = '';
 
+    // Use changed_files array from API
+    const files = pr.changed_files || pr.files || [];
+
     // Collect generated files info before rendering
-    if (pr.files) {
-      pr.files.forEach(file => {
+    if (files.length > 0) {
+      files.forEach(file => {
         if (file.generated) {
           this.generatedFiles.set(file.file, {
             insertions: file.insertions,
@@ -401,8 +490,8 @@ class PRManager {
     }
 
     // Parse each file's diff
-    if (pr.files && pr.files.length > 0) {
-      pr.files.forEach(file => {
+    if (files.length > 0) {
+      files.forEach(file => {
         const fileWrapper = this.renderFileDiff(file);
         if (fileWrapper) {
           diffContainer.appendChild(fileWrapper);

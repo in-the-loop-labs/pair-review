@@ -100,6 +100,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         created_at: prMetadata.created_at,
         updated_at: prMetadata.updated_at,
         file_changes: extendedData.changed_files ? extendedData.changed_files.length : 0,
+        changed_files: extendedData.changed_files || [],
         additions: extendedData.additions || 0,
         deletions: extendedData.deletions || 0,
         diff_content: extendedData.diff || '',
