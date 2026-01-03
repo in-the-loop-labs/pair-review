@@ -18,6 +18,7 @@ import sqlite3 from 'sqlite3';
 // We'll spy on prototype methods instead
 const { GitHubClient } = require('../../src/github/client');
 const { GitWorktreeManager } = require('../../src/git/worktree');
+const configModule = require('../../src/config');
 
 // Define mock response values
 const mockGitHubResponses = {
@@ -72,6 +73,15 @@ vi.spyOn(GitWorktreeManager.prototype, 'updateWorktree').mockResolvedValue(mockW
 vi.spyOn(GitWorktreeManager.prototype, 'createWorktreeForPR').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
 vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockResolvedValue(true);
 
+// Spy on config module functions to prevent writing to user's real config
+vi.spyOn(configModule, 'saveConfig').mockResolvedValue(undefined);
+vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
+  github_token: 'test-token',
+  port: 3000,
+  theme: 'light'
+});
+vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
+
 vi.mock('../../src/ai/analyzer', () => ({
   default: vi.fn().mockImplementation(() => ({
     analyzeLevel1: vi.fn().mockResolvedValue({
@@ -95,15 +105,7 @@ vi.mock('../../src/git/gitattributes', () => ({
   })
 }));
 
-vi.mock('../../src/config', () => ({
-  loadConfig: vi.fn().mockResolvedValue({
-    github_token: 'test-token',
-    port: 3000,
-    theme: 'light'
-  }),
-  saveConfig: vi.fn().mockResolvedValue(undefined),
-  getConfigDir: vi.fn().mockReturnValue('/tmp/.pair-review')
-}));
+// Note: vi.mock for config doesn't work with CommonJS require() - using vi.spyOn above instead
 
 // Import the database utilities
 const database = require('../../src/database.js');
