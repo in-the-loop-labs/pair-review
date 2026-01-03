@@ -105,6 +105,15 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 - Progressive loading for large PRs
 - Offline mode
 
+## Testing
+- `npm test` - Run all tests once
+- `npm run test:watch` - Run tests in watch mode (re-runs on file changes)
+- `npm run test:coverage` - Run tests with coverage report
+
+Test structure:
+- `tests/unit/` - Unit tests
+- `tests/integration/` - Integration tests (database, API routes)
+
 ## Development Notes
 - **Git workflow**: Ask before committing to main or pushing to remote
 - Package name: `pair-review`
