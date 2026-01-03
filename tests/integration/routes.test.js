@@ -238,11 +238,16 @@ function closeTestDatabase(db) {
   });
 }
 
-// Load the PR routes once (will use the mocked modules)
+// Load the route modules once (will use the mocked modules)
+// Order matters: more specific routes must be mounted before general ones
+const analysisRoutes = require('../../src/routes/analysis');
+const commentsRoutes = require('../../src/routes/comments');
+const configRoutes = require('../../src/routes/config');
+const worktreesRoutes = require('../../src/routes/worktrees');
 const prRoutes = require('../../src/routes/pr');
 
 /**
- * Create a test Express app with the PR routes
+ * Create a test Express app with all route modules
  */
 function createTestApp(db) {
   const app = express();
@@ -258,7 +263,12 @@ function createTestApp(db) {
     model: 'sonnet'
   });
 
-  // Use the pre-loaded routes
+  // Mount routes in the same order as server.js
+  // More specific routes first to ensure proper route matching
+  app.use('/', analysisRoutes);
+  app.use('/', commentsRoutes);
+  app.use('/', configRoutes);
+  app.use('/', worktreesRoutes);
   app.use('/', prRoutes);
 
   return app;

@@ -175,9 +175,21 @@ async function startServer(sharedDb = null) {
     app.set('db', db);
     app.set('githubToken', config.github_token);
     app.set('config', config);
-    
-    // PR API routes
+
+    // API routes - split into focused modules
+    // Order matters: more specific routes must be mounted before general ones
+    // to ensure proper route matching
+    const analysisRoutes = require('./routes/analysis');
+    const worktreesRoutes = require('./routes/worktrees');
+    const commentsRoutes = require('./routes/comments');
+    const configRoutes = require('./routes/config');
     const prRoutes = require('./routes/pr');
+
+    // Mount specific routes first to ensure they match before general PR routes
+    app.use('/', analysisRoutes);
+    app.use('/', commentsRoutes);
+    app.use('/', configRoutes);
+    app.use('/', worktreesRoutes);
     app.use('/', prRoutes);
     
     // Error handling middleware
