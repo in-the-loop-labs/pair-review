@@ -5469,9 +5469,9 @@ body:not([data-theme="dark"]) .theme-icon-light {
 
 .segment-btn {
   flex: 1;
-  padding: 6px 8px;
+  padding: 5px 4px;
   font-family: inherit;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 500;
   color: var(--color-text-tertiary);
   background: transparent;

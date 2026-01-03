@@ -680,9 +680,12 @@ class AIPanel {
         const headerContainer = document.querySelector('.findings-header');
         if (!headerContainer) return;
 
+        // Determine header label based on selected segment
+        const headerLabel = this.selectedSegment === 'comments' ? 'Comments' : 'Findings';
+
         // Update or create the header content
         headerContainer.innerHTML = `
-            <span class="findings-label">Findings</span>
+            <span class="findings-label">${headerLabel}</span>
             <div class="findings-nav">
                 <button class="findings-nav-btn nav-prev" title="Previous item (k)" ${navigableCount === 0 ? 'disabled' : ''}>
                     <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
