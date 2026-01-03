@@ -14,8 +14,8 @@ const { extractJSON } = require('../utils/json-extractor');
  */
 const GEMINI_MODELS = [
   {
-    id: 'gemini-2.5-flash',
-    name: '2.5 Flash',
+    id: 'gemini-3.0-flash-preview',
+    name: '3.0 Flash',
     tier: 'fast',
     tagline: 'Lightning Fast',
     description: 'Quick analysis for simple changes',
@@ -33,16 +33,13 @@ const GEMINI_MODELS = [
     default: true
   },
   {
-    id: 'gemini-2.5-pro',
-    name: '2.5 Pro',
+    id: 'gemini-3.0-pro-preview',
+    name: '3.0 Pro',
     tier: 'thorough',
     tagline: 'Most Capable',
     description: 'Deep analysis for complex code',
     badge: 'Most Thorough',
-    badgeClass: 'badge-power',
-    // Note: Using same model as balanced since Gemini doesn't have a clear 3-tier structure
-    // The thorough tier could use extended thinking or different parameters in the future
-    sameAsBalanced: true
+    badgeClass: 'badge-power'
   }
 ];
 

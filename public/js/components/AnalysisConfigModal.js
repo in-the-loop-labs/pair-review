@@ -61,8 +61,8 @@ class AnalysisConfigModal {
         name: 'Gemini',
         models: [
           {
-            id: 'gemini-2.5-flash',
-            name: '2.5 Flash',
+            id: 'gemini-3.0-flash-preview',
+            name: '3.0 Flash',
             tier: 'fast',
             tagline: 'Lightning Fast',
             description: 'Quick analysis for simple changes',
@@ -80,8 +80,8 @@ class AnalysisConfigModal {
             default: true
           },
           {
-            id: 'gemini-2.5-pro',
-            name: '2.5 Pro',
+            id: 'gemini-3.0-pro-preview',
+            name: '3.0 Pro',
             tier: 'thorough',
             tagline: 'Most Capable',
             description: 'Deep analysis for complex code',
