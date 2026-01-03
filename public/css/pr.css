@@ -5846,8 +5846,28 @@ body:not([data-theme="dark"]) .theme-icon-light {
   border-color: rgba(163, 113, 247, 0.4);
 }
 
-.finding-item.finding-comment .finding-dot {
-  background: var(--comment-primary, #a371f7);
+/* Comment icon container for Octicons */
+.comment-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--comment-primary, #a371f7);
+}
+
+.comment-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* AI-adopted comments use amber/gold color to indicate AI origin */
+.finding-item.comment-ai-origin .comment-icon {
+  color: var(--ai-primary, #f59e0b);
+}
+
+/* User-originated comments use purple */
+.finding-item.comment-user-origin .comment-icon {
+  color: var(--comment-primary, #a371f7);
 }
 
 /* Active state for comment items maintains purple accent */

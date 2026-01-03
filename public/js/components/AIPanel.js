@@ -475,15 +475,40 @@ class AIPanel {
         // Full location for tooltip, filename only for display
         const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
 
+        // Choose icon based on whether comment originated from AI (has parent_id) or user
+        const icon = comment.parent_id
+            ? this.getCommentAIIcon()
+            : this.getPersonIcon();
+
         return `
-            <button class="finding-item finding-comment" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-item-type="comment" title="${fullLocation}">
-                <span class="finding-dot"></span>
+            <button class="finding-item finding-comment ${comment.parent_id ? 'comment-ai-origin' : 'comment-user-origin'}" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-item-type="comment" title="${fullLocation}">
+                <span class="comment-icon">${icon}</span>
                 <div class="finding-content">
                     <span class="finding-title">${this.escapeHtml(title)}</span>
                     ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
                 </div>
             </button>
         `;
+    }
+
+    /**
+     * Get the comment-ai Octicon SVG for AI-adopted comments
+     * @returns {string} SVG HTML string
+     */
+    getCommentAIIcon() {
+        return `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+            <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
+        </svg>`;
+    }
+
+    /**
+     * Get the person Octicon SVG for user-originated comments
+     * @returns {string} SVG HTML string
+     */
+    getPersonIcon() {
+        return `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+            <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
+        </svg>`;
     }
 
     /**
