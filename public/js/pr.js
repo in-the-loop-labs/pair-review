@@ -47,6 +47,8 @@ class PRManager {
   static extractFunctionContext(header) {
     if (!header) return null;
     // Match: @@ followed by line info, then @@ and optional trailing context
+    // The [^@]+ between @@ markers ensures we stop at the closing @@, so even
+    // if the function name contains @ characters, they're captured correctly
     const match = header.match(/^@@[^@]+@@\s*(.*)$/);
     const context = match ? match[1].trim() : null;
     return context || null; // Return null for empty strings too
@@ -1115,8 +1117,8 @@ class PRManager {
           headerRow.className = 'd2h-info';
           const functionContext = PRManager.extractFunctionContext(block.header);
           const headerContent = functionContext
-            ? `<span class="hunk-context-icon">ƒ</span>${this.escapeHtml(functionContext)}`
-            : '<span class="hunk-divider">···</span>';
+            ? `<span class="hunk-context-icon" aria-label="Function context">ƒ</span>${this.escapeHtml(functionContext)}`
+            : '<span class="hunk-divider" aria-label="Code section divider">···</span>';
           headerRow.innerHTML = `<td colspan="2" class="d2h-info">${headerContent}</td>`;
           tbody.appendChild(headerRow);
 
