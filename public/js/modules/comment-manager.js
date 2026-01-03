@@ -70,7 +70,7 @@ class CommentManager {
     const formHTML = `
       <div class="user-comment-form">
         <div class="comment-form-header">
-          <span class="comment-icon">Comment</span>
+          <span class="comment-icon">💬</span>
           <span class="comment-title">Add comment</span>
           ${isRange ? `<span class="line-range-indicator">${lineRangeText}</span>` : ''}
         </div>
