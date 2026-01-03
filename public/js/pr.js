@@ -219,17 +219,25 @@ class PRManager {
    * Initialize the PR viewer
    */
   async init() {
-    // Get PR reference from URL
-    const urlParams = new URLSearchParams(window.location.search);
-    const prRef = urlParams.get('pr');
-
-    if (!prRef) {
-      this.showError('No PR reference provided. Use ?pr=owner/repo/number');
-      return;
-    }
-
     try {
-      // Parse PR reference
+      // First, check if we have PR context from URL path (e.g., /pr/owner/repo/number)
+      const pathMatch = window.location.pathname.match(/^\/pr\/([^\/]+)\/([^\/]+)\/(\d+)$/);
+      if (pathMatch) {
+        const [, owner, repo, number] = pathMatch;
+        await this.loadPR(owner, repo, parseInt(number));
+        return;
+      }
+
+      // Fallback: Check if we have PR context from URL query parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      const prRef = urlParams.get('pr');
+
+      if (!prRef) {
+        this.showError('No PR reference provided. Use ?pr=owner/repo/number');
+        return;
+      }
+
+      // Parse PR reference from query param
       const parts = prRef.split('/');
       if (parts.length !== 3) {
         throw new Error('Invalid PR reference format. Expected: owner/repo/number');
