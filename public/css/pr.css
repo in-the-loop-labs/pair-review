@@ -648,6 +648,11 @@
   --color-warning: #d29922;
   --color-info: #0969da;
   --color-praise: #8250df;
+
+  /* Comment accent colors - purple to distinguish from AI amber */
+  --comment-primary: #8250df;
+  --comment-subtle: rgba(130, 80, 223, 0.08);
+  --comment-border: rgba(130, 80, 223, 0.3);
 }
 
 [data-theme="dark"] {
@@ -726,6 +731,11 @@
   --color-warning: #d29922;
   --color-info: #58a6ff;
   --color-praise: #a371f7;
+
+  /* Comment accent colors - purple to distinguish from AI amber (dark theme) */
+  --comment-primary: #a371f7;
+  --comment-subtle: rgba(163, 113, 247, 0.1);
+  --comment-border: rgba(163, 113, 247, 0.3);
 }
 
 /* Update PR container styles */
@@ -5472,6 +5482,22 @@ body:not([data-theme="dark"]) .theme-icon-light {
   background: var(--ai-subtle);
 }
 
+/* Segment-specific active colors */
+.segment-btn[data-segment="ai"].active {
+  color: var(--ai-primary);
+  background: var(--ai-subtle);
+}
+
+.segment-btn[data-segment="comments"].active {
+  color: var(--comment-primary);
+  background: var(--comment-subtle);
+}
+
+.segment-btn[data-segment="all"].active {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+}
+
 .segment-count {
   opacity: 0.7;
   font-weight: 400;
@@ -5781,41 +5807,52 @@ body:not([data-theme="dark"]) .theme-icon-light {
   display: inline;
 }
 
-/* Comment items in the findings list - blue accent to distinguish from AI suggestions */
+/* Comment items in the findings list - purple accent to distinguish from AI amber */
 .finding-item.finding-comment {
-  border-left: 3px solid var(--color-info, #58a6ff);
+  border-left: 3px solid var(--comment-primary, #a371f7);
   padding-left: 9px;
-  background: rgba(88, 166, 255, 0.08);
-  border-color: rgba(88, 166, 255, 0.25);
+  background: var(--comment-subtle, rgba(163, 113, 247, 0.08));
+  border-color: var(--comment-border, rgba(163, 113, 247, 0.25));
 }
 
 .finding-item.finding-comment:hover {
-  background: rgba(88, 166, 255, 0.12);
-  border-color: rgba(88, 166, 255, 0.35);
+  background: rgba(163, 113, 247, 0.15);
+  border-color: rgba(163, 113, 247, 0.4);
 }
 
 .finding-item.finding-comment .finding-icon {
-  color: var(--color-info, #58a6ff);
+  color: var(--comment-primary, #a371f7);
+}
+
+/* Active state for comment items maintains purple accent */
+.finding-item.finding-comment.active {
+  background: var(--comment-subtle, rgba(163, 113, 247, 0.12));
+  border-color: var(--comment-border, rgba(163, 113, 247, 0.4));
+  border-left-color: var(--comment-primary, #a371f7);
 }
 
 /* Badge for adopted comments showing original suggestion type */
 .finding-badge {
   font-size: 0.6rem;
-  font-weight: 500;
-  padding: 1px 6px;
+  font-weight: 600;
+  padding: 2px 6px;
   border-radius: 9999px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
 
+/* "Nice Work" badge for adopted praise items - uses star/gold styling */
 .finding-badge-praise {
   background: rgba(245, 158, 11, 0.15);
   color: var(--ai-primary, #f59e0b);
+  border: 1px solid rgba(245, 158, 11, 0.25);
 }
 
+/* "From AI" badge for adopted AI suggestions - amber to indicate AI origin */
 .finding-badge-suggestion {
-  background: rgba(88, 166, 255, 0.15);
-  color: var(--color-info, #58a6ff);
+  background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
+  color: var(--ai-primary, #f59e0b);
+  border: 1px solid var(--ai-border, rgba(245, 158, 11, 0.25));
 }
 
 /* Highlight flash animation for scrolling to comments */
@@ -5825,8 +5862,8 @@ body:not([data-theme="dark"]) .theme-icon-light {
 
 @keyframes comment-highlight-flash {
   0% {
-    box-shadow: 0 0 0 3px var(--color-info, #58a6ff);
-    background: rgba(88, 166, 255, 0.15);
+    box-shadow: 0 0 0 3px var(--comment-primary, #a371f7);
+    background: rgba(163, 113, 247, 0.15);
   }
   100% {
     box-shadow: none;

@@ -615,13 +615,11 @@ class AIPanel {
      * Update the findings header with navigation controls and counter
      */
     updateFindingsHeader(totalCount) {
-        if (!this.findingsCount) return;
-
         const navigableCount = this.getNavigableItems().length;
         const currentDisplay = this.currentIndex >= 0 ? (this.currentIndex + 1) : '\u2014';
 
-        // Build the header content with navigation buttons and counter
-        const headerContainer = this.findingsCount.parentElement;
+        // Always get the .findings-header element directly to avoid parent reference issues
+        const headerContainer = document.querySelector('.findings-header');
         if (!headerContainer) return;
 
         // Update or create the header content
