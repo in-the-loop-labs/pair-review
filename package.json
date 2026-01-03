@@ -11,7 +11,10 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node bin/pair-review.js"
+    "dev": "node bin/pair-review.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [
     "github",
@@ -30,5 +33,10 @@
     "simple-git": "^3.19.1",
     "sqlite3": "^5.1.6",
     "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.0.16",
+    "supertest": "^7.1.4",
+    "vitest": "^4.0.16"
   }
 }
