@@ -246,6 +246,11 @@ class SuggestionManager {
           });
         }
       });
+
+      // Update AI panel with findings
+      if (window.aiPanel?.addFindings) {
+        window.aiPanel.addFindings(suggestions);
+      }
     } finally {
       // Always clear the guard, even if an error occurred
       this._isDisplayingSuggestions = false;

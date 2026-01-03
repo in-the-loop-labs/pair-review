@@ -283,16 +283,16 @@ class PRManager {
       // Load saved comments
       await this.loadUserComments();
 
-      // Load saved AI suggestions if they exist
-      await this.loadAISuggestions();
-
       // Initialize split button for comment actions
       this.initSplitButton();
 
-      // Initialize AI Panel
+      // Initialize AI Panel before loading suggestions so it can receive them
       if (window.AIPanel) {
         window.aiPanel = new window.AIPanel();
       }
+
+      // Load saved AI suggestions if they exist
+      await this.loadAISuggestions();
 
     } catch (error) {
       console.error('Error loading PR:', error);
