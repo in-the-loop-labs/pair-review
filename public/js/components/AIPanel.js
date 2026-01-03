@@ -13,9 +13,11 @@ class AIPanel {
         this.comments = [];
         this.selectedLevel = 'final';
         this.selectedSegment = 'all';
+        this.currentIndex = -1; // Current navigation index
 
         this.initElements();
         this.bindEvents();
+        this.setupKeyboardNavigation();
     }
 
     initElements() {
@@ -95,6 +97,9 @@ class AIPanel {
         btn.classList.add('active');
         this.selectedSegment = segment;
 
+        // Reset navigation index when segment changes
+        this.currentIndex = -1;
+
         // Show/hide level filter based on segment
         // Level filter only applies to AI findings
         if (this.levelFilter) {
@@ -150,6 +155,7 @@ class AIPanel {
      */
     addFindings(suggestions) {
         this.findings = suggestions || [];
+        this.currentIndex = -1; // Reset navigation when findings change
         this.updateSegmentCounts();
         this.renderFindings();
     }
@@ -229,15 +235,11 @@ class AIPanel {
                     <p>${emptyMessage}</p>
                 </div>
             `;
-            if (this.findingsCount) {
-                this.findingsCount.textContent = '0 items';
-            }
+            this.updateFindingsHeader(0);
             return;
         }
 
-        if (this.findingsCount) {
-            this.findingsCount.textContent = `${items.length} item${items.length !== 1 ? 's' : ''}`;
-        }
+        this.updateFindingsHeader(items.length);
 
         this.findingsList.innerHTML = items.map((item, index) => {
             // Check if this is a comment or a finding
@@ -252,6 +254,9 @@ class AIPanel {
         this.findingsList.querySelectorAll('.finding-item').forEach(item => {
             item.addEventListener('click', () => this.onFindingClick(item));
         });
+
+        // Restore active state if we have a current index
+        this.highlightCurrentItem();
     }
 
     onFindingClick(item) {
@@ -259,10 +264,12 @@ class AIPanel {
         const itemType = item.dataset.itemType;
         const file = item.dataset.file;
         const line = item.dataset.line;
+        const index = parseInt(item.dataset.index, 10);
 
-        // Remove active state from all
-        this.findingsList.querySelectorAll('.finding-item').forEach(i => i.classList.remove('active'));
-        item.classList.add('active');
+        // Update current index and highlight
+        this.currentIndex = index;
+        this.highlightCurrentItem();
+        this.updateNavigationCounter();
 
         // Handle comments - scroll to user comment row
         if (itemType === 'comment') {
@@ -482,6 +489,7 @@ class AIPanel {
     clearAllFindings() {
         this.findings = [];
         this.comments = [];
+        this.currentIndex = -1; // Reset navigation
         this.updateSegmentCounts();
         this.renderFindings();
         this.resetLevelFilter();
@@ -520,6 +528,7 @@ class AIPanel {
      */
     setComments(comments) {
         this.comments = comments || [];
+        this.currentIndex = -1; // Reset navigation when comments change
         this.updateSegmentCounts();
         this.renderFindings();
     }
@@ -566,6 +575,218 @@ class AIPanel {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // ========================================
+    // Navigation Methods
+    // ========================================
+
+    /**
+     * Setup keyboard navigation (j/k keys)
+     */
+    setupKeyboardNavigation() {
+        document.addEventListener('keydown', (e) => {
+            // Don't navigate when typing in input fields
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                return;
+            }
+
+            // Don't navigate when a modal is open
+            if (document.querySelector('.modal.show, .comment-form-overlay, [role="dialog"]:not([hidden])')) {
+                return;
+            }
+
+            // Don't navigate when panel is collapsed
+            if (this.isCollapsed) {
+                return;
+            }
+
+            if (e.key === 'j' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                e.preventDefault();
+                this.goToNext();
+            } else if (e.key === 'k' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                e.preventDefault();
+                this.goToPrevious();
+            }
+        });
+    }
+
+    /**
+     * Update the findings header with navigation controls and counter
+     */
+    updateFindingsHeader(totalCount) {
+        if (!this.findingsCount) return;
+
+        const navigableCount = this.getNavigableItems().length;
+        const currentDisplay = this.currentIndex >= 0 ? (this.currentIndex + 1) : '\u2014';
+
+        // Build the header content with navigation buttons and counter
+        const headerContainer = this.findingsCount.parentElement;
+        if (!headerContainer) return;
+
+        // Update or create the header content
+        headerContainer.innerHTML = `
+            <span class="findings-label">Findings</span>
+            <div class="findings-nav">
+                <button class="findings-nav-btn nav-prev" title="Previous item (k)" ${navigableCount === 0 ? 'disabled' : ''}>
+                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                        <path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/>
+                    </svg>
+                </button>
+                <span class="findings-counter" id="findings-count">${currentDisplay} of ${navigableCount}</span>
+                <button class="findings-nav-btn nav-next" title="Next item (j)" ${navigableCount === 0 ? 'disabled' : ''}>
+                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                        <path d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
+                    </svg>
+                </button>
+            </div>
+        `;
+
+        // Re-bind reference to findings count
+        this.findingsCount = headerContainer.querySelector('#findings-count');
+
+        // Bind nav button events
+        const prevBtn = headerContainer.querySelector('.nav-prev');
+        const nextBtn = headerContainer.querySelector('.nav-next');
+        if (prevBtn) {
+            prevBtn.addEventListener('click', () => this.goToPrevious());
+        }
+        if (nextBtn) {
+            nextBtn.addEventListener('click', () => this.goToNext());
+        }
+    }
+
+    /**
+     * Get items that can be navigated to (skipping dismissed/adopted findings)
+     * @returns {Array} Array of navigable items with their original indices
+     */
+    getNavigableItems() {
+        const items = this.getFilteredItems();
+        return items.map((item, index) => ({ item, index }))
+            .filter(({ item }) => !this.shouldSkipItem(item));
+    }
+
+    /**
+     * Check if an item should be skipped during navigation
+     * (dismissed or adopted AI findings are skipped)
+     */
+    shouldSkipItem(item) {
+        // Comments are always navigable
+        if (item._itemType === 'comment') {
+            return false;
+        }
+        // Skip dismissed or adopted findings
+        return item.status === 'dismissed' || item.status === 'adopted';
+    }
+
+    /**
+     * Navigate to the next item
+     */
+    goToNext() {
+        const navigableItems = this.getNavigableItems();
+        if (navigableItems.length === 0) return;
+
+        // Find current position in navigable items
+        let nextNavIndex;
+        if (this.currentIndex < 0) {
+            // No selection yet, go to first
+            nextNavIndex = 0;
+        } else {
+            // Find next navigable item after current index
+            const currentNavIndex = navigableItems.findIndex(({ index }) => index === this.currentIndex);
+            nextNavIndex = (currentNavIndex + 1) % navigableItems.length;
+        }
+
+        const nextItem = navigableItems[nextNavIndex];
+        this.goToIndex(nextItem.index);
+    }
+
+    /**
+     * Navigate to the previous item
+     */
+    goToPrevious() {
+        const navigableItems = this.getNavigableItems();
+        if (navigableItems.length === 0) return;
+
+        // Find current position in navigable items
+        let prevNavIndex;
+        if (this.currentIndex < 0) {
+            // No selection yet, go to last
+            prevNavIndex = navigableItems.length - 1;
+        } else {
+            // Find previous navigable item before current index
+            const currentNavIndex = navigableItems.findIndex(({ index }) => index === this.currentIndex);
+            prevNavIndex = currentNavIndex <= 0 ? navigableItems.length - 1 : currentNavIndex - 1;
+        }
+
+        const prevItem = navigableItems[prevNavIndex];
+        this.goToIndex(prevItem.index);
+    }
+
+    /**
+     * Navigate to a specific index
+     */
+    goToIndex(index) {
+        const items = this.getFilteredItems();
+        if (index < 0 || index >= items.length) return;
+
+        this.currentIndex = index;
+        this.highlightCurrentItem();
+        this.scrollToCurrentItem();
+        this.updateNavigationCounter();
+    }
+
+    /**
+     * Highlight the current item in the panel list
+     */
+    highlightCurrentItem() {
+        if (!this.findingsList) return;
+
+        // Remove active class from all items
+        this.findingsList.querySelectorAll('.finding-item').forEach(item => {
+            item.classList.remove('active');
+        });
+
+        // Add active class to current item
+        if (this.currentIndex >= 0) {
+            const currentItem = this.findingsList.querySelector(`[data-index="${this.currentIndex}"]`);
+            if (currentItem) {
+                currentItem.classList.add('active');
+                // Ensure the item is visible in the panel's scroll area
+                currentItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+    }
+
+    /**
+     * Scroll to the current item in the diff view
+     */
+    scrollToCurrentItem() {
+        const items = this.getFilteredItems();
+        if (this.currentIndex < 0 || this.currentIndex >= items.length) return;
+
+        const item = items[this.currentIndex];
+        const itemId = item.id;
+        const file = item.file;
+        const line = item.line_start || item.line;
+
+        if (item._itemType === 'comment') {
+            this.scrollToComment(itemId, file, line);
+        } else {
+            this.scrollToFinding(itemId, file, line);
+        }
+    }
+
+    /**
+     * Update the navigation counter display
+     */
+    updateNavigationCounter() {
+        const navigableItems = this.getNavigableItems();
+        const currentDisplay = this.currentIndex >= 0 ? (this.currentIndex + 1) : '\u2014';
+
+        if (this.findingsCount) {
+            this.findingsCount.textContent = `${currentDisplay} of ${navigableItems.length}`;
+        }
     }
 }
 
