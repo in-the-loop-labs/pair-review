@@ -10,7 +10,9 @@ class AIPanel {
         // Check actual DOM state for collapsed status
         this.isCollapsed = this.panel?.classList.contains('collapsed') ?? false;
         this.findings = [];
+        this.comments = [];
         this.selectedLevel = 'final';
+        this.selectedSegment = 'all';
 
         this.initElements();
         this.bindEvents();
@@ -20,6 +22,10 @@ class AIPanel {
         // Panel elements
         this.closeBtn = document.getElementById('ai-panel-close');
         this.toggleBtn = document.getElementById('ai-panel-toggle');
+
+        // Segment control
+        this.segmentControl = document.getElementById('segment-control');
+        this.segmentBtns = this.segmentControl?.querySelectorAll('.segment-btn');
 
         // Level filter
         this.levelFilter = document.getElementById('level-filter');
@@ -38,6 +44,13 @@ class AIPanel {
 
         if (this.toggleBtn) {
             this.toggleBtn.addEventListener('click', () => this.toggle());
+        }
+
+        // Segment control buttons
+        if (this.segmentBtns) {
+            this.segmentBtns.forEach(btn => {
+                btn.addEventListener('click', () => this.onSegmentSelect(btn));
+            });
         }
 
         // Level filter pills
@@ -68,6 +81,38 @@ class AIPanel {
         if (this.panel) {
             this.panel.classList.remove('collapsed');
         }
+    }
+
+    /**
+     * Handle segment button selection
+     */
+    onSegmentSelect(btn) {
+        const segment = btn.dataset.segment;
+        if (segment === this.selectedSegment) return;
+
+        // Update UI
+        this.segmentBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        this.selectedSegment = segment;
+
+        // Show/hide level filter based on segment
+        // Level filter only applies to AI findings
+        if (this.levelFilter) {
+            if (segment === 'comments') {
+                this.levelFilter.classList.add('hidden');
+            } else {
+                this.levelFilter.classList.remove('hidden');
+            }
+        }
+
+        // Re-render findings to filter by segment
+        this.renderFindings();
+
+        // Dispatch event for other components to respond
+        const event = new CustomEvent('segmentChanged', {
+            detail: { segment }
+        });
+        document.dispatchEvent(event);
     }
 
     /**
@@ -105,16 +150,70 @@ class AIPanel {
      */
     addFindings(suggestions) {
         this.findings = suggestions || [];
+        this.updateSegmentCounts();
         this.renderFindings();
+    }
+
+    /**
+     * Update segment counts in the segment control
+     */
+    updateSegmentCounts() {
+        const aiCount = this.findings.length;
+        const commentsCount = this.comments.length;
+        const allCount = aiCount + commentsCount;
+
+        if (this.segmentBtns) {
+            this.segmentBtns.forEach(btn => {
+                const segment = btn.dataset.segment;
+                const countSpan = btn.querySelector('.segment-count');
+                if (countSpan) {
+                    if (segment === 'all') {
+                        countSpan.textContent = `(${allCount})`;
+                    } else if (segment === 'ai') {
+                        countSpan.textContent = `(${aiCount})`;
+                    } else if (segment === 'comments') {
+                        countSpan.textContent = `(${commentsCount})`;
+                    }
+                }
+            });
+        }
+    }
+
+    /**
+     * Get items to display based on selected segment
+     */
+    getFilteredItems() {
+        switch (this.selectedSegment) {
+            case 'ai':
+                return this.findings;
+            case 'comments':
+                return this.comments;
+            case 'all':
+            default:
+                // Combine and return both - for now just findings since comments not implemented
+                return this.findings;
+        }
     }
 
     renderFindings() {
         if (!this.findingsList) return;
 
-        if (this.findings.length === 0) {
+        const items = this.getFilteredItems();
+
+        // Show empty state based on segment
+        if (items.length === 0) {
+            let emptyMessage;
+            if (this.selectedSegment === 'comments') {
+                emptyMessage = 'No comments yet. Add comments using the + button in the diff view.';
+            } else if (this.selectedSegment === 'ai') {
+                emptyMessage = 'No AI analysis yet. Click "Analyze" to get started.';
+            } else {
+                emptyMessage = 'No items yet. Click "Analyze" for AI suggestions or add comments in the diff view.';
+            }
+
             this.findingsList.innerHTML = `
                 <div class="findings-empty">
-                    <p>No AI analysis yet. Click "Analyze" to get started.</p>
+                    <p>${emptyMessage}</p>
                 </div>
             `;
             if (this.findingsCount) {
@@ -124,10 +223,10 @@ class AIPanel {
         }
 
         if (this.findingsCount) {
-            this.findingsCount.textContent = `${this.findings.length} item${this.findings.length !== 1 ? 's' : ''}`;
+            this.findingsCount.textContent = `${items.length} item${items.length !== 1 ? 's' : ''}`;
         }
 
-        this.findingsList.innerHTML = this.findings.map((finding, index) => {
+        this.findingsList.innerHTML = items.map((finding, index) => {
             const type = this.getFindingType(finding);
             const iconSvg = this.getTypeIcon(type);
             const title = this.truncateText(finding.title || finding.body || 'Suggestion', 40);
@@ -266,6 +365,8 @@ class AIPanel {
      */
     clearAllFindings() {
         this.findings = [];
+        this.comments = [];
+        this.updateSegmentCounts();
         this.renderFindings();
         this.resetLevelFilter();
 

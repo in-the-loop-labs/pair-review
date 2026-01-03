@@ -5437,6 +5437,55 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--color-text-primary);
 }
 
+/* Segment Control */
+.segment-control {
+  display: flex;
+  gap: 2px;
+  padding: 12px 16px;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border-primary);
+  flex-shrink: 0;
+}
+
+.segment-btn {
+  flex: 1;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.segment-btn:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+}
+
+.segment-btn.active {
+  color: var(--ai-primary);
+  background: var(--ai-subtle);
+}
+
+.segment-count {
+  opacity: 0.7;
+  font-weight: 400;
+}
+
+.segment-btn.active .segment-count {
+  opacity: 1;
+}
+
+/* Hide level filter when Comments segment is selected */
+.level-filter.hidden {
+  display: none;
+}
+
 /* Level Filter Pills */
 .level-filter {
   display: flex;

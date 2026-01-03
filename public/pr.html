@@ -195,13 +195,20 @@
                                 <path d="M18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/>
                             </svg>
                         </div>
-                        <span>AI Analysis</span>
+                        <span>Review</span>
                     </div>
                     <button class="ai-panel-close" id="ai-panel-close" title="Close panel">
                         <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
                             <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
                         </svg>
                     </button>
+                </div>
+
+                <!-- Segment Control -->
+                <div class="segment-control" id="segment-control">
+                    <button class="segment-btn active" data-segment="all">All <span class="segment-count">(0)</span></button>
+                    <button class="segment-btn" data-segment="ai">AI Findings <span class="segment-count">(0)</span></button>
+                    <button class="segment-btn" data-segment="comments">Comments <span class="segment-count">(0)</span></button>
                 </div>
 
                 <!-- Level Filter -->
