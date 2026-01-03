@@ -5457,6 +5457,16 @@ body:not([data-theme="dark"]) .theme-icon-light {
   flex-shrink: 0;
 }
 
+.segment-control-inner {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-md);
+  width: 100%;
+}
+
 .segment-btn {
   flex: 1;
   padding: 6px 8px;
@@ -5636,9 +5646,9 @@ body:not([data-theme="dark"]) .theme-icon-light {
 
 .finding-item {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 8px 12px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-primary);
   border-radius: var(--radius-sm);
@@ -5646,6 +5656,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   transition: all var(--transition-fast);
   text-align: left;
   width: 100%;
+  font-family: inherit;
 }
 
 .finding-item:hover {
@@ -5658,22 +5669,21 @@ body:not([data-theme="dark"]) .theme-icon-light {
   border-color: var(--ai-border);
 }
 
-.finding-icon {
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+/* Simple colored dot indicator */
+.finding-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   flex-shrink: 0;
-  margin-top: 2px;
+  background: var(--color-text-tertiary);
 }
 
-.finding-item.finding-issue .finding-icon {
-  color: var(--color-warning, #d29922);
+.finding-item.finding-issue .finding-dot {
+  background: var(--color-warning, #d29922);
 }
 
-.finding-item.finding-praise .finding-icon {
-  color: var(--ai-primary, #f59e0b);
+.finding-item.finding-praise .finding-dot {
+  background: var(--category-praise, #2ea043);
 }
 
 /* Active findings - amber accent to highlight actionable items */
@@ -5702,7 +5712,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--color-text-tertiary);
 }
 
-.finding-item.finding-dismissed .finding-icon {
+.finding-item.finding-dismissed .finding-dot {
   opacity: 0.5;
 }
 
@@ -5738,8 +5748,8 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--color-text-secondary);
 }
 
-.finding-item.finding-adopted .finding-icon {
-  color: var(--color-success, #2ea043);
+.finding-item.finding-adopted .finding-dot {
+  background: var(--color-success, #2ea043);
   opacity: 0.85;
 }
 
@@ -5761,50 +5771,34 @@ body:not([data-theme="dark"]) .theme-icon-light {
   mask-repeat: no-repeat;
 }
 
-.finding-item.finding-info .finding-icon {
-  color: var(--color-info, #58a6ff);
+.finding-item.finding-info .finding-dot {
+  background: var(--color-info, #58a6ff);
 }
 
 .finding-content {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .finding-title {
-  display: block;
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--color-text-primary);
-  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .finding-location {
-  display: block;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.6875rem;
   color: var(--color-text-tertiary);
-}
-
-.finding-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 2px;
-}
-
-.finding-category {
-  font-size: 0.65rem;
-  color: var(--color-text-tertiary);
-  text-transform: lowercase;
-}
-
-.finding-separator {
-  font-size: 0.65rem;
-  color: var(--color-text-muted);
-}
-
-.finding-meta .finding-location {
-  display: inline;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Comment items in the findings list - purple accent to distinguish from AI amber */
@@ -5820,8 +5814,8 @@ body:not([data-theme="dark"]) .theme-icon-light {
   border-color: rgba(163, 113, 247, 0.4);
 }
 
-.finding-item.finding-comment .finding-icon {
-  color: var(--comment-primary, #a371f7);
+.finding-item.finding-comment .finding-dot {
+  background: var(--comment-primary, #a371f7);
 }
 
 /* Active state for comment items maintains purple accent */

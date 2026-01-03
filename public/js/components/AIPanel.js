@@ -12,12 +12,13 @@ class AIPanel {
         this.findings = [];
         this.comments = [];
         this.selectedLevel = 'final';
-        this.selectedSegment = 'all';
+        this.selectedSegment = localStorage.getItem('reviewPanelSegment') || 'ai';
         this.currentIndex = -1; // Current navigation index
 
         this.initElements();
         this.bindEvents();
         this.setupKeyboardNavigation();
+        this.restoreSegmentSelection();
     }
 
     initElements() {
@@ -86,6 +87,27 @@ class AIPanel {
     }
 
     /**
+     * Restore segment selection from localStorage
+     */
+    restoreSegmentSelection() {
+        if (!this.segmentBtns) return;
+
+        // Update UI to match stored segment
+        this.segmentBtns.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.segment === this.selectedSegment);
+        });
+
+        // Show/hide level filter based on segment
+        if (this.levelFilter) {
+            if (this.selectedSegment === 'comments') {
+                this.levelFilter.classList.add('hidden');
+            } else {
+                this.levelFilter.classList.remove('hidden');
+            }
+        }
+    }
+
+    /**
      * Handle segment button selection
      */
     onSegmentSelect(btn) {
@@ -96,6 +118,9 @@ class AIPanel {
         this.segmentBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         this.selectedSegment = segment;
+
+        // Persist selection
+        localStorage.setItem('reviewPanelSegment', segment);
 
         // Reset navigation index when segment changes
         this.currentIndex = -1;
@@ -397,25 +422,20 @@ class AIPanel {
      */
     renderFindingItem(finding, index) {
         const type = this.getFindingType(finding);
-        const iconSvg = this.getTypeIcon(type);
-        const title = this.truncateText(finding.title || finding.body || 'Suggestion', 40);
+        const title = this.truncateText(finding.title || finding.body || 'Suggestion', 50);
         const fileName = finding.file ? finding.file.split('/').pop() : null;
         const lineNum = finding.line_start || finding.line;
-        const location = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
-        const category = finding.type || finding.category || '';
+        // Full location for tooltip, filename only for display
+        const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
         const statusClass = finding.status === 'dismissed' ? 'finding-dismissed' :
                            finding.status === 'adopted' ? 'finding-adopted' : 'finding-active';
 
         return `
-            <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" data-item-type="finding" title="${location}">
-                <div class="finding-icon">${iconSvg}</div>
+            <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" data-item-type="finding" title="${fullLocation}">
+                <span class="finding-dot"></span>
                 <div class="finding-content">
                     <span class="finding-title">${this.escapeHtml(title)}</span>
-                    <div class="finding-meta">
-                        ${category ? `<span class="finding-category">${this.escapeHtml(category)}</span>` : ''}
-                        ${category && location ? '<span class="finding-separator">·</span>' : ''}
-                        ${location ? `<span class="finding-location">${this.escapeHtml(location)}</span>` : ''}
-                    </div>
+                    ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
                 </div>
             </button>
         `;
@@ -428,30 +448,18 @@ class AIPanel {
      * @returns {string} HTML string
      */
     renderCommentItem(comment, index) {
-        const iconSvg = this.getTypeIcon('comment');
-        const title = this.truncateText(comment.body || 'Comment', 40);
+        const title = this.truncateText(comment.body || 'Comment', 50);
         const fileName = comment.file ? comment.file.split('/').pop() : null;
         const lineNum = comment.line_start;
-        const location = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
-
-        // For adopted comments (from AI suggestions), show the original type as a badge
-        let badgeHtml = '';
-        if (comment.parent_id && comment.type) {
-            const badgeType = comment.type === 'praise' ? 'praise' : 'suggestion';
-            const badgeLabel = comment.type === 'praise' ? 'Nice Work' : 'From AI';
-            badgeHtml = `<span class="finding-badge finding-badge-${badgeType}">${this.escapeHtml(badgeLabel)}</span>`;
-        }
+        // Full location for tooltip, filename only for display
+        const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
 
         return `
-            <button class="finding-item finding-comment" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-item-type="comment" title="${location}">
-                <div class="finding-icon">${iconSvg}</div>
+            <button class="finding-item finding-comment" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-item-type="comment" title="${fullLocation}">
+                <span class="finding-dot"></span>
                 <div class="finding-content">
                     <span class="finding-title">${this.escapeHtml(title)}</span>
-                    <div class="finding-meta">
-                        ${badgeHtml}
-                        ${badgeHtml && location ? '<span class="finding-separator">·</span>' : ''}
-                        ${location ? `<span class="finding-location">${this.escapeHtml(location)}</span>` : ''}
-                    </div>
+                    ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
                 </div>
             </button>
         `;
@@ -615,8 +623,11 @@ class AIPanel {
      * Update the findings header with navigation controls and counter
      */
     updateFindingsHeader(totalCount) {
-        const navigableCount = this.getNavigableItems().length;
-        const currentDisplay = this.currentIndex >= 0 ? (this.currentIndex + 1) : '\u2014';
+        const navigableItems = this.getNavigableItems();
+        const navigableCount = navigableItems.length;
+        // Find position within navigable items (not raw index)
+        const navPosition = navigableItems.findIndex(({ index }) => index === this.currentIndex);
+        const currentDisplay = navPosition >= 0 ? (navPosition + 1) : '\u2014';
 
         // Always get the .findings-header element directly to avoid parent reference issues
         const headerContainer = document.querySelector('.findings-header');
@@ -780,7 +791,9 @@ class AIPanel {
      */
     updateNavigationCounter() {
         const navigableItems = this.getNavigableItems();
-        const currentDisplay = this.currentIndex >= 0 ? (this.currentIndex + 1) : '\u2014';
+        // Find position within navigable items (not raw index)
+        const navPosition = navigableItems.findIndex(({ index }) => index === this.currentIndex);
+        const currentDisplay = navPosition >= 0 ? (navPosition + 1) : '\u2014';
 
         if (this.findingsCount) {
             this.findingsCount.textContent = `${currentDisplay} of ${navigableItems.length}`;
