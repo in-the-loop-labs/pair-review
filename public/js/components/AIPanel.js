@@ -443,12 +443,19 @@ class AIPanel {
         const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
         const statusClass = finding.status === 'dismissed' ? 'finding-dismissed' :
                            finding.status === 'adopted' ? 'finding-adopted' : 'finding-active';
+        const category = finding.category || finding.type || '';
+
+        // Use star icon for praise, dot for other types
+        const indicator = type === 'praise'
+            ? `<span class="finding-star">${this.getTypeIcon('praise')}</span>`
+            : `<span class="finding-dot"></span>`;
 
         return `
             <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" data-item-type="finding" title="${fullLocation}">
-                <span class="finding-dot"></span>
+                ${indicator}
                 <div class="finding-content">
                     <span class="finding-title">${this.escapeHtml(title)}</span>
+                    ${category ? `<span class="finding-category">${this.escapeHtml(category)}</span>` : ''}
                     ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
                 </div>
             </button>

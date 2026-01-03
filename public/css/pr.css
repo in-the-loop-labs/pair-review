@@ -5801,6 +5801,38 @@ body:not([data-theme="dark"]) .theme-icon-light {
   text-overflow: ellipsis;
 }
 
+/* Category label for AI findings */
+.finding-category {
+  font-size: 0.6875rem;
+  color: var(--color-text-tertiary);
+  text-transform: capitalize;
+}
+
+/* Star icon for praise findings */
+.finding-star {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--category-praise, #2ea043);
+}
+
+.finding-star svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Dismissed state for star */
+.finding-item.finding-dismissed .finding-star {
+  opacity: 0.5;
+}
+
+/* Adopted state for star */
+.finding-item.finding-adopted .finding-star {
+  color: var(--color-success, #2ea043);
+  opacity: 0.85;
+}
+
 /* Comment items in the findings list - purple accent to distinguish from AI amber */
 .finding-item.finding-comment {
   border-left: 3px solid var(--comment-primary, #a371f7);
