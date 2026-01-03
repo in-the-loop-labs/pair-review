@@ -448,10 +448,15 @@ class PRManager {
       titleElement.textContent = pr.title;
     }
 
-    // Update meta info
+    // Update meta info - show only head branch, full info in tooltip
     const branchName = document.getElementById('pr-branch-name');
+    const branchContainer = document.getElementById('pr-branch');
     if (branchName) {
-      branchName.textContent = `${pr.base_branch} <- ${pr.head_branch}`;
+      branchName.textContent = pr.head_branch;
+      // Set tooltip with full branch info
+      if (branchContainer) {
+        branchContainer.title = `${pr.head_branch} -> ${pr.base_branch}`;
+      }
     }
 
     const additions = document.getElementById('pr-additions');

@@ -4812,104 +4812,9 @@ body::before {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 4px;
-  display: block;
-}
-
-.header-center .pr-meta {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  font-size: 0.75rem;
-  color: var(--color-text-secondary);
   margin: 0;
-  padding: 0;
-}
-
-.header-center .pr-branch {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--color-text-tertiary);
-}
-
-.header-center .pr-branch svg {
-  opacity: 0.7;
-}
-
-.pr-stat {
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  font-weight: 500;
-}
-
-.pr-stat-additions {
-  color: #1a7f37;
-}
-
-[data-theme="dark"] .pr-stat-additions {
-  color: #3fb950;
-}
-
-.pr-stat-deletions {
-  color: #cf222e;
-}
-
-[data-theme="dark"] .pr-stat-deletions {
-  color: #f85149;
-}
-
-.pr-files {
-  color: var(--color-text-tertiary);
-}
-
-/* Commit SHA display */
-.pr-commit {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--color-text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
-  padding: 2px 6px;
-  background-color: var(--color-bg-tertiary);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.pr-commit:hover {
-  background-color: var(--color-bg-secondary);
-  color: var(--color-text-secondary);
-}
-
-.pr-commit svg {
-  opacity: 0.7;
-  flex-shrink: 0;
-}
-
-.pr-commit-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--color-text-tertiary);
-  border-radius: var(--radius-xs);
-  transition: all var(--transition-fast);
-  opacity: 0;
-}
-
-.pr-commit:hover .pr-commit-copy {
-  opacity: 1;
-}
-
-.pr-commit-copy:hover {
-  background-color: var(--color-bg-primary);
-  color: var(--color-accent-primary);
+  display: block;
+  line-height: 1.4;
 }
 
 .header-right {
@@ -4917,6 +4822,26 @@ body::before {
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+}
+
+/* Icon button group - visually clusters related icon buttons */
+.header-icon-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--color-bg-secondary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-secondary);
+}
+
+.header-icon-group .btn-icon {
+  border: none;
+  background: transparent;
+}
+
+.header-icon-group .btn-icon:hover {
+  background: var(--color-bg-tertiary);
 }
 
 /* Header buttons */
@@ -5146,9 +5071,119 @@ body:not([data-theme="dark"]) .theme-icon-light {
 }
 
 .diff-toolbar .diff-stats {
-  flex: 1;
   font-size: 0.8125rem;
   color: var(--color-text-secondary);
+}
+
+/* Toolbar metadata - branch, stats, commit info */
+.toolbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.toolbar-separator {
+  width: 1px;
+  height: 14px;
+  background: var(--color-border-primary);
+}
+
+.toolbar-branch {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+  max-width: 180px;
+  overflow: hidden;
+}
+
+.toolbar-branch svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.toolbar-branch #pr-branch-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toolbar-stat {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.toolbar-stat-additions {
+  color: #1a7f37;
+}
+
+[data-theme="dark"] .toolbar-stat-additions {
+  color: #3fb950;
+}
+
+.toolbar-stat-deletions {
+  color: #cf222e;
+}
+
+[data-theme="dark"] .toolbar-stat-deletions {
+  color: #f85149;
+}
+
+.toolbar-files {
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+}
+
+/* Commit SHA display in toolbar */
+.toolbar-commit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  background-color: var(--color-bg-tertiary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.toolbar-commit:hover {
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+
+.toolbar-commit svg {
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.toolbar-commit-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-xs);
+  transition: all var(--transition-fast);
+  opacity: 0;
+}
+
+.toolbar-commit:hover .toolbar-commit-copy {
+  opacity: 1;
+}
+
+.toolbar-commit-copy:hover {
+  background-color: var(--color-bg-primary);
+  color: var(--color-accent-primary);
 }
 
 .toolbar-actions {
@@ -5603,12 +5638,14 @@ body:not([data-theme="dark"]) .theme-icon-light {
     display: none;
   }
 
-  .header .btn span:not(.btn-text) {
+  /* Hide non-essential toolbar items on small screens */
+  .toolbar-separator,
+  .toolbar-commit {
     display: none;
   }
 
-  .header .btn-secondary:not(.btn-icon) {
-    padding: 8px;
+  .toolbar-branch {
+    max-width: 120px;
   }
 }
 
