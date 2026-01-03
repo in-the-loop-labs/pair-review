@@ -36,6 +36,146 @@ class HunkParser {
   // Auto-expand threshold - gaps smaller than this are expanded automatically (2x standard context of 3 lines)
   static AUTO_EXPAND_THRESHOLD = 6;
 
+  // ========================================
+  // Helper functions for gap section creation
+  // ========================================
+
+  /**
+   * Create the expand controls metadata element
+   * @param {string} fileName - File name
+   * @param {number} startLine - Start line number
+   * @param {number} endLine - End line number
+   * @param {number} gapSize - Number of hidden lines
+   * @param {string} position - Position ('above', 'below', or 'between')
+   * @returns {HTMLElement} The expand controls element with dataset properties
+   */
+  static createExpandControlsElement(fileName, startLine, endLine, gapSize, position) {
+    const expandControls = document.createElement('div');
+    expandControls.className = 'context-expand-controls';
+    expandControls.dataset.fileName = fileName;
+    expandControls.dataset.startLine = startLine;
+    expandControls.dataset.endLine = endLine;
+    expandControls.dataset.hiddenCount = gapSize;
+    expandControls.dataset.position = position;
+    expandControls.dataset.isGap = 'true';
+    return expandControls;
+  }
+
+  /**
+   * Create expand button(s) based on position and gap size
+   * @param {number} gapSize - Number of hidden lines
+   * @param {string} position - Position ('above', 'below', or 'between')
+   * @param {HTMLElement} expandControls - The expand controls element for callbacks
+   * @param {Function} expandCallback - Callback function for expanding gaps
+   * @returns {HTMLElement} Container with expand button(s)
+   */
+  static createExpandButtons(gapSize, position, expandControls, expandCallback) {
+    const buttonContainer = document.createElement('div');
+    buttonContainer.className = 'expand-button-container';
+
+    // For short sections (<=SMALL_GAP_THRESHOLD lines) or single-direction, show single button
+    // For larger sections with both directions, show stacked buttons
+    if (gapSize <= HunkParser.SMALL_GAP_THRESHOLD || position !== 'between') {
+      // Single button - either fold-up, fold-down, or fold-up-down
+      const expandBtn = document.createElement('button');
+      expandBtn.className = 'expand-button expand-all-short';
+
+      if (position === 'above') {
+        // At top - expand up to reveal lines above first visible line
+        expandBtn.title = 'Expand up';
+        expandBtn.innerHTML = HunkParser.FOLD_UP_ICON;
+        expandBtn.addEventListener('click', () => expandCallback(expandControls, 'up', HunkParser.DEFAULT_EXPAND_LINES));
+      } else if (position === 'below') {
+        // At bottom - expand down to reveal lines below last visible line
+        expandBtn.title = 'Expand down';
+        expandBtn.innerHTML = HunkParser.FOLD_DOWN_ICON;
+        expandBtn.addEventListener('click', () => expandCallback(expandControls, 'down', HunkParser.DEFAULT_EXPAND_LINES));
+      } else {
+        // Between - short section, expand all
+        expandBtn.title = 'Expand all';
+        expandBtn.innerHTML = HunkParser.FOLD_UP_DOWN_ICON;
+        expandBtn.addEventListener('click', () => expandCallback(expandControls, 'all', gapSize));
+      }
+      buttonContainer.appendChild(expandBtn);
+    } else {
+      // Large gap between changes - show separate up/down buttons with GitHub fold icons
+      const expandAbove = document.createElement('button');
+      expandAbove.className = 'expand-button expand-up';
+      expandAbove.title = 'Expand up';
+      expandAbove.innerHTML = HunkParser.FOLD_UP_ICON;
+
+      const expandBelow = document.createElement('button');
+      expandBelow.className = 'expand-button expand-down';
+      expandBelow.title = 'Expand down';
+      expandBelow.innerHTML = HunkParser.FOLD_DOWN_ICON;
+
+      // Stack buttons: down on top (visually), up below - matches GitHub behavior
+      buttonContainer.appendChild(expandBelow);
+      buttonContainer.appendChild(expandAbove);
+
+      // Add event listeners - capture expandControls in closure at creation time
+      expandAbove.addEventListener('click', () => expandCallback(expandControls, 'up', HunkParser.DEFAULT_EXPAND_LINES));
+      expandBelow.addEventListener('click', () => expandCallback(expandControls, 'down', HunkParser.DEFAULT_EXPAND_LINES));
+    }
+
+    return buttonContainer;
+  }
+
+  /**
+   * Create line number cells for gap rows
+   * @returns {{ oldLineCell: HTMLElement, newLineCell: HTMLElement }} The two line number cells
+   */
+  static createLineNumberCells() {
+    const oldLineCell = document.createElement('td');
+    oldLineCell.className = 'diff-line-num';
+    oldLineCell.style.padding = '0';
+    oldLineCell.style.textAlign = 'center';
+
+    const newLineCell = document.createElement('td');
+    newLineCell.className = 'diff-line-num';
+    newLineCell.style.padding = '0';
+    newLineCell.style.textAlign = 'center';
+
+    return { oldLineCell, newLineCell };
+  }
+
+  /**
+   * Create content cell with expand icon and hidden lines info
+   * @param {number} gapSize - Number of hidden lines
+   * @param {HTMLElement} expandControls - The expand controls element for callbacks
+   * @param {Function} expandCallback - Callback function for expanding gaps
+   * @returns {HTMLElement} The content cell element
+   */
+  static createContentCell(gapSize, expandControls, expandCallback) {
+    const contentCell = document.createElement('td');
+    contentCell.className = 'diff-code expand-content clickable-expand';
+    contentCell.colSpan = 2;
+    contentCell.title = 'Expand all';
+
+    const contentWrapper = document.createElement('div');
+    contentWrapper.className = 'expand-content-wrapper';
+
+    const expandIcon = document.createElement('span');
+    expandIcon.className = 'expand-icon';
+    expandIcon.innerHTML = HunkParser.FOLD_UP_DOWN_ICON;
+
+    const expandInfo = document.createElement('span');
+    expandInfo.className = 'expand-info';
+    expandInfo.textContent = `${gapSize} hidden lines`;
+
+    contentWrapper.appendChild(expandIcon);
+    contentWrapper.appendChild(expandInfo);
+    contentCell.appendChild(contentWrapper);
+
+    // Make content cell clickable to expand all
+    contentCell.addEventListener('click', () => {
+      const hiddenCount = parseInt(expandControls.dataset.hiddenCount) || gapSize;
+      expandCallback(expandControls, 'all', hiddenCount);
+    });
+
+    return contentCell;
+  }
+
   /**
    * Extract function context from a unified diff hunk header.
    * Hunk headers have the format: "@@ -old,count +new,count @@ optional context"
@@ -105,107 +245,18 @@ class HunkParser {
     const row = document.createElement('tr');
     row.className = 'context-expand-row';
 
-    // Create separate cells for old and new line numbers
-    const oldLineCell = document.createElement('td');
-    oldLineCell.className = 'diff-line-num';
-    oldLineCell.style.padding = '0';
-    oldLineCell.style.textAlign = 'center';
+    // Create line number cells using helper
+    const { oldLineCell, newLineCell } = HunkParser.createLineNumberCells();
 
-    const newLineCell = document.createElement('td');
-    newLineCell.className = 'diff-line-num';
-    newLineCell.style.padding = '0';
-    newLineCell.style.textAlign = 'center';
+    // Create expand controls container for metadata using helper
+    const expandControls = HunkParser.createExpandControlsElement(fileName, startLine, endLine, gapSize, position);
 
-    // Put expand buttons in the first line number cell
-    const buttonContainer = document.createElement('div');
-    buttonContainer.className = 'expand-button-container';
-
-    // Create expand controls container for metadata
-    const expandControls = document.createElement('div');
-    expandControls.className = 'context-expand-controls';
-
-    // Store metadata for expansion
-    expandControls.dataset.fileName = fileName;
-    expandControls.dataset.startLine = startLine;
-    expandControls.dataset.endLine = endLine;
-    expandControls.dataset.hiddenCount = gapSize;
-    expandControls.dataset.position = position;
-    expandControls.dataset.isGap = 'true'; // Mark this as a gap section
-
-    // Create the expand buttons with GitHub Octicons
-    // For short sections (<=SMALL_GAP_THRESHOLD lines) or single-direction, show single button
-    // For larger sections with both directions, show stacked buttons
-    if (gapSize <= HunkParser.SMALL_GAP_THRESHOLD || position !== 'between') {
-      // Single button - either fold-up, fold-down, or fold-up-down
-      const expandBtn = document.createElement('button');
-      expandBtn.className = 'expand-button expand-all-short';
-
-      if (position === 'above') {
-        // At top - expand up to reveal lines above first visible line
-        expandBtn.title = 'Expand up';
-        expandBtn.innerHTML = HunkParser.FOLD_UP_ICON;
-        expandBtn.addEventListener('click', () => expandCallback(expandControls, 'up', HunkParser.DEFAULT_EXPAND_LINES));
-      } else if (position === 'below') {
-        // At bottom - expand down to reveal lines below last visible line
-        expandBtn.title = 'Expand down';
-        expandBtn.innerHTML = HunkParser.FOLD_DOWN_ICON;
-        expandBtn.addEventListener('click', () => expandCallback(expandControls, 'down', HunkParser.DEFAULT_EXPAND_LINES));
-      } else {
-        // Between - short section, expand all
-        expandBtn.title = 'Expand all';
-        expandBtn.innerHTML = HunkParser.FOLD_UP_DOWN_ICON;
-        expandBtn.addEventListener('click', () => expandCallback(expandControls, 'all', gapSize));
-      }
-      buttonContainer.appendChild(expandBtn);
-    } else {
-      // Large gap between changes - show separate up/down buttons with GitHub fold icons
-      const expandAbove = document.createElement('button');
-      expandAbove.className = 'expand-button expand-up';
-      expandAbove.title = 'Expand up';
-      expandAbove.innerHTML = HunkParser.FOLD_UP_ICON;
-
-      const expandBelow = document.createElement('button');
-      expandBelow.className = 'expand-button expand-down';
-      expandBelow.title = 'Expand down';
-      expandBelow.innerHTML = HunkParser.FOLD_DOWN_ICON;
-
-      // Stack buttons: down on top (visually), up below - matches GitHub behavior
-      buttonContainer.appendChild(expandBelow);
-      buttonContainer.appendChild(expandAbove);
-
-      // Add event listeners - capture expandControls in closure at creation time
-      expandAbove.addEventListener('click', () => expandCallback(expandControls, 'up', HunkParser.DEFAULT_EXPAND_LINES));
-      expandBelow.addEventListener('click', () => expandCallback(expandControls, 'down', HunkParser.DEFAULT_EXPAND_LINES));
-    }
+    // Create expand buttons using helper (handles position-based icon logic)
+    const buttonContainer = HunkParser.createExpandButtons(gapSize, position, expandControls, expandCallback);
     oldLineCell.appendChild(buttonContainer);
 
-    // Create content cell for hidden lines text - clickable to expand all
-    const contentCell = document.createElement('td');
-    contentCell.className = 'diff-code expand-content clickable-expand';
-    contentCell.colSpan = 2;
-    contentCell.title = 'Expand all';
-
-    const contentWrapper = document.createElement('div');
-    contentWrapper.className = 'expand-content-wrapper';
-
-    const expandIcon = document.createElement('span');
-    expandIcon.className = 'expand-icon';
-    expandIcon.innerHTML = HunkParser.FOLD_UP_DOWN_ICON;
-
-    const expandInfo = document.createElement('span');
-    expandInfo.className = 'expand-info';
-    expandInfo.textContent = `${gapSize} hidden lines`;
-
-    contentWrapper.appendChild(expandIcon);
-    contentWrapper.appendChild(expandInfo);
-    contentCell.appendChild(contentWrapper);
-
-    // Make content cell clickable to expand all
-    contentCell.addEventListener('click', (e) => {
-      const row = e.currentTarget.closest('tr');
-      const hiddenCount = parseInt(expandControls.dataset.hiddenCount) || gapSize;
-      expandCallback(row.expandControls, 'all', hiddenCount);
-    });
+    // Create content cell using helper
+    const contentCell = HunkParser.createContentCell(gapSize, expandControls, expandCallback);
 
     // Store expand controls reference on row
     row.expandControls = expandControls;
@@ -236,63 +287,19 @@ class HunkParser {
     const row = document.createElement('tr');
     row.className = 'context-expand-row';
 
-    // Create line number cells
-    const oldLineCell = document.createElement('td');
-    oldLineCell.className = 'diff-line-num';
-    oldLineCell.style.padding = '0';
-    oldLineCell.style.textAlign = 'center';
+    // Create line number cells using helper
+    const { oldLineCell, newLineCell } = HunkParser.createLineNumberCells();
 
-    const newLineCell = document.createElement('td');
-    newLineCell.className = 'diff-line-num';
-    newLineCell.style.padding = '0';
-    newLineCell.style.textAlign = 'center';
+    // Create expand controls with metadata using helper
+    const expandControls = HunkParser.createExpandControlsElement(fileName, startLine, endLine, gapSize, position);
 
-    const buttonContainer = document.createElement('div');
-    buttonContainer.className = 'expand-button-container';
-
-    // Create expand controls with metadata
-    const expandControls = document.createElement('div');
-    expandControls.className = 'context-expand-controls';
-    expandControls.dataset.fileName = fileName;
-    expandControls.dataset.startLine = startLine;
-    expandControls.dataset.endLine = endLine;
-    expandControls.dataset.hiddenCount = gapSize;
-    expandControls.dataset.position = position;
-    expandControls.dataset.isGap = 'true';
-
-    // Create expand button
-    const expandBtn = document.createElement('button');
-    expandBtn.className = 'expand-button expand-all-short';
-    expandBtn.title = `Expand ${gapSize} lines`;
-    expandBtn.innerHTML = HunkParser.FOLD_UP_DOWN_ICON;
-    expandBtn.addEventListener('click', () => expandCallback(expandControls, 'all', gapSize));
-    buttonContainer.appendChild(expandBtn);
+    // Create expand buttons using helper
+    // Note: This always uses 'between' position logic since partial expansions show expand-all
+    const buttonContainer = HunkParser.createExpandButtons(gapSize, position, expandControls, expandCallback);
     oldLineCell.appendChild(buttonContainer);
 
-    // Create content cell
-    const contentCell = document.createElement('td');
-    contentCell.className = 'diff-code expand-content clickable-expand';
-    contentCell.colSpan = 2;
-    contentCell.title = 'Expand all';
-
-    const contentWrapper = document.createElement('div');
-    contentWrapper.className = 'expand-content-wrapper';
-
-    const expandIcon = document.createElement('span');
-    expandIcon.className = 'expand-icon';
-    expandIcon.innerHTML = HunkParser.FOLD_UP_DOWN_ICON;
-
-    const expandInfo = document.createElement('span');
-    expandInfo.className = 'expand-info';
-    expandInfo.textContent = `${gapSize} hidden lines`;
-
-    contentWrapper.appendChild(expandIcon);
-    contentWrapper.appendChild(expandInfo);
-    contentCell.appendChild(contentWrapper);
-
-    contentCell.addEventListener('click', () => {
-      expandCallback(expandControls, 'all', gapSize);
-    });
+    // Create content cell using helper
+    const contentCell = HunkParser.createContentCell(gapSize, expandControls, expandCallback);
 
     row.expandControls = expandControls;
     row.appendChild(oldLineCell);
