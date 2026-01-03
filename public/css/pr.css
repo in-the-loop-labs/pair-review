@@ -2805,7 +2805,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   padding: 12px;
   border: 1px solid #d1d9e0;
   border-radius: 6px;
-  font-family: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--font-github);
   font-size: 14px;
   line-height: 1.5;
   resize: vertical;
@@ -3094,7 +3094,7 @@ tr.line-range-start .d2h-code-line-ctn {
   padding: 8px 12px;
   border: 1px solid #d1d9e0;
   border-radius: 6px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  font-family: var(--font-github);
   font-size: 14px;
   line-height: 1.5;
   resize: vertical;
@@ -3472,8 +3472,9 @@ tr.line-range-start .d2h-code-line-ctn {
   padding: 8px;
   border: 2px solid #8b5cf6;
   border-radius: 6px;
-  font-family: inherit;
-  font-size: 13px;
+  font-family: var(--font-github);
+  font-size: 14px;
+  line-height: 1.5;
   resize: vertical;
   background: white;
   transition: border-color 0.2s;
@@ -3619,8 +3620,9 @@ tr.line-range-start .d2h-code-line-ctn {
   padding: 6px 12px;
   border: 1px solid #d1d9e0;
   border-radius: 6px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+  font-family: var(--font-github);
   font-size: 14px;
+  line-height: 1.5;
   resize: none;
 }
 
@@ -4678,6 +4680,13 @@ tr.line-range-start .d2h-code-line-ctn {
   --radius-md: 6px;
   --radius-lg: 8px;
   --radius-xl: 12px;
+
+  /* Toolbar branch width - sized to fit typical branch names like "feature/ABC-123-description" */
+  --toolbar-branch-max-width: 180px;
+  --toolbar-branch-max-width-mobile: 120px;
+
+  /* GitHub font stack for comment textareas */
+  --font-github: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
 }
 
 /* Apply font stack globally and prevent document-level scrolling */
@@ -4835,15 +4844,6 @@ body::before {
   border: 1px solid var(--color-border-secondary);
 }
 
-.header-icon-group .btn-icon {
-  border: none;
-  background: transparent;
-}
-
-.header-icon-group .btn-icon:hover {
-  background: var(--color-bg-tertiary);
-}
-
 /* Header buttons */
 .header .btn {
   display: inline-flex;
@@ -4866,6 +4866,17 @@ body::before {
   width: 36px;
   height: 36px;
   justify-content: center;
+}
+
+/* Icon buttons within the icon group have special styling (no border, transparent bg)
+   This selector is more specific than .header .btn-icon to override properly */
+.header-icon-group .btn-icon {
+  border: none;
+  background: transparent;
+}
+
+.header-icon-group .btn-icon:hover {
+  background: var(--color-bg-tertiary);
 }
 
 .header .btn-secondary {
@@ -5096,7 +5107,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   gap: 4px;
   color: var(--color-text-tertiary);
   font-size: 0.75rem;
-  max-width: 180px;
+  max-width: var(--toolbar-branch-max-width);
   overflow: hidden;
 }
 
@@ -5197,25 +5208,122 @@ body:not([data-theme="dark"]) .theme-icon-light {
   font-size: 0.8125rem;
 }
 
+/* Toolbar icon buttons - base styling for icon-only buttons in toolbar */
+.toolbar-actions .btn-icon {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.toolbar-actions .btn-icon:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-secondary);
+}
+
+/* Small icon buttons in toolbar have reduced dimensions */
 .toolbar-actions .btn-sm.btn-icon {
   padding: 6px;
   width: 32px;
   height: 32px;
 }
 
-.toolbar-actions .btn-sm .analyze-icon {
-  color: var(--ai-primary);
+/* Magical Analyze Button - Amber AI CTA */
+#analyze-btn {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border: 1px solid #fcd34d;
+  color: #b45309;
+  font-weight: 600;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s ease;
 }
 
-.toolbar-actions .btn.btn-analyzing {
-  background: var(--ai-primary);
-  border-color: var(--ai-primary);
-  color: #ffffff;
+#analyze-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.4) 50%,
+    transparent 100%
+  );
+  transition: left 0.5s ease;
 }
 
-.toolbar-actions .btn.btn-analyzing .analyze-icon {
+#analyze-btn:hover {
+  background: linear-gradient(135deg, #fde68a 0%, #fcd34d 100%);
+  border-color: #f59e0b;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.4), 0 0 32px rgba(245, 158, 11, 0.2);
+  transform: translateY(-1px);
+}
+
+#analyze-btn:hover::before {
+  left: 100%;
+}
+
+#analyze-btn .analyze-icon {
+  color: #d97706;
+  filter: drop-shadow(0 0 2px rgba(217, 119, 6, 0.5));
+}
+
+#analyze-btn:hover .analyze-icon {
+  animation: sparkle-float 0.6s ease-in-out infinite;
+}
+
+@keyframes sparkle-float {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-2px) rotate(5deg); }
+}
+
+/* Dark theme adjustments */
+[data-theme="dark"] #analyze-btn {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.15) 0%, rgba(245, 158, 11, 0.25) 100%);
+  border-color: rgba(251, 191, 36, 0.4);
+  color: #fbbf24;
+}
+
+[data-theme="dark"] #analyze-btn:hover {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.25) 0%, rgba(245, 158, 11, 0.35) 100%);
+  border-color: #f59e0b;
+  box-shadow: 0 0 20px rgba(251, 191, 36, 0.3), 0 0 40px rgba(245, 158, 11, 0.15);
+}
+
+[data-theme="dark"] #analyze-btn .analyze-icon {
+  color: #fbbf24;
+  filter: drop-shadow(0 0 3px rgba(251, 191, 36, 0.6));
+}
+
+/* Analyzing state - more intense glow */
+#analyze-btn.btn-analyzing {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  border-color: #b45309;
   color: #ffffff;
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.5), 0 0 40px rgba(217, 119, 6, 0.3);
+}
+
+#analyze-btn.btn-analyzing .analyze-icon {
+  color: #ffffff;
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.8));
   animation: pulse-sparkle 1.2s ease-in-out infinite;
+}
+
+[data-theme="dark"] #analyze-btn.btn-analyzing {
+  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+  border-color: #f59e0b;
+  color: #1c1917;
+  box-shadow: 0 0 24px rgba(251, 191, 36, 0.6), 0 0 48px rgba(245, 158, 11, 0.3);
+}
+
+[data-theme="dark"] #analyze-btn.btn-analyzing .analyze-icon {
+  color: #1c1917;
 }
 
 .main-layout .diff-container {
@@ -5263,23 +5371,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   }
 }
 
-/* Toolbar button styling (for AI panel toggle and other toolbar buttons) */
-.toolbar-actions .btn-icon {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-primary);
-  color: var(--color-text-secondary);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.toolbar-actions .btn-icon:hover {
-  background: var(--color-bg-tertiary);
-  color: var(--color-text-primary);
-  border-color: var(--color-border-secondary);
-}
-
-/* Dark theme toolbar button fixes */
+/* Dark theme toolbar button overrides */
 [data-theme="dark"] .toolbar-actions .btn-icon {
   background: var(--color-bg-tertiary);
   border-color: var(--color-border-secondary);
@@ -5602,6 +5694,17 @@ body:not([data-theme="dark"]) .theme-icon-light {
 
 /* --------------------------------------------------------------------------
    Responsive Design for New Layout
+   --------------------------------------------------------------------------
+
+   Standard Breakpoints:
+   - 1400px: Large desktop - reduce AI panel width
+   - 1200px: Desktop - hide sidebar, show collapsed toggle
+   - 900px:  Small desktop/large tablet - hide AI panel and header center
+   - 768px:  Tablet - hide breadcrumb, simplify toolbar (hide separator/commit)
+   - 480px:  Mobile - (reserved for future mobile-specific styles)
+
+   Note: toolbar-meta remains visible on small screens for essential PR context,
+   but non-essential items like separator and commit info are hidden at 768px.
    -------------------------------------------------------------------------- */
 @media (max-width: 1400px) {
   :root {
@@ -5645,7 +5748,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   }
 
   .toolbar-branch {
-    max-width: 120px;
+    max-width: var(--toolbar-branch-max-width-mobile);
   }
 }
 

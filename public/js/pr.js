@@ -453,9 +453,9 @@ class PRManager {
     const branchContainer = document.getElementById('pr-branch');
     if (branchName) {
       branchName.textContent = pr.head_branch;
-      // Set tooltip with full branch info
+      // Set tooltip with full branch info (base <- head, showing merge direction)
       if (branchContainer) {
-        branchContainer.title = `${pr.head_branch} -> ${pr.base_branch}`;
+        branchContainer.title = `${pr.base_branch} <- ${pr.head_branch}`;
       }
     }
 
