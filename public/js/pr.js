@@ -515,7 +515,7 @@ class PRManager {
     // Check if this is a generated file
     const isGenerated = file.generated || this.generatedFiles.has(file.file);
     if (isGenerated) {
-      wrapper.classList.add('collapsed');
+      wrapper.classList.add('generated-file', 'collapsed');
     }
 
     // Create file header
