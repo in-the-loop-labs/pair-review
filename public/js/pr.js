@@ -462,6 +462,12 @@ class PRManager {
         });
       }
     }
+
+    // Update GitHub link
+    const githubLink = document.getElementById('github-link');
+    if (githubLink && pr.html_url) {
+      githubLink.href = pr.html_url;
+    }
   }
 
   /**
@@ -2060,8 +2066,9 @@ class PRManager {
   updateThemeIcon() {
     const themeButton = document.getElementById('theme-toggle');
     if (themeButton) {
+      // Sun icon for light mode, moon icon for dark mode
       const icon = this.currentTheme === 'light' ?
-        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13Z"/></svg>` :
+        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13Zm8-5a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM0 8a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5H.75A.75.75 0 0 1 0 8Zm11.535-5.535a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Zm-9.192 9.192a.75.75 0 0 1 0 1.06l-.353.354a.75.75 0 0 1-1.061-1.06l.353-.354a.75.75 0 0 1 1.06 0Zm9.192 0a.75.75 0 0 1 1.06 0l.354.354a.75.75 0 0 1-1.06 1.06l-.354-.354a.75.75 0 0 1 0-1.06ZM3.404 3.404a.75.75 0 0 1 1.06 0l.354.353a.75.75 0 0 1-1.06 1.061l-.354-.353a.75.75 0 0 1 0-1.06Z"/></svg>` :
         `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.598 1.591a.749.749 0 0 1 .785-.175 7.001 7.001 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Z"/></svg>`;
       themeButton.innerHTML = icon;
       themeButton.title = `Switch to ${this.currentTheme === 'light' ? 'dark' : 'light'} mode`;
