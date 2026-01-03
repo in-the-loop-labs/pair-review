@@ -14,48 +14,50 @@ import sqlite3 from 'sqlite3';
  * mocked to ensure tests are fast, deterministic, and isolated.
  */
 
-// Create mock instances that we can control
-const mockGitHubClient = {
-  fetchPullRequest: vi.fn().mockResolvedValue({
-    title: 'Test PR',
-    body: 'Test description',
-    author: 'testuser',
-    base_branch: 'main',
-    head_branch: 'feature-branch',
-    state: 'open',
-    base_sha: 'abc123',
-    head_sha: 'def456',
-    node_id: 'PR_node123',
-    html_url: 'https://github.com/owner/repo/pull/1',
-    additions: 10,
-    deletions: 5
-  }),
-  validateToken: vi.fn().mockResolvedValue(true),
-  repositoryExists: vi.fn().mockResolvedValue(true),
-  createReviewGraphQL: vi.fn().mockResolvedValue({
-    id: 12345,
-    html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
-    comments_count: 2,
-    submitted_at: new Date().toISOString(),
-    state: 'APPROVED'
-  }),
-  createDraftReviewGraphQL: vi.fn().mockResolvedValue({
-    id: 12346,
-    html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
-    comments_count: 2,
-    state: 'PENDING'
-  })
-};
-
-const mockWorktreeManager = {
-  getWorktreePath: vi.fn().mockResolvedValue('/tmp/worktree/test'),
-  worktreeExists: vi.fn().mockResolvedValue(true),
-  generateUnifiedDiff: vi.fn().mockResolvedValue('diff --git a/file.js b/file.js\n--- a/file.js\n+++ b/file.js\n@@ -1,3 +1,4 @@\n+// New line\n line1\n line2\n line3'),
-  getChangedFiles: vi.fn().mockResolvedValue([{ file: 'file.js', additions: 1, deletions: 0 }]),
-  updateWorktree: vi.fn().mockResolvedValue('/tmp/worktree/test'),
-  createWorktreeForPR: vi.fn().mockResolvedValue('/tmp/worktree/test'),
-  pathExists: vi.fn().mockResolvedValue(true)
-};
+// Use vi.hoisted() to define mock objects before vi.mock() runs
+// This is necessary because vi.mock() is hoisted to the top of the file
+const { mockGitHubClient, mockWorktreeManager } = vi.hoisted(() => ({
+  mockGitHubClient: {
+    fetchPullRequest: vi.fn().mockResolvedValue({
+      title: 'Test PR',
+      body: 'Test description',
+      author: 'testuser',
+      base_branch: 'main',
+      head_branch: 'feature-branch',
+      state: 'open',
+      base_sha: 'abc123',
+      head_sha: 'def456',
+      node_id: 'PR_node123',
+      html_url: 'https://github.com/owner/repo/pull/1',
+      additions: 10,
+      deletions: 5
+    }),
+    validateToken: vi.fn().mockResolvedValue(true),
+    repositoryExists: vi.fn().mockResolvedValue(true),
+    createReviewGraphQL: vi.fn().mockResolvedValue({
+      id: 12345,
+      html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
+      comments_count: 2,
+      submitted_at: new Date().toISOString(),
+      state: 'APPROVED'
+    }),
+    createDraftReviewGraphQL: vi.fn().mockResolvedValue({
+      id: 12346,
+      html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
+      comments_count: 2,
+      state: 'PENDING'
+    })
+  },
+  mockWorktreeManager: {
+    getWorktreePath: vi.fn().mockResolvedValue('/tmp/worktree/test'),
+    worktreeExists: vi.fn().mockResolvedValue(true),
+    generateUnifiedDiff: vi.fn().mockResolvedValue('diff --git a/file.js b/file.js\n--- a/file.js\n+++ b/file.js\n@@ -1,3 +1,4 @@\n+// New line\n line1\n line2\n line3'),
+    getChangedFiles: vi.fn().mockResolvedValue([{ file: 'file.js', additions: 1, deletions: 0 }]),
+    updateWorktree: vi.fn().mockResolvedValue('/tmp/worktree/test'),
+    createWorktreeForPR: vi.fn().mockResolvedValue('/tmp/worktree/test'),
+    pathExists: vi.fn().mockResolvedValue(true)
+  }
+}));
 
 // Mock external dependencies before importing the routes
 vi.mock('../../src/github/client', () => ({
