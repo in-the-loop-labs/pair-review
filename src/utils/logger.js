@@ -27,6 +27,20 @@ const COLORS = {
 class AILogger {
   constructor() {
     this.enabled = true;
+    this.debugEnabled = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
+  }
+
+  /**
+   * Log debug message (only shown when DEBUG=true)
+   */
+  debug(message) {
+    if (!this.enabled || !this.debugEnabled) return;
+    const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+    process.stdout.write(
+      `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
+      `${COLORS.dim}[AI DBG]${COLORS.reset} ` +
+      `${COLORS.dim}${message}${COLORS.reset}\n`
+    );
   }
 
   /**

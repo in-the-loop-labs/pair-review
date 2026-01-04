@@ -9,43 +9,24 @@ class AnalysisConfigModal {
     this.onSubmit = null;
     this.onCancel = null;
     this.escapeHandler = null;
+    this.selectedProvider = 'claude';
     this.selectedModel = 'sonnet';
     this.selectedPresets = new Set();
     this.rememberModel = false;
     this.repoInstructions = '';
     this.lastInstructions = '';
+    this.providersLoaded = false;
 
     // Character limit constants (must match backend limit)
     this.CHAR_LIMIT = 5000;
     this.CHAR_WARNING_THRESHOLD = 4500;
 
-    this.models = [
-      {
-        id: 'haiku',
-        name: 'Haiku',
-        tagline: 'Lightning Fast',
-        description: 'Quick analysis for simple changes',
-        badge: 'Fastest',
-        badgeClass: 'badge-speed'
-      },
-      {
-        id: 'sonnet',
-        name: 'Sonnet',
-        tagline: 'Best Balance',
-        description: 'Recommended for most reviews',
-        badge: 'Recommended',
-        badgeClass: 'badge-recommended',
-        default: true
-      },
-      {
-        id: 'opus',
-        name: 'Opus',
-        tagline: 'Most Capable',
-        description: 'Deep analysis for complex code',
-        badge: 'Most Thorough',
-        badgeClass: 'badge-power'
-      }
-    ];
+    // Provider definitions - loaded from backend API
+    // Initialize empty, will be populated by loadProviders()
+    this.providers = {};
+
+    // Models for current provider (updated when provider changes)
+    this.models = [];
 
     this.presets = [
       { id: 'security', label: 'Security', instruction: 'Focus on security vulnerabilities, injection risks, and authentication issues.' },
@@ -56,6 +37,52 @@ class AnalysisConfigModal {
 
     this.createModal();
     this.setupEventListeners();
+  }
+
+  /**
+   * Load provider definitions from the backend API
+   * This makes the backend the single source of truth for provider/model configs
+   * @returns {Promise<void>}
+   */
+  async loadProviders() {
+    if (this.providersLoaded) return;
+
+    try {
+      const response = await fetch('/api/providers');
+      if (!response.ok) {
+        throw new Error('Failed to fetch providers');
+      }
+
+      const data = await response.json();
+
+      // Convert array to object keyed by provider id
+      this.providers = {};
+      for (const provider of data.providers) {
+        this.providers[provider.id] = provider;
+      }
+
+      this.providersLoaded = true;
+
+      // Update models for current provider
+      if (this.providers[this.selectedProvider]) {
+        this.models = this.providers[this.selectedProvider].models;
+      }
+    } catch (error) {
+      console.error('Error loading providers:', error);
+      // Fall back to minimal defaults if API fails
+      this.providers = {
+        claude: {
+          id: 'claude',
+          name: 'Claude',
+          models: [
+            { id: 'sonnet', name: 'Sonnet', tier: 'balanced', default: true }
+          ],
+          defaultModel: 'sonnet'
+        }
+      };
+      this.models = this.providers.claude.models;
+      this.providersLoaded = true;
+    }
   }
 
   /**
@@ -99,32 +126,28 @@ class AnalysisConfigModal {
         </div>
 
         <div class="modal-body analysis-config-body">
+          <!-- Provider Selection -->
+          <section class="config-section">
+            <h4 class="section-title">
+              AI Provider
+            </h4>
+            <div class="provider-toggle" id="provider-toggle-container">
+              <!-- Provider buttons rendered dynamically -->
+            </div>
+          </section>
+
           <!-- Model Selection -->
           <section class="config-section">
             <h4 class="section-title">
               Select Model
             </h4>
-            <div class="model-cards">
-              ${this.models.map(model => `
-                <button class="model-card ${model.default ? 'selected' : ''}" data-model="${model.id}">
-                  <div class="model-badge ${model.badgeClass}">${model.badge}</div>
-                  <div class="model-info">
-                    <span class="model-name">${model.name}</span>
-                    <span class="model-tagline">${model.tagline}</span>
-                  </div>
-                  <p class="model-description">${model.description}</p>
-                  <div class="model-selected-indicator">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-                    </svg>
-                  </div>
-                </button>
-              `).join('')}
+            <div class="model-cards" id="model-cards-container">
+              <!-- Model cards rendered dynamically -->
             </div>
             <label class="remember-toggle">
               <input type="checkbox" id="remember-model" />
               <span class="toggle-switch"></span>
-              <span class="toggle-label">Remember model choice for this repository</span>
+              <span class="toggle-label">Remember choices for this repository</span>
             </label>
           </section>
 
@@ -210,13 +233,9 @@ class AnalysisConfigModal {
 
   /**
    * Setup event listeners
+   * Note: Provider buttons and model cards have their listeners attached in their render methods
    */
   setupEventListeners() {
-    // Model card selection
-    this.modal.querySelectorAll('.model-card').forEach(card => {
-      card.addEventListener('click', () => this.selectModel(card.dataset.model));
-    });
-
     // Preset chip toggle
     this.modal.querySelectorAll('.preset-chip').forEach(chip => {
       chip.addEventListener('click', () => this.togglePreset(chip.dataset.preset));
@@ -262,6 +281,94 @@ class AnalysisConfigModal {
       }
     };
     // Note: Event listener is added in show() and removed in hide() to prevent memory leaks
+  }
+
+  /**
+   * Render provider toggle buttons into the container
+   */
+  renderProviderButtons() {
+    const container = this.modal.querySelector('#provider-toggle-container');
+    if (!container) return;
+
+    const providerIds = Object.keys(this.providers);
+    container.innerHTML = providerIds.map(providerId => {
+      const provider = this.providers[providerId];
+      return `
+        <button class="provider-btn ${providerId === this.selectedProvider ? 'selected' : ''}" data-provider="${providerId}">
+          ${provider.name}
+        </button>
+      `;
+    }).join('');
+
+    // Re-attach event listeners
+    container.querySelectorAll('.provider-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.selectProvider(btn.dataset.provider));
+    });
+  }
+
+  /**
+   * Render model cards into the container
+   */
+  renderModelCards() {
+    const container = this.modal.querySelector('#model-cards-container');
+    if (!container) return;
+
+    container.innerHTML = this.models.map(model => `
+      <button class="model-card ${model.id === this.selectedModel ? 'selected' : ''}" data-model="${model.id}" data-tier="${model.tier}">
+        <div class="model-badge ${model.badgeClass || ''}">${model.badge || ''}</div>
+        <div class="model-info">
+          <span class="model-name">${model.name}</span>
+          <span class="model-tagline">${model.tagline || ''}</span>
+        </div>
+        <p class="model-description">${model.description || ''}</p>
+        <div class="model-selected-indicator">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
+          </svg>
+        </div>
+      </button>
+    `).join('');
+
+    // Attach event listeners
+    container.querySelectorAll('.model-card').forEach(card => {
+      card.addEventListener('click', () => this.selectModel(card.dataset.model));
+    });
+  }
+
+  /**
+   * Select a provider and update model cards
+   */
+  selectProvider(providerId) {
+    if (!this.providers[providerId]) return;
+
+    this.selectedProvider = providerId;
+    this.models = this.providers[providerId].models;
+
+    // Find the model with same tier as currently selected, or use default
+    const currentModel = this.models.find(m => m.id === this.selectedModel);
+    if (!currentModel) {
+      // Current model doesn't exist in new provider, find one with same tier
+      const currentTier = Object.values(this.providers)
+        .flatMap(p => p.models)
+        .find(m => m.id === this.selectedModel)?.tier;
+
+      const matchingModel = this.models.find(m => m.tier === currentTier);
+      const defaultModel = this.models.find(m => m.default) || this.models[0];
+      this.selectedModel = matchingModel?.id || defaultModel.id;
+    }
+
+    // Update provider buttons
+    this.modal.querySelectorAll('.provider-btn').forEach(btn => {
+      btn.classList.toggle('selected', btn.dataset.provider === providerId);
+    });
+
+    // Re-render model cards (handles its own event listeners)
+    this.renderModelCards();
+
+    // Update selection state for the selected model
+    if (this.selectedModel) {
+      this.selectModel(this.selectedModel);
+    }
   }
 
   /**
@@ -369,6 +476,7 @@ class AnalysisConfigModal {
    */
   handleSubmit() {
     const config = {
+      provider: this.selectedProvider,
       model: this.selectedModel,
       instructions: this.buildInstructions(),
       customInstructions: this.modal.querySelector('#custom-instructions')?.value?.trim() || '',
@@ -388,6 +496,7 @@ class AnalysisConfigModal {
   /**
    * Show the modal
    * @param {Object} options - Configuration options
+   * @param {string} options.currentProvider - Currently selected provider
    * @param {string} options.currentModel - Currently selected model
    * @param {string} options.repoInstructions - Default instructions from repo settings
    * @param {string} options.lastInstructions - Last used custom instructions
@@ -395,8 +504,15 @@ class AnalysisConfigModal {
    * @param {Function} options.onSubmit - Callback when analysis is started
    * @returns {Promise<Object|null>} Promise that resolves to config or null if cancelled
    */
-  show(options = {}) {
-    if (!this.modal) return Promise.resolve(null);
+  async show(options = {}) {
+    if (!this.modal) return null;
+
+    // Load providers from backend before showing modal
+    await this.loadProviders();
+
+    // Render provider buttons and model cards now that we have provider data
+    this.renderProviderButtons();
+    this.renderModelCards();
 
     return new Promise((resolve) => {
       // Store callbacks
@@ -407,7 +523,13 @@ class AnalysisConfigModal {
         resolve(null);
       };
 
-      // Set initial values
+      // Set initial provider and model
+      if (options.currentProvider && this.providers[options.currentProvider]) {
+        this.selectProvider(options.currentProvider);
+      } else if (Object.keys(this.providers).length > 0) {
+        // Default to first available provider
+        this.selectProvider(Object.keys(this.providers)[0]);
+      }
       if (options.currentModel) {
         this.selectModel(options.currentModel);
       }

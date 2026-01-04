@@ -1,4 +1,4 @@
-const ClaudeCLI = require('./claude-cli');
+const { createProvider } = require('./index');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs').promises;
@@ -10,9 +10,15 @@ const { extractJSON } = require('../utils/json-extractor');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 
 class Analyzer {
-  constructor(database, model = 'sonnet') {
-    // Store model for creating separate ClaudeCLI instances per level
+  /**
+   * @param {Object} database - Database instance
+   * @param {string} model - Model to use (e.g., 'sonnet', 'gemini-2.5-pro')
+   * @param {string} provider - Provider ID (e.g., 'claude', 'gemini'). Defaults to 'claude'.
+   */
+  constructor(database, model = 'sonnet', provider = 'claude') {
+    // Store model and provider for creating provider instances per level
     this.model = model;
+    this.provider = provider;
     this.db = database;
     this.testContextCache = new Map(); // Cache test detection results per worktree
   }
@@ -250,8 +256,8 @@ Or simply ignore any changes to files matching these patterns in your analysis.
     logger.info('[Level 1] Analysis Starting');
 
     try {
-      // Create separate ClaudeCLI instance for this level
-      const claude = new ClaudeCLI(this.model);
+      // Create provider instance for this level
+      const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
         const progress = `Level 1: ${step}...`;
@@ -267,12 +273,12 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       };
 
       // Build the Level 1 prompt
-      updateProgress('Building prompt for Claude to analyze changes');
+      updateProgress('Building prompt for AI to analyze changes');
       const prompt = this.buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions);
 
       // Execute Claude CLI in the worktree directory
-      updateProgress('Running Claude to analyze changes in isolation');
-      const response = await claude.execute(prompt, {
+      updateProgress('Running AI to analyze changes in isolation');
+      const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 1
         level: 1
@@ -774,8 +780,8 @@ Output JSON with this structure:
     logger.info('[Level 2] Analysis Starting');
 
     try {
-      // Create separate ClaudeCLI instance for this level
-      const claude = new ClaudeCLI(this.model);
+      // Create provider instance for this level
+      const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
         const progress = `Level 2: ${step}...`;
@@ -791,12 +797,12 @@ Output JSON with this structure:
       };
 
       // Build the Level 2 prompt
-      updateProgress('Building prompt for Claude to analyze file context');
+      updateProgress('Building prompt for AI to analyze file context');
       const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions);
 
       // Execute Claude CLI in the worktree directory
-      updateProgress('Running Claude to analyze files in context');
-      const response = await claude.execute(prompt, {
+      updateProgress('Running AI to analyze files in context');
+      const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 2
         level: 2
@@ -857,8 +863,8 @@ Output JSON with this structure:
     logger.info('[Level 3] Analysis Starting');
 
     try {
-      // Create separate ClaudeCLI instance for this level
-      const claude = new ClaudeCLI(this.model);
+      // Create provider instance for this level
+      const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
         const progress = `Level 3: ${step}...`;
@@ -878,12 +884,12 @@ Output JSON with this structure:
       const testingContext = await this.detectTestingContext(worktreePath, prMetadata);
 
       // Build the Level 3 prompt with test context
-      updateProgress('Building prompt for Claude to analyze codebase impact');
+      updateProgress('Building prompt for AI to analyze codebase impact');
       const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions);
 
       // Execute Claude CLI for Level 3 analysis
-      updateProgress('Running Claude to analyze codebase-wide implications');
-      const response = await claude.execute(prompt, {
+      updateProgress('Running AI to analyze codebase-wide implications');
+      const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 3
         level: 3
@@ -946,8 +952,8 @@ Output JSON with this structure:
     logger.info(`Worktree path: ${worktreePath}`);
 
     try {
-      // Create separate ClaudeCLI instance
-      const claude = new ClaudeCLI(this.model);
+      // Create provider instance for this level
+      const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
         const progress = `Level 2: ${step}...`;
@@ -967,8 +973,8 @@ Output JSON with this structure:
       const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata);
 
       // Step 2: Execute Claude CLI in the worktree directory (single invocation)
-      updateProgress('Running Claude to analyze all changed files in context');
-      const response = await claude.execute(prompt, {
+      updateProgress('Running AI to analyze all changed files in context');
+      const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 2 - analyze all files in one go
         level: 2
@@ -1283,8 +1289,8 @@ Output JSON with this structure:
     logger.info(`Worktree path: ${worktreePath}`);
 
     try {
-      // Create separate ClaudeCLI instance
-      const claude = new ClaudeCLI(this.model);
+      // Create provider instance for this level
+      const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
         const progress = `Level 3: ${step}...`;
@@ -1308,8 +1314,8 @@ Output JSON with this structure:
       const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext);
 
       // Step 2: Execute Claude CLI for Level 3 analysis
-      updateProgress('Running Claude to analyze codebase-wide implications');
-      const response = await claude.execute(prompt, {
+      updateProgress('Running AI to analyze codebase-wide implications');
+      const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 900000, // 15 minutes for Level 3 - full codebase exploration
         level: 3
@@ -1469,15 +1475,15 @@ Output JSON with this structure:
     logger.info(`[Orchestration] Orchestrating ${totalSuggestions} total suggestions across all levels`);
 
     try {
-      // Create separate ClaudeCLI instance for orchestration
-      const claude = new ClaudeCLI(this.model);
+      // Create provider instance for orchestration
+      const aiProvider = createProvider(this.provider, this.model);
 
       // Build the orchestration prompt
       const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions);
 
       // Execute Claude CLI for orchestration
       logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
-      const response = await claude.execute(prompt, {
+      const response = await aiProvider.execute(prompt, {
         timeout: 300000, // 5 minutes for orchestration
         level: 'orchestration'
       });

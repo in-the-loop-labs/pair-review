@@ -1,26 +1,62 @@
+/**
+ * Claude AI Provider
+ *
+ * Wraps the Claude CLI for use with the AI provider abstraction.
+ */
+
 const { spawn } = require('child_process');
-const path = require('path');
+const { AIProvider, registerProvider } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 
-class ClaudeCLI {
+/**
+ * Claude model definitions with tier mappings
+ */
+const CLAUDE_MODELS = [
+  {
+    id: 'haiku',
+    name: 'Haiku',
+    tier: 'fast',
+    tagline: 'Lightning Fast',
+    description: 'Quick analysis for simple changes',
+    badge: 'Fastest',
+    badgeClass: 'badge-speed'
+  },
+  {
+    id: 'sonnet',
+    name: 'Sonnet',
+    tier: 'balanced',
+    tagline: 'Best Balance',
+    description: 'Recommended for most reviews',
+    badge: 'Recommended',
+    badgeClass: 'badge-recommended',
+    default: true
+  },
+  {
+    id: 'opus',
+    name: 'Opus',
+    tier: 'thorough',
+    tagline: 'Most Capable',
+    description: 'Deep analysis for complex code',
+    badge: 'Most Thorough',
+    badgeClass: 'badge-power'
+  }
+];
+
+class ClaudeProvider extends AIProvider {
   constructor(model = 'sonnet') {
+    super(model);
+
     // Check for environment variable to override default command
-    // Use PAIR_REVIEW_CLAUDE_CMD environment variable if set, otherwise default to 'claude'
     const claudeCmd = process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
 
-    // Store model for use in commands
-    this.model = model;
-
-    // For multi-word commands like "devx claude", we need to use shell mode
+    // For multi-word commands like "devx claude", use shell mode
     this.useShell = claudeCmd.includes(' ');
 
     if (this.useShell) {
-      // Use the full command string with -p and --model appended
       this.command = `${claudeCmd} -p --model ${model}`;
       this.args = [];
     } else {
-      // Single command, use normal spawn mode
       this.command = claudeCmd;
       this.args = ['-p', '--model', model];
     }
@@ -34,7 +70,7 @@ class ClaudeCLI {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown' } = options; // 5 minute default timeout
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown' } = options;
 
       const levelPrefix = `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Claude CLI...`);
@@ -79,7 +115,7 @@ class ClaudeCLI {
       claude.on('close', (code) => {
         if (timeoutId) clearTimeout(timeoutId);
 
-        // Always log stderr if present (helps debug issues even on successful exit)
+        // Always log stderr if present
         if (stderr.trim()) {
           if (code !== 0) {
             logger.error(`${levelPrefix} Claude CLI stderr (exit code ${code}): ${stderr}`);
@@ -94,7 +130,7 @@ class ClaudeCLI {
           return;
         }
 
-        // Extract JSON from the text response using robust extraction strategies
+        // Extract JSON from the text response
         const extracted = extractJSON(stdout, level);
         if (extracted.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
@@ -113,26 +149,25 @@ class ClaudeCLI {
 
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Claude CLI not found. Please ensure Claude CLI is installed.`);
-          reject(new Error(`${levelPrefix} Claude CLI not found. Please install it and ensure it's in your PATH.`));
+          reject(new Error(`${levelPrefix} Claude CLI not found. ${ClaudeProvider.getInstallInstructions()}`));
         } else {
           logger.error(`${levelPrefix} Claude process error: ${error}`);
           reject(error);
         }
       });
 
-      // Send the prompt to stdin with backpressure handling
+      // Send the prompt to stdin
       claude.stdin.write(prompt, (err) => {
         if (err) {
           logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
           if (timeoutId) clearTimeout(timeoutId);
-          claude.kill('SIGTERM'); // Prevent resource leak
+          claude.kill('SIGTERM');
           reject(new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
         }
       });
       claude.stdin.end();
     });
   }
-
 
   /**
    * Test if Claude CLI is available
@@ -147,6 +182,29 @@ class ClaudeCLI {
       return false;
     }
   }
+
+  static getProviderName() {
+    return 'Claude';
+  }
+
+  static getProviderId() {
+    return 'claude';
+  }
+
+  static getModels() {
+    return CLAUDE_MODELS;
+  }
+
+  static getDefaultModel() {
+    return 'sonnet';
+  }
+
+  static getInstallInstructions() {
+    return 'Install Claude CLI: npm install -g @anthropic-ai/claude-code';
+  }
 }
 
-module.exports = ClaudeCLI;
+// Register this provider
+registerProvider('claude', ClaudeProvider);
+
+module.exports = ClaudeProvider;

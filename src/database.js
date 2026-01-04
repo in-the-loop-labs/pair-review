@@ -8,7 +8,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * Database schema SQL statements
@@ -112,6 +112,7 @@ const SCHEMA_SQL = {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       repository TEXT NOT NULL UNIQUE,
       default_instructions TEXT,
+      default_provider TEXT,
       default_model TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -219,6 +220,35 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 1 complete');
+  },
+
+  // Migration to version 2: adds default_provider column to repo_settings
+  2: async (db) => {
+    console.log('Running migration to schema version 2...');
+
+    // Helper to check if column exists
+    const columnExists = async (table, column) => {
+      return new Promise((resolve, reject) => {
+        db.all(`PRAGMA table_info(${table})`, (error, rows) => {
+          if (error) reject(error);
+          else resolve(rows ? rows.some(row => row.name === column) : false);
+        });
+      });
+    };
+
+    // Add default_provider column to repo_settings if it doesn't exist
+    const hasDefaultProvider = await columnExists('repo_settings', 'default_provider');
+    if (!hasDefaultProvider) {
+      await new Promise((resolve, reject) => {
+        db.run(`ALTER TABLE repo_settings ADD COLUMN default_provider TEXT`, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+      console.log('  Added default_provider column to repo_settings');
+    }
+
+    console.log('Migration to schema version 2 complete');
   }
 };
 
@@ -802,7 +832,7 @@ class RepoSettingsRepository {
    */
   async getRepoSettings(repository) {
     const row = await queryOne(this.db, `
-      SELECT id, repository, default_instructions, default_model, created_at, updated_at
+      SELECT id, repository, default_instructions, default_provider, default_model, created_at, updated_at
       FROM repo_settings
       WHERE repository = ?
     `, [repository]);
@@ -813,11 +843,11 @@ class RepoSettingsRepository {
   /**
    * Save settings for a repository (upsert)
    * @param {string} repository - Repository in owner/repo format
-   * @param {Object} settings - Settings object { default_instructions?, default_model? }
+   * @param {Object} settings - Settings object { default_instructions?, default_provider?, default_model? }
    * @returns {Promise<Object>} Saved settings object
    */
   async saveRepoSettings(repository, settings) {
-    const { default_instructions, default_model } = settings;
+    const { default_instructions, default_provider, default_model } = settings;
     const now = new Date().toISOString();
 
     // Check if settings already exist
@@ -828,11 +858,13 @@ class RepoSettingsRepository {
       await run(this.db, `
         UPDATE repo_settings
         SET default_instructions = ?,
+            default_provider = ?,
             default_model = ?,
             updated_at = ?
         WHERE repository = ?
       `, [
         default_instructions !== undefined ? default_instructions : existing.default_instructions,
+        default_provider !== undefined ? default_provider : existing.default_provider,
         default_model !== undefined ? default_model : existing.default_model,
         now,
         repository
@@ -841,20 +873,22 @@ class RepoSettingsRepository {
       return {
         ...existing,
         default_instructions: default_instructions !== undefined ? default_instructions : existing.default_instructions,
+        default_provider: default_provider !== undefined ? default_provider : existing.default_provider,
         default_model: default_model !== undefined ? default_model : existing.default_model,
         updated_at: now
       };
     } else {
       // Insert new settings
       const result = await run(this.db, `
-        INSERT INTO repo_settings (repository, default_instructions, default_model, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-      `, [repository, default_instructions || null, default_model || null, now, now]);
+        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [repository, default_instructions || null, default_provider || null, default_model || null, now, now]);
 
       return {
         id: result.lastID,
         repository,
         default_instructions: default_instructions || null,
+        default_provider: default_provider || null,
         default_model: default_model || null,
         created_at: now,
         updated_at: now

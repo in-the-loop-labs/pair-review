@@ -3,12 +3,14 @@
  *
  * Handles all configuration-related endpoints:
  * - User configuration (theme, comment button action)
- * - Repository-specific settings (default instructions, default model)
+ * - Repository-specific settings (default instructions, default model, default provider)
  * - Review settings for PRs
+ * - AI provider information
  */
 
 const express = require('express');
 const { RepoSettingsRepository, ReviewRepository } = require('../database');
+const { getAllProvidersInfo, testProviderAvailability } = require('../ai');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -77,7 +79,7 @@ router.patch('/api/config', async (req, res) => {
 
 /**
  * Get repository-specific settings
- * Returns default_instructions and default_model for the repository
+ * Returns default_instructions, default_provider, and default_model for the repository
  */
 router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
@@ -93,6 +95,7 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
       return res.json({
         repository,
         default_instructions: null,
+        default_provider: null,
         default_model: null
       });
     }
@@ -100,6 +103,7 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
     res.json({
       repository: settings.repository,
       default_instructions: settings.default_instructions,
+      default_provider: settings.default_provider,
       default_model: settings.default_model,
       created_at: settings.created_at,
       updated_at: settings.updated_at
@@ -115,25 +119,26 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
 
 /**
  * Save repository-specific settings
- * Saves default_instructions and/or default_model for the repository
+ * Saves default_instructions, default_provider, and/or default_model for the repository
  */
 router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
     const { owner, repo } = req.params;
-    const { default_instructions, default_model } = req.body;
+    const { default_instructions, default_provider, default_model } = req.body;
     const repository = `${owner}/${repo}`;
     const db = req.app.get('db');
 
     // Validate that at least one setting is provided
-    if (default_instructions === undefined && default_model === undefined) {
+    if (default_instructions === undefined && default_provider === undefined && default_model === undefined) {
       return res.status(400).json({
-        error: 'At least one setting (default_instructions or default_model) must be provided'
+        error: 'At least one setting (default_instructions, default_provider, or default_model) must be provided'
       });
     }
 
     const repoSettingsRepo = new RepoSettingsRepository(db);
     const settings = await repoSettingsRepo.saveRepoSettings(repository, {
       default_instructions,
+      default_provider,
       default_model
     });
 
@@ -144,6 +149,7 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
       settings: {
         repository: settings.repository,
         default_instructions: settings.default_instructions,
+        default_provider: settings.default_provider,
         default_model: settings.default_model,
         updated_at: settings.updated_at
       }
@@ -192,6 +198,45 @@ router.get('/api/pr/:owner/:repo/:number/review-settings', async (req, res) => {
     console.error('Error fetching review settings:', error);
     res.status(500).json({
       error: 'Failed to fetch review settings'
+    });
+  }
+});
+
+/**
+ * Get available AI providers and their models
+ * Returns provider info including available models
+ */
+router.get('/api/providers', (req, res) => {
+  try {
+    const providers = getAllProvidersInfo();
+    res.json({ providers });
+  } catch (error) {
+    console.error('Error fetching providers:', error);
+    res.status(500).json({
+      error: 'Failed to fetch AI providers'
+    });
+  }
+});
+
+/**
+ * Test if a specific AI provider is available
+ * Checks if the provider's CLI is installed and accessible
+ */
+router.get('/api/providers/:providerId/test', async (req, res) => {
+  try {
+    const { providerId } = req.params;
+    const result = await testProviderAvailability(providerId);
+
+    res.json({
+      provider: providerId,
+      available: result.available,
+      error: result.error || null,
+      installInstructions: result.installInstructions || null
+    });
+  } catch (error) {
+    console.error('Error testing provider:', error);
+    res.status(500).json({
+      error: 'Failed to test provider availability'
     });
   }
 });
