@@ -219,7 +219,12 @@ class AIPanel {
         this.saveCurrentSelection();
 
         this.findings = suggestions || [];
-        this.analysisState = suggestions?.length > 0 ? 'complete' : 'none';
+        // Only update analysisState if there are suggestions (analysis definitely ran).
+        // If no suggestions, the caller (loadAISuggestions) should have already set
+        // the correct state based on whether analysis has ever been run.
+        if (suggestions?.length > 0) {
+            this.analysisState = 'complete';
+        }
         this.updateSegmentCounts();
         this.renderFindings();
 
@@ -388,17 +393,17 @@ class AIPanel {
                 } else {
                     // 'unknown' state - analysis hasn't been run yet
                     emptyContent = `
-                        <div class="empty-state-icon">${this.getEmptyStateIcon('sparkle')}</div>
+                        <div class="empty-state-icon empty-state-icon--amber">${this.getEmptyStateIcon('sparkle')}</div>
                         <div class="empty-state-title">Ready for AI Review</div>
-                        <div class="empty-state-description">Click <strong>Analyze with AI</strong> to get suggestions</div>
+                        <div class="empty-state-description">Click <strong>Analyze</strong> to get AI suggestions</div>
                     `;
                 }
             } else {
                 // 'all' segment
                 emptyContent = `
-                    <div class="empty-state-icon">${this.getEmptyStateIcon('sparkle')}</div>
+                    <div class="empty-state-icon empty-state-icon--amber">${this.getEmptyStateIcon('sparkle')}</div>
                     <div class="empty-state-title">No items yet</div>
-                    <div class="empty-state-description">Click <strong>Analyze with AI</strong> for suggestions or add comments in the diff view.</div>
+                    <div class="empty-state-description">Click <strong>Analyze</strong> for AI suggestions or add comments in the diff view.</div>
                 `;
             }
 

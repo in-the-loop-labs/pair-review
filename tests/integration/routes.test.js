@@ -179,6 +179,7 @@ async function createTestDatabase() {
               created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               pr_data TEXT,
+              last_ai_run_id TEXT,
               UNIQUE(pr_number, repository)
             )
           `,
@@ -945,12 +946,13 @@ describe('AI Suggestion Endpoints', () => {
   });
 
   describe('GET /api/pr/:owner/:repo/:number/has-ai-suggestions', () => {
-    it('should return false when no suggestions exist', async () => {
+    it('should return false when no suggestions exist and no analysis run', async () => {
       const response = await request(app)
         .get('/api/pr/owner/repo/1/has-ai-suggestions');
 
       expect(response.status).toBe(200);
       expect(response.body.hasSuggestions).toBe(false);
+      expect(response.body.analysisHasRun).toBe(false);
     });
 
     it('should return true when suggestions exist', async () => {
@@ -964,6 +966,22 @@ describe('AI Suggestion Endpoints', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.hasSuggestions).toBe(true);
+      expect(response.body.analysisHasRun).toBe(true);
+    });
+
+    it('should return analysisHasRun true when last_ai_run_id is set (even with no suggestions)', async () => {
+      // Set last_ai_run_id to indicate analysis was run
+      await run(db, `
+        UPDATE pr_metadata SET last_ai_run_id = 'test-run-123'
+        WHERE pr_number = ? AND repository = ?
+      `, [1, 'owner/repo']);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/has-ai-suggestions');
+
+      expect(response.status).toBe(200);
+      expect(response.body.hasSuggestions).toBe(false);
+      expect(response.body.analysisHasRun).toBe(true);
     });
   });
 });

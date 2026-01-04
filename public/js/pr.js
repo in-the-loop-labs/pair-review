@@ -1513,9 +1513,28 @@ class PRManager {
     if (!this.currentPR) return;
 
     try {
+      // First, check if analysis has been run for this PR
+      const { owner, repo, number } = this.currentPR;
+      let analysisHasRun = false;
+      try {
+        const checkResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`);
+        if (checkResponse.ok) {
+          const checkData = await checkResponse.json();
+          analysisHasRun = checkData.analysisHasRun;
+        }
+      } catch (checkError) {
+        console.warn('Error checking analysis status:', checkError);
+      }
+
+      // Set the analysis state on the AI panel BEFORE loading suggestions
+      // This ensures the correct empty state is shown
+      if (window.aiPanel?.setAnalysisState) {
+        window.aiPanel.setAnalysisState(analysisHasRun ? 'complete' : 'unknown');
+      }
+
       // Use provided level, or fall back to current selectedLevel
       const filterLevel = level || this.selectedLevel || 'final';
-      const url = `/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/ai-suggestions?levels=${filterLevel}`;
+      const url = `/api/pr/${owner}/${repo}/${number}/ai-suggestions?levels=${filterLevel}`;
 
       const response = await fetch(url);
       if (!response.ok) return;

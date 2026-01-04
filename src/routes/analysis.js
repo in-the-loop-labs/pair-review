@@ -225,10 +225,22 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Start analysis asynchronously with progress callback and custom instructions
     analyzer.analyzeLevel1(prMetadata.id, worktreePath, prMetadata, progressCallback, combinedInstructions)
-      .then(result => {
+      .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
         logger.success(`Found ${result.suggestions.length} suggestions:`);
+
+        // Update pr_metadata with the last AI run ID (tracks that analysis was run)
+        try {
+          const { run } = require('../database');
+          await run(db, `
+            UPDATE pr_metadata SET last_ai_run_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `, [result.runId, prMetadata.id]);
+          logger.info(`Updated pr_metadata with last_ai_run_id: ${result.runId}`);
+        } catch (updateError) {
+          logger.warn(`Failed to update pr_metadata with last_ai_run_id: ${updateError.message}`);
+        }
         result.suggestions.forEach(s => {
           const icon = s.type === 'bug' ? '🐛' :
                        s.type === 'praise' ? '⭐' :
@@ -694,6 +706,7 @@ router.get('/api/pr/:owner/:repo/:number/analysis-status', async (req, res) => {
 
 /**
  * Check if a PR has existing AI suggestions
+ * Also returns whether AI analysis has ever been run (even if no suggestions were found)
  */
 router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) => {
   try {
@@ -707,9 +720,12 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
     }
 
     const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
 
     // Get PR metadata to find pr_id
-    const prMetadata = await queryOne(req.app.get('db'), `
+    // Note: We query 'id' only here, and handle last_ai_run_id separately
+    // to gracefully handle databases that haven't been migrated yet
+    const prMetadata = await queryOne(db, `
       SELECT id FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
@@ -721,7 +737,7 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
     }
 
     // Check if any AI suggestions exist for this PR
-    const result = await queryOne(req.app.get('db'), `
+    const result = await queryOne(db, `
       SELECT EXISTS(
         SELECT 1 FROM comments
         WHERE pr_id = ? AND source = 'ai'
@@ -730,8 +746,26 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
 
     const hasSuggestions = result?.has_suggestions === 1;
 
+    // Try to check last_ai_run_id, but fall back if column doesn't exist
+    // This handles databases that haven't been migrated yet
+    let analysisHasRun = hasSuggestions;
+    try {
+      const runCheck = await queryOne(db, `
+        SELECT last_ai_run_id FROM pr_metadata
+        WHERE id = ?
+      `, [prMetadata.id]);
+      // Analysis has been run if last_ai_run_id is set OR if there are any AI suggestions
+      // (backwards compatibility for PRs analyzed before this column was added)
+      analysisHasRun = !!(runCheck?.last_ai_run_id || hasSuggestions);
+    } catch (e) {
+      // Column may not exist in older databases, fall back to checking suggestions
+      // This is expected behavior during migration - no need to log an error
+      analysisHasRun = hasSuggestions;
+    }
+
     res.json({
-      hasSuggestions: hasSuggestions
+      hasSuggestions: hasSuggestions,
+      analysisHasRun: analysisHasRun
     });
   } catch (error) {
     console.error('Error checking for AI suggestions:', error);

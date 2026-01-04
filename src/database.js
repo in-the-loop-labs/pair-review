@@ -8,7 +8,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 
 /**
  * Database schema SQL statements
@@ -90,6 +90,7 @@ const SCHEMA_SQL = {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       pr_data TEXT,
+      last_ai_run_id TEXT,
       UNIQUE(pr_number, repository)
     )
   `,
@@ -249,6 +250,72 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 2 complete');
+  },
+
+  // Migration to version 3: adds last_ai_run_id column to pr_metadata
+  3: async (db) => {
+    console.log('Running migration to schema version 3...');
+
+    // Helper to check if table exists
+    const tableExists = async (tableName) => {
+      return new Promise((resolve, reject) => {
+        db.get(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+          [tableName],
+          (error, row) => {
+            if (error) reject(error);
+            else resolve(!!row);
+          }
+        );
+      });
+    };
+
+    // Helper to check if column exists
+    const columnExists = async (table, column) => {
+      return new Promise((resolve, reject) => {
+        db.all(`PRAGMA table_info(${table})`, (error, rows) => {
+          if (error) reject(error);
+          else resolve(rows ? rows.some(row => row.name === column) : false);
+        });
+      });
+    };
+
+    // Helper to run SQL safely
+    const runSql = (sql) => {
+      return new Promise((resolve, reject) => {
+        db.run(sql, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    };
+
+    // First ensure pr_metadata table exists
+    const hasPrMetadata = await tableExists('pr_metadata');
+    if (!hasPrMetadata) {
+      console.log('  Creating pr_metadata table...');
+      await runSql(SCHEMA_SQL.pr_metadata);
+      console.log('  Successfully created pr_metadata table');
+    }
+
+    // Add last_ai_run_id column to pr_metadata if it doesn't exist
+    const hasLastAiRunId = await columnExists('pr_metadata', 'last_ai_run_id');
+    if (!hasLastAiRunId) {
+      try {
+        await runSql(`ALTER TABLE pr_metadata ADD COLUMN last_ai_run_id TEXT`);
+        console.log('  Added last_ai_run_id column to pr_metadata');
+      } catch (error) {
+        // Ignore duplicate column errors (race condition protection)
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column last_ai_run_id already exists (race condition)');
+      }
+    } else {
+      console.log('  Column last_ai_run_id already exists');
+    }
+
+    console.log('Migration to schema version 3 complete');
   }
 };
 
