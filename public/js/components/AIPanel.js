@@ -383,7 +383,7 @@ class AIPanel {
                             <p>Analyzing PR...</p>
                         </div>
                     `;
-                } else if (this.analysisState === 'complete' || this.analysisState === 'none') {
+                } else if (this.analysisState === 'complete') {
                     // Analysis ran, but no issues found
                     emptyContent = `
                         <div class="empty-state-icon empty-state-icon--success">${this.getEmptyStateIcon('check')}</div>
@@ -391,7 +391,7 @@ class AIPanel {
                         <div class="empty-state-description">AI analysis complete</div>
                     `;
                 } else {
-                    // 'unknown' state - analysis hasn't been run yet
+                    // 'unknown' or 'none' state - analysis hasn't been run yet
                     emptyContent = `
                         <div class="empty-state-icon empty-state-icon--amber">${this.getEmptyStateIcon('sparkle')}</div>
                         <div class="empty-state-title">Ready for AI Review</div>
@@ -399,12 +399,22 @@ class AIPanel {
                     `;
                 }
             } else {
-                // 'all' segment
-                emptyContent = `
-                    <div class="empty-state-icon empty-state-icon--amber">${this.getEmptyStateIcon('sparkle')}</div>
-                    <div class="empty-state-title">No items yet</div>
-                    <div class="empty-state-description">Click <strong>Analyze</strong> for AI suggestions or add comments in the diff view.</div>
-                `;
+                // 'all' segment - check analysis state to determine empty message
+                if (this.analysisState === 'complete') {
+                    // Analysis already ran - don't prompt to run again
+                    emptyContent = `
+                        <div class="empty-state-icon">${this.getEmptyStateIcon('comment')}</div>
+                        <div class="empty-state-title">No items yet</div>
+                        <div class="empty-state-description">Add comments in the diff view.</div>
+                    `;
+                } else {
+                    // Analysis not run yet ('unknown' or 'none')
+                    emptyContent = `
+                        <div class="empty-state-icon empty-state-icon--amber">${this.getEmptyStateIcon('sparkle')}</div>
+                        <div class="empty-state-title">No items yet</div>
+                        <div class="empty-state-description">Click <strong>Analyze</strong> for AI suggestions or add comments in the diff view.</div>
+                    `;
+                }
             }
 
             this.findingsList.innerHTML = `

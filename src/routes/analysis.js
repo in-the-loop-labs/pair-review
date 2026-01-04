@@ -10,7 +10,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, withTransaction, RepoSettingsRepository, ReviewRepository } = require('../database');
+const { query, queryOne, run, withTransaction, RepoSettingsRepository, ReviewRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
@@ -232,7 +232,6 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
         // Update pr_metadata with the last AI run ID (tracks that analysis was run)
         try {
-          const { run } = require('../database');
           await run(db, `
             UPDATE pr_metadata SET last_ai_run_id = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
@@ -758,8 +757,12 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       // (backwards compatibility for PRs analyzed before this column was added)
       analysisHasRun = !!(runCheck?.last_ai_run_id || hasSuggestions);
     } catch (e) {
-      // Column may not exist in older databases, fall back to checking suggestions
-      // This is expected behavior during migration - no need to log an error
+      // Only silence "no such column" errors (expected during migration)
+      // Log any other unexpected errors
+      if (!e.message.includes('no such column')) {
+        console.warn('Unexpected error checking last_ai_run_id:', e);
+      }
+      // Fall back to using hasSuggestions
       analysisHasRun = hasSuggestions;
     }
 
