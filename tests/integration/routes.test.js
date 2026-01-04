@@ -782,10 +782,10 @@ describe('AI Suggestion Endpoints', () => {
     });
 
     it('should return AI suggestions for PR', async () => {
-      // Insert AI suggestion
+      // Insert AI suggestion with ai_run_id (required for filtering by latest analysis run)
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, type, title, body, status)
-        VALUES (?, 'ai', 'file.js', 10, 'improvement', 'Test Suggestion', 'Suggestion body', 'active')
+        INSERT INTO comments (pr_id, source, file, line_start, type, title, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 10, 'improvement', 'Test Suggestion', 'Suggestion body', 'active', 'test-run-1')
       `, [prId]);
 
       const response = await request(app)
@@ -797,19 +797,20 @@ describe('AI Suggestion Endpoints', () => {
     });
 
     it('should filter by levels query parameter', async () => {
-      // Insert suggestions with different levels
+      // Insert suggestions with different levels (all with same ai_run_id to simulate one analysis run)
+      const runId = 'test-run-levels';
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status)
-        VALUES (?, 'ai', 'file.js', 10, 1, 'Level 1 suggestion', 'active')
-      `, [prId]);
+        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 10, 1, 'Level 1 suggestion', 'active', ?)
+      `, [prId, runId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status)
-        VALUES (?, 'ai', 'file.js', 20, 2, 'Level 2 suggestion', 'active')
-      `, [prId]);
+        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 20, 2, 'Level 2 suggestion', 'active', ?)
+      `, [prId, runId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status)
-        VALUES (?, 'ai', 'file.js', 30, NULL, 'Final suggestion', 'active')
-      `, [prId]);
+        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 30, NULL, 'Final suggestion', 'active', ?)
+      `, [prId, runId]);
 
       // Filter for level 1 only
       const response = await request(app)
@@ -821,14 +822,15 @@ describe('AI Suggestion Endpoints', () => {
     });
 
     it('should default to final suggestions when no levels specified', async () => {
+      const runId = 'test-run-default';
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status)
-        VALUES (?, 'ai', 'file.js', 10, 1, 'Level 1', 'active')
-      `, [prId]);
+        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 10, 1, 'Level 1', 'active', ?)
+      `, [prId, runId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status)
-        VALUES (?, 'ai', 'file.js', 20, NULL, 'Final', 'active')
-      `, [prId]);
+        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Final', 'active', ?)
+      `, [prId, runId]);
 
       const response = await request(app)
         .get('/api/pr/owner/repo/1/ai-suggestions');
