@@ -790,7 +790,16 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
       : 'ai_level IS NULL';
 
     // Get AI suggestions from the comments table
-    // Support filtering by analysis level via query parameter
+    // Only return suggestions from the latest analysis run (ai_run_id)
+    // This preserves history while showing only the most recent results
+    //
+    // Note: If no AI suggestions exist (subquery returns NULL), the ai_run_id = NULL
+    // comparison returns no rows. This is intentional - we only show suggestions
+    // when there's a matching analysis run.
+    //
+    // Note: prMetadata.id is passed twice because SQLite requires separate parameters
+    // for the outer WHERE clause and the subquery. A CTE could consolidate this but
+    // adds complexity without meaningful benefit here.
     const suggestions = await query(req.app.get('db'), `
       SELECT
         id,
@@ -809,7 +818,16 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'ai' AND ${levelFilter} AND status IN ('active', 'dismissed', 'adopted')
+      WHERE pr_id = ?
+        AND source = 'ai'
+        AND ${levelFilter}
+        AND status IN ('active', 'dismissed', 'adopted')
+        AND ai_run_id = (
+          SELECT ai_run_id FROM comments
+          WHERE pr_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+          ORDER BY created_at DESC
+          LIMIT 1
+        )
       ORDER BY
         CASE
           WHEN ai_level IS NULL THEN 0
@@ -820,7 +838,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         END,
         file,
         line_start
-    `, [prMetadata.id]);
+    `, [prMetadata.id, prMetadata.id]);
 
     res.json({ suggestions });
 

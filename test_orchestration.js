@@ -36,11 +36,8 @@ async function testOrchestration() {
   logger.info(`PR metadata: ${JSON.stringify(testPrMetadata)}`);
   
   try {
-    // Clean up any existing test suggestions
-    logger.info('Cleaning up old test suggestions...');
-    await analyzer.deleteOldAISuggestions(testPrId);
-    
     // Run the full analysis with orchestration
+    // Note: Old AI suggestions are no longer deleted; the API filters to show only the latest run
     logger.section('Starting Full Analysis with Orchestration');
     
     const result = await analyzer.analyzeLevel1(

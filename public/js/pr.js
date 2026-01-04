@@ -2595,6 +2595,18 @@ class PRManager {
         }
       }
 
+      // Clear existing AI suggestions from UI immediately when starting new analysis
+      if (window.aiPanel && typeof window.aiPanel.clearAllFindings === 'function') {
+        try {
+          window.aiPanel.clearAllFindings();
+        } catch (e) {
+          console.warn('Error clearing AI panel findings:', e);
+          // Fall through to manual DOM cleanup
+        }
+      }
+      // Always do manual DOM cleanup as backup
+      document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
+
       // Start AI analysis with model and instructions
       const response = await fetch(`/api/analyze/${owner}/${repo}/${number}`, {
         method: 'POST',
