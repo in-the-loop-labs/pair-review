@@ -17,18 +17,18 @@ const GEMINI_MODELS = [
     id: 'gemini-3-flash-preview',
     name: '3.0 Flash',
     tier: 'fast',
-    tagline: 'Lightning Fast',
-    description: 'Quick analysis for simple changes',
-    badge: 'Fastest',
+    tagline: 'Rapid Sanity Check',
+    description: 'Best for catching syntax, typos, and simple logic errors',
+    badge: 'Quick Look',
     badgeClass: 'badge-speed'
   },
   {
     id: 'gemini-2.5-pro',
     name: '2.5 Pro',
     tier: 'balanced',
-    tagline: 'Best Balance',
-    description: 'Recommended for most reviews',
-    badge: 'Recommended',
+    tagline: 'Standard PR Review',
+    description: 'Reliable feedback on code style, features, and refactoring',
+    badge: 'Daily Driver',
     badgeClass: 'badge-recommended',
     default: true
   },
@@ -36,9 +36,9 @@ const GEMINI_MODELS = [
     id: 'gemini-3-pro-preview',
     name: '3.0 Pro',
     tier: 'thorough',
-    tagline: 'Most Capable',
-    description: 'Deep analysis for complex code',
-    badge: 'Most Thorough',
+    tagline: 'Architectural Audit',
+    description: 'Deep analysis for race conditions, security, and edge cases',
+    badge: 'Deep Dive',
     badgeClass: 'badge-power'
   }
 ];
@@ -48,7 +48,20 @@ class GeminiProvider extends AIProvider {
     super(model);
 
     // Check for environment variable to override default command
-    this.geminiCmd = process.env.PAIR_REVIEW_GEMINI_CMD || 'gemini';
+    // Supports multi-word commands like "npx gemini" or "/path/to/gemini --verbose"
+    const geminiCmd = process.env.PAIR_REVIEW_GEMINI_CMD || 'gemini';
+
+    // For multi-word commands, use shell mode (same pattern as Claude provider)
+    this.useShell = geminiCmd.includes(' ');
+
+    if (this.useShell) {
+      // In shell mode, build full command string with args
+      this.command = `${geminiCmd} -m ${model} -o json -y`;
+      this.args = [];
+    } else {
+      this.command = geminiCmd;
+      this.args = ['-m', model, '-o', 'json', '-y'];
+    }
   }
 
   /**
@@ -65,23 +78,13 @@ class GeminiProvider extends AIProvider {
       logger.info(`${levelPrefix} Executing Gemini CLI...`);
       logger.info(`${levelPrefix} Writing prompt: ${prompt.length} bytes`);
 
-      // Gemini CLI args:
-      // -m <model> : specify model
-      // -o json    : output format as JSON
-      // -y         : auto-accept actions (YOLO mode) for non-interactive use
-      // The prompt is passed via stdin
-      const args = [
-        '-m', this.model,
-        '-o', 'json',
-        '-y'  // Auto-accept for non-interactive use
-      ];
-
-      const gemini = spawn(this.geminiCmd, args, {
+      const gemini = spawn(this.command, this.args, {
         cwd,
         env: {
           ...process.env,
           PATH: process.env.PATH
-        }
+        },
+        shell: this.useShell
       });
 
       const pid = gemini.pid;
@@ -90,13 +93,21 @@ class GeminiProvider extends AIProvider {
       let stdout = '';
       let stderr = '';
       let timeoutId = null;
+      let settled = false;  // Guard against multiple resolve/reject calls
+
+      const settle = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        fn(value);
+      };
 
       // Set timeout
       if (timeout) {
         timeoutId = setTimeout(() => {
           logger.error(`${levelPrefix} Process ${pid} timed out after ${timeout}ms`);
           gemini.kill('SIGTERM');
-          reject(new Error(`${levelPrefix} Gemini CLI timed out after ${timeout}ms`));
+          settle(reject, new Error(`${levelPrefix} Gemini CLI timed out after ${timeout}ms`));
         }, timeout);
       }
 
@@ -112,7 +123,7 @@ class GeminiProvider extends AIProvider {
 
       // Handle completion
       gemini.on('close', (code) => {
-        if (timeoutId) clearTimeout(timeoutId);
+        if (settled) return;  // Already settled by timeout or error
 
         // Always log stderr if present
         if (stderr.trim()) {
@@ -125,7 +136,7 @@ class GeminiProvider extends AIProvider {
 
         if (code !== 0) {
           logger.error(`${levelPrefix} Gemini CLI exited with code ${code}`);
-          reject(new Error(`${levelPrefix} Gemini CLI exited with code ${code}: ${stderr}`));
+          settle(reject, new Error(`${levelPrefix} Gemini CLI exited with code ${code}: ${stderr}`));
           return;
         }
 
@@ -134,25 +145,23 @@ class GeminiProvider extends AIProvider {
         const parsed = this.parseGeminiResponse(stdout, level);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
-          resolve(parsed.data);
+          settle(resolve, parsed.data);
         } else {
           logger.warn(`${levelPrefix} Failed to extract JSON: ${parsed.error}`);
           logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
           logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-          resolve({ raw: stdout, parsed: false });
+          settle(resolve, { raw: stdout, parsed: false });
         }
       });
 
       // Handle errors
       gemini.on('error', (error) => {
-        if (timeoutId) clearTimeout(timeoutId);
-
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Gemini CLI not found. Please ensure Gemini CLI is installed.`);
-          reject(new Error(`${levelPrefix} Gemini CLI not found. ${GeminiProvider.getInstallInstructions()}`));
+          settle(reject, new Error(`${levelPrefix} Gemini CLI not found. ${GeminiProvider.getInstallInstructions()}`));
         } else {
           logger.error(`${levelPrefix} Gemini process error: ${error}`);
-          reject(error);
+          settle(reject, error);
         }
       });
 
@@ -160,9 +169,8 @@ class GeminiProvider extends AIProvider {
       gemini.stdin.write(prompt, (err) => {
         if (err) {
           logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
-          if (timeoutId) clearTimeout(timeoutId);
           gemini.kill('SIGTERM');
-          reject(new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
+          settle(reject, new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
         }
       });
       gemini.stdin.end();
@@ -217,20 +225,31 @@ class GeminiProvider extends AIProvider {
    */
   async testAvailability() {
     return new Promise((resolve) => {
-      const gemini = spawn(this.geminiCmd, ['--version'], {
+      // For availability test, we just need to check --version
+      // Use shell mode if the command contains spaces
+      const geminiCmd = process.env.PAIR_REVIEW_GEMINI_CMD || 'gemini';
+      const useShell = geminiCmd.includes(' ');
+      const command = useShell ? `${geminiCmd} --version` : geminiCmd;
+      const args = useShell ? [] : ['--version'];
+
+      const gemini = spawn(command, args, {
         env: {
           ...process.env,
           PATH: process.env.PATH
-        }
+        },
+        shell: useShell
       });
 
       let stdout = '';
+      let settled = false;
 
       gemini.stdout.on('data', (data) => {
         stdout += data.toString();
       });
 
       gemini.on('close', (code) => {
+        if (settled) return;
+        settled = true;
         if (code === 0 && stdout.includes('.')) {
           logger.info(`Gemini CLI available: ${stdout.trim()}`);
           resolve(true);
@@ -241,6 +260,8 @@ class GeminiProvider extends AIProvider {
       });
 
       gemini.on('error', (error) => {
+        if (settled) return;
+        settled = true;
         logger.warn(`Gemini CLI not available: ${error.message}`);
         resolve(false);
       });

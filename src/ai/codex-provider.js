@@ -23,8 +23,8 @@ const CODEX_MODELS = [
     id: 'gpt-5.1-codex-mini',
     name: 'GPT-5.1 Mini',
     tier: 'fast',
-    tagline: 'Lightning Fast',
-    description: 'Cost-effective variant for quick lint-level scans',
+    tagline: 'Blazing Fast',
+    description: 'Quick, low-cost reviews for style issues, obvious bugs, and lint-level feedback.',
     badge: 'Fastest',
     badgeClass: 'badge-speed'
   },
@@ -33,7 +33,7 @@ const CODEX_MODELS = [
     name: 'GPT-5.1 Max',
     tier: 'balanced',
     tagline: 'Best Balance',
-    description: 'Optimized for long-horizon agentic coding tasks',
+    description: 'Strong everyday reviewer—quality + speed for PR-sized changes and practical suggestions.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
@@ -42,8 +42,8 @@ const CODEX_MODELS = [
     id: 'gpt-5.2-codex',
     name: 'GPT-5.2',
     tier: 'thorough',
-    tagline: 'Most Capable',
-    description: 'Most advanced model for deep analysis and multi-step remediation',
+    tagline: 'Deep Review',
+    description: 'Most capable for complex diffs—finds subtle issues, reasons across files, and proposes step-by-step fixes.',
     badge: 'Most Thorough',
     badgeClass: 'badge-power'
   }
@@ -54,7 +54,20 @@ class CodexProvider extends AIProvider {
     super(model);
 
     // Check for environment variable to override default command
-    this.codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
+    // Supports multi-word commands like "npx codex" or "/path/to/codex --verbose"
+    const codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
+
+    // For multi-word commands, use shell mode (same pattern as Claude provider)
+    this.useShell = codexCmd.includes(' ');
+
+    if (this.useShell) {
+      // In shell mode, build full command string with args
+      this.command = `${codexCmd} exec -m ${model} --json -`;
+      this.args = [];
+    } else {
+      this.command = codexCmd;
+      this.args = ['exec', '-m', model, '--json', '-'];
+    }
   }
 
   /**
@@ -71,24 +84,13 @@ class CodexProvider extends AIProvider {
       logger.info(`${levelPrefix} Executing Codex CLI...`);
       logger.info(`${levelPrefix} Writing prompt: ${prompt.length} bytes`);
 
-      // Codex CLI args:
-      // exec         : non-interactive execution mode
-      // -m <model>   : specify model
-      // --json       : output as JSONL
-      // -            : read prompt from stdin
-      const args = [
-        'exec',
-        '-m', this.model,
-        '--json',
-        '-'  // Read prompt from stdin
-      ];
-
-      const codex = spawn(this.codexCmd, args, {
+      const codex = spawn(this.command, this.args, {
         cwd,
         env: {
           ...process.env,
           PATH: process.env.PATH
-        }
+        },
+        shell: this.useShell
       });
 
       const pid = codex.pid;
@@ -97,13 +99,21 @@ class CodexProvider extends AIProvider {
       let stdout = '';
       let stderr = '';
       let timeoutId = null;
+      let settled = false;  // Guard against multiple resolve/reject calls
+
+      const settle = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        fn(value);
+      };
 
       // Set timeout
       if (timeout) {
         timeoutId = setTimeout(() => {
           logger.error(`${levelPrefix} Process ${pid} timed out after ${timeout}ms`);
           codex.kill('SIGTERM');
-          reject(new Error(`${levelPrefix} Codex CLI timed out after ${timeout}ms`));
+          settle(reject, new Error(`${levelPrefix} Codex CLI timed out after ${timeout}ms`));
         }, timeout);
       }
 
@@ -119,7 +129,7 @@ class CodexProvider extends AIProvider {
 
       // Handle completion
       codex.on('close', (code) => {
-        if (timeoutId) clearTimeout(timeoutId);
+        if (settled) return;  // Already settled by timeout or error
 
         // Always log stderr if present
         if (stderr.trim()) {
@@ -132,7 +142,7 @@ class CodexProvider extends AIProvider {
 
         if (code !== 0) {
           logger.error(`${levelPrefix} Codex CLI exited with code ${code}`);
-          reject(new Error(`${levelPrefix} Codex CLI exited with code ${code}: ${stderr}`));
+          settle(reject, new Error(`${levelPrefix} Codex CLI exited with code ${code}: ${stderr}`));
           return;
         }
 
@@ -140,25 +150,23 @@ class CodexProvider extends AIProvider {
         const parsed = this.parseCodexResponse(stdout, level);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
-          resolve(parsed.data);
+          settle(resolve, parsed.data);
         } else {
           logger.warn(`${levelPrefix} Failed to extract JSON: ${parsed.error}`);
           logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
           logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-          resolve({ raw: stdout, parsed: false });
+          settle(resolve, { raw: stdout, parsed: false });
         }
       });
 
       // Handle errors
       codex.on('error', (error) => {
-        if (timeoutId) clearTimeout(timeoutId);
-
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Codex CLI not found. Please ensure Codex CLI is installed.`);
-          reject(new Error(`${levelPrefix} Codex CLI not found. ${CodexProvider.getInstallInstructions()}`));
+          settle(reject, new Error(`${levelPrefix} Codex CLI not found. ${CodexProvider.getInstallInstructions()}`));
         } else {
           logger.error(`${levelPrefix} Codex process error: ${error}`);
-          reject(error);
+          settle(reject, error);
         }
       });
 
@@ -166,9 +174,8 @@ class CodexProvider extends AIProvider {
       codex.stdin.write(prompt, (err) => {
         if (err) {
           logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
-          if (timeoutId) clearTimeout(timeoutId);
           codex.kill('SIGTERM');
-          reject(new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
+          settle(reject, new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
         }
       });
       codex.stdin.end();
@@ -247,20 +254,31 @@ class CodexProvider extends AIProvider {
    */
   async testAvailability() {
     return new Promise((resolve) => {
-      const codex = spawn(this.codexCmd, ['--version'], {
+      // For availability test, we just need to check --version
+      // Use shell mode if the command contains spaces
+      const codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
+      const useShell = codexCmd.includes(' ');
+      const command = useShell ? `${codexCmd} --version` : codexCmd;
+      const args = useShell ? [] : ['--version'];
+
+      const codex = spawn(command, args, {
         env: {
           ...process.env,
           PATH: process.env.PATH
-        }
+        },
+        shell: useShell
       });
 
       let stdout = '';
+      let settled = false;
 
       codex.stdout.on('data', (data) => {
         stdout += data.toString();
       });
 
       codex.on('close', (code) => {
+        if (settled) return;
+        settled = true;
         if (code === 0 && stdout.includes('codex')) {
           logger.info(`Codex CLI available: ${stdout.trim()}`);
           resolve(true);
@@ -271,6 +289,8 @@ class CodexProvider extends AIProvider {
       });
 
       codex.on('error', (error) => {
+        if (settled) return;
+        settled = true;
         logger.warn(`Codex CLI not available: ${error.message}`);
         resolve(false);
       });
