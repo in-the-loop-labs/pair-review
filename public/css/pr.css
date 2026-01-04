@@ -2233,6 +2233,11 @@ tr.newly-expanded .d2h-code-line-ctn {
   font-size: 14px;
 }
 
+/* Confirm dialog buttons should be centered */
+.confirm-dialog-container .modal-footer {
+  justify-content: center;
+}
+
 /* Status Indicator Styles */
 .status-indicator {
   display: none;
