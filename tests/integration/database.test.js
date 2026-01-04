@@ -89,6 +89,7 @@ function createTestDatabase() {
               created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               pr_data TEXT,
+              last_ai_run_id TEXT,
               UNIQUE(pr_number, repository)
             )
           `,

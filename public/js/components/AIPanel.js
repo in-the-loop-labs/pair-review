@@ -219,7 +219,12 @@ class AIPanel {
         this.saveCurrentSelection();
 
         this.findings = suggestions || [];
-        this.analysisState = suggestions?.length > 0 ? 'complete' : 'none';
+        // Only update analysisState if there are suggestions (analysis definitely ran).
+        // If no suggestions, the caller (loadAISuggestions) should have already set
+        // the correct state based on whether analysis has ever been run.
+        if (suggestions?.length > 0) {
+            this.analysisState = 'complete';
+        }
         this.updateSegmentCounts();
         this.renderFindings();
 
@@ -296,6 +301,7 @@ class AIPanel {
 
     /**
      * Update segment counts in the segment control
+     * Dims counts when they are zero
      */
     updateSegmentCounts() {
         const aiCount = this.findings.length;
@@ -307,13 +313,19 @@ class AIPanel {
                 const segment = btn.dataset.segment;
                 const countSpan = btn.querySelector('.segment-count');
                 if (countSpan) {
+                    let count = 0;
                     if (segment === 'all') {
+                        count = allCount;
                         countSpan.textContent = `(${allCount})`;
                     } else if (segment === 'ai') {
+                        count = aiCount;
                         countSpan.textContent = `(${aiCount})`;
                     } else if (segment === 'comments') {
+                        count = commentsCount;
                         countSpan.textContent = `(${commentsCount})`;
                     }
+                    // Dim the count when zero
+                    countSpan.classList.toggle('segment-count--zero', count === 0);
                 }
             });
         }
@@ -357,7 +369,11 @@ class AIPanel {
         if (items.length === 0) {
             let emptyContent;
             if (this.selectedSegment === 'comments') {
-                emptyContent = `<p>No comments yet.</p><p class="empty-action">Click the <strong>+</strong> button next to any line to add a comment.</p>`;
+                emptyContent = `
+                    <div class="empty-state-icon">${this.getEmptyStateIcon('comment')}</div>
+                    <div class="empty-state-title">No comments yet</div>
+                    <div class="empty-state-description">Click the <strong>+</strong> button next to any line to add a comment.</div>
+                `;
             } else if (this.selectedSegment === 'ai') {
                 // Show different states based on analysis status
                 if (this.analysisState === 'loading') {
@@ -367,18 +383,42 @@ class AIPanel {
                             <p>Analyzing PR...</p>
                         </div>
                     `;
-                } else if (this.analysisState === 'complete' || this.analysisState === 'none') {
-                    emptyContent = `<p>No AI suggestions for this PR.</p>`;
+                } else if (this.analysisState === 'complete') {
+                    // Analysis ran, but no issues found
+                    emptyContent = `
+                        <div class="empty-state-icon empty-state-icon--success">${this.getEmptyStateIcon('check')}</div>
+                        <div class="empty-state-title">No issues found</div>
+                        <div class="empty-state-description">AI analysis complete</div>
+                    `;
                 } else {
-                    // 'unknown' state - analysis hasn't been run yet
-                    emptyContent = `<p>No AI analysis yet.</p><p class="empty-action">Click <strong>Analyze</strong> to get started.</p>`;
+                    // 'unknown' or 'none' state - analysis hasn't been run yet
+                    emptyContent = `
+                        <div class="empty-state-icon empty-state-icon--amber">${this.getEmptyStateIcon('sparkle')}</div>
+                        <div class="empty-state-title">Ready for AI Review</div>
+                        <div class="empty-state-description">Click <strong>Analyze</strong> to get AI suggestions</div>
+                    `;
                 }
             } else {
-                emptyContent = `<p>No items yet.</p><p class="empty-action">Click <strong>Analyze</strong> for AI suggestions or add comments in the diff view.</p>`;
+                // 'all' segment - check analysis state to determine empty message
+                if (this.analysisState === 'complete') {
+                    // Analysis already ran - don't prompt to run again
+                    emptyContent = `
+                        <div class="empty-state-icon">${this.getEmptyStateIcon('comment')}</div>
+                        <div class="empty-state-title">No items yet</div>
+                        <div class="empty-state-description">Add comments in the diff view.</div>
+                    `;
+                } else {
+                    // Analysis not run yet ('unknown' or 'none')
+                    emptyContent = `
+                        <div class="empty-state-icon empty-state-icon--amber">${this.getEmptyStateIcon('sparkle')}</div>
+                        <div class="empty-state-title">No items yet</div>
+                        <div class="empty-state-description">Click <strong>Analyze</strong> for AI suggestions or add comments in the diff view.</div>
+                    `;
+                }
             }
 
             this.findingsList.innerHTML = `
-                <div class="findings-empty">
+                <div class="findings-empty empty-state">
                     ${emptyContent}
                 </div>
             `;
@@ -559,6 +599,33 @@ class AIPanel {
                 return `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
                     <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0Zm0 4a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 8 4Zm0 9a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/>
                 </svg>`;
+        }
+    }
+
+    /**
+     * Get icon SVG for empty state displays
+     * @param {string} type - Icon type: 'sparkle', 'check', 'comment'
+     * @returns {string} SVG HTML string
+     */
+    getEmptyStateIcon(type) {
+        switch (type) {
+            case 'sparkle':
+                // Sparkle/stars icon for "Ready for AI Review"
+                return `<svg viewBox="0 0 16 16" fill="currentColor" width="32" height="32">
+                    <path d="M7.53 1.282a.5.5 0 0 1 .94 0l.478 1.306a7.492 7.492 0 0 0 4.464 4.464l1.305.478a.5.5 0 0 1 0 .94l-1.305.478a7.492 7.492 0 0 0-4.464 4.464l-.478 1.305a.5.5 0 0 1-.94 0l-.478-1.305a7.492 7.492 0 0 0-4.464-4.464L1.282 8.47a.5.5 0 0 1 0-.94l1.306-.478a7.492 7.492 0 0 0 4.464-4.464l.478-1.306Z"/>
+                </svg>`;
+            case 'check':
+                // Check circle icon for "No issues found"
+                return `<svg viewBox="0 0 16 16" fill="currentColor" width="32" height="32">
+                    <path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.751.751 0 0 0-.018-1.042.751.751 0 0 0-1.042-.018L6.75 9.19 5.28 7.72a.751.751 0 0 0-1.042.018.751.751 0 0 0-.018 1.042l2 2a.75.75 0 0 0 1.06 0Z"/>
+                </svg>`;
+            case 'comment':
+                // Comment bubble icon for "No comments yet"
+                return `<svg viewBox="0 0 16 16" fill="currentColor" width="32" height="32">
+                    <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"/>
+                </svg>`;
+            default:
+                return '';
         }
     }
 
@@ -836,6 +903,7 @@ class AIPanel {
 
     /**
      * Update the findings header with navigation controls and counter
+     * Hides the entire navigation section when there are no items
      */
     updateFindingsHeader(totalCount) {
         const items = this.getFilteredItems();
@@ -846,16 +914,23 @@ class AIPanel {
         const headerContainer = document.querySelector('.findings-header');
         if (!headerContainer) return;
 
+        // Hide navigation section entirely when there are no items
+        if (itemCount === 0) {
+            headerContainer.innerHTML = '';
+            this.findingsCount = null;
+            return;
+        }
+
         // Update or create the header content (no label - segments already indicate content type)
         headerContainer.innerHTML = `
             <div class="findings-nav">
-                <button class="findings-nav-btn nav-prev" title="Previous item (k)" ${itemCount === 0 ? 'disabled' : ''}>
+                <button class="findings-nav-btn nav-prev" title="Previous item (k)">
                     <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
                         <path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/>
                     </svg>
                 </button>
                 <span class="findings-counter" id="findings-count">${currentDisplay} of ${itemCount}</span>
-                <button class="findings-nav-btn nav-next" title="Next item (j)" ${itemCount === 0 ? 'disabled' : ''}>
+                <button class="findings-nav-btn nav-next" title="Next item (j)">
                     <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
                         <path d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
                     </svg>
