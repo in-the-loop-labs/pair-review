@@ -92,9 +92,8 @@ class CommentManager {
           data-side="${side}"
         ></textarea>
         <div class="comment-form-actions">
-          <button class="btn btn-sm btn-primary save-comment-btn">Save</button>
+          <button class="btn btn-sm btn-primary save-comment-btn" disabled>Save</button>
           <button class="btn btn-sm btn-secondary cancel-comment-btn">Cancel</button>
-          <span class="draft-indicator">Draft saved</span>
         </div>
       </div>
     `;
@@ -131,11 +130,13 @@ class CommentManager {
     this.autoResizeTextarea(textarea);
     this.updateSuggestionButtonState(textarea, suggestionBtn);
 
-    // Auto-save on input, auto-resize textarea, and update suggestion button state
+    // Auto-save on input, auto-resize textarea, update suggestion button and save button state
     textarea.addEventListener('input', () => {
       this.autoSaveComment(textarea);
       this.autoResizeTextarea(textarea);
       this.updateSuggestionButtonState(textarea, suggestionBtn);
+      // Enable/disable save button based on content
+      saveBtn.disabled = !textarea.value.trim();
     });
 
     // Keyboard shortcuts (Escape, Cmd/Ctrl+Enter) are handled by delegated
@@ -157,7 +158,7 @@ class CommentManager {
   }
 
   /**
-   * Auto-save comment draft
+   * Auto-save comment draft (silently, no indicator)
    * @param {HTMLTextAreaElement} textarea - The textarea element
    */
   autoSaveComment(textarea) {
@@ -165,20 +166,15 @@ class CommentManager {
     const lineNumber = textarea.dataset.line;
     const content = textarea.value.trim();
 
-    if (!content) return;
-
     // Save to localStorage as draft
     const prNumber = this.prManager?.currentPR?.number;
     const draftKey = `draft_${prNumber}_${fileName}_${lineNumber}`;
-    localStorage.setItem(draftKey, content);
 
-    // Show draft indicator
-    const indicator = textarea.closest('.user-comment-form, .user-comment')?.querySelector('.draft-indicator');
-    if (indicator) {
-      indicator.style.display = 'inline';
-      setTimeout(() => {
-        indicator.style.display = 'none';
-      }, 2000);
+    if (content) {
+      localStorage.setItem(draftKey, content);
+    } else {
+      // Clear draft if content is empty
+      localStorage.removeItem(draftKey);
     }
   }
 
@@ -345,8 +341,8 @@ class CommentManager {
     const side = textarea.dataset.side || 'RIGHT';
     const content = textarea.value.trim();
 
+    // Guard clause - button should be disabled when empty, but check anyway
     if (!content) {
-      alert('Please enter a comment');
       return;
     }
 
@@ -382,8 +378,8 @@ class CommentManager {
       const draftKey = `draft_${prNumber}_${fileName}_${lineNumber}`;
       localStorage.removeItem(draftKey);
 
-      // Create comment display row
-      this.displayUserComment({
+      // Build comment object
+      const commentData = {
         id: result.commentId,
         file: fileName,
         line_start: lineNumber,
@@ -391,7 +387,15 @@ class CommentManager {
         diff_position: diffPosition,  // Include for expanded context warning logic
         body: content,
         created_at: new Date().toISOString()
-      }, formRow.previousElementSibling);
+      };
+
+      // Create comment display row
+      this.displayUserComment(commentData, formRow.previousElementSibling);
+
+      // Notify AI Panel about the new comment
+      if (window.aiPanel?.addComment) {
+        window.aiPanel.addComment(commentData);
+      }
 
       // Hide form and clear selection
       this.hideCommentForm();
@@ -460,13 +464,21 @@ class CommentManager {
     }
 
     const escapeHtml = this.prManager?.escapeHtml?.bind(this.prManager) || ((s) => s);
+
+    // Choose icon based on comment origin (AI-adopted vs user-originated)
+    const commentIcon = comment.parent_id
+      ? `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
+           <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
+         </svg>`
+      : `<svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
+           <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
+         </svg>`;
+
     const commentHTML = `
-      <div class="user-comment ${comment.parent_id ? 'adopted-comment' : ''}">
+      <div class="user-comment ${comment.parent_id ? 'adopted-comment comment-ai-origin' : 'comment-user-origin'}">
         <div class="user-comment-header">
-          <span class="comment-icon">
-            <svg class="octicon octicon-comment" viewBox="0 0 16 16" width="16" height="16">
-              <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"></path>
-            </svg>
+          <span class="comment-origin-icon">
+            ${commentIcon}
           </span>
           <span class="user-comment-line-info">${lineInfo}</span>
           ${expandedContextIndicator}
@@ -519,13 +531,21 @@ class CommentManager {
       : `Line ${comment.line_start}`;
 
     const escapeHtml = this.prManager?.escapeHtml?.bind(this.prManager) || ((s) => s);
+
+    // Choose icon based on comment origin (AI-adopted vs user-originated)
+    const commentIcon = comment.parent_id
+      ? `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
+           <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
+         </svg>`
+      : `<svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
+           <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
+         </svg>`;
+
     const commentHTML = `
-      <div class="user-comment editing-mode ${comment.parent_id ? 'adopted-comment' : ''}">
+      <div class="user-comment editing-mode ${comment.parent_id ? 'adopted-comment comment-ai-origin' : 'comment-user-origin'}">
         <div class="user-comment-header">
-          <span class="comment-icon">
-            <svg class="octicon octicon-comment" viewBox="0 0 16 16" width="16" height="16">
-              <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"></path>
-            </svg>
+          <span class="comment-origin-icon">
+            ${commentIcon}
           </span>
           <span class="user-comment-line-info">${lineInfo}</span>
           ${comment.type === 'praise' ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>` : ''}
