@@ -1378,14 +1378,14 @@ class PRManager {
       return;
     }
 
-    const confirmed = await window.confirmDialog.show({
+    const result = await window.confirmDialog.show({
       title: 'Delete Comment?',
       message: 'Are you sure you want to delete this comment? This action cannot be undone.',
       confirmText: 'Delete',
       confirmClass: 'btn-danger'
     });
 
-    if (!confirmed) return;
+    if (result !== 'confirm') return;
 
     try {
       const response = await fetch(`/api/user-comment/${commentId}`, { method: 'DELETE' });
@@ -1419,14 +1419,14 @@ class PRManager {
       return;
     }
 
-    const confirmed = await window.confirmDialog.show({
+    const dialogResult = await window.confirmDialog.show({
       title: 'Clear All Comments?',
       message: `This will delete all ${userCommentRows.length} user comment${userCommentRows.length !== 1 ? 's' : ''} from this PR. This action cannot be undone.`,
       confirmText: 'Delete All',
       confirmClass: 'btn-danger'
     });
 
-    if (!confirmed) return;
+    if (dialogResult !== 'confirm') return;
 
     try {
       const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`, {
@@ -2422,6 +2422,71 @@ class PRManager {
     }
 
     try {
+      // Check if PR has new commits before analysis
+      try {
+        const staleResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`);
+        if (!staleResponse.ok) {
+          // Handle non-OK responses (401/403/500 etc)
+          const errorText = await staleResponse.text().catch(() => 'Unknown error');
+          console.warn(`Stale check failed with status ${staleResponse.status}:`, errorText);
+          if (window.toast) {
+            window.toast.showWarning(`Could not verify PR is current (${staleResponse.status}). Proceeding with analysis.`);
+          }
+          // Fall through to continue with analysis
+        } else {
+          const staleData = await staleResponse.json();
+
+          // Handle PR state - show info for closed/merged PRs but still allow analysis
+          if (staleData.prState && (staleData.prState !== 'open' || staleData.merged)) {
+            const stateLabel = staleData.merged ? 'merged' : 'closed';
+            if (window.toast) {
+              window.toast.showWarning(`This PR is ${stateLabel}. Analysis will proceed on the existing data.`);
+            }
+          }
+
+          // Handle isStale === null (unknown - couldn't check)
+          if (staleData.isStale === null) {
+            // Couldn't verify - show toast and proceed
+            if (window.toast) {
+              window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
+            }
+            // Continue with analysis
+          } else if (staleData.isStale === true) {
+            // PR is stale - show single dialog with 3 options
+            if (!window.confirmDialog) {
+              console.warn('ConfirmDialog not available for stale PR check');
+            } else {
+              const choice = await window.confirmDialog.show({
+                title: 'PR Has New Commits',
+                message: 'This pull request has new commits since you last loaded it. What would you like to do?',
+                confirmText: 'Refresh & Analyze',
+                confirmClass: 'btn-primary',
+                secondaryText: 'Analyze Anyway',
+                secondaryClass: 'btn-warning'
+              });
+
+              if (choice === 'confirm') {
+                // User wants to refresh first
+                await this.refreshPR();
+                // After refresh, continue with analysis
+              } else if (choice === 'secondary') {
+                // User chose to analyze anyway - continue with stale data
+              } else {
+                // User cancelled
+                return;
+              }
+            }
+          }
+          // If isStale === false, PR is up-to-date, just continue
+        }
+      } catch (staleError) {
+        // Fail-open: show toast warning and continue with analysis
+        console.warn('Error checking PR staleness:', staleError);
+        if (window.toast) {
+          window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
+        }
+      }
+
       // Check if there are existing AI suggestions first
       let hasSuggestions = false;
       try {
@@ -2442,14 +2507,14 @@ class PRManager {
           return;
         }
 
-        const confirmed = await window.confirmDialog.show({
+        const replaceResult = await window.confirmDialog.show({
           title: 'Replace Existing Analysis?',
           message: 'This will replace all existing AI suggestions for this PR. Continue?',
           confirmText: 'Continue',
           confirmClass: 'btn-danger'
         });
 
-        if (!confirmed) {
+        if (replaceResult !== 'confirm') {
           return;
         }
       }
