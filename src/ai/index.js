@@ -21,6 +21,7 @@ const {
 // Each provider self-registers when loaded
 require('./claude-provider');
 require('./gemini-provider');
+require('./codex-provider');
 
 // Export the unified API
 module.exports = {
