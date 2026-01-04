@@ -4204,6 +4204,12 @@ tr.line-range-start .d2h-code-line-ctn {
   border: 1px solid #cf222e;
 }
 
+.toast-warning {
+  background-color: #9a6700;
+  color: white;
+  border: 1px solid #bf8700;
+}
+
 .toast-content {
   display: flex;
   align-items: center;
@@ -4239,6 +4245,11 @@ tr.line-range-start .d2h-code-line-ctn {
 [data-theme="dark"] .toast-error {
   background-color: #da3633;
   border-color: #f85149;
+}
+
+[data-theme="dark"] .toast-warning {
+  background-color: #9e6a03;
+  border-color: #d29922;
 }
 
 /* Loading spinner for buttons */
@@ -4963,6 +4974,19 @@ body::before {
 }
 
 .header .settings-link:hover {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-primary);
+  color: var(--color-text-primary);
+}
+
+/* GitHub link in header - override generic .github-link styling */
+.header #github-link {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--color-text-tertiary);
+}
+
+.header #github-link:hover {
   background: var(--color-bg-secondary);
   border-color: var(--color-border-primary);
   color: var(--color-text-primary);

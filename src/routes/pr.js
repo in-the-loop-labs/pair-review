@@ -285,9 +285,9 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     `, [prNumber, repository]);
 
     if (!prMetadata || !prMetadata.pr_data) {
-      // No local data, can't determine staleness - fail-open
+      // No local data, can't determine staleness - return null (unknown)
       return res.json({
-        isStale: false,
+        isStale: null,
         error: 'No local PR data found'
       });
     }
@@ -298,7 +298,7 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
       localPrData = JSON.parse(prMetadata.pr_data);
     } catch (parseError) {
       return res.json({
-        isStale: false,
+        isStale: null,
         error: 'Failed to parse local PR data'
       });
     }
@@ -306,7 +306,7 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     const localHeadSha = localPrData.head_sha;
     if (!localHeadSha) {
       return res.json({
-        isStale: false,
+        isStale: null,
         error: 'No head SHA in local PR data'
       });
     }
@@ -326,11 +326,22 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     });
 
   } catch (error) {
-    // Fail-open: on any error, return isStale: false so analysis can proceed
+    // Fail-open: on any error, return isStale: null (unknown) so analysis can proceed
     logger.warn('Error checking PR staleness:', error.message);
+
+    // Provide more helpful error messages based on error type
+    let errorMessage = error.message;
+    if (error.status === 404) {
+      errorMessage = 'PR not found on GitHub';
+    } else if (error.status === 401 || error.status === 403) {
+      errorMessage = 'GitHub authentication issue';
+    } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
+      errorMessage = 'Could not connect to GitHub';
+    }
+
     res.json({
-      isStale: false,
-      error: error.message
+      isStale: null,
+      error: errorMessage
     });
   }
 });

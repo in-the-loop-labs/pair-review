@@ -7,6 +7,7 @@ class ConfirmDialog {
     this.modal = null;
     this.isVisible = false;
     this.onConfirm = null;
+    this.onSecondary = null;
     this.onCancel = null;
     this.escapeHandler = null;
     this.createModal();
@@ -47,6 +48,9 @@ class ConfirmDialog {
 
         <div class="modal-footer">
           <button class="btn btn-secondary" data-action="cancel">Cancel</button>
+          <button class="btn btn-secondary" id="confirm-dialog-secondary-btn" data-action="secondary" style="display: none;">
+            Secondary
+          </button>
           <button class="btn btn-danger" id="confirm-dialog-btn" data-action="confirm">
             Confirm
           </button>
@@ -67,6 +71,8 @@ class ConfirmDialog {
       const action = e.target.closest('[data-action]')?.dataset.action;
       if (action === 'confirm') {
         this.handleConfirm();
+      } else if (action === 'secondary') {
+        this.handleSecondary();
       } else if (action === 'cancel') {
         this.handleCancel();
       }
@@ -88,12 +94,15 @@ class ConfirmDialog {
    * @param {string} options.message - Dialog message
    * @param {string} options.confirmText - Confirm button text (default: "Confirm")
    * @param {string} options.confirmClass - Confirm button class (default: "btn-danger")
+   * @param {string} options.secondaryText - Secondary button text (optional - if provided, shows 3rd button)
+   * @param {string} options.secondaryClass - Secondary button class (default: "btn-secondary")
    * @param {Function} options.onConfirm - Callback when confirmed
+   * @param {Function} options.onSecondary - Callback when secondary clicked (optional)
    * @param {Function} options.onCancel - Callback when cancelled (optional)
-   * @returns {Promise<boolean>} Promise that resolves to true if confirmed, false if cancelled
+   * @returns {Promise<string>} Promise that resolves to 'confirm', 'secondary', or 'cancel'
    */
   show(options = {}) {
-    if (!this.modal) return Promise.resolve(false);
+    if (!this.modal) return Promise.resolve('cancel');
 
     return new Promise((resolve) => {
       // Set title
@@ -113,9 +122,24 @@ class ConfirmDialog {
       if (confirmBtn) {
         confirmBtn.textContent = options.confirmText || 'Confirm';
         // Remove previous style classes and add new one
-        confirmBtn.classList.remove('btn-primary', 'btn-secondary', 'btn-danger');
+        confirmBtn.classList.remove('btn-primary', 'btn-secondary', 'btn-danger', 'btn-warning');
         const confirmClass = options.confirmClass || 'btn-danger';
         confirmBtn.classList.add(confirmClass);
+      }
+
+      // Set secondary button (optional 3rd button)
+      const secondaryBtn = this.modal.querySelector('#confirm-dialog-secondary-btn');
+      if (secondaryBtn) {
+        if (options.secondaryText) {
+          secondaryBtn.textContent = options.secondaryText;
+          secondaryBtn.style.display = '';
+          // Remove previous style classes and add new one
+          secondaryBtn.classList.remove('btn-primary', 'btn-secondary', 'btn-danger', 'btn-warning');
+          const secondaryClass = options.secondaryClass || 'btn-secondary';
+          secondaryBtn.classList.add(secondaryClass);
+        } else {
+          secondaryBtn.style.display = 'none';
+        }
       }
 
       // Store callbacks with promise resolution
@@ -123,14 +147,21 @@ class ConfirmDialog {
         if (options.onConfirm) {
           options.onConfirm();
         }
-        resolve(true);
+        resolve('confirm');
+      };
+
+      this.onSecondary = () => {
+        if (options.onSecondary) {
+          options.onSecondary();
+        }
+        resolve('secondary');
       };
 
       this.onCancel = () => {
         if (options.onCancel) {
           options.onCancel();
         }
-        resolve(false);
+        resolve('cancel');
       };
 
       // Show modal
@@ -145,6 +176,16 @@ class ConfirmDialog {
   handleConfirm() {
     if (this.onConfirm) {
       this.onConfirm();
+    }
+    this.hide();
+  }
+
+  /**
+   * Handle secondary action
+   */
+  handleSecondary() {
+    if (this.onSecondary) {
+      this.onSecondary();
     }
     this.hide();
   }
@@ -168,6 +209,7 @@ class ConfirmDialog {
     this.modal.style.display = 'none';
     this.isVisible = false;
     this.onConfirm = null;
+    this.onSecondary = null;
     this.onCancel = null;
   }
 }
