@@ -260,6 +260,82 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
 });
 
 /**
+ * Check if PR data is stale (remote has newer commits)
+ */
+router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+    const config = req.app.get('config');
+
+    // Get local PR data from database
+    const prMetadata = await queryOne(db, `
+      SELECT pr_data
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata || !prMetadata.pr_data) {
+      // No local data, can't determine staleness - fail-open
+      return res.json({
+        isStale: false,
+        error: 'No local PR data found'
+      });
+    }
+
+    // Extract localHeadSha from the pr_data JSON
+    let localPrData;
+    try {
+      localPrData = JSON.parse(prMetadata.pr_data);
+    } catch (parseError) {
+      return res.json({
+        isStale: false,
+        error: 'Failed to parse local PR data'
+      });
+    }
+
+    const localHeadSha = localPrData.head_sha;
+    if (!localHeadSha) {
+      return res.json({
+        isStale: false,
+        error: 'No head SHA in local PR data'
+      });
+    }
+
+    // Fetch current PR from GitHub
+    const githubClient = new GitHubClient(config.github_token);
+    const remotePrData = await githubClient.fetchPullRequest(owner, repo, prNumber);
+
+    const remoteHeadSha = remotePrData.head_sha;
+    const isStale = localHeadSha !== remoteHeadSha;
+
+    res.json({
+      isStale,
+      localHeadSha,
+      remoteHeadSha,
+      prState: remotePrData.state
+    });
+
+  } catch (error) {
+    // Fail-open: on any error, return isStale: false so analysis can proceed
+    logger.warn('Error checking PR staleness:', error.message);
+    res.json({
+      isStale: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * Get list of pull requests
  */
 router.get('/api/prs', async (req, res) => {

@@ -2422,6 +2422,52 @@ class PRManager {
     }
 
     try {
+      // Check if PR has new commits before analysis
+      try {
+        const staleResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`);
+        if (staleResponse.ok) {
+          const staleData = await staleResponse.json();
+          if (staleData.isStale) {
+            // PR has new commits - ask user what to do
+            if (!window.confirmDialog) {
+              console.warn('ConfirmDialog not available for stale PR check');
+            } else {
+              const refreshConfirmed = await window.confirmDialog.show({
+                title: 'PR Has New Commits',
+                message: 'This pull request has new commits since you last loaded it. Would you like to refresh the PR data before running the analysis?',
+                confirmText: 'Refresh & Continue',
+                cancelText: 'Cancel',
+                confirmClass: 'btn-primary'
+              });
+
+              if (refreshConfirmed) {
+                // User wants to refresh first
+                await this.refreshPR();
+                // After refresh, continue with analysis
+              } else {
+                // User cancelled - ask if they want to analyze anyway
+                const analyzeAnyway = await window.confirmDialog.show({
+                  title: 'Analyze Outdated Data?',
+                  message: 'You can still run the analysis on the current (outdated) data. The analysis results may not reflect the latest changes. Continue anyway?',
+                  confirmText: 'Analyze Anyway',
+                  cancelText: 'Cancel',
+                  confirmClass: 'btn-warning'
+                });
+
+                if (!analyzeAnyway) {
+                  // User cancelled completely
+                  return;
+                }
+                // User chose to analyze anyway - continue with stale data
+              }
+            }
+          }
+        }
+      } catch (staleError) {
+        // Fail-open: log warning and continue with analysis
+        console.warn('Error checking PR staleness:', staleError);
+      }
+
       // Check if there are existing AI suggestions first
       let hasSuggestions = false;
       try {
