@@ -838,6 +838,37 @@ describe('AI Suggestion Endpoints', () => {
       expect(response.body.suggestions.length).toBe(1);
       expect(response.body.suggestions[0].body).toBe('Final');
     });
+
+    it('should only return suggestions from the latest ai_run_id', async () => {
+      // Insert suggestions from two different analysis runs
+      // run-1 has older timestamps, run-2 has newer timestamps
+      const oldTime = '2024-01-01 10:00:00';
+      const newTime = '2024-01-01 11:00:00';
+
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Old run suggestion 1', 'active', 'run-1', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Old run suggestion 2', 'active', 'run-1', ?)
+      `, [prId, oldTime]);
+
+      // run-2 has a later created_at timestamp, making it the newest analysis run
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        VALUES (?, 'ai', 'file.js', 30, NULL, 'New run suggestion', 'active', 'run-2', ?)
+      `, [prId, newTime]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/ai-suggestions');
+
+      // Should only return the suggestion from run-2 (the latest run based on created_at)
+      expect(response.status).toBe(200);
+      expect(response.body.suggestions.length).toBe(1);
+      expect(response.body.suggestions[0].body).toBe('New run suggestion');
+      expect(response.body.suggestions[0].ai_run_id).toBe('run-2');
+    });
   });
 
   describe('POST /api/ai-suggestion/:id/status', () => {

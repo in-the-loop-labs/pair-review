@@ -24,30 +24,6 @@ class Analyzer {
   }
 
   /**
-   * Delete old AI suggestions for a PR
-   * @param {number} prId - Pull request ID
-   */
-  async deleteOldAISuggestions(prId) {
-    const { run } = require('../database');
-    
-    try {
-      const result = await run(this.db, `
-        DELETE FROM comments 
-        WHERE pr_id = ? AND source = 'ai'
-      `, [prId]);
-      
-      if (result.changes > 0) {
-        logger.info(`Deleted ${result.changes} old AI suggestions for PR ${prId}`);
-      }
-      
-      return result.changes;
-    } catch (error) {
-      logger.error(`Error deleting old AI suggestions: ${error.message}`);
-      throw error;
-    }
-  }
-
-  /**
    * Perform all 3 levels of analysis in parallel
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree

@@ -792,6 +792,14 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
     // Get AI suggestions from the comments table
     // Only return suggestions from the latest analysis run (ai_run_id)
     // This preserves history while showing only the most recent results
+    //
+    // Note: If no AI suggestions exist (subquery returns NULL), the ai_run_id = NULL
+    // comparison returns no rows. This is intentional - we only show suggestions
+    // when there's a matching analysis run.
+    //
+    // Note: prMetadata.id is passed twice because SQLite requires separate parameters
+    // for the outer WHERE clause and the subquery. A CTE could consolidate this but
+    // adds complexity without meaningful benefit here.
     const suggestions = await query(req.app.get('db'), `
       SELECT
         id,
