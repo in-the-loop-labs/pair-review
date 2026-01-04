@@ -5573,8 +5573,16 @@ body:not([data-theme="dark"]) .theme-icon-light {
   font-weight: 400;
 }
 
+.segment-count--zero {
+  opacity: 0.4;
+}
+
 .segment-btn.active .segment-count {
   opacity: 1;
+}
+
+.segment-btn.active .segment-count--zero {
+  opacity: 0.6;
 }
 
 /* Hide level filter when Comments segment is selected */
@@ -5694,6 +5702,51 @@ body:not([data-theme="dark"]) .theme-icon-light {
   padding: 24px 16px;
   color: var(--color-text-tertiary);
   font-size: 0.8125rem;
+}
+
+/* Structured empty state layout */
+.findings-empty.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem 1.5rem;
+  min-height: 200px;
+}
+
+.empty-state-icon {
+  font-size: 2rem;
+  opacity: 0.4;
+  margin-bottom: 1rem;
+  color: var(--color-text-tertiary);
+}
+
+.empty-state-icon svg {
+  display: block;
+}
+
+.empty-state-icon--success {
+  color: var(--color-success, #1a7f37);
+  opacity: 0.6;
+}
+
+.empty-state-title {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.empty-state-description {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  max-width: 240px;
+  line-height: 1.5;
+}
+
+.empty-state-description strong {
+  color: var(--color-text-secondary);
+  font-weight: 500;
 }
 
 .findings-empty p {
