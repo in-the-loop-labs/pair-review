@@ -797,15 +797,18 @@ Output JSON with this structure:
     // FAILSAFE: Get valid file paths from PR metadata
     const validFilePaths = await this.getValidFilePaths(prId);
 
+    // Create a Set of normalized valid paths for O(1) lookup
+    const validPathsSet = new Set(validFilePaths);
+
     // Filter suggestions to only those with valid file paths
     const validSuggestions = [];
     let filteredCount = 0;
 
     for (const suggestion of suggestions) {
       // Check if the suggestion's file path exists in the PR diff
-      if (!this.isValidSuggestionPath(suggestion.file, validFilePaths)) {
+      if (!this.isValidSuggestionPath(suggestion.file, validPathsSet)) {
         filteredCount++;
-        console.warn(
+        logger.warn(
           `[FAILSAFE] Filtered AI suggestion with invalid path: "${suggestion.file}" ` +
           `(expected one of: ${validFilePaths.slice(0, 5).join(', ')}${validFilePaths.length > 5 ? '...' : ''})`
         );
@@ -888,12 +891,15 @@ Output JSON with this structure:
   /**
    * Check if a suggestion's file path is valid (exists in PR diff)
    * @param {string} suggestionPath - The file path from the suggestion
-   * @param {Array<string>} validPaths - Array of valid (normalized) file paths
+   * @param {Array<string>|Set<string>} validPaths - Array or Set of valid (normalized) file paths
    * @returns {boolean} True if the path is valid
    */
   isValidSuggestionPath(suggestionPath, validPaths) {
     // If we couldn't get valid paths, allow all suggestions (fail open for usability)
-    if (!validPaths || validPaths.length === 0) {
+    // This is a safety fallback - if PR metadata lookup fails, we don't want to
+    // discard all suggestions. Log prominently so this is visible for debugging.
+    if (!validPaths || (Array.isArray(validPaths) && validPaths.length === 0) || (validPaths instanceof Set && validPaths.size === 0)) {
+      logger.warn('[FAILSAFE] Path validation bypassed: no valid paths available. All suggestions will pass through unfiltered.');
       return true;
     }
 
@@ -902,8 +908,14 @@ Output JSON with this structure:
       return false;
     }
 
-    // Use normalized path comparison
-    return pathExistsInList(suggestionPath, validPaths);
+    // Use O(1) Set lookup if validPaths is a Set, otherwise normalize and check
+    const normalizedSuggestionPath = normalizePath(suggestionPath);
+    if (validPaths instanceof Set) {
+      return validPaths.has(normalizedSuggestionPath);
+    }
+    // Fallback for array (convert to Set for lookup)
+    const validPathsSet = new Set(validPaths.map(p => normalizePath(p)));
+    return validPathsSet.has(normalizedSuggestionPath);
   }
 
   /**

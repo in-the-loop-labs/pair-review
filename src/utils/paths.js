@@ -80,6 +80,7 @@ function pathsEqual(path1, path2) {
 /**
  * Check if a path exists in a list of paths (using normalized comparison)
  *
+ * @deprecated Use pathExistsInSet() with a pre-normalized Set for O(1) lookups
  * @param {string} needle - Path to search for
  * @param {Array<string>} haystack - Array of paths to search in
  * @returns {boolean} True if path exists in the array
@@ -93,8 +94,34 @@ function pathExistsInList(needle, haystack) {
   return haystack.some(path => normalizePath(path) === normalizedNeedle);
 }
 
+/**
+ * Check if a path exists in a Set of pre-normalized paths (O(1) lookup)
+ *
+ * This is the preferred method for checking path existence when performing
+ * multiple lookups against the same set of valid paths.
+ *
+ * @param {string} needle - Path to search for (will be normalized)
+ * @param {Set<string>} normalizedPathsSet - Set of pre-normalized paths
+ * @returns {boolean} True if path exists in the Set
+ *
+ * @example
+ * // Pre-normalize paths once
+ * const validPathsSet = new Set(validPaths.map(p => normalizePath(p)));
+ * // Then use O(1) lookups
+ * pathExistsInSet('./src/foo.js', validPathsSet) // => true
+ */
+function pathExistsInSet(needle, normalizedPathsSet) {
+  if (!needle || !(normalizedPathsSet instanceof Set)) {
+    return false;
+  }
+
+  const normalizedNeedle = normalizePath(needle);
+  return normalizedPathsSet.has(normalizedNeedle);
+}
+
 module.exports = {
   normalizePath,
   pathsEqual,
-  pathExistsInList
+  pathExistsInList,
+  pathExistsInSet
 };
