@@ -511,6 +511,17 @@
   border-color: #b62324;
 }
 
+.btn-warning {
+  color: #24292f;
+  background-color: #f6c343;
+  border-color: #d4a72c;
+}
+
+.btn-warning:hover {
+  background-color: #e5b430;
+  border-color: #c49a27;
+}
+
 
 /* Theme toggle button specific styling */
 #theme-toggle {

@@ -2425,12 +2425,20 @@ class PRManager {
       // Check if PR has new commits before analysis
       try {
         const staleResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`);
-        if (staleResponse.ok) {
+        if (!staleResponse.ok) {
+          // Handle non-OK responses (401/403/500 etc)
+          const errorText = await staleResponse.text().catch(() => 'Unknown error');
+          console.warn(`Stale check failed with status ${staleResponse.status}:`, errorText);
+          if (window.toast) {
+            window.toast.showWarning(`Could not verify PR is current (${staleResponse.status}). Proceeding with analysis.`);
+          }
+          // Fall through to continue with analysis
+        } else {
           const staleData = await staleResponse.json();
 
           // Handle PR state - show info for closed/merged PRs but still allow analysis
-          if (staleData.prState && staleData.prState !== 'open') {
-            const stateLabel = staleData.prState === 'closed' ? 'closed' : 'merged';
+          if (staleData.prState && (staleData.prState !== 'open' || staleData.merged)) {
+            const stateLabel = staleData.merged ? 'merged' : 'closed';
             if (window.toast) {
               window.toast.showWarning(`This PR is ${stateLabel}. Analysis will proceed on the existing data.`);
             }

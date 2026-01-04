@@ -39,6 +39,7 @@ class GitHubClient {
         body: data.body || '',
         author: data.user.login,
         state: data.state,
+        merged: data.merged || false,  // Boolean indicating if PR was merged
         base_branch: data.base.ref,
         head_branch: data.head.ref,
         base_sha: data.base.sha,

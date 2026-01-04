@@ -322,7 +322,8 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
       isStale,
       localHeadSha,
       remoteHeadSha,
-      prState: remotePrData.state
+      prState: remotePrData.state,
+      merged: remotePrData.merged
     });
 
   } catch (error) {
