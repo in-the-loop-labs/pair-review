@@ -15,7 +15,7 @@ const { extractJSON } = require('../utils/json-extractor');
 const GEMINI_MODELS = [
   {
     id: 'gemini-3-flash-preview',
-    name: '3 Flash',
+    name: '3.0 Flash',
     tier: 'fast',
     tagline: 'Lightning Fast',
     description: 'Quick analysis for simple changes',
@@ -34,7 +34,7 @@ const GEMINI_MODELS = [
   },
   {
     id: 'gemini-3-pro-preview',
-    name: '3 Pro',
+    name: '3.0 Pro',
     tier: 'thorough',
     tagline: 'Most Capable',
     description: 'Deep analysis for complex code',
