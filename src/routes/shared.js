@@ -16,6 +16,10 @@ const prToAnalysisId = new Map();
 // Store SSE clients for real-time progress updates
 const progressClients = new Map();
 
+// Store local review diff data keyed by reviewId
+// Using a Map avoids process.env size limits and security concerns
+const localReviewDiffs = new Map();
+
 /**
  * Generate a consistent PR key for mapping
  * @param {string} owner - Repository owner
@@ -123,6 +127,7 @@ module.exports = {
   activeAnalyses,
   prToAnalysisId,
   progressClients,
+  localReviewDiffs,
   getPRKey,
   getModel,
   determineCompletionInfo,

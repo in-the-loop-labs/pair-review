@@ -4,6 +4,7 @@ const fs = require('fs').promises;
 const { loadConfig } = require('./config');
 const { initializeDatabase, ReviewRepository } = require('./database');
 const { startServer } = require('./server');
+const { localReviewDiffs } = require('./routes/shared');
 const open = (...args) => import('open').then(({ default: open }) => open(...args));
 
 /**
@@ -71,6 +72,79 @@ async function getHeadSha(repoPath) {
   } catch (error) {
     throw new Error(`Failed to get HEAD SHA: ${error.message}`);
   }
+}
+
+/**
+ * Get the repository name from git remote or fall back to directory name
+ * @param {string} repoPath - Path to the git repository
+ * @returns {Promise<string>} Repository name (owner/repo format if available, or just repo name)
+ */
+async function getRepositoryName(repoPath) {
+  try {
+    // Try to get the remote URL
+    const remoteUrl = execSync('git config --get remote.origin.url', {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+
+    if (remoteUrl) {
+      // Parse the repository name from the URL
+      // Supports formats:
+      // - https://github.com/owner/repo.git
+      // - https://github.com/owner/repo
+      // - git@github.com:owner/repo.git
+      // - git@github.com:owner/repo
+      // - ssh://git@github.com/owner/repo.git
+
+      let repoName = remoteUrl;
+
+      // Remove .git suffix if present
+      if (repoName.endsWith('.git')) {
+        repoName = repoName.slice(0, -4);
+      }
+
+      // Handle SSH format (git@github.com:owner/repo)
+      if (repoName.includes(':') && repoName.includes('@')) {
+        const colonIndex = repoName.lastIndexOf(':');
+        repoName = repoName.substring(colonIndex + 1);
+      } else {
+        // Handle HTTPS or SSH URL format
+        // Extract the path after the domain
+        try {
+          const url = new URL(repoName);
+          repoName = url.pathname;
+        } catch {
+          // If URL parsing fails, try to extract path manually
+          const match = repoName.match(/[/:]([\w.-]+\/[\w.-]+)$/);
+          if (match) {
+            repoName = match[1];
+          }
+        }
+      }
+
+      // Remove leading slash if present
+      if (repoName.startsWith('/')) {
+        repoName = repoName.substring(1);
+      }
+
+      // Validate we got something reasonable (should have owner/repo format)
+      if (repoName && repoName.includes('/')) {
+        return repoName;
+      }
+
+      // If we only got the repo part, return it
+      if (repoName && repoName.length > 0) {
+        return repoName;
+      }
+    }
+  } catch (error) {
+    // No remote configured or git command failed
+    console.warn(`Could not get remote URL: ${error.message}`);
+  }
+
+  // Fall back to directory name
+  return path.basename(repoPath);
 }
 
 /**
@@ -206,7 +280,9 @@ async function getUntrackedFiles(repoPath) {
 }
 
 /**
- * Generate diff for local changes (staged + unstaged)
+ * Generate diff for local changes (unstaged only, not staged)
+ * Local mode shows unstaged changes + untracked files, NOT staged changes.
+ * This allows users to stage files to "hide" them from the review.
  * @param {string} repoPath - Path to the git repository
  * @returns {Promise<{diff: string, untrackedFiles: Array, stats: Object}>}
  */
@@ -220,7 +296,8 @@ async function generateLocalDiff(repoPath) {
   };
 
   try {
-    // Get staged changes
+    // Count staged changes for stats (but don't include in diff)
+    // This is informational only - staged files are excluded from review
     const stagedDiff = execSync('git diff --cached --no-color --no-ext-diff --unified=25', {
       cwd: repoPath,
       encoding: 'utf8',
@@ -229,11 +306,10 @@ async function generateLocalDiff(repoPath) {
     });
 
     if (stagedDiff.trim()) {
-      diff += stagedDiff;
       stats.stagedChanges = (stagedDiff.match(/^diff --git/gm) || []).length;
     }
 
-    // Get unstaged changes to tracked files
+    // Get unstaged changes to tracked files (this is what we show in the review)
     const unstagedDiff = execSync('git diff --no-color --no-ext-diff --unified=25', {
       cwd: repoPath,
       encoding: 'utf8',
@@ -242,15 +318,11 @@ async function generateLocalDiff(repoPath) {
     });
 
     if (unstagedDiff.trim()) {
-      // Add separator if we already have staged changes
-      if (diff && unstagedDiff.trim()) {
-        diff += '\n';
-      }
       diff += unstagedDiff;
       stats.unstagedChanges = (unstagedDiff.match(/^diff --git/gm) || []).length;
     }
 
-    stats.trackedChanges = stats.stagedChanges + stats.unstagedChanges;
+    stats.trackedChanges = stats.unstagedChanges;
 
   } catch (error) {
     console.warn(`Warning: Could not generate diff for tracked files: ${error.message}`);
@@ -260,27 +332,45 @@ async function generateLocalDiff(repoPath) {
   const untrackedFiles = await getUntrackedFiles(repoPath);
   stats.untrackedFiles = untrackedFiles.length;
 
-  // Generate pseudo-diff for untracked files (new file format)
+  // Generate authentic git diff for untracked files using git diff --no-index
   for (const untracked of untrackedFiles) {
-    if (!untracked.skipped && untracked.content) {
-      const lines = untracked.content.split('\n');
-      const lineCount = lines.length;
+    if (!untracked.skipped) {
+      try {
+        const filePath = path.join(repoPath, untracked.file);
+        // git diff --no-index exits with code 1 when there are differences, so we catch and handle it
+        let fileDiff;
+        try {
+          fileDiff = execSync(`git diff --no-index --no-color --no-ext-diff -- /dev/null "${filePath}"`, {
+            cwd: repoPath,
+            encoding: 'utf8',
+            stdio: ['pipe', 'pipe', 'pipe'],
+            maxBuffer: 10 * 1024 * 1024 // 10MB buffer per file
+          });
+        } catch (diffError) {
+          // git diff --no-index returns exit code 1 when there are differences
+          // The stdout still contains the valid diff
+          if (diffError.stdout) {
+            fileDiff = diffError.stdout;
+          } else {
+            throw diffError;
+          }
+        }
 
-      // Create a diff-like format for new files
-      const fileDiff = [
-        `diff --git a/${untracked.file} b/${untracked.file}`,
-        'new file mode 100644',
-        `index 0000000..0000000`,
-        `--- /dev/null`,
-        `+++ b/${untracked.file}`,
-        `@@ -0,0 +1,${lineCount} @@`,
-        ...lines.map(line => `+${line}`)
-      ].join('\n');
+        if (fileDiff && fileDiff.trim()) {
+          // The diff output shows the absolute path, normalize it to relative path
+          // Replace /dev/null comparison paths with the relative file path
+          const normalizedDiff = fileDiff
+            .replace(/^diff --git a\/dev\/null b\/.+$/m, `diff --git a/${untracked.file} b/${untracked.file}`)
+            .replace(/^\+\+\+ b\/.+$/m, `+++ b/${untracked.file}`);
 
-      if (diff) {
-        diff += '\n';
+          if (diff) {
+            diff += '\n';
+          }
+          diff += normalizedDiff;
+        }
+      } catch (fileError) {
+        console.warn(`Warning: Could not generate diff for untracked file ${untracked.file}: ${fileError.message}`);
       }
-      diff += fileDiff;
     }
   }
 
@@ -337,7 +427,8 @@ async function handleLocalReview(targetPath, flags = {}) {
 
     // Check for existing session or create new one
     const reviewRepo = new ReviewRepository(db);
-    const repository = path.basename(repoPath);
+    const repository = await getRepositoryName(repoPath);
+    console.log(`Repository: ${repository}`);
 
     console.log('Checking for existing review session...');
     const existingReview = await reviewRepo.getLocalReview(repoPath, headSha);
@@ -367,9 +458,6 @@ async function handleLocalReview(targetPath, flags = {}) {
     }
 
     console.log(`Found changes:`);
-    if (stats.stagedChanges > 0) {
-      console.log(`  - ${stats.stagedChanges} staged file(s)`);
-    }
     if (stats.unstagedChanges > 0) {
       console.log(`  - ${stats.unstagedChanges} unstaged file(s)`);
     }
@@ -378,8 +466,11 @@ async function handleLocalReview(targetPath, flags = {}) {
       const included = stats.untrackedFiles - skipped;
       console.log(`  - ${included} untracked file(s)${skipped > 0 ? ` (${skipped} skipped)` : ''}`);
     }
+    if (stats.stagedChanges > 0) {
+      console.log(`  - ${stats.stagedChanges} staged file(s) (excluded from review)`);
+    }
 
-    // Set environment variables for local mode
+    // Set environment variables for local mode (metadata only, not large data)
     process.env.PAIR_REVIEW_LOCAL = 'true';
     process.env.PAIR_REVIEW_LOCAL_PATH = repoPath;
     process.env.PAIR_REVIEW_LOCAL_ID = String(sessionId);
@@ -387,9 +478,8 @@ async function handleLocalReview(targetPath, flags = {}) {
     process.env.PAIR_REVIEW_BRANCH = branch;
     process.env.PAIR_REVIEW_LOCAL_HEAD_SHA = headSha;
 
-    // Store diff data for the server to access
-    process.env.PAIR_REVIEW_LOCAL_DIFF = diff;
-    process.env.PAIR_REVIEW_LOCAL_STATS = JSON.stringify(stats);
+    // Store diff data in module-level Map (avoids process.env size limits and security concerns)
+    localReviewDiffs.set(sessionId, { diff, stats });
 
     // Set model override if provided
     if (flags.model) {
@@ -436,6 +526,7 @@ module.exports = {
   handleLocalReview,
   findGitRoot,
   getHeadSha,
+  getRepositoryName,
   getCurrentBranch,
   generateLocalDiff,
   generateLocalReviewId,

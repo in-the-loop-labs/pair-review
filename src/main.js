@@ -53,14 +53,14 @@ function parseArgs(args) {
         throw new Error('--model flag requires a model name (e.g., --model opus)');
       }
     } else if (arg === '--local') {
+      // --local flag is always a boolean
+      flags.local = true;
       // Next argument is optional path (if not starting with --)
       if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
-        flags.local = args[i + 1];
+        flags.localPath = args[i + 1];
         i++; // Skip next argument since we consumed it
-      } else {
-        // No path provided, use true to indicate local mode with cwd
-        flags.local = true;
       }
+      // localPath will be resolved to cwd if not provided
     } else if (arg === '--configure') {
       // Skip --configure as it's handled earlier
       continue;
@@ -112,7 +112,8 @@ async function main() {
 
     // Check for local mode (review uncommitted local changes)
     if (flags.local) {
-      const targetPath = typeof flags.local === 'string' ? flags.local : process.cwd();
+      // Resolve localPath, defaulting to cwd if not provided
+      const targetPath = flags.localPath || process.cwd();
       await handleLocalReview(targetPath, flags);
       return; // Exit after local review
     }

@@ -46,6 +46,9 @@ class LocalManager {
     // Hide PR-specific UI elements
     this.hideGitHubElements();
 
+    // Initialize refresh button
+    this.initRefreshButton();
+
     // Load local review data
     await this.loadLocalReview();
 
@@ -541,6 +544,73 @@ class LocalManager {
       };
     }
 
+    // Patch PRManager.clearAllUserComments for local mode
+    const originalClearAllUserComments = manager.clearAllUserComments?.bind(manager);
+    if (originalClearAllUserComments) {
+      manager.clearAllUserComments = async function() {
+        // Find all user comment rows
+        const userCommentRows = document.querySelectorAll('.user-comment-row');
+
+        if (userCommentRows.length === 0) {
+          if (window.toast) {
+            window.toast.showInfo('No comments to clear');
+          }
+          return;
+        }
+
+        if (!window.confirmDialog) {
+          alert('Confirmation dialog unavailable. Please refresh the page.');
+          return;
+        }
+
+        const dialogResult = await window.confirmDialog.show({
+          title: 'Clear All Comments?',
+          message: `This will delete all ${userCommentRows.length} user comment${userCommentRows.length !== 1 ? 's' : ''} from this review. This action cannot be undone.`,
+          confirmText: 'Delete All',
+          confirmClass: 'btn-danger'
+        });
+
+        if (dialogResult !== 'confirm') return;
+
+        try {
+          const response = await fetch(`/api/local/${reviewId}/user-comments`, {
+            method: 'DELETE'
+          });
+
+          if (!response.ok) throw new Error('Failed to delete comments');
+
+          const result = await response.json();
+          const deletedCount = result.deletedCount || userCommentRows.length;
+
+          // Remove comment rows from DOM
+          userCommentRows.forEach(row => row.remove());
+
+          // Clear internal userComments array
+          manager.userComments = [];
+
+          // Clear comments from AI Panel
+          if (window.aiPanel?.setComments) {
+            window.aiPanel.setComments([]);
+          }
+
+          // Update comment count display
+          manager.updateCommentCount();
+
+          // Show success toast notification
+          if (window.toast) {
+            window.toast.showSuccess(`Cleared ${deletedCount} comment${deletedCount !== 1 ? 's' : ''}`);
+          }
+        } catch (error) {
+          console.error('Error clearing user comments:', error);
+          if (window.toast) {
+            window.toast.showError('Failed to clear comments');
+          } else {
+            alert('Failed to clear comments');
+          }
+        }
+      };
+    }
+
     // Patch SuggestionManager.createUserCommentFromSuggestion for local mode
     // This method is called when adopting AI suggestions
     if (manager.suggestionManager) {
@@ -767,6 +837,110 @@ class LocalManager {
   }
 
   /**
+   * Initialize the refresh button for local mode
+   */
+  initRefreshButton() {
+    const refreshBtn = document.getElementById('local-refresh-btn');
+    if (!refreshBtn) return;
+
+    refreshBtn.addEventListener('click', () => this.refreshDiff());
+  }
+
+  /**
+   * Refresh the diff from the working directory
+   */
+  async refreshDiff() {
+    const manager = window.prManager;
+    const refreshBtn = document.getElementById('local-refresh-btn');
+
+    if (!refreshBtn || refreshBtn.disabled) return;
+
+    try {
+      // Show loading state
+      refreshBtn.disabled = true;
+      refreshBtn.classList.add('btn-loading');
+
+      const response = await fetch(`/api/local/${this.reviewId}/refresh`, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to refresh diff');
+      }
+
+      const result = await response.json();
+      console.log('Diff refreshed:', result.stats);
+
+      // Check if HEAD has changed (user made a commit)
+      if (result.sessionChanged && result.newSessionId) {
+        // Show confirmation dialog to user
+        const originalSha = result.originalHeadSha ? result.originalHeadSha.substring(0, 7) : 'unknown';
+        const newSha = result.newHeadSha ? result.newHeadSha.substring(0, 7) : 'unknown';
+
+        if (window.confirmDialog) {
+          const dialogResult = await window.confirmDialog.show({
+            title: 'HEAD Has Changed',
+            message: `A new commit was detected (${originalSha} -> ${newSha}). Your comments and AI suggestions are tied to the previous commit.\n\nWould you like to switch to the new session for the current HEAD?`,
+            confirmText: 'Switch to New Session',
+            cancelText: 'Stay on Current Session',
+            confirmClass: 'btn-primary'
+          });
+
+          if (dialogResult === 'confirm') {
+            // Redirect to the new session
+            window.location.href = `/local/${result.newSessionId}`;
+            return;
+          }
+        } else {
+          // Fallback if confirmDialog is not available
+          const switchSession = confirm(
+            `HEAD has changed (${originalSha} -> ${newSha}). ` +
+            `Your comments and AI suggestions are tied to the previous commit. ` +
+            `Switch to the new session?`
+          );
+
+          if (switchSession) {
+            window.location.href = `/local/${result.newSessionId}`;
+            return;
+          }
+        }
+
+        // User chose to stay, show info toast
+        if (window.toast) {
+          window.toast.showInfo('Staying on current session. Refresh again to see this option.');
+        }
+      }
+
+      // Reload the diff display
+      await this.loadLocalDiff();
+
+      // Show success toast
+      if (window.toast) {
+        window.toast.showSuccess('Diff refreshed successfully');
+      } else if (window.showToast) {
+        window.showToast('Diff refreshed successfully', 'success');
+      }
+
+    } catch (error) {
+      console.error('Error refreshing diff:', error);
+      if (window.toast) {
+        window.toast.showError('Failed to refresh diff: ' + error.message);
+      } else if (window.showToast) {
+        window.showToast('Failed to refresh diff: ' + error.message, 'error');
+      } else {
+        alert('Failed to refresh diff: ' + error.message);
+      }
+    } finally {
+      // Reset button state
+      if (refreshBtn) {
+        refreshBtn.disabled = false;
+        refreshBtn.classList.remove('btn-loading');
+      }
+    }
+  }
+
+  /**
    * Update split button for local mode (no GitHub submission)
    * Replace the SplitButton with a simple Preview button
    */
@@ -926,16 +1100,19 @@ class LocalManager {
       repoName.textContent = reviewData.repository || 'Unknown';
     }
 
+    // Update local path display in toolbar-meta
+    const pathText = document.getElementById('local-path-text');
+    const pathInner = document.getElementById('local-path-inner');
+    if (pathText && pathInner && reviewData.localPath) {
+      const fullPath = reviewData.localPath;
+      pathInner.textContent = fullPath;
+      pathText.title = fullPath;
+    }
+
     // Update branch name
     const branchText = document.getElementById('local-branch-text');
     if (branchText) {
       branchText.textContent = reviewData.branch || 'unknown';
-    }
-
-    // Update title
-    const titleElement = document.getElementById('pr-title-text');
-    if (titleElement) {
-      titleElement.textContent = 'Uncommitted Changes';
     }
 
     // Update commit SHA
@@ -944,6 +1121,15 @@ class LocalManager {
       commitSha.textContent = reviewData.localHeadSha.substring(0, 7);
       commitSha.dataset.fullSha = reviewData.localHeadSha;
     }
+  }
+
+  /**
+   * Escape HTML to prevent XSS
+   */
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   /**
@@ -1020,6 +1206,12 @@ class LocalManager {
       const filesCountEl = document.getElementById('pr-files-count');
       if (filesCountEl) {
         filesCountEl.textContent = `${files.length} files`;
+      }
+
+      // Update sidebar file count
+      const sidebarFileCount = document.getElementById('sidebar-file-count');
+      if (sidebarFileCount) {
+        sidebarFileCount.textContent = files.length;
       }
 
       // Update file list sidebar

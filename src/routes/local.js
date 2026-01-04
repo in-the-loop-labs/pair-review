@@ -16,9 +16,11 @@ const { query, queryOne, run, ReviewRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
+const { generateLocalDiff } = require('../local-review');
 const {
   activeAnalyses,
   progressClients,
+  localReviewDiffs,
   getModel,
   determineCompletionInfo,
   broadcastProgress
@@ -61,11 +63,32 @@ router.get('/api/local/:reviewId', async (req, res) => {
       });
     }
 
+    // If the stored repository name doesn't look like owner/repo format,
+    // try to get a fresh one from git remote
+    let repositoryName = review.repository;
+    if (repositoryName && !repositoryName.includes('/') && review.local_path) {
+      try {
+        const { getRepositoryName } = require('../local-review');
+        const freshRepoName = await getRepositoryName(review.local_path);
+        if (freshRepoName && freshRepoName.includes('/')) {
+          repositoryName = freshRepoName;
+          // Update the database with the correct name
+          await run(db, `
+            UPDATE reviews SET repository = ? WHERE id = ?
+          `, [freshRepoName, reviewId]);
+          logger.log('API', `Updated repository name: ${freshRepoName}`, 'cyan');
+        }
+      } catch (repoError) {
+        // Keep the original name if we can't get a better one
+        logger.warn(`Could not refresh repository name: ${repoError.message}`);
+      }
+    }
+
     res.json({
       id: review.id,
       localPath: review.local_path,
       localHeadSha: review.local_head_sha,
-      repository: review.repository,
+      repository: repositoryName,
       branch: process.env.PAIR_REVIEW_BRANCH || 'unknown',
       reviewType: 'local',
       status: review.status,
@@ -105,24 +128,17 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       });
     }
 
-    // Get diff from environment variable
-    const diffContent = process.env.PAIR_REVIEW_LOCAL_DIFF || '';
-    const statsJson = process.env.PAIR_REVIEW_LOCAL_STATS || '{}';
-
-    let stats;
-    try {
-      stats = JSON.parse(statsJson);
-    } catch (parseError) {
-      stats = {};
-    }
+    // Get diff from module-level storage
+    const diffData = localReviewDiffs.get(reviewId) || { diff: '', stats: {} };
+    const { diff: diffContent, stats } = diffData;
 
     res.json({
-      diff: diffContent,
+      diff: diffContent || '',
       stats: {
-        trackedChanges: stats.trackedChanges || 0,
-        untrackedFiles: stats.untrackedFiles || 0,
-        stagedChanges: stats.stagedChanges || 0,
-        unstagedChanges: stats.unstagedChanges || 0
+        trackedChanges: stats?.trackedChanges || 0,
+        untrackedFiles: stats?.untrackedFiles || 0,
+        stagedChanges: stats?.stagedChanges || 0,
+        unstagedChanges: stats?.unstagedChanges || 0
       }
     });
 
@@ -957,6 +973,68 @@ router.put('/api/local/:reviewId/user-comments/:commentId', async (req, res) => 
 });
 
 /**
+ * Bulk delete all user comments for a local review
+ */
+router.delete('/api/local/:reviewId/user-comments', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+
+    // Verify review exists
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({
+        error: `Local review #${reviewId} not found`
+      });
+    }
+
+    // Begin transaction to ensure atomicity
+    await run(db, 'BEGIN TRANSACTION');
+
+    try {
+      // Soft delete all user comments for this review (active, submitted, or draft)
+      const result = await run(db, `
+        UPDATE comments
+        SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+        WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+      `, [reviewId]);
+
+      // Commit transaction
+      await run(db, 'COMMIT');
+
+      // Use actual number of affected rows from the UPDATE
+      const deletedCount = result.changes;
+
+      res.json({
+        success: true,
+        deletedCount: deletedCount,
+        message: `Deleted ${deletedCount} user comment${deletedCount !== 1 ? 's' : ''}`
+      });
+
+    } catch (transactionError) {
+      // Rollback transaction on error
+      await run(db, 'ROLLBACK');
+      throw transactionError;
+    }
+
+  } catch (error) {
+    console.error('Error deleting all local review user comments:', error);
+    res.status(500).json({
+      error: 'Failed to delete comments'
+    });
+  }
+});
+
+/**
  * Delete user comment from a local review
  */
 router.delete('/api/local/:reviewId/user-comments/:commentId', async (req, res) => {
@@ -1168,6 +1246,109 @@ router.get('/api/local/:reviewId/ai-suggestions/status', (req, res) => {
       }
     }
   });
+});
+
+/**
+ * Refresh the diff for a local review
+ * Regenerates the diff from the current state of the working directory
+ * Returns sessionChanged flag if HEAD has changed since the session was created
+ */
+router.post('/api/local/:reviewId/refresh', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({
+        error: `Local review #${reviewId} not found`
+      });
+    }
+
+    const localPath = review.local_path;
+    const originalHeadSha = review.local_head_sha;
+
+    if (!localPath) {
+      return res.status(400).json({
+        error: 'Local review is missing path information'
+      });
+    }
+
+    logger.log('API', `Refreshing diff for local review #${reviewId}`, 'cyan');
+    logger.log('API', `Local path: ${localPath}`, 'magenta');
+
+    // Check if HEAD has changed
+    const { getHeadSha } = require('../local-review');
+    let currentHeadSha;
+    let sessionChanged = false;
+    let newSessionId = null;
+
+    try {
+      currentHeadSha = await getHeadSha(localPath);
+
+      if (originalHeadSha && currentHeadSha !== originalHeadSha) {
+        sessionChanged = true;
+        logger.log('API', `HEAD changed: ${originalHeadSha.substring(0, 7)} -> ${currentHeadSha.substring(0, 7)}`, 'yellow');
+
+        // Check if a session already exists for the new HEAD
+        const existingSession = await reviewRepo.getLocalReview(localPath, currentHeadSha);
+        if (existingSession) {
+          newSessionId = existingSession.id;
+          logger.log('API', `Existing session found for new HEAD: ${newSessionId}`, 'cyan');
+        } else {
+          // Create a new session for the new HEAD
+          const { getRepositoryName } = require('../local-review');
+          const repository = await getRepositoryName(localPath);
+          newSessionId = await reviewRepo.upsertLocalReview({
+            localPath: localPath,
+            localHeadSha: currentHeadSha,
+            repository
+          });
+          logger.log('API', `Created new session for new HEAD: ${newSessionId}`, 'cyan');
+        }
+      }
+    } catch (headError) {
+      logger.warn(`Could not check HEAD SHA: ${headError.message}`);
+    }
+
+    // Regenerate the diff from the working directory
+    const { diff, stats } = await generateLocalDiff(localPath);
+
+    // Update the stored diff data for the appropriate session
+    const targetSessionId = sessionChanged ? newSessionId : reviewId;
+    localReviewDiffs.set(targetSessionId, { diff, stats });
+
+    logger.success(`Diff refreshed: ${stats.unstagedChanges} unstaged, ${stats.untrackedFiles} untracked${stats.stagedChanges > 0 ? ` (${stats.stagedChanges} staged excluded)` : ''}`);
+
+    res.json({
+      success: true,
+      message: 'Diff refreshed successfully',
+      sessionChanged,
+      newSessionId: sessionChanged ? newSessionId : null,
+      newHeadSha: sessionChanged ? currentHeadSha : null,
+      originalHeadSha: originalHeadSha,
+      stats: {
+        trackedChanges: stats.trackedChanges || 0,
+        untrackedFiles: stats.untrackedFiles || 0,
+        stagedChanges: stats.stagedChanges || 0,
+        unstagedChanges: stats.unstagedChanges || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Error refreshing local diff:', error);
+    res.status(500).json({
+      error: 'Failed to refresh diff: ' + error.message
+    });
+  }
 });
 
 module.exports = router;

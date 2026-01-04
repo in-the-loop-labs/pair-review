@@ -28,8 +28,7 @@ const SCHEMA_SQL = {
       custom_instructions TEXT,
       review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
       local_path TEXT,
-      local_head_sha TEXT,
-      UNIQUE(pr_number, repository)
+      local_head_sha TEXT
     )
   `,
   
@@ -136,7 +135,9 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = \'local\''
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = \'local\'',
+  // Partial unique index for PR reviews only (NULL pr_number values for local reviews should not conflict)
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = \'pr\''
 ];
 
 /**
@@ -432,6 +433,14 @@ const MIGRATIONS = {
       -- Recreate indexes
       CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = 'local';
+    `);
+
+    // Add partial unique index for PR reviews only
+    console.log('  Creating partial unique index for PR reviews...');
+    await runSql(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique
+      ON reviews(pr_number, repository)
+      WHERE review_type = 'pr'
     `);
 
     console.log('Migration to schema version 5 complete');

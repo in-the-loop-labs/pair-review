@@ -80,33 +80,6 @@
             box-shadow: 0 2px 8px rgba(124, 58, 237, 0.4);
         }
 
-        /* Local mode header info */
-        .local-header-info {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            font-size: 13px;
-            color: var(--color-text-secondary);
-        }
-
-        .local-header-info .info-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .local-header-info .info-label {
-            color: var(--color-text-tertiary);
-            font-weight: 500;
-        }
-
-        .local-header-info .info-value {
-            color: var(--color-text-primary);
-            font-weight: 500;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-        }
-
         /* Branch badge styling for local mode */
         .local-branch-badge {
             display: inline-flex;
@@ -123,6 +96,71 @@
 
         .local-branch-badge svg {
             color: var(--color-text-tertiary);
+        }
+
+        /* Dark mode improvements for header icon buttons */
+        [data-theme="dark"] .header-icon-group {
+            background: var(--color-bg-tertiary);
+            border-color: var(--color-border-primary);
+        }
+
+        [data-theme="dark"] .header-icon-group .btn-icon {
+            color: var(--color-text-primary);
+        }
+
+        [data-theme="dark"] .header-icon-group .btn-icon:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Local header info - compact single row */
+        .local-header-info {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            font-size: 13px;
+            color: var(--color-text-secondary);
+        }
+
+        .local-header-info .info-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .local-header-info .info-value {
+            color: var(--color-text-primary);
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        /* Path display in toolbar-meta (with left truncation) */
+        .toolbar-path {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--color-text-secondary);
+            max-width: 300px;
+            overflow: hidden;
+        }
+
+        .toolbar-path svg {
+            flex-shrink: 0;
+            color: var(--color-text-tertiary);
+        }
+
+        .toolbar-path > span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            direction: rtl;
+            text-align: left;
+        }
+
+        .toolbar-path > span > span {
+            direction: ltr;
+            unicode-bidi: bidi-override;
         }
 
     </style>
@@ -144,16 +182,17 @@
                     <svg viewBox="0 0 16 16" fill="currentColor">
                         <path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5v-9Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25v3.25a.25.25 0 0 0 .4.2l1.45-1.087a.25.25 0 0 1 .3 0L8.6 15.7a.25.25 0 0 0 .4-.2v-3.25a.25.25 0 0 0-.25-.25h-3.5a.25.25 0 0 0-.25.25Z"/>
                     </svg>
-                    Local Mode
+                    Local
                 </span>
-                <!-- Local header info -->
+                <!-- Local header info - compact row -->
                 <div class="local-header-info" id="local-header-info">
                     <div class="info-item">
-                        <span class="info-label">Repository:</span>
+                        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14" style="color: var(--color-text-tertiary);">
+                            <path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1H4.5a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25v3.25a.25.25 0 0 0 .4.2l1.45-1.087a.25.25 0 0 1 .3 0L8.6 15.7a.25.25 0 0 0 .4-.2v-3.25a.25.25 0 0 0-.25-.25h-3.5a.25.25 0 0 0-.25.25Z"/>
+                        </svg>
                         <span class="info-value" id="local-repo-name">--</span>
                     </div>
                     <div class="info-item">
-                        <span class="info-label">Branch:</span>
                         <span class="local-branch-badge" id="local-branch-name">
                             <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
                                 <path d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"/>
@@ -164,10 +203,16 @@
                 </div>
             </div>
             <div class="header-center">
-                <h1 class="pr-title" id="pr-title-text">Uncommitted Changes</h1>
+                <!-- Title area intentionally left empty for local mode -->
+                <!-- The "Local Mode" badge and header info provide sufficient context -->
             </div>
             <div class="header-right">
                 <div class="header-icon-group">
+                    <button class="btn btn-icon" id="local-refresh-btn" title="Refresh diff from directory">
+                        <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
+                            <path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 1 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"/>
+                        </svg>
+                    </button>
                     <button class="btn btn-icon" id="theme-toggle" title="Toggle theme">
                         <svg class="theme-icon-light" viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
                             <path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/>
@@ -227,6 +272,13 @@
                                     <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
                                 </svg>
                             </button>
+                        </span>
+                        <span class="toolbar-separator"></span>
+                        <span class="toolbar-path" id="local-path-text" title="">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                                <path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z"/>
+                            </svg>
+                            <span id="local-path-inner">--</span>
                         </span>
                     </div>
                     <div class="diff-stats" id="diff-stats"></div>
