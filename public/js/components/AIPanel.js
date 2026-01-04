@@ -12,13 +12,18 @@ class AIPanel {
         this.findings = [];
         this.comments = [];
         this.selectedLevel = 'final';
-        this.selectedSegment = localStorage.getItem('reviewPanelSegment') || 'ai';
+        this.selectedSegment = 'ai'; // Default to AI segment until PR loads
         this.currentIndex = -1; // Current navigation index
+        this.currentPRKey = null; // PR-specific key for localStorage
+        this.analysisState = 'unknown'; // 'unknown' | 'loading' | 'complete' | 'none'
+
+        // Track selected item by stable identifier for restoration
+        this.selectedItemKey = null; // Format: "file:lineNumber:itemType"
 
         this.initElements();
         this.bindEvents();
         this.setupKeyboardNavigation();
-        this.restoreSegmentSelection();
+        // Don't restore segment on init - wait for setPR() call
     }
 
     initElements() {
@@ -87,24 +92,59 @@ class AIPanel {
     }
 
     /**
-     * Restore segment selection from localStorage
+     * Set the current PR for PR-specific storage
+     * Call this when a PR loads to restore segment selection for that specific PR
+     * @param {string} owner - Repository owner
+     * @param {string} repo - Repository name
+     * @param {number} number - PR number
+     */
+    setPR(owner, repo, number) {
+        this.currentPRKey = `${owner}/${repo}#${number}`;
+        this.restoreSegmentSelection();
+    }
+
+    /**
+     * Set the analysis state for empty state display
+     * @param {string} state - 'unknown' | 'loading' | 'complete' | 'none'
+     */
+    setAnalysisState(state) {
+        this.analysisState = state;
+        // Re-render if currently showing empty state
+        if (this.findings.length === 0 && this.selectedSegment === 'ai') {
+            this.renderFindings();
+        }
+    }
+
+    /**
+     * Restore segment selection from localStorage (PR-specific)
      */
     restoreSegmentSelection() {
         if (!this.segmentBtns) return;
+
+        // Only restore if we have a PR key
+        if (this.currentPRKey) {
+            const stored = localStorage.getItem(`reviewPanelSegment_${this.currentPRKey}`);
+            if (stored) {
+                this.selectedSegment = stored;
+            } else {
+                // Default to 'ai' for new PRs
+                this.selectedSegment = 'ai';
+            }
+        }
 
         // Update UI to match stored segment
         this.segmentBtns.forEach(btn => {
             btn.classList.toggle('active', btn.dataset.segment === this.selectedSegment);
         });
 
-        // Show/hide level filter based on segment
+        // Level filter is now hidden by default
+        // Could be shown via config in the future
         if (this.levelFilter) {
-            if (this.selectedSegment === 'comments') {
-                this.levelFilter.classList.add('hidden');
-            } else {
-                this.levelFilter.classList.remove('hidden');
-            }
+            this.levelFilter.classList.add('hidden');
         }
+
+        // Re-render findings with restored segment
+        this.renderFindings();
     }
 
     /**
@@ -119,21 +159,16 @@ class AIPanel {
         btn.classList.add('active');
         this.selectedSegment = segment;
 
-        // Persist selection
-        localStorage.setItem('reviewPanelSegment', segment);
+        // Persist selection with PR-specific key
+        if (this.currentPRKey) {
+            localStorage.setItem(`reviewPanelSegment_${this.currentPRKey}`, segment);
+        }
 
-        // Reset navigation index when segment changes
+        // Reset selected item key when segment changes
+        this.selectedItemKey = null;
         this.currentIndex = -1;
 
-        // Show/hide level filter based on segment
-        // Level filter only applies to AI findings
-        if (this.levelFilter) {
-            if (segment === 'comments') {
-                this.levelFilter.classList.add('hidden');
-            } else {
-                this.levelFilter.classList.remove('hidden');
-            }
-        }
+        // Level filter remains hidden (hidden by default now)
 
         // Re-render findings to filter by segment
         this.renderFindings();
@@ -180,23 +215,83 @@ class AIPanel {
      * @param {Array} suggestions - Array of AI suggestions
      */
     addFindings(suggestions) {
+        // Save current selection before updating
+        this.saveCurrentSelection();
+
         this.findings = suggestions || [];
-        this.currentIndex = -1; // Reset navigation when findings change
+        this.analysisState = suggestions?.length > 0 ? 'complete' : 'none';
         this.updateSegmentCounts();
         this.renderFindings();
-        this.autoSelectFirst();
+
+        // Try to restore previous selection, or auto-select first
+        if (!this.restoreSelection()) {
+            this.autoSelectFirst();
+        }
     }
 
     /**
-     * Auto-select the first navigable item so counter shows "1 of N" instead of "— of N"
+     * Auto-select the first item so counter shows "1 of N" instead of "— of N"
      */
     autoSelectFirst() {
-        const navigableItems = this.getNavigableItems();
-        if (navigableItems.length > 0 && this.currentIndex < 0) {
-            this.currentIndex = navigableItems[0].index;
+        const items = this.getFilteredItems();
+        if (items.length > 0 && this.currentIndex < 0) {
+            this.currentIndex = 0;
             this.highlightCurrentItem();
             this.updateNavigationCounter();
+            // Update selected item key for future restoration
+            const item = items[0];
+            if (item) {
+                this.selectedItemKey = this.getItemKey(item);
+            }
         }
+    }
+
+    /**
+     * Generate a stable key for an item (file + line + type)
+     * @param {Object} item - Finding or comment item
+     * @returns {string} Stable identifier
+     */
+    getItemKey(item) {
+        const file = item.file || '';
+        const line = item.line_start || item.line || 0;
+        const type = item._itemType || 'finding';
+        return `${file}:${line}:${type}`;
+    }
+
+    /**
+     * Save the current selection for restoration after re-render
+     */
+    saveCurrentSelection() {
+        if (this.currentIndex < 0) {
+            this.selectedItemKey = null;
+            return;
+        }
+
+        const items = this.getFilteredItems();
+        if (this.currentIndex < items.length) {
+            const item = items[this.currentIndex];
+            this.selectedItemKey = this.getItemKey(item);
+        }
+    }
+
+    /**
+     * Restore selection after re-render if the item still exists
+     * @returns {boolean} True if selection was restored
+     */
+    restoreSelection() {
+        if (!this.selectedItemKey) return false;
+
+        const items = this.getFilteredItems();
+        const matchIndex = items.findIndex(item => this.getItemKey(item) === this.selectedItemKey);
+
+        if (matchIndex >= 0) {
+            this.currentIndex = matchIndex;
+            this.highlightCurrentItem();
+            this.updateNavigationCounter();
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -258,20 +353,33 @@ class AIPanel {
 
         const items = this.getFilteredItems();
 
-        // Show empty state based on segment
+        // Show empty state based on segment and analysis state
         if (items.length === 0) {
-            let emptyMessage;
+            let emptyContent;
             if (this.selectedSegment === 'comments') {
-                emptyMessage = 'No comments yet. Add comments using the + button in the diff view.';
+                emptyContent = `<p>No comments yet.</p><p class="empty-action">Click the <strong>+</strong> button next to any line to add a comment.</p>`;
             } else if (this.selectedSegment === 'ai') {
-                emptyMessage = 'No AI analysis yet. Click "Analyze" to get started.';
+                // Show different states based on analysis status
+                if (this.analysisState === 'loading') {
+                    emptyContent = `
+                        <div class="loading-indicator">
+                            <div class="loading-spinner-small"></div>
+                            <p>Analyzing PR...</p>
+                        </div>
+                    `;
+                } else if (this.analysisState === 'complete' || this.analysisState === 'none') {
+                    emptyContent = `<p>No AI suggestions for this PR.</p>`;
+                } else {
+                    // 'unknown' state - analysis hasn't been run yet
+                    emptyContent = `<p>No AI analysis yet.</p><p class="empty-action">Click <strong>Analyze</strong> to get started.</p>`;
+                }
             } else {
-                emptyMessage = 'No items yet. Click "Analyze" for AI suggestions or add comments in the diff view.';
+                emptyContent = `<p>No items yet.</p><p class="empty-action">Click <strong>Analyze</strong> for AI suggestions or add comments in the diff view.</p>`;
             }
 
             this.findingsList.innerHTML = `
                 <div class="findings-empty">
-                    <p>${emptyMessage}</p>
+                    ${emptyContent}
                 </div>
             `;
             this.updateFindingsHeader(0);
@@ -294,8 +402,28 @@ class AIPanel {
             item.addEventListener('click', () => this.onFindingClick(item));
         });
 
+        // Bind delete button events for comments
+        this.findingsList.querySelectorAll('.finding-delete-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent triggering item click
+                const commentId = parseInt(btn.dataset.commentId, 10);
+                this.onDeleteComment(commentId);
+            });
+        });
+
         // Restore active state if we have a current index
         this.highlightCurrentItem();
+    }
+
+    /**
+     * Handle delete comment button click
+     * @param {number} commentId - The comment ID to delete
+     */
+    onDeleteComment(commentId) {
+        // Use prManager's delete method which handles both UI and API
+        if (window.prManager?.deleteUserComment) {
+            window.prManager.deleteUserComment(commentId);
+        }
     }
 
     onFindingClick(item) {
@@ -309,6 +437,12 @@ class AIPanel {
         this.currentIndex = index;
         this.highlightCurrentItem();
         this.updateNavigationCounter();
+
+        // Save selected item key for restoration after re-renders
+        const items = this.getFilteredItems();
+        if (index < items.length) {
+            this.selectedItemKey = this.getItemKey(items[index]);
+        }
 
         // Handle comments - scroll to user comment row
         if (itemType === 'comment') {
@@ -469,7 +603,9 @@ class AIPanel {
      * @returns {string} HTML string
      */
     renderCommentItem(comment, index) {
-        const title = this.truncateText(comment.body || 'Comment', 50);
+        // Strip markdown from body for clean display
+        const rawTitle = this.stripMarkdown(comment.body || 'Comment');
+        const title = this.truncateText(rawTitle, 50);
         const fileName = comment.file ? comment.file.split('/').pop() : null;
         const lineNum = comment.line_start;
         // Full location for tooltip, filename only for display
@@ -481,13 +617,20 @@ class AIPanel {
             : this.getPersonIcon();
 
         return `
-            <button class="finding-item finding-comment ${comment.parent_id ? 'comment-ai-origin' : 'comment-user-origin'}" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-item-type="comment" title="${fullLocation}">
-                <span class="comment-icon">${icon}</span>
-                <div class="finding-content">
-                    <span class="finding-title">${this.escapeHtml(title)}</span>
-                    ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
-                </div>
-            </button>
+            <div class="finding-item-wrapper">
+                <button class="finding-item finding-comment ${comment.parent_id ? 'comment-ai-origin' : 'comment-user-origin'}" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-item-type="comment" title="${fullLocation}">
+                    <span class="comment-icon">${icon}</span>
+                    <div class="finding-content">
+                        <span class="finding-title">${this.escapeHtml(title)}</span>
+                        ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
+                    </div>
+                </button>
+                <button class="finding-delete-btn" data-comment-id="${comment.id}" title="Delete comment">
+                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+                        <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19c.9 0 1.652-.681 1.741-1.576l.66-6.6a.75.75 0 00-1.492-.149l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"/>
+                    </svg>
+                </button>
+            </div>
         `;
     }
 
@@ -581,11 +724,17 @@ class AIPanel {
      * @param {Array} comments - Array of comment objects
      */
     setComments(comments) {
+        // Save current selection before updating
+        this.saveCurrentSelection();
+
         this.comments = comments || [];
-        this.currentIndex = -1; // Reset navigation when comments change
         this.updateSegmentCounts();
         this.renderFindings();
-        this.autoSelectFirst();
+
+        // Try to restore previous selection, or auto-select first
+        if (!this.restoreSelection()) {
+            this.autoSelectFirst();
+        }
     }
 
     /**
@@ -621,6 +770,25 @@ class AIPanel {
         if (!text) return '';
         if (text.length <= maxLength) return text;
         return text.substring(0, maxLength) + '...';
+    }
+
+    /**
+     * Strip common markdown formatting from text for display
+     * Removes **bold**, *italic*, `code`, and emoji prefixes
+     * @param {string} text - Text to strip
+     * @returns {string} Plain text
+     */
+    stripMarkdown(text) {
+        if (!text) return '';
+        return text
+            .replace(/^\s*[\u{1F300}-\u{1F9FF}]\s*/u, '') // Remove leading emoji
+            .replace(/\*\*([^*]+)\*\*/g, '$1')  // **bold** -> bold
+            .replace(/\*([^*]+)\*/g, '$1')      // *italic* -> italic
+            .replace(/__([^_]+)__/g, '$1')      // __bold__ -> bold
+            .replace(/_([^_]+)_/g, '$1')        // _italic_ -> italic
+            .replace(/`([^`]+)`/g, '$1')        // `code` -> code
+            .replace(/^#+\s+/, '')              // # Header -> Header
+            .trim();
     }
 
     /**
@@ -670,30 +838,24 @@ class AIPanel {
      * Update the findings header with navigation controls and counter
      */
     updateFindingsHeader(totalCount) {
-        const navigableItems = this.getNavigableItems();
-        const navigableCount = navigableItems.length;
-        // Find position within navigable items (not raw index)
-        const navPosition = navigableItems.findIndex(({ index }) => index === this.currentIndex);
-        const currentDisplay = navPosition >= 0 ? (navPosition + 1) : '\u2014';
+        const items = this.getFilteredItems();
+        const itemCount = items.length;
+        const currentDisplay = this.currentIndex >= 0 ? (this.currentIndex + 1) : '\u2014';
 
         // Always get the .findings-header element directly to avoid parent reference issues
         const headerContainer = document.querySelector('.findings-header');
         if (!headerContainer) return;
 
-        // Determine header label based on selected segment
-        const headerLabel = this.selectedSegment === 'comments' ? 'Comments' : 'Findings';
-
-        // Update or create the header content
+        // Update or create the header content (no label - segments already indicate content type)
         headerContainer.innerHTML = `
-            <span class="findings-label">${headerLabel}</span>
             <div class="findings-nav">
-                <button class="findings-nav-btn nav-prev" title="Previous item (k)" ${navigableCount === 0 ? 'disabled' : ''}>
+                <button class="findings-nav-btn nav-prev" title="Previous item (k)" ${itemCount === 0 ? 'disabled' : ''}>
                     <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
                         <path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/>
                     </svg>
                 </button>
-                <span class="findings-counter" id="findings-count">${currentDisplay} of ${navigableCount}</span>
-                <button class="findings-nav-btn nav-next" title="Next item (j)" ${navigableCount === 0 ? 'disabled' : ''}>
+                <span class="findings-counter" id="findings-count">${currentDisplay} of ${itemCount}</span>
+                <button class="findings-nav-btn nav-next" title="Next item (j)" ${itemCount === 0 ? 'disabled' : ''}>
                     <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
                         <path d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
                     </svg>
@@ -716,70 +878,35 @@ class AIPanel {
     }
 
     /**
-     * Get items that can be navigated to (skipping dismissed/adopted findings)
-     * @returns {Array} Array of navigable items with their original indices
-     */
-    getNavigableItems() {
-        const items = this.getFilteredItems();
-        return items.map((item, index) => ({ item, index }))
-            .filter(({ item }) => !this.shouldSkipItem(item));
-    }
-
-    /**
-     * Check if an item should be skipped during navigation
-     * (dismissed or adopted AI findings are skipped)
-     */
-    shouldSkipItem(item) {
-        // Comments are always navigable
-        if (item._itemType === 'comment') {
-            return false;
-        }
-        // Skip dismissed or adopted findings
-        return item.status === 'dismissed' || item.status === 'adopted';
-    }
-
-    /**
-     * Navigate to the next item
+     * Navigate to the next item (purely positional through visible items)
      */
     goToNext() {
-        const navigableItems = this.getNavigableItems();
-        if (navigableItems.length === 0) return;
+        const items = this.getFilteredItems();
+        if (items.length === 0) return;
 
-        // Find current position in navigable items
-        let nextNavIndex;
         if (this.currentIndex < 0) {
             // No selection yet, go to first
-            nextNavIndex = 0;
+            this.goToIndex(0);
         } else {
-            // Find next navigable item after current index
-            const currentNavIndex = navigableItems.findIndex(({ index }) => index === this.currentIndex);
-            nextNavIndex = (currentNavIndex + 1) % navigableItems.length;
+            // Go to next item, wrap to start
+            this.goToIndex((this.currentIndex + 1) % items.length);
         }
-
-        const nextItem = navigableItems[nextNavIndex];
-        this.goToIndex(nextItem.index);
     }
 
     /**
-     * Navigate to the previous item
+     * Navigate to the previous item (purely positional through visible items)
      */
     goToPrevious() {
-        const navigableItems = this.getNavigableItems();
-        if (navigableItems.length === 0) return;
+        const items = this.getFilteredItems();
+        if (items.length === 0) return;
 
-        // Find current position in navigable items
-        let prevNavIndex;
         if (this.currentIndex < 0) {
             // No selection yet, go to last
-            prevNavIndex = navigableItems.length - 1;
+            this.goToIndex(items.length - 1);
         } else {
-            // Find previous navigable item before current index
-            const currentNavIndex = navigableItems.findIndex(({ index }) => index === this.currentIndex);
-            prevNavIndex = currentNavIndex <= 0 ? navigableItems.length - 1 : currentNavIndex - 1;
+            // Go to previous item, wrap to end
+            this.goToIndex(this.currentIndex <= 0 ? items.length - 1 : this.currentIndex - 1);
         }
-
-        const prevItem = navigableItems[prevNavIndex];
-        this.goToIndex(prevItem.index);
     }
 
     /**
@@ -840,13 +967,11 @@ class AIPanel {
      * Update the navigation counter display
      */
     updateNavigationCounter() {
-        const navigableItems = this.getNavigableItems();
-        // Find position within navigable items (not raw index)
-        const navPosition = navigableItems.findIndex(({ index }) => index === this.currentIndex);
-        const currentDisplay = navPosition >= 0 ? (navPosition + 1) : '\u2014';
+        const items = this.getFilteredItems();
+        const currentDisplay = this.currentIndex >= 0 ? (this.currentIndex + 1) : '\u2014';
 
         if (this.findingsCount) {
-            this.findingsCount.textContent = `${currentDisplay} of ${navigableItems.length}`;
+            this.findingsCount.textContent = `${currentDisplay} of ${items.length}`;
         }
     }
 }

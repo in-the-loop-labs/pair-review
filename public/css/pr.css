@@ -3719,6 +3719,26 @@ tr.line-range-start .d2h-code-line-ctn {
   background: rgba(167, 139, 250, 0.15);
 }
 
+/* Comment origin icon in diff view user comments */
+.comment-origin-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--comment-primary, #a371f7);
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.comment-origin-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+[data-theme="dark"] .comment-origin-icon {
+  color: #a78bfa;
+}
+
 [data-theme="dark"] .user-comment-header {
   border-bottom-color: rgba(167, 139, 250, 0.1);
 }
@@ -5576,14 +5596,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
   flex-shrink: 0;
 }
 
-.findings-label {
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-text-tertiary);
-}
-
 .findings-count {
   font-size: 0.7rem;
   color: var(--color-text-tertiary);
@@ -5642,6 +5654,74 @@ body:not([data-theme="dark"]) .theme-icon-light {
   padding: 24px 16px;
   color: var(--color-text-tertiary);
   font-size: 0.8125rem;
+}
+
+.findings-empty p {
+  margin: 0 0 4px 0;
+}
+
+.findings-empty .empty-action {
+  color: var(--color-text-quaternary, #8b949e);
+  font-size: 0.75rem;
+}
+
+.findings-empty .empty-action strong {
+  color: var(--color-text-tertiary);
+}
+
+/* Loading indicator in empty state */
+.findings-empty .loading-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.loading-spinner-small {
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--color-border-secondary, #d0d7de);
+  border-top-color: var(--ai-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* Wrapper for comment items with delete button */
+.finding-item-wrapper {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  position: relative;
+}
+
+.finding-item-wrapper .finding-item {
+  flex: 1;
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+}
+
+.finding-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  flex-shrink: 0;
+  padding: 0;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-left: none;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--color-text-quaternary, #8b949e);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.finding-delete-btn:hover {
+  background: var(--category-bug-subtle, #ffebe9);
+  color: var(--category-bug, #cf222e);
+  border-color: var(--category-bug, #cf222e);
 }
 
 .finding-item {
