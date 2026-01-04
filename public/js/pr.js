@@ -159,7 +159,11 @@ class PRManager {
     this.setupEventHandlers();
     this.initTheme();
     this.initAnalysisConfigModal();
-    this.init();
+
+    // In local mode, LocalManager handles init instead
+    if (!window.PAIR_REVIEW_LOCAL_MODE) {
+      this.init();
+    }
   }
 
   /**

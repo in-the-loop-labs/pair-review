@@ -166,6 +166,11 @@ async function startServer(sharedDb = null) {
       res.sendFile(path.join(__dirname, '..', 'public', 'repo-settings.html'));
     });
 
+    // Local review route - serves local.html for local review mode
+    app.get('/local/:reviewId', (req, res) => {
+      res.sendFile(path.join(__dirname, '..', 'public', 'local.html'));
+    });
+
     // Health check endpoint
     app.get('/health', (req, res) => {
       res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -184,12 +189,14 @@ async function startServer(sharedDb = null) {
     const commentsRoutes = require('./routes/comments');
     const configRoutes = require('./routes/config');
     const prRoutes = require('./routes/pr');
+    const localRoutes = require('./routes/local');
 
     // Mount specific routes first to ensure they match before general PR routes
     app.use('/', analysisRoutes);
     app.use('/', commentsRoutes);
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);
+    app.use('/', localRoutes);
     app.use('/', prRoutes);
     
     // Error handling middleware

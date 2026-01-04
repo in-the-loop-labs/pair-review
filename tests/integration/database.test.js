@@ -37,7 +37,7 @@ function createTestDatabase() {
           reviews: `
             CREATE TABLE IF NOT EXISTS reviews (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              pr_number INTEGER NOT NULL,
+              pr_number INTEGER,
               repository TEXT NOT NULL,
               status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'submitted', 'pending')),
               review_id INTEGER,
@@ -46,6 +46,9 @@ function createTestDatabase() {
               submitted_at DATETIME,
               review_data TEXT,
               custom_instructions TEXT,
+              review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
+              local_path TEXT,
+              local_head_sha TEXT,
               UNIQUE(pr_number, repository)
             )
           `,
@@ -127,7 +130,8 @@ function createTestDatabase() {
           'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
           'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
           'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
-          'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)'
+          'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = 'local'"
         ];
 
         // Execute table creation
