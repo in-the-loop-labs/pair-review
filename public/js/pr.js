@@ -316,6 +316,11 @@ class PRManager {
         window.aiPanel = new window.AIPanel();
       }
 
+      // Set PR context for AI Panel (for PR-specific localStorage keys)
+      if (window.aiPanel?.setPR) {
+        window.aiPanel.setPR(owner, repo, number);
+      }
+
       // Load saved AI suggestions if they exist
       await this.loadAISuggestions();
 
@@ -2317,6 +2322,11 @@ class PRManager {
       if (data.running && data.analysisId) {
         console.log('Found running analysis:', data.analysisId);
 
+        // Set AI Panel to loading state
+        if (window.aiPanel?.setAnalysisState) {
+          window.aiPanel.setAnalysisState('loading');
+        }
+
         // Set button to analyzing state
         this.setButtonAnalyzing(data.analysisId);
 
@@ -2532,6 +2542,11 @@ class PRManager {
       }
 
       const result = await response.json();
+
+      // Set AI Panel to loading state
+      if (window.aiPanel?.setAnalysisState) {
+        window.aiPanel.setAnalysisState('loading');
+      }
 
       // Set analyzing state and show progress modal
       this.setButtonAnalyzing(result.analysisId);
