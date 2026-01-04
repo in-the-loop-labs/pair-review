@@ -2427,17 +2427,21 @@ class PRManager {
         this.fetchLastCustomInstructions()
       ]);
 
-      // Determine the model to use (priority: remembered > repo default > 'sonnet')
+      // Determine the model and provider to use (priority: remembered > repo default > defaults)
       const modelStorageKey = PRManager.getRepoStorageKey('pair-review-model', owner, repo);
+      const providerStorageKey = PRManager.getRepoStorageKey('pair-review-provider', owner, repo);
       const rememberedModel = localStorage.getItem(modelStorageKey);
+      const rememberedProvider = localStorage.getItem(providerStorageKey);
       const currentModel = rememberedModel || repoSettings?.default_model || 'sonnet';
+      const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
 
       // Show the config modal
       const config = await this.analysisConfigModal.show({
         currentModel,
+        currentProvider,
         repoInstructions: repoSettings?.default_instructions || '',
         lastInstructions: lastInstructions,
-        rememberModel: !!rememberedModel
+        rememberModel: !!(rememberedModel || rememberedProvider)
       });
 
       // If user cancelled, do nothing
@@ -2445,11 +2449,13 @@ class PRManager {
         return;
       }
 
-      // Save remembered model preference if requested
+      // Save remembered model and provider preferences if requested
       if (config.rememberModel) {
         localStorage.setItem(modelStorageKey, config.model);
+        localStorage.setItem(providerStorageKey, config.provider);
       } else {
         localStorage.removeItem(modelStorageKey);
+        localStorage.removeItem(providerStorageKey);
       }
 
       // Start the analysis with the selected config

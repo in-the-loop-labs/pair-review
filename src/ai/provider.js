@@ -187,14 +187,25 @@ function createProvider(providerId, model = null) {
 }
 
 /**
- * Test availability of a provider
+ * Test availability of a provider with timeout
  * @param {string} providerId - Provider ID
+ * @param {number} timeout - Timeout in milliseconds (default 10 seconds)
  * @returns {Promise<{available: boolean, error?: string}>}
  */
-async function testProviderAvailability(providerId) {
+async function testProviderAvailability(providerId, timeout = 10000) {
   try {
     const provider = createProvider(providerId);
-    const available = await provider.testAvailability();
+
+    // Race between availability test and timeout
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Provider test timed out')), timeout);
+    });
+
+    const available = await Promise.race([
+      provider.testAvailability(),
+      timeoutPromise
+    ]);
+
     return { available };
   } catch (error) {
     const ProviderClass = providerRegistry.get(providerId);

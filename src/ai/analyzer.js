@@ -273,11 +273,11 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       };
 
       // Build the Level 1 prompt
-      updateProgress('Building prompt for Claude to analyze changes');
+      updateProgress('Building prompt for AI to analyze changes');
       const prompt = this.buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions);
 
       // Execute Claude CLI in the worktree directory
-      updateProgress('Running Claude to analyze changes in isolation');
+      updateProgress('Running AI to analyze changes in isolation');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 1
@@ -797,11 +797,11 @@ Output JSON with this structure:
       };
 
       // Build the Level 2 prompt
-      updateProgress('Building prompt for Claude to analyze file context');
+      updateProgress('Building prompt for AI to analyze file context');
       const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions);
 
       // Execute Claude CLI in the worktree directory
-      updateProgress('Running Claude to analyze files in context');
+      updateProgress('Running AI to analyze files in context');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 2
@@ -884,11 +884,11 @@ Output JSON with this structure:
       const testingContext = await this.detectTestingContext(worktreePath, prMetadata);
 
       // Build the Level 3 prompt with test context
-      updateProgress('Building prompt for Claude to analyze codebase impact');
+      updateProgress('Building prompt for AI to analyze codebase impact');
       const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions);
 
       // Execute Claude CLI for Level 3 analysis
-      updateProgress('Running Claude to analyze codebase-wide implications');
+      updateProgress('Running AI to analyze codebase-wide implications');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 3
@@ -973,7 +973,7 @@ Output JSON with this structure:
       const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata);
 
       // Step 2: Execute Claude CLI in the worktree directory (single invocation)
-      updateProgress('Running Claude to analyze all changed files in context');
+      updateProgress('Running AI to analyze all changed files in context');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 2 - analyze all files in one go
@@ -1314,7 +1314,7 @@ Output JSON with this structure:
       const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext);
 
       // Step 2: Execute Claude CLI for Level 3 analysis
-      updateProgress('Running Claude to analyze codebase-wide implications');
+      updateProgress('Running AI to analyze codebase-wide implications');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 900000, // 15 minutes for Level 3 - full codebase exploration
