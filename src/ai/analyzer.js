@@ -8,6 +8,7 @@ const execPromise = util.promisify(exec);
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
+const { normalizePath, pathExistsInList } = require('../utils/paths');
 
 class Analyzer {
   /**
@@ -98,6 +99,10 @@ class Analyzer {
         });
       }
 
+      // Get list of changed files from PR diff for path validation
+      const changedFiles = await this.getChangedFilesList(worktreePath, prMetadata);
+      logger.info(`[Orchestration] Found ${changedFiles.length} changed files in PR diff for path validation`);
+
       try {
         const allSuggestions = {
           level1: levelResults.level1.suggestions,
@@ -107,15 +112,21 @@ class Analyzer {
 
         const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, customInstructions);
 
+        // Validate suggestion file paths against PR diff
+        const validatedSuggestions = this.validateSuggestionFilePaths(
+          orchestrationResult.suggestions,
+          changedFiles
+        );
+
         // Store orchestrated results with ai_level = NULL (final suggestions)
         logger.info('Storing orchestrated suggestions in database...');
-        await this.storeSuggestions(prId, runId, orchestrationResult.suggestions, null);
+        await this.storeSuggestions(prId, runId, validatedSuggestions, null);
 
-        logger.success(`Analysis complete: ${orchestrationResult.suggestions.length} final suggestions`);
+        logger.success(`Analysis complete: ${validatedSuggestions.length} final suggestions (${orchestrationResult.suggestions.length - validatedSuggestions.length} filtered for invalid paths)`);
 
         return {
           runId,
-          suggestions: orchestrationResult.suggestions,
+          suggestions: validatedSuggestions,
           levelResults,
           summary: orchestrationResult.summary
         };
@@ -131,13 +142,19 @@ class Analyzer {
           ...levelResults.level3.suggestions
         ];
 
-        await this.storeSuggestions(prId, runId, fallbackSuggestions, null);
+        // Validate suggestion file paths against PR diff (also in fallback path)
+        const validatedFallbackSuggestions = this.validateSuggestionFilePaths(
+          fallbackSuggestions,
+          changedFiles
+        );
+
+        await this.storeSuggestions(prId, runId, validatedFallbackSuggestions, null);
 
         return {
           runId,
-          suggestions: fallbackSuggestions,
+          suggestions: validatedFallbackSuggestions,
           levelResults,
-          summary: `Analysis complete (orchestration failed): ${fallbackSuggestions.length} suggestions`,
+          summary: `Analysis complete (orchestration failed): ${validatedFallbackSuggestions.length} suggestions`,
           orchestrationFailed: true
         };
       }
@@ -179,6 +196,95 @@ The following custom instructions have been provided for this review. Please inc
 
 ${customInstructions.trim()}
 `;
+  }
+
+  /**
+   * Build the section of the prompt that lists valid files for suggestions
+   * @param {Array<string>} changedFiles - List of changed file paths
+   * @returns {string} Prompt section or empty string
+   */
+  buildChangedFilesSection(changedFiles) {
+    if (!changedFiles || changedFiles.length === 0) {
+      return '';
+    }
+
+    return `
+## Valid Files for Suggestions
+You should ONLY create suggestions for files in this list:
+${changedFiles.map(f => `- ${f}`).join('\n')}
+
+Do NOT create suggestions for any files not in this list. If you cannot find issues in these files, that's okay - just return fewer suggestions.
+`;
+  }
+
+  /**
+   * Get list of changed files from git diff
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} prMetadata - PR metadata with base/head SHAs
+   * @returns {Promise<Array<string>>} List of changed file paths
+   */
+  async getChangedFilesList(worktreePath, prMetadata) {
+    try {
+      const { stdout } = await execPromise(
+        `git diff ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`,
+        { cwd: worktreePath }
+      );
+      return stdout.trim().split('\n').filter(f => f.length > 0);
+    } catch (error) {
+      logger.warn(`Could not get changed files list: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Validate suggestion file paths against the PR diff
+   * Filters out suggestions that reference files not in the PR diff
+   *
+   * @param {Array} suggestions - Array of suggestions to validate
+   * @param {Array<string>} validPaths - List of valid file paths from the PR diff
+   * @returns {Array} Filtered suggestions with only valid file paths
+   */
+  validateSuggestionFilePaths(suggestions, validPaths) {
+    if (!suggestions || suggestions.length === 0) {
+      return [];
+    }
+
+    if (!validPaths || validPaths.length === 0) {
+      logger.warn('[Orchestration] No valid paths provided for validation, skipping path filtering');
+      return suggestions;
+    }
+
+    // Create a Set of normalized valid paths for efficient lookup
+    const normalizedValidPaths = new Set(validPaths.map(p => normalizePath(p)));
+
+    const validSuggestions = [];
+    const discardedSuggestions = [];
+
+    for (const suggestion of suggestions) {
+      const normalizedSuggestionPath = normalizePath(suggestion.file);
+
+      if (normalizedValidPaths.has(normalizedSuggestionPath)) {
+        validSuggestions.push(suggestion);
+      } else {
+        discardedSuggestions.push({
+          file: suggestion.file,
+          normalizedPath: normalizedSuggestionPath,
+          title: suggestion.title,
+          type: suggestion.type
+        });
+      }
+    }
+
+    // Log discarded suggestions for debugging
+    if (discardedSuggestions.length > 0) {
+      logger.warn(`[Orchestration] Discarded ${discardedSuggestions.length} suggestion(s) with invalid file paths:`);
+      for (const discarded of discardedSuggestions) {
+        logger.warn(`  - "${discarded.file}" (normalized: "${discarded.normalizedPath}"): ${discarded.type} - ${discarded.title}`);
+      }
+      logger.info(`[Orchestration] Valid paths in PR diff: ${Array.from(normalizedValidPaths).slice(0, 10).join(', ')}${normalizedValidPaths.size > 10 ? '...' : ''}`);
+    }
+
+    return validSuggestions;
   }
 
   /**
@@ -329,8 +435,9 @@ ${prMetadata.description || '(No description provided)'}
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Array<string>} generatedPatterns - Patterns for generated files to skip
    * @param {string} customInstructions - Optional custom instructions to include in prompt
+   * @param {Array<string>} changedFiles - List of changed file paths for grounding
    */
-  buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null) {
+  buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = []) {
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. As you analyze file-level consistency, verify if the actual changes align with this description. Be alert for:
 - Significant functionality changes not mentioned in the description
@@ -339,10 +446,11 @@ ${prMetadata.description || '(No description provided)'}
 
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
+    const changedFilesSection = this.buildChangedFilesSection(changedFiles);
 
     return `You are reviewing pull request #${prId} in the current working directory.
 ${prContext}${customInstructionsSection}# Level 2 Review - Analyze File Context
-${generatedFilesSection}
+${generatedFilesSection}${changedFilesSection}
 ## Analysis Process
 For each file with changes:
    - Read the full file content to understand context
@@ -681,17 +789,46 @@ Output JSON with this structure:
 
   /**
    * Store suggestions in the database
+   * Includes failsafe filter to reject suggestions with invalid file paths
    */
   async storeSuggestions(prId, runId, suggestions, level) {
     const { run } = require('../database');
-    
+
+    // FAILSAFE: Get valid file paths from PR metadata
+    const validFilePaths = await this.getValidFilePaths(prId);
+
+    // Create a Set of normalized valid paths for O(1) lookup
+    const validPathsSet = new Set(validFilePaths);
+
+    // Filter suggestions to only those with valid file paths
+    const validSuggestions = [];
+    let filteredCount = 0;
+
     for (const suggestion of suggestions) {
-      const body = suggestion.description + 
+      // Check if the suggestion's file path exists in the PR diff
+      if (!this.isValidSuggestionPath(suggestion.file, validPathsSet)) {
+        filteredCount++;
+        logger.warn(
+          `[FAILSAFE] Filtered AI suggestion with invalid path: "${suggestion.file}" ` +
+          `(expected one of: ${validFilePaths.slice(0, 5).join(', ')}${validFilePaths.length > 5 ? '...' : ''})`
+        );
+        continue;
+      }
+      validSuggestions.push(suggestion);
+    }
+
+    if (filteredCount > 0) {
+      logger.warn(`[FAILSAFE] Filtered ${filteredCount} suggestions with invalid file paths`);
+    }
+
+    // Store only valid suggestions
+    for (const suggestion of validSuggestions) {
+      const body = suggestion.description +
         (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
-      
+
       // Handle different level types including orchestrated
       const aiLevel = typeof level === 'string' ? level : level;
-      
+
       await run(this.db, `
         INSERT INTO comments (
           pr_id, source, author, ai_run_id, ai_level, ai_confidence,
@@ -713,8 +850,72 @@ Output JSON with this structure:
         'active'
       ]);
     }
-    
-    logger.success(`Stored ${suggestions.length} suggestions in database`);
+
+    logger.success(`Stored ${validSuggestions.length} suggestions in database`);
+  }
+
+  /**
+   * Get valid file paths from PR metadata
+   * @param {number} prId - Pull request ID
+   * @returns {Promise<Array<string>>} Array of valid file paths from the PR diff
+   */
+  async getValidFilePaths(prId) {
+    const { queryOne } = require('../database');
+
+    try {
+      const prMetadata = await queryOne(this.db, `
+        SELECT pr_data FROM pr_metadata WHERE id = ?
+      `, [prId]);
+
+      if (!prMetadata || !prMetadata.pr_data) {
+        logger.warn(`[FAILSAFE] No PR metadata found for prId ${prId}`);
+        return [];
+      }
+
+      const prData = JSON.parse(prMetadata.pr_data);
+      const changedFiles = prData.changed_files || [];
+
+      // Extract file paths and normalize them
+      return changedFiles.map(f => {
+        // changed_files entries can be objects with 'file' property or just strings
+        const filePath = typeof f === 'string' ? f : (f.file || '');
+        return normalizePath(filePath);
+      }).filter(p => p.length > 0);
+
+    } catch (error) {
+      logger.error(`[FAILSAFE] Error getting valid file paths: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Check if a suggestion's file path is valid (exists in PR diff)
+   * @param {string} suggestionPath - The file path from the suggestion
+   * @param {Array<string>|Set<string>} validPaths - Array or Set of valid (normalized) file paths
+   * @returns {boolean} True if the path is valid
+   */
+  isValidSuggestionPath(suggestionPath, validPaths) {
+    // If we couldn't get valid paths, allow all suggestions (fail open for usability)
+    // This is a safety fallback - if PR metadata lookup fails, we don't want to
+    // discard all suggestions. Log prominently so this is visible for debugging.
+    if (!validPaths || (Array.isArray(validPaths) && validPaths.length === 0) || (validPaths instanceof Set && validPaths.size === 0)) {
+      logger.warn('[FAILSAFE] Path validation bypassed: no valid paths available. All suggestions will pass through unfiltered.');
+      return true;
+    }
+
+    // Check if the suggestion path is empty or invalid
+    if (!suggestionPath || typeof suggestionPath !== 'string') {
+      return false;
+    }
+
+    // Use O(1) Set lookup if validPaths is a Set, otherwise normalize and check
+    const normalizedSuggestionPath = normalizePath(suggestionPath);
+    if (validPaths instanceof Set) {
+      return validPaths.has(normalizedSuggestionPath);
+    }
+    // Fallback for array (convert to Set for lookup)
+    const validPathsSet = new Set(validPaths.map(p => normalizePath(p)));
+    return validPathsSet.has(normalizedSuggestionPath);
   }
 
   /**
@@ -722,9 +923,9 @@ Output JSON with this structure:
    */
   async getSuggestions(prId, runId = null) {
     const { query } = require('../database');
-    
+
     let sql = `
-      SELECT * FROM comments 
+      SELECT * FROM comments
       WHERE pr_id = ? AND source = 'ai'
     `;
     const params = [prId];
@@ -771,9 +972,13 @@ Output JSON with this structure:
         logger.info(progress);
       };
 
+      // Get list of changed files for grounding
+      const changedFiles = await this.getChangedFilesList(worktreePath, prMetadata);
+      logger.info(`[Level 2] Changed files for grounding: ${changedFiles.length} files`);
+
       // Build the Level 2 prompt
       updateProgress('Building prompt for AI to analyze file context');
-      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions);
+      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions, changedFiles);
 
       // Execute Claude CLI in the worktree directory
       updateProgress('Running AI to analyze files in context');
@@ -858,9 +1063,13 @@ Output JSON with this structure:
       updateProgress('Detecting testing context for codebase');
       const testingContext = await this.detectTestingContext(worktreePath, prMetadata);
 
+      // Get list of changed files for grounding
+      const changedFiles = await this.getChangedFilesList(worktreePath, prMetadata);
+      logger.info(`[Level 3] Changed files for grounding: ${changedFiles.length} files`);
+
       // Build the Level 3 prompt with test context
       updateProgress('Building prompt for AI to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions);
+      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions, changedFiles);
 
       // Execute Claude CLI for Level 3 analysis
       updateProgress('Running AI to analyze codebase-wide implications');
@@ -1350,7 +1559,7 @@ Output JSON with this structure:
     }
   }
 
-  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null, generatedPatterns = [], customInstructions = null) {
+  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null, generatedPatterns = [], customInstructions = null, changedFiles = []) {
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. At this architectural level, it's especially important to verify alignment between stated intent and actual implementation. Flag any:
 - **Architectural discrepancies:** Does the implementation match the architectural approach described?
@@ -1360,10 +1569,11 @@ Output JSON with this structure:
 
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
+    const changedFilesSection = this.buildChangedFilesSection(changedFiles);
 
     return `You are reviewing pull request #${prId} in the current working directory.
 ${prContext}${customInstructionsSection}# Level 3 Review - Analyze Change Impact on Codebase
-${generatedFilesSection}
+${generatedFilesSection}${changedFilesSection}
 ## Purpose
 Level 3 analyzes how the PR changes connect to and impact the broader codebase.
 This is NOT a general codebase review or architectural audit.
