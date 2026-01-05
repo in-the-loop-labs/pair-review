@@ -328,7 +328,12 @@ class LocalManager {
           };
 
           // Create comment display row
-          cm.displayUserComment(commentData, formRow.previousElementSibling);
+          const targetRow = formRow.previousElementSibling;
+          if (!targetRow) {
+            console.error('Could not find target row for comment display');
+            return;
+          }
+          cm.displayUserComment(commentData, targetRow);
 
           // Notify AI Panel about the new comment
           if (window.aiPanel?.addComment) {
@@ -512,6 +517,10 @@ class LocalManager {
           if (!response.ok) throw new Error('Failed to update comment');
 
           const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
+          if (!commentRow) {
+            console.error('Comment element not found');
+            return;
+          }
           const commentDiv = commentRow.querySelector('.user-comment');
           let bodyDiv = commentDiv.querySelector('.user-comment-body');
           const editForm = commentDiv.querySelector('.user-comment-edit-form');
@@ -1133,6 +1142,34 @@ class LocalManager {
   }
 
   /**
+   * Update diff statistics display
+   * @param {Object} stats - Stats object with additions, deletions, and fileCount
+   */
+  updateDiffStats(stats) {
+    const { additions = 0, deletions = 0, fileCount = 0 } = stats;
+
+    const additionsEl = document.getElementById('pr-additions');
+    if (additionsEl) {
+      additionsEl.textContent = `+${additions}`;
+    }
+
+    const deletionsEl = document.getElementById('pr-deletions');
+    if (deletionsEl) {
+      deletionsEl.textContent = `-${deletions}`;
+    }
+
+    const filesCountEl = document.getElementById('pr-files-count');
+    if (filesCountEl) {
+      filesCountEl.textContent = `${fileCount} file${fileCount !== 1 ? 's' : ''}`;
+    }
+
+    const sidebarFileCount = document.getElementById('sidebar-file-count');
+    if (sidebarFileCount) {
+      sidebarFileCount.textContent = fileCount;
+    }
+  }
+
+  /**
    * Load and display local diff
    */
   async loadLocalDiff() {
@@ -1150,10 +1187,18 @@ class LocalManager {
       const stats = data.stats || {};
 
       if (!diffContent) {
+        // Clear the diff container
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
-          diffContainer.innerHTML = '<div class="no-diff">No uncommitted changes found</div>';
+          diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review</div>';
         }
+
+        // Clear the file navigation sidebar
+        manager.updateFileList([]);
+
+        // Update stats to show zeros
+        this.updateDiffStats({ additions: 0, deletions: 0, fileCount: 0 });
+
         return;
       }
 
@@ -1193,26 +1238,11 @@ class LocalManager {
       }
 
       // Update stats display
-      const additionsEl = document.getElementById('pr-additions');
-      if (additionsEl) {
-        additionsEl.textContent = `+${totalAdditions}`;
-      }
-
-      const deletionsEl = document.getElementById('pr-deletions');
-      if (deletionsEl) {
-        deletionsEl.textContent = `-${totalDeletions}`;
-      }
-
-      const filesCountEl = document.getElementById('pr-files-count');
-      if (filesCountEl) {
-        filesCountEl.textContent = `${files.length} files`;
-      }
-
-      // Update sidebar file count
-      const sidebarFileCount = document.getElementById('sidebar-file-count');
-      if (sidebarFileCount) {
-        sidebarFileCount.textContent = files.length;
-      }
+      this.updateDiffStats({
+        additions: totalAdditions,
+        deletions: totalDeletions,
+        fileCount: files.length
+      });
 
       // Update file list sidebar
       manager.updateFileList(files);

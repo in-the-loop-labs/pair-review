@@ -13,6 +13,12 @@ const open = (...args) => import('open').then(({ default: open }) => open(...arg
 const MAX_FILE_SIZE = 1024 * 1024;
 
 /**
+ * Exit code returned by git diff --no-index when files differ
+ * (exit code 1 means differences exist, not an error)
+ */
+const GIT_DIFF_HAS_DIFFERENCES = 1;
+
+/**
  * Find the git repository root by walking up the directory tree
  * @param {string} startPath - Starting path to search from
  * @returns {Promise<string>} Absolute path to the git repository root
@@ -209,8 +215,6 @@ function isBinaryFile(buffer) {
  * @returns {Promise<Array<{file: string, content: string, size: number, skipped: boolean, reason?: string}>>}
  */
 async function getUntrackedFiles(repoPath) {
-  const results = [];
-
   try {
     // Get list of untracked files (excluding ignored files)
     const output = execSync('git ls-files --others --exclude-standard', {
@@ -221,7 +225,9 @@ async function getUntrackedFiles(repoPath) {
 
     const files = output.trim().split('\n').filter(f => f.length > 0);
 
-    for (const file of files) {
+    // Process files in parallel for better performance
+    // Use Promise.allSettled to process all files even if some fail
+    const settledResults = await Promise.allSettled(files.map(async (file) => {
       const filePath = path.join(repoPath, file);
 
       try {
@@ -229,14 +235,13 @@ async function getUntrackedFiles(repoPath) {
 
         // Skip files larger than 1MB
         if (stat.size > MAX_FILE_SIZE) {
-          results.push({
+          return {
             file,
             content: '',
             size: stat.size,
             skipped: true,
             reason: 'File too large (>1MB)'
-          });
-          continue;
+          };
         }
 
         // Read file content
@@ -244,39 +249,55 @@ async function getUntrackedFiles(repoPath) {
 
         // Skip binary files
         if (isBinaryFile(buffer)) {
-          results.push({
+          return {
             file,
             content: '',
             size: stat.size,
             skipped: true,
             reason: 'Binary file'
-          });
-          continue;
+          };
         }
 
-        results.push({
+        return {
           file,
           content: buffer.toString('utf8'),
           size: stat.size,
           skipped: false
-        });
+        };
 
       } catch (readError) {
-        results.push({
+        return {
           file,
           content: '',
           size: 0,
           skipped: true,
           reason: `Could not read file: ${readError.message}`
-        });
+        };
       }
-    }
+    }));
+
+    // Filter successful results and handle rejections gracefully
+    const results = settledResults.map((result, index) => {
+      if (result.status === 'fulfilled') {
+        return result.value;
+      }
+      // Handle unexpected rejection (shouldn't happen due to inner try/catch, but be safe)
+      console.warn(`Warning: Unexpected error processing file ${files[index]}: ${result.reason?.message || result.reason}`);
+      return {
+        file: files[index],
+        content: '',
+        size: 0,
+        skipped: true,
+        reason: `Unexpected error: ${result.reason?.message || result.reason}`
+      };
+    });
+
+    return results;
 
   } catch (error) {
     console.warn(`Warning: Could not get untracked files: ${error.message}`);
+    return [];
   }
-
-  return results;
 }
 
 /**
@@ -337,7 +358,7 @@ async function generateLocalDiff(repoPath) {
     if (!untracked.skipped) {
       try {
         const filePath = path.join(repoPath, untracked.file);
-        // git diff --no-index exits with code 1 when there are differences, so we catch and handle it
+        // git diff --no-index exits with code 1 when files differ, code 0 when identical
         let fileDiff;
         try {
           fileDiff = execSync(`git diff --no-index --no-color --no-ext-diff -- /dev/null "${filePath}"`, {
@@ -347,11 +368,12 @@ async function generateLocalDiff(repoPath) {
             maxBuffer: 10 * 1024 * 1024 // 10MB buffer per file
           });
         } catch (diffError) {
-          // git diff --no-index returns exit code 1 when there are differences
-          // The stdout still contains the valid diff
-          if (diffError.stdout) {
+          // git diff --no-index returns exit code 1 when files differ (expected case)
+          // Exit code 1 with stdout means files differ - this is the normal case for new files
+          if (diffError.status === GIT_DIFF_HAS_DIFFERENCES && typeof diffError.stdout === 'string') {
             fileDiff = diffError.stdout;
           } else {
+            // Any other error (status !== 1 or no stdout) is a real error
             throw diffError;
           }
         }

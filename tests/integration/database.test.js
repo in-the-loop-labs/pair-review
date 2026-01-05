@@ -48,8 +48,7 @@ function createTestDatabase() {
               custom_instructions TEXT,
               review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
               local_path TEXT,
-              local_head_sha TEXT,
-              UNIQUE(pr_number, repository)
+              local_head_sha TEXT
             )
           `,
           comments: `
@@ -131,7 +130,9 @@ function createTestDatabase() {
           'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
           'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
           'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
-          "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = 'local'"
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = 'local'",
+          // Partial unique index for PR reviews only (matches migration 5 schema)
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = 'pr'"
         ];
 
         // Execute table creation
@@ -279,6 +280,9 @@ describe('Database Initialization', () => {
     expect(indexNames).toContain('idx_comments_status');
     expect(indexNames).toContain('idx_worktrees_last_accessed');
     expect(indexNames).toContain('idx_worktrees_repo');
+    // Partial unique indexes from migration 5
+    expect(indexNames).toContain('idx_reviews_local');
+    expect(indexNames).toContain('idx_reviews_pr_unique');
   });
 });
 
