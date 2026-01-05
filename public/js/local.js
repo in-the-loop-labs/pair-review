@@ -692,6 +692,50 @@ class LocalManager {
       };
     }
 
+    // Patch fetchRepoSettings to use the repository from local review data
+    manager.fetchRepoSettings = async function() {
+      if (!self.localData || !self.localData.repository) return null;
+
+      // Parse owner/repo from repository name
+      const repository = self.localData.repository;
+      const parts = repository.split('/');
+      if (parts.length !== 2) return null;
+
+      const [owner, repo] = parts;
+      try {
+        const response = await fetch(`/api/repos/${owner}/${repo}/settings`);
+        if (!response.ok) {
+          if (response.status === 404) {
+            return null;
+          }
+          console.warn('Failed to fetch repo settings:', response.statusText);
+          return null;
+        }
+        return await response.json();
+      } catch (error) {
+        console.warn('Error fetching repo settings:', error);
+        return null;
+      }
+    };
+
+    // Patch fetchLastCustomInstructions to use local API endpoint
+    // Local mode uses a different endpoint pattern than PR mode because local reviews
+    // don't have PR metadata (owner/repo/number). Instead, instructions are stored
+    // directly on the review record and accessed via the review ID.
+    manager.fetchLastCustomInstructions = async function() {
+      try {
+        const response = await fetch(`/api/local/${reviewId}/review-settings`);
+        if (!response.ok) {
+          return '';
+        }
+        const data = await response.json();
+        return data.custom_instructions || '';
+      } catch (error) {
+        console.warn('Error fetching last custom instructions:', error);
+        return '';
+      }
+    };
+
     // Patch initSplitButton to be a no-op in local mode
     // The local export button is set up by updateSplitButtonForLocal() instead
     manager.initSplitButton = function() {

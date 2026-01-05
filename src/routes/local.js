@@ -12,7 +12,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, ReviewRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, RepoSettingsRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
@@ -64,7 +64,9 @@ router.get('/api/local/:reviewId', async (req, res) => {
     }
 
     // If the stored repository name doesn't look like owner/repo format,
-    // try to get a fresh one from git remote
+    // try to get a fresh one from git remote for display purposes only.
+    // Note: GET requests are read-only - no database writes here.
+    // Repository name updates happen during session creation or refresh.
     let repositoryName = review.repository;
     if (repositoryName && !repositoryName.includes('/') && review.local_path) {
       try {
@@ -72,11 +74,8 @@ router.get('/api/local/:reviewId', async (req, res) => {
         const freshRepoName = await getRepositoryName(review.local_path);
         if (freshRepoName && freshRepoName.includes('/')) {
           repositoryName = freshRepoName;
-          // Update the database with the correct name
-          await run(db, `
-            UPDATE reviews SET repository = ? WHERE id = ?
-          `, [freshRepoName, reviewId]);
-          logger.log('API', `Updated repository name: ${freshRepoName}`, 'cyan');
+          // Just use the fresh name for this response - don't write to DB in GET
+          logger.log('API', `Using fresh repository name from git remote: ${freshRepoName}`, 'cyan');
         }
       } catch (repoError) {
         // Keep the original name if we can't get a better one
@@ -186,21 +185,58 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     }
 
     const localPath = review.local_path;
+    const repository = review.repository;
 
-    // Determine provider and model
+    // Fetch repo settings for default instructions
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const repoSettings = repository ? await repoSettingsRepo.getRepoSettings(repository) : null;
+
+    // Determine provider: request body > repo settings > config > default ('claude')
     let selectedProvider;
     if (requestProvider) {
       selectedProvider = requestProvider;
+    } else if (repoSettings && repoSettings.default_provider) {
+      selectedProvider = repoSettings.default_provider;
     } else {
       const config = req.app.get('config') || {};
       selectedProvider = config.provider || 'claude';
     }
 
+    // Determine model: request body > repo settings > config/CLI > default
     let selectedModel;
     if (requestModel) {
       selectedModel = requestModel;
+    } else if (repoSettings && repoSettings.default_model) {
+      selectedModel = repoSettings.default_model;
     } else {
       selectedModel = getModel(req);
+    }
+
+    // Combine custom instructions with XML-like tags for AI clarity
+    // Server is the single source of truth for how instructions are merged
+    // Note: This merging logic is duplicated with PR mode (analysis.js).
+    // Kept as duplication rather than extracting to shared utility since it's
+    // simple string concatenation and the two modes may diverge in the future.
+    let combinedInstructions = null;
+    const repoInstructions = repoSettings?.default_instructions;
+    if (repoInstructions || requestInstructions) {
+      const parts = [];
+      if (repoInstructions) {
+        parts.push(`These are default instructions for this repository:\n<repo_instructions>\n${repoInstructions}\n</repo_instructions>`);
+      }
+      if (requestInstructions) {
+        parts.push(`These are custom instructions for this analysis run. The following instructions take precedence over the repo_instructions in areas where they overlap or conflict:\n<custom_instructions>\n${requestInstructions}\n</custom_instructions>`);
+      }
+      combinedInstructions = parts.join('\n\n');
+    }
+
+    // Save custom instructions to the review record
+    // Only update when requestInstructions has a value - updateReview would accept
+    // null/undefined but we only want to persist actual user-provided instructions
+    if (requestInstructions) {
+      await reviewRepo.updateReview(reviewId, {
+        customInstructions: requestInstructions
+      });
     }
 
     // Create analysis ID
@@ -210,7 +246,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     const initialStatus = {
       id: analysisId,
       reviewId,
-      repository: review.repository,
+      repository: repository,
       reviewType: 'local',
       status: 'running',
       startedAt: new Date().toISOString(),
@@ -241,7 +277,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     // For local review, we use HEAD as both since we're diffing working directory
     const localMetadata = {
       id: reviewId,
-      title: `Local changes in ${review.repository}`,
+      title: `Local changes in ${repository}`,
       description: `Reviewing uncommitted changes in ${localPath}`,
       base_sha: review.local_head_sha,  // HEAD commit
       head_sha: review.local_head_sha,  // HEAD commit (diff is against working directory)
@@ -250,13 +286,13 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
 
     // Log analysis start
     logger.section(`Local AI Analysis Request - Review #${reviewId}`);
-    logger.log('API', `Repository: ${review.repository}`, 'magenta');
+    logger.log('API', `Repository: ${repository}`, 'magenta');
     logger.log('API', `Local path: ${localPath}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
     logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
     logger.log('API', `Model: ${selectedModel}`, 'cyan');
-    if (requestInstructions) {
-      logger.log('API', `Custom instructions: ${requestInstructions.length} chars`, 'cyan');
+    if (combinedInstructions) {
+      logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
     }
 
     // Create progress callback function that tracks each level separately
@@ -292,7 +328,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     };
 
     // Start analysis asynchronously
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, requestInstructions)
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, combinedInstructions)
       .then(result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);
@@ -1404,6 +1440,86 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     console.error('Error refreshing local diff:', error);
     res.status(500).json({
       error: 'Failed to refresh diff: ' + error.message
+    });
+  }
+});
+
+/**
+ * Get review settings for a local review
+ * Returns the custom_instructions from the review record
+ */
+router.get('/api/local/:reviewId/review-settings', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.json({
+        custom_instructions: null
+      });
+    }
+
+    res.json({
+      custom_instructions: review.custom_instructions || null
+    });
+
+  } catch (error) {
+    console.error('Error fetching local review settings:', error);
+    res.status(500).json({
+      error: 'Failed to fetch review settings'
+    });
+  }
+});
+
+/**
+ * Save review settings for a local review
+ * Saves the custom_instructions to the review record
+ */
+router.post('/api/local/:reviewId/review-settings', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const { custom_instructions } = req.body;
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({
+        error: `Local review #${reviewId} not found`
+      });
+    }
+
+    // Update the review with custom instructions
+    await reviewRepo.updateReview(reviewId, {
+      customInstructions: custom_instructions || null
+    });
+
+    res.json({
+      success: true,
+      custom_instructions: custom_instructions || null
+    });
+
+  } catch (error) {
+    console.error('Error saving local review settings:', error);
+    res.status(500).json({
+      error: 'Failed to save review settings'
     });
   }
 });

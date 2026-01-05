@@ -449,6 +449,25 @@ ${prMetadata.description || '(No description provided)'}
   }
 
   /**
+   * Build the appropriate git diff command based on review type
+   * For PR reviews: git diff base_sha...head_sha
+   * For local reviews: git diff HEAD (all uncommitted changes - both staged and unstaged)
+   * @param {Object} prMetadata - PR/review metadata
+   * @param {string} suffix - Optional suffix like '<file>' or '--name-only'
+   * @returns {string} The git diff command
+   */
+  buildGitDiffCommand(prMetadata, suffix = '') {
+    const isLocal = prMetadata.reviewType === 'local';
+    if (isLocal) {
+      // For local mode, diff against HEAD to see working directory changes
+      return suffix ? `git diff HEAD ${suffix}` : 'git diff HEAD';
+    }
+    // For PR mode, diff between base and head commits
+    const baseCmd = `git diff ${prMetadata.base_sha}...${prMetadata.head_sha}`;
+    return suffix ? `${baseCmd} ${suffix}` : baseCmd;
+  }
+
+  /**
    * Build the Level 2 prompt for file context analysis
    * @param {number} prId - Pull request ID
    * @param {string} worktreePath - Path to the git worktree
@@ -468,13 +487,16 @@ ${prMetadata.description || '(No description provided)'}
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
 
+    const diffCmd = this.buildGitDiffCommand(prMetadata);
+    const diffCmdWithFile = this.buildGitDiffCommand(prMetadata, '<file>');
+
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 2 Review - Analyze File Context
 ${generatedFilesSection}${changedFilesSection}
 ## Analysis Process
 For each file with changes:
    - Read the full file content to understand context
-   - Run 'git diff ${prMetadata.base_sha}...${prMetadata.head_sha} <file>' to see what changed
+   - Run '${diffCmdWithFile}' to see what changed
    - Analyze how changes fit within the file's overall structure
    - Focus on file-level patterns and consistency
    - Skip files where no file-level issues are found (efficiency focus)
@@ -495,7 +517,7 @@ Look for:
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
-- git diff ${prMetadata.base_sha}...${prMetadata.head_sha} <file>
+- ${diffCmdWithFile}
 - cat <file> or any file reading command
 - grep, find, ls commands as needed
 
@@ -548,6 +570,8 @@ Output JSON with this structure:
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
 
+    const diffCmd = this.buildGitDiffCommand(prMetadata);
+
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 1 Review - Analyze Changes in Isolation
 
@@ -555,7 +579,7 @@ ${prContext}${customInstructionsSection}# Level 1 Review - Analyze Changes in Is
 **This level should be fast** - focusing only on the diff itself without exploring file context or surrounding unchanged code. That analysis is reserved for Level 2.
 ${generatedFilesSection}
 ## Initial Setup
-1. Run 'git diff ${prMetadata.base_sha}...${prMetadata.head_sha}' to see the changes
+1. Run '${diffCmd}' to see the changes
 2. Focus ONLY on the changed lines in the diff
 3. Do not analyze file context or surrounding unchanged code - that's for Level 2
 
@@ -573,7 +597,7 @@ Identify the following in changed code:
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
-- git diff ${prMetadata.base_sha}...${prMetadata.head_sha}
+- ${diffCmd}
 - git diff --stat
 - ls, find, grep commands as needed
 
@@ -1223,7 +1247,9 @@ Output JSON with this structure:
 
     try {
       // Step 1: Detect primary language(s) from changed files
-      const { stdout: changedFiles } = await execPromise(`git diff ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`, { cwd: worktreePath });
+      // For local mode, use git diff HEAD; for PR mode, use base...head
+      const diffCmd = this.buildGitDiffCommand(prMetadata, '--name-only');
+      const { stdout: changedFiles } = await execPromise(diffCmd, { cwd: worktreePath });
       const files = changedFiles.trim().split('\n').filter(f => f.length > 0);
       
       const languages = this.detectLanguages(files);
