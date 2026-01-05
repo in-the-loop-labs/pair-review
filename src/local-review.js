@@ -346,6 +346,13 @@ async function generateLocalDiff(repoPath) {
     stats.trackedChanges = stats.unstagedChanges;
 
   } catch (error) {
+    // Check for buffer overflow errors and provide clear user feedback
+    if (error.message && error.message.includes('maxBuffer')) {
+      console.error(`Error: Diff output exceeded the 50MB buffer limit.`);
+      console.error(`This typically happens with very large repositories or binary files in the diff.`);
+      console.error(`Consider staging some files to exclude them from the review.`);
+      throw new Error('Diff output exceeded maximum buffer size (50MB). Try staging some files to reduce the diff size.');
+    }
     console.warn(`Warning: Could not generate diff for tracked files: ${error.message}`);
   }
 
@@ -370,7 +377,9 @@ async function generateLocalDiff(repoPath) {
         } catch (diffError) {
           // git diff --no-index returns exit code 1 when files differ (expected case)
           // Exit code 1 with stdout means files differ - this is the normal case for new files
-          if (diffError.status === GIT_DIFF_HAS_DIFFERENCES && typeof diffError.stdout === 'string') {
+          // Defensive check: ensure diffError is an object with expected properties
+          if (diffError && typeof diffError === 'object' &&
+              diffError.status === GIT_DIFF_HAS_DIFFERENCES && typeof diffError.stdout === 'string') {
             fileDiff = diffError.stdout;
           } else {
             // Any other error (status !== 1 or no stdout) is a real error

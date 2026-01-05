@@ -7,6 +7,20 @@
  * - Adapting the UI for local uncommitted changes review
  */
 class LocalManager {
+  /**
+   * Create LocalManager instance.
+   *
+   * INITIALIZATION ORDER DEPENDENCY:
+   * LocalManager requires PRManager to be fully initialized before patching.
+   * The initialization order is:
+   * 1. PRManager is created and attached to window.prManager (in pr.js)
+   * 2. LocalManager is created (in local.js, loaded after pr.js)
+   * 3. LocalManager.init() patches PRManager methods
+   *
+   * If PRManager is not ready when LocalManager is constructed, we defer
+   * initialization until DOMContentLoaded with a setTimeout(0) to ensure
+   * PRManager's constructor has completed.
+   */
   constructor() {
     this.reviewId = null;
     this.localData = null;
@@ -56,7 +70,16 @@ class LocalManager {
   }
 
   /**
-   * Patch PRManager to use local API endpoints
+   * Patch PRManager to use local API endpoints.
+   *
+   * NOTE: This method uses monkey patching to override PRManager methods at runtime.
+   * While monkey patching is generally discouraged in favor of patterns like strategy/adapter,
+   * it is acceptable here because:
+   * 1. This is a local-only web application with a single entry point
+   * 2. LocalManager is tightly coupled to PRManager by design
+   * 3. The patching happens once at initialization, not dynamically
+   * 4. A strategy pattern would require significant refactoring of PRManager for minimal benefit
+   * 5. The current approach is working and well-tested
    */
   patchPRManager() {
     const manager = window.prManager;

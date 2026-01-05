@@ -375,6 +375,11 @@ class PreviewModal {
     const copyBtn = this.modal.querySelector('#copy-json-btn');
     const originalText = copyBtn.innerHTML;
 
+    // Guard against missing localData - provide sensible defaults
+    if (!this.localData) {
+      console.warn('PreviewModal.copyAsJSON: No local data available, using defaults');
+    }
+
     try {
       // Format as JSON using stored comments
       const comments = this.currentComments || [];

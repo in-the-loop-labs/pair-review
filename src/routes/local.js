@@ -401,6 +401,9 @@ router.post('/api/local/:reviewId/analyze/level2', async (req, res) => {
       });
     }
 
+    // Extract optional provider and model from request body
+    const { provider: requestProvider, model: requestModel } = req.body || {};
+
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
     const review = await reviewRepo.getLocalReviewById(reviewId);
@@ -412,6 +415,22 @@ router.post('/api/local/:reviewId/analyze/level2', async (req, res) => {
     }
 
     const localPath = review.local_path;
+
+    // Determine provider and model
+    let selectedProvider;
+    if (requestProvider) {
+      selectedProvider = requestProvider;
+    } else {
+      const config = req.app.get('config') || {};
+      selectedProvider = config.provider || 'claude';
+    }
+
+    let selectedModel;
+    if (requestModel) {
+      selectedModel = requestModel;
+    } else {
+      selectedModel = getModel(req);
+    }
 
     // Create analysis ID
     const analysisId = uuidv4();
@@ -438,9 +457,8 @@ router.post('/api/local/:reviewId/analyze/level2', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
-    // Create analyzer instance
-    const model = getModel(req);
-    const analyzer = new Analyzer(db, model);
+    // Create analyzer instance with provider and model
+    const analyzer = new Analyzer(db, selectedModel, selectedProvider);
 
     const localMetadata = {
       id: reviewId,
@@ -454,7 +472,8 @@ router.post('/api/local/:reviewId/analyze/level2', async (req, res) => {
     logger.section(`Local Level 2 AI Analysis - Review #${reviewId}`);
     logger.log('API', `Repository: ${review.repository}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
-    logger.log('API', `Model: ${model}`, 'cyan');
+    logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
+    logger.log('API', `Model: ${selectedModel}`, 'cyan');
 
     const progressCallback = (progressUpdate) => {
       const updatedStatus = {
@@ -526,6 +545,9 @@ router.post('/api/local/:reviewId/analyze/level3', async (req, res) => {
       });
     }
 
+    // Extract optional provider and model from request body
+    const { provider: requestProvider, model: requestModel } = req.body || {};
+
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
     const review = await reviewRepo.getLocalReviewById(reviewId);
@@ -537,6 +559,22 @@ router.post('/api/local/:reviewId/analyze/level3', async (req, res) => {
     }
 
     const localPath = review.local_path;
+
+    // Determine provider and model
+    let selectedProvider;
+    if (requestProvider) {
+      selectedProvider = requestProvider;
+    } else {
+      const config = req.app.get('config') || {};
+      selectedProvider = config.provider || 'claude';
+    }
+
+    let selectedModel;
+    if (requestModel) {
+      selectedModel = requestModel;
+    } else {
+      selectedModel = getModel(req);
+    }
 
     // Create analysis ID
     const analysisId = uuidv4();
@@ -563,9 +601,8 @@ router.post('/api/local/:reviewId/analyze/level3', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
-    // Create analyzer instance
-    const model = getModel(req);
-    const analyzer = new Analyzer(db, model);
+    // Create analyzer instance with provider and model
+    const analyzer = new Analyzer(db, selectedModel, selectedProvider);
 
     const localMetadata = {
       id: reviewId,
@@ -579,7 +616,8 @@ router.post('/api/local/:reviewId/analyze/level3', async (req, res) => {
     logger.section(`Local Level 3 AI Analysis - Review #${reviewId}`);
     logger.log('API', `Repository: ${review.repository}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
-    logger.log('API', `Model: ${model}`, 'cyan');
+    logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
+    logger.log('API', `Model: ${selectedModel}`, 'cyan');
 
     const progressCallback = (progressUpdate) => {
       const updatedStatus = {
