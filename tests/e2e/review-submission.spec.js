@@ -9,12 +9,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-
-// Helper to wait for diff to render
-async function waitForDiffToRender(page) {
-  await page.waitForSelector('[data-file-name]', { timeout: 10000 });
-  await page.waitForSelector('.d2h-code-line-ctn', { timeout: 10000 });
-}
+import { waitForDiffToRender } from './helpers.js';
 
 // Helper to open the review modal
 async function openReviewModal(page) {

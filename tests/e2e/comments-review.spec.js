@@ -6,12 +6,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-
-// Helper to wait for diff to render
-async function waitForDiffToRender(page) {
-  await page.waitForSelector('[data-file-name]', { timeout: 10000 });
-  await page.waitForSelector('.d2h-code-line-ctn', { timeout: 10000 });
-}
+import { waitForDiffToRender } from './helpers.js';
 
 test.describe('Comment Creation', () => {
   test('should show comment form when add comment button is clicked', async ({ page }) => {
@@ -127,8 +122,10 @@ test.describe('Review Modal', () => {
     const commentRadio = page.locator('input[value="COMMENT"]');
     const requestChangesRadio = page.locator('input[value="REQUEST_CHANGES"]');
 
-    // At least comment option should exist
+    // All three review event options should be visible
+    await expect(approveRadio).toBeVisible();
     await expect(commentRadio).toBeVisible();
+    await expect(requestChangesRadio).toBeVisible();
   });
 
   test('should close review modal on cancel', async ({ page }) => {
@@ -245,21 +242,28 @@ test.describe('Accessibility', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await page.waitForLoadState('networkidle');
 
-    // Buttons should have text content or aria-label
-    const buttons = page.locator('button');
-    const count = await buttons.count();
+    // Test specific known buttons that must have accessible names
+    // These are the key interactive elements in the PR page
 
-    for (let i = 0; i < Math.min(count, 5); i++) {
-      const button = buttons.nth(i);
-      const text = await button.textContent();
-      const ariaLabel = await button.getAttribute('aria-label');
-      const title = await button.getAttribute('title');
+    // Analyze button should have accessible text
+    const analyzeBtn = page.locator('#analyze-btn, button:has-text("Analyze")').first();
+    await expect(analyzeBtn).toBeVisible();
+    const analyzeText = await analyzeBtn.textContent();
+    expect(analyzeText?.trim().length).toBeGreaterThan(0);
 
-      // Button should have some accessible name
-      const hasAccessibleName = (text && text.trim().length > 0) ||
-                                 ariaLabel ||
-                                 title;
-      expect(hasAccessibleName).toBeTruthy();
+    // Review/Submit button should have accessible text
+    const reviewBtn = page.locator('button:has-text("Review"), .split-button-main').first();
+    await expect(reviewBtn).toBeVisible();
+    const reviewText = await reviewBtn.textContent();
+    const reviewAriaLabel = await reviewBtn.getAttribute('aria-label');
+    expect(reviewText?.trim().length || reviewAriaLabel?.length).toBeGreaterThan(0);
+
+    // Theme toggle (if visible) should have accessible name via aria-label or title
+    const themeToggle = page.locator('#theme-toggle');
+    if (await themeToggle.isVisible()) {
+      const themeAriaLabel = await themeToggle.getAttribute('aria-label');
+      const themeTitle = await themeToggle.getAttribute('title');
+      expect(themeAriaLabel || themeTitle).toBeTruthy();
     }
   });
 
@@ -267,11 +271,25 @@ test.describe('Accessibility', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await page.waitForLoadState('networkidle');
 
-    // Tab should move focus
+    // Tab should move focus to an interactive element
     await page.keyboard.press('Tab');
 
-    // Something should have focus
-    const focusedElement = await page.evaluate(() => document.activeElement?.tagName);
-    expect(focusedElement).toBeTruthy();
+    // Focus should be on a meaningful interactive element (button, link, input, etc.)
+    const focusedInfo = await page.evaluate(() => {
+      const el = document.activeElement;
+      return {
+        tagName: el?.tagName,
+        isInteractive: ['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA'].includes(el?.tagName || ''),
+        hasTabIndex: el?.getAttribute('tabindex') !== null,
+        role: el?.getAttribute('role')
+      };
+    });
+
+    // Verify focus moved to a focusable interactive element
+    const isValidFocusTarget = focusedInfo.isInteractive ||
+                                focusedInfo.hasTabIndex ||
+                                focusedInfo.role === 'button' ||
+                                focusedInfo.role === 'link';
+    expect(isValidFocusTarget).toBe(true);
   });
 });

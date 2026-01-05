@@ -6,14 +6,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-
-// Helper to wait for diff to render
-async function waitForDiffToRender(page) {
-  // Wait for diff container to have content
-  await page.waitForSelector('[data-file-name]', { timeout: 10000 });
-  // Wait for at least one diff line
-  await page.waitForSelector('.d2h-code-line-ctn', { timeout: 10000 });
-}
+import { waitForDiffToRender } from './helpers.js';
 
 test.describe('PR Page', () => {
   test.describe('Page Load', () => {
@@ -158,14 +151,16 @@ test.describe('PR Page', () => {
       const count = await fileItems.count();
 
       if (count > 1) {
+        // Get the second file's name to verify we scroll to it
+        const secondFileName = await fileItems.nth(1).textContent();
+
         // Click second file to trigger scroll
         await fileItems.nth(1).click();
 
-        // Wait for scroll animation
-        await page.waitForTimeout(500);
-
-        // The diff view should have scrolled (file should be visible)
-        await expect(page.locator('[data-file-name]').first()).toBeVisible();
+        // Wait for the second file to be visible in viewport (replaces fixed timeout)
+        // The file section matching the clicked file should be in view
+        const targetFileSection = page.locator(`[data-file-name]`).nth(1);
+        await expect(targetFileSection).toBeInViewport({ timeout: 2000 });
       }
     });
   });
@@ -204,12 +199,9 @@ test.describe('AI Features', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await page.waitForLoadState('networkidle');
 
-    // Should show indicator that AI features are available
-    const pageContent = await page.textContent('body');
-    const hasAIIndicator = pageContent.toLowerCase().includes('ai') ||
-                           pageContent.toLowerCase().includes('analyze') ||
-                           pageContent.toLowerCase().includes('suggestion');
-    expect(hasAIIndicator).toBe(true);
+    // Verify the actual Analyze button exists and is visible
+    const analyzeBtn = page.locator('#analyze-btn, button:has-text("Analyze")');
+    await expect(analyzeBtn.first()).toBeVisible();
   });
 });
 
