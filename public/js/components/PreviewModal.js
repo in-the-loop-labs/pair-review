@@ -59,21 +59,7 @@ class PreviewModal {
               <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
               <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
             </svg>
-            Copy
-          </button>
-          <button class="btn btn-secondary" id="copy-markdown-btn" onclick="previewModal.copyAsMarkdown()" style="display: none;">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-              <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
-              <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
-            </svg>
             Copy as Markdown
-          </button>
-          <button class="btn btn-secondary" id="copy-json-btn" onclick="previewModal.copyAsJSON()" style="display: none;">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-              <path d="M4 1.75C4 .784 4.784 0 5.75 0h5.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v8.586A1.75 1.75 0 0 1 14.25 15h-9a.75.75 0 0 1 0-1.5h9a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 10 4.25V1.5H5.75a.25.25 0 0 0-.25.25v2.5a.75.75 0 0 1-1.5 0Zm7.5-.188V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
-              <path d="M.878 8.5a1.5 1.5 0 0 1 2.244 0l.252.335V7.25a.75.75 0 1 1 1.5 0v1.585l.251-.335a1.5 1.5 0 1 1 2.4 1.8l-1.5 2a1.5 1.5 0 0 1-2.4 0l-1.5-2a1.5 1.5 0 0 1-.247-1.8Z"/>
-            </svg>
-            Copy as JSON
           </button>
           <button class="btn btn-primary" id="submit-review-btn" onclick="previewModal.submitReview()">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
@@ -107,38 +93,25 @@ class PreviewModal {
   /**
    * Show the modal and load comments
    * @param {Object} options - Display options
-   * @param {boolean} options.hideSubmit - Hide the Submit Review button
+   * @param {boolean} options.hideSubmit - Hide the Submit Review button (deprecated, use window.PAIR_REVIEW_LOCAL_MODE)
    * @param {boolean} options.hideClearAll - Hide the Clear All button
-   * @param {boolean} options.isLocalMode - Show local mode buttons (Copy as Markdown/JSON)
    */
   async show(options = {}) {
     if (!this.modal) return;
 
     this.options = options;
 
-    // Show/hide buttons based on options
+    // Show/hide buttons based on options and local mode
     const submitBtn = this.modal.querySelector('#submit-review-btn');
     const clearBtn = this.modal.querySelector('#clear-all-comments-btn');
-    const copyBtn = this.modal.querySelector('#copy-preview-btn');
-    const copyMarkdownBtn = this.modal.querySelector('#copy-markdown-btn');
-    const copyJsonBtn = this.modal.querySelector('#copy-json-btn');
 
+    // Hide Submit Review in local mode or if explicitly requested
+    const isLocalMode = window.PAIR_REVIEW_LOCAL_MODE === true;
     if (submitBtn) {
-      submitBtn.style.display = options.hideSubmit ? 'none' : '';
+      submitBtn.style.display = (isLocalMode || options.hideSubmit) ? 'none' : '';
     }
     if (clearBtn) {
       clearBtn.style.display = options.hideClearAll ? 'none' : '';
-    }
-
-    // For local mode, show Copy as Markdown/JSON buttons, hide generic Copy button
-    if (options.isLocalMode) {
-      if (copyBtn) copyBtn.style.display = 'none';
-      if (copyMarkdownBtn) copyMarkdownBtn.style.display = '';
-      if (copyJsonBtn) copyJsonBtn.style.display = '';
-    } else {
-      if (copyBtn) copyBtn.style.display = '';
-      if (copyMarkdownBtn) copyMarkdownBtn.style.display = 'none';
-      if (copyJsonBtn) copyJsonBtn.style.display = 'none';
     }
 
     // Show modal
@@ -180,8 +153,15 @@ class PreviewModal {
         return;
       }
 
-      // Fetch user comments
-      const response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/user-comments`);
+      // Determine the correct API endpoint based on mode
+      let response;
+      if (window.PAIR_REVIEW_LOCAL_MODE && window.localManager?.reviewId) {
+        // Local mode - use local API endpoint
+        response = await fetch(`/api/local/${window.localManager.reviewId}/user-comments`);
+      } else {
+        // PR mode - use PR API endpoint
+        response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/user-comments`);
+      }
 
       if (!response.ok) {
         throw new Error('Failed to load comments');
@@ -189,6 +169,9 @@ class PreviewModal {
 
       const data = await response.json();
       const comments = data.comments || [];
+
+      // Store comments for copy functionality
+      this.currentComments = comments;
 
       // Format comments for preview
       const formattedText = this.formatComments(comments);
@@ -285,7 +268,7 @@ class PreviewModal {
   }
 
   /**
-   * Copy preview text to clipboard
+   * Copy preview text to clipboard (as Markdown)
    */
   async copyToClipboard() {
     const previewTextElement = this.modal.querySelector('#preview-text');
@@ -326,113 +309,6 @@ class PreviewModal {
         copyBtn.innerHTML = originalText;
       }, 2000);
     }
-  }
-
-  /**
-   * Copy comments as Markdown to clipboard (for local mode)
-   */
-  async copyAsMarkdown() {
-    const copyBtn = this.modal.querySelector('#copy-markdown-btn');
-    const originalText = copyBtn.innerHTML;
-
-    try {
-      // Use stored comments or current preview text
-      let text;
-      if (this.currentComments) {
-        text = this.formatComments(this.currentComments);
-      } else {
-        const previewTextElement = this.modal.querySelector('#preview-text');
-        text = previewTextElement.textContent;
-      }
-
-      await navigator.clipboard.writeText(text);
-
-      // Show success feedback
-      copyBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-          <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
-        </svg>
-        Copied!
-      `;
-      copyBtn.disabled = true;
-
-      // Reset button after 2 seconds
-      setTimeout(() => {
-        copyBtn.innerHTML = originalText;
-        copyBtn.disabled = false;
-      }, 2000);
-
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      this.showCopyError(copyBtn, originalText);
-    }
-  }
-
-  /**
-   * Copy comments as JSON to clipboard (for local mode)
-   */
-  async copyAsJSON() {
-    const copyBtn = this.modal.querySelector('#copy-json-btn');
-    const originalText = copyBtn.innerHTML;
-
-    // Guard against missing localData - provide sensible defaults
-    if (!this.localData) {
-      console.warn('PreviewModal.copyAsJSON: No local data available, using defaults');
-    }
-
-    try {
-      // Format as JSON using stored comments
-      const comments = this.currentComments || [];
-      const jsonData = {
-        repository: this.localData?.repository || 'unknown',
-        branch: this.localData?.branch || 'unknown',
-        exportedAt: new Date().toISOString(),
-        comments: comments.map(c => ({
-          file: c.file,
-          lineStart: c.line_start,
-          lineEnd: c.line_end || c.line_start,
-          body: c.body
-        }))
-      };
-      const text = JSON.stringify(jsonData, null, 2);
-
-      await navigator.clipboard.writeText(text);
-
-      // Show success feedback
-      copyBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-          <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
-        </svg>
-        Copied!
-      `;
-      copyBtn.disabled = true;
-
-      // Reset button after 2 seconds
-      setTimeout(() => {
-        copyBtn.innerHTML = originalText;
-        copyBtn.disabled = false;
-      }, 2000);
-
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      this.showCopyError(copyBtn, originalText);
-    }
-  }
-
-  /**
-   * Show copy error feedback on a button
-   */
-  showCopyError(btn, originalText) {
-    btn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-        <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06z"/>
-      </svg>
-      Failed to copy
-    `;
-
-    setTimeout(() => {
-      btn.innerHTML = originalText;
-    }, 2000);
   }
 }
 

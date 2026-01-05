@@ -736,36 +736,12 @@ class LocalManager {
       }
     };
 
-    // Patch initSplitButton to be a no-op in local mode
-    // The local export button is set up by updateSplitButtonForLocal() instead
-    manager.initSplitButton = function() {
-      console.log('initSplitButton skipped - local mode uses custom export button');
-    };
+    // Note: initSplitButton is NOT patched - it will use the standard SplitButton
+    // which automatically detects local mode via window.PAIR_REVIEW_LOCAL_MODE
+    // and hides the Submit Review option accordingly.
 
-    // Patch openPreviewModal to use local API endpoint
-    manager.openPreviewModal = function() {
-      if (!manager.previewModal) {
-        manager.previewModal = new PreviewModal();
-      }
-      // Patch the loadComments method for this specific instance
-      manager.previewModal.loadComments = async function() {
-        const previewTextElement = this.modal.querySelector('#preview-text');
-        try {
-          const response = await fetch(`/api/local/${reviewId}/user-comments`);
-          if (!response.ok) {
-            throw new Error('Failed to load comments');
-          }
-          const data = await response.json();
-          const comments = data.comments || [];
-          const formattedText = this.formatComments(comments);
-          previewTextElement.textContent = formattedText;
-        } catch (error) {
-          console.error('Error loading comments:', error);
-          previewTextElement.textContent = 'Error loading comments: ' + error.message;
-        }
-      };
-      manager.previewModal.show();
-    };
+    // Note: openPreviewModal is NOT patched - PreviewModal now automatically
+    // detects local mode and uses the correct API endpoint.
 
     console.log('PRManager patched for local mode');
   }
@@ -1017,81 +993,6 @@ class LocalManager {
   }
 
   /**
-   * Update split button for local mode (no GitHub submission)
-   * Replace the SplitButton with a simple Preview button
-   */
-  updateSplitButtonForLocal() {
-    const placeholder = document.getElementById('split-button-placeholder');
-    if (!placeholder) return;
-
-    // Clear any existing split button
-    placeholder.innerHTML = '';
-
-    // Create simple preview button
-    const previewButton = document.createElement('button');
-    previewButton.className = 'btn btn-secondary';
-    previewButton.id = 'local-preview-btn';
-    previewButton.title = 'Preview comments';
-    previewButton.innerHTML = `
-      <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
-        <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
-        <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
-      </svg>
-      <span>Preview</span>
-    `;
-
-    previewButton.addEventListener('click', () => {
-      this.openLocalPreviewModal();
-    });
-
-    placeholder.appendChild(previewButton);
-  }
-
-  /**
-   * Open preview modal with formatted comments for local mode
-   */
-  async openLocalPreviewModal() {
-    const manager = window.prManager;
-    if (!manager) return;
-
-    // Ensure PreviewModal exists
-    if (!manager.previewModal) {
-      manager.previewModal = new PreviewModal();
-    }
-
-    const modal = manager.previewModal;
-    const reviewId = this.reviewId;
-    const localData = this.localData;
-
-    // Override loadComments to use local API
-    modal.loadComments = async function() {
-      const previewTextElement = this.modal.querySelector('#preview-text');
-      try {
-        const response = await fetch(`/api/local/${reviewId}/user-comments`);
-        if (!response.ok) {
-          throw new Error('Failed to load comments');
-        }
-        const data = await response.json();
-        const comments = data.comments || [];
-
-        // Store comments for format switching
-        this.currentComments = comments;
-        this.localData = localData;
-
-        // Default to markdown format
-        const formattedText = this.formatComments(comments);
-        previewTextElement.textContent = formattedText;
-      } catch (error) {
-        console.error('Error loading comments:', error);
-        previewTextElement.textContent = 'Error loading comments: ' + error.message;
-      }
-    };
-
-    // Show modal with local mode options (hide Submit Review, keep Clear All)
-    modal.show({ hideSubmit: true, isLocalMode: true });
-  }
-
-  /**
    * Load local review data
    */
   async loadLocalReview() {
@@ -1138,9 +1039,8 @@ class LocalManager {
       // Load saved comments
       await manager.loadUserComments();
 
-      // Initialize local export button (initSplitButton is patched to be a no-op)
+      // Initialize split button (uses standard SplitButton which auto-detects local mode)
       manager.initSplitButton();
-      this.updateSplitButtonForLocal();
 
       // Initialize AI Panel
       if (window.AIPanel && !window.aiPanel) {
