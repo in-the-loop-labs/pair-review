@@ -2965,44 +2965,67 @@ tr.newly-expanded .d2h-code-line-ctn {
   position: relative;
   display: flex;
   align-items: center;
+  height: 100%;
 }
 
+/* GitHub-style add comment button - positioned on boundary between line numbers and code */
 .add-comment-btn {
-  display: none;
   position: absolute;
-  right: -16px;
+  /* Position on the right edge, overlapping the boundary */
+  right: -12px;
   top: 50%;
   transform: translateY(-50%);
-  width: 12px;
-  height: 12px;
-  background: #0969da;
+  /* Larger, easier to click */
+  width: 22px;
+  height: 22px;
+  /* GitHub blue with subtle depth */
+  background: linear-gradient(180deg, #0969da 0%, #0860ca 100%);
   color: white;
   border: none;
-  border-radius: 2px;
-  font-size: 10px;
-  font-weight: bold;
+  border-radius: 6px;
+  /* Centered plus sign */
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1;
   cursor: pointer;
-  z-index: 10;
+  z-index: 20;
+  /* Smooth appearance - use opacity for visibility, keep in DOM for drag events */
+  opacity: 0;
+  transition: opacity 0.1s ease, transform 0.1s ease, box-shadow 0.1s ease;
+  /* Subtle shadow for depth */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
+  /* Flex centering for the plus - always display flex to stay in DOM for mousedown events */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Ensure button can receive click events even when invisible (for drag start) */
+  pointer-events: auto;
 }
 
 .add-comment-btn:hover {
-  background: #0860ca;
+  background: linear-gradient(180deg, #0860ca 0%, #0757b8 100%);
+  transform: translateY(-50%) scale(1.08);
+  box-shadow: 0 2px 6px rgba(9, 105, 218, 0.35), 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.add-comment-btn:active {
+  transform: translateY(-50%) scale(0.96);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 /* Expanded context comment button - slightly different style to indicate limitation */
 .add-comment-btn.expanded-context-comment {
-  background: #6e7781;
-  opacity: 0.7;
+  background: linear-gradient(180deg, #6e7781 0%, #57606a 100%);
+  opacity: 0;
 }
 
 .add-comment-btn.expanded-context-comment:hover {
-  background: #57606a;
-  opacity: 1;
+  background: linear-gradient(180deg, #57606a 0%, #4d5561 100%);
 }
 
-/* Show comment button on hover */
+/* Show comment button on hover - use opacity for smoother transition */
 tr:hover .add-comment-btn {
-  display: block;
+  opacity: 1;
 }
 
 /* Line range selection */

@@ -791,6 +791,14 @@ class PRManager {
         }
       },
       onMouseOver: (_e, row, lineNumber, file) => {
+        // Check if we have a potential drag start and convert it to an actual drag
+        if (this.lineTracker.potentialDragStart && !this.lineTracker.isDraggingRange) {
+          const start = this.lineTracker.potentialDragStart;
+          // Only start drag if we've moved to a different line
+          if (start.lineNumber !== lineNumber || start.fileName !== file) {
+            this.lineTracker.startDragSelection(start.row, start.lineNumber, start.fileName, start.side);
+          }
+        }
         this.lineTracker.updateDragSelection(row, lineNumber, file);
       },
       onMouseUp: (_e, row, lineNumber, file) => {
@@ -800,6 +808,10 @@ class PRManager {
 
           if (start.lineNumber !== lineNumber || start.fileName !== file) {
             // Drag selection ended on a different line
+            // If drag wasn't started yet (quick drag without mouseover), start it first
+            if (!this.lineTracker.isDraggingRange) {
+              this.lineTracker.startDragSelection(start.row, start.lineNumber, start.fileName, start.side);
+            }
             this.lineTracker.completeDragSelection(row, lineNumber, file);
           }
         } else if (this.lineTracker.isDraggingRange) {
