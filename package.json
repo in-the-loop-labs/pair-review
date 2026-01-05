@@ -14,7 +14,10 @@
     "dev": "node bin/pair-review.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:debug": "playwright test --debug"
   },
   "keywords": [
     "github",
@@ -35,6 +38,7 @@
     "uuid": "^11.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.57.0",
     "@vitest/coverage-v8": "^4.0.16",
     "supertest": "^7.1.4",
     "vitest": "^4.0.16"
