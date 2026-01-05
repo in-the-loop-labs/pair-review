@@ -7,6 +7,11 @@ const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
 const open = (...args) => import('open').then(({ default: open }) => open(...args));
 
+// Design note: This module uses execSync for git commands despite async function signatures.
+// For a local CLI tool, synchronous execution is acceptable and simplifies error handling.
+// The async signatures allow mixing with truly async operations (fs.promises, database calls)
+// without requiring callers to handle mixed sync/async patterns.
+
 /**
  * Maximum file size in bytes for reading untracked files (1MB)
  */
