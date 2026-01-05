@@ -26,8 +26,12 @@ async function handleAnalysisModals(page) {
     // Try waiting for config modal first
     await configModal.waitFor({ state: 'visible', timeout: 2000 });
     await page.locator('#analysis-config-modal .btn-primary').first().click();
-  } catch {
-    // If config modal didn't appear, check for confirm dialog (when re-running analysis)
+  } catch (error) {
+    // Only swallow timeout errors - re-throw unexpected errors
+    if (error.name !== 'TimeoutError' && !error.message?.includes('Timeout')) {
+      throw error;
+    }
+    // If config modal didn't appear (timeout), check for confirm dialog (when re-running analysis)
     if (await confirmDialog.isVisible()) {
       await page.locator('#confirm-dialog .btn-danger, #confirm-dialog button:has-text("Continue")').first().click();
       // After confirm, config modal should appear
@@ -50,35 +54,48 @@ async function triggerAnalysisAndWait(page) {
   const progressModal = page.locator('#progress-modal');
   await progressModal.waitFor({ state: 'visible', timeout: 5000 });
 
-  // Wait for analysis to complete (modal should auto-close or show completion)
-  // Give it up to 3 seconds for the mock analysis to complete
-  await page.waitForTimeout(2000);
+  // Wait for analysis to complete by watching for modal to close
+  await progressModal.waitFor({ state: 'hidden', timeout: 10000 });
 }
 
 // Helper to pre-seed AI suggestions by calling the analyze endpoint directly
 async function seedAISuggestions(page) {
-  // Make a direct POST request to trigger analysis
-  await page.evaluate(async () => {
+  // Make a direct POST request to trigger analysis and verify success
+  const result = await page.evaluate(async () => {
     const response = await fetch('/api/analyze/test-owner/test-repo/1', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
     });
+    if (!response.ok) {
+      throw new Error(`Analysis API failed: ${response.status}`);
+    }
     return response.json();
   });
 
-  // Wait for the analysis to complete
-  await page.waitForTimeout(600);
+  if (!result.analysisId) {
+    throw new Error('Analysis failed to start: no analysisId returned');
+  }
 
-  // Reload suggestions
+  // Wait for analysis to complete by polling the status endpoint
+  await page.waitForFunction(
+    async () => {
+      const response = await fetch('/api/pr/test-owner/test-repo/1/analysis-status');
+      const status = await response.json();
+      return !status.running;
+    },
+    { timeout: 5000 }
+  );
+
+  // Reload suggestions and wait for them to appear in the DOM
   await page.evaluate(async () => {
     if (window.prManager?.loadAISuggestions) {
       await window.prManager.loadAISuggestions();
     }
   });
 
-  // Wait for suggestions to render
-  await page.waitForTimeout(500);
+  // Wait for at least one AI suggestion to render
+  await page.waitForSelector('.ai-suggestion, [data-suggestion-id]', { timeout: 5000 });
 }
 
 test.describe('AI Analysis Button', () => {

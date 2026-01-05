@@ -15,6 +15,29 @@
 import { test, expect } from '@playwright/test';
 import { waitForDiffToRender } from './helpers.js';
 
+// Helper to clean up all user comments (call via API to ensure clean state)
+async function cleanupAllComments(page) {
+  // Delete all user comments via API to ensure test isolation
+  await page.evaluate(async () => {
+    // Get all comments for this PR
+    const response = await fetch('/api/pr/test-owner/test-repo/1');
+    const data = await response.json();
+    const prId = data.metadata?.id;
+    if (!prId) return;
+
+    // Fetch comments
+    const commentsResponse = await fetch(`/api/pr/${prId}/comments`);
+    const comments = await commentsResponse.json();
+
+    // Delete each user comment
+    for (const comment of comments) {
+      if (comment.source === 'user') {
+        await fetch(`/api/user-comment/${comment.id}`, { method: 'DELETE' });
+      }
+    }
+  });
+}
+
 // Helper to open comment form on a specific line
 async function openCommentFormOnLine(page, lineIndex = 0) {
   // Hover over a line number to show the add comment button
@@ -144,9 +167,12 @@ test.describe('Comment Creation and Submission', () => {
 
 test.describe('Comment Editing', () => {
   test.beforeEach(async ({ page }) => {
-    // Create a comment first
+    // Clean up any existing comments for test isolation
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+    await cleanupAllComments(page);
+
+    // Create a fresh comment for this test
     await openCommentFormOnLine(page, 0);
 
     const textarea = page.locator('.user-comment-form textarea');
@@ -155,6 +181,11 @@ test.describe('Comment Editing', () => {
 
     // Wait for comment to appear
     await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+  });
+
+  test.afterEach(async ({ page }) => {
+    // Clean up comments created during the test
+    await cleanupAllComments(page);
   });
 
   test('should show edit button on user comments', async ({ page }) => {
@@ -240,9 +271,12 @@ test.describe('Comment Editing', () => {
 
 test.describe('Comment Deletion', () => {
   test.beforeEach(async ({ page }) => {
-    // Create a comment first
+    // Clean up any existing comments for test isolation
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+    await cleanupAllComments(page);
+
+    // Create a fresh comment for this test
     await openCommentFormOnLine(page, 0);
 
     const textarea = page.locator('.user-comment-form textarea');
@@ -251,6 +285,11 @@ test.describe('Comment Deletion', () => {
 
     // Wait for comment to appear
     await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+  });
+
+  test.afterEach(async ({ page }) => {
+    // Clean up comments created during the test
+    await cleanupAllComments(page);
   });
 
   test('should show delete button on user comments', async ({ page }) => {

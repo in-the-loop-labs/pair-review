@@ -8,6 +8,9 @@ const express = require('express');
 const path = require('path');
 const sqlite3 = require('sqlite3');
 
+// Mock analysis timing - how long the simulated AI analysis takes
+const MOCK_ANALYSIS_DURATION_MS = 500;
+
 // Mock external dependencies
 const mockGitHubResponses = {
   fetchPullRequest: {
@@ -215,17 +218,22 @@ let db = null;
 
 /**
  * Create in-memory database
+ *
+ * Note: This database is shared across all test files for performance.
+ * Tests run sequentially (workers: 1) to avoid race conditions.
+ * For better isolation, see issue pair_review-3e6d.
  */
 function createTestDatabase() {
   return new Promise((resolve, reject) => {
     db = new sqlite3.Database(':memory:', (error) => {
       if (error) {
-        reject(error);
-        return;
+        return reject(error);
       }
       db.exec(SCHEMA_SQL, (err) => {
-        if (err) reject(err);
-        else resolve(db);
+        if (err) {
+          return reject(err);
+        }
+        resolve(db);
       });
     });
   });
@@ -406,10 +414,10 @@ async function globalSetup() {
       message: 'AI analysis started in background'
     });
 
-    // Simulate analysis completion after 500ms
+    // Simulate analysis completion after configured duration
     setTimeout(() => {
       analysisRunning = false;
-    }, 500);
+    }, MOCK_ANALYSIS_DURATION_MS);
   });
 
   // Mock SSE endpoint for analysis progress
@@ -423,7 +431,7 @@ async function globalSetup() {
     // Send initial connection
     res.write('data: {"type":"connected"}\n\n');
 
-    // Send running status
+    // Send running status after short delay
     setTimeout(() => {
       res.write(`data: ${JSON.stringify({
         type: 'progress',
@@ -438,7 +446,7 @@ async function globalSetup() {
       })}\n\n`);
     }, 100);
 
-    // Send completion after 500ms
+    // Send completion after configured duration
     setTimeout(() => {
       res.write(`data: ${JSON.stringify({
         type: 'progress',
@@ -454,7 +462,7 @@ async function globalSetup() {
         suggestionsCount: mockAISuggestions.length
       })}\n\n`);
       res.end();
-    }, 500);
+    }, MOCK_ANALYSIS_DURATION_MS);
   });
 
   // Mock analysis status check endpoint
