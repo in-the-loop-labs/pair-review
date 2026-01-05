@@ -8,7 +8,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * Database schema SQL statements
@@ -17,7 +17,7 @@ const SCHEMA_SQL = {
   reviews: `
     CREATE TABLE IF NOT EXISTS reviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      pr_number INTEGER NOT NULL,
+      pr_number INTEGER,
       repository TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'submitted', 'pending')),
       review_id INTEGER,
@@ -26,7 +26,9 @@ const SCHEMA_SQL = {
       submitted_at DATETIME,
       review_data TEXT,
       custom_instructions TEXT,
-      UNIQUE(pr_number, repository)
+      review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
+      local_path TEXT,
+      local_head_sha TEXT
     )
   `,
   
@@ -132,7 +134,10 @@ const INDEX_SQL = [
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)'
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = \'local\'',
+  // Partial unique index for PR reviews only (NULL pr_number values for local reviews should not conflict)
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = \'pr\''
 ];
 
 /**
@@ -316,6 +321,129 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 3 complete');
+  },
+
+  // Migration to version 4: adds local review support columns to reviews table
+  4: async (db) => {
+    console.log('Running migration to schema version 4...');
+
+    // Helper to check if column exists
+    const columnExists = async (table, column) => {
+      return new Promise((resolve, reject) => {
+        db.all(`PRAGMA table_info(${table})`, (error, rows) => {
+          if (error) reject(error);
+          else resolve(rows ? rows.some(row => row.name === column) : false);
+        });
+      });
+    };
+
+    // Helper to run SQL safely
+    const runSql = (sql) => {
+      return new Promise((resolve, reject) => {
+        db.run(sql, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    };
+
+    // Helper to add column if not exists (idempotent)
+    const addColumnIfNotExists = async (table, column, definition) => {
+      const exists = await columnExists(table, column);
+      if (!exists) {
+        console.log(`  Adding ${column} column to ${table} table...`);
+        try {
+          await runSql(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+          console.log(`  Successfully added ${column} column`);
+        } catch (error) {
+          // Ignore duplicate column errors (race condition protection)
+          if (!error.message.includes('duplicate column name')) {
+            throw error;
+          }
+        }
+      }
+    };
+
+    // Add local review columns to reviews table
+    await addColumnIfNotExists('reviews', 'review_type', "TEXT DEFAULT 'pr'");
+    await addColumnIfNotExists('reviews', 'local_path', 'TEXT');
+    await addColumnIfNotExists('reviews', 'local_head_sha', 'TEXT');
+
+    console.log('Migration to schema version 4 complete');
+  },
+
+  // Migration to version 5: Make pr_number nullable in reviews table
+  // SQLite doesn't support ALTER COLUMN, so we recreate the table
+  5: async (db) => {
+    console.log('Running migration to schema version 5...');
+
+    // Helper to run SQL safely
+    const runSql = (sql) => {
+      return new Promise((resolve, reject) => {
+        db.run(sql, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    };
+
+    // Helper to run all SQL in a transaction
+    const runAll = (sql) => {
+      return new Promise((resolve, reject) => {
+        db.exec(sql, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    };
+
+    // Recreate reviews table with pr_number as nullable
+    console.log('  Recreating reviews table with nullable pr_number...');
+
+    await runAll(`
+      -- Create new table with correct schema
+      CREATE TABLE IF NOT EXISTS reviews_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_number INTEGER,
+        repository TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'submitted', 'pending')),
+        review_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        submitted_at DATETIME,
+        review_data TEXT,
+        custom_instructions TEXT,
+        review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
+        local_path TEXT,
+        local_head_sha TEXT
+      );
+
+      -- Copy data from old table
+      INSERT INTO reviews_new (id, pr_number, repository, status, review_id, created_at, updated_at, submitted_at, review_data, custom_instructions, review_type, local_path, local_head_sha)
+      SELECT id, pr_number, repository, status, review_id, created_at, updated_at, submitted_at, review_data, custom_instructions,
+             COALESCE(review_type, 'pr'), local_path, local_head_sha
+      FROM reviews;
+
+      -- Drop old table
+      DROP TABLE reviews;
+
+      -- Rename new table
+      ALTER TABLE reviews_new RENAME TO reviews;
+
+      -- Recreate indexes
+      CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = 'local';
+    `);
+
+    // Add partial unique index for PR reviews only
+    console.log('  Creating partial unique index for PR reviews...');
+    await runSql(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique
+      ON reviews(pr_number, repository)
+      WHERE review_type = 'pr'
+    `);
+
+    console.log('Migration to schema version 5 complete');
   }
 };
 
@@ -1191,7 +1319,8 @@ class ReviewRepository {
   async listByRepository(repository, limit = 50) {
     const rows = await query(this.db, `
       SELECT id, pr_number, repository, status, review_id,
-             created_at, updated_at, submitted_at, review_data, custom_instructions
+             created_at, updated_at, submitted_at, review_data, custom_instructions,
+             review_type, local_path, local_head_sha
       FROM reviews
       WHERE repository = ?
       ORDER BY updated_at DESC
@@ -1202,6 +1331,83 @@ class ReviewRepository {
       ...row,
       review_data: row.review_data ? JSON.parse(row.review_data) : null
     }));
+  }
+
+  /**
+   * Create or resume a local review session
+   * Finds existing session by path+sha or creates a new one
+   * @param {Object} context - Local review context
+   * @param {string} context.localPath - Absolute path to the local repository
+   * @param {string} context.localHeadSha - Current HEAD SHA of the repository
+   * @param {string} context.repository - Repository identifier (can be derived from path)
+   * @returns {Promise<number>} The review ID
+   */
+  async upsertLocalReview({ localPath, localHeadSha, repository }) {
+    // Try to find existing local review by path and SHA
+    const existing = await this.getLocalReview(localPath, localHeadSha);
+
+    if (existing) {
+      // Update the updated_at timestamp
+      await run(this.db, `
+        UPDATE reviews
+        SET updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [existing.id]);
+      return existing.id;
+    }
+
+    // Create new local review
+    const result = await run(this.db, `
+      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+      VALUES (NULL, ?, 'draft', 'local', ?, ?)
+    `, [repository, localPath, localHeadSha]);
+
+    return result.lastID;
+  }
+
+  /**
+   * Get a local review by path and HEAD SHA
+   * @param {string} localPath - Absolute path to the local repository
+   * @param {string} localHeadSha - Current HEAD SHA of the repository
+   * @returns {Promise<Object|null>} Review record or null if not found
+   */
+  async getLocalReview(localPath, localHeadSha) {
+    const row = await queryOne(this.db, `
+      SELECT id, pr_number, repository, status, review_id,
+             created_at, updated_at, submitted_at, review_data, custom_instructions,
+             review_type, local_path, local_head_sha
+      FROM reviews
+      WHERE review_type = 'local' AND local_path = ? AND local_head_sha = ?
+    `, [localPath, localHeadSha]);
+
+    if (!row) return null;
+
+    return {
+      ...row,
+      review_data: row.review_data ? JSON.parse(row.review_data) : null
+    };
+  }
+
+  /**
+   * Get a local review by its database ID
+   * @param {number} id - Review ID
+   * @returns {Promise<Object|null>} Review record or null if not found
+   */
+  async getLocalReviewById(id) {
+    const row = await queryOne(this.db, `
+      SELECT id, pr_number, repository, status, review_id,
+             created_at, updated_at, submitted_at, review_data, custom_instructions,
+             review_type, local_path, local_head_sha
+      FROM reviews
+      WHERE id = ? AND review_type = 'local'
+    `, [id]);
+
+    if (!row) return null;
+
+    return {
+      ...row,
+      review_data: row.review_data ? JSON.parse(row.review_data) : null
+    };
   }
 }
 

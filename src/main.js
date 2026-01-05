@@ -5,6 +5,7 @@ const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
+const { handleLocalReview } = require('./local-review');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
@@ -51,6 +52,15 @@ function parseArgs(args) {
       } else {
         throw new Error('--model flag requires a model name (e.g., --model opus)');
       }
+    } else if (arg === '--local') {
+      // --local flag is always a boolean
+      flags.local = true;
+      // Next argument is optional path (if not starting with --)
+      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
+        flags.localPath = args[i + 1];
+        i++; // Skip next argument since we consumed it
+      }
+      // localPath will be resolved to cwd if not provided
     } else if (arg === '--configure') {
       // Skip --configure as it's handled earlier
       continue;
@@ -99,6 +109,14 @@ async function main() {
 
     // Parse command line arguments including flags
     const { prArgs, flags } = parseArgs(args);
+
+    // Check for local mode (review uncommitted local changes)
+    if (flags.local) {
+      // Resolve localPath, defaulting to cwd if not provided
+      const targetPath = flags.localPath || process.cwd();
+      await handleLocalReview(targetPath, flags);
+      return; // Exit after local review
+    }
 
     // Check if PR arguments were provided
     if (prArgs.length > 0) {

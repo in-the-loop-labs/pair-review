@@ -8,7 +8,10 @@ class SplitButton {
     this.dropdown = null;
     this.isOpen = false;
     this.commentCount = 0;
-    this.defaultAction = options.defaultAction || 'submit'; // 'submit' or 'preview'
+    // In local mode, default to preview since submit is hidden
+    const isLocalMode = window.PAIR_REVIEW_LOCAL_MODE === true;
+    this.defaultAction = isLocalMode ? 'preview' : (options.defaultAction || 'submit'); // 'submit' or 'preview'
+    this.hideSubmit = isLocalMode || options.hideSubmit === true;
     this.onSubmit = options.onSubmit || (() => {});
     this.onPreview = options.onPreview || (() => {});
     this.onClear = options.onClear || (() => {});
@@ -86,14 +89,22 @@ class SplitButton {
     if (!this.dropdown) return;
 
     const isSubmitDefault = this.defaultAction === 'submit';
+    const isPreviewDefault = this.defaultAction === 'preview';
 
-    this.dropdown.innerHTML = `
+    // Build menu items - conditionally include Submit Review
+    let menuItems = '';
+
+    if (!this.hideSubmit) {
+      menuItems += `
       <button class="split-button-menu-item" data-action="submit" role="menuitem">
         <span class="menu-item-check">${isSubmitDefault ? '&#10003;' : ''}</span>
         <span class="menu-item-text">Submit Review</span>
-      </button>
+      </button>`;
+    }
+
+    menuItems += `
       <button class="split-button-menu-item" data-action="preview" role="menuitem">
-        <span class="menu-item-check">${!isSubmitDefault ? '&#10003;' : ''}</span>
+        <span class="menu-item-check">${isPreviewDefault ? '&#10003;' : ''}</span>
         <span class="menu-item-text">Preview</span>
       </button>
       <div class="split-button-menu-separator"></div>
@@ -102,6 +113,8 @@ class SplitButton {
         <span class="menu-item-text">Clear All</span>
       </button>
     `;
+
+    this.dropdown.innerHTML = menuItems;
 
     // Add click handlers to menu items
     this.dropdown.querySelectorAll('.split-button-menu-item').forEach(item => {
@@ -229,6 +242,11 @@ class SplitButton {
    */
   setDefaultAction(action) {
     if (action !== 'submit' && action !== 'preview') return;
+
+    // In local mode (hideSubmit), don't allow setting submit as default
+    if (this.hideSubmit && action === 'submit') {
+      action = 'preview';
+    }
 
     this.defaultAction = action;
     this.updateDropdownMenu();

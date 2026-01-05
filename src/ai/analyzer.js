@@ -406,19 +406,39 @@ Or simply ignore any changes to files matching these patterns in your analysis.
   }
 
   /**
-   * Build PR context section for inclusion in analysis prompts
-   * @param {Object} prMetadata - PR metadata with title and description
+   * Build the review introduction line for prompts
+   * Adapts terminology based on whether this is a PR review or local review
+   * @param {number} reviewId - Review/PR ID
+   * @param {Object} prMetadata - PR/review metadata
+   * @returns {string} Introduction line for the prompt
+   */
+  buildReviewIntroduction(reviewId, prMetadata) {
+    const isLocal = prMetadata.reviewType === 'local';
+    if (isLocal) {
+      return `You are reviewing local changes (review #${reviewId}) in the current working directory.`;
+    }
+    return `You are reviewing pull request #${reviewId} in the current working directory.`;
+  }
+
+  /**
+   * Build context section for inclusion in analysis prompts
+   * Adapts terminology based on whether this is a PR review or local review
+   * @param {Object} prMetadata - PR/review metadata with title and description
    * @param {string} criticalNote - Level-specific critical note text
-   * @returns {string} PR context section or empty string
+   * @returns {string} Context section or empty string
    */
   buildPRContextSection(prMetadata, criticalNote) {
     // Check for null/undefined explicitly to include section even if fields are empty strings
     if (prMetadata.title != null || prMetadata.description != null) {
+      const isLocal = prMetadata.reviewType === 'local';
+      const sectionTitle = isLocal ? 'Review Context' : 'Pull Request Context';
+      const descriptionLabel = isLocal ? 'Description:' : "Author's Description:";
+
       return `
-## Pull Request Context
+## ${sectionTitle}
 **Title:** ${prMetadata.title || '(No title provided)'}
 
-**Author's Description:**
+**${descriptionLabel}**
 ${prMetadata.description || '(No description provided)'}
 
 ⚠️ **Critical Note:** ${criticalNote}
@@ -426,6 +446,25 @@ ${prMetadata.description || '(No description provided)'}
 `;
     }
     return '';
+  }
+
+  /**
+   * Build the appropriate git diff command based on review type
+   * For PR reviews: git diff base_sha...head_sha
+   * For local reviews: git diff HEAD (all uncommitted changes - both staged and unstaged)
+   * @param {Object} prMetadata - PR/review metadata
+   * @param {string} suffix - Optional suffix like '<file>' or '--name-only'
+   * @returns {string} The git diff command
+   */
+  buildGitDiffCommand(prMetadata, suffix = '') {
+    const isLocal = prMetadata.reviewType === 'local';
+    if (isLocal) {
+      // For local mode, diff against HEAD to see working directory changes
+      return suffix ? `git diff HEAD ${suffix}` : 'git diff HEAD';
+    }
+    // For PR mode, diff between base and head commits
+    const baseCmd = `git diff ${prMetadata.base_sha}...${prMetadata.head_sha}`;
+    return suffix ? `${baseCmd} ${suffix}` : baseCmd;
   }
 
   /**
@@ -448,13 +487,16 @@ ${prMetadata.description || '(No description provided)'}
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
 
-    return `You are reviewing pull request #${prId} in the current working directory.
+    const diffCmd = this.buildGitDiffCommand(prMetadata);
+    const diffCmdWithFile = this.buildGitDiffCommand(prMetadata, '<file>');
+
+    return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 2 Review - Analyze File Context
 ${generatedFilesSection}${changedFilesSection}
 ## Analysis Process
 For each file with changes:
    - Read the full file content to understand context
-   - Run 'git diff ${prMetadata.base_sha}...${prMetadata.head_sha} <file>' to see what changed
+   - Run '${diffCmdWithFile}' to see what changed
    - Analyze how changes fit within the file's overall structure
    - Focus on file-level patterns and consistency
    - Skip files where no file-level issues are found (efficiency focus)
@@ -475,7 +517,7 @@ Look for:
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
-- git diff ${prMetadata.base_sha}...${prMetadata.head_sha} <file>
+- ${diffCmdWithFile}
 - cat <file> or any file reading command
 - grep, find, ls commands as needed
 
@@ -528,14 +570,16 @@ Output JSON with this structure:
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
 
-    return `You are reviewing pull request #${prId} in the current working directory.
+    const diffCmd = this.buildGitDiffCommand(prMetadata);
+
+    return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 1 Review - Analyze Changes in Isolation
 
 ## Speed and Scope Expectations
 **This level should be fast** - focusing only on the diff itself without exploring file context or surrounding unchanged code. That analysis is reserved for Level 2.
 ${generatedFilesSection}
 ## Initial Setup
-1. Run 'git diff ${prMetadata.base_sha}...${prMetadata.head_sha}' to see what changed in this PR
+1. Run '${diffCmd}' to see the changes
 2. Focus ONLY on the changed lines in the diff
 3. Do not analyze file context or surrounding unchanged code - that's for Level 2
 
@@ -553,7 +597,7 @@ Identify the following in changed code:
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
-- git diff ${prMetadata.base_sha}...${prMetadata.head_sha}
+- ${diffCmd}
 - git diff --stat
 - ls, find, grep commands as needed
 
@@ -590,7 +634,7 @@ Output JSON with this structure:
 - code-style: Formatting, naming conventions, and code style
 
 ## Important Guidelines
-- You may comment on any line in files modified by this PR. Prioritize changed lines, but include unchanged lines when they reveal issues (missing error handling, inconsistent patterns, etc.)
+- You may comment on any line in modified files. Prioritize changed lines, but include unchanged lines when they reveal issues (missing error handling, inconsistent patterns, etc.)
 - Focus on issues visible in the diff itself - do not analyze file context
 - Do not review unchanged code or missing tests (that's for Level 3)
 - Do not analyze file-level patterns or consistency (that's for Level 2)
@@ -1203,7 +1247,9 @@ Output JSON with this structure:
 
     try {
       // Step 1: Detect primary language(s) from changed files
-      const { stdout: changedFiles } = await execPromise(`git diff ${prMetadata.base_sha}...${prMetadata.head_sha} --name-only`, { cwd: worktreePath });
+      // For local mode, use git diff HEAD; for PR mode, use base...head
+      const diffCmd = this.buildGitDiffCommand(prMetadata, '--name-only');
+      const { stdout: changedFiles } = await execPromise(diffCmd, { cwd: worktreePath });
       const files = changedFiles.trim().split('\n').filter(f => f.length > 0);
       
       const languages = this.detectLanguages(files);
@@ -1571,11 +1617,11 @@ Output JSON with this structure:
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
 
-    return `You are reviewing pull request #${prId} in the current working directory.
+    return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 3 Review - Analyze Change Impact on Codebase
 ${generatedFilesSection}${changedFilesSection}
 ## Purpose
-Level 3 analyzes how the PR changes connect to and impact the broader codebase.
+Level 3 analyzes how the changes connect to and impact the broader codebase.
 This is NOT a general codebase review or architectural audit.
 Focus on understanding the relationships between these specific changes and existing code.
 
@@ -1636,7 +1682,7 @@ Output JSON with this structure:
 }
 
 ## Important Guidelines
-- You may attach suggestions to any line within files touched by this PR, including unchanged context lines when codebase-level analysis reveals issues.
+- You may attach suggestions to any line within modified files, including unchanged context lines when codebase-level analysis reveals issues.
 - Focus on how these changes interact with the broader codebase
 - Look especially for ${testingContext?.shouldCheckTests ? 'missing tests,' : ''} documentation, and integration issues
 - For "praise" type: Omit the suggestion field entirely to save tokens
@@ -1750,7 +1796,12 @@ When curating suggestions, give higher priority to findings that align with thes
 `
       : '';
 
-    return `You are orchestrating AI-powered code review suggestions for pull request #${prMetadata.number}.
+    const isLocal = prMetadata.reviewType === 'local';
+    const reviewDescription = isLocal
+      ? `local changes (review #${prMetadata.number || 'local'})`
+      : `pull request #${prMetadata.number}`;
+
+    return `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.
 
 # AI Suggestion Orchestration Task
 
@@ -1827,7 +1878,7 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
 - **Preserve actionability** - Every suggestion should give clear next steps
 - **Maintain context** - Don't lose important details when merging
 - **Suggestions may target any line in modified files** - Context lines can reveal issues too
-- **Only include files from the PR diff** - Discard any suggestions for files not modified in this PR`;
+- **Only include modified files** - Discard any suggestions for files not included in the diff`;
   }
 
 

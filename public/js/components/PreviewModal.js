@@ -6,6 +6,7 @@ class PreviewModal {
   constructor() {
     this.modal = null;
     this.isVisible = false;
+    this.options = {};
     this.createModal();
     this.setupEventListeners();
   }
@@ -58,9 +59,9 @@ class PreviewModal {
               <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
               <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
             </svg>
-            Copy
+            Copy as Markdown
           </button>
-          <button class="btn btn-primary" onclick="previewModal.submitReview()">
+          <button class="btn btn-primary" id="submit-review-btn" onclick="previewModal.submitReview()">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
               <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
             </svg>
@@ -91,9 +92,27 @@ class PreviewModal {
 
   /**
    * Show the modal and load comments
+   * @param {Object} options - Display options
+   * @param {boolean} options.hideSubmit - Hide the Submit Review button (deprecated, use window.PAIR_REVIEW_LOCAL_MODE)
+   * @param {boolean} options.hideClearAll - Hide the Clear All button
    */
-  async show() {
+  async show(options = {}) {
     if (!this.modal) return;
+
+    this.options = options;
+
+    // Show/hide buttons based on options and local mode
+    const submitBtn = this.modal.querySelector('#submit-review-btn');
+    const clearBtn = this.modal.querySelector('#clear-all-comments-btn');
+
+    // Hide Submit Review in local mode or if explicitly requested
+    const isLocalMode = window.PAIR_REVIEW_LOCAL_MODE === true;
+    if (submitBtn) {
+      submitBtn.style.display = (isLocalMode || options.hideSubmit) ? 'none' : '';
+    }
+    if (clearBtn) {
+      clearBtn.style.display = options.hideClearAll ? 'none' : '';
+    }
 
     // Show modal
     this.modal.style.display = 'flex';
@@ -134,8 +153,15 @@ class PreviewModal {
         return;
       }
 
-      // Fetch user comments
-      const response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/user-comments`);
+      // Determine the correct API endpoint based on mode
+      let response;
+      if (window.PAIR_REVIEW_LOCAL_MODE && window.localManager?.reviewId) {
+        // Local mode - use local API endpoint
+        response = await fetch(`/api/local/${window.localManager.reviewId}/user-comments`);
+      } else {
+        // PR mode - use PR API endpoint
+        response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/user-comments`);
+      }
 
       if (!response.ok) {
         throw new Error('Failed to load comments');
@@ -143,6 +169,9 @@ class PreviewModal {
 
       const data = await response.json();
       const comments = data.comments || [];
+
+      // Store comments for copy functionality
+      this.currentComments = comments;
 
       // Format comments for preview
       const formattedText = this.formatComments(comments);
@@ -239,7 +268,7 @@ class PreviewModal {
   }
 
   /**
-   * Copy preview text to clipboard
+   * Copy preview text to clipboard (as Markdown)
    */
   async copyToClipboard() {
     const previewTextElement = this.modal.querySelector('#preview-text');

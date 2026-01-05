@@ -127,7 +127,7 @@ async function createTestDatabase() {
           reviews: `
             CREATE TABLE IF NOT EXISTS reviews (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              pr_number INTEGER NOT NULL,
+              pr_number INTEGER,
               repository TEXT NOT NULL,
               status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'submitted', 'pending')),
               review_id INTEGER,
@@ -136,7 +136,9 @@ async function createTestDatabase() {
               submitted_at DATETIME,
               review_data TEXT,
               custom_instructions TEXT,
-              UNIQUE(pr_number, repository)
+              review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
+              local_path TEXT,
+              local_head_sha TEXT
             )
           `,
           comments: `
@@ -255,6 +257,7 @@ const commentsRoutes = require('../../src/routes/comments');
 const configRoutes = require('../../src/routes/config');
 const worktreesRoutes = require('../../src/routes/worktrees');
 const prRoutes = require('../../src/routes/pr');
+const localRoutes = require('../../src/routes/local');
 
 /**
  * Create a test Express app with all route modules
@@ -279,6 +282,7 @@ function createTestApp(db) {
   app.use('/', commentsRoutes);
   app.use('/', configRoutes);
   app.use('/', worktreesRoutes);
+  app.use('/', localRoutes);
   app.use('/', prRoutes);
 
   return app;
@@ -1359,6 +1363,137 @@ describe('Analysis Status Endpoints', () => {
 
       expect(response.status).toBe(404);
       expect(response.body.error).toContain('not found');
+    });
+  });
+});
+
+// ============================================================================
+// Local Review Settings Endpoint Tests
+// ============================================================================
+
+describe('Local Review Settings Endpoints', () => {
+  let db;
+  let app;
+  let reviewId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    // Create a local review
+    const result = await run(db, `
+      INSERT INTO reviews (repository, status, review_type, local_path, local_head_sha)
+      VALUES ('owner/repo', 'draft', 'local', '/tmp/test-repo', 'abc123def')
+    `);
+    reviewId = result.lastID;
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('GET /api/local/:reviewId/review-settings', () => {
+    it('should return null custom_instructions when not set', async () => {
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/review-settings`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.custom_instructions).toBeNull();
+    });
+
+    it('should return saved custom_instructions', async () => {
+      // Set custom instructions
+      await run(db, `
+        UPDATE reviews SET custom_instructions = ? WHERE id = ?
+      `, ['Focus on performance', reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/review-settings`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.custom_instructions).toBe('Focus on performance');
+    });
+
+    it('should return null for non-existent review', async () => {
+      const response = await request(app)
+        .get('/api/local/9999/review-settings');
+
+      expect(response.status).toBe(200);
+      expect(response.body.custom_instructions).toBeNull();
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .get('/api/local/invalid/review-settings');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+  });
+
+  describe('POST /api/local/:reviewId/review-settings', () => {
+    it('should save custom_instructions', async () => {
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/review-settings`)
+        .send({ custom_instructions: 'Check for security issues' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.custom_instructions).toBe('Check for security issues');
+
+      // Verify it was saved in the database
+      const review = await queryOne(db, 'SELECT custom_instructions FROM reviews WHERE id = ?', [reviewId]);
+      expect(review.custom_instructions).toBe('Check for security issues');
+    });
+
+    it('should update existing custom_instructions', async () => {
+      // Set initial instructions
+      await run(db, `
+        UPDATE reviews SET custom_instructions = ? WHERE id = ?
+      `, ['Initial instructions', reviewId]);
+
+      // Update instructions
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/review-settings`)
+        .send({ custom_instructions: 'Updated instructions' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.custom_instructions).toBe('Updated instructions');
+    });
+
+    it('should clear custom_instructions when null is passed', async () => {
+      // Set initial instructions
+      await run(db, `
+        UPDATE reviews SET custom_instructions = ? WHERE id = ?
+      `, ['Some instructions', reviewId]);
+
+      // Clear instructions
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/review-settings`)
+        .send({ custom_instructions: null });
+
+      expect(response.status).toBe(200);
+      expect(response.body.custom_instructions).toBeNull();
+    });
+
+    it('should return 404 for non-existent review', async () => {
+      const response = await request(app)
+        .post('/api/local/9999/review-settings')
+        .send({ custom_instructions: 'Test' });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .post('/api/local/invalid/review-settings')
+        .send({ custom_instructions: 'Test' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
     });
   });
 });
