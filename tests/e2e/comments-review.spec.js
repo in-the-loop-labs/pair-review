@@ -131,23 +131,21 @@ test.describe('Review Modal', () => {
     await expect(commentRadio).toBeVisible();
   });
 
-  test.skip('should close review modal on cancel', async ({ page }) => {
+  test('should close review modal on cancel', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await page.waitForLoadState('networkidle');
 
     // Open review modal
-    await page.locator('button:has-text("Review"), .split-button-main, #submit-review-btn').first().click();
+    await page.locator('.split-button-main').click();
 
-    // Wait for review modal specifically
     const modal = page.locator('.review-modal-overlay');
-    await expect(modal.first()).toBeVisible({ timeout: 5000 });
+    await expect(modal).toBeVisible({ timeout: 5000 });
 
-    // Close modal (cancel button or close button)
-    const closeBtn = page.locator('#cancel-review-btn, #close-review-btn, .modal-close-btn');
-    await closeBtn.first().click();
+    // Click cancel
+    await page.locator('#cancel-review-btn').click();
 
-    // Modal should close
-    await expect(modal.first()).not.toBeVisible({ timeout: 3000 });
+    // Wait for modal to be hidden (handles animations)
+    await modal.waitFor({ state: 'hidden', timeout: 5000 });
   });
 });
 
