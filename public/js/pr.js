@@ -2045,6 +2045,12 @@ class PRManager {
     const fileListContainer = document.getElementById('file-list');
     if (!fileListContainer) return;
 
+    // Update sidebar file count badge
+    const fileCountEl = document.getElementById('sidebar-file-count');
+    if (fileCountEl) {
+      fileCountEl.textContent = files.length;
+    }
+
     if (files.length === 0) {
       fileListContainer.innerHTML = '<div style="padding: 16px; text-align: center; color: var(--color-text-secondary);">No files changed</div>';
       return;
