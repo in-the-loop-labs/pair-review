@@ -7,7 +7,7 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 - **Backend**: Node.js with Express server
 - **Frontend**: Vanilla JavaScript (no framework) - familiar GitHub-like UI
 - **Database**: SQLite for local storage of reviews and drafts
-- **AI Integration**: Claude CLI in SDK mode (`claude -p` for programmatic output)
+- **AI Integration**: Claude CLI in SDK mode (`claude -p` for programmatic output), Gemini CLI, Codex
 - **Distribution**: npm package executable via `npx pair-review`
 
 ## Key Design Principles
@@ -30,8 +30,8 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 8. User submits complete review to GitHub with inline comments and overall status
 
 ## AI Review Implementation
-- **Execution**: Use `claude -p` command to generate review in non-interactive mode
-- **Input**: Pass PR diff and context to Claude via stdin or prompt
+- **Execution**: Use AI provider CLI command to generate review in non-interactive mode
+- **Input**: Pass PR diff and context to CLI via stdin or prompt
 - **Output Format**: Structured JSON or parseable text with categorized suggestions
 - **Categories**: Include "praise" category for highlighting good practices
 - **Adapter Pattern**: Design for future support of other AI providers
@@ -44,10 +44,9 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 - All changed files in single scrollable view
 
 ### Diff Display
-- Unified diff view (priority for MVP)
+- Unified diff view
 - Expandable context (click to show more lines around changes)
 - Inline comments displayed with diff hunks
-- No syntax highlighting required for MVP
 
 ### Interactions
 - Button to trigger AI analysis
@@ -57,7 +56,6 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 
 ### Theme
 - Support both dark and light themes
-- Match GitHub's default styling
 
 ## Technical Specifications
 
@@ -85,6 +83,7 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 ### Command Line Interface
 - `npx pair-review <PR-number>` - Review by PR number
 - `npx pair-review <PR-URL>` - Review by full GitHub URL
+- `npx pair-review --local` - (Coming soon) Review uncommitted changes
 - Verbose stdout logging for debugging
 
 ### Server
@@ -95,32 +94,29 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 
 ## Future Features (Post-MVP)
 - Interactive chat with AI about specific code sections
-- Multiple AI provider support beyond Claude
-- Split diff view option
-- Syntax highlighting
-- Multi-user support
-- PR discovery/list UI in web interface
-- Markdown formatting in comments
-- Confidence levels or priority indicators on AI suggestions
-- Progressive loading for large PRs
-- Offline mode
 
 ## Testing
 - `npm test` - Run all tests once
 - `npm run test:watch` - Run tests in watch mode (re-runs on file changes)
 - `npm run test:coverage` - Run tests with coverage report
+- `npm run test:e2e` - Run E2E tests
+- `npm run test:e2e:headed` - Run E2E tests with browser
 
 Test structure:
 - `tests/unit/` - Unit tests
 - `tests/integration/` - Integration tests (database, API routes)
 
-## Development Notes
+## Development workflow
 - **Git workflow**: Ask before committing to main or pushing to remote
 - Package name: `pair-review`
 - No specific Node version requirement (use modern/recent)
 - Adapter pattern for AI providers to enable future extensibility
 - Verbose logging to stdout for debugging
 - Handle errors gracefully with informative messages
+- CRITICAL: Complete, professional implementation - no stubs, prototypes, or partial work
+- CRITICAL: Include appropriate test coverage when making changes
+- CRITICAL: When completing a change, run the relevant tests
+- CRITICAL: When completing changes that modify frontend code, use a Task tool run E2E tests
 
 ## Project Documentation Structure
 - **CLAUDE.md**: Stable requirements (this file)
