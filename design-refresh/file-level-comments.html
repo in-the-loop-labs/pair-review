@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>File-Level Comments - PR Review</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================
+       CSS Variables - Extending existing theme
+       ============================================ */
+    :root {
+      /* Existing variables (simulated) */
+      --bg-primary: #0d1117;
+      --bg-secondary: #161b22;
+      --bg-tertiary: #21262d;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-muted: #6e7681;
+      --border-default: #30363d;
+      --border-muted: #21262d;
+      --accent-blue: #58a6ff;
+      --accent-green: #3fb950;
+      --accent-orange: #d29922;
+      --accent-purple: #a371f7;
+      --accent-red: #f85149;
+      --comment-bg: #161b22;
+
+      /* New variables for file-level comments */
+      --file-comment-bg: #1c2128;
+      --file-comment-border: #30363d;
+      --file-comment-accent: linear-gradient(135deg, #58a6ff 0%, #a371f7 100%);
+      --ai-badge-bg: linear-gradient(135deg, #238636 0%, #2ea043 100%);
+      --user-badge-bg: #30363d;
+      --adopt-btn-bg: #238636;
+      --dismiss-btn-bg: #21262d;
+
+      /* Typography */
+      --font-mono: 'JetBrains Mono', monospace;
+      --font-sans: 'Source Sans 3', -apple-system, BlinkMacSystemFont, sans-serif;
+
+      /* Spacing scale */
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+
+      /* Transitions */
+      --transition-fast: 150ms ease;
+      --transition-normal: 250ms ease;
+      --transition-slow: 400ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    [data-theme="light"] {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f6f8fa;
+      --bg-tertiary: #eaeef2;
+      --text-primary: #1f2328;
+      --text-secondary: #656d76;
+      --text-muted: #8c959f;
+      --border-default: #d0d7de;
+      --border-muted: #eaeef2;
+      --accent-blue: #0969da;
+      --accent-green: #1a7f37;
+      --accent-orange: #9a6700;
+      --accent-purple: #8250df;
+      --accent-red: #cf222e;
+      --comment-bg: #f6f8fa;
+      --file-comment-bg: #f6f8fa;
+      --file-comment-border: #d0d7de;
+      --ai-badge-bg: linear-gradient(135deg, #1a7f37 0%, #2da44e 100%);
+      --user-badge-bg: #eaeef2;
+      --dismiss-btn-bg: #eaeef2;
+    }
+
+    /* ============================================
+       Base Styles
+       ============================================ */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* Demo container */
+    .demo-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: var(--space-6);
+    }
+
+    .demo-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: var(--space-6);
+      padding-bottom: var(--space-4);
+      border-bottom: 1px solid var(--border-default);
+    }
+
+    .demo-title {
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .theme-toggle {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .theme-toggle:hover {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+
+    /* ============================================
+       File Block Structure
+       ============================================ */
+    .file-block {
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      margin-bottom: var(--space-5);
+      overflow: hidden;
+      background: var(--bg-secondary);
+    }
+
+    /* File Header - existing pattern */
+    .file-header {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-3) var(--space-4);
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border-default);
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+    }
+
+    .file-icon {
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .file-path {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .file-stats {
+      margin-left: auto;
+      display: flex;
+      gap: var(--space-3);
+      font-size: 0.75rem;
+    }
+
+    .stat-added {
+      color: var(--accent-green);
+    }
+
+    .stat-removed {
+      color: var(--accent-red);
+    }
+
+    /* ============================================
+       File-Level Comments Zone - NEW COMPONENT
+       ============================================ */
+    .file-comments-zone {
+      background: var(--file-comment-bg);
+      border-bottom: 1px solid var(--file-comment-border);
+      overflow: hidden;
+      transition: all var(--transition-slow);
+    }
+
+    .file-comments-zone.collapsed {
+      max-height: 0;
+      border-bottom-color: transparent;
+    }
+
+    /* Zone Header - Toggle & Add Button */
+    .file-comments-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-2) var(--space-4);
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border-muted);
+      min-height: 40px;
+    }
+
+    .file-comments-toggle {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      cursor: pointer;
+      padding: var(--space-1) var(--space-2);
+      margin: calc(var(--space-1) * -1) calc(var(--space-2) * -1);
+      border-radius: 4px;
+      transition: all var(--transition-fast);
+    }
+
+    .file-comments-toggle:hover {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+
+    .toggle-icon {
+      transition: transform var(--transition-normal);
+      display: flex;
+    }
+
+    .file-comments-zone.collapsed .toggle-icon {
+      transform: rotate(-90deg);
+    }
+
+    .comment-count-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 6px;
+      background: var(--accent-blue);
+      color: white;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      border-radius: 10px;
+    }
+
+    .comment-count-badge.has-ai {
+      background: var(--ai-badge-bg);
+    }
+
+    .add-file-comment-btn {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      background: transparent;
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .add-file-comment-btn:hover {
+      background: var(--bg-secondary);
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
+    .add-file-comment-btn svg {
+      opacity: 0.7;
+    }
+
+    .add-file-comment-btn:hover svg {
+      opacity: 1;
+    }
+
+    /* Comments Container */
+    .file-comments-container {
+      padding: var(--space-4);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+    }
+
+    /* Empty State */
+    .file-comments-empty {
+      text-align: center;
+      padding: var(--space-5);
+      color: var(--text-muted);
+      font-size: 0.875rem;
+    }
+
+    /* ============================================
+       File-Level Comment Card
+       ============================================ */
+    .file-comment-card {
+      background: var(--comment-bg);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      overflow: hidden;
+      animation: slideIn var(--transition-normal) ease-out;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(-8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* Comment Header */
+    .file-comment-header {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      padding: var(--space-3) var(--space-4);
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border-muted);
+    }
+
+    .comment-source-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-1);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    .comment-source-badge.ai {
+      background: var(--ai-badge-bg);
+      color: white;
+    }
+
+    .comment-source-badge.ai svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .comment-source-badge.user {
+      background: var(--user-badge-bg);
+      color: var(--text-secondary);
+    }
+
+    .comment-author {
+      font-weight: 500;
+      color: var(--text-primary);
+      font-size: 0.875rem;
+    }
+
+    .comment-timestamp {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      margin-left: auto;
+    }
+
+    .comment-type-tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.6875rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    .comment-type-tag.praise {
+      background: rgba(63, 185, 80, 0.15);
+      color: var(--accent-green);
+    }
+
+    .comment-type-tag.issue {
+      background: rgba(248, 81, 73, 0.15);
+      color: var(--accent-red);
+    }
+
+    .comment-type-tag.suggestion {
+      background: rgba(163, 113, 247, 0.15);
+      color: var(--accent-purple);
+    }
+
+    .comment-type-tag.question {
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--accent-blue);
+    }
+
+    .comment-type-tag.refactor {
+      background: rgba(210, 153, 34, 0.15);
+      color: var(--accent-orange);
+    }
+
+    /* Comment Body */
+    .file-comment-body {
+      padding: var(--space-4);
+    }
+
+    .comment-title {
+      font-weight: 600;
+      font-size: 0.9375rem;
+      color: var(--text-primary);
+      margin-bottom: var(--space-2);
+    }
+
+    .comment-text {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .comment-text code {
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      background: var(--bg-tertiary);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--accent-blue);
+    }
+
+    /* Comment Actions (for AI suggestions) */
+    .file-comment-actions {
+      display: flex;
+      gap: var(--space-2);
+      padding: var(--space-3) var(--space-4);
+      background: var(--bg-tertiary);
+      border-top: 1px solid var(--border-muted);
+    }
+
+    .comment-action-btn {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      border-radius: 6px;
+      font-family: var(--font-sans);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .comment-action-btn.adopt {
+      background: var(--adopt-btn-bg);
+      border: 1px solid transparent;
+      color: white;
+    }
+
+    .comment-action-btn.adopt:hover {
+      filter: brightness(1.1);
+      transform: translateY(-1px);
+    }
+
+    .comment-action-btn.dismiss {
+      background: var(--dismiss-btn-bg);
+      border: 1px solid var(--border-default);
+      color: var(--text-secondary);
+    }
+
+    .comment-action-btn.dismiss:hover {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+
+    .comment-action-btn.edit {
+      background: transparent;
+      border: 1px solid var(--border-default);
+      color: var(--text-secondary);
+      margin-left: auto;
+    }
+
+    .comment-action-btn.edit:hover {
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
+    /* User Comment Actions */
+    .user-comment-actions {
+      display: flex;
+      gap: var(--space-2);
+      margin-left: auto;
+    }
+
+    .user-action-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .user-action-btn:hover {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+
+    .user-action-btn.delete:hover {
+      color: var(--accent-red);
+    }
+
+    /* ============================================
+       Comment Form
+       ============================================ */
+    .file-comment-form {
+      background: var(--comment-bg);
+      border: 1px solid var(--border-default);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .file-comment-form.focused {
+      border-color: var(--accent-blue);
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+    }
+
+    .comment-form-header {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-3) var(--space-4);
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border-muted);
+    }
+
+    .comment-form-header label {
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .comment-textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: var(--space-4);
+      background: var(--comment-bg);
+      border: none;
+      font-family: var(--font-sans);
+      font-size: 0.875rem;
+      color: var(--text-primary);
+      resize: vertical;
+      line-height: 1.6;
+    }
+
+    .comment-textarea:focus {
+      outline: none;
+    }
+
+    .comment-textarea::placeholder {
+      color: var(--text-muted);
+    }
+
+    .comment-form-footer {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: var(--space-2);
+      padding: var(--space-3) var(--space-4);
+      background: var(--bg-tertiary);
+      border-top: 1px solid var(--border-muted);
+    }
+
+    .comment-form-btn {
+      padding: var(--space-2) var(--space-4);
+      border-radius: 6px;
+      font-family: var(--font-sans);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .comment-form-btn.cancel {
+      background: transparent;
+      border: 1px solid var(--border-default);
+      color: var(--text-secondary);
+    }
+
+    .comment-form-btn.cancel:hover {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+
+    .comment-form-btn.submit {
+      background: var(--accent-blue);
+      border: 1px solid transparent;
+      color: white;
+    }
+
+    .comment-form-btn.submit:hover {
+      filter: brightness(1.1);
+    }
+
+    .comment-form-btn.submit:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* ============================================
+       Diff Content (simplified for demo)
+       ============================================ */
+    .diff-content {
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+
+    .diff-line {
+      display: flex;
+      padding: 0 var(--space-4);
+      min-height: 24px;
+    }
+
+    .diff-line:hover {
+      background: rgba(88, 166, 255, 0.05);
+    }
+
+    .diff-line.added {
+      background: rgba(63, 185, 80, 0.1);
+    }
+
+    .diff-line.added:hover {
+      background: rgba(63, 185, 80, 0.15);
+    }
+
+    .diff-line.removed {
+      background: rgba(248, 81, 73, 0.1);
+    }
+
+    .diff-line.removed:hover {
+      background: rgba(248, 81, 73, 0.15);
+    }
+
+    .line-number {
+      width: 40px;
+      padding-right: var(--space-3);
+      color: var(--text-muted);
+      text-align: right;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .line-content {
+      flex: 1;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .diff-gutter {
+      width: 20px;
+      text-align: center;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .diff-line.added .diff-gutter {
+      color: var(--accent-green);
+    }
+
+    .diff-line.removed .diff-gutter {
+      color: var(--accent-red);
+    }
+
+    /* ============================================
+       Inline indicator on file header (collapsed state)
+       ============================================ */
+    .file-header-comment-indicator {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      margin-left: var(--space-3);
+      padding: var(--space-1) var(--space-2);
+      background: rgba(88, 166, 255, 0.1);
+      border-radius: 4px;
+      font-family: var(--font-sans);
+      font-size: 0.75rem;
+      color: var(--accent-blue);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .file-header-comment-indicator:hover {
+      background: rgba(88, 166, 255, 0.2);
+    }
+
+    .file-header-comment-indicator.has-ai {
+      background: rgba(35, 134, 54, 0.15);
+      color: var(--accent-green);
+    }
+
+    .file-header-comment-indicator.has-ai:hover {
+      background: rgba(35, 134, 54, 0.25);
+    }
+
+    /* ============================================
+       Responsive adjustments
+       ============================================ */
+    @media (max-width: 768px) {
+      .demo-container {
+        padding: var(--space-4);
+      }
+
+      .file-comments-header {
+        flex-wrap: wrap;
+        gap: var(--space-2);
+      }
+
+      .file-comment-actions {
+        flex-wrap: wrap;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="demo-container">
+    <header class="demo-header">
+      <h1 class="demo-title">File-Level Comments Component</h1>
+      <button class="theme-toggle" onclick="toggleTheme()">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM8 0a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13zM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.06-1.06a.75.75 0 0 1 0-1.061zM0 8a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5H.75A.75.75 0 0 1 0 8zm13 0a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 13 8zM2.343 13.657a.75.75 0 0 1 0-1.061l1.06-1.06a.75.75 0 0 1 1.061 1.06l-1.06 1.06a.75.75 0 0 1-1.061 0zm9.193-9.193a.75.75 0 0 1 0-1.06l1.06-1.061a.75.75 0 0 1 1.061 1.06l-1.06 1.06a.75.75 0 0 1-1.061 0z"/>
+        </svg>
+        Toggle Theme
+      </button>
+    </header>
+
+    <!-- File Block with Comments -->
+    <div class="file-block">
+      <!-- File Header -->
+      <div class="file-header">
+        <svg class="file-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M3.75 1.5a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5H3.75zm6.75.062V4.25c0 .138.112.25.25.25h2.688a.252.252 0 0 0-.011-.013l-2.914-2.914a.272.272 0 0 0-.013-.011zM2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25V1.75z"/>
+        </svg>
+        <span class="file-path">src/components/AuthProvider.tsx</span>
+
+        <!-- Indicator shown in header when zone is collapsed -->
+        <div class="file-header-comment-indicator has-ai" onclick="toggleFileComments(this)" title="2 file-level comments (1 AI suggestion)">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5z"/>
+          </svg>
+          2 comments
+        </div>
+
+        <div class="file-stats">
+          <span class="stat-added">+42</span>
+          <span class="stat-removed">-18</span>
+        </div>
+      </div>
+
+      <!-- File-Level Comments Zone -->
+      <div class="file-comments-zone" id="file-comments-1">
+        <!-- Zone Header -->
+        <div class="file-comments-header">
+          <button class="file-comments-toggle" onclick="toggleFileComments(this)">
+            <span class="toggle-icon">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M12.78 6.22a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L3.22 7.28a.75.75 0 0 1 1.06-1.06L8 9.94l3.72-3.72a.75.75 0 0 1 1.06 0z"/>
+              </svg>
+            </span>
+            File Comments
+            <span class="comment-count-badge has-ai">2</span>
+          </button>
+
+          <button class="add-file-comment-btn" onclick="showCommentForm(this)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 0a.75.75 0 0 1 .75.75v6.5h6.5a.75.75 0 0 1 0 1.5h-6.5v6.5a.75.75 0 0 1-1.5 0v-6.5H.75a.75.75 0 0 1 0-1.5h6.5V.75A.75.75 0 0 1 8 0z"/>
+            </svg>
+            Add comment
+          </button>
+        </div>
+
+        <!-- Comments Container -->
+        <div class="file-comments-container">
+
+          <!-- AI Suggestion Card -->
+          <div class="file-comment-card">
+            <div class="file-comment-header">
+              <span class="comment-source-badge ai">
+                <svg viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zM6.5 11.5v-3h-.75a.75.75 0 0 1 0-1.5h1.5a.75.75 0 0 1 .75.75v3.75h.75a.75.75 0 0 1 0 1.5h-3a.75.75 0 0 1 0-1.5h.75zm.75-7a1 1 0 1 1 2 0 1 1 0 0 1-2 0z"/>
+                </svg>
+                AI
+              </span>
+              <span class="comment-author">Claude Analysis</span>
+              <span class="comment-type-tag refactor">Refactor</span>
+              <span class="comment-timestamp">Level 3 · Just now</span>
+            </div>
+            <div class="file-comment-body">
+              <div class="comment-title">Consider splitting authentication concerns</div>
+              <div class="comment-text">
+                This file handles both OAuth flow and session management. Consider extracting the session logic into a separate <code>SessionManager</code> hook to improve testability and follow single-responsibility principle. The OAuth-specific code could remain here while session state management moves to its own module.
+              </div>
+            </div>
+            <div class="file-comment-actions">
+              <button class="comment-action-btn adopt">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/>
+                </svg>
+                Adopt
+              </button>
+              <button class="comment-action-btn dismiss">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06z"/>
+                </svg>
+                Dismiss
+              </button>
+              <button class="comment-action-btn edit">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064l6.286-6.286z"/>
+                </svg>
+                Edit & Adopt
+              </button>
+            </div>
+          </div>
+
+          <!-- User Comment Card -->
+          <div class="file-comment-card">
+            <div class="file-comment-header">
+              <span class="comment-source-badge user">User</span>
+              <span class="comment-author">you</span>
+              <div class="user-comment-actions">
+                <button class="user-action-btn edit" title="Edit">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064l6.286-6.286z"/>
+                  </svg>
+                </button>
+                <button class="user-action-btn delete" title="Delete">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.75 1.75 0 0 1 10.595 15H5.405a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15zM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25z"/>
+                  </svg>
+                </button>
+              </div>
+              <span class="comment-timestamp">2 minutes ago</span>
+            </div>
+            <div class="file-comment-body">
+              <div class="comment-text">
+                We should add JSDoc comments to the exported functions in this file for better IDE support. The type definitions are good but runtime documentation would help consumers of this module.
+              </div>
+            </div>
+          </div>
+
+          <!-- Comment Form (initially hidden, shown when "Add comment" clicked) -->
+          <div class="file-comment-form" id="comment-form-1" style="display: none;">
+            <div class="comment-form-header">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5z"/>
+              </svg>
+              <label>Add file-level comment</label>
+            </div>
+            <textarea class="comment-textarea" placeholder="Write a comment about this file..." onfocus="this.parentElement.classList.add('focused')" onblur="this.parentElement.classList.remove('focused')"></textarea>
+            <div class="comment-form-footer">
+              <button class="comment-form-btn cancel" onclick="hideCommentForm()">Cancel</button>
+              <button class="comment-form-btn submit" disabled>Add Comment</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Diff Content (abbreviated for demo) -->
+      <div class="diff-content">
+        <div class="diff-line">
+          <span class="line-number">1</span>
+          <span class="diff-gutter"></span>
+          <span class="line-content">import { createContext, useContext, useEffect, useState } from 'react';</span>
+        </div>
+        <div class="diff-line added">
+          <span class="line-number">2</span>
+          <span class="diff-gutter">+</span>
+          <span class="line-content">import { useRouter } from 'next/navigation';</span>
+        </div>
+        <div class="diff-line">
+          <span class="line-number">3</span>
+          <span class="diff-gutter"></span>
+          <span class="line-content">import type { User, Session } from '@/types/auth';</span>
+        </div>
+        <div class="diff-line removed">
+          <span class="line-number">4</span>
+          <span class="diff-gutter">-</span>
+          <span class="line-content">import { getSession } from '@/lib/session';</span>
+        </div>
+        <div class="diff-line added">
+          <span class="line-number">5</span>
+          <span class="diff-gutter">+</span>
+          <span class="line-content">import { getSession, refreshSession } from '@/lib/session';</span>
+        </div>
+        <div class="diff-line">
+          <span class="line-number">6</span>
+          <span class="diff-gutter"></span>
+          <span class="line-content"></span>
+        </div>
+        <div class="diff-line">
+          <span class="line-number">7</span>
+          <span class="diff-gutter"></span>
+          <span class="line-content">interface AuthContextType {</span>
+        </div>
+        <div class="diff-line">
+          <span class="line-number">8</span>
+          <span class="diff-gutter"></span>
+          <span class="line-content">  user: User | null;</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Second file block - showing collapsed state with indicator -->
+    <div class="file-block">
+      <div class="file-header">
+        <svg class="file-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M3.75 1.5a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5H3.75zm6.75.062V4.25c0 .138.112.25.25.25h2.688a.252.252 0 0 0-.011-.013l-2.914-2.914a.272.272 0 0 0-.013-.011zM2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25V1.75z"/>
+        </svg>
+        <span class="file-path">src/hooks/useSession.ts</span>
+        <div class="file-stats">
+          <span class="stat-added">+15</span>
+          <span class="stat-removed">-3</span>
+        </div>
+      </div>
+
+      <!-- File-Level Comments Zone (collapsed) -->
+      <div class="file-comments-zone collapsed" id="file-comments-2">
+        <div class="file-comments-header">
+          <button class="file-comments-toggle" onclick="toggleFileComments(this)">
+            <span class="toggle-icon">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M12.78 6.22a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L3.22 7.28a.75.75 0 0 1 1.06-1.06L8 9.94l3.72-3.72a.75.75 0 0 1 1.06 0z"/>
+              </svg>
+            </span>
+            File Comments
+            <span class="comment-count-badge">0</span>
+          </button>
+
+          <button class="add-file-comment-btn" onclick="showCommentForm(this)">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 0a.75.75 0 0 1 .75.75v6.5h6.5a.75.75 0 0 1 0 1.5h-6.5v6.5a.75.75 0 0 1-1.5 0v-6.5H.75a.75.75 0 0 1 0-1.5h6.5V.75A.75.75 0 0 1 8 0z"/>
+            </svg>
+            Add comment
+          </button>
+        </div>
+
+        <div class="file-comments-container">
+          <div class="file-comments-empty">
+            No file-level comments yet. Click "Add comment" to start a discussion about this file.
+          </div>
+        </div>
+      </div>
+
+      <!-- Diff Content (abbreviated) -->
+      <div class="diff-content">
+        <div class="diff-line">
+          <span class="line-number">1</span>
+          <span class="diff-gutter"></span>
+          <span class="line-content">import { useState, useEffect, useCallback } from 'react';</span>
+        </div>
+        <div class="diff-line added">
+          <span class="line-number">2</span>
+          <span class="diff-gutter">+</span>
+          <span class="line-content">import type { Session, SessionStatus } from '@/types/auth';</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // Theme toggle
+    function toggleTheme() {
+      const html = document.documentElement;
+      const currentTheme = html.getAttribute('data-theme');
+      html.setAttribute('data-theme', currentTheme === 'dark' ? 'light' : 'dark');
+    }
+
+    // Toggle file comments zone
+    function toggleFileComments(button) {
+      const fileBlock = button.closest('.file-block');
+      const zone = fileBlock.querySelector('.file-comments-zone');
+      const indicator = fileBlock.querySelector('.file-header-comment-indicator');
+
+      zone.classList.toggle('collapsed');
+
+      // Toggle visibility of header indicator
+      if (indicator) {
+        indicator.style.display = zone.classList.contains('collapsed') ? 'flex' : 'none';
+      }
+    }
+
+    // Show comment form
+    function showCommentForm(button) {
+      const zone = button.closest('.file-comments-zone');
+      const form = zone.querySelector('.file-comment-form');
+      const emptyState = zone.querySelector('.file-comments-empty');
+
+      // Make sure zone is expanded
+      zone.classList.remove('collapsed');
+
+      // Hide empty state if present
+      if (emptyState) {
+        emptyState.style.display = 'none';
+      }
+
+      // Show and focus form
+      form.style.display = 'block';
+      form.querySelector('textarea').focus();
+
+      // Enable/disable submit based on content
+      const textarea = form.querySelector('textarea');
+      const submitBtn = form.querySelector('.submit');
+      textarea.addEventListener('input', () => {
+        submitBtn.disabled = !textarea.value.trim();
+      });
+    }
+
+    // Hide comment form
+    function hideCommentForm() {
+      const form = document.querySelector('.file-comment-form[style*="block"]');
+      if (form) {
+        form.style.display = 'none';
+        form.querySelector('textarea').value = '';
+
+        // Show empty state if no comments
+        const container = form.closest('.file-comments-container');
+        const hasComments = container.querySelectorAll('.file-comment-card').length > 0;
+        const emptyState = container.querySelector('.file-comments-empty');
+        if (emptyState && !hasComments) {
+          emptyState.style.display = 'block';
+        }
+      }
+    }
+
+    // Initialize: hide header indicators for expanded zones
+    document.querySelectorAll('.file-comments-zone:not(.collapsed)').forEach(zone => {
+      const indicator = zone.closest('.file-block').querySelector('.file-header-comment-indicator');
+      if (indicator) {
+        indicator.style.display = 'none';
+      }
+    });
+  </script>
+</body>
+</html>
