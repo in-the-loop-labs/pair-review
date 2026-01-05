@@ -808,7 +808,7 @@ describe('WorktreeRepository', () => {
       });
 
       expect(worktree.id).toBeDefined();
-      expect(worktree.id).toHaveLength(3); // Default 3-char ID
+      expect(worktree.id).toMatch(/^pair-review--[0-9a-z]{3}$/); // pair-review-- prefix + 3-char random ID
       expect(worktree.pr_number).toBe(123);
       expect(worktree.repository).toBe('owner/repo');
       expect(worktree.branch).toBe('feature-branch');
@@ -1518,19 +1518,19 @@ describe('Database Utilities', () => {
   });
 
   describe('generateWorktreeId()', () => {
-    it('should generate 3-character ID by default', () => {
+    it('should generate ID with pair-review-- prefix and 3-character random part by default', () => {
       const id = generateWorktreeId();
-      expect(id).toHaveLength(3);
+      expect(id).toMatch(/^pair-review--[0-9a-z]{3}$/);
     });
 
-    it('should generate ID of specified length', () => {
+    it('should generate ID with specified random part length', () => {
       const id = generateWorktreeId(5);
-      expect(id).toHaveLength(5);
+      expect(id).toMatch(/^pair-review--[0-9a-z]{5}$/);
     });
 
-    it('should only contain alphanumeric characters', () => {
+    it('should have pair-review-- prefix and alphanumeric random part', () => {
       const id = generateWorktreeId(10);
-      expect(id).toMatch(/^[0-9a-z]+$/);
+      expect(id).toMatch(/^pair-review--[0-9a-z]{10}$/);
     });
 
     it('should generate different IDs on each call', () => {

@@ -655,17 +655,18 @@ async function getDatabaseStatus(db) {
 }
 
 /**
- * Generate a random alphanumeric ID (beads-style)
- * @param {number} length - Length of the ID (default: 3)
- * @returns {string} Random alphanumeric ID
+ * Generate a worktree ID with pair-review prefix
+ * Format: pair-review--{random} where random is alphanumeric
+ * @param {number} length - Length of the random part (default: 3)
+ * @returns {string} Worktree ID in format "pair-review--xyz"
  */
 function generateWorktreeId(length = 3) {
   const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
-  let result = '';
+  let randomPart = '';
   for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+    randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
   }
-  return result;
+  return `pair-review--${randomPart}`;
 }
 
 /**
