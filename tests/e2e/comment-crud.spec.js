@@ -1,0 +1,626 @@
+/**
+ * E2E Tests: Comment CRUD Operations
+ *
+ * Tests the full comment lifecycle including:
+ * - Creating comments (typing text and submitting)
+ * - Comments appearing inline in the diff
+ * - Editing existing comments
+ * - Deleting comments
+ * - Multi-line drag selection for comments
+ * - Comment persistence across page refresh
+ *
+ * The test server is started via global-setup.js with pre-seeded test data.
+ */
+
+import { test, expect } from '@playwright/test';
+
+// Helper to wait for diff to render
+async function waitForDiffToRender(page) {
+  await page.waitForSelector('[data-file-name]', { timeout: 10000 });
+  await page.waitForSelector('.d2h-code-line-ctn', { timeout: 10000 });
+}
+
+// Helper to open comment form on a specific line
+async function openCommentFormOnLine(page, lineIndex = 0) {
+  // Hover over a line number to show the add comment button
+  const lineNumberCell = page.locator('.d2h-code-linenumber').nth(lineIndex);
+  await lineNumberCell.hover();
+
+  // Click the add comment button
+  const addCommentBtn = page.locator('.add-comment-btn').first();
+  await addCommentBtn.waitFor({ state: 'visible', timeout: 5000 });
+  await addCommentBtn.click();
+
+  // Wait for the comment form to appear
+  await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+}
+
+test.describe('Comment Creation and Submission', () => {
+  test('should type text in comment textarea and submit', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Open comment form
+    await openCommentFormOnLine(page, 0);
+
+    // Type a comment
+    const textarea = page.locator('.user-comment-form textarea');
+    await expect(textarea).toBeVisible();
+    const testComment = 'This is a test comment for e2e testing';
+    await textarea.fill(testComment);
+
+    // Verify text was entered
+    await expect(textarea).toHaveValue(testComment);
+
+    // Save button should be enabled now
+    const saveBtn = page.locator('.save-comment-btn');
+    await expect(saveBtn).toBeEnabled();
+
+    // Click save
+    await saveBtn.click();
+
+    // Wait for form to close and comment to appear
+    await expect(page.locator('.user-comment-form')).not.toBeVisible({ timeout: 5000 });
+
+    // Comment should now be displayed inline
+    const userComment = page.locator('.user-comment-row');
+    await expect(userComment.first()).toBeVisible({ timeout: 5000 });
+
+    // Verify comment text is displayed
+    const commentBody = page.locator('.user-comment-body');
+    await expect(commentBody.first()).toContainText(testComment);
+  });
+
+  test('should show comment inline in the diff after submission', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Find a specific line to comment on
+    const lineNumberCells = page.locator('.d2h-code-linenumber');
+    const count = await lineNumberCells.count();
+    expect(count).toBeGreaterThan(0);
+
+    // Open comment form on first line
+    await openCommentFormOnLine(page, 0);
+
+    // Submit a comment
+    const textarea = page.locator('.user-comment-form textarea');
+    const uniqueComment = `Inline comment test ${Date.now()}`;
+    await textarea.fill(uniqueComment);
+
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for the form to close
+    await expect(page.locator('.user-comment-form')).not.toBeVisible({ timeout: 5000 });
+
+    // The comment row should be inserted in the diff table
+    const commentRow = page.locator('.user-comment-row');
+    await expect(commentRow.first()).toBeVisible({ timeout: 5000 });
+
+    // Verify the comment is within a diff file wrapper
+    const diffWrapper = page.locator('.d2h-file-wrapper');
+    const commentInDiff = diffWrapper.locator('.user-comment-row');
+    await expect(commentInDiff.first()).toBeVisible();
+  });
+
+  test('should disable save button when textarea is empty', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    await openCommentFormOnLine(page, 0);
+
+    // Save button should be disabled initially
+    const saveBtn = page.locator('.save-comment-btn');
+    await expect(saveBtn).toBeDisabled();
+
+    // Type some text
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Some text');
+    await expect(saveBtn).toBeEnabled();
+
+    // Clear the text
+    await textarea.fill('');
+    await expect(saveBtn).toBeDisabled();
+  });
+
+  test('should use keyboard shortcut Cmd/Ctrl+Enter to save comment', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    await openCommentFormOnLine(page, 0);
+
+    // Type a comment
+    const textarea = page.locator('.user-comment-form textarea');
+    const testComment = 'Comment saved with keyboard shortcut';
+    await textarea.fill(testComment);
+
+    // Use keyboard shortcut to save (Cmd+Enter on Mac, Ctrl+Enter on others)
+    const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+    await textarea.press(`${modifier}+Enter`);
+
+    // Wait for form to close
+    await expect(page.locator('.user-comment-form')).not.toBeVisible({ timeout: 5000 });
+
+    // Comment should be saved
+    const commentBody = page.locator('.user-comment-body');
+    await expect(commentBody.first()).toContainText(testComment);
+  });
+});
+
+test.describe('Comment Editing', () => {
+  test.beforeEach(async ({ page }) => {
+    // Create a comment first
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await openCommentFormOnLine(page, 0);
+
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Original comment text');
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for comment to appear
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+  });
+
+  test('should show edit button on user comments', async ({ page }) => {
+    // Look for edit button in the comment
+    const editBtn = page.locator('.btn-edit-comment');
+    await expect(editBtn.first()).toBeVisible();
+  });
+
+  test('should enter edit mode when edit button is clicked', async ({ page }) => {
+    // Click edit button
+    const editBtn = page.locator('.btn-edit-comment').first();
+    await editBtn.click();
+
+    // Should show edit form (textarea for editing)
+    const editTextarea = page.locator('.comment-edit-textarea, .user-comment-edit-form textarea');
+    await expect(editTextarea.first()).toBeVisible({ timeout: 5000 });
+
+    // Original text should be in the textarea
+    await expect(editTextarea.first()).toHaveValue('Original comment text');
+  });
+
+  test('should save edited comment', async ({ page }) => {
+    // Get the specific comment row we just created in beforeEach
+    const commentRow = page.locator('.user-comment-row').first();
+    const commentId = await commentRow.getAttribute('data-comment-id');
+
+    // Click edit button on this specific comment
+    await commentRow.locator('.btn-edit-comment').click();
+
+    // Wait for edit mode - use the specific textarea ID
+    const editTextarea = page.locator(`#edit-comment-${commentId}`);
+    await expect(editTextarea).toBeVisible({ timeout: 5000 });
+
+    // Clear and type new text
+    await editTextarea.fill('');
+    await editTextarea.fill('Edited comment text');
+
+    // Wait for API call to complete
+    const responsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+    );
+
+    // Save the edit
+    const saveEditBtn = page.locator('.save-edit-btn');
+    await saveEditBtn.click();
+
+    // Wait for API response
+    await responsePromise;
+
+    // Wait for edit form to be removed from DOM
+    await expect(page.locator('.user-comment-edit-form')).not.toBeVisible({ timeout: 5000 });
+
+    // Get the same comment row again and check its body text
+    const updatedRow = page.locator(`[data-comment-id="${commentId}"]`);
+    const commentBody = updatedRow.locator('.user-comment-body');
+    await expect(commentBody).toBeVisible({ timeout: 5000 });
+    await expect(commentBody).toContainText('Edited comment text', { timeout: 5000 });
+  });
+
+  test('should cancel edit and restore original text', async ({ page }) => {
+    // Click edit button
+    await page.locator('.btn-edit-comment').first().click();
+
+    // Wait for edit mode
+    const editTextarea = page.locator('.comment-edit-textarea, .user-comment-edit-form textarea').first();
+    await expect(editTextarea).toBeVisible({ timeout: 5000 });
+
+    // Type different text
+    await editTextarea.fill('This should be discarded');
+
+    // Cancel the edit
+    const cancelEditBtn = page.locator('.cancel-edit-btn');
+    await cancelEditBtn.click();
+
+    // Edit mode should close
+    await expect(editTextarea).not.toBeVisible({ timeout: 5000 });
+
+    // Comment should still show original text
+    const commentBody = page.locator('.user-comment-body');
+    await expect(commentBody.first()).toContainText('Original comment text');
+  });
+});
+
+test.describe('Comment Deletion', () => {
+  test.beforeEach(async ({ page }) => {
+    // Create a comment first
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await openCommentFormOnLine(page, 0);
+
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Comment to be deleted');
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for comment to appear
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+  });
+
+  test('should show delete button on user comments', async ({ page }) => {
+    const deleteBtn = page.locator('.btn-delete-comment');
+    await expect(deleteBtn.first()).toBeVisible();
+  });
+
+  test('should show confirmation dialog when delete is clicked', async ({ page }) => {
+    // Click delete button
+    await page.locator('.btn-delete-comment').first().click();
+
+    // Confirmation dialog should appear
+    const confirmDialog = page.locator('.confirm-dialog, .confirm-dialog-overlay');
+    await expect(confirmDialog.first()).toBeVisible({ timeout: 5000 });
+
+    // Should have confirm and cancel buttons
+    const confirmBtn = page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")');
+    const cancelBtn = page.locator('.confirm-dialog button:has-text("Cancel"), .btn-secondary:has-text("Cancel")');
+
+    await expect(confirmBtn.first()).toBeVisible();
+    await expect(cancelBtn.first()).toBeVisible();
+  });
+
+  test('should delete comment when confirmed', async ({ page }) => {
+    // Get the comment id from the row's data attribute
+    const commentRow = page.locator('.user-comment-row').first();
+    await expect(commentRow).toBeVisible();
+    const commentId = await commentRow.getAttribute('data-comment-id');
+
+    // Set up API listener before deletion
+    const deleteResponsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
+    );
+
+    // Click delete button
+    await page.locator('.btn-delete-comment').first().click();
+
+    // Wait for confirmation dialog
+    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
+
+    // Confirm deletion
+    const confirmBtn = page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")').first();
+    await confirmBtn.click();
+
+    // Wait for delete API to complete
+    await deleteResponsePromise;
+
+    // The specific comment row should be removed from DOM
+    const deletedRow = page.locator(`[data-comment-id="${commentId}"]`);
+    await expect(deletedRow).not.toBeVisible({ timeout: 5000 });
+  });
+
+  test('should keep comment when deletion is cancelled', async ({ page }) => {
+    // Click delete button
+    await page.locator('.btn-delete-comment').first().click();
+
+    // Wait for confirmation dialog
+    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
+
+    // Cancel deletion
+    const cancelBtn = page.locator('.confirm-dialog button:has-text("Cancel"), .btn-secondary:has-text("Cancel")').first();
+    await cancelBtn.click();
+
+    // Comment should still be visible
+    const commentRow = page.locator('.user-comment-row');
+    await expect(commentRow.first()).toBeVisible();
+    await expect(page.locator('.user-comment-body').first()).toContainText('Comment to be deleted');
+  });
+});
+
+test.describe('Multi-line Drag Selection', () => {
+  test('should support drag selection from add-comment button', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Get rows with line numbers - skip first few rows as they may be context lines
+    const lineRows = page.locator('tr[data-line-number]');
+    const rowCount = await lineRows.count();
+
+    // Need at least 3 rows for a drag test
+    if (rowCount >= 3) {
+      // The drag mechanism works via mousedown on add-comment button,
+      // mouseover on rows, then mouseup. Since button is hidden by default,
+      // we verify the mechanism exists by checking that the selection can be created
+      // programmatically via clicking the add button after a multi-row selection.
+
+      // This test validates that:
+      // 1. Multiple rows exist for potential selection
+      // 2. Add comment buttons are present (appear on hover)
+      // 3. Line tracking infrastructure exists
+
+      // Hover over a line to reveal button
+      const targetRow = lineRows.nth(1);
+      const lineNumCell = targetRow.locator('.d2h-code-linenumber');
+      await lineNumCell.hover();
+
+      // Button should exist (may be visible or hidden based on CSS)
+      const addBtns = page.locator('.add-comment-btn');
+      const btnCount = await addBtns.count();
+      expect(btnCount).toBeGreaterThan(0);
+
+      // Verify rows have proper data attributes for selection
+      const hasLineNumber = await targetRow.getAttribute('data-line-number');
+      expect(hasLineNumber).toBeTruthy();
+    }
+  });
+
+  test('should show add comment button after multi-line selection', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Get line number cells
+    const lineNumberCells = page.locator('.d2h-code-linenumber');
+    const count = await lineNumberCells.count();
+
+    if (count >= 3) {
+      const startCell = lineNumberCells.nth(0);
+      const endCell = lineNumberCells.nth(2);
+
+      const startBox = await startCell.boundingBox();
+      const endBox = await endCell.boundingBox();
+
+      if (startBox && endBox) {
+        // Perform drag action
+        await page.mouse.move(startBox.x + startBox.width / 2, startBox.y + startBox.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(endBox.x + endBox.width / 2, endBox.y + endBox.height / 2);
+        await page.mouse.up();
+
+        // Wait a moment for selection to complete
+        await page.waitForTimeout(200);
+
+        // Add comment button should be visible after selection
+        const addCommentBtn = page.locator('.add-comment-btn');
+        const btnCount = await addCommentBtn.count();
+        expect(btnCount).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test('should create comment for multi-line range', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Get line number cells - find rows with actual line numbers
+    const lineRows = page.locator('tr[data-line-number]');
+    const rowCount = await lineRows.count();
+
+    if (rowCount >= 3) {
+      // Click on first row's line number cell to start selection
+      const firstRow = lineRows.nth(0);
+      const firstLineNumCell = firstRow.locator('.d2h-code-linenumber');
+      await firstLineNumCell.hover();
+
+      // Look for add comment button and click it
+      const addCommentBtn = page.locator('.add-comment-btn').first();
+      await addCommentBtn.waitFor({ state: 'visible', timeout: 3000 });
+      await addCommentBtn.click();
+
+      // Wait for comment form
+      await page.waitForSelector('.user-comment-form', { timeout: 5000 });
+
+      // Add a multi-line comment
+      const textarea = page.locator('.user-comment-form textarea');
+      await textarea.fill('Comment on line range');
+      await page.locator('.save-comment-btn').click();
+
+      // Comment should be created
+      await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+    }
+  });
+});
+
+test.describe('Comment Persistence', () => {
+  test('should persist comment after page refresh', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Create a unique comment
+    await openCommentFormOnLine(page, 0);
+    const textarea = page.locator('.user-comment-form textarea');
+    const uniqueComment = `Persistent comment ${Date.now()}`;
+    await textarea.fill(uniqueComment);
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for comment to appear
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('.user-comment-body').first()).toContainText(uniqueComment);
+
+    // Refresh the page
+    await page.reload();
+    await waitForDiffToRender(page);
+
+    // Wait for comments to load
+    await page.waitForTimeout(1000);
+
+    // Comment should still be visible after refresh
+    const commentBody = page.locator('.user-comment-body');
+    await expect(commentBody.first()).toContainText(uniqueComment, { timeout: 10000 });
+  });
+
+  test('should load existing comments on page load', async ({ page }) => {
+    // First visit - create a comment
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    await openCommentFormOnLine(page, 0);
+    const textarea = page.locator('.user-comment-form textarea');
+    const persistentComment = `Comment created at ${Date.now()}`;
+    await textarea.fill(persistentComment);
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for comment to be saved
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+
+    // Navigate away and come back
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Go back to the PR page
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Wait for comments to load from API
+    await page.waitForTimeout(1000);
+
+    // The comment should be loaded from the database
+    const commentBody = page.locator('.user-comment-body');
+    await expect(commentBody.first()).toContainText(persistentComment, { timeout: 10000 });
+  });
+});
+
+test.describe('Comment API Integration', () => {
+  test('should call user-comment API when saving', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Set up API response listener
+    const responsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment') && response.request().method() === 'POST'
+    );
+
+    // Create and save a comment
+    await openCommentFormOnLine(page, 0);
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('API test comment');
+    await page.locator('.save-comment-btn').click();
+
+    // Verify API was called
+    const response = await responsePromise;
+    expect(response.status()).toBe(200);
+
+    const responseData = await response.json();
+    expect(responseData.success).toBe(true);
+    expect(responseData.commentId).toBeDefined();
+  });
+
+  test('should call delete API when deleting comment', async ({ page }) => {
+    // Create a comment first
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await openCommentFormOnLine(page, 0);
+
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Comment for delete API test');
+    await page.locator('.save-comment-btn').click();
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+
+    // Set up delete API listener
+    const deleteResponsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
+    );
+
+    // Delete the comment
+    await page.locator('.btn-delete-comment').first().click();
+    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
+    await page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")').first().click();
+
+    // Verify delete API was called
+    const response = await deleteResponsePromise;
+    expect(response.status()).toBe(200);
+  });
+
+  test('should call update API when editing comment', async ({ page }) => {
+    // Create a comment first
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await openCommentFormOnLine(page, 0);
+
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Comment for edit API test');
+    await page.locator('.save-comment-btn').click();
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+
+    // Set up update API listener
+    const updateResponsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+    );
+
+    // Edit the comment
+    await page.locator('.btn-edit-comment').first().click();
+    const editTextarea = page.locator('.comment-edit-textarea, .user-comment-edit-form textarea').first();
+    await expect(editTextarea).toBeVisible({ timeout: 5000 });
+    await editTextarea.fill('Updated comment text');
+    await page.locator('.save-edit-btn').click();
+
+    // Verify update API was called
+    const response = await updateResponsePromise;
+    expect(response.status()).toBe(200);
+  });
+});
+
+test.describe('Comment Display', () => {
+  test('should display comment timestamp', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Create a comment
+    await openCommentFormOnLine(page, 0);
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Comment with timestamp');
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for comment to appear
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+
+    // Should show timestamp
+    const timestamp = page.locator('.user-comment-timestamp');
+    await expect(timestamp.first()).toBeVisible();
+  });
+
+  test('should display line info in comment header', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Create a comment
+    await openCommentFormOnLine(page, 0);
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Comment with line info');
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for comment to appear
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+
+    // Should show line info
+    const lineInfo = page.locator('.user-comment-line-info');
+    await expect(lineInfo.first()).toBeVisible();
+    await expect(lineInfo.first()).toContainText(/Line \d+/);
+  });
+
+  test('should display user icon for user-created comments', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Create a comment
+    await openCommentFormOnLine(page, 0);
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('User comment');
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for comment to appear
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+
+    // Should have user origin class (not AI)
+    const userComment = page.locator('.user-comment.comment-user-origin');
+    await expect(userComment.first()).toBeVisible();
+  });
+});

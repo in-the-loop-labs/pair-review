@@ -26,6 +26,70 @@ const mockGitHubResponses = {
   }
 };
 
+// Mock AI analysis suggestions for testing
+const mockAISuggestions = [
+  {
+    id: 1001,
+    source: 'ai',
+    ai_run_id: 'test-run-001',
+    ai_level: null, // Final/orchestrated suggestion
+    file: 'src/utils.js',
+    line_start: 3,
+    line_end: 3,
+    type: 'improvement',
+    title: 'Consider using const for immutable values',
+    body: 'The variable `result` could be declared with `const` since it is not reassigned after initialization. This makes the code more readable and prevents accidental reassignment.',
+    status: 'active',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: 1002,
+    source: 'ai',
+    ai_run_id: 'test-run-001',
+    ai_level: null,
+    file: 'src/main.js',
+    line_start: 12,
+    line_end: 14,
+    type: 'praise',
+    title: 'Good use of descriptive function naming',
+    body: 'The `log` function has a clear, descriptive name that indicates its purpose. This improves code readability.',
+    status: 'active',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: 1003,
+    source: 'ai',
+    ai_run_id: 'test-run-001',
+    ai_level: 1,
+    file: 'src/utils.js',
+    line_start: 5,
+    line_end: 5,
+    type: 'bug',
+    title: 'Potential null reference',
+    body: 'The `computeValue()` function may return null in some cases. Consider adding a null check before using the result.',
+    status: 'active',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: 1004,
+    source: 'ai',
+    ai_run_id: 'test-run-001',
+    ai_level: 2,
+    file: 'src/main.js',
+    line_start: 13,
+    line_end: 13,
+    type: 'code-style',
+    title: 'Consider using template literals',
+    body: 'Using template literals instead of string concatenation would make this code cleaner: `console.log(`[App] ${message}`)`',
+    status: 'active',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }
+];
+
 const mockWorktreeResponses = {
   generateUnifiedDiff: `diff --git a/src/utils.js b/src/utils.js
 --- a/src/utils.js
@@ -226,7 +290,15 @@ async function globalSetup() {
   GitHubClient.prototype.createReviewGraphQL = async () => ({
     id: 12345,
     html_url: 'https://github.com/test-owner/test-repo/pull/1#review-12345',
-    state: 'APPROVED'
+    state: 'APPROVED',
+    comments_count: 0,
+    submitted_at: new Date().toISOString()
+  });
+  GitHubClient.prototype.createDraftReviewGraphQL = async () => ({
+    id: 12346,
+    html_url: 'https://github.com/test-owner/test-repo/pull/1#review-12346',
+    state: 'PENDING',
+    comments_count: 0
   });
 
   // Mock worktree manager
@@ -270,6 +342,169 @@ async function globalSetup() {
   app.set('db', db);
   app.set('githubToken', 'test-token-e2e');
   app.set('config', { github_token: 'test-token-e2e', port: 3456, theme: 'light', model: 'sonnet' });
+
+  // Track analysis state for mocking
+  let analysisRunning = false;
+  let analysisId = null;
+  let analysisHasRun = false;
+
+  // Mock AI analysis endpoint - responds with mock suggestions
+  app.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
+    const { owner, repo, pr } = req.params;
+    analysisId = `test-analysis-${Date.now()}`;
+    analysisRunning = true;
+    analysisHasRun = true;
+
+    // Get PR metadata ID from database
+    const prMetadata = await new Promise((resolve, reject) => {
+      db.get('SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?',
+        [parseInt(pr), `${owner}/${repo}`],
+        (err, row) => err ? reject(err) : resolve(row)
+      );
+    });
+
+    if (prMetadata) {
+      // Update last_ai_run_id to mark that analysis has been run
+      await new Promise((resolve, reject) => {
+        db.run('UPDATE pr_metadata SET last_ai_run_id = ? WHERE id = ?',
+          ['test-run-001', prMetadata.id],
+          (err) => err ? reject(err) : resolve()
+        );
+      });
+
+      // Insert mock AI suggestions into the database
+      for (const suggestion of mockAISuggestions) {
+        await new Promise((resolve, reject) => {
+          db.run(`
+            INSERT INTO comments (
+              pr_id, source, ai_run_id, ai_level, file, line_start, line_end,
+              type, title, body, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            prMetadata.id,
+            'ai',
+            suggestion.ai_run_id,
+            suggestion.ai_level,
+            suggestion.file,
+            suggestion.line_start,
+            suggestion.line_end,
+            suggestion.type,
+            suggestion.title,
+            suggestion.body,
+            suggestion.status,
+            suggestion.created_at,
+            suggestion.updated_at
+          ], (err) => err ? reject(err) : resolve());
+        });
+      }
+    }
+
+    // Return immediately (analysis "started")
+    res.json({
+      analysisId,
+      status: 'started',
+      message: 'AI analysis started in background'
+    });
+
+    // Simulate analysis completion after 500ms
+    setTimeout(() => {
+      analysisRunning = false;
+    }, 500);
+  });
+
+  // Mock SSE endpoint for analysis progress
+  app.get('/api/pr/:id/ai-suggestions/status', (req, res) => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive'
+    });
+
+    // Send initial connection
+    res.write('data: {"type":"connected"}\n\n');
+
+    // Send running status
+    setTimeout(() => {
+      res.write(`data: ${JSON.stringify({
+        type: 'progress',
+        status: 'running',
+        levels: {
+          1: { status: 'running', progress: 'Analyzing...' },
+          2: { status: 'running', progress: 'Analyzing...' },
+          3: { status: 'running', progress: 'Analyzing...' },
+          4: { status: 'pending', progress: 'Pending' }
+        },
+        progress: 'Running analysis...'
+      })}\n\n`);
+    }, 100);
+
+    // Send completion after 500ms
+    setTimeout(() => {
+      res.write(`data: ${JSON.stringify({
+        type: 'progress',
+        status: 'completed',
+        levels: {
+          1: { status: 'completed', progress: 'Complete' },
+          2: { status: 'completed', progress: 'Complete' },
+          3: { status: 'completed', progress: 'Complete' },
+          4: { status: 'completed', progress: 'Complete' }
+        },
+        progress: 'Analysis complete',
+        completedLevel: 3,
+        suggestionsCount: mockAISuggestions.length
+      })}\n\n`);
+      res.end();
+    }, 500);
+  });
+
+  // Mock analysis status check endpoint
+  app.get('/api/pr/:owner/:repo/:number/analysis-status', (req, res) => {
+    if (analysisRunning && analysisId) {
+      res.json({
+        running: true,
+        analysisId,
+        status: { status: 'running', progress: 'Analyzing...' }
+      });
+    } else {
+      res.json({
+        running: false,
+        analysisId: null,
+        status: null
+      });
+    }
+  });
+
+  // Mock has-ai-suggestions endpoint
+  app.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) => {
+    const { owner, repo, number } = req.params;
+    try {
+      const result = await new Promise((resolve, reject) => {
+        db.get(`
+          SELECT COUNT(*) as count FROM comments c
+          JOIN pr_metadata p ON c.pr_id = p.id
+          WHERE p.pr_number = ? AND p.repository = ? AND c.source = 'ai'
+        `, [parseInt(number), `${owner}/${repo}`], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+      res.json({
+        hasSuggestions: result?.count > 0,
+        analysisHasRun: analysisHasRun || result?.count > 0
+      });
+    } catch (e) {
+      res.json({ hasSuggestions: false, analysisHasRun: false });
+    }
+  });
+
+  // Mock check-stale endpoint (PR is never stale in tests)
+  app.get('/api/pr/:owner/:repo/:number/check-stale', (req, res) => {
+    res.json({
+      isStale: false,
+      prState: 'open',
+      merged: false
+    });
+  });
 
   // Load API routes
   const analysisRoutes = require('../../src/routes/analysis');
