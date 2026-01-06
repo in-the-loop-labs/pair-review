@@ -8,7 +8,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 /**
  * Database schema SQL statements
@@ -70,6 +70,7 @@ const SCHEMA_SQL = {
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
       adopted_as_id INTEGER,
       parent_id INTEGER,
+      is_file_level INTEGER DEFAULT 0,
 
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -131,6 +132,7 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start)',
   'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
   'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(pr_id, file, is_file_level)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
@@ -323,9 +325,53 @@ const MIGRATIONS = {
     console.log('Migration to schema version 3 complete');
   },
 
-  // Migration to version 4: adds local review support columns to reviews table
+  // Migration to version 4: adds is_file_level column to comments for file-level comments support
   4: async (db) => {
     console.log('Running migration to schema version 4...');
+
+    // Helper to check if column exists
+    const columnExists = async (table, column) => {
+      return new Promise((resolve, reject) => {
+        db.all(`PRAGMA table_info(${table})`, (error, rows) => {
+          if (error) reject(error);
+          else resolve(rows ? rows.some(row => row.name === column) : false);
+        });
+      });
+    };
+
+    // Helper to run SQL safely
+    const runSql = (sql) => {
+      return new Promise((resolve, reject) => {
+        db.run(sql, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    };
+
+    // Add is_file_level column to comments if it doesn't exist
+    const hasIsFileLevel = await columnExists('comments', 'is_file_level');
+    if (!hasIsFileLevel) {
+      try {
+        await runSql(`ALTER TABLE comments ADD COLUMN is_file_level INTEGER DEFAULT 0`);
+        console.log('  Added is_file_level column to comments');
+      } catch (error) {
+        // Ignore duplicate column errors (race condition protection)
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column is_file_level already exists (race condition)');
+      }
+    } else {
+      console.log('  Column is_file_level already exists');
+    }
+
+    console.log('Migration to schema version 4 complete');
+  },
+
+  // Migration to version 5: adds local review support columns to reviews table
+  5: async (db) => {
+    console.log('Running migration to schema version 5...');
 
     // Helper to check if column exists
     const columnExists = async (table, column) => {
@@ -369,13 +415,13 @@ const MIGRATIONS = {
     await addColumnIfNotExists('reviews', 'local_path', 'TEXT');
     await addColumnIfNotExists('reviews', 'local_head_sha', 'TEXT');
 
-    console.log('Migration to schema version 4 complete');
+    console.log('Migration to schema version 5 complete');
   },
 
-  // Migration to version 5: Make pr_number nullable in reviews table
+  // Migration to version 6: Make pr_number nullable in reviews table
   // SQLite doesn't support ALTER COLUMN, so we recreate the table
-  5: async (db) => {
-    console.log('Running migration to schema version 5...');
+  6: async (db) => {
+    console.log('Running migration to schema version 6...');
 
     // Helper to run SQL safely
     const runSql = (sql) => {
@@ -443,7 +489,7 @@ const MIGRATIONS = {
       WHERE review_type = 'pr'
     `);
 
-    console.log('Migration to schema version 5 complete');
+    console.log('Migration to schema version 6 complete');
   }
 };
 

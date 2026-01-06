@@ -852,6 +852,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         title,
         body,
         status,
+        is_file_level,
         created_at,
         updated_at
       FROM comments
@@ -873,6 +874,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
           WHEN ai_level = 3 THEN 3
           ELSE 4
         END,
+        is_file_level DESC,
         file,
         line_start
     `, [prMetadata.id, prMetadata.id]);

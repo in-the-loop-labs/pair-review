@@ -181,10 +181,28 @@ class SuggestionManager {
         }
       }
 
-      // Group suggestions by file and line
-      const suggestionsByLocation = {};
+      // Separate file-level and line-level suggestions
+      const fileLevelSuggestions = [];
+      const lineLevelSuggestions = [];
 
       suggestions.forEach(suggestion => {
+        if (suggestion.is_file_level === 1 || suggestion.line_start === null) {
+          fileLevelSuggestions.push(suggestion);
+        } else {
+          lineLevelSuggestions.push(suggestion);
+        }
+      });
+
+      // Handle file-level suggestions via FileCommentManager
+      if (fileLevelSuggestions.length > 0 && this.prManager?.fileCommentManager) {
+        console.log('[UI] Routing file-level suggestions to FileCommentManager:', fileLevelSuggestions.length);
+        this.prManager.fileCommentManager.loadFileComments([], fileLevelSuggestions);
+      }
+
+      // Group line-level suggestions by file and line
+      const suggestionsByLocation = {};
+
+      lineLevelSuggestions.forEach(suggestion => {
         const key = `${suggestion.file}:${suggestion.line_start}`;
         if (!suggestionsByLocation[key]) {
           suggestionsByLocation[key] = [];
@@ -192,9 +210,9 @@ class SuggestionManager {
         suggestionsByLocation[key].push(suggestion);
       });
 
-      console.log('[UI] Grouped suggestions by location:', Object.keys(suggestionsByLocation));
+      console.log('[UI] Grouped line-level suggestions by location:', Object.keys(suggestionsByLocation));
 
-      // Find diff rows and insert suggestions
+      // Find diff rows and insert line-level suggestions
       Object.entries(suggestionsByLocation).forEach(([location, locationSuggestions]) => {
         const [file, lineStr] = location.split(':');
         const line = parseInt(lineStr);

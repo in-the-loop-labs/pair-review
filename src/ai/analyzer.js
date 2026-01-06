@@ -584,17 +584,36 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style|refactor",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why full file context was needed",
     "suggestion": "How to fix/improve based on file context (omit for praise items)",
     "confidence": 0.0-1.0
   }],
+  "fileLevelSuggestions": [{
+    "file": "path/to/file",
+    "type": "refactor|suggestion|praise|issue|design",
+    "title": "Brief title describing file-level concern",
+    "description": "Explanation of the file-level observation (architecture, organization, naming, etc.)",
+    "suggestion": "How to address the file-level concern (omit for praise items)",
+    "confidence": 0.0-1.0
+  }],
   "summary": "Brief summary of file context findings"
 }
 
+## File-Level Suggestions
+In addition to line-specific suggestions, you may include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
+- Overall file architecture or organization issues
+- Naming convention concerns for the file/module
+- Missing tests for the file
+- File structure improvements
+- Module-level design patterns
+- Overall code organization within the file
+
+File-level suggestions should NOT have a line number. They apply to the entire file.
+
 ## Important Guidelines
-- You may attach suggestions to any line within modified files, including context lines when they reveal file-level issues.
+- You may attach line-specific suggestions to any line within modified files, including context lines when they reveal file-level issues.
 - Focus on issues that require understanding the full file context
 - Focus on file-level patterns and consistency
 - For "praise" type: Omit the suggestion field entirely to save tokens
@@ -704,14 +723,22 @@ Output JSON with this structure:
 
     // If response is already parsed JSON
     if (response.suggestions && Array.isArray(response.suggestions)) {
-      return this.validateSuggestions(response.suggestions, previousSuggestions);
+      const lineSuggestions = this.validateSuggestions(response.suggestions, previousSuggestions);
+      const fileLevelSuggestions = response.fileLevelSuggestions
+        ? this.validateFileLevelSuggestions(response.fileLevelSuggestions)
+        : [];
+      return [...lineSuggestions, ...fileLevelSuggestions];
     }
 
     // If response is raw text, try multiple extraction strategies
     if (response.raw) {
       const extracted = extractJSON(response.raw, level);
       if (extracted.success && extracted.data.suggestions && Array.isArray(extracted.data.suggestions)) {
-        return this.validateSuggestions(extracted.data.suggestions, previousSuggestions);
+        const lineSuggestions = this.validateSuggestions(extracted.data.suggestions, previousSuggestions);
+        const fileLevelSuggestions = extracted.data.fileLevelSuggestions
+          ? this.validateFileLevelSuggestions(extracted.data.fileLevelSuggestions)
+          : [];
+        return [...lineSuggestions, ...fileLevelSuggestions];
       } else {
         logger.warn(`${levelPrefix} JSON extraction failed: ${extracted.error}`);
         logger.info(`${levelPrefix} Raw response length: ${response.raw.length} characters`);
@@ -722,6 +749,61 @@ Output JSON with this structure:
     // Fallback to empty array
     logger.warn(`${levelPrefix} No valid suggestions found in response`);
     return [];
+  }
+
+  /**
+   * Validate and filter file-level suggestions (suggestions about entire files, not tied to specific lines)
+   * @param {Array} suggestions - Raw file-level suggestions from AI
+   * @returns {Array} Validated file-level suggestions
+   */
+  validateFileLevelSuggestions(suggestions) {
+    if (!suggestions || !Array.isArray(suggestions)) {
+      return [];
+    }
+
+    return suggestions
+      .map(s => {
+        // Normalize: If title is missing but description exists, extract first line as title
+        if (!s.title && s.description) {
+          const firstLine = s.description.split(/[.\n]/)[0].trim();
+          const title = firstLine.length > 150
+            ? firstLine.substring(0, 147) + '...'
+            : firstLine;
+
+          return {
+            ...s,
+            title: title,
+            description: s.description
+          };
+        }
+        return s;
+      })
+      .filter(s => {
+        // File-level suggestions require file, type, and title but NOT line
+        if (!s.file || !s.type || !s.title) {
+          logger.warn(`Skipping invalid file-level suggestion: ${JSON.stringify(s)}`);
+          return false;
+        }
+
+        // Filter out low confidence suggestions
+        if (s.confidence && s.confidence < 0.3) {
+          logger.info(`Filtering low confidence file-level suggestion: ${s.title} (${s.confidence})`);
+          return false;
+        }
+
+        return true;
+      })
+      .map(s => ({
+        file: s.file,
+        line_start: null,  // File-level suggestions have no line numbers
+        line_end: null,
+        type: s.type,
+        title: s.title,
+        description: s.description || '',
+        suggestion: s.suggestion || '',
+        confidence: s.confidence || 0.7,
+        is_file_level: true  // Mark as file-level suggestion
+      }));
   }
 
   /**
@@ -933,11 +1015,15 @@ Output JSON with this structure:
       // Handle different level types including orchestrated
       const aiLevel = typeof level === 'string' ? level : level;
 
+      // Determine if this is a file-level suggestion
+      // File-level suggestions have is_file_level=true or have null line_start
+      const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;
+
       await run(this.db, `
         INSERT INTO comments (
           pr_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, type, title, body, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          file, line_start, line_end, type, title, body, status, is_file_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         prId,
         'ai',
@@ -951,7 +1037,8 @@ Output JSON with this structure:
         suggestion.type,
         suggestion.title,
         body,
-        'active'
+        'active',
+        isFileLevel
       ]);
     }
 
@@ -1760,17 +1847,36 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style|refactor",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why codebase context was needed",
     "suggestion": "How to fix/improve based on codebase context (omit for praise items)",
     "confidence": 0.0-1.0
   }],
+  "fileLevelSuggestions": [{
+    "file": "path/to/file",
+    "type": "refactor|suggestion|praise|issue|design",
+    "title": "Brief title describing file-level concern",
+    "description": "Explanation of the file-level observation from codebase perspective",
+    "suggestion": "How to address the file-level concern (omit for praise items)",
+    "confidence": 0.0-1.0
+  }],
   "summary": "Brief summary of how these changes connect to and impact the codebase"
 }
 
+## File-Level Suggestions
+In addition to line-specific suggestions, you may include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
+- Architectural concerns about the file's role in the codebase
+- Missing tests for the file's functionality
+- Integration issues with other parts of the codebase
+- File-level design pattern inconsistencies with the rest of the codebase
+- Documentation gaps for the file
+- Organizational issues (file location, module structure)
+
+File-level suggestions should NOT have a line number. They apply to the entire file.
+
 ## Important Guidelines
-- You may attach suggestions to any line within modified files, including unchanged context lines when codebase-level analysis reveals issues.
+- You may attach line-specific suggestions to any line within files touched by this PR, including unchanged context lines when analysis reveals issues.
 - Focus on how these changes interact with the broader codebase
 - Look especially for ${testingContext?.shouldCheckTests ? 'missing tests,' : ''} documentation, and integration issues
 - For "praise" type: Omit the suggestion field entirely to save tokens
@@ -1901,18 +2007,24 @@ You are helping a human reviewer by intelligently curating and merging suggestio
 ${orchestrationCustomInstructions}
 ## Input: Multi-Level Analysis Results
 **Level 1 - Diff Analysis (${level1Count} suggestions):**
-${allSuggestions.level1 ? allSuggestions.level1.map(s => 
-  `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
+${allSuggestions.level1 ? allSuggestions.level1.map(s =>
+  s.is_file_level
+    ? `- [FILE-LEVEL] ${s.type}: ${s.title} (${s.file}) - ${s.description.substring(0, 100)}...`
+    : `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
 ).join('\n') : 'No Level 1 suggestions'}
 
 **Level 2 - File Context (${level2Count} suggestions):**
-${allSuggestions.level2 ? allSuggestions.level2.map(s => 
-  `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
+${allSuggestions.level2 ? allSuggestions.level2.map(s =>
+  s.is_file_level
+    ? `- [FILE-LEVEL] ${s.type}: ${s.title} (${s.file}) - ${s.description.substring(0, 100)}...`
+    : `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
 ).join('\n') : 'No Level 2 suggestions'}
 
 **Level 3 - Codebase Context (${level3Count} suggestions):**
-${allSuggestions.level3 ? allSuggestions.level3.map(s => 
-  `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
+${allSuggestions.level3 ? allSuggestions.level3.map(s =>
+  s.is_file_level
+    ? `- [FILE-LEVEL] ${s.type}: ${s.title} (${s.file}) - ${s.description.substring(0, 100)}...`
+    : `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
 ).join('\n') : 'No Level 3 suggestions'}
 
 ## Orchestration Guidelines
@@ -1951,14 +2063,28 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style|refactor",
     "title": "Brief title describing the curated insight",
     "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
     "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
     "confidence": 0.0-1.0
   }],
+  "fileLevelSuggestions": [{
+    "file": "path/to/file",
+    "type": "refactor|suggestion|praise|issue|design",
+    "title": "Brief title describing file-level concern",
+    "description": "Explanation of the file-level observation",
+    "suggestion": "How to address the file-level concern (omit for praise items)",
+    "confidence": 0.0-1.0
+  }],
   "summary": "Brief summary of orchestration results and key patterns found"
 }
+
+## File-Level Suggestions
+Some input suggestions are marked as [FILE-LEVEL]. These are observations about entire files, not tied to specific lines:
+- Preserve file-level suggestions in the "fileLevelSuggestions" array
+- File-level suggestions should NOT have a line number
+- Good examples: architecture concerns, missing tests, naming conventions, file organization
 
 ## Important Notes
 - **Quality over quantity** - Better to have 8 excellent suggestions than 20 mediocre ones
@@ -1966,7 +2092,8 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
 - **Preserve actionability** - Every suggestion should give clear next steps
 - **Maintain context** - Don't lose important details when merging
 - **Suggestions may target any line in modified files** - Context lines can reveal issues too
-- **Only include modified files** - Discard any suggestions for files not included in the diff`;
+- **Only include modified files** - Discard any suggestions for files not modified in this PR
+- **Preserve file-level insights** - Don't discard valuable file-level observations`;
   }
 
 

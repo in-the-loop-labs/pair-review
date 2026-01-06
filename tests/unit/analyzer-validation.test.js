@@ -415,3 +415,267 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
     });
   });
 });
+
+describe('Analyzer.validateFileLevelSuggestions', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should return empty array for null input', () => {
+    const result = analyzer.validateFileLevelSuggestions(null);
+    expect(result).toEqual([]);
+  });
+
+  it('should return empty array for undefined input', () => {
+    const result = analyzer.validateFileLevelSuggestions(undefined);
+    expect(result).toEqual([]);
+  });
+
+  it('should return empty array for non-array input', () => {
+    const result = analyzer.validateFileLevelSuggestions('not an array');
+    expect(result).toEqual([]);
+  });
+
+  it('should validate file-level suggestions without line numbers', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'refactor',
+        title: 'Consider restructuring this file',
+        description: 'This file has grown large and could benefit from being split.'
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].file).toBe('src/foo.js');
+    expect(result[0].line_start).toBeNull();
+    expect(result[0].line_end).toBeNull();
+    expect(result[0].is_file_level).toBe(true);
+    expect(result[0].type).toBe('refactor');
+  });
+
+  it('should filter out suggestions missing required fields', () => {
+    const suggestions = [
+      { file: 'src/foo.js', type: 'refactor' }, // missing title
+      { type: 'refactor', title: 'Test' }, // missing file
+      { file: 'src/bar.js', title: 'Test' }, // missing type
+      { file: 'src/valid.js', type: 'suggestion', title: 'Valid suggestion' } // valid
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].file).toBe('src/valid.js');
+  });
+
+  it('should filter out low confidence suggestions', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'refactor',
+        title: 'Low confidence suggestion',
+        description: 'Test',
+        confidence: 0.2
+      },
+      {
+        file: 'src/bar.js',
+        type: 'refactor',
+        title: 'High confidence suggestion',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].file).toBe('src/bar.js');
+  });
+
+  it('should normalize title from description if missing', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'refactor',
+        description: 'This is the first sentence. This is more detail.'
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe('This is the first sentence');
+  });
+
+  it('should set default confidence if not provided', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'refactor',
+        title: 'Test'
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].confidence).toBe(0.7);
+  });
+});
+
+describe('Analyzer.parseResponse with file-level suggestions', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should parse both line-level and file-level suggestions from response object', () => {
+    const response = {
+      suggestions: [
+        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue' }
+      ],
+      fileLevelSuggestions: [
+        { file: 'src/foo.js', type: 'refactor', title: 'File issue' }
+      ]
+    };
+
+    const result = analyzer.parseResponse(response, 2);
+
+    expect(result).toHaveLength(2);
+    // Line-level suggestion
+    expect(result[0].line_start).toBe(10);
+    expect(result[0].is_file_level).toBeUndefined();
+    // File-level suggestion
+    expect(result[1].line_start).toBeNull();
+    expect(result[1].is_file_level).toBe(true);
+  });
+
+  it('should handle response with only line-level suggestions', () => {
+    const response = {
+      suggestions: [
+        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue' }
+      ]
+    };
+
+    const result = analyzer.parseResponse(response, 2);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].line_start).toBe(10);
+  });
+
+  it('should handle response with only file-level suggestions', () => {
+    const response = {
+      suggestions: [],
+      fileLevelSuggestions: [
+        { file: 'src/foo.js', type: 'refactor', title: 'File issue' }
+      ]
+    };
+
+    const result = analyzer.parseResponse(response, 2);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].is_file_level).toBe(true);
+  });
+});
+
+describe('Analyzer.storeSuggestions with file-level suggestions', () => {
+  let analyzer;
+  let mockDb;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb = {
+      run: vi.fn((sql, params, callback) => callback(null)),
+      get: vi.fn((sql, params, callback) => {
+        callback(null, {
+          pr_data: JSON.stringify({
+            changed_files: ['src/foo.js']
+          })
+        });
+      })
+    };
+    analyzer = new Analyzer(mockDb, 'sonnet', 'claude');
+  });
+
+  it('should set is_file_level=1 for file-level suggestions', async () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: null,
+        line_end: null,
+        type: 'refactor',
+        title: 'File-level concern',
+        description: 'Test',
+        confidence: 0.8,
+        is_file_level: true
+      }
+    ];
+
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 2);
+
+    expect(mockDb.run).toHaveBeenCalledTimes(1);
+    // The is_file_level parameter is the 14th param (index 13)
+    const params = mockDb.run.mock.calls[0][1];
+    expect(params[13]).toBe(1); // is_file_level should be 1
+    expect(params[7]).toBeNull(); // line_start should be null
+    expect(params[8]).toBeNull(); // line_end should be null
+  });
+
+  it('should set is_file_level=0 for line-level suggestions', async () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 15,
+        type: 'bug',
+        title: 'Line-level concern',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
+
+    expect(mockDb.run).toHaveBeenCalledTimes(1);
+    const params = mockDb.run.mock.calls[0][1];
+    expect(params[13]).toBe(0); // is_file_level should be 0
+    expect(params[7]).toBe(10); // line_start should be 10
+  });
+
+  it('should handle mixed line-level and file-level suggestions', async () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 15,
+        type: 'bug',
+        title: 'Line issue',
+        description: 'Test',
+        confidence: 0.8
+      },
+      {
+        file: 'src/foo.js',
+        line_start: null,
+        line_end: null,
+        type: 'refactor',
+        title: 'File issue',
+        description: 'Test',
+        confidence: 0.8,
+        is_file_level: true
+      }
+    ];
+
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 2);
+
+    expect(mockDb.run).toHaveBeenCalledTimes(2);
+    // First call (line-level)
+    expect(mockDb.run.mock.calls[0][1][13]).toBe(0);
+    // Second call (file-level)
+    expect(mockDb.run.mock.calls[1][1][13]).toBe(1);
+  });
+});

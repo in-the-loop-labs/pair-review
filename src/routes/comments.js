@@ -173,6 +173,65 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
 });
 
 /**
+ * Create file-level user comment
+ * File-level comments are about an entire file, not tied to specific lines
+ */
+router.post('/api/file-comment', async (req, res) => {
+  try {
+    const { pr_id, file, body, commit_sha } = req.body;
+
+    if (!pr_id || !file || !body) {
+      return res.status(400).json({
+        error: 'Missing required fields: pr_id, file, body'
+      });
+    }
+
+    const db = req.app.get('db');
+
+    // Verify PR exists
+    const pr = await queryOne(db, `
+      SELECT id FROM pr_metadata WHERE id = ?
+    `, [pr_id]);
+
+    if (!pr) {
+      return res.status(404).json({
+        error: 'Pull request not found'
+      });
+    }
+
+    // Create file-level user comment
+    // line_start, line_end, diff_position, and side are NULL for file-level comments
+    const result = await run(db, `
+      INSERT INTO comments (
+        pr_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
+        type, title, body, status, is_file_level
+      ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL, ?, ?, 1)
+    `, [
+      pr_id,
+      'user',
+      'Current User', // TODO: Get actual user from session/config
+      file,
+      commit_sha || null,
+      'comment',
+      body.trim(),
+      'active'
+    ]);
+
+    res.json({
+      success: true,
+      commentId: result.lastID,
+      message: 'File-level comment saved successfully'
+    });
+
+  } catch (error) {
+    console.error('Error creating file-level comment:', error);
+    res.status(500).json({
+      error: 'Failed to create file-level comment'
+    });
+  }
+});
+
+/**
  * Create user comment
  */
 router.post('/api/user-comment', async (req, res) => {
@@ -281,6 +340,7 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
         body,
         status,
         parent_id,
+        is_file_level,
         created_at,
         updated_at
       FROM comments
@@ -328,6 +388,7 @@ router.get('/api/pr/:id/user-comments', async (req, res) => {
         body,
         status,
         parent_id,
+        is_file_level,
         created_at,
         updated_at
       FROM comments

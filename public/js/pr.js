@@ -128,6 +128,7 @@ class PRManager {
     this.lineTracker = new window.LineTracker();
     this.commentManager = new window.CommentManager(this);
     this.suggestionManager = new window.SuggestionManager(this);
+    this.fileCommentManager = window.FileCommentManager ? new window.FileCommentManager(this) : null;
 
     // Line range selection state - delegate to lineTracker
     Object.defineProperty(this, 'rangeSelectionStart', {
@@ -585,6 +586,12 @@ class PRManager {
       (path) => this.toggleGeneratedFile(path)
     );
     wrapper.appendChild(header);
+
+    // Create file-level comments zone (between header and diff)
+    if (this.fileCommentManager) {
+      const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(file.file);
+      wrapper.appendChild(fileCommentsZone);
+    }
 
     // Create diff table
     const table = document.createElement('table');
@@ -1495,8 +1502,20 @@ class PRManager {
       const data = await response.json();
       this.userComments = data.comments || [];
 
-      // Display saved comments
+      // Separate file-level and line-level comments
+      const fileLevelComments = [];
+      const lineLevelComments = [];
+
       this.userComments.forEach(comment => {
+        if (comment.is_file_level === 1) {
+          fileLevelComments.push(comment);
+        } else {
+          lineLevelComments.push(comment);
+        }
+      });
+
+      // Display line-level comments inline with diff
+      lineLevelComments.forEach(comment => {
         const fileElement = this.findFileElement(comment.file);
         if (!fileElement) return;
 
@@ -1509,6 +1528,11 @@ class PRManager {
           }
         }
       });
+
+      // Load file-level comments into their zones
+      if (this.fileCommentManager && fileLevelComments.length > 0) {
+        this.fileCommentManager.loadFileComments(fileLevelComments, []);
+      }
 
       // Populate AI Panel with comments
       if (window.aiPanel?.setComments) {

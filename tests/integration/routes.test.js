@@ -162,6 +162,7 @@ async function createTestDatabase() {
               status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
               adopted_as_id INTEGER,
               parent_id INTEGER,
+              is_file_level INTEGER DEFAULT 0,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
@@ -559,6 +560,84 @@ describe('User Comment Endpoints', () => {
     });
   });
 
+  describe('POST /api/file-comment', () => {
+    it('should return 400 when required fields are missing', async () => {
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({ pr_id: prId });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Missing required fields');
+    });
+
+    it('should return 404 when PR not found', async () => {
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: 9999,
+          file: 'file.js',
+          body: 'Test file-level comment'
+        });
+
+      expect(response.status).toBe(404);
+    });
+
+    it('should create file-level comment successfully', async () => {
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'file.js',
+          body: 'This is a file-level comment'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.commentId).toBeDefined();
+      expect(response.body.message).toContain('File-level');
+    });
+
+    it('should create file-level comment with is_file_level=1 and NULL line fields', async () => {
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'file.js',
+          body: 'File-level comment'
+        });
+
+      expect(response.status).toBe(200);
+
+      // Verify the comment was stored correctly
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.commentId]);
+      expect(comment.is_file_level).toBe(1);
+      expect(comment.line_start).toBeNull();
+      expect(comment.line_end).toBeNull();
+      expect(comment.diff_position).toBeNull();
+      expect(comment.side).toBeNull();
+      expect(comment.source).toBe('user');
+    });
+
+    it('should create file-level comment with optional commit_sha', async () => {
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'file.js',
+          body: 'File-level comment with commit',
+          commit_sha: 'abc123'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.commentId).toBeDefined();
+
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.commentId]);
+      expect(comment).toBeDefined();
+      expect(comment.commit_sha).toBe('abc123');
+    });
+  });
+
   describe('GET /api/pr/:owner/:repo/:number/user-comments', () => {
     it('should return empty array when no comments exist', async () => {
       const response = await request(app)
@@ -599,6 +678,31 @@ describe('User Comment Endpoints', () => {
 
       expect(response.body.comments.length).toBe(1);
       expect(response.body.comments[0].body).toBe('Active comment');
+    });
+
+    it('should include is_file_level in response', async () => {
+      // Create a line-level comment (default is_file_level=0)
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, is_file_level)
+        VALUES (?, 'user', 'file.js', 10, 'Line comment', 'active', 0)
+      `, [prId]);
+      // Create a file-level comment (is_file_level=1)
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'another.js', 'File comment', 'active', 1)
+      `, [prId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/user-comments');
+
+      expect(response.status).toBe(200);
+      expect(response.body.comments.length).toBe(2);
+
+      const lineComment = response.body.comments.find(c => c.body === 'Line comment');
+      const fileComment = response.body.comments.find(c => c.body === 'File comment');
+
+      expect(lineComment.is_file_level).toBe(0);
+      expect(fileComment.is_file_level).toBe(1);
     });
   });
 
@@ -1088,6 +1192,126 @@ describe('Review Submission Endpoint', () => {
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Too many comments');
+    });
+
+    it('should submit file-level comments with isFileLevel flag', async () => {
+      // Insert a file-level comment (is_file_level=1)
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'file.js', 'This is a file-level comment', 'active', 1)
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review with file-level comment' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify the GraphQL function was called with isFileLevel=true
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      const comments = callArgs[3]; // Fourth argument is comments array
+
+      expect(comments.length).toBe(1);
+      expect(comments[0].isFileLevel).toBe(true);
+      expect(comments[0].path).toBe('file.js');
+      expect(comments[0].body).toBe('This is a file-level comment');
+      // File-level comments should NOT have line or side
+      expect(comments[0].line).toBeUndefined();
+      expect(comments[0].side).toBeUndefined();
+    });
+
+    it('should submit mixed file-level and line-level comments correctly', async () => {
+      // Insert a file-level comment
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'file1.js', 'File-level comment', 'active', 1)
+      `, [prId]);
+
+      // Insert a line-level comment with diff_position (inside diff hunk)
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, diff_position, side, body, status, is_file_level)
+        VALUES (?, 'user', 'file2.js', 10, 5, 'RIGHT', 'Line-level comment', 'active', 0)
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review with mixed comments' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify the GraphQL function was called with correct comment structure
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      const comments = callArgs[3];
+
+      expect(comments.length).toBe(2);
+
+      // Find file-level and line-level comments
+      const fileLevelComment = comments.find(c => c.path === 'file1.js');
+      const lineLevelComment = comments.find(c => c.path === 'file2.js');
+
+      // File-level comment should have isFileLevel=true and no line/side
+      expect(fileLevelComment.isFileLevel).toBe(true);
+      expect(fileLevelComment.line).toBeUndefined();
+      expect(fileLevelComment.side).toBeUndefined();
+
+      // Line-level comment should have isFileLevel=false and include line/side
+      expect(lineLevelComment.isFileLevel).toBe(false);
+      expect(lineLevelComment.line).toBe(10);
+      expect(lineLevelComment.side).toBe('RIGHT');
+    });
+
+    it('should submit draft review with file-level comments', async () => {
+      // Insert a file-level comment
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'file.js', 'Draft file-level comment', 'active', 1)
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'DRAFT', body: 'Draft review' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify the draft GraphQL function was called
+      expect(GitHubClient.prototype.createDraftReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createDraftReviewGraphQL.mock.calls[0];
+      const comments = callArgs[2]; // Third argument is comments array for draft
+
+      expect(comments.length).toBe(1);
+      expect(comments[0].isFileLevel).toBe(true);
+      expect(comments[0].path).toBe('file.js');
+    });
+
+    it('should handle expanded context comments as file-level with line reference', async () => {
+      // Insert an expanded context comment (no diff_position, not explicitly file-level)
+      // This represents a comment on a line outside the diff hunk
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, side, body, status, is_file_level)
+        VALUES (?, 'user', 'file.js', 42, 'RIGHT', 'Expanded context comment', 'active', 0)
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review with expanded context comment' });
+
+      expect(response.status).toBe(200);
+
+      // Verify the GraphQL function was called
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      const comments = callArgs[3];
+
+      expect(comments.length).toBe(1);
+      // Expanded context comments should be file-level with line reference in body
+      expect(comments[0].isFileLevel).toBe(true);
+      expect(comments[0].body).toContain('(Ref Line 42)');
+      expect(comments[0].body).toContain('Expanded context comment');
     });
   });
 });
