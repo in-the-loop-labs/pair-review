@@ -277,22 +277,43 @@ class FileCommentManager {
     }
 
     const card = document.createElement('div');
-    card.className = 'file-comment-card user-comment';
+    // Match line-level: add adopted-comment and comment-ai-origin classes when AI-originated
+    const isAIOrigin = !!comment.parent_id;
+    card.className = `file-comment-card user-comment ${isAIOrigin ? 'adopted-comment comment-ai-origin' : 'comment-user-origin'}`;
     card.dataset.commentId = comment.id;
 
     const renderedBody = window.renderMarkdown
       ? window.renderMarkdown(comment.body)
       : this.escapeHtml(comment.body);
 
+    // Choose icon based on comment origin (AI-adopted vs user-originated) - matches line-level
+    const commentIcon = isAIOrigin
+      ? `<svg class="octicon octicon-comment-ai" viewBox="0 0 16 16" width="16" height="16">
+           <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
+         </svg>`
+      : `<svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
+           <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
+         </svg>`;
+
+    // Praise badge for "Nice Work" comments - matches line-level
+    const praiseBadge = comment.type === 'praise'
+      ? `<span class="adopted-praise-badge" title="Nice Work"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
+      : '';
+
+    // Title for AI-adopted comments - matches line-level
+    const titleHtml = comment.title
+      ? `<span class="adopted-title">${this.escapeHtml(comment.title)}</span>`
+      : '';
+
     // Use same structure as line-level user comments
     card.innerHTML = `
       <div class="user-comment-header">
         <span class="comment-origin-icon">
-          <svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
-            <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
-          </svg>
+          ${commentIcon}
         </span>
         <span class="user-comment-line-info">File</span>
+        ${praiseBadge}
+        ${titleHtml}
         <span class="user-comment-timestamp">${this.formatTimestamp(comment.created_at)}</span>
         <div class="user-comment-actions">
           <button class="btn-edit-comment" title="Edit comment">
@@ -340,72 +361,72 @@ class FileCommentManager {
       emptyState.style.display = 'none';
     }
 
+    // Use the same structure as line-level AI suggestions for consistency
     const card = document.createElement('div');
-    card.className = 'file-comment-card ai-suggestion';
+    // Include ai-type-${type} class for proper category styling (especially praise badge)
+    card.className = `file-comment-card ai-suggestion ai-type-${suggestion.type || 'suggestion'}`;
     card.dataset.suggestionId = suggestion.id;
 
-    const typeTag = suggestion.type
-      ? `<span class="comment-type-tag ${suggestion.type}">${suggestion.type}</span>`
-      : '';
-
-    const levelInfo = suggestion.ai_level
-      ? `Level ${suggestion.ai_level} · `
-      : '';
-
-    const titleHtml = suggestion.title
-      ? `<div class="comment-title">${this.escapeHtml(suggestion.title)}</div>`
-      : '';
+    // Get category label for display (same as line-level)
+    const categoryLabel = suggestion.type || suggestion.category || '';
 
     const renderedBody = window.renderMarkdown
       ? window.renderMarkdown(suggestion.body)
       : this.escapeHtml(suggestion.body);
 
+    // Use exact same HTML structure as line-level suggestions (suggestion-manager.js)
     card.innerHTML = `
-      <div class="file-comment-header">
-        <span class="comment-source-badge ai">
-          <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-            <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
-          </svg>
-          AI
-        </span>
-        <span class="comment-author">Claude Analysis</span>
-        ${typeTag}
-        <span class="comment-timestamp">${levelInfo}Just now</span>
+      <div class="ai-suggestion-header">
+        <div class="ai-suggestion-header-left">
+          ${suggestion.type === 'praise'
+            ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
+            : `<span class="ai-suggestion-badge" data-type="${suggestion.type}" title="AI Suggestion"><svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901L3.2 5.86a.213.213 0 0 1-.4 0l-.203-.556A3.2 3.2 0 0 0 .696 3.403L.14 3.2a.213.213 0 0 1 0-.4l.556-.203A3.2 3.2 0 0 0 2.597.696L2.8.14Z"/></svg>AI Suggestion</span>`}
+          ${categoryLabel ? `<span class="ai-suggestion-category">${this.escapeHtml(categoryLabel)}</span>` : ''}
+          <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
+        </div>
       </div>
-      <div class="file-comment-body">
-        ${titleHtml}
-        <div class="comment-text">${renderedBody}</div>
-      </div>
-      <div class="file-comment-actions">
-        <button class="file-comment-action-btn adopt">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.75.75 0 0 1 1.06-1.06L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0z"/>
+      <div class="ai-suggestion-collapsed-content">
+        ${suggestion.type === 'praise'
+          ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
+          : `<span class="ai-suggestion-badge collapsed" data-type="${suggestion.type}" title="AI Suggestion"><svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10"><path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901L3.2 5.86a.213.213 0 0 1-.4 0l-.203-.556A3.2 3.2 0 0 0 .696 3.403L.14 3.2a.213.213 0 0 1 0-.4l.556-.203A3.2 3.2 0 0 0 2.597.696L2.8.14Z"/></svg>AI Suggestion</span>`}
+        <span class="collapsed-text">Suggestion adopted</span>
+        <span class="collapsed-title">${this.escapeHtml(suggestion.title || '')}</span>
+        <button class="btn-restore" title="Show suggestion">
+          <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="16" height="16">
+            <path fill-rule="evenodd" d="M1.679 7.932c.412-.621 1.242-1.75 2.366-2.717C5.175 4.242 6.527 3.5 8 3.5c1.473 0 2.824.742 3.955 1.715 1.124.967 1.954 2.096 2.366 2.717a.119.119 0 010 .136c-.412.621-1.242 1.75-2.366 2.717C10.825 11.758 9.473 12.5 8 12.5c-1.473 0-2.824-.742-3.955-1.715C2.92 9.818 2.09 8.69 1.679 8.068a.119.119 0 010-.136zM8 2c-1.981 0-3.67.992-4.933 2.078C1.797 5.169.88 6.423.43 7.1a1.619 1.619 0 000 1.798c.45.678 1.367 1.932 2.637 3.024C4.329 13.008 6.019 14 8 14c1.981 0 3.67-.992 4.933-2.078 1.27-1.091 2.187-2.345 2.637-3.023a1.619 1.619 0 000-1.798c-.45-.678-1.367-1.932-2.637-3.023C11.671 2.992 9.981 2 8 2zm0 8a2 2 0 100-4 2 2 0 000 4z"></path>
           </svg>
+          <span class="btn-text">Show</span>
+        </button>
+      </div>
+      <div class="ai-suggestion-body">
+        ${renderedBody}
+      </div>
+      <div class="ai-suggestion-actions">
+        <button class="ai-action ai-action-adopt">
+          <svg viewBox="0 0 16 16" width="16" height="16"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path></svg>
           Adopt
         </button>
-        <button class="file-comment-action-btn dismiss">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06z"/>
-          </svg>
-          Dismiss
+        <button class="ai-action ai-action-edit">
+          <svg viewBox="0 0 16 16" width="16" height="16"><path fill-rule="evenodd" d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"></path></svg>
+          Edit
         </button>
-        <button class="file-comment-action-btn edit">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064l6.286-6.286z"/>
-          </svg>
-          Edit & Adopt
+        <button class="ai-action ai-action-dismiss">
+          <svg viewBox="0 0 16 16" width="16" height="16"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path></svg>
+          Dismiss
         </button>
       </div>
     `;
 
-    // Wire up action buttons
-    const adoptBtn = card.querySelector('.file-comment-action-btn.adopt');
-    const dismissBtn = card.querySelector('.file-comment-action-btn.dismiss');
-    const editBtn = card.querySelector('.file-comment-action-btn.edit');
+    // Wire up action buttons (using same class names as line-level)
+    const adoptBtn = card.querySelector('.ai-action-adopt');
+    const dismissBtn = card.querySelector('.ai-action-dismiss');
+    const editBtn = card.querySelector('.ai-action-edit');
+    const restoreBtn = card.querySelector('.btn-restore');
 
     adoptBtn.addEventListener('click', () => this.adoptAISuggestion(zone, suggestion));
     dismissBtn.addEventListener('click', () => this.dismissAISuggestion(zone, suggestion.id));
     editBtn.addEventListener('click', () => this.editAndAdoptAISuggestion(zone, suggestion));
+    restoreBtn.addEventListener('click', () => this.restoreAISuggestion(zone, suggestion.id));
 
     // Insert at the beginning (AI suggestions shown first)
     const firstUserComment = container.querySelector('.file-comment-card:not(.ai-suggestion)');
@@ -456,10 +477,15 @@ class FileCommentManager {
 
       if (!statusResponse.ok) throw new Error('Failed to update suggestion status');
 
-      // Remove the AI suggestion card
+      // Collapse the AI suggestion card instead of removing it
       const suggestionCard = zone.querySelector(`[data-suggestion-id="${suggestion.id}"]`);
       if (suggestionCard) {
-        suggestionCard.remove();
+        suggestionCard.classList.add('collapsed');
+        // Update collapsed text to show "Suggestion adopted"
+        const collapsedText = suggestionCard.querySelector('.collapsed-text');
+        if (collapsedText) {
+          collapsedText.textContent = 'Suggestion adopted';
+        }
       }
 
       // Display as user comment
@@ -483,9 +509,14 @@ class FileCommentManager {
         this.prManager.updateCommentCount();
       }
 
-      // Notify AI Panel
-      if (window.aiPanel?.updateSuggestionStatus) {
-        window.aiPanel.updateSuggestionStatus(suggestion.id, 'adopted');
+      // Add comment to AI Panel's comment list for navigation and display
+      if (window.aiPanel?.addComment) {
+        window.aiPanel.addComment(commentData);
+      }
+
+      // Update finding status in AI Panel (mark suggestion as adopted)
+      if (window.aiPanel?.updateFindingStatus) {
+        window.aiPanel.updateFindingStatus(suggestion.id, 'adopted');
       }
 
     } catch (error) {
@@ -510,22 +541,39 @@ class FileCommentManager {
 
       if (!response.ok) throw new Error('Failed to dismiss suggestion');
 
-      // Remove the card
+      // Collapse the card instead of removing it
       const card = zone.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (card) {
-        card.remove();
+        card.classList.add('collapsed');
+        // Update collapsed text to show "Hidden AI suggestion"
+        const collapsedText = card.querySelector('.collapsed-text');
+        if (collapsedText) {
+          collapsedText.textContent = 'Hidden AI suggestion';
+        }
       }
 
       this.updateCommentCount(zone);
 
-      // Notify AI Panel
-      if (window.aiPanel?.updateSuggestionStatus) {
-        window.aiPanel.updateSuggestionStatus(suggestionId, 'dismissed');
+      // Update finding status in AI Panel (mark suggestion as dismissed)
+      if (window.aiPanel?.updateFindingStatus) {
+        window.aiPanel.updateFindingStatus(suggestionId, 'dismissed');
       }
 
     } catch (error) {
       console.error('Error dismissing suggestion:', error);
       alert('Failed to dismiss suggestion');
+    }
+  }
+
+  /**
+   * Restore (show) a collapsed AI suggestion
+   * @param {HTMLElement} zone - The file comments zone
+   * @param {number} suggestionId - The suggestion ID
+   */
+  restoreAISuggestion(zone, suggestionId) {
+    const card = zone.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+    if (card) {
+      card.classList.remove('collapsed');
     }
   }
 
@@ -651,10 +699,15 @@ class FileCommentManager {
 
       if (!statusResponse.ok) throw new Error('Failed to update suggestion status');
 
-      // Remove the AI suggestion card
+      // Collapse the AI suggestion card instead of removing it
       const suggestionCard = zone.querySelector(`[data-suggestion-id="${suggestion.id}"]`);
       if (suggestionCard) {
-        suggestionCard.remove();
+        suggestionCard.classList.add('collapsed');
+        // Update collapsed text to show "Suggestion adopted"
+        const collapsedText = suggestionCard.querySelector('.collapsed-text');
+        if (collapsedText) {
+          collapsedText.textContent = 'Suggestion adopted';
+        }
       }
 
       // Display as user comment
@@ -678,9 +731,14 @@ class FileCommentManager {
         this.prManager.updateCommentCount();
       }
 
-      // Notify AI Panel
-      if (window.aiPanel?.updateSuggestionStatus) {
-        window.aiPanel.updateSuggestionStatus(suggestion.id, 'adopted');
+      // Add comment to AI Panel's comment list for navigation and display
+      if (window.aiPanel?.addComment) {
+        window.aiPanel.addComment(commentData);
+      }
+
+      // Update finding status in AI Panel (mark suggestion as adopted)
+      if (window.aiPanel?.updateFindingStatus) {
+        window.aiPanel.updateFindingStatus(suggestion.id, 'adopted');
       }
 
     } catch (error) {

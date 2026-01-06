@@ -1947,8 +1947,9 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .ai-action-edit:hover {
-  background: var(--color-bg-tertiary, #181c23);
-  color: var(--color-text-primary, #e6edf3);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-primary);
 }
 
 /* Dismiss button: transparent, gray text turns red on hover, X icon */
@@ -1959,7 +1960,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .ai-action-dismiss:hover {
   color: var(--color-danger, #f85149);
-  background: rgba(248, 81, 73, 0.1);
+  background: rgba(248, 81, 73, 0.15);
 }
 
 /* Icon styling inside action buttons */
@@ -1967,6 +1968,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   width: 12px;
   height: 12px;
   flex-shrink: 0;
+  fill: currentColor;
 }
 
 /* Legacy .btn classes for backwards compatibility */
@@ -3672,6 +3674,12 @@ tr.line-range-start .d2h-code-line-ctn {
   background: rgba(167, 139, 250, 0.15);
   border-color: #a78bfa;
   color: #a78bfa;
+}
+
+[data-theme="dark"] .btn-delete-comment:hover {
+  background: rgba(248, 81, 73, 0.15);
+  border-color: #f85149;
+  color: #f85149;
 }
 
 .comment-edit-actions {
@@ -7322,59 +7330,37 @@ body:not([data-theme="dark"]) .theme-icon-light {
 }
 
 /* Comment Actions (for AI suggestions) */
-.file-comment-actions {
-  display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  background: var(--color-bg-tertiary);
-  border-top: 1px solid var(--color-border-secondary);
-}
+/* File-level AI suggestions now use the same classes as line-level (.ai-suggestion-*)
+   No custom button styles needed - they inherit from .ai-action classes defined earlier */
 
-.file-comment-action-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+/* File-level AI suggestion collapsed state - uses same classes as line-level */
+.file-comment-card.ai-suggestion.collapsed {
+  background: var(--color-bg-secondary, #f6f8fa);
+  opacity: 0.7;
+  border-left-color: var(--color-text-tertiary, #6e7681);
+  padding: 4px 8px;
+  margin: 2px 0;
   border-radius: 6px;
-  font-family: var(--font-sans);
+}
+
+[data-theme="dark"] .file-comment-card.ai-suggestion.collapsed {
+  background: var(--color-bg-secondary, #161b22);
+}
+
+/* Hide header, body, and actions when collapsed (using line-level class names) */
+.file-comment-card.ai-suggestion.collapsed .ai-suggestion-header,
+.file-comment-card.ai-suggestion.collapsed .ai-suggestion-body,
+.file-comment-card.ai-suggestion.collapsed .ai-suggestion-actions {
+  display: none;
+}
+
+/* Show collapsed content when collapsed (inherits line-level styles) */
+.file-comment-card.ai-suggestion.collapsed .ai-suggestion-collapsed-content {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
   font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.file-comment-action-btn.adopt {
-  background: var(--color-accent-emphasis);
-  border: 1px solid transparent;
-  color: white;
-}
-
-.file-comment-action-btn.adopt:hover {
-  filter: brightness(1.1);
-  transform: translateY(-1px);
-}
-
-.file-comment-action-btn.dismiss {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-primary);
-  color: var(--color-text-secondary);
-}
-
-.file-comment-action-btn.dismiss:hover {
-  background: var(--color-bg-tertiary);
-  color: var(--color-text-primary);
-}
-
-.file-comment-action-btn.edit {
-  background: transparent;
-  border: 1px solid var(--color-border-primary);
-  color: var(--color-text-secondary);
-  margin-left: auto;
-}
-
-.file-comment-action-btn.edit:hover {
-  border-color: var(--color-accent-primary);
-  color: var(--color-accent-primary);
 }
 
 /* User Comment Actions (in header) */
@@ -7405,6 +7391,40 @@ body:not([data-theme="dark"]) .theme-icon-light {
 
 .file-comment-user-btn.delete:hover {
   color: var(--color-danger);
+}
+
+/* ==========================================================================
+   File-Level AI Suggestion Praise Badge
+   Ensure praise badge sizing matches line-level comments
+   ========================================================================== */
+.file-comment-card.ai-suggestion.ai-type-praise .praise-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
+  color: var(--ai-primary, #f59e0b);
+}
+
+.file-comment-card.ai-suggestion.ai-type-praise .praise-badge svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+/* Praise badge in collapsed content for file-level */
+.file-comment-card.ai-suggestion.ai-type-praise .ai-suggestion-collapsed-content .praise-badge {
+  padding: 2px 6px;
+  font-size: 10px;
+  gap: 4px;
+}
+
+.file-comment-card.ai-suggestion.ai-type-praise .ai-suggestion-collapsed-content .praise-badge svg {
+  width: 10px;
+  height: 10px;
 }
 
 /* ==========================================================================
@@ -7533,15 +7553,8 @@ body:not([data-theme="dark"]) .theme-icon-light {
     gap: 8px;
   }
 
-  .file-comment-actions {
+  .file-comment-card .ai-suggestion-actions {
     flex-wrap: wrap;
-  }
-
-  .file-comment-action-btn.edit {
-    margin-left: 0;
-    margin-top: 8px;
-    width: 100%;
-    justify-content: center;
   }
 }
 
