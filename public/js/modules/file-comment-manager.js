@@ -367,6 +367,23 @@ class FileCommentManager {
     card.className = `file-comment-card ai-suggestion ai-type-${suggestion.type || 'suggestion'}`;
     card.dataset.suggestionId = suggestion.id;
 
+    // Check if this suggestion was adopted by looking at status or user comments with matching parent_id
+    // This mirrors the behavior in suggestion-manager.js for line-level suggestions
+    const userComments = this.prManager?.userComments || [];
+    const suggestionIdNum = parseInt(suggestion.id);
+    const wasAdopted = userComments.some(comment =>
+      comment.parent_id && (comment.parent_id === suggestion.id || comment.parent_id === suggestionIdNum)
+    );
+
+    // Determine if suggestion should be collapsed based on status or adoption
+    const isAdopted = wasAdopted || suggestion.status === 'adopted';
+    const isDismissed = suggestion.status === 'dismissed';
+
+    // Apply collapsed class if the suggestion is dismissed or was adopted
+    if (isAdopted || isDismissed) {
+      card.classList.add('collapsed');
+    }
+
     // Get category label for display (same as line-level)
     const categoryLabel = suggestion.type || suggestion.category || '';
 
@@ -389,7 +406,7 @@ class FileCommentManager {
         ${suggestion.type === 'praise'
           ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
           : `<span class="ai-suggestion-badge collapsed" data-type="${suggestion.type}" title="AI Suggestion"><svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10"><path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901L3.2 5.86a.213.213 0 0 1-.4 0l-.203-.556A3.2 3.2 0 0 0 .696 3.403L.14 3.2a.213.213 0 0 1 0-.4l.556-.203A3.2 3.2 0 0 0 2.597.696L2.8.14Z"/></svg>AI Suggestion</span>`}
-        <span class="collapsed-text">Suggestion adopted</span>
+        <span class="collapsed-text">${isAdopted ? 'Suggestion adopted' : 'Hidden AI suggestion'}</span>
         <span class="collapsed-title">${this.escapeHtml(suggestion.title || '')}</span>
         <button class="btn-restore" title="Show suggestion">
           <svg class="octicon octicon-eye" viewBox="0 0 16 16" width="16" height="16">
@@ -978,17 +995,31 @@ class FileCommentManager {
       const fileName = zone.dataset.fileName;
       const container = zone.querySelector('.file-comments-container');
 
-      // Clear existing file-level comment cards before rendering new results
-      // This prevents stale suggestions from persisting when reloading or changing levels
+      // Selectively clear existing cards based on what we're about to reload
+      // This prevents user comments from being cleared when only reloading AI suggestions
       if (container) {
-        const existingCards = container.querySelectorAll('.file-comment-card');
-        for (const card of existingCards) {
-          card.remove();
+        // Only clear AI suggestions if we have suggestions to display
+        // (prevents stale suggestions from persisting when reloading or changing levels)
+        if (suggestions && suggestions.length > 0) {
+          const existingAISuggestions = container.querySelectorAll('.file-comment-card.ai-suggestion');
+          for (const card of existingAISuggestions) {
+            card.remove();
+          }
         }
-        // Show empty state initially (will be hidden if there are comments)
+
+        // Only clear user comments if we have comments to display
+        if (comments && comments.length > 0) {
+          const existingUserComments = container.querySelectorAll('.file-comment-card.user-comment');
+          for (const card of existingUserComments) {
+            card.remove();
+          }
+        }
+
+        // Update empty state based on remaining/new content
         const emptyState = container.querySelector('.file-comments-empty');
+        const remainingCards = container.querySelectorAll('.file-comment-card').length;
         if (emptyState) {
-          emptyState.style.display = 'block';
+          emptyState.style.display = remainingCards > 0 ? 'none' : 'block';
         }
       }
 
