@@ -231,9 +231,10 @@ class CommentManager {
    * @param {string} fileName - The file name
    * @param {number} startLine - Start line number
    * @param {number} endLine - End line number
+   * @param {string} [side] - The side of the diff ('LEFT' or 'RIGHT') to filter by
    * @returns {string} The code content from the lines
    */
-  getCodeFromLines(fileName, startLine, endLine) {
+  getCodeFromLines(fileName, startLine, endLine, side) {
     // Find the file wrapper
     const fileWrappers = document.querySelectorAll('.d2h-file-wrapper');
     let targetWrapper = null;
@@ -256,7 +257,10 @@ class CommentManager {
 
     for (const row of rows) {
       const lineNum = parseInt(row.dataset.lineNumber, 10);
-      if (lineNum >= startLine && lineNum <= endLine && row.dataset.fileName === fileName) {
+      // Filter by line number, file name, and side (if provided)
+      // Side filtering prevents including both deleted and added versions of modified lines
+      const matchesSide = !side || row.dataset.side === side;
+      if (lineNum >= startLine && lineNum <= endLine && row.dataset.fileName === fileName && matchesSide) {
         // Get the code content cell
         const codeCell = row.querySelector('.d2h-code-line-ctn');
         if (codeCell) {
@@ -284,9 +288,10 @@ class CommentManager {
     const fileName = textarea.dataset.file;
     const startLine = parseInt(textarea.dataset.line, 10);
     const endLine = parseInt(textarea.dataset.lineEnd, 10) || startLine;
+    const side = textarea.dataset.side;
 
-    // Get the code from the selected lines
-    const code = this.getCodeFromLines(fileName, startLine, endLine);
+    // Get the code from the selected lines (pass side to avoid including both deleted and added lines)
+    const code = this.getCodeFromLines(fileName, startLine, endLine, side);
 
     // Build the suggestion block
     // Use 4 backticks if the code contains triple backticks
