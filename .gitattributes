@@ -1,3 +1,5 @@
 
 # Use bd merge for beads JSONL files
 .beads/issues.jsonl merge=beads linguist-generated=true
+.beads/.local_version linguist-generated=true
+.beads/.last-touched linguist-generated=true
