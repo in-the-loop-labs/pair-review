@@ -113,6 +113,7 @@ Test structure:
 - Adapter pattern for AI providers to enable future extensibility
 - Verbose logging to stdout for debugging
 - Handle errors gracefully with informative messages
+- Aim to keep file sizes below 20K tokens
 - CRITICAL: Complete, professional implementation - no stubs, prototypes, or partial work
 - CRITICAL: Include appropriate test coverage when making changes
 - CRITICAL: When completing a change, run the relevant tests
