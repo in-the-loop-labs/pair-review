@@ -284,6 +284,11 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       reviewType: 'local'
     };
 
+    // Get changed files for local mode path validation
+    // This is critical for local mode since git diff HEAD...HEAD returns nothing
+    const changedFiles = await analyzer.getLocalChangedFiles(localPath);
+    logger.info(`[Local] Found ${changedFiles.length} changed files for path validation`);
+
     // Log analysis start
     logger.section(`Local AI Analysis Request - Review #${reviewId}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
@@ -291,6 +296,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
     logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
     logger.log('API', `Model: ${selectedModel}`, 'cyan');
+    logger.log('API', `Changed files: ${changedFiles.length}`, 'cyan');
     if (combinedInstructions) {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
     }
@@ -327,8 +333,8 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       broadcastProgress(analysisId, currentStatus);
     };
 
-    // Start analysis asynchronously
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, combinedInstructions)
+    // Start analysis asynchronously (pass changedFiles for local mode path validation)
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, combinedInstructions, changedFiles)
       .then(result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);
@@ -505,11 +511,16 @@ router.post('/api/local/:reviewId/analyze/level2', async (req, res) => {
       reviewType: 'local'
     };
 
+    // Get changed files for local mode path validation
+    const changedFiles = await analyzer.getLocalChangedFiles(localPath);
+    logger.info(`[Local] Found ${changedFiles.length} changed files for path validation`);
+
     logger.section(`Local Level 2 AI Analysis - Review #${reviewId}`);
     logger.log('API', `Repository: ${review.repository}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
     logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
     logger.log('API', `Model: ${selectedModel}`, 'cyan');
+    logger.log('API', `Changed files: ${changedFiles.length}`, 'cyan');
 
     const progressCallback = (progressUpdate) => {
       const updatedStatus = {
@@ -521,9 +532,12 @@ router.post('/api/local/:reviewId/analyze/level2', async (req, res) => {
       broadcastProgress(analysisId, updatedStatus);
     };
 
-    // Start Level 2 analysis asynchronously
-    analyzer.analyzeLevel2(reviewId, localPath, localMetadata, progressCallback)
-      .then(result => {
+    // Start Level 2 analysis asynchronously (pass changedFiles for local mode path validation)
+    analyzer.analyzeLevel2(reviewId, localPath, localMetadata, progressCallback, changedFiles)
+      .then(async result => {
+        // Store suggestions to database (standalone Level 2 doesn't store - orchestration normally handles this)
+        await analyzer.storeSuggestions(reviewId, result.runId, result.suggestions, 2, changedFiles);
+
         const completedStatus = {
           ...activeAnalyses.get(analysisId),
           status: 'completed',
@@ -649,11 +663,16 @@ router.post('/api/local/:reviewId/analyze/level3', async (req, res) => {
       reviewType: 'local'
     };
 
+    // Get changed files for local mode path validation
+    const changedFiles = await analyzer.getLocalChangedFiles(localPath);
+    logger.info(`[Local] Found ${changedFiles.length} changed files for path validation`);
+
     logger.section(`Local Level 3 AI Analysis - Review #${reviewId}`);
     logger.log('API', `Repository: ${review.repository}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
     logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
     logger.log('API', `Model: ${selectedModel}`, 'cyan');
+    logger.log('API', `Changed files: ${changedFiles.length}`, 'cyan');
 
     const progressCallback = (progressUpdate) => {
       const updatedStatus = {
@@ -665,9 +684,12 @@ router.post('/api/local/:reviewId/analyze/level3', async (req, res) => {
       broadcastProgress(analysisId, updatedStatus);
     };
 
-    // Start Level 3 analysis asynchronously
-    analyzer.analyzeLevel3(reviewId, localPath, localMetadata, progressCallback)
-      .then(result => {
+    // Start Level 3 analysis asynchronously (pass changedFiles for local mode path validation)
+    analyzer.analyzeLevel3(reviewId, localPath, localMetadata, progressCallback, changedFiles)
+      .then(async result => {
+        // Store suggestions to database (standalone Level 3 doesn't store - orchestration normally handles this)
+        await analyzer.storeSuggestions(reviewId, result.runId, result.suggestions, 3, changedFiles);
+
         const completedStatus = {
           ...activeAnalyses.get(analysisId),
           status: 'completed',

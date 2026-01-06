@@ -31,9 +31,10 @@ class Analyzer {
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
+   * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null) {
+  async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null, changedFiles = null) {
     const runId = uuidv4();
 
     logger.section('Multi-Level AI Analysis Starting (Parallel Execution)');
@@ -47,6 +48,10 @@ class Analyzer {
       logger.info(`Found ${generatedPatterns.length} generated file patterns to skip: ${generatedPatterns.join(', ')}`);
     }
 
+    // Get changed files for validation (use provided list for local mode, or compute for PR mode)
+    const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
+    logger.info(`[Orchestration] Using ${validFiles.length} changed files for path validation`);
+
     try {
       // Note: We no longer delete old AI suggestions to preserve analysis history.
       // The API endpoint filters to show only the latest ai_run_id.
@@ -57,9 +62,9 @@ class Analyzer {
         logger.info(`Custom instructions provided: ${customInstructions.length} chars`);
       }
       const results = await Promise.allSettled([
-        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions),
-        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions),
-        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions)
+        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles),
+        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles),
+        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles)
       ]);
 
       // Step 3: Collect successful results
@@ -99,10 +104,6 @@ class Analyzer {
         });
       }
 
-      // Get list of changed files from PR diff for path validation
-      const changedFiles = await this.getChangedFilesList(worktreePath, prMetadata);
-      logger.info(`[Orchestration] Found ${changedFiles.length} changed files in PR diff for path validation`);
-
       try {
         const allSuggestions = {
           level1: levelResults.level1.suggestions,
@@ -115,12 +116,12 @@ class Analyzer {
         // Validate suggestion file paths against PR diff
         const validatedSuggestions = this.validateSuggestionFilePaths(
           orchestrationResult.suggestions,
-          changedFiles
+          validFiles
         );
 
         // Store orchestrated results with ai_level = NULL (final suggestions)
         logger.info('Storing orchestrated suggestions in database...');
-        await this.storeSuggestions(prId, runId, validatedSuggestions, null);
+        await this.storeSuggestions(prId, runId, validatedSuggestions, null, validFiles);
 
         logger.success(`Analysis complete: ${validatedSuggestions.length} final suggestions (${orchestrationResult.suggestions.length - validatedSuggestions.length} filtered for invalid paths)`);
 
@@ -145,10 +146,10 @@ class Analyzer {
         // Validate suggestion file paths against PR diff (also in fallback path)
         const validatedFallbackSuggestions = this.validateSuggestionFilePaths(
           fallbackSuggestions,
-          changedFiles
+          validFiles
         );
 
-        await this.storeSuggestions(prId, runId, validatedFallbackSuggestions, null);
+        await this.storeSuggestions(prId, runId, validatedFallbackSuggestions, null, validFiles);
 
         return {
           runId,
@@ -237,6 +238,45 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
   }
 
   /**
+   * Get list of changed files for local mode analysis
+   * Includes unstaged changes and untracked files only.
+   *
+   * Design note: Staged files are intentionally excluded. Local mode focuses on
+   * reviewing uncommitted working directory changes before they are staged.
+   * Staged changes are considered "ready to commit" and outside the scope of
+   * local review at this point.
+   *
+   * @param {string} localPath - Path to the local git repository
+   * @returns {Promise<Array<string>>} List of changed file paths
+   */
+  async getLocalChangedFiles(localPath) {
+    try {
+      // Get modified tracked files (unstaged only - staged files are excluded by design)
+      const { stdout: unstaged } = await execPromise(
+        'git diff --name-only',
+        { cwd: localPath }
+      );
+
+      // Get untracked files
+      const { stdout: untracked } = await execPromise(
+        'git ls-files --others --exclude-standard',
+        { cwd: localPath }
+      );
+
+      // Combine and dedupe (no staged files - see design note above)
+      // Filter empty strings immediately after split to handle empty git output
+      const unstagedFiles = unstaged.trim().split('\n').filter(f => f.length > 0);
+      const untrackedFiles = untracked.trim().split('\n').filter(f => f.length > 0);
+      const allFiles = [...unstagedFiles, ...untrackedFiles];
+
+      return [...new Set(allFiles)];
+    } catch (error) {
+      logger.warn(`Could not get local changed files for ${localPath}: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
    * Validate suggestion file paths against the PR diff
    * Filters out suggestions that reference files not in the PR diff
    *
@@ -315,11 +355,12 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
+   * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel1(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null) {
+  async analyzeLevel1(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null, changedFiles = null) {
     // This is now a wrapper that calls the parallel implementation
-    return this.analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback, customInstructions);
+    return this.analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback, customInstructions, changedFiles);
   }
 
   /**
@@ -331,9 +372,10 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @param {Array} generatedPatterns - Patterns of generated files to skip
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
+   * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null) {
+  async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null) {
     logger.info('[Level 1] Analysis Starting');
 
     try {
@@ -367,12 +409,20 @@ Or simply ignore any changes to files matching these patterns in your analysis.
 
       // Parse and validate the response
       updateProgress('Processing AI results');
-      const suggestions = this.parseResponse(response, 1);
-      logger.success(`Parsed ${suggestions.length} valid Level 1 suggestions`);
+      const parsedSuggestions = this.parseResponse(response, 1);
+      logger.success(`Parsed ${parsedSuggestions.length} valid Level 1 suggestions`);
+
+      // Validate suggestion file paths if changedFiles provided
+      const suggestions = (changedFiles && changedFiles.length > 0)
+        ? this.validateSuggestionFilePaths(parsedSuggestions, changedFiles)
+        : parsedSuggestions;
+      if (changedFiles && changedFiles.length > 0) {
+        logger.success(`After path validation: ${suggestions.length} suggestions`);
+      }
 
       // Store Level 1 suggestions
       updateProgress('Storing Level 1 suggestions in database');
-      await this.storeSuggestions(prId, runId, suggestions, 1);
+      await this.storeSuggestions(prId, runId, suggestions, 1, changedFiles);
       logger.success(`Level 1 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
@@ -834,12 +884,23 @@ Output JSON with this structure:
   /**
    * Store suggestions in the database
    * Includes failsafe filter to reject suggestions with invalid file paths
+   * @param {number} prId - Pull request or local review ID
+   * @param {string} runId - Analysis run ID
+   * @param {Array} suggestions - Suggestions to store
+   * @param {number|string} level - Analysis level
+   * @param {Array<string>} changedFiles - Optional list of changed files for local mode fallback
    */
-  async storeSuggestions(prId, runId, suggestions, level) {
+  async storeSuggestions(prId, runId, suggestions, level, changedFiles = null) {
     const { run } = require('../database');
 
     // FAILSAFE: Get valid file paths from PR metadata
-    const validFilePaths = await this.getValidFilePaths(prId);
+    let validFilePaths = await this.getValidFilePaths(prId);
+
+    // For local mode, PR metadata won't exist - use provided changedFiles as fallback
+    if (validFilePaths.length === 0 && changedFiles && changedFiles.length > 0) {
+      validFilePaths = changedFiles.map(f => normalizePath(f));
+      logger.info(`[FAILSAFE] Using provided changed files for local mode validation: ${validFilePaths.length} files`);
+    }
 
     // Create a Set of normalized valid paths for O(1) lookup
     const validPathsSet = new Set(validFilePaths);
@@ -994,9 +1055,10 @@ Output JSON with this structure:
    * @param {Array} generatedPatterns - Patterns of generated files to skip
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
+   * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null) {
+  async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null) {
     logger.info('[Level 2] Analysis Starting');
 
     try {
@@ -1016,13 +1078,13 @@ Output JSON with this structure:
         logger.info(progress);
       };
 
-      // Get list of changed files for grounding
-      const changedFiles = await this.getChangedFilesList(worktreePath, prMetadata);
-      logger.info(`[Level 2] Changed files for grounding: ${changedFiles.length} files`);
+      // Get list of changed files for grounding (use provided list for local mode, or compute for PR mode)
+      const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
+      logger.info(`[Level 2] Changed files for grounding: ${validFiles.length} files`);
 
       // Build the Level 2 prompt
       updateProgress('Building prompt for AI to analyze file context');
-      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions, changedFiles);
+      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions, validFiles);
 
       // Execute Claude CLI in the worktree directory
       updateProgress('Running AI to analyze files in context');
@@ -1034,12 +1096,16 @@ Output JSON with this structure:
 
       // Parse and validate the response
       updateProgress('Processing AI results');
-      const suggestions = this.parseResponse(response, 2);
+      let suggestions = this.parseResponse(response, 2);
       logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
+
+      // Validate suggestion file paths against changed files
+      suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
+      logger.success(`After path validation: ${suggestions.length} suggestions`);
 
       // Store Level 2 suggestions
       updateProgress('Storing Level 2 suggestions in database');
-      await this.storeSuggestions(prId, runId, suggestions, 2);
+      await this.storeSuggestions(prId, runId, suggestions, 2, validFiles);
       logger.success(`Level 2 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
@@ -1081,9 +1147,10 @@ Output JSON with this structure:
    * @param {Array} generatedPatterns - Patterns of generated files to skip
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
+   * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null) {
+  async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null) {
     logger.info('[Level 3] Analysis Starting');
 
     try {
@@ -1107,13 +1174,13 @@ Output JSON with this structure:
       updateProgress('Detecting testing context for codebase');
       const testingContext = await this.detectTestingContext(worktreePath, prMetadata);
 
-      // Get list of changed files for grounding
-      const changedFiles = await this.getChangedFilesList(worktreePath, prMetadata);
-      logger.info(`[Level 3] Changed files for grounding: ${changedFiles.length} files`);
+      // Get list of changed files for grounding (use provided list for local mode, or compute for PR mode)
+      const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
+      logger.info(`[Level 3] Changed files for grounding: ${validFiles.length} files`);
 
       // Build the Level 3 prompt with test context
       updateProgress('Building prompt for AI to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions, changedFiles);
+      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions, validFiles);
 
       // Execute Claude CLI for Level 3 analysis
       updateProgress('Running AI to analyze codebase-wide implications');
@@ -1125,12 +1192,16 @@ Output JSON with this structure:
 
       // Parse and validate the response
       updateProgress('Processing codebase context results');
-      const suggestions = this.parseResponse(response, 3);
+      let suggestions = this.parseResponse(response, 3);
       logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
+
+      // Validate suggestion file paths against changed files
+      suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
+      logger.success(`After path validation: ${suggestions.length} suggestions`);
 
       // Store Level 3 suggestions
       updateProgress('Storing Level 3 suggestions in database');
-      await this.storeSuggestions(prId, runId, suggestions, 3);
+      await this.storeSuggestions(prId, runId, suggestions, 3, validFiles);
       logger.success(`Level 3 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
@@ -1169,9 +1240,10 @@ Output JSON with this structure:
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Function} progressCallback - Callback for progress updates
+   * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel2(prId, worktreePath, prMetadata, progressCallback = null) {
+  async analyzeLevel2(prId, worktreePath, prMetadata, progressCallback = null, changedFiles = null) {
     const runId = uuidv4();
 
     logger.section('[Level 2] Analysis Starting');
@@ -1196,9 +1268,12 @@ Output JSON with this structure:
         logger.info(progress);
       };
 
-      // Step 1: Build the Level 2 prompt
+      // Get changed files for validation (use provided list for local mode, or compute for PR mode)
+      const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
+
+      // Step 1: Build the Level 2 prompt with file list for validation
       updateProgress('Building Level 2 prompt for Claude to analyze changes at file level');
-      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata);
+      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, [], null, validFiles);
 
       // Step 2: Execute Claude CLI in the worktree directory (single invocation)
       updateProgress('Running AI to analyze all changed files in context');
@@ -1210,20 +1285,25 @@ Output JSON with this structure:
 
       // Step 3: Parse and validate the response
       updateProgress('Processing AI results');
-      const suggestions = this.parseResponse(response, 2);
+      let suggestions = this.parseResponse(response, 2);
       logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
-      
+
+      // Step 4: Validate suggestion file paths against changed files
+      suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
+      logger.success(`After path validation: ${suggestions.length} suggestions`);
+
       // Keep suggestions in memory - do not store yet (orchestration will handle storage)
-      
+
       logger.success(`Level 2 analysis complete: ${suggestions.length} suggestions found`);
-      
+
       return {
         runId,
         level: 2,
         suggestions,
+        changedFiles: validFiles,
         summary: response.summary || `Level 2 analysis complete: Found ${suggestions.length} file context suggestions`
       };
-      
+
     } catch (error) {
       logger.error(`Level 2 analysis failed: ${error.message}`);
       logger.error(`Error stack: ${error.stack}`);
@@ -1508,9 +1588,10 @@ Output JSON with this structure:
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Function} progressCallback - Callback for progress updates
+   * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel3(prId, worktreePath, prMetadata, progressCallback = null) {
+  async analyzeLevel3(prId, worktreePath, prMetadata, progressCallback = null, changedFiles = null) {
     const runId = uuidv4();
 
     logger.section('[Level 3] Analysis Starting');
@@ -1535,15 +1616,18 @@ Output JSON with this structure:
         logger.info(progress);
       };
 
+      // Get changed files for validation (use provided list for local mode, or compute for PR mode)
+      const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
+
       // Step 1: Detect testing context
       updateProgress('Detecting testing context for codebase');
       const testingContext = await this.detectTestingContext(worktreePath, prMetadata);
 
-      // Step 2: Build the Level 3 prompt with test context
+      // Step 2: Build the Level 3 prompt with test context and file list
       updateProgress('Building Level 3 prompt for Claude to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext);
+      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, [], null, validFiles);
 
-      // Step 2: Execute Claude CLI for Level 3 analysis
+      // Step 3: Execute Claude CLI for Level 3 analysis
       updateProgress('Running AI to analyze codebase-wide implications');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
@@ -1551,22 +1635,27 @@ Output JSON with this structure:
         level: 3
       });
 
-      // Step 3: Parse and validate the response
+      // Step 4: Parse and validate the response
       updateProgress('Processing codebase context results');
-      const suggestions = this.parseResponse(response, 3);
+      let suggestions = this.parseResponse(response, 3);
       logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
-      
+
+      // Step 5: Validate suggestion file paths against changed files
+      suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
+      logger.success(`After path validation: ${suggestions.length} suggestions`);
+
       // Keep suggestions in memory - do not store yet (orchestration will handle storage)
-      
+
       logger.success(`Level 3 analysis complete: ${suggestions.length} suggestions found`);
-      
+
       return {
         runId,
         level: 3,
         suggestions,
+        changedFiles: validFiles,
         summary: response.summary || `Level 3 analysis complete: Found ${suggestions.length} codebase context suggestions`
       };
-      
+
     } catch (error) {
       logger.error(`Level 3 analysis failed: ${error.message}`);
       logger.error(`Error stack: ${error.stack}`);
