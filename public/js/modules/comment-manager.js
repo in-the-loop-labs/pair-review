@@ -589,7 +589,7 @@ class CommentManager {
           >${escapeHtml(comment.body)}</textarea>
           <div class="comment-edit-actions">
             <button class="btn btn-sm btn-primary save-edit-btn">
-              Save comment
+              Save
             </button>
             <button class="btn btn-sm btn-secondary cancel-edit-btn">
               Cancel

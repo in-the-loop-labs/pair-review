@@ -591,6 +591,31 @@ class PRManager {
     if (this.fileCommentManager) {
       const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(file.file);
       wrapper.appendChild(fileCommentsZone);
+
+      // Add file comment button to header - toggles visibility only
+      const fileCommentBtn = document.createElement('button');
+      fileCommentBtn.className = 'file-header-comment-btn';
+      fileCommentBtn.title = 'Toggle file comments';
+      fileCommentBtn.dataset.file = file.file;
+      // Outline icon (no comments) - will be updated by updateHeaderButtonState
+      fileCommentBtn.innerHTML = `
+        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
+        </svg>
+        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
+          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
+        </svg>
+      `;
+      fileCommentBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.fileCommentManager.toggleZone(fileCommentsZone);
+        // Update expanded state class on button
+        fileCommentBtn.classList.toggle('expanded', !fileCommentsZone.classList.contains('collapsed'));
+      });
+      header.appendChild(fileCommentBtn);
+
+      // Store reference for updating icon state later
+      fileCommentsZone.headerButton = fileCommentBtn;
     }
 
     // Create diff table
@@ -1434,8 +1459,12 @@ class PRManager {
    * Clear all user comments
    */
   async clearAllUserComments() {
-    const userCommentRows = document.querySelectorAll('.user-comment-row');
-    if (userCommentRows.length === 0) return;
+    // Count both line-level and file-level user comments
+    const lineCommentRows = document.querySelectorAll('.user-comment-row');
+    const fileCommentCards = document.querySelectorAll('.file-comment-card.user-comment');
+    const totalComments = lineCommentRows.length + fileCommentCards.length;
+
+    if (totalComments === 0) return;
 
     if (!window.confirmDialog) {
       alert('Confirmation dialog unavailable. Please refresh the page.');
@@ -1444,7 +1473,7 @@ class PRManager {
 
     const dialogResult = await window.confirmDialog.show({
       title: 'Clear All Comments?',
-      message: `This will delete all ${userCommentRows.length} user comment${userCommentRows.length !== 1 ? 's' : ''} from this PR. This action cannot be undone.`,
+      message: `This will delete all ${totalComments} user comment${totalComments !== 1 ? 's' : ''} from this PR. This action cannot be undone.`,
       confirmText: 'Delete All',
       confirmClass: 'btn-danger'
     });
@@ -1459,10 +1488,32 @@ class PRManager {
       if (!response.ok) throw new Error('Failed to delete comments');
 
       const result = await response.json();
-      const deletedCount = result.deletedCount || userCommentRows.length;
+      const deletedCount = result.deletedCount || totalComments;
 
-      // Remove comment rows from DOM
-      userCommentRows.forEach(row => row.remove());
+      // Remove line-level comment rows from DOM
+      lineCommentRows.forEach(row => row.remove());
+
+      // Remove file-level comment cards from DOM
+      fileCommentCards.forEach(card => {
+        const zone = card.closest('.file-comments-zone');
+        card.remove();
+
+        // Show empty state in the file comments zone if no more comments remain
+        if (zone) {
+          const container = zone.querySelector('.file-comments-container');
+          const hasComments = container?.querySelectorAll('.file-comment-card').length > 0;
+          if (!hasComments) {
+            const emptyState = container?.querySelector('.file-comments-empty');
+            if (emptyState) {
+              emptyState.style.display = 'block';
+            }
+          }
+          // Update the file comment zone header button state
+          if (this.fileCommentManager) {
+            this.fileCommentManager.updateCommentCount(zone);
+          }
+        }
+      });
 
       // Clear internal userComments array
       this.userComments = [];
@@ -1881,7 +1932,10 @@ class PRManager {
    * Update comment count display
    */
   updateCommentCount() {
-    const userComments = document.querySelectorAll('.user-comment-row').length;
+    // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
+    const lineComments = document.querySelectorAll('.user-comment-row').length;
+    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
+    const userComments = lineComments + fileComments;
 
     if (this.splitButton) {
       this.splitButton.updateCommentCount(userComments);

@@ -584,7 +584,7 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style|refactor",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why full file context was needed",
     "suggestion": "How to fix/improve based on file context (omit for praise items)",
@@ -592,7 +592,7 @@ Output JSON with this structure:
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
-    "type": "refactor|suggestion|praise|issue|design",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation (architecture, organization, naming, etc.)",
     "suggestion": "How to address the file-level concern (omit for praise items)",
@@ -721,11 +721,15 @@ Output JSON with this structure:
   parseResponse(response, level, previousSuggestions = []) {
     const levelPrefix = `[Level ${level}]`;
 
+    // Separate previous suggestions into line-level and file-level for deduplication
+    const previousLineSuggestions = previousSuggestions.filter(s => !s.is_file_level);
+    const previousFileLevelSuggestions = previousSuggestions.filter(s => s.is_file_level);
+
     // If response is already parsed JSON
     if (response.suggestions && Array.isArray(response.suggestions)) {
-      const lineSuggestions = this.validateSuggestions(response.suggestions, previousSuggestions);
+      const lineSuggestions = this.validateSuggestions(response.suggestions, previousLineSuggestions);
       const fileLevelSuggestions = response.fileLevelSuggestions
-        ? this.validateFileLevelSuggestions(response.fileLevelSuggestions)
+        ? this.validateFileLevelSuggestions(response.fileLevelSuggestions, previousFileLevelSuggestions)
         : [];
       return [...lineSuggestions, ...fileLevelSuggestions];
     }
@@ -734,9 +738,9 @@ Output JSON with this structure:
     if (response.raw) {
       const extracted = extractJSON(response.raw, level);
       if (extracted.success && extracted.data.suggestions && Array.isArray(extracted.data.suggestions)) {
-        const lineSuggestions = this.validateSuggestions(extracted.data.suggestions, previousSuggestions);
+        const lineSuggestions = this.validateSuggestions(extracted.data.suggestions, previousLineSuggestions);
         const fileLevelSuggestions = extracted.data.fileLevelSuggestions
-          ? this.validateFileLevelSuggestions(extracted.data.fileLevelSuggestions)
+          ? this.validateFileLevelSuggestions(extracted.data.fileLevelSuggestions, previousFileLevelSuggestions)
           : [];
         return [...lineSuggestions, ...fileLevelSuggestions];
       } else {
@@ -754,14 +758,15 @@ Output JSON with this structure:
   /**
    * Validate and filter file-level suggestions (suggestions about entire files, not tied to specific lines)
    * @param {Array} suggestions - Raw file-level suggestions from AI
+   * @param {Array} previousFileLevelSuggestions - Previous file-level suggestions to check for duplicates
    * @returns {Array} Validated file-level suggestions
    */
-  validateFileLevelSuggestions(suggestions) {
+  validateFileLevelSuggestions(suggestions, previousFileLevelSuggestions = []) {
     if (!suggestions || !Array.isArray(suggestions)) {
       return [];
     }
 
-    return suggestions
+    const validSuggestions = suggestions
       .map(s => {
         // Normalize: If title is missing but description exists, extract first line as title
         if (!s.title && s.description) {
@@ -785,9 +790,10 @@ Output JSON with this structure:
           return false;
         }
 
-        // Filter out low confidence suggestions
-        if (s.confidence && s.confidence < 0.3) {
-          logger.info(`Filtering low confidence file-level suggestion: ${s.title} (${s.confidence})`);
+        // Filter out suggestions with missing, zero, or low confidence
+        // Missing/zero confidence indicates low quality and should be discarded
+        if (!s.confidence || s.confidence <= 0 || s.confidence < 0.3) {
+          logger.info(`Filtering low/missing confidence file-level suggestion: ${s.title} (${s.confidence || 'missing'})`);
           return false;
         }
 
@@ -804,6 +810,45 @@ Output JSON with this structure:
         confidence: s.confidence || 0.7,
         is_file_level: true  // Mark as file-level suggestion
       }));
+
+    // Deduplicate against previous file-level suggestions
+    return this.deduplicateFileLevelSuggestions(validSuggestions, previousFileLevelSuggestions);
+  }
+
+  /**
+   * Deduplicate file-level suggestions against previous file-level suggestions
+   * @param {Array} newSuggestions - New file-level suggestions to check
+   * @param {Array} previousSuggestions - Previous file-level suggestions to compare against
+   * @returns {Array} Filtered suggestions with duplicates removed
+   */
+  deduplicateFileLevelSuggestions(newSuggestions, previousSuggestions) {
+    if (!previousSuggestions || previousSuggestions.length === 0) {
+      return newSuggestions;
+    }
+
+    return newSuggestions.filter(newSugg => {
+      // Check for duplicates based on file, type, and body/description similarity
+      const hasSimilarMatch = previousSuggestions.some(prevSugg => {
+        // Must be same file and type
+        if (prevSugg.file !== newSugg.file || prevSugg.type !== newSugg.type) {
+          return false;
+        }
+
+        // Check text similarity for deduplication
+        const newText = (newSugg.title || '') + ' ' + (newSugg.description || '');
+        const prevText = (prevSugg.title || '') + ' ' + (prevSugg.description || '');
+        const similarity = this.calculateTextSimilarity(newText, prevText);
+
+        return similarity > 0.8; // 80% similarity threshold
+      });
+
+      if (hasSimilarMatch) {
+        logger.info(`Filtering duplicate file-level suggestion: ${newSugg.title} (${newSugg.file})`);
+        return false;
+      }
+
+      return true;
+    });
   }
 
   /**
@@ -1847,7 +1892,7 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style|refactor",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why codebase context was needed",
     "suggestion": "How to fix/improve based on codebase context (omit for praise items)",
@@ -1855,7 +1900,7 @@ Output JSON with this structure:
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
-    "type": "refactor|suggestion|praise|issue|design",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation from codebase perspective",
     "suggestion": "How to address the file-level concern (omit for praise items)",
@@ -2063,7 +2108,7 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
-    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style|refactor",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title describing the curated insight",
     "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
     "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
@@ -2071,7 +2116,7 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
-    "type": "refactor|suggestion|praise|issue|design",
+    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation",
     "suggestion": "How to address the file-level concern (omit for praise items)",

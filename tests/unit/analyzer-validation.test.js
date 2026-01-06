@@ -442,9 +442,10 @@ describe('Analyzer.validateFileLevelSuggestions', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        type: 'refactor',
+        type: 'design',
         title: 'Consider restructuring this file',
-        description: 'This file has grown large and could benefit from being split.'
+        description: 'This file has grown large and could benefit from being split.',
+        confidence: 0.8
       }
     ];
 
@@ -455,15 +456,15 @@ describe('Analyzer.validateFileLevelSuggestions', () => {
     expect(result[0].line_start).toBeNull();
     expect(result[0].line_end).toBeNull();
     expect(result[0].is_file_level).toBe(true);
-    expect(result[0].type).toBe('refactor');
+    expect(result[0].type).toBe('design');
   });
 
   it('should filter out suggestions missing required fields', () => {
     const suggestions = [
-      { file: 'src/foo.js', type: 'refactor' }, // missing title
-      { type: 'refactor', title: 'Test' }, // missing file
-      { file: 'src/bar.js', title: 'Test' }, // missing type
-      { file: 'src/valid.js', type: 'suggestion', title: 'Valid suggestion' } // valid
+      { file: 'src/foo.js', type: 'design', confidence: 0.8 }, // missing title
+      { type: 'design', title: 'Test', confidence: 0.8 }, // missing file
+      { file: 'src/bar.js', title: 'Test', confidence: 0.8 }, // missing type
+      { file: 'src/valid.js', type: 'suggestion', title: 'Valid suggestion', confidence: 0.8 } // valid
     ];
 
     const result = analyzer.validateFileLevelSuggestions(suggestions);
@@ -476,14 +477,14 @@ describe('Analyzer.validateFileLevelSuggestions', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        type: 'refactor',
+        type: 'design',
         title: 'Low confidence suggestion',
         description: 'Test',
         confidence: 0.2
       },
       {
         file: 'src/bar.js',
-        type: 'refactor',
+        type: 'design',
         title: 'High confidence suggestion',
         description: 'Test',
         confidence: 0.8
@@ -500,8 +501,9 @@ describe('Analyzer.validateFileLevelSuggestions', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        type: 'refactor',
-        description: 'This is the first sentence. This is more detail.'
+        type: 'design',
+        description: 'This is the first sentence. This is more detail.',
+        confidence: 0.8
       }
     ];
 
@@ -511,19 +513,34 @@ describe('Analyzer.validateFileLevelSuggestions', () => {
     expect(result[0].title).toBe('This is the first sentence');
   });
 
-  it('should set default confidence if not provided', () => {
+  it('should filter out suggestions without confidence (low quality)', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        type: 'refactor',
-        title: 'Test'
+        type: 'design',
+        title: 'Test without confidence'
+        // No confidence provided - should be filtered
+      },
+      {
+        file: 'src/bar.js',
+        type: 'design',
+        title: 'Test with zero confidence',
+        confidence: 0
+      },
+      {
+        file: 'src/baz.js',
+        type: 'design',
+        title: 'Test with valid confidence',
+        confidence: 0.5
       }
     ];
 
     const result = analyzer.validateFileLevelSuggestions(suggestions);
 
+    // Only suggestion with valid confidence (> 0.3) should pass
     expect(result).toHaveLength(1);
-    expect(result[0].confidence).toBe(0.7);
+    expect(result[0].file).toBe('src/baz.js');
+    expect(result[0].confidence).toBe(0.5);
   });
 });
 
@@ -537,10 +554,10 @@ describe('Analyzer.parseResponse with file-level suggestions', () => {
   it('should parse both line-level and file-level suggestions from response object', () => {
     const response = {
       suggestions: [
-        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue' }
+        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
       ],
       fileLevelSuggestions: [
-        { file: 'src/foo.js', type: 'refactor', title: 'File issue' }
+        { file: 'src/foo.js', type: 'design', title: 'File issue', confidence: 0.8 }
       ]
     };
 
@@ -558,7 +575,7 @@ describe('Analyzer.parseResponse with file-level suggestions', () => {
   it('should handle response with only line-level suggestions', () => {
     const response = {
       suggestions: [
-        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue' }
+        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
       ]
     };
 
@@ -572,7 +589,7 @@ describe('Analyzer.parseResponse with file-level suggestions', () => {
     const response = {
       suggestions: [],
       fileLevelSuggestions: [
-        { file: 'src/foo.js', type: 'refactor', title: 'File issue' }
+        { file: 'src/foo.js', type: 'design', title: 'File issue', confidence: 0.8 }
       ]
     };
 
@@ -608,7 +625,7 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
         file: 'src/foo.js',
         line_start: null,
         line_end: null,
-        type: 'refactor',
+        type: 'design',
         title: 'File-level concern',
         description: 'Test',
         confidence: 0.8,
@@ -662,7 +679,7 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
         file: 'src/foo.js',
         line_start: null,
         line_end: null,
-        type: 'refactor',
+        type: 'design',
         title: 'File issue',
         description: 'Test',
         confidence: 0.8,

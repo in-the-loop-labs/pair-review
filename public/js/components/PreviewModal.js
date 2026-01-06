@@ -226,8 +226,8 @@ class PreviewModal {
       // Add file-level comments section if any exist
       if (fileComments.length > 0) {
         text += `### File Comments\n`;
-        fileComments.forEach(comment => {
-          text += `- ${comment.body}\n`;
+        fileComments.forEach((comment, index) => {
+          text += `- File comment ${index + 1}: ${comment.body}\n`;
         });
       }
 

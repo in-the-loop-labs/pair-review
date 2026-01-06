@@ -37,7 +37,6 @@ class FileCommentManager {
         </svg>
       </span>
       File Comments
-      <span class="comment-count-badge empty">0</span>
     `;
     toggleBtn.addEventListener('click', () => this.toggleZone(zone));
 
@@ -77,6 +76,11 @@ class FileCommentManager {
    */
   toggleZone(zone) {
     zone.classList.toggle('collapsed');
+    // Update header button state after toggling
+    const container = zone.querySelector('.file-comments-container');
+    const userComments = container.querySelectorAll('.file-comment-card:not(.ai-suggestion)').length;
+    const aiSuggestions = container.querySelectorAll('.file-comment-card.ai-suggestion').length;
+    this.updateHeaderButtonState(zone, userComments + aiSuggestions);
   }
 
   /**
@@ -122,12 +126,12 @@ class FileCommentManager {
       </div>
       <textarea
         class="file-comment-textarea"
-        placeholder="Write a comment about this file..."
+        placeholder="Write a comment about this file... (Ctrl+Enter to save)"
         data-file="${this.escapeHtml(fileName)}"
       ></textarea>
       <div class="file-comment-form-footer">
-        <button class="file-comment-form-btn cancel">Cancel</button>
-        <button class="file-comment-form-btn submit" disabled>Add Comment</button>
+        <button class="file-comment-form-btn submit submit-btn" disabled>Save</button>
+        <button class="file-comment-form-btn cancel cancel-btn">Cancel</button>
       </div>
     `;
 
@@ -135,8 +139,8 @@ class FileCommentManager {
 
     // Get elements
     const textarea = form.querySelector('.file-comment-textarea');
-    const submitBtn = form.querySelector('.file-comment-form-btn.submit');
-    const cancelBtn = form.querySelector('.file-comment-form-btn.cancel');
+    const submitBtn = form.querySelector('.submit-btn');
+    const cancelBtn = form.querySelector('.cancel-btn');
 
     // Focus textarea
     textarea.focus();
@@ -273,39 +277,42 @@ class FileCommentManager {
     }
 
     const card = document.createElement('div');
-    card.className = 'file-comment-card';
+    card.className = 'file-comment-card user-comment';
     card.dataset.commentId = comment.id;
 
     const renderedBody = window.renderMarkdown
       ? window.renderMarkdown(comment.body)
       : this.escapeHtml(comment.body);
 
+    // Use same structure as line-level user comments
     card.innerHTML = `
-      <div class="file-comment-header">
-        <span class="comment-source-badge user">User</span>
-        <span class="comment-author">you</span>
-        <div class="file-comment-user-actions">
-          <button class="file-comment-user-btn edit" title="Edit">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zm.176 4.823L9.75 4.81l-6.286 6.287a.25.25 0 0 0-.064.108l-.558 1.953 1.953-.558a.249.249 0 0 0 .108-.064l6.286-6.286z"/>
+      <div class="user-comment-header">
+        <span class="comment-origin-icon">
+          <svg class="octicon octicon-person" viewBox="0 0 16 16" width="16" height="16">
+            <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
+          </svg>
+        </span>
+        <span class="user-comment-line-info">File</span>
+        <span class="user-comment-timestamp">${this.formatTimestamp(comment.created_at)}</span>
+        <div class="user-comment-actions">
+          <button class="btn-edit-comment" title="Edit comment">
+            <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
+              <path fill-rule="evenodd" d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"></path>
             </svg>
           </button>
-          <button class="file-comment-user-btn delete" title="Delete">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.75 1.75 0 0 1 10.595 15H5.405a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15zM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25z"/>
+          <button class="btn-delete-comment" title="Delete comment">
+            <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
+              <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19c.9 0 1.652-.681 1.741-1.576l.66-6.6a.75.75 0 00-1.492-.149l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"></path>
             </svg>
           </button>
         </div>
-        <span class="comment-timestamp">${this.formatTimestamp(comment.created_at)}</span>
       </div>
-      <div class="file-comment-body">
-        <div class="comment-text" data-original-markdown="${this.escapeHtml(comment.body)}">${renderedBody}</div>
-      </div>
+      <div class="user-comment-body" data-original-markdown="${this.escapeHtml(comment.body)}">${renderedBody}</div>
     `;
 
     // Wire up edit/delete buttons
-    const editBtn = card.querySelector('.file-comment-user-btn.edit');
-    const deleteBtn = card.querySelector('.file-comment-user-btn.delete');
+    const editBtn = card.querySelector('.btn-edit-comment');
+    const deleteBtn = card.querySelector('.btn-delete-comment');
 
     editBtn.addEventListener('click', () => this.editFileComment(zone, comment));
     deleteBtn.addEventListener('click', () => this.deleteFileComment(zone, comment.id));
@@ -471,6 +478,11 @@ class FileCommentManager {
       this.displayUserComment(zone, commentData);
       this.updateCommentCount(zone);
 
+      // Update parent comment count for Preview button
+      if (this.prManager?.updateCommentCount) {
+        this.prManager.updateCommentCount();
+      }
+
       // Notify AI Panel
       if (window.aiPanel?.updateSuggestionStatus) {
         window.aiPanel.updateSuggestionStatus(suggestion.id, 'adopted');
@@ -557,8 +569,8 @@ class FileCommentManager {
         data-file="${this.escapeHtml(suggestion.file)}"
       >${this.escapeHtml(suggestion.body)}</textarea>
       <div class="file-comment-form-footer">
-        <button class="file-comment-form-btn cancel">Cancel</button>
-        <button class="file-comment-form-btn submit">Adopt</button>
+        <button class="file-comment-form-btn submit submit-btn">Adopt</button>
+        <button class="file-comment-form-btn cancel cancel-btn">Cancel</button>
       </div>
     `;
 
@@ -571,8 +583,8 @@ class FileCommentManager {
     }
 
     const textarea = form.querySelector('.file-comment-textarea');
-    const submitBtn = form.querySelector('.file-comment-form-btn.submit');
-    const cancelBtn = form.querySelector('.file-comment-form-btn.cancel');
+    const submitBtn = form.querySelector('.submit-btn');
+    const cancelBtn = form.querySelector('.cancel-btn');
 
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -661,6 +673,11 @@ class FileCommentManager {
       this.displayUserComment(zone, commentData);
       this.updateCommentCount(zone);
 
+      // Update parent comment count for Preview button
+      if (this.prManager?.updateCommentCount) {
+        this.prManager.updateCommentCount();
+      }
+
       // Notify AI Panel
       if (window.aiPanel?.updateSuggestionStatus) {
         window.aiPanel.updateSuggestionStatus(suggestion.id, 'adopted');
@@ -681,21 +698,21 @@ class FileCommentManager {
     const card = zone.querySelector(`[data-comment-id="${comment.id}"]`);
     if (!card) return;
 
-    const bodyEl = card.querySelector('.file-comment-body');
-    const originalMarkdown = bodyEl.querySelector('.comment-text').dataset.originalMarkdown || comment.body;
+    const bodyEl = card.querySelector('.user-comment-body');
+    const originalMarkdown = bodyEl.dataset.originalMarkdown || comment.body;
 
-    // Replace body with edit form
+    // Replace body with edit form (matching line-level comment edit form styling)
     bodyEl.innerHTML = `
       <textarea class="file-comment-textarea" style="min-height: 80px;">${this.escapeHtml(originalMarkdown)}</textarea>
-      <div class="file-comment-form-footer" style="padding: 8px 0 0 0; background: transparent; border: none;">
-        <button class="file-comment-form-btn cancel">Cancel</button>
-        <button class="file-comment-form-btn submit">Save</button>
+      <div class="comment-edit-actions">
+        <button class="btn btn-sm btn-primary save-edit-btn">Save</button>
+        <button class="btn btn-sm btn-secondary cancel-edit-btn">Cancel</button>
       </div>
     `;
 
     const textarea = bodyEl.querySelector('.file-comment-textarea');
-    const saveBtn = bodyEl.querySelector('.file-comment-form-btn.submit');
-    const cancelBtn = bodyEl.querySelector('.file-comment-form-btn.cancel');
+    const saveBtn = bodyEl.querySelector('.save-edit-btn');
+    const cancelBtn = bodyEl.querySelector('.cancel-edit-btn');
 
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -704,7 +721,8 @@ class FileCommentManager {
       const renderedBody = window.renderMarkdown
         ? window.renderMarkdown(originalMarkdown)
         : this.escapeHtml(originalMarkdown);
-      bodyEl.innerHTML = `<div class="comment-text" data-original-markdown="${this.escapeHtml(originalMarkdown)}">${renderedBody}</div>`;
+      bodyEl.innerHTML = renderedBody;
+      bodyEl.dataset.originalMarkdown = originalMarkdown;
     };
 
     cancelBtn.addEventListener('click', restoreView);
@@ -745,7 +763,8 @@ class FileCommentManager {
       const renderedBody = window.renderMarkdown
         ? window.renderMarkdown(newBody)
         : this.escapeHtml(newBody);
-      bodyEl.innerHTML = `<div class="comment-text" data-original-markdown="${this.escapeHtml(newBody)}">${renderedBody}</div>`;
+      bodyEl.innerHTML = renderedBody;
+      bodyEl.dataset.originalMarkdown = newBody;
 
     } catch (error) {
       console.error('Error updating comment:', error);
@@ -759,7 +778,19 @@ class FileCommentManager {
    * @param {number} commentId - The comment ID
    */
   async deleteFileComment(zone, commentId) {
-    if (!confirm('Are you sure you want to delete this comment?')) return;
+    if (!window.confirmDialog) {
+      alert('Confirmation dialog unavailable. Please refresh the page.');
+      return;
+    }
+
+    const result = await window.confirmDialog.show({
+      title: 'Delete Comment?',
+      message: 'Are you sure you want to delete this comment? This action cannot be undone.',
+      confirmText: 'Delete',
+      confirmClass: 'btn-danger'
+    });
+
+    if (result !== 'confirm') return;
 
     try {
       const response = await fetch(`/api/user-comment/${commentId}`, {
@@ -798,30 +829,56 @@ class FileCommentManager {
   }
 
   /**
-   * Update the comment count badge for a zone
+   * Update the zone state based on comment count
    * @param {HTMLElement} zone - The file comments zone
    */
   updateCommentCount(zone) {
     const container = zone.querySelector('.file-comments-container');
-    const badge = zone.querySelector('.comment-count-badge');
 
     const userComments = container.querySelectorAll('.file-comment-card:not(.ai-suggestion)').length;
     const aiSuggestions = container.querySelectorAll('.file-comment-card.ai-suggestion').length;
     const total = userComments + aiSuggestions;
 
-    badge.textContent = total.toString();
-
-    // Update badge style
-    badge.classList.remove('has-ai', 'empty');
-    if (total === 0) {
-      badge.classList.add('empty');
-    } else if (aiSuggestions > 0) {
-      badge.classList.add('has-ai');
-    }
+    // Update header button icon state (outline vs filled)
+    this.updateHeaderButtonState(zone, total);
 
     // If there are comments, expand the zone
     if (total > 0 && zone.classList.contains('collapsed')) {
       this.expandZone(zone);
+    }
+  }
+
+  /**
+   * Update the header button icon state based on comment count
+   * @param {HTMLElement} zone - The file comments zone
+   * @param {number} count - Total comment count
+   */
+  updateHeaderButtonState(zone, count) {
+    const headerBtn = zone.headerButton;
+    if (!headerBtn) return;
+
+    const outlineIcon = headerBtn.querySelector('.comment-icon-outline');
+    const filledIcon = headerBtn.querySelector('.comment-icon-filled');
+
+    if (count > 0) {
+      // Has comments - show filled icon
+      if (outlineIcon) outlineIcon.style.display = 'none';
+      if (filledIcon) filledIcon.style.display = '';
+      headerBtn.classList.add('has-comments');
+      headerBtn.title = `View ${count} comment${count > 1 ? 's' : ''}`;
+    } else {
+      // No comments - show outline icon
+      if (outlineIcon) outlineIcon.style.display = '';
+      if (filledIcon) filledIcon.style.display = 'none';
+      headerBtn.classList.remove('has-comments');
+      headerBtn.title = 'Add file comment';
+    }
+
+    // Update expanded state
+    const isExpanded = !zone.classList.contains('collapsed');
+    headerBtn.classList.toggle('expanded', isExpanded);
+    if (isExpanded) {
+      headerBtn.title = count > 0 ? 'Hide comments' : 'Hide comment panel';
     }
   }
 
@@ -861,6 +918,21 @@ class FileCommentManager {
     const zones = document.querySelectorAll('.file-comments-zone');
     for (const zone of zones) {
       const fileName = zone.dataset.fileName;
+      const container = zone.querySelector('.file-comments-container');
+
+      // Clear existing file-level comment cards before rendering new results
+      // This prevents stale suggestions from persisting when reloading or changing levels
+      if (container) {
+        const existingCards = container.querySelectorAll('.file-comment-card');
+        for (const card of existingCards) {
+          card.remove();
+        }
+        // Show empty state initially (will be hidden if there are comments)
+        const emptyState = container.querySelector('.file-comments-empty');
+        if (emptyState) {
+          emptyState.style.display = 'block';
+        }
+      }
 
       const fileComments = commentsByFile.get(fileName) || [];
       const fileSuggestions = suggestionsByFile.get(fileName) || [];
@@ -920,6 +992,78 @@ class FileCommentManager {
     if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
     if (diffDays < 7) return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
     return date.toLocaleDateString();
+  }
+
+  /**
+   * Check if a suggestion block already exists in the textarea
+   * @param {string} text - The textarea content
+   * @returns {boolean} True if a suggestion block exists
+   */
+  hasSuggestionBlock(text) {
+    // Match both ``` and ```` suggestion blocks, allowing leading whitespace
+    return /^\s*(`{3,})suggestion\s*$/m.test(text);
+  }
+
+  /**
+   * Update the suggestion button state based on textarea content
+   * Disables the button if a suggestion block already exists
+   * @param {HTMLTextAreaElement} textarea - The textarea to check
+   * @param {HTMLButtonElement} button - The suggestion button
+   */
+  updateSuggestionButtonState(textarea, button) {
+    if (!button) return;
+    const hasSuggestion = this.hasSuggestionBlock(textarea.value);
+    button.disabled = hasSuggestion;
+    button.title = hasSuggestion ? 'Only one suggestion per comment' : 'Insert a suggestion';
+  }
+
+  /**
+   * Insert a suggestion block into the textarea at cursor position
+   * For file-level comments, inserts an empty suggestion block
+   * @param {HTMLTextAreaElement} textarea - The textarea to insert into
+   * @param {HTMLButtonElement} [button] - Optional suggestion button to disable after insert
+   */
+  insertSuggestionBlock(textarea, button) {
+    // Check if suggestion already exists
+    if (this.hasSuggestionBlock(textarea.value)) {
+      return;
+    }
+
+    // For file-level comments, insert empty suggestion block
+    const backticks = '```';
+    const suggestionBlock = `${backticks}suggestion\n\n${backticks}`;
+
+    // Get current cursor position
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = textarea.value;
+
+    // Insert at cursor position (or replace selection)
+    const before = text.substring(0, start);
+    const after = text.substring(end);
+
+    // Add newlines if needed for clean formatting
+    const needsNewlineBefore = before.length > 0 && !before.endsWith('\n');
+    const needsNewlineAfter = after.length > 0 && !after.startsWith('\n');
+
+    const prefix = needsNewlineBefore ? '\n' : '';
+    const suffix = needsNewlineAfter ? '\n' : '';
+
+    textarea.value = before + prefix + suggestionBlock + suffix + after;
+
+    // Position cursor inside the suggestion block
+    const newCursorPos = start + prefix.length + backticks.length + 'suggestion\n'.length;
+    textarea.setSelectionRange(newCursorPos, newCursorPos);
+    textarea.focus();
+
+    // Trigger input event for auto-resize and state updates
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Disable the suggestion button
+    if (button) {
+      button.disabled = true;
+      button.title = 'Only one suggestion per comment';
+    }
   }
 }
 

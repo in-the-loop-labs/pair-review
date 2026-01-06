@@ -186,6 +186,14 @@ router.post('/api/file-comment', async (req, res) => {
       });
     }
 
+    // Validate body is not just whitespace
+    const trimmedBody = body.trim();
+    if (trimmedBody.length === 0) {
+      return res.status(400).json({
+        error: 'Comment body cannot be empty or whitespace only'
+      });
+    }
+
     const db = req.app.get('db');
 
     // Verify PR exists
@@ -213,7 +221,7 @@ router.post('/api/file-comment', async (req, res) => {
       file,
       commit_sha || null,
       'comment',
-      body.trim(),
+      trimmedBody,
       'active'
     ]);
 

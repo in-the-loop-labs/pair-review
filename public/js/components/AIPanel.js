@@ -540,28 +540,48 @@ class AIPanel {
      * Scroll to a user comment in the diff view
      */
     scrollToComment(commentId, file, line) {
-        let targetComment = null;
+        let targetElement = null;
+        let isFileLevel = false;
 
-        // First, try to find by exact comment ID (most reliable)
-        if (commentId) {
-            targetComment = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
+        // Check if this is a file-level comment
+        const comment = this.comments.find(c => String(c.id) === String(commentId));
+        if (comment && (comment.is_file_level === 1 || comment.is_file_level === true)) {
+            isFileLevel = true;
+        }
+
+        // For file-level comments, find the comment card in the file-comments-zone
+        if (isFileLevel && commentId) {
+            targetElement = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+
+            // If found, make sure the zone is expanded
+            if (targetElement) {
+                const zone = targetElement.closest('.file-comments-zone');
+                if (zone && zone.classList.contains('collapsed')) {
+                    zone.classList.remove('collapsed');
+                }
+            }
+        }
+
+        // For line-level comments, try to find by exact comment ID
+        if (!targetElement && commentId) {
+            targetElement = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
         }
 
         // Fallback: find by file and line if no direct match
-        if (!targetComment && file && line) {
+        if (!targetElement && file && line) {
             const commentRows = document.querySelectorAll('.user-comment-row');
             for (const row of commentRows) {
                 if (row.dataset.file === file && row.dataset.lineStart === line) {
-                    targetComment = row;
+                    targetElement = row;
                     break;
                 }
             }
         }
 
-        if (targetComment) {
-            targetComment.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (targetElement) {
+            targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
             // Add highlight effect
-            const commentDiv = targetComment.querySelector('.user-comment');
+            const commentDiv = isFileLevel ? targetElement : targetElement.querySelector('.user-comment');
             if (commentDiv) {
                 commentDiv.classList.add('highlight-flash');
                 setTimeout(() => commentDiv.classList.remove('highlight-flash'), 2000);
@@ -675,8 +695,9 @@ class AIPanel {
         const title = this.truncateText(rawTitle, 50);
         const fileName = comment.file ? comment.file.split('/').pop() : null;
         const lineNum = comment.line_start;
+        const isFileLevel = comment.is_file_level === 1 || comment.is_file_level === true;
         // Full location for tooltip, filename only for display
-        const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
+        const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : (isFileLevel ? ' (file)' : '')}` : '';
 
         // Choose icon based on whether comment originated from AI (has parent_id) or user
         const icon = comment.parent_id
@@ -685,11 +706,11 @@ class AIPanel {
 
         return `
             <div class="finding-item-wrapper">
-                <button class="finding-item finding-comment ${comment.parent_id ? 'comment-ai-origin' : 'comment-user-origin'}" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-item-type="comment" title="${fullLocation}">
+                <button class="finding-item finding-comment ${comment.parent_id ? 'comment-ai-origin' : 'comment-user-origin'}${isFileLevel ? ' file-level' : ''}" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-is-file-level="${isFileLevel ? '1' : '0'}" data-item-type="comment" title="${fullLocation}">
                     <span class="comment-icon">${icon}</span>
                     <div class="finding-content">
                         <span class="finding-title">${this.escapeHtml(title)}</span>
-                        ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
+                        ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}${isFileLevel ? ' <span class="file-level-indicator">(file)</span>' : ''}</span>` : ''}
                     </div>
                 </button>
                 <button class="finding-delete-btn" data-comment-id="${comment.id}" title="Delete comment">
