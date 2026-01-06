@@ -325,53 +325,9 @@ const MIGRATIONS = {
     console.log('Migration to schema version 3 complete');
   },
 
-  // Migration to version 4: adds is_file_level column to comments for file-level comments support
+  // Migration to version 4: adds local review support columns to reviews table
   4: async (db) => {
     console.log('Running migration to schema version 4...');
-
-    // Helper to check if column exists
-    const columnExists = async (table, column) => {
-      return new Promise((resolve, reject) => {
-        db.all(`PRAGMA table_info(${table})`, (error, rows) => {
-          if (error) reject(error);
-          else resolve(rows ? rows.some(row => row.name === column) : false);
-        });
-      });
-    };
-
-    // Helper to run SQL safely
-    const runSql = (sql) => {
-      return new Promise((resolve, reject) => {
-        db.run(sql, (error) => {
-          if (error) reject(error);
-          else resolve();
-        });
-      });
-    };
-
-    // Add is_file_level column to comments if it doesn't exist
-    const hasIsFileLevel = await columnExists('comments', 'is_file_level');
-    if (!hasIsFileLevel) {
-      try {
-        await runSql(`ALTER TABLE comments ADD COLUMN is_file_level INTEGER DEFAULT 0`);
-        console.log('  Added is_file_level column to comments');
-      } catch (error) {
-        // Ignore duplicate column errors (race condition protection)
-        if (!error.message.includes('duplicate column name')) {
-          throw error;
-        }
-        console.log('  Column is_file_level already exists (race condition)');
-      }
-    } else {
-      console.log('  Column is_file_level already exists');
-    }
-
-    console.log('Migration to schema version 4 complete');
-  },
-
-  // Migration to version 5: adds local review support columns to reviews table
-  5: async (db) => {
-    console.log('Running migration to schema version 5...');
 
     // Helper to check if column exists
     const columnExists = async (table, column) => {
@@ -415,13 +371,13 @@ const MIGRATIONS = {
     await addColumnIfNotExists('reviews', 'local_path', 'TEXT');
     await addColumnIfNotExists('reviews', 'local_head_sha', 'TEXT');
 
-    console.log('Migration to schema version 5 complete');
+    console.log('Migration to schema version 4 complete');
   },
 
-  // Migration to version 6: Make pr_number nullable in reviews table
+  // Migration to version 5: Make pr_number nullable in reviews table
   // SQLite doesn't support ALTER COLUMN, so we recreate the table
-  6: async (db) => {
-    console.log('Running migration to schema version 6...');
+  5: async (db) => {
+    console.log('Running migration to schema version 5...');
 
     // Helper to run SQL safely
     const runSql = (sql) => {
@@ -488,6 +444,50 @@ const MIGRATIONS = {
       ON reviews(pr_number, repository)
       WHERE review_type = 'pr'
     `);
+
+    console.log('Migration to schema version 5 complete');
+  },
+
+  // Migration to version 6: adds is_file_level column to comments for file-level comments support
+  6: async (db) => {
+    console.log('Running migration to schema version 6...');
+
+    // Helper to check if column exists
+    const columnExists = async (table, column) => {
+      return new Promise((resolve, reject) => {
+        db.all(`PRAGMA table_info(${table})`, (error, rows) => {
+          if (error) reject(error);
+          else resolve(rows ? rows.some(row => row.name === column) : false);
+        });
+      });
+    };
+
+    // Helper to run SQL safely
+    const runSql = (sql) => {
+      return new Promise((resolve, reject) => {
+        db.run(sql, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    };
+
+    // Add is_file_level column to comments if it doesn't exist
+    const hasIsFileLevel = await columnExists('comments', 'is_file_level');
+    if (!hasIsFileLevel) {
+      try {
+        await runSql(`ALTER TABLE comments ADD COLUMN is_file_level INTEGER DEFAULT 0`);
+        console.log('  Added is_file_level column to comments');
+      } catch (error) {
+        // Ignore duplicate column errors (race condition protection)
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column is_file_level already exists (race condition)');
+      }
+    } else {
+      console.log('  Column is_file_level already exists');
+    }
 
     console.log('Migration to schema version 6 complete');
   }
