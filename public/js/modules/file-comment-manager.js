@@ -421,19 +421,33 @@ class FileCommentManager {
    */
   async adoptAISuggestion(zone, suggestion) {
     try {
-      const response = await fetch(`/api/adopt-suggestion/${suggestion.id}`, {
+      const prId = this.prManager?.currentPR?.id;
+      const headSha = this.prManager?.currentPR?.head_sha;
+
+      // Create a file-level user comment from the suggestion
+      const createResponse = await fetch('/api/file-comment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          pr_id: prId,
+          file: suggestion.file,
           body: suggestion.body,
-          title: suggestion.title,
-          type: suggestion.type
+          commit_sha: headSha
         })
       });
 
-      if (!response.ok) throw new Error('Failed to adopt suggestion');
+      if (!createResponse.ok) throw new Error('Failed to create user comment');
 
-      const result = await response.json();
+      const createResult = await createResponse.json();
+
+      // Update the AI suggestion status to adopted
+      const statusResponse = await fetch(`/api/ai-suggestion/${suggestion.id}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'adopted' })
+      });
+
+      if (!statusResponse.ok) throw new Error('Failed to update suggestion status');
 
       // Remove the AI suggestion card
       const suggestionCard = zone.querySelector(`[data-suggestion-id="${suggestion.id}"]`);
@@ -443,7 +457,7 @@ class FileCommentManager {
 
       // Display as user comment
       const commentData = {
-        id: result.commentId,
+        id: createResult.commentId,
         file: suggestion.file,
         body: suggestion.body,
         source: 'user',
@@ -475,8 +489,11 @@ class FileCommentManager {
    */
   async dismissAISuggestion(zone, suggestionId) {
     try {
-      const response = await fetch(`/api/dismiss-suggestion/${suggestionId}`, {
-        method: 'POST'
+      // Update the AI suggestion status to dismissed
+      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'dismissed' })
       });
 
       if (!response.ok) throw new Error('Failed to dismiss suggestion');
@@ -594,19 +611,33 @@ class FileCommentManager {
    */
   async adoptWithEdit(zone, suggestion, editedBody) {
     try {
-      const response = await fetch(`/api/adopt-suggestion/${suggestion.id}`, {
+      const prId = this.prManager?.currentPR?.id;
+      const headSha = this.prManager?.currentPR?.head_sha;
+
+      // Create a file-level user comment with the edited body
+      const createResponse = await fetch('/api/file-comment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          pr_id: prId,
+          file: suggestion.file,
           body: editedBody,
-          title: suggestion.title,
-          type: suggestion.type
+          commit_sha: headSha
         })
       });
 
-      if (!response.ok) throw new Error('Failed to adopt suggestion');
+      if (!createResponse.ok) throw new Error('Failed to create user comment');
 
-      const result = await response.json();
+      const createResult = await createResponse.json();
+
+      // Update the AI suggestion status to adopted
+      const statusResponse = await fetch(`/api/ai-suggestion/${suggestion.id}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'adopted' })
+      });
+
+      if (!statusResponse.ok) throw new Error('Failed to update suggestion status');
 
       // Remove the AI suggestion card
       const suggestionCard = zone.querySelector(`[data-suggestion-id="${suggestion.id}"]`);
@@ -616,7 +647,7 @@ class FileCommentManager {
 
       // Display as user comment
       const commentData = {
-        id: result.commentId,
+        id: createResult.commentId,
         file: suggestion.file,
         body: editedBody,
         source: 'user',
