@@ -2381,3 +2381,349 @@ describe('File Content Endpoints', () => {
     });
   });
 });
+
+describe('Local Review File-Level Comments', () => {
+  let app, db, reviewId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    // Create a local review
+    const reviewResult = await run(db, `
+      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+    reviewId = reviewResult.lastID;
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('POST /api/local/:reviewId/file-comment', () => {
+    it('should return 400 when required fields are missing', async () => {
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/file-comment`)
+        .send({ file: 'test.js' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Missing required fields');
+    });
+
+    it('should return 400 when body is empty', async () => {
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/file-comment`)
+        .send({
+          file: 'test.js',
+          body: '   '
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Comment body cannot be empty');
+    });
+
+    it('should return 404 when review not found', async () => {
+      const response = await request(app)
+        .post('/api/local/9999/file-comment')
+        .send({
+          file: 'test.js',
+          body: 'File-level comment'
+        });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('Local review not found');
+    });
+
+    it('should create file-level comment successfully', async () => {
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/file-comment`)
+        .send({
+          file: 'test.js',
+          body: 'This is a file-level comment'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.commentId).toBeDefined();
+      expect(response.body.message).toContain('File-level');
+    });
+
+    it('should create file-level comment with is_file_level=1 and NULL line fields', async () => {
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/file-comment`)
+        .send({
+          file: 'test.js',
+          body: 'File-level comment'
+        });
+
+      expect(response.status).toBe(200);
+
+      const comment = await queryOne(db, `
+        SELECT * FROM comments WHERE id = ?
+      `, [response.body.commentId]);
+
+      expect(comment.is_file_level).toBe(1);
+      expect(comment.line_start).toBeNull();
+      expect(comment.line_end).toBeNull();
+      expect(comment.diff_position).toBeNull();
+      expect(comment.side).toBeNull();
+      expect(comment.commit_sha).toBeNull();
+    });
+
+    it('should create file-level comment with optional parent_id, type, and title', async () => {
+      // First create an AI suggestion
+      const aiResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, body, status, type, title, is_file_level)
+        VALUES (?, 'ai', 'test.js', 'AI suggestion', 'active', 'suggestion', 'Consider refactoring', 1)
+      `, [reviewId]);
+
+      // Now adopt it as a file-level comment with metadata
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/file-comment`)
+        .send({
+          file: 'test.js',
+          body: 'AI suggestion',
+          parent_id: aiResult.lastID,
+          type: 'suggestion',
+          title: 'Consider refactoring'
+        });
+
+      expect(response.status).toBe(200);
+
+      const comment = await queryOne(db, `
+        SELECT * FROM comments WHERE id = ?
+      `, [response.body.commentId]);
+
+      expect(comment.parent_id).toBe(aiResult.lastID);
+      expect(comment.type).toBe('suggestion');
+      expect(comment.title).toBe('Consider refactoring');
+      expect(comment.is_file_level).toBe(1);
+    });
+  });
+
+  describe('PUT /api/local/:reviewId/file-comment/:commentId', () => {
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .put('/api/local/invalid/file-comment/1')
+        .send({ body: 'Updated comment' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return 400 for invalid comment ID', async () => {
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/file-comment/invalid`)
+        .send({ body: 'Updated comment' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid comment ID');
+    });
+
+    it('should return 400 when body is empty', async () => {
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/file-comment/1`)
+        .send({ body: '   ' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Comment body cannot be empty');
+    });
+
+    it('should return 404 when file-level comment not found', async () => {
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/file-comment/9999`)
+        .send({ body: 'Updated comment' });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('File-level comment not found');
+    });
+
+    it('should not update line-level comment via file-comment endpoint', async () => {
+      // Create a line-level comment
+      const lineCommentResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, is_file_level)
+        VALUES (?, 'user', 'test.js', 10, 'Line comment', 'active', 0)
+      `, [reviewId]);
+
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/file-comment/${lineCommentResult.lastID}`)
+        .send({ body: 'Updated comment' });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('File-level comment not found');
+    });
+
+    it('should update file-level comment successfully', async () => {
+      // Create a file-level comment
+      const fileCommentResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'test.js', 'Original comment', 'active', 1)
+      `, [reviewId]);
+
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/file-comment/${fileCommentResult.lastID}`)
+        .send({ body: 'Updated file-level comment' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.message).toContain('File-level comment updated');
+
+      // Verify the update
+      const comment = await queryOne(db, `
+        SELECT * FROM comments WHERE id = ?
+      `, [fileCommentResult.lastID]);
+
+      expect(comment.body).toBe('Updated file-level comment');
+    });
+  });
+
+  describe('DELETE /api/local/:reviewId/file-comment/:commentId', () => {
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .delete('/api/local/invalid/file-comment/1');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return 400 for invalid comment ID', async () => {
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/file-comment/invalid`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid comment ID');
+    });
+
+    it('should return 404 when file-level comment not found', async () => {
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/file-comment/9999`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('File-level comment not found');
+    });
+
+    it('should not delete line-level comment via file-comment endpoint', async () => {
+      // Create a line-level comment
+      const lineCommentResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, is_file_level)
+        VALUES (?, 'user', 'test.js', 10, 'Line comment', 'active', 0)
+      `, [reviewId]);
+
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/file-comment/${lineCommentResult.lastID}`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('File-level comment not found');
+    });
+
+    it('should soft delete file-level comment successfully', async () => {
+      // Create a file-level comment
+      const fileCommentResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'test.js', 'File comment to delete', 'active', 1)
+      `, [reviewId]);
+
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/file-comment/${fileCommentResult.lastID}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.message).toContain('File-level comment deleted');
+
+      // Verify the soft delete
+      const comment = await queryOne(db, `
+        SELECT * FROM comments WHERE id = ?
+      `, [fileCommentResult.lastID]);
+
+      expect(comment.status).toBe('inactive');
+    });
+  });
+
+  describe('GET /api/local/:reviewId/user-comments', () => {
+    it('should return file-level comments with is_file_level=1', async () => {
+      // Create a file-level comment
+      await run(db, `
+        INSERT INTO comments (pr_id, source, author, file, body, status, is_file_level)
+        VALUES (?, 'user', 'Current User', 'test.js', 'File-level comment', 'active', 1)
+      `, [reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/user-comments`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.comments).toHaveLength(1);
+      expect(response.body.comments[0].is_file_level).toBe(1);
+      expect(response.body.comments[0].line_start).toBeNull();
+    });
+
+    it('should return both file-level and line-level comments', async () => {
+      // Create a file-level comment
+      await run(db, `
+        INSERT INTO comments (pr_id, source, author, file, body, status, is_file_level)
+        VALUES (?, 'user', 'Current User', 'test.js', 'File-level comment', 'active', 1)
+      `, [reviewId]);
+
+      // Create a line-level comment
+      await run(db, `
+        INSERT INTO comments (pr_id, source, author, file, line_start, line_end, body, status)
+        VALUES (?, 'user', 'Current User', 'test.js', 10, 10, 'Line comment', 'active')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/user-comments`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.comments).toHaveLength(2);
+
+      const fileLevelComment = response.body.comments.find(c => c.is_file_level === 1);
+      const lineLevelComment = response.body.comments.find(c => c.line_start === 10);
+
+      expect(fileLevelComment).toBeDefined();
+      expect(lineLevelComment).toBeDefined();
+    });
+  });
+
+  describe('GET /api/local/:reviewId/suggestions', () => {
+    it('should return file-level AI suggestions with is_file_level=1', async () => {
+      // Create a file-level AI suggestion
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, body, status, ai_run_id, is_file_level)
+        VALUES (?, 'ai', 'test.js', 'File-level suggestion', 'active', 'run-1', 1)
+      `, [reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/suggestions`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.suggestions).toHaveLength(1);
+      expect(response.body.suggestions[0].is_file_level).toBe(1);
+      expect(response.body.suggestions[0].line_start).toBeNull();
+    });
+
+    it('should order file-level suggestions before line-level suggestions', async () => {
+      // Create line-level suggestion
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'Line suggestion', 'active', 'run-1')
+      `, [reviewId]);
+
+      // Create file-level suggestion
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, body, status, ai_run_id, is_file_level)
+        VALUES (?, 'ai', 'test.js', 'File suggestion', 'active', 'run-1', 1)
+      `, [reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/suggestions`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.suggestions).toHaveLength(2);
+      // File-level should come first due to ORDER BY is_file_level DESC
+      expect(response.body.suggestions[0].is_file_level).toBe(1);
+      expect(response.body.suggestions[1].line_start).toBe(10);
+    });
+  });
+});

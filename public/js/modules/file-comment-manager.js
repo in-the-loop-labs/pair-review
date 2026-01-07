@@ -4,6 +4,23 @@
  */
 
 class FileCommentManager {
+  // Category to emoji mapping for formatting adopted comments (matches SuggestionManager)
+  static CATEGORY_EMOJI_MAP = {
+    'bug': '\u{1F41B}',           // bug
+    'improvement': '\u{1F4A1}',   // lightbulb
+    'suggestion': '\u{1F4AD}',    // thought balloon
+    'design': '\u{1F3D7}',        // building construction
+    'performance': '\u{1F680}',   // rocket
+    'security': '\u{1F512}',      // lock
+    'refactor': '\u{1F527}',      // wrench
+    'documentation': '\u{1F4DD}', // memo
+    'test': '\u{2705}',           // white heavy check mark
+    'style': '\u{1F3A8}',         // artist palette
+    'chore': '\u{1F9F9}',         // broom
+    'feat': '\u{2728}',           // sparkles
+    'fix': '\u{1F527}'            // wrench
+  };
+
   constructor(prManagerRef) {
     // Reference to parent PRManager for API calls and state access
     this.prManager = prManagerRef;
@@ -11,6 +28,98 @@ class FileCommentManager {
     this.fileComments = new Map();
     // Current open form
     this.currentForm = null;
+  }
+
+  /**
+   * Get emoji for suggestion category
+   * @param {string} category - Category name
+   * @returns {string} Emoji character
+   */
+  getCategoryEmoji(category) {
+    return FileCommentManager.CATEGORY_EMOJI_MAP[category] || '\u{1F4AC}';
+  }
+
+  /**
+   * Format adopted comment text with emoji and category prefix
+   * @param {string} text - Comment text
+   * @param {string} category - Category name
+   * @returns {string} Formatted text
+   */
+  formatAdoptedComment(text, category) {
+    if (!category) {
+      return text;
+    }
+    const emoji = this.getCategoryEmoji(category);
+    // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
+    const capitalizedCategory = category
+      .split('-')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+    return `${emoji} **${capitalizedCategory}**: ${text}`;
+  }
+
+  /**
+   * Get the appropriate API endpoint and request body for file-level comments
+   * @private
+   * @param {string} operation - Operation type: 'create', 'update', 'delete'
+   * @param {Object} options - Options object with commentId, file, body, etc.
+   * @returns {Object} Object with endpoint and requestBody
+   */
+  _getFileCommentEndpoint(operation, options = {}) {
+    const prId = this.prManager?.currentPR?.id;
+    const reviewType = this.prManager?.currentPR?.reviewType;
+    const headSha = this.prManager?.currentPR?.head_sha;
+    const isLocal = reviewType === 'local';
+
+    let endpoint;
+    let requestBody = null;
+
+    switch (operation) {
+      case 'create':
+        endpoint = isLocal
+          ? `/api/local/${prId}/file-comment`
+          : '/api/file-comment';
+
+        requestBody = isLocal
+          ? {
+              file: options.file,
+              body: options.body,
+              parent_id: options.parent_id,
+              type: options.type,
+              title: options.title
+            }
+          : {
+              pr_id: prId,
+              file: options.file,
+              body: options.body,
+              commit_sha: headSha,
+              parent_id: options.parent_id,
+              type: options.type,
+              title: options.title
+            };
+        break;
+
+      case 'update':
+        endpoint = isLocal
+          ? `/api/local/${prId}/file-comment/${options.commentId}`
+          : `/api/user-comment/${options.commentId}`;
+
+        requestBody = { body: options.body };
+        break;
+
+      case 'delete':
+        endpoint = isLocal
+          ? `/api/local/${prId}/file-comment/${options.commentId}`
+          : `/api/user-comment/${options.commentId}`;
+
+        // No body needed for DELETE
+        break;
+
+      default:
+        throw new Error(`Unknown operation: ${operation}`);
+    }
+
+    return { endpoint, requestBody };
   }
 
   /**
@@ -205,20 +314,17 @@ class FileCommentManager {
    */
   async saveFileComment(zone, fileName, body) {
     try {
-      const prId = this.prManager?.currentPR?.id;
-      const headSha = this.prManager?.currentPR?.head_sha;
+      const { endpoint, requestBody } = this._getFileCommentEndpoint('create', {
+        file: fileName,
+        body: body
+      });
 
-      const response = await fetch('/api/file-comment', {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          pr_id: prId,
-          file: fileName,
-          body: body,
-          commit_sha: headSha
-        })
+        body: JSON.stringify(requestBody)
       });
 
       if (!response.ok) {
@@ -466,22 +572,22 @@ class FileCommentManager {
    */
   async adoptAISuggestion(zone, suggestion) {
     try {
-      const prId = this.prManager?.currentPR?.id;
-      const headSha = this.prManager?.currentPR?.head_sha;
+      // Format the comment body with category prefix (matches line-level behavior)
+      const formattedBody = this.formatAdoptedComment(suggestion.body, suggestion.type);
 
       // Create a file-level user comment from the suggestion, including parent_id/type/title for adopted suggestions
-      const createResponse = await fetch('/api/file-comment', {
+      const { endpoint, requestBody } = this._getFileCommentEndpoint('create', {
+        file: suggestion.file,
+        body: formattedBody,
+        parent_id: suggestion.id,
+        type: suggestion.type,
+        title: suggestion.title
+      });
+
+      const createResponse = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pr_id: prId,
-          file: suggestion.file,
-          body: suggestion.body,
-          commit_sha: headSha,
-          parent_id: suggestion.id,
-          type: suggestion.type,
-          title: suggestion.title
-        })
+        body: JSON.stringify(requestBody)
       });
 
       if (!createResponse.ok) throw new Error('Failed to create user comment');
@@ -508,11 +614,11 @@ class FileCommentManager {
         }
       }
 
-      // Display as user comment
+      // Display as user comment with formatted body
       const commentData = {
         id: createResult.commentId,
         file: suggestion.file,
-        body: suggestion.body,
+        body: formattedBody,
         source: 'user',
         parent_id: suggestion.id,
         type: suggestion.type,
@@ -691,22 +797,22 @@ class FileCommentManager {
    */
   async adoptWithEdit(zone, suggestion, editedBody) {
     try {
-      const prId = this.prManager?.currentPR?.id;
-      const headSha = this.prManager?.currentPR?.head_sha;
+      // Format the edited body with category prefix (matches line-level behavior)
+      const formattedBody = this.formatAdoptedComment(editedBody, suggestion.type);
 
       // Create a file-level user comment with the edited body, including parent_id/type/title for adopted suggestions
-      const createResponse = await fetch('/api/file-comment', {
+      const { endpoint, requestBody } = this._getFileCommentEndpoint('create', {
+        file: suggestion.file,
+        body: formattedBody,
+        parent_id: suggestion.id,
+        type: suggestion.type,
+        title: suggestion.title
+      });
+
+      const createResponse = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pr_id: prId,
-          file: suggestion.file,
-          body: editedBody,
-          commit_sha: headSha,
-          parent_id: suggestion.id,
-          type: suggestion.type,
-          title: suggestion.title
-        })
+        body: JSON.stringify(requestBody)
       });
 
       if (!createResponse.ok) throw new Error('Failed to create user comment');
@@ -733,11 +839,11 @@ class FileCommentManager {
         }
       }
 
-      // Display as user comment
+      // Display as user comment with formatted body
       const commentData = {
         id: createResult.commentId,
         file: suggestion.file,
-        body: editedBody,
+        body: formattedBody,
         source: 'user',
         parent_id: suggestion.id,
         type: suggestion.type,
@@ -832,10 +938,15 @@ class FileCommentManager {
    */
   async saveEditedComment(zone, commentId, newBody, bodyEl) {
     try {
-      const response = await fetch(`/api/user-comment/${commentId}`, {
+      const { endpoint, requestBody } = this._getFileCommentEndpoint('update', {
+        commentId: commentId,
+        body: newBody
+      });
+
+      const response = await fetch(endpoint, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: newBody })
+        body: JSON.stringify(requestBody)
       });
 
       if (!response.ok) throw new Error('Failed to update comment');
@@ -874,7 +985,11 @@ class FileCommentManager {
     if (result !== 'confirm') return;
 
     try {
-      const response = await fetch(`/api/user-comment/${commentId}`, {
+      const { endpoint } = this._getFileCommentEndpoint('delete', {
+        commentId: commentId
+      });
+
+      const response = await fetch(endpoint, {
         method: 'DELETE'
       });
 
