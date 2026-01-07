@@ -926,4 +926,38 @@ router.get('/api/pr/health', (req, res) => {
   });
 });
 
+/**
+ * Parse a PR URL and extract owner, repo, and PR number
+ * Supports GitHub and Graphite URLs (with or without protocol)
+ */
+router.post('/api/parse-pr-url', (req, res) => {
+  const { PRArgumentParser } = require('../github/parser');
+  const parser = new PRArgumentParser();
+
+  const { url } = req.body;
+
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({
+      error: 'URL is required',
+      valid: false
+    });
+  }
+
+  const result = parser.parsePRUrl(url);
+
+  if (result) {
+    return res.json({
+      valid: true,
+      owner: result.owner,
+      repo: result.repo,
+      prNumber: result.number
+    });
+  }
+
+  return res.status(400).json({
+    error: 'Invalid PR URL. Please enter a GitHub or Graphite PR URL.',
+    valid: false
+  });
+});
+
 module.exports = router;
