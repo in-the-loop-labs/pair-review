@@ -26,10 +26,15 @@ class PRArgumentParser {
       return this.parseGitHubURL(input);
     }
 
+    // Check if input is a Graphite URL
+    if (input.startsWith('https://app.graphite.dev/') || input.startsWith('https://app.graphite.com/')) {
+      return this.parseGraphiteURL(input);
+    }
+
     // Check if input is a PR number
     const prNumber = parseInt(input);
     if (isNaN(prNumber) || prNumber <= 0) {
-      throw new Error('Invalid GitHub URL format. Expected: https://github.com/owner/repo/pull/number');
+      throw new Error('Invalid input format. Expected: PR number, GitHub URL (https://github.com/owner/repo/pull/number), or Graphite URL (https://app.graphite.com/github/pr/owner/repo/number)');
     }
 
     // Parse repository from current directory's git remote
@@ -45,16 +50,49 @@ class PRArgumentParser {
   parseGitHubURL(url) {
     // Match GitHub PR URL pattern: https://github.com/owner/repo/pull/number
     const match = url.match(/^https:\/\/github\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)(?:\/.*)?$/);
-    
+
     if (!match) {
       throw new Error('Invalid GitHub URL format. Expected: https://github.com/owner/repo/pull/number');
     }
 
     const [, owner, repo, numberStr] = match;
+    return this._createPRInfo(owner, repo, numberStr, 'GitHub');
+  }
+
+  /**
+   * Parse Graphite URL to extract owner, repo, and PR number
+   * @param {string} url - Graphite pull request URL
+   * @returns {Object} Parsed information { owner, repo, number }
+   */
+  parseGraphiteURL(url) {
+    // Match Graphite PR URL pattern: https://app.graphite.{dev|com}/github/pr/owner/repo/number[/optional-title]
+    const match = url.match(/^https:\/\/app\.graphite\.(?:dev|com)\/github\/pr\/([^\/]+)\/([^\/]+)\/(\d+)(?:\/.*)?$/);
+
+    if (!match) {
+      throw new Error('Invalid Graphite URL format. Expected: https://app.graphite.com/github/pr/owner/repo/number');
+    }
+
+    const [, owner, repo, numberStr] = match;
+    return this._createPRInfo(owner, repo, numberStr, 'Graphite');
+  }
+
+  /**
+   * Create and validate PR info object from parsed components
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {string} numberStr - PR number as string
+   * @param {string} source - Source name for error messages ('GitHub' or 'Graphite')
+   * @returns {Object} Validated PR info { owner, repo, number }
+   * @private
+   */
+  _createPRInfo(owner, repo, numberStr, source) {
     const number = parseInt(numberStr);
 
     if (isNaN(number) || number <= 0) {
-      throw new Error('Invalid GitHub URL format. Expected: https://github.com/owner/repo/pull/number');
+      const exampleUrl = source === 'GitHub'
+        ? 'https://github.com/owner/repo/pull/number'
+        : 'https://app.graphite.com/github/pr/owner/repo/number';
+      throw new Error(`Invalid ${source} URL format. Expected: ${exampleUrl}`);
     }
 
     return { owner, repo, number };
