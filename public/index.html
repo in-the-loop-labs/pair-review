@@ -642,7 +642,7 @@
                             type="text"
                             class="start-review-input"
                             id="pr-url-input"
-                            placeholder="Enter GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)"
+                            placeholder="Enter GitHub or Graphite PR URL"
                             autocomplete="off"
                             spellcheck="false"
                         >
@@ -909,11 +909,13 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
         }
 
         /**
-         * Parse a GitHub PR URL and extract owner, repo, and PR number
+         * Parse a PR URL and extract owner, repo, and PR number
          * Supports:
          *   - https://github.com/owner/repo/pull/123
          *   - https://github.com/owner/repo/pull/123/files
          *   - github.com/owner/repo/pull/123 (no protocol)
+         *   - https://app.graphite.dev/github/pr/owner/repo/123
+         *   - https://app.graphite.com/github/pr/owner/repo/123[/title-slug]
          * @param {string} url - The PR URL to parse
          * @returns {Object|null} { owner, repo, prNumber } or null if invalid
          */
@@ -932,6 +934,11 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
 
             try {
                 const urlObj = new URL(url);
+
+                // Check for Graphite URL
+                if (urlObj.hostname === 'app.graphite.dev' || urlObj.hostname === 'app.graphite.com') {
+                    return parseGraphiteUrl(urlObj);
+                }
 
                 // Verify it's a GitHub URL
                 if (urlObj.hostname !== 'github.com' && urlObj.hostname !== 'www.github.com') {
@@ -964,6 +971,37 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
                 // Invalid URL
                 return null;
             }
+        }
+
+        /**
+         * Parse a Graphite URL to extract owner, repo, and PR number
+         * Format: https://app.graphite.{dev|com}/github/pr/owner/repo/number[/title-slug]
+         * @param {URL} urlObj - The parsed URL object
+         * @returns {Object|null} { owner, repo, prNumber } or null if invalid
+         */
+        function parseGraphiteUrl(urlObj) {
+            // Parse the path: /github/pr/owner/repo/123[/title-slug]
+            const pathParts = urlObj.pathname.split('/').filter(Boolean);
+
+            // Need at least: 'github', 'pr', owner, repo, number
+            if (pathParts.length < 5) {
+                return null;
+            }
+
+            const [github, pr, owner, repo, prNumberStr] = pathParts;
+
+            // Verify path structure
+            if (github !== 'github' || pr !== 'pr') {
+                return null;
+            }
+
+            // Parse PR number
+            const prNumber = parseInt(prNumberStr, 10);
+            if (isNaN(prNumber) || prNumber <= 0) {
+                return null;
+            }
+
+            return { owner, repo, prNumber };
         }
 
         /**
@@ -1028,7 +1066,7 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
             // Parse the URL
             const parsed = parsePRUrl(url);
             if (!parsed) {
-                showStartReviewError('Invalid PR URL. Please enter a valid GitHub pull request URL (e.g., https://github.com/owner/repo/pull/123)');
+                showStartReviewError('Invalid PR URL. Please enter a GitHub or Graphite PR URL (e.g., https://github.com/owner/repo/pull/123)');
                 input.focus();
                 return;
             }
