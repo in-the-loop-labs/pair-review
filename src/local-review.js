@@ -1,7 +1,11 @@
 const { execSync, exec } = require('child_process');
+const { promisify } = require('util');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
 const { loadConfig } = require('./config');
+
+const execAsync = promisify(exec);
 const { initializeDatabase, ReviewRepository } = require('./database');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
@@ -514,8 +518,12 @@ async function handleLocalReview(targetPath, flags = {}) {
     process.env.PAIR_REVIEW_BRANCH = branch;
     process.env.PAIR_REVIEW_LOCAL_HEAD_SHA = headSha;
 
+    // Compute baseline digest NOW for accurate staleness detection later
+    // This must be done at diff-capture time, not lazily at check time
+    const digest = await computeLocalDiffDigest(repoPath);
+
     // Store diff data in module-level Map (avoids process.env size limits and security concerns)
-    localReviewDiffs.set(sessionId, { diff, stats });
+    localReviewDiffs.set(sessionId, { diff, stats, digest });
 
     // Set model override if provided
     if (flags.model) {
@@ -558,6 +566,62 @@ async function handleLocalReview(targetPath, flags = {}) {
   }
 }
 
+/**
+ * Compute a hash digest of local changes for staleness detection
+ * Uses git diff output which captures actual content changes
+ * Returns null on error (caller should treat as stale to be safe)
+ * @param {string} localPath - Path to the local git repository
+ * @returns {Promise<string|null>} 16-character hex digest or null on error
+ */
+async function computeLocalDiffDigest(localPath) {
+  let hasError = false;
+
+  // Get unstaged diff (the actual content being reviewed)
+  let unstagedDiff = '';
+  try {
+    const result = await execAsync('git diff', {
+      cwd: localPath,
+      encoding: 'utf8',
+      maxBuffer: 50 * 1024 * 1024
+    });
+    unstagedDiff = result.stdout;
+  } catch (e) {
+    hasError = true;
+  }
+
+  // Get list of untracked files with their sizes (content proxy)
+  let untrackedInfo = '';
+  try {
+    const result = await execAsync('git ls-files --others --exclude-standard', {
+      cwd: localPath,
+      encoding: 'utf8'
+    });
+    const untrackedFiles = result.stdout.trim().split('\n').filter(f => f.length > 0);
+
+    // For untracked files, include file path and size in digest
+    for (const file of untrackedFiles) {
+      try {
+        const stats = await fs.stat(path.join(localPath, file));
+        untrackedInfo += `${file}:${stats.size}:${stats.mtimeMs}\n`;
+      } catch (statError) {
+        untrackedInfo += `${file}:missing\n`;
+      }
+    }
+  } catch (e) {
+    hasError = true;
+  }
+
+  // If we had errors, return null to signal caller should assume stale
+  if (hasError && !unstagedDiff && !untrackedInfo) {
+    return null;
+  }
+
+  // Combine and hash
+  const combined = unstagedDiff + '\n---UNTRACKED---\n' + untrackedInfo;
+  const digest = crypto.createHash('sha256').update(combined).digest('hex').substring(0, 16);
+  return digest;
+}
+
 module.exports = {
   handleLocalReview,
   findGitRoot,
@@ -566,5 +630,6 @@ module.exports = {
   getCurrentBranch,
   generateLocalDiff,
   generateLocalReviewId,
-  getUntrackedFiles
+  getUntrackedFiles,
+  computeLocalDiffDigest
 };

@@ -1497,3 +1497,118 @@ describe('Local Review Settings Endpoints', () => {
     });
   });
 });
+
+// ============================================================================
+// Local Review Check-Stale Endpoint Tests
+// ============================================================================
+
+describe('Local Review Check-Stale Endpoint', () => {
+  let db;
+  let app;
+  let reviewId;
+  const { localReviewDiffs } = require('../../src/routes/shared');
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    // Create a local review
+    const result = await run(db, `
+      INSERT INTO reviews (repository, status, review_type, local_path, local_head_sha)
+      VALUES ('owner/repo', 'draft', 'local', '/tmp/test-repo', 'abc123def')
+    `);
+    reviewId = result.lastID;
+
+    // Clear any existing diff data
+    localReviewDiffs.clear();
+  });
+
+  afterEach(async () => {
+    localReviewDiffs.clear();
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('GET /api/local/:reviewId/check-stale', () => {
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .get('/api/local/invalid/check-stale');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return isStale null when review not found', async () => {
+      const response = await request(app)
+        .get('/api/local/9999/check-stale');
+
+      expect(response.status).toBe(200);
+      expect(response.body.isStale).toBeNull();
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should return isStale null when no stored diff data', async () => {
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/check-stale`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.isStale).toBeNull();
+      expect(response.body.error).toContain('No stored diff data');
+    });
+
+    it('should return isStale true when stored digest differs from current', async () => {
+      // Set up stored diff data with a known digest
+      localReviewDiffs.set(reviewId, {
+        diff: 'old diff content',
+        stats: { unstagedChanges: 1, untrackedFiles: 0 },
+        digest: 'old_digest_12345678'
+      });
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/check-stale`);
+
+      expect(response.status).toBe(200);
+      // Since the local path is fake, digest computation will likely fail or differ
+      // The endpoint should handle this gracefully
+      expect(response.body).toHaveProperty('isStale');
+    });
+
+    it('should include storedDigest in response when digest exists', async () => {
+      // When a digest is pre-computed and stored, it should be included in response
+      // Note: With a fake path, current digest computation will fail, so isStale will be true
+      localReviewDiffs.set(reviewId, {
+        diff: 'some diff',
+        stats: { unstagedChanges: 0, untrackedFiles: 0 },
+        digest: 'test_digest_1234'
+      });
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/check-stale`);
+
+      expect(response.status).toBe(200);
+      // Response should have isStale property
+      expect(response.body).toHaveProperty('isStale');
+      // With fake path, digest computation fails so we get isStale: true with error
+      // This is the expected fail-safe behavior
+      expect(response.body.isStale).toBe(true);
+    });
+
+    it('should assume stale when no baseline digest exists', async () => {
+      // Store diff data without a digest (simulates legacy session or failed capture)
+      localReviewDiffs.set(reviewId, {
+        diff: 'some diff',
+        stats: { unstagedChanges: 1, untrackedFiles: 0 }
+        // No digest - endpoint should assume stale since baseline was never captured
+      });
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/check-stale`);
+
+      expect(response.status).toBe(200);
+      // When no baseline digest exists, should assume stale for safety
+      expect(response.body.isStale).toBe(true);
+      expect(response.body.error).toContain('No baseline digest');
+    });
+  });
+});

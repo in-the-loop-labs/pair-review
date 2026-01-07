@@ -16,7 +16,7 @@ const { query, queryOne, run, ReviewRepository, RepoSettingsRepository } = requi
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
-const { generateLocalDiff } = require('../local-review');
+const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 const {
   activeAnalyses,
   progressClients,
@@ -145,6 +145,86 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
     console.error('Error fetching local diff:', error);
     res.status(500).json({
       error: 'Failed to fetch local diff'
+    });
+  }
+});
+
+/**
+ * Check if local review diff is stale (working directory has changed since diff was captured)
+ * Uses a digest of the diff content for accurate change detection
+ */
+router.get('/api/local/:reviewId/check-stale', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.json({
+        isStale: null,
+        error: 'Local review not found'
+      });
+    }
+
+    const localPath = review.local_path;
+    if (!localPath) {
+      return res.json({
+        isStale: null,
+        error: 'Local review missing path'
+      });
+    }
+
+    // Get stored diff data
+    const storedDiffData = localReviewDiffs.get(reviewId);
+    if (!storedDiffData) {
+      return res.json({
+        isStale: null,
+        error: 'No stored diff data found'
+      });
+    }
+
+    // Check if baseline digest exists (must be computed at diff-capture time)
+    if (!storedDiffData.digest) {
+      // No baseline digest - session may predate staleness detection feature
+      // Assume stale to be safe and prompt user to refresh
+      return res.json({
+        isStale: true,
+        error: 'No baseline digest - please refresh to enable staleness detection'
+      });
+    }
+
+    // Compute current digest to compare against baseline
+    const currentDigest = await computeLocalDiffDigest(localPath);
+
+    // If current digest computation failed, assume stale to be safe
+    if (!currentDigest) {
+      return res.json({
+        isStale: true,
+        error: 'Could not compute current digest - refresh recommended'
+      });
+    }
+
+    const isStale = storedDiffData.digest !== currentDigest;
+
+    res.json({
+      isStale,
+      storedDigest: storedDiffData.digest,
+      currentDigest
+    });
+
+  } catch (error) {
+    logger.warn(`Error checking local review staleness: ${error.message}`);
+    res.json({
+      isStale: null,
+      error: error.message
     });
   }
 });
@@ -287,7 +367,6 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     // Get changed files for local mode path validation
     // This is critical for local mode since git diff HEAD...HEAD returns nothing
     const changedFiles = await analyzer.getLocalChangedFiles(localPath);
-    logger.info(`[Local] Found ${changedFiles.length} changed files for path validation`);
 
     // Log analysis start
     logger.section(`Local AI Analysis Request - Review #${reviewId}`);
@@ -513,7 +592,6 @@ router.post('/api/local/:reviewId/analyze/level2', async (req, res) => {
 
     // Get changed files for local mode path validation
     const changedFiles = await analyzer.getLocalChangedFiles(localPath);
-    logger.info(`[Local] Found ${changedFiles.length} changed files for path validation`);
 
     logger.section(`Local Level 2 AI Analysis - Review #${reviewId}`);
     logger.log('API', `Repository: ${review.repository}`, 'magenta');
@@ -665,7 +743,6 @@ router.post('/api/local/:reviewId/analyze/level3', async (req, res) => {
 
     // Get changed files for local mode path validation
     const changedFiles = await analyzer.getLocalChangedFiles(localPath);
-    logger.info(`[Local] Found ${changedFiles.length} changed files for path validation`);
 
     logger.section(`Local Level 3 AI Analysis - Review #${reviewId}`);
     logger.log('API', `Repository: ${review.repository}`, 'magenta');
@@ -1437,9 +1514,12 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     // Regenerate the diff from the working directory
     const { diff, stats } = await generateLocalDiff(localPath);
 
+    // Compute fresh digest for the new diff
+    const digest = await computeLocalDiffDigest(localPath);
+
     // Update the stored diff data for the appropriate session
     const targetSessionId = sessionChanged ? newSessionId : reviewId;
-    localReviewDiffs.set(targetSessionId, { diff, stats });
+    localReviewDiffs.set(targetSessionId, { diff, stats, digest });
 
     logger.success(`Diff refreshed: ${stats.unstagedChanges} unstaged, ${stats.untrackedFiles} untracked${stats.stagedChanges > 0 ? ` (${stats.stagedChanges} staged excluded)` : ''}`);
 

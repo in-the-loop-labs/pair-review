@@ -185,6 +185,48 @@ class LocalManager {
         return;
       }
 
+      // Check staleness FIRST, before showing config modal
+      try {
+        const staleResponse = await fetch(`/api/local/${reviewId}/check-stale`);
+        if (staleResponse.ok) {
+          const staleData = await staleResponse.json();
+
+          if (staleData.isStale === true) {
+            // Working directory has changed - show dialog with options
+            if (window.confirmDialog) {
+              const choice = await window.confirmDialog.show({
+                title: 'Files Have Changed',
+                message: 'The working directory has changed since you loaded the diff. What would you like to do?',
+                confirmText: 'Refresh & Analyze',
+                confirmClass: 'btn-primary',
+                secondaryText: 'Analyze Anyway',
+                secondaryClass: 'btn-warning'
+              });
+
+              if (choice === 'confirm') {
+                // User wants to refresh first, then continue to analysis
+                await self.refreshDiff();
+                // Continue to config modal after refresh (don't return)
+              } else if (choice !== 'secondary') {
+                // User cancelled
+                return;
+              }
+              // Both 'confirm' (after refresh) and 'secondary' continue to config modal
+            }
+          } else if (staleData.isStale === null && staleData.error) {
+            // Couldn't verify - show toast warning
+            if (window.toast) {
+              window.toast.showWarning('Could not verify working directory is current.');
+            }
+          }
+        }
+      } catch (staleError) {
+        console.warn('[Local] Error checking staleness:', staleError);
+        if (window.toast) {
+          window.toast.showWarning('Could not verify working directory is current.');
+        }
+      }
+
       try {
         // Check if there are existing AI suggestions first
         let hasSuggestions = false;
@@ -814,6 +856,8 @@ class LocalManager {
         }
       }
 
+      // Staleness is now checked in triggerAIAnalysis before showing config modal
+
       // Start AI analysis
       const response = await fetch(`/api/local/${this.reviewId}/analyze`, {
         method: 'POST',
@@ -896,6 +940,30 @@ class LocalManager {
     if (!refreshBtn) return;
 
     refreshBtn.addEventListener('click', () => this.refreshDiff());
+  }
+
+  /**
+   * Reset the analysis button to its default enabled state
+   * @param {HTMLElement} btn - The button element to reset
+   */
+  resetAnalysisButton(btn) {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove('btn-analyzing');
+      const btnText = btn.querySelector('.btn-text');
+      if (btnText) {
+        btnText.textContent = 'Start Analysis';
+      }
+    }
+  }
+
+  /**
+   * Perform a refresh and prepare for re-analysis
+   * This is the core refresh logic extracted for direct invocation
+   * rather than depending on DOM button state
+   */
+  async performRefreshAndAnalysis() {
+    await this.refreshDiff();
   }
 
   /**
