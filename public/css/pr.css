@@ -1300,11 +1300,82 @@
 }
 
 .d2h-file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   background: var(--color-bg-secondary);
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border-primary);
   font-weight: 600;
   font-size: 14px;
+}
+
+.d2h-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* File header comment button */
+.file-header-comment-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--color-text-secondary, #656d76);
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.file-header-comment-btn:hover {
+  background-color: var(--color-accent-bg, rgba(9, 105, 218, 0.1));
+  border-color: var(--color-accent-primary, #0969da);
+  color: var(--color-accent-primary, #0969da);
+}
+
+.file-header-comment-btn:active {
+  background-color: var(--color-accent-bg, rgba(9, 105, 218, 0.15));
+}
+
+.file-header-comment-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+[data-theme="dark"] .file-header-comment-btn {
+  color: #8b949e;
+}
+
+[data-theme="dark"] .file-header-comment-btn:hover {
+  background-color: rgba(56, 139, 253, 0.15);
+  border-color: #58a6ff;
+  color: #58a6ff;
+}
+
+/* Has comments state - filled icon with accent color */
+.file-header-comment-btn.has-comments {
+  color: var(--color-accent-primary, #0969da);
+}
+
+[data-theme="dark"] .file-header-comment-btn.has-comments {
+  color: #58a6ff;
+}
+
+/* Expanded state - subtle background indicator */
+.file-header-comment-btn.expanded {
+  background-color: var(--color-accent-bg, rgba(9, 105, 218, 0.1));
+}
+
+[data-theme="dark"] .file-header-comment-btn.expanded {
+  background-color: rgba(56, 139, 253, 0.15);
 }
 
 .d2h-diff-table {
@@ -1876,8 +1947,9 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .ai-action-edit:hover {
-  background: var(--color-bg-tertiary, #181c23);
-  color: var(--color-text-primary, #e6edf3);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-primary);
 }
 
 /* Dismiss button: transparent, gray text turns red on hover, X icon */
@@ -1888,7 +1960,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .ai-action-dismiss:hover {
   color: var(--color-danger, #f85149);
-  background: rgba(248, 81, 73, 0.1);
+  background: rgba(248, 81, 73, 0.15);
 }
 
 /* Icon styling inside action buttons */
@@ -1896,6 +1968,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   width: 12px;
   height: 12px;
   flex-shrink: 0;
+  fill: currentColor;
 }
 
 /* Legacy .btn classes for backwards compatibility */
@@ -3601,6 +3674,12 @@ tr.line-range-start .d2h-code-line-ctn {
   background: rgba(167, 139, 250, 0.15);
   border-color: #a78bfa;
   color: #a78bfa;
+}
+
+[data-theme="dark"] .btn-delete-comment:hover {
+  background: rgba(248, 81, 73, 0.15);
+  border-color: #f85149;
+  color: #f85149;
 }
 
 .comment-edit-actions {
@@ -6092,6 +6171,13 @@ body:not([data-theme="dark"]) .theme-icon-light {
   text-overflow: ellipsis;
 }
 
+.file-level-indicator {
+  font-family: var(--font-sans);
+  font-size: 0.6rem;
+  font-style: italic;
+  color: var(--color-text-muted);
+}
+
 /* Category label for AI findings */
 .finding-category {
   font-size: 0.6875rem;
@@ -6189,7 +6275,8 @@ body:not([data-theme="dark"]) .theme-icon-light {
 }
 
 /* Highlight flash animation for scrolling to comments */
-.user-comment.highlight-flash {
+.user-comment.highlight-flash,
+.file-comment-card.highlight-flash {
   animation: comment-highlight-flash 2s ease-out;
 }
 
@@ -6973,6 +7060,501 @@ body:not([data-theme="dark"]) .theme-icon-light {
   .preset-chip {
     padding: 6px 12px;
     font-size: 12px;
+  }
+}
+
+/* ==========================================================================
+   File-Level Comments Zone
+   Collapsible section between file header and diff content
+   ========================================================================== */
+
+/* CSS Variables for file-level comments */
+:root {
+  --file-comment-bg: #f6f8fa;
+  --file-comment-border: #d0d7de;
+  --file-comment-accent: linear-gradient(135deg, #0969da 0%, #8250df 100%);
+  --file-comment-header-bg: #eaeef2;
+}
+
+[data-theme="dark"] {
+  --file-comment-bg: #1c2128;
+  --file-comment-border: #30363d;
+  --file-comment-header-bg: #21262d;
+}
+
+/* File Comments Zone Container */
+.file-comments-zone {
+  background: var(--file-comment-bg);
+  border-bottom: 1px solid var(--file-comment-border);
+  overflow: hidden;
+  transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              border-bottom-color 0.3s ease,
+              opacity 0.2s ease;
+}
+
+.file-comments-zone.collapsed {
+  max-height: 0 !important;
+  border-bottom-color: transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Zone Header - Toggle & Add Button */
+.file-comments-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: var(--file-comment-header-bg);
+  border-bottom: 1px solid var(--color-border-secondary);
+  min-height: 40px;
+}
+
+.file-comments-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.file-comments-toggle:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.file-comments-toggle .toggle-icon {
+  transition: transform 0.25s ease;
+  display: flex;
+  align-items: center;
+}
+
+.file-comments-zone.collapsed .file-comments-toggle .toggle-icon {
+  transform: rotate(-90deg);
+}
+
+/* Add File Comment Button */
+.add-file-comment-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.add-file-comment-btn:hover {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-accent-primary);
+  color: var(--color-accent-primary);
+}
+
+.add-file-comment-btn svg {
+  opacity: 0.7;
+  width: 14px;
+  height: 14px;
+}
+
+.add-file-comment-btn:hover svg {
+  opacity: 1;
+}
+
+/* Comments Container */
+.file-comments-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Empty State */
+.file-comments-empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--color-text-muted);
+  font-size: 14px;
+}
+
+/* ==========================================================================
+   File-Level Comment Card
+   ========================================================================== */
+.file-comment-card {
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  overflow: hidden;
+  animation: fileCommentSlideIn 0.25s ease-out;
+}
+
+@keyframes fileCommentSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Comment Header */
+.file-comment-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--color-bg-tertiary);
+  border-bottom: 1px solid var(--color-border-secondary);
+}
+
+/* Source Badge (AI vs User) */
+.comment-source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.comment-source-badge.ai {
+  background: linear-gradient(135deg, var(--ai-primary) 0%, var(--ai-secondary) 100%);
+  color: white;
+}
+
+.comment-source-badge.ai svg {
+  width: 12px;
+  height: 12px;
+}
+
+.comment-source-badge.user {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-primary);
+}
+
+.comment-author {
+  font-weight: 500;
+  color: var(--color-text-primary);
+  font-size: 14px;
+}
+
+.comment-timestamp {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  margin-left: auto;
+}
+
+/* Type Tag */
+.comment-type-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.comment-type-tag.praise {
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--color-success);
+}
+
+.comment-type-tag.issue,
+.comment-type-tag.bug {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--color-danger);
+}
+
+.comment-type-tag.suggestion {
+  background: rgba(163, 113, 247, 0.15);
+  color: var(--color-praise);
+}
+
+.comment-type-tag.question {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--color-info);
+}
+
+.comment-type-tag.refactor {
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--color-warning);
+}
+
+/* Comment Body */
+.file-comment-body {
+  padding: 16px;
+}
+
+.file-comment-body .comment-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--color-text-primary);
+  margin-bottom: 8px;
+}
+
+.file-comment-body .comment-text {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.file-comment-body .comment-text code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--color-bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--color-accent-primary);
+}
+
+/* Comment Actions (for AI suggestions) */
+/* File-level AI suggestions now use the same classes as line-level (.ai-suggestion-*)
+   No custom button styles needed - they inherit from .ai-action classes defined earlier */
+
+/* File-level AI suggestion collapsed state - uses same classes as line-level */
+.file-comment-card.ai-suggestion.collapsed {
+  background: var(--color-bg-secondary, #f6f8fa);
+  opacity: 0.7;
+  border-left-color: var(--color-text-tertiary, #6e7681);
+  padding: 4px 8px;
+  margin: 2px 0;
+  border-radius: 6px;
+}
+
+[data-theme="dark"] .file-comment-card.ai-suggestion.collapsed {
+  background: var(--color-bg-secondary, #161b22);
+}
+
+/* Hide header, body, and actions when collapsed (using line-level class names) */
+.file-comment-card.ai-suggestion.collapsed .ai-suggestion-header,
+.file-comment-card.ai-suggestion.collapsed .ai-suggestion-body,
+.file-comment-card.ai-suggestion.collapsed .ai-suggestion-actions {
+  display: none;
+}
+
+/* Show collapsed content when collapsed (inherits line-level styles) */
+.file-comment-card.ai-suggestion.collapsed .ai-suggestion-collapsed-content {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+/* User Comment Actions (in header) */
+.file-comment-user-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.file-comment-user-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.file-comment-user-btn:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.file-comment-user-btn.delete:hover {
+  color: var(--color-danger);
+}
+
+/* ==========================================================================
+   File-Level AI Suggestion Praise Badge
+   Ensure praise badge sizing matches line-level comments
+   ========================================================================== */
+.file-comment-card.ai-suggestion.ai-type-praise .praise-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
+  color: var(--ai-primary, #f59e0b);
+}
+
+.file-comment-card.ai-suggestion.ai-type-praise .praise-badge svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+/* Praise badge in collapsed content for file-level */
+.file-comment-card.ai-suggestion.ai-type-praise .ai-suggestion-collapsed-content .praise-badge {
+  padding: 2px 6px;
+  font-size: 10px;
+  gap: 4px;
+}
+
+.file-comment-card.ai-suggestion.ai-type-praise .ai-suggestion-collapsed-content .praise-badge svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* ==========================================================================
+   User File-Level Comments
+   Use .user-comment class to inherit line-level styling, with minor adjustments
+   ========================================================================== */
+.file-comment-card.user-comment {
+  /* Override file-comment-card defaults to use user-comment styling */
+  margin: 0;  /* Remove margin since container handles spacing */
+}
+
+/* ==========================================================================
+   File-Level Comment Form
+   ========================================================================== */
+.file-comment-form {
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.file-comment-form.focused {
+  border-color: var(--color-accent-primary);
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.15);
+}
+
+.file-comment-form-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--color-bg-tertiary);
+  border-bottom: 1px solid var(--color-border-secondary);
+}
+
+.file-comment-form-header label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+/* Toolbar inside file comment form */
+.file-comment-form .comment-form-toolbar {
+  border-radius: 0;
+  border-top: none;
+  margin: 0;
+}
+
+/* When toolbar is present, adjust textarea */
+.file-comment-form .comment-form-toolbar + .file-comment-textarea {
+  border-top: none;
+  padding-top: 12px;
+}
+
+.file-comment-textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 16px;
+  background: var(--color-bg-primary);
+  border: none;
+  font-family: var(--font-github);
+  font-size: 14px;
+  color: var(--color-text-primary);
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.file-comment-textarea:focus {
+  outline: none;
+}
+
+.file-comment-textarea::placeholder {
+  color: var(--color-text-muted);
+}
+
+.file-comment-form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--color-bg-tertiary);
+  border-top: 1px solid var(--color-border-secondary);
+}
+
+.file-comment-form-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.file-comment-form-btn.cancel {
+  background: transparent;
+  border: 1px solid var(--color-border-primary);
+  color: var(--color-text-secondary);
+}
+
+.file-comment-form-btn.cancel:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.file-comment-form-btn.submit {
+  background: var(--color-accent-emphasis);
+  border: 1px solid transparent;
+  color: white;
+}
+
+.file-comment-form-btn.submit:hover {
+  filter: brightness(1.1);
+}
+
+.file-comment-form-btn.submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .file-comments-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .file-comment-card .ai-suggestion-actions {
+    flex-wrap: wrap;
   }
 }
 

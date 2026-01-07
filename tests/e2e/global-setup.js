@@ -166,6 +166,7 @@ const SCHEMA_SQL = `
     status TEXT DEFAULT 'active',
     adopted_as_id INTEGER,
     parent_id INTEGER,
+    is_file_level INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );

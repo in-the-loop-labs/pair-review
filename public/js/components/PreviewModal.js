@@ -191,13 +191,21 @@ class PreviewModal {
       return 'No comments to preview.';
     }
 
-    // Group comments by file
+    // Group comments by file, separating file-level and line-level
     const commentsByFile = {};
     comments.forEach(comment => {
       if (!commentsByFile[comment.file]) {
-        commentsByFile[comment.file] = [];
+        commentsByFile[comment.file] = {
+          fileComments: [],
+          lineComments: []
+        };
       }
-      commentsByFile[comment.file].push(comment);
+      // Check if this is a file-level comment
+      if (comment.is_file_level === 1) {
+        commentsByFile[comment.file].fileComments.push(comment);
+      } else {
+        commentsByFile[comment.file].lineComments.push(comment);
+      }
     });
 
     // Sort files alphabetically
@@ -207,33 +215,39 @@ class PreviewModal {
     let text = '';
 
     sortedFiles.forEach((file, fileIndex) => {
+      const { fileComments, lineComments } = commentsByFile[file];
+
       // Add file header
       if (fileIndex > 0) {
         text += '\n';
       }
-      text += `## File: ${file}\n\n`;
+      text += `## ${file}\n`;
 
-      // Sort comments by line number
-      const fileComments = commentsByFile[file].sort((a, b) => a.line_start - b.line_start);
+      // Add file-level comments - each gets its own header
+      if (fileComments.length > 0) {
+        fileComments.forEach((comment, index) => {
+          text += `\n### File Comment ${index + 1}:\n`;
+          text += `${comment.body}\n`;
+        });
+      }
 
-      // Add each comment
-      fileComments.forEach((comment, commentIndex) => {
-        // Format line number(s)
-        let lineInfo;
-        if (comment.line_end && comment.line_end !== comment.line_start) {
-          lineInfo = `Lines ${comment.line_start}-${comment.line_end}`;
-        } else {
-          lineInfo = `Line ${comment.line_start}`;
-        }
+      // Add line-level comments - each gets its own header
+      if (lineComments.length > 0) {
+        // Sort line comments by line number
+        lineComments.sort((a, b) => (a.line_start || 0) - (b.line_start || 0));
 
-        text += `### Comment ${commentIndex + 1} (${lineInfo}):\n`;
-        text += comment.body + '\n';
-
-        // Add spacing between comments
-        if (commentIndex < fileComments.length - 1) {
-          text += '\n';
-        }
-      });
+        lineComments.forEach(comment => {
+          // Format line number(s) for header
+          let lineInfo;
+          if (comment.line_end && comment.line_end !== comment.line_start) {
+            lineInfo = `lines ${comment.line_start}-${comment.line_end}`;
+          } else {
+            lineInfo = `line ${comment.line_start}`;
+          }
+          text += `\n### Line Comment (${lineInfo}):\n`;
+          text += `${comment.body}\n`;
+        });
+      }
     });
 
     return text;

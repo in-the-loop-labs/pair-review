@@ -718,7 +718,8 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         body,
         diff_position,
         side,
-        commit_sha
+        commit_sha,
+        is_file_level
       FROM comments
       WHERE pr_id = ? AND source = 'user' AND status = 'active'
       ORDER BY file, line_start
@@ -759,6 +760,18 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     const graphqlComments = comments.map(comment => {
       const side = comment.side || 'RIGHT';
       const isRange = comment.line_end && comment.line_end !== comment.line_start;
+
+      // Check if this is an explicit file-level comment (is_file_level=1)
+      // These are comments about the entire file, not tied to specific lines
+      if (comment.is_file_level === 1) {
+        console.log(`Formatting file-level comment: ${comment.file}`);
+
+        return {
+          path: comment.file,
+          body: comment.body,
+          isFileLevel: true
+        };
+      }
 
       // Detect expanded context comments (no diff_position)
       // These are submitted as file-level comments since GitHub API rejects
@@ -841,16 +854,6 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
       console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
 
-      res.json({
-        success: true,
-        message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} GitHub`,
-        github_url: githubReview.html_url,
-        github_review_id: githubReview.id,
-        comments_submitted: githubReview.comments_count,
-        event: event,
-        status: event === 'DRAFT' ? githubReview.state : undefined // Include status for drafts
-      });
-
       // Update comments table to mark submitted comments
       // Note: Since comments table doesn't have github-specific columns in current schema,
       // we'll update the status to indicate submission
@@ -866,6 +869,17 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
       // Commit transaction
       await run(db, 'COMMIT');
+
+      // Send success response after all database operations complete
+      res.json({
+        success: true,
+        message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} GitHub`,
+        github_url: githubReview.html_url,
+        github_review_id: githubReview.id,
+        comments_submitted: githubReview.comments_count,
+        event: event,
+        status: event === 'DRAFT' ? githubReview.state : undefined // Include status for drafts
+      });
 
     } catch (submitError) {
       // Rollback transaction on error

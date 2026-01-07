@@ -120,8 +120,20 @@ class LocalManager {
         const data = await response.json();
         manager.userComments = data.comments || [];
 
-        // Display saved comments using the same approach as pr.js
+        // Separate file-level and line-level comments
+        const fileLevelComments = [];
+        const lineLevelComments = [];
+
         manager.userComments.forEach(comment => {
+          if (comment.is_file_level === 1) {
+            fileLevelComments.push(comment);
+          } else {
+            lineLevelComments.push(comment);
+          }
+        });
+
+        // Display line-level comments inline with diff
+        lineLevelComments.forEach(comment => {
           const fileElement = manager.findFileElement(comment.file);
           if (!fileElement) return;
 
@@ -134,6 +146,11 @@ class LocalManager {
             }
           }
         });
+
+        // Load file-level comments into their zones
+        if (manager.fileCommentManager && fileLevelComments.length > 0) {
+          manager.fileCommentManager.loadFileComments(fileLevelComments, []);
+        }
 
         // Populate AI Panel with comments
         if (window.aiPanel?.setComments) {
@@ -622,10 +639,12 @@ class LocalManager {
     const originalClearAllUserComments = manager.clearAllUserComments?.bind(manager);
     if (originalClearAllUserComments) {
       manager.clearAllUserComments = async function() {
-        // Find all user comment rows
-        const userCommentRows = document.querySelectorAll('.user-comment-row');
+        // Count both line-level and file-level user comments
+        const lineCommentRows = document.querySelectorAll('.user-comment-row');
+        const fileCommentCards = document.querySelectorAll('.file-comment-card.user-comment');
+        const totalComments = lineCommentRows.length + fileCommentCards.length;
 
-        if (userCommentRows.length === 0) {
+        if (totalComments === 0) {
           if (window.toast) {
             window.toast.showInfo('No comments to clear');
           }
@@ -639,7 +658,7 @@ class LocalManager {
 
         const dialogResult = await window.confirmDialog.show({
           title: 'Clear All Comments?',
-          message: `This will delete all ${userCommentRows.length} user comment${userCommentRows.length !== 1 ? 's' : ''} from this review. This action cannot be undone.`,
+          message: `This will delete all ${totalComments} user comment${totalComments !== 1 ? 's' : ''} from this review. This action cannot be undone.`,
           confirmText: 'Delete All',
           confirmClass: 'btn-danger'
         });
@@ -654,10 +673,32 @@ class LocalManager {
           if (!response.ok) throw new Error('Failed to delete comments');
 
           const result = await response.json();
-          const deletedCount = result.deletedCount || userCommentRows.length;
+          const deletedCount = result.deletedCount || totalComments;
 
-          // Remove comment rows from DOM
-          userCommentRows.forEach(row => row.remove());
+          // Remove line-level comment rows from DOM
+          lineCommentRows.forEach(row => row.remove());
+
+          // Remove file-level comment cards from DOM
+          fileCommentCards.forEach(card => {
+            const zone = card.closest('.file-comments-zone');
+            card.remove();
+
+            // Show empty state in the file comments zone if no more comments remain
+            if (zone) {
+              const container = zone.querySelector('.file-comments-container');
+              const hasComments = container?.querySelectorAll('.file-comment-card').length > 0;
+              if (!hasComments) {
+                const emptyState = container?.querySelector('.file-comments-empty');
+                if (emptyState) {
+                  emptyState.style.display = 'block';
+                }
+              }
+              // Update the file comment zone header button state
+              if (manager.fileCommentManager) {
+                manager.fileCommentManager.updateCommentCount(zone);
+              }
+            }
+          });
 
           // Clear internal userComments array
           manager.userComments = [];

@@ -8,7 +8,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 /**
  * Database schema SQL statements
@@ -70,6 +70,7 @@ const SCHEMA_SQL = {
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
       adopted_as_id INTEGER,
       parent_id INTEGER,
+      is_file_level INTEGER DEFAULT 0,
 
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -131,6 +132,7 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start)',
   'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
   'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(pr_id, file, is_file_level)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
@@ -444,6 +446,50 @@ const MIGRATIONS = {
     `);
 
     console.log('Migration to schema version 5 complete');
+  },
+
+  // Migration to version 6: adds is_file_level column to comments for file-level comments support
+  6: async (db) => {
+    console.log('Running migration to schema version 6...');
+
+    // Helper to check if column exists
+    const columnExists = async (table, column) => {
+      return new Promise((resolve, reject) => {
+        db.all(`PRAGMA table_info(${table})`, (error, rows) => {
+          if (error) reject(error);
+          else resolve(rows ? rows.some(row => row.name === column) : false);
+        });
+      });
+    };
+
+    // Helper to run SQL safely
+    const runSql = (sql) => {
+      return new Promise((resolve, reject) => {
+        db.run(sql, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    };
+
+    // Add is_file_level column to comments if it doesn't exist
+    const hasIsFileLevel = await columnExists('comments', 'is_file_level');
+    if (!hasIsFileLevel) {
+      try {
+        await runSql(`ALTER TABLE comments ADD COLUMN is_file_level INTEGER DEFAULT 0`);
+        console.log('  Added is_file_level column to comments');
+      } catch (error) {
+        // Ignore duplicate column errors (race condition protection)
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column is_file_level already exists (race condition)');
+      }
+    } else {
+      console.log('  Column is_file_level already exists');
+    }
+
+    console.log('Migration to schema version 6 complete');
   }
 };
 
@@ -1107,6 +1153,328 @@ class RepoSettingsRepository {
 }
 
 /**
+ * CommentRepository class for managing comment database records
+ */
+class CommentRepository {
+  /**
+   * Create a new CommentRepository instance
+   * @param {sqlite3.Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a line-level user comment
+   * @param {Object} commentData - Comment data
+   * @param {number} commentData.pr_id - PR or review ID
+   * @param {string} commentData.file - File path
+   * @param {number} commentData.line_start - Starting line number
+   * @param {number} [commentData.line_end] - Ending line number (defaults to line_start)
+   * @param {string} commentData.body - Comment body text
+   * @param {number} [commentData.diff_position] - Diff position for GitHub API
+   * @param {string} [commentData.side='RIGHT'] - Side of diff (LEFT or RIGHT)
+   * @param {string} [commentData.commit_sha] - Commit SHA
+   * @param {string} [commentData.type='comment'] - Comment type
+   * @param {string} [commentData.title] - Comment title
+   * @param {number} [commentData.parent_id] - Parent AI suggestion ID if adopted
+   * @param {string} [commentData.author='Current User'] - Comment author
+   * @returns {Promise<number>} Created comment ID
+   */
+  async createLineComment({
+    pr_id,
+    file,
+    line_start,
+    line_end,
+    body,
+    diff_position = null,
+    side = 'RIGHT',
+    commit_sha = null,
+    type = 'comment',
+    title = null,
+    parent_id = null,
+    author = 'Current User'
+  }) {
+    // Validate required fields
+    if (!pr_id || !file || !line_start || !body) {
+      throw new Error('Missing required fields: pr_id, file, line_start, body');
+    }
+
+    // Validate side
+    const validSide = side === 'LEFT' ? 'LEFT' : 'RIGHT';
+
+    const result = await run(this.db, `
+      INSERT INTO comments (
+        pr_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
+        type, title, body, status, parent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      pr_id,
+      'user',
+      author,
+      file,
+      line_start,
+      line_end || line_start,
+      diff_position,
+      validSide,
+      commit_sha,
+      type,
+      title,
+      body.trim(),
+      'active',
+      parent_id
+    ]);
+
+    return result.lastID;
+  }
+
+  /**
+   * Create a file-level user comment
+   * @param {Object} commentData - Comment data
+   * @param {number} commentData.pr_id - PR or review ID
+   * @param {string} commentData.file - File path
+   * @param {string} commentData.body - Comment body text
+   * @param {string} [commentData.commit_sha] - Commit SHA
+   * @param {string} [commentData.type='comment'] - Comment type
+   * @param {string} [commentData.title] - Comment title
+   * @param {number} [commentData.parent_id] - Parent AI suggestion ID if adopted
+   * @param {string} [commentData.author='Current User'] - Comment author
+   * @returns {Promise<number>} Created comment ID
+   */
+  async createFileComment({
+    pr_id,
+    file,
+    body,
+    commit_sha = null,
+    type = 'comment',
+    title = null,
+    parent_id = null,
+    author = 'Current User'
+  }) {
+    // Validate required fields
+    if (!pr_id || !file || !body) {
+      throw new Error('Missing required fields: pr_id, file, body');
+    }
+
+    const result = await run(this.db, `
+      INSERT INTO comments (
+        pr_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
+        type, title, body, status, parent_id, is_file_level
+      ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, 1)
+    `, [
+      pr_id,
+      'user',
+      author,
+      file,
+      commit_sha,
+      type,
+      title,
+      body.trim(),
+      'active',
+      parent_id
+    ]);
+
+    return result.lastID;
+  }
+
+  /**
+   * Adopt an AI suggestion as a user comment (with optional edits)
+   * Creates a new user comment linked to the AI suggestion via parent_id
+   * @param {number} suggestionId - AI suggestion comment ID
+   * @param {string} editedBody - The adopted/edited comment body
+   * @returns {Promise<number>} Created user comment ID
+   */
+  async adoptSuggestion(suggestionId, editedBody) {
+    // Validate inputs
+    if (!suggestionId || !editedBody || !editedBody.trim()) {
+      throw new Error('Missing required fields: suggestionId, editedBody');
+    }
+
+    // Get the AI suggestion
+    const suggestion = await queryOne(this.db, `
+      SELECT * FROM comments WHERE id = ? AND source = 'ai'
+    `, [suggestionId]);
+
+    if (!suggestion) {
+      throw new Error('AI suggestion not found');
+    }
+
+    if (suggestion.status !== 'active') {
+      throw new Error('This suggestion has already been processed');
+    }
+
+    // Create user comment preserving metadata from the suggestion
+    const result = await run(this.db, `
+      INSERT INTO comments (
+        pr_id, source, author, file, line_start, line_end,
+        diff_position, side, commit_sha,
+        type, title, body, status, parent_id, is_file_level
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      suggestion.pr_id,
+      'user',
+      'Current User',
+      suggestion.file,
+      suggestion.line_start,
+      suggestion.line_end,
+      suggestion.diff_position,
+      suggestion.side || 'RIGHT',
+      suggestion.commit_sha,
+      'comment',
+      suggestion.title,
+      editedBody.trim(),
+      'active',
+      suggestionId,
+      suggestion.is_file_level || 0
+    ]);
+
+    return result.lastID;
+  }
+
+  /**
+   * Update AI suggestion status and link to adopted comment
+   * @param {number} suggestionId - AI suggestion comment ID
+   * @param {string} status - New status ('adopted', 'dismissed', 'active')
+   * @param {number} [adoptedAsId] - ID of the user comment if adopted
+   * @returns {Promise<boolean>} True if updated successfully
+   */
+  async updateSuggestionStatus(suggestionId, status, adoptedAsId = null) {
+    const validStatuses = ['adopted', 'dismissed', 'active'];
+    if (!validStatuses.includes(status)) {
+      throw new Error('Invalid status. Must be "adopted", "dismissed", or "active"');
+    }
+
+    // When restoring to active, clear adopted_as_id
+    if (status === 'active') {
+      const result = await run(this.db, `
+        UPDATE comments
+        SET status = ?, adopted_as_id = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [status, suggestionId]);
+      return result.changes > 0;
+    }
+
+    // For adopted/dismissed, optionally set adopted_as_id
+    const result = await run(this.db, `
+      UPDATE comments
+      SET status = ?, adopted_as_id = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [status, adoptedAsId, suggestionId]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Get a single comment by ID
+   * @param {number} id - Comment ID
+   * @param {string} [source] - Optional filter by source ('user' or 'ai')
+   * @returns {Promise<Object|null>} Comment record or null if not found
+   */
+  async getComment(id, source = null) {
+    let sql = 'SELECT * FROM comments WHERE id = ?';
+    const params = [id];
+
+    if (source) {
+      sql += ' AND source = ?';
+      params.push(source);
+    }
+
+    return await queryOne(this.db, sql, params);
+  }
+
+  /**
+   * Update a user comment's body
+   * @param {number} id - Comment ID
+   * @param {string} body - New comment body
+   * @returns {Promise<boolean>} True if updated successfully
+   */
+  async updateComment(id, body) {
+    if (!body || !body.trim()) {
+      throw new Error('Comment body cannot be empty');
+    }
+
+    // Verify it's a user comment
+    const comment = await this.getComment(id, 'user');
+    if (!comment) {
+      throw new Error('User comment not found');
+    }
+
+    const result = await run(this.db, `
+      UPDATE comments
+      SET body = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [body.trim(), id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Soft delete a user comment (set status to inactive)
+   * @param {number} id - Comment ID
+   * @returns {Promise<boolean>} True if deleted successfully
+   */
+  async deleteComment(id) {
+    // Verify it's a user comment
+    const comment = await this.getComment(id, 'user');
+    if (!comment) {
+      throw new Error('User comment not found');
+    }
+
+    const result = await run(this.db, `
+      UPDATE comments
+      SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Bulk delete all user comments for a PR
+   * @param {number} prId - PR or review ID
+   * @returns {Promise<number>} Number of comments deleted
+   */
+  async bulkDeleteComments(prId) {
+    const result = await run(this.db, `
+      UPDATE comments
+      SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+      WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+    `, [prId]);
+
+    return result.changes;
+  }
+
+  /**
+   * Get all user comments for a PR
+   * @param {number} prId - PR or review ID
+   * @returns {Promise<Array<Object>>} Array of comment records
+   */
+  async getUserComments(prId) {
+    return await query(this.db, `
+      SELECT
+        id,
+        source,
+        author,
+        file,
+        line_start,
+        line_end,
+        diff_position,
+        type,
+        title,
+        body,
+        status,
+        parent_id,
+        is_file_level,
+        created_at,
+        updated_at
+      FROM comments
+      WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+      ORDER BY file, line_start, created_at
+    `, [prId]);
+  }
+}
+
+/**
  * ReviewRepository class for managing review database records
  */
 class ReviewRepository {
@@ -1467,6 +1835,7 @@ module.exports = {
   WorktreeRepository,
   RepoSettingsRepository,
   ReviewRepository,
+  CommentRepository,
   generateWorktreeId,
   migrateExistingWorktrees
 };

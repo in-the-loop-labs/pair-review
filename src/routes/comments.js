@@ -8,7 +8,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run } = require('../database');
+const { query, queryOne, run, CommentRepository } = require('../database');
 
 const router = express.Router();
 
@@ -33,22 +33,14 @@ router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
     }
 
     const db = req.app.get('db');
+    const commentRepo = new CommentRepository(db);
 
-    // Get the suggestion and validate it
-    const suggestion = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND source = 'ai'
-    `, [id]);
+    // Get the suggestion to validate PR exists
+    const suggestion = await commentRepo.getComment(id, 'ai');
 
     if (!suggestion) {
       return res.status(404).json({
         error: 'AI suggestion not found'
-      });
-    }
-
-    // Validate suggestion status is active
-    if (suggestion.status !== 'active') {
-      return res.status(400).json({
-        error: 'This suggestion has already been processed'
       });
     }
 
@@ -63,39 +55,11 @@ router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
       });
     }
 
-    // Create a user comment with the edited text
-    // Preserve diff_position and side from the original suggestion if available
-    const result = await run(db, `
-      INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end,
-        diff_position, side, commit_sha,
-        type, title, body, status, parent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      suggestion.pr_id,
-      'user',
-      'Current User', // TODO: Get actual user from session/config
-      suggestion.file,
-      suggestion.line_start,
-      suggestion.line_end,
-      suggestion.diff_position || null,  // Preserve for GitHub API
-      suggestion.side || 'RIGHT',        // Default to RIGHT for added/context lines
-      suggestion.commit_sha || null,     // Preserve commit SHA
-      'comment',
-      suggestion.title,
-      editedText.trim(),
-      'active',
-      id  // Link to parent AI suggestion
-    ]);
-
-    const userCommentId = result.lastID;
+    // Adopt the suggestion with edited text using repository
+    const userCommentId = await commentRepo.adoptSuggestion(id, editedText);
 
     // Update suggestion status to adopted and link to user comment
-    await run(db, `
-      UPDATE comments
-      SET status = 'adopted', adopted_as_id = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [userCommentId, id]);
+    await commentRepo.updateSuggestionStatus(id, 'adopted', userCommentId);
 
     res.json({
       success: true,
@@ -106,7 +70,7 @@ router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
   } catch (error) {
     console.error('Error editing suggestion:', error);
     res.status(500).json({
-      error: 'Failed to edit suggestion'
+      error: error.message || 'Failed to edit suggestion'
     });
   }
 });
@@ -129,11 +93,10 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
     }
 
     const db = req.app.get('db');
+    const commentRepo = new CommentRepository(db);
 
     // Get the suggestion
-    const suggestion = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND source = 'ai'
-    `, [id]);
+    const suggestion = await commentRepo.getComment(id, 'ai');
 
     if (!suggestion) {
       return res.status(404).json({
@@ -141,23 +104,8 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
       });
     }
 
-    // Update suggestion status
-    // When restoring to active, we need to clear adopted_as_id
-    // Note: User comment creation for adopted suggestions is handled separately
-    // by the frontend via /api/user-comment endpoint to avoid duplicate comments
-    if (status === 'active') {
-      await run(db, `
-        UPDATE comments
-        SET status = ?, adopted_as_id = NULL, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [status, id]);
-    } else {
-      await run(db, `
-        UPDATE comments
-        SET status = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [status, id]);
-    }
+    // Update suggestion status using repository
+    await commentRepo.updateSuggestionStatus(id, status);
 
     res.json({
       success: true,
@@ -167,7 +115,68 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
   } catch (error) {
     console.error('Error updating suggestion status:', error);
     res.status(500).json({
-      error: 'Failed to update suggestion status'
+      error: error.message || 'Failed to update suggestion status'
+    });
+  }
+});
+
+/**
+ * Create file-level user comment
+ * File-level comments are about an entire file, not tied to specific lines
+ */
+router.post('/api/file-comment', async (req, res) => {
+  try {
+    const { pr_id, file, body, commit_sha, parent_id, type, title } = req.body;
+
+    if (!pr_id || !file || !body) {
+      return res.status(400).json({
+        error: 'Missing required fields: pr_id, file, body'
+      });
+    }
+
+    // Validate body is not just whitespace
+    const trimmedBody = body.trim();
+    if (trimmedBody.length === 0) {
+      return res.status(400).json({
+        error: 'Comment body cannot be empty or whitespace only'
+      });
+    }
+
+    const db = req.app.get('db');
+
+    // Verify PR exists
+    const pr = await queryOne(db, `
+      SELECT id FROM pr_metadata WHERE id = ?
+    `, [pr_id]);
+
+    if (!pr) {
+      return res.status(404).json({
+        error: 'Pull request not found'
+      });
+    }
+
+    // Create file-level user comment using repository
+    const commentRepo = new CommentRepository(db);
+    const commentId = await commentRepo.createFileComment({
+      pr_id,
+      file,
+      body: trimmedBody,
+      commit_sha,
+      type,
+      title,
+      parent_id
+    });
+
+    res.json({
+      success: true,
+      commentId,
+      message: 'File-level comment saved successfully'
+    });
+
+  } catch (error) {
+    console.error('Error creating file-level comment:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to create file-level comment'
     });
   }
 });
@@ -198,42 +207,32 @@ router.post('/api/user-comment', async (req, res) => {
       });
     }
 
-    // Create user comment with optional parent_id and metadata
-    // Validate side if provided (must be LEFT or RIGHT)
-    const validSide = side === 'LEFT' ? 'LEFT' : 'RIGHT';
-
-    const result = await run(db, `
-      INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
-        type, title, body, status, parent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
+    // Create user comment using repository
+    const commentRepo = new CommentRepository(db);
+    const commentId = await commentRepo.createLineComment({
       pr_id,
-      'user',
-      'Current User', // TODO: Get actual user from session/config
       file,
       line_start,
-      line_end || line_start,
-      diff_position || null,  // Store diff position for legacy fallback
-      validSide,              // LEFT for deleted lines, RIGHT for added/context
-      commit_sha || null,     // Commit SHA for new GitHub API (line/side/commit_id)
-      type || 'comment',  // Use provided type or default to 'comment'
-      title || null,       // Optional title from AI suggestion
-      body.trim(),
-      'active',
-      parent_id || null    // Link to parent AI suggestion if adopted
-    ]);
+      line_end,
+      diff_position,
+      side,
+      commit_sha,
+      body,
+      parent_id,
+      type,
+      title
+    });
 
     res.json({
       success: true,
-      commentId: result.lastID,
+      commentId,
       message: 'Comment saved successfully'
     });
 
   } catch (error) {
     console.error('Error creating user comment:', error);
     res.status(500).json({
-      error: 'Failed to create comment'
+      error: error.message || 'Failed to create comment'
     });
   }
 });
@@ -281,6 +280,7 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
         body,
         status,
         parent_id,
+        is_file_level,
         created_at,
         updated_at
       FROM comments
@@ -328,6 +328,7 @@ router.get('/api/pr/:id/user-comments', async (req, res) => {
         body,
         status,
         parent_id,
+        is_file_level,
         created_at,
         updated_at
       FROM comments
@@ -355,10 +356,9 @@ router.get('/api/user-comment/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const db = req.app.get('db');
+    const commentRepo = new CommentRepository(db);
 
-    const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND source = 'user'
-    `, [id]);
+    const comment = await commentRepo.getComment(id, 'user');
 
     if (!comment) {
       return res.status(404).json({
@@ -371,7 +371,7 @@ router.get('/api/user-comment/:id', async (req, res) => {
   } catch (error) {
     console.error('Error fetching user comment:', error);
     res.status(500).json({
-      error: 'Failed to fetch comment'
+      error: error.message || 'Failed to fetch comment'
     });
   }
 });
@@ -391,24 +391,10 @@ router.put('/api/user-comment/:id', async (req, res) => {
     }
 
     const db = req.app.get('db');
+    const commentRepo = new CommentRepository(db);
 
-    // Get the comment and verify it exists and is a user comment
-    const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND source = 'user'
-    `, [id]);
-
-    if (!comment) {
-      return res.status(404).json({
-        error: 'User comment not found'
-      });
-    }
-
-    // Update comment
-    await run(db, `
-      UPDATE comments
-      SET body = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [body.trim(), id]);
+    // Update comment using repository
+    await commentRepo.updateComment(id, body);
 
     res.json({
       success: true,
@@ -417,8 +403,16 @@ router.put('/api/user-comment/:id', async (req, res) => {
 
   } catch (error) {
     console.error('Error updating user comment:', error);
+
+    // Return 404 if comment not found
+    if (error.message && error.message.includes('not found')) {
+      return res.status(404).json({
+        error: error.message
+      });
+    }
+
     res.status(500).json({
-      error: 'Failed to update comment'
+      error: error.message || 'Failed to update comment'
     });
   }
 });
@@ -431,24 +425,10 @@ router.delete('/api/user-comment/:id', async (req, res) => {
     const { id } = req.params;
 
     const db = req.app.get('db');
+    const commentRepo = new CommentRepository(db);
 
-    // Get the comment and verify it exists and is a user comment
-    const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND source = 'user'
-    `, [id]);
-
-    if (!comment) {
-      return res.status(404).json({
-        error: 'User comment not found'
-      });
-    }
-
-    // Soft delete by setting status to inactive
-    await run(db, `
-      UPDATE comments
-      SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [id]);
+    // Soft delete using repository
+    await commentRepo.deleteComment(id);
 
     res.json({
       success: true,
@@ -457,8 +437,16 @@ router.delete('/api/user-comment/:id', async (req, res) => {
 
   } catch (error) {
     console.error('Error deleting user comment:', error);
+
+    // Return 404 if comment not found
+    if (error.message && error.message.includes('not found')) {
+      return res.status(404).json({
+        error: error.message
+      });
+    }
+
     res.status(500).json({
-      error: 'Failed to delete comment'
+      error: error.message || 'Failed to delete comment'
     });
   }
 });
@@ -496,22 +484,16 @@ router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => 
     await run(db, 'BEGIN TRANSACTION');
 
     try {
-      // Soft delete all user comments for this PR (active, submitted, or draft)
-      const result = await run(db, `
-        UPDATE comments
-        SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-        WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
-      `, [prMetadata.id]);
+      // Bulk delete using repository
+      const commentRepo = new CommentRepository(db);
+      const deletedCount = await commentRepo.bulkDeleteComments(prMetadata.id);
 
       // Commit transaction
       await run(db, 'COMMIT');
 
-      // Use actual number of affected rows from the UPDATE
-      const deletedCount = result.changes;
-
       res.json({
         success: true,
-        deletedCount: deletedCount,
+        deletedCount,
         message: `Deleted ${deletedCount} user comment${deletedCount !== 1 ? 's' : ''}`
       });
 
@@ -524,7 +506,7 @@ router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => 
   } catch (error) {
     console.error('Error deleting user comments:', error);
     res.status(500).json({
-      error: 'Failed to delete comments'
+      error: error.message || 'Failed to delete comments'
     });
   }
 });

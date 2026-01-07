@@ -208,7 +208,10 @@ class ReviewModal {
    * Update comment count display in modal
    */
   updateCommentCount() {
-    const userComments = document.querySelectorAll('.user-comment-row').length;
+    // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
+    const lineComments = document.querySelectorAll('.user-comment-row').length;
+    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
+    const userComments = lineComments + fileComments;
     const countElement = this.modal.querySelector('.review-comment-count');
     
     if (countElement) {

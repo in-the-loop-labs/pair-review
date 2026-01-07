@@ -12,7 +12,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, ReviewRepository, RepoSettingsRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, CommentRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
@@ -883,6 +883,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
         title,
         body,
         status,
+        is_file_level,
         created_at,
         updated_at
       FROM comments
@@ -904,6 +905,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
           WHEN ai_level = 3 THEN 3
           ELSE 4
         END,
+        is_file_level DESC,
         file,
         line_start
     `, [reviewId, reviewId]);
@@ -958,6 +960,7 @@ router.get('/api/local/:reviewId/user-comments', async (req, res) => {
         body,
         status,
         parent_id,
+        is_file_level,
         created_at,
         updated_at
       FROM comments
@@ -1011,40 +1014,212 @@ router.post('/api/local/:reviewId/user-comments', async (req, res) => {
       });
     }
 
-    // Validate side if provided (must be LEFT or RIGHT)
-    const validSide = side === 'LEFT' ? 'LEFT' : 'RIGHT';
-
-    const result = await run(db, `
-      INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end, diff_position, side,
-        type, title, body, status, parent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      reviewId,
-      'user',
-      'Current User',
+    // Create line-level comment using repository
+    const commentRepo = new CommentRepository(db);
+    const commentId = await commentRepo.createLineComment({
+      pr_id: reviewId,
       file,
       line_start,
-      line_end || line_start,
-      diff_position || null,
-      validSide,
-      type || 'comment',
-      title || null,
-      body.trim(),
-      'active',
-      parent_id || null
-    ]);
+      line_end,
+      diff_position,
+      side,
+      body,
+      parent_id,
+      type,
+      title
+    });
 
     res.json({
       success: true,
-      commentId: result.lastID,
+      commentId,
       message: 'Comment saved successfully'
     });
 
   } catch (error) {
     console.error('Error creating local review user comment:', error);
     res.status(500).json({
-      error: 'Failed to create comment'
+      error: error.message || 'Failed to create comment'
+    });
+  }
+});
+
+/**
+ * Create file-level user comment for a local review
+ * File-level comments are about an entire file, not tied to specific lines
+ */
+router.post('/api/local/:reviewId/file-comment', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const { file, body, parent_id, type, title } = req.body;
+
+    if (!file || !body) {
+      return res.status(400).json({
+        error: 'Missing required fields: file, body'
+      });
+    }
+
+    // Validate body is not just whitespace
+    const trimmedBody = body.trim();
+    if (trimmedBody.length === 0) {
+      return res.status(400).json({
+        error: 'Comment body cannot be empty or whitespace only'
+      });
+    }
+
+    const db = req.app.get('db');
+
+    // Verify review exists
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({
+        error: 'Local review not found'
+      });
+    }
+
+    // Create file-level comment using repository
+    const commentRepo = new CommentRepository(db);
+    const commentId = await commentRepo.createFileComment({
+      pr_id: reviewId,
+      file,
+      body: trimmedBody,
+      type,
+      title,
+      parent_id
+    });
+
+    res.json({
+      success: true,
+      commentId,
+      message: 'File-level comment saved successfully'
+    });
+
+  } catch (error) {
+    console.error('Error creating file-level comment:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to create file-level comment'
+    });
+  }
+});
+
+/**
+ * Update file-level comment in a local review
+ */
+router.put('/api/local/:reviewId/file-comment/:commentId', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const commentId = parseInt(req.params.commentId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    if (isNaN(commentId) || commentId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid comment ID'
+      });
+    }
+
+    const { body } = req.body;
+
+    if (!body || !body.trim()) {
+      return res.status(400).json({
+        error: 'Comment body cannot be empty'
+      });
+    }
+
+    const db = req.app.get('db');
+
+    // Verify the comment exists, belongs to this review, and is a file-level comment
+    const comment = await queryOne(db, `
+      SELECT * FROM comments WHERE id = ? AND pr_id = ? AND source = 'user' AND is_file_level = 1
+    `, [commentId, reviewId]);
+
+    if (!comment) {
+      return res.status(404).json({
+        error: 'File-level comment not found'
+      });
+    }
+
+    // Update comment
+    await run(db, `
+      UPDATE comments
+      SET body = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [body.trim(), commentId]);
+
+    res.json({
+      success: true,
+      message: 'File-level comment updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Error updating file-level comment:', error);
+    res.status(500).json({
+      error: 'Failed to update comment'
+    });
+  }
+});
+
+/**
+ * Delete file-level comment from a local review
+ */
+router.delete('/api/local/:reviewId/file-comment/:commentId', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const commentId = parseInt(req.params.commentId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    if (isNaN(commentId) || commentId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid comment ID'
+      });
+    }
+
+    const db = req.app.get('db');
+
+    // Verify the comment exists, belongs to this review, and is a file-level comment
+    const comment = await queryOne(db, `
+      SELECT * FROM comments WHERE id = ? AND pr_id = ? AND source = 'user' AND is_file_level = 1
+    `, [commentId, reviewId]);
+
+    if (!comment) {
+      return res.status(404).json({
+        error: 'File-level comment not found'
+      });
+    }
+
+    // Soft delete by setting status to inactive
+    await run(db, `
+      UPDATE comments
+      SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [commentId]);
+
+    res.json({
+      success: true,
+      message: 'File-level comment deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error deleting file-level comment:', error);
+    res.status(500).json({
+      error: 'Failed to delete comment'
     });
   }
 });
