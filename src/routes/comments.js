@@ -178,7 +178,7 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
  */
 router.post('/api/file-comment', async (req, res) => {
   try {
-    const { pr_id, file, body, commit_sha } = req.body;
+    const { pr_id, file, body, commit_sha, parent_id, type, title } = req.body;
 
     if (!pr_id || !file || !body) {
       return res.status(400).json({
@@ -207,22 +207,24 @@ router.post('/api/file-comment', async (req, res) => {
       });
     }
 
-    // Create file-level user comment
+    // Create file-level user comment with optional parent_id, type, and title for adopted suggestions
     // line_start, line_end, diff_position, and side are NULL for file-level comments
     const result = await run(db, `
       INSERT INTO comments (
         pr_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
-        type, title, body, status, is_file_level
-      ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL, ?, ?, 1)
+        type, title, body, status, parent_id, is_file_level
+      ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, 1)
     `, [
       pr_id,
       'user',
       'Current User', // TODO: Get actual user from session/config
       file,
       commit_sha || null,
-      'comment',
+      type || 'comment',
+      title || null,
       trimmedBody,
-      'active'
+      'active',
+      parent_id || null
     ]);
 
     res.json({

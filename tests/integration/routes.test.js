@@ -636,6 +636,170 @@ describe('User Comment Endpoints', () => {
       expect(comment).toBeDefined();
       expect(comment.commit_sha).toBe('abc123');
     });
+
+    // Bug fix tests: Verify parent_id, type, and title metadata persistence
+    it('should save parent_id, type, and title for adopted AI suggestions', async () => {
+      // First create an AI suggestion
+      const aiSuggestion = await run(db, `
+        INSERT INTO comments (pr_id, source, file, type, title, body, status, is_file_level)
+        VALUES (?, 'ai', ?, 'improvement', 'Consider refactoring', 'This could be improved', 'active', 1)
+      `, [prId, 'file.js']);
+
+      // Now adopt it as a file-level comment with metadata
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'file.js',
+          body: 'Adopted: This could be improved',
+          parent_id: aiSuggestion.lastID,
+          type: 'ai',
+          title: 'Consider refactoring'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify all metadata fields were saved
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.commentId]);
+      expect(comment.parent_id).toBe(aiSuggestion.lastID);
+      expect(comment.type).toBe('ai');
+      expect(comment.title).toBe('Consider refactoring');
+      expect(comment.body).toBe('Adopted: This could be improved');
+      expect(comment.is_file_level).toBe(1);
+      expect(comment.source).toBe('user');
+    });
+
+    it('should retrieve file-level comment with metadata intact', async () => {
+      // Create a file-level comment with all metadata
+      const createResponse = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'test.js',
+          body: 'File comment with metadata',
+          parent_id: 999,
+          type: 'ai',
+          title: 'Test Title'
+        });
+
+      expect(createResponse.status).toBe(200);
+      const commentId = createResponse.body.commentId;
+
+      // Retrieve the comment
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [commentId]);
+
+      // Verify all metadata persisted
+      expect(comment.parent_id).toBe(999);
+      expect(comment.type).toBe('ai');
+      expect(comment.title).toBe('Test Title');
+      expect(comment.body).toBe('File comment with metadata');
+      expect(comment.file).toBe('test.js');
+    });
+
+    it('should allow regular user comments without metadata', async () => {
+      // Regular user file-level comment without parent_id, type, or title
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'file.js',
+          body: 'Regular user file comment'
+        });
+
+      expect(response.status).toBe(200);
+
+      // Verify comment was created with NULL metadata fields
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.commentId]);
+      expect(comment.parent_id).toBeNull();
+      expect(comment.type).toBe('comment'); // Default type
+      expect(comment.title).toBeNull();
+      expect(comment.body).toBe('Regular user file comment');
+      expect(comment.is_file_level).toBe(1);
+    });
+
+    it('should persist metadata after page reload simulation', async () => {
+      // Simulate adopting an AI suggestion and saving it
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'file.js',
+          body: 'Adopted suggestion body',
+          parent_id: 123,
+          type: 'ai',
+          title: 'Performance Issue'
+        });
+
+      expect(response.status).toBe(200);
+      const commentId = response.body.commentId;
+
+      // Simulate page reload by fetching user comments
+      const getResponse = await request(app)
+        .get('/api/pr/owner/repo/1/user-comments');
+
+      expect(getResponse.status).toBe(200);
+      expect(getResponse.body.comments).toBeDefined();
+
+      // Find our comment
+      const savedComment = getResponse.body.comments.find(c => c.id === commentId);
+      expect(savedComment).toBeDefined();
+      expect(savedComment.parent_id).toBe(123);
+      expect(savedComment.type).toBe('ai');
+      expect(savedComment.title).toBe('Performance Issue');
+      expect(savedComment.body).toBe('Adopted suggestion body');
+    });
+
+    it('should handle partial metadata (only type)', async () => {
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'file.js',
+          body: 'Comment with only type',
+          type: 'suggestion'
+        });
+
+      expect(response.status).toBe(200);
+
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.commentId]);
+      expect(comment.type).toBe('suggestion');
+      expect(comment.parent_id).toBeNull();
+      expect(comment.title).toBeNull();
+    });
+
+    it('should handle partial metadata (only title)', async () => {
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'file.js',
+          body: 'Comment with only title',
+          title: 'Important Note'
+        });
+
+      expect(response.status).toBe(200);
+
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.commentId]);
+      expect(comment.title).toBe('Important Note');
+      expect(comment.parent_id).toBeNull();
+      expect(comment.type).toBe('comment'); // Default
+    });
+
+    it('should default type to "comment" when not provided', async () => {
+      const response = await request(app)
+        .post('/api/file-comment')
+        .send({
+          pr_id: prId,
+          file: 'file.js',
+          body: 'Comment without explicit type'
+        });
+
+      expect(response.status).toBe(200);
+
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.commentId]);
+      expect(comment.type).toBe('comment');
+    });
   });
 
   describe('GET /api/pr/:owner/:repo/:number/user-comments', () => {

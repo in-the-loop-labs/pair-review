@@ -469,7 +469,7 @@ class FileCommentManager {
       const prId = this.prManager?.currentPR?.id;
       const headSha = this.prManager?.currentPR?.head_sha;
 
-      // Create a file-level user comment from the suggestion
+      // Create a file-level user comment from the suggestion, including parent_id/type/title for adopted suggestions
       const createResponse = await fetch('/api/file-comment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -477,7 +477,10 @@ class FileCommentManager {
           pr_id: prId,
           file: suggestion.file,
           body: suggestion.body,
-          commit_sha: headSha
+          commit_sha: headSha,
+          parent_id: suggestion.id,
+          type: suggestion.type,
+          title: suggestion.title
         })
       });
 
@@ -691,7 +694,7 @@ class FileCommentManager {
       const prId = this.prManager?.currentPR?.id;
       const headSha = this.prManager?.currentPR?.head_sha;
 
-      // Create a file-level user comment with the edited body
+      // Create a file-level user comment with the edited body, including parent_id/type/title for adopted suggestions
       const createResponse = await fetch('/api/file-comment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -699,7 +702,10 @@ class FileCommentManager {
           pr_id: prId,
           file: suggestion.file,
           body: editedBody,
-          commit_sha: headSha
+          commit_sha: headSha,
+          parent_id: suggestion.id,
+          type: suggestion.type,
+          title: suggestion.title
         })
       });
 

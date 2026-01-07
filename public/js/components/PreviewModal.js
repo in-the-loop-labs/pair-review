@@ -223,29 +223,29 @@ class PreviewModal {
       }
       text += `## ${file}\n`;
 
-      // Add file-level comments section if any exist
+      // Add file-level comments - each gets its own header
       if (fileComments.length > 0) {
-        text += `### File Comments\n`;
         fileComments.forEach((comment, index) => {
-          text += `- File comment ${index + 1}: ${comment.body}\n`;
+          text += `\n### File Comment ${index + 1}:\n`;
+          text += `${comment.body}\n`;
         });
       }
 
-      // Add line-level comments section if any exist
+      // Add line-level comments - each gets its own header
       if (lineComments.length > 0) {
         // Sort line comments by line number
         lineComments.sort((a, b) => (a.line_start || 0) - (b.line_start || 0));
 
-        text += `### Line Comments\n`;
         lineComments.forEach(comment => {
-          // Format line number(s)
+          // Format line number(s) for header
           let lineInfo;
           if (comment.line_end && comment.line_end !== comment.line_start) {
-            lineInfo = `Lines ${comment.line_start}-${comment.line_end}`;
+            lineInfo = `lines ${comment.line_start}-${comment.line_end}`;
           } else {
-            lineInfo = `Line ${comment.line_start}`;
+            lineInfo = `line ${comment.line_start}`;
           }
-          text += `- ${lineInfo}: ${comment.body}\n`;
+          text += `\n### Line Comment (${lineInfo}):\n`;
+          text += `${comment.body}\n`;
         });
       }
     });
