@@ -13,7 +13,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, WorktreeRepository } = require('../database');
+const { query, queryOne, run, WorktreeRepository, ReviewRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
@@ -532,6 +532,71 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
       });
     }
 
+    const db = req.app.get('db');
+
+    // Handle local mode - owner='local' and number is a review ID
+    if (owner === 'local') {
+      const reviewId = parseInt(number);
+      if (isNaN(reviewId) || reviewId <= 0) {
+        return res.status(400).json({
+          error: 'Invalid review ID for local mode'
+        });
+      }
+
+      const reviewRepo = new ReviewRepository(db);
+      const review = await reviewRepo.getLocalReviewById(reviewId);
+
+      if (!review) {
+        return res.status(404).json({
+          error: 'Local review not found'
+        });
+      }
+
+      const localPath = review.local_path;
+      if (!localPath) {
+        return res.status(404).json({
+          error: 'Local review missing path'
+        });
+      }
+
+      // Construct file path in local repository
+      const filePath = path.join(localPath, fileName);
+
+      try {
+        // Security check - resolve symlinks and ensure file is within local path
+        const realFilePath = await fs.realpath(filePath);
+        const realLocalPath = await fs.realpath(localPath);
+        if (!realFilePath.startsWith(realLocalPath + path.sep) && realFilePath !== realLocalPath) {
+          return res.status(403).json({
+            error: 'Access denied: path outside repository'
+          });
+        }
+
+        const content = await fs.readFile(realFilePath, 'utf8');
+        const lines = content.split('\n');
+
+        return res.json({
+          fileName,
+          lines,
+          totalLines: lines.length
+        });
+
+      } catch (fileError) {
+        if (fileError.code === 'ENOENT') {
+          return res.status(404).json({
+            error: 'File not found in local repository'
+          });
+        } else if (fileError.code === 'EISDIR') {
+          return res.status(400).json({
+            error: 'Path is a directory, not a file'
+          });
+        } else {
+          throw fileError;
+        }
+      }
+    }
+
+    // Standard PR mode handling
     const prNumber = parseInt(number);
     if (isNaN(prNumber) || prNumber <= 0) {
       return res.status(400).json({
@@ -539,7 +604,6 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
       });
     }
 
-    const db = req.app.get('db');
     const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
 
@@ -553,16 +617,18 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
     // Construct file path in worktree (use base branch version)
     const filePath = path.join(worktreePath, fileName);
 
-    // Security check - ensure file is within worktree
-    if (!filePath.startsWith(worktreePath)) {
-      return res.status(400).json({
-        error: 'Invalid file path'
-      });
-    }
-
     try {
+      // Security check - resolve symlinks and ensure file is within worktree
+      const realFilePath = await fs.realpath(filePath);
+      const realWorktreePath = await fs.realpath(worktreePath);
+      if (!realFilePath.startsWith(realWorktreePath + path.sep) && realFilePath !== realWorktreePath) {
+        return res.status(403).json({
+          error: 'Access denied: path outside repository'
+        });
+      }
+
       // Read file content and split into lines
-      const content = await fs.readFile(filePath, 'utf8');
+      const content = await fs.readFile(realFilePath, 'utf8');
       const lines = content.split('\n');
 
       res.json({

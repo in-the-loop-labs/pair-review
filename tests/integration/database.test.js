@@ -785,6 +785,103 @@ describe('ReviewRepository', () => {
       expect(reviews[0].pr_number).toBe(1); // Most recently updated
     });
   });
+
+  describe('getLocalReviewById()', () => {
+    it('should return null for non-existent ID', async () => {
+      const review = await reviewRepo.getLocalReviewById(999);
+      expect(review).toBeNull();
+    });
+
+    it('should return null for PR review (review_type != local)', async () => {
+      // Create a standard PR review
+      const created = await reviewRepo.createReview({
+        prNumber: 123,
+        repository: 'owner/repo'
+      });
+
+      // getLocalReviewById should not find it since it's a PR review
+      const review = await reviewRepo.getLocalReviewById(created.id);
+      expect(review).toBeNull();
+    });
+
+    it('should retrieve local review by ID', async () => {
+      // Insert a local review directly
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/path/to/repo', 'abc123']);
+
+      const inserted = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      const review = await reviewRepo.getLocalReviewById(inserted.id);
+      expect(review).not.toBeNull();
+      expect(review.id).toBe(inserted.id);
+      expect(review.review_type).toBe('local');
+      expect(review.local_path).toBe('/path/to/repo');
+      expect(review.local_head_sha).toBe('abc123');
+    });
+
+    it('should include all required fields', async () => {
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha, custom_instructions)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/path/to/repo', 'abc123', 'Focus on security']);
+
+      const inserted = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      const review = await reviewRepo.getLocalReviewById(inserted.id);
+
+      // Check all fields are present
+      expect(review.id).toBeDefined();
+      expect(review.pr_number).toBeNull();
+      expect(review.repository).toBe('test-repo');
+      expect(review.status).toBe('draft');
+      expect(review.review_type).toBe('local');
+      expect(review.local_path).toBe('/path/to/repo');
+      expect(review.local_head_sha).toBe('abc123');
+      expect(review.custom_instructions).toBe('Focus on security');
+      expect(review.created_at).toBeDefined();
+      expect(review.updated_at).toBeDefined();
+    });
+
+    it('should parse review_data JSON', async () => {
+      const reviewData = { key: 'value', nested: { data: true } };
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, review_data)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/path/to/repo', JSON.stringify(reviewData)]);
+
+      const inserted = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      const review = await reviewRepo.getLocalReviewById(inserted.id);
+      expect(review.review_data).toEqual(reviewData);
+    });
+
+    it('should handle null review_data', async () => {
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path)
+        VALUES (?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/path/to/repo']);
+
+      const inserted = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      const review = await reviewRepo.getLocalReviewById(inserted.id);
+      expect(review.review_data).toBeNull();
+    });
+
+    it('should handle null local_path', async () => {
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path)
+        VALUES (?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', null]);
+
+      const inserted = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      const review = await reviewRepo.getLocalReviewById(inserted.id);
+      expect(review).not.toBeNull();
+      expect(review.local_path).toBeNull();
+    });
+  });
 });
 
 // ============================================================================

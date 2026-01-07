@@ -899,7 +899,6 @@ Output JSON with this structure:
     // For local mode, PR metadata won't exist - use provided changedFiles as fallback
     if (validFilePaths.length === 0 && changedFiles && changedFiles.length > 0) {
       validFilePaths = changedFiles.map(f => normalizePath(f));
-      logger.info(`[FAILSAFE] Using provided changed files for local mode validation: ${validFilePaths.length} files`);
     }
 
     // Create a Set of normalized valid paths for O(1) lookup
@@ -973,7 +972,7 @@ Output JSON with this structure:
       `, [prId]);
 
       if (!prMetadata || !prMetadata.pr_data) {
-        logger.warn(`[FAILSAFE] No PR metadata found for prId ${prId}`);
+        // This is expected for local mode - not a warning condition
         return [];
       }
 

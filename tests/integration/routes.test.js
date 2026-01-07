@@ -1612,3 +1612,384 @@ describe('Local Review Check-Stale Endpoint', () => {
     });
   });
 });
+
+// ============================================================================
+// File Content Endpoint Tests
+// ============================================================================
+
+describe('File Content Endpoints', () => {
+  let db;
+  let app;
+  let fsRealpathSpy;
+  let fsReadFileSpy;
+
+  // Import fs for spying
+  const fs = require('fs').promises;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    // Reset fs spies
+    fsRealpathSpy = vi.spyOn(fs, 'realpath');
+    fsReadFileSpy = vi.spyOn(fs, 'readFile');
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+    vi.clearAllMocks();
+    fsRealpathSpy?.mockRestore();
+    fsReadFileSpy?.mockRestore();
+  });
+
+  describe('GET /api/file-content-original/:fileName (Local Mode)', () => {
+    it('should detect owner=local and use review ID', async () => {
+      // Insert a local review
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+
+      const review = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      // Mock fs operations
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('line1\nline2\nline3');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'local', repo: 'test-repo', number: review.id });
+
+      expect(response.status).toBe(200);
+      expect(response.body.fileName).toBe('src/test.js');
+      expect(response.body.lines).toEqual(['line1', 'line2', 'line3']);
+      expect(response.body.totalLines).toBe(3);
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'local', repo: 'test-repo', number: 'invalid' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return 400 for negative review ID', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'local', repo: 'test-repo', number: '-1' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return 400 for zero review ID', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'local', repo: 'test-repo', number: '0' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return 404 when local review not found', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'local', repo: 'test-repo', number: '999' });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('Local review not found');
+    });
+
+    it('should return 404 when review exists but local_path is NULL', async () => {
+      // Insert a local review without local_path
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path)
+        VALUES (?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', null]);
+
+      const review = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'local', repo: 'test-repo', number: review.id });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('missing path');
+    });
+
+    it('should return 404 for non-existent file in local repo', async () => {
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+
+      const review = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      // Mock fs.realpath to throw ENOENT
+      const enoentError = new Error('ENOENT: no such file or directory');
+      enoentError.code = 'ENOENT';
+      fsRealpathSpy.mockRejectedValue(enoentError);
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/nonexistent.js')
+        .query({ owner: 'local', repo: 'test-repo', number: review.id });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('File not found');
+    });
+
+    it('should return 403 for path traversal attempts', async () => {
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+
+      const review = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      // Mock realpath to return path outside repository (simulating symlink escape)
+      fsRealpathSpy.mockImplementation(async (p) => {
+        if (p === '/tmp/test-repo') return '/tmp/test-repo';
+        return '/etc/passwd'; // Escaped path
+      });
+
+      const response = await request(app)
+        .get('/api/file-content-original/evil-symlink')
+        .query({ owner: 'local', repo: 'test-repo', number: review.id });
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain('Access denied');
+    });
+
+    it('should return 400 when path is a directory', async () => {
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+
+      const review = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      // Mock realpath to succeed, but readFile to throw EISDIR
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      const eisdirError = new Error('EISDIR: illegal operation on a directory');
+      eisdirError.code = 'EISDIR';
+      fsReadFileSpy.mockRejectedValue(eisdirError);
+
+      const response = await request(app)
+        .get('/api/file-content-original/src')
+        .query({ owner: 'local', repo: 'test-repo', number: review.id });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('directory');
+    });
+
+    it('should handle URL-encoded file names', async () => {
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+
+      const review = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('content');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src%2Futils%2Ftest.js')
+        .query({ owner: 'local', repo: 'test-repo', number: review.id });
+
+      expect(response.status).toBe(200);
+      expect(response.body.fileName).toBe('src/utils/test.js');
+    });
+  });
+
+  describe('GET /api/file-content-original/:fileName (PR Mode)', () => {
+    it('should return file content from worktree for valid request', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('line1\nline2\nline3');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'owner', repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.fileName).toBe('src/test.js');
+      expect(response.body.lines).toEqual(['line1', 'line2', 'line3']);
+      expect(response.body.totalLines).toBe(3);
+    });
+
+    it('should return 400 when owner is missing', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Missing required parameters');
+    });
+
+    it('should return 400 when repo is missing', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'owner', number: '1' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Missing required parameters');
+    });
+
+    it('should return 400 when number is missing', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'owner', repo: 'repo' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Missing required parameters');
+    });
+
+    it('should return 400 for invalid PR number (non-numeric)', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'owner', repo: 'repo', number: 'invalid' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid pull request number');
+    });
+
+    it('should return 400 for negative PR number', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'owner', repo: 'repo', number: '-1' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid pull request number');
+    });
+
+    it('should return 400 for zero PR number', async () => {
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'owner', repo: 'repo', number: '0' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid pull request number');
+    });
+
+    it('should return 404 when worktree does not exist', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+
+      // Mock worktreeExists to return false
+      vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValueOnce(false);
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'owner', repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('Worktree not found');
+    });
+
+    it('should return 404 for non-existent file in worktree', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      const enoentError = new Error('ENOENT: no such file or directory');
+      enoentError.code = 'ENOENT';
+      fsRealpathSpy.mockRejectedValue(enoentError);
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/nonexistent.js')
+        .query({ owner: 'owner', repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('File not found');
+    });
+
+    it('should return 403 for path traversal attempts via symlinks', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      // Mock realpath to return path outside worktree (simulating symlink escape)
+      fsRealpathSpy.mockImplementation(async (p) => {
+        if (p === '/tmp/worktree/test') return '/tmp/worktree/test';
+        return '/etc/passwd'; // Escaped path
+      });
+
+      const response = await request(app)
+        .get('/api/file-content-original/evil-symlink')
+        .query({ owner: 'owner', repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain('Access denied');
+    });
+
+    it('should return 400 when path is a directory', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      const eisdirError = new Error('EISDIR: illegal operation on a directory');
+      eisdirError.code = 'EISDIR';
+      fsReadFileSpy.mockRejectedValue(eisdirError);
+
+      const response = await request(app)
+        .get('/api/file-content-original/src')
+        .query({ owner: 'owner', repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('directory');
+    });
+
+    it('should handle URL-encoded file names correctly', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('content');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src%2Futils%2Ftest.js')
+        .query({ owner: 'owner', repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.fileName).toBe('src/utils/test.js');
+    });
+
+    it('should handle files with empty content', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/empty.js')
+        .query({ owner: 'owner', repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.lines).toEqual(['']);
+      expect(response.body.totalLines).toBe(1);
+    });
+
+    it('should handle files with many lines', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      const manyLines = Array.from({ length: 1000 }, (_, i) => `line ${i + 1}`).join('\n');
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue(manyLines);
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/large.js')
+        .query({ owner: 'owner', repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.totalLines).toBe(1000);
+      expect(response.body.lines[0]).toBe('line 1');
+      expect(response.body.lines[999]).toBe('line 1000');
+    });
+  });
+});
