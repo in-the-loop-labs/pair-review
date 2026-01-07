@@ -20,15 +20,10 @@ class PRArgumentParser {
     }
 
     const input = args[0];
+    const result = this.parsePRUrl(input);
 
-    // Check if input is a GitHub URL
-    if (input.startsWith('https://github.com/')) {
-      return this.parseGitHubURL(input);
-    }
-
-    // Check if input is a Graphite URL
-    if (input.startsWith('https://app.graphite.dev/') || input.startsWith('https://app.graphite.com/')) {
-      return this.parseGraphiteURL(input);
+    if (result) {
+      return result;
     }
 
     // Check if input is a PR number
@@ -40,6 +35,48 @@ class PRArgumentParser {
     // Parse repository from current directory's git remote
     const { owner, repo } = await this.parseRepositoryFromGitRemote();
     return { owner, repo, number: prNumber };
+  }
+
+  /**
+   * Parse a PR URL string and extract owner, repo, and PR number
+   * Handles both GitHub and Graphite URLs, with or without protocol
+   * @param {string} url - The PR URL to parse
+   * @returns {Object|null} { owner, repo, number } or null if not a valid PR URL
+   */
+  parsePRUrl(url) {
+    if (!url || typeof url !== 'string') {
+      return null;
+    }
+
+    // Clean up the URL - trim whitespace
+    let normalizedUrl = url.trim();
+
+    // Add https:// if no protocol is present
+    if (normalizedUrl.startsWith('github.com')) {
+      normalizedUrl = 'https://' + normalizedUrl;
+    } else if (normalizedUrl.startsWith('app.graphite.dev') || normalizedUrl.startsWith('app.graphite.com')) {
+      normalizedUrl = 'https://' + normalizedUrl;
+    }
+
+    // Check if input is a GitHub URL
+    if (normalizedUrl.startsWith('https://github.com/')) {
+      try {
+        return this.parseGitHubURL(normalizedUrl);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // Check if input is a Graphite URL
+    if (normalizedUrl.startsWith('https://app.graphite.dev/') || normalizedUrl.startsWith('https://app.graphite.com/')) {
+      try {
+        return this.parseGraphiteURL(normalizedUrl);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    return null;
   }
 
   /**

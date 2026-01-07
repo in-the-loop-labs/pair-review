@@ -40,6 +40,63 @@ describe('PRArgumentParser', () => {
     });
   });
 
+  describe('parsePRUrl', () => {
+    it('should parse GitHub URL with protocol', () => {
+      const result = parser.parsePRUrl('https://github.com/owner/repo/pull/123');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123 });
+    });
+
+    it('should parse GitHub URL without protocol', () => {
+      const result = parser.parsePRUrl('github.com/owner/repo/pull/456');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 456 });
+    });
+
+    it('should parse Graphite .dev URL with protocol', () => {
+      const result = parser.parsePRUrl('https://app.graphite.dev/github/pr/shop/world/337891');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+    });
+
+    it('should parse Graphite .com URL with protocol', () => {
+      const result = parser.parsePRUrl('https://app.graphite.com/github/pr/shop/world/337891');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+    });
+
+    it('should parse Graphite .dev URL without protocol', () => {
+      const result = parser.parsePRUrl('app.graphite.dev/github/pr/shop/world/337891');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+    });
+
+    it('should parse Graphite .com URL without protocol', () => {
+      const result = parser.parsePRUrl('app.graphite.com/github/pr/shop/world/337891');
+      expect(result).toEqual({ owner: 'shop', repo: 'world', number: 337891 });
+    });
+
+    it('should handle whitespace around URL', () => {
+      const result = parser.parsePRUrl('  https://github.com/owner/repo/pull/789  ');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 789 });
+    });
+
+    it('should return null for invalid URL', () => {
+      expect(parser.parsePRUrl('not-a-url')).toBeNull();
+    });
+
+    it('should return null for non-PR URL', () => {
+      expect(parser.parsePRUrl('https://github.com/owner/repo')).toBeNull();
+    });
+
+    it('should return null for empty string', () => {
+      expect(parser.parsePRUrl('')).toBeNull();
+    });
+
+    it('should return null for null input', () => {
+      expect(parser.parsePRUrl(null)).toBeNull();
+    });
+
+    it('should return null for non-string input', () => {
+      expect(parser.parsePRUrl(123)).toBeNull();
+    });
+  });
+
   describe('parseGraphiteURL', () => {
     it('should parse Graphite URL with .dev domain', () => {
       const result = parser.parseGraphiteURL('https://app.graphite.dev/github/pr/shop/world/337891');
