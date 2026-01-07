@@ -20,6 +20,7 @@ const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
+const simpleGit = require('simple-git');
 
 const router = express.Router();
 
@@ -614,7 +615,48 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
       });
     }
 
-    // Construct file path in worktree (use base branch version)
+    // Get base_sha from the stored PR data
+    // Context expansion needs content from the BASE version (old lines), not HEAD
+    const repository = `${owner}/${repo}`;
+    const prRecord = await queryOne(db, `
+      SELECT pr_data FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    let baseSha = null;
+    if (prRecord?.pr_data) {
+      try {
+        const prData = JSON.parse(prRecord.pr_data);
+        baseSha = prData.base_sha;
+      } catch (parseError) {
+        console.warn('Could not parse pr_data for base_sha:', parseError.message);
+      }
+    }
+
+    // If we have base_sha, use git show to get the BASE version of the file
+    // This is critical for correct line number mapping during context expansion
+    if (baseSha) {
+      try {
+        const git = simpleGit(worktreePath);
+        // git show base_sha:path/to/file returns the file content at that commit
+        const content = await git.show([`${baseSha}:${fileName}`]);
+        const lines = content.split('\n');
+
+        return res.json({
+          fileName,
+          lines,
+          totalLines: lines.length
+        });
+      } catch (gitError) {
+        // Fall through to filesystem read if git show fails for any reason:
+        // - File might not exist at base_sha (new file)
+        // - Worktree might not be a valid git repo (test environment)
+        // - Git command might fail for other reasons
+        console.log(`Could not read ${fileName} from base commit, falling back to HEAD: ${gitError.message}`);
+      }
+    }
+
+    // Fallback: Read from filesystem (HEAD version) if base_sha unavailable or file is new
     const filePath = path.join(worktreePath, fileName);
 
     try {
