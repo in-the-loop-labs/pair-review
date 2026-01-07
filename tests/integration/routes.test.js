@@ -2192,6 +2192,51 @@ describe('File Content Endpoints', () => {
       expect(response.status).toBe(200);
       expect(response.body.fileName).toBe('src/utils/test.js');
     });
+
+    // Note: Local mode now uses git show local_head_sha:fileName for context expansion
+    // to ensure line numbers match the diff's "before" state.
+    // Tests below verify the fallback behavior when git show fails.
+
+    it('should fall back to filesystem read when git show fails for new files in local mode', async () => {
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+
+      const review = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      // The real simple-git will fail because the path doesn't exist,
+      // which causes the code to fall back to filesystem read
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('content from working directory');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/new-file.js')
+        .query({ owner: 'local', repo: 'test-repo', number: review.id });
+
+      expect(response.status).toBe(200);
+      expect(response.body.lines).toEqual(['content from working directory']);
+    });
+
+    it('should skip git show when local_head_sha is not available', async () => {
+      // Insert a local review without local_head_sha
+      await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path)
+        VALUES (?, ?, ?, ?, ?)
+      `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo']);
+
+      const review = await queryOne(db, 'SELECT id FROM reviews WHERE review_type = ?', ['local']);
+
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('working directory content');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'local', repo: 'test-repo', number: review.id });
+
+      expect(response.status).toBe(200);
+      expect(response.body.lines).toEqual(['working directory content']);
+    });
   });
 
   describe('GET /api/file-content-original/:fileName (PR Mode)', () => {
@@ -2378,6 +2423,79 @@ describe('File Content Endpoints', () => {
       expect(response.body.totalLines).toBe(1000);
       expect(response.body.lines[0]).toBe('line 1');
       expect(response.body.lines[999]).toBe('line 1000');
+    });
+
+    // Note: The git show base_sha:fileName functionality is tested via the fallback behavior.
+    // When git show fails (as it does in tests due to non-existent worktree directories),
+    // it falls back to filesystem read. The implementation is verified through:
+    // 1. The code path exists and is exercised (see console log "falling back to HEAD")
+    // 2. The fallback behavior works correctly (tests below)
+    // Full git show testing requires E2E tests with a real git repository.
+
+    it('should fall back to filesystem read when git show fails for new files', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      // The real simple-git will fail because the worktree doesn't exist,
+      // which causes the code to fall back to filesystem read
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('filesystem content for new file');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/new-file.js')
+        .query({ owner: 'owner', repo: 'repo', number: '1' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.lines).toEqual(['filesystem content for new file']);
+    });
+
+    it('should skip git show when base_sha is not available in pr_data', async () => {
+      // Insert PR without base_sha in pr_data
+      const prDataWithoutBase = JSON.stringify({
+        state: 'open',
+        diff: 'diff content',
+        changed_files: [{ file: 'file.js', additions: 1, deletions: 0 }],
+        // No base_sha field
+        head_sha: 'def456'
+      });
+
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [2, 'owner/repo', 'Test PR', 'Description', 'user', 'main', 'feature', prDataWithoutBase]);
+
+      await insertTestWorktree(db, 2, 'owner/repo');
+
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('head version content');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'owner', repo: 'repo', number: '2' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.lines).toEqual(['head version content']);
+    });
+
+    it('should handle corrupted pr_data JSON gracefully', async () => {
+      // Insert PR with invalid JSON in pr_data
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [3, 'owner/repo', 'Test PR', 'Description', 'user', 'main', 'feature', 'not valid json']);
+
+      await insertTestWorktree(db, 3, 'owner/repo');
+
+      fsRealpathSpy.mockImplementation(async (p) => p);
+      fsReadFileSpy.mockResolvedValue('content from filesystem');
+
+      const response = await request(app)
+        .get('/api/file-content-original/src/test.js')
+        .query({ owner: 'owner', repo: 'repo', number: '3' });
+
+      // Should gracefully fall back to filesystem read when JSON parsing fails
+      expect(response.status).toBe(200);
+      expect(response.body.lines).toEqual(['content from filesystem']);
     });
   });
 });

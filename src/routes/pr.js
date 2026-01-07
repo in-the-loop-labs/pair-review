@@ -560,7 +560,34 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
         });
       }
 
-      // Construct file path in local repository
+      // Get local_head_sha for correct line number mapping during context expansion
+      // Local mode diffs are generated against HEAD, so we need the HEAD version
+      const localHeadSha = review.local_head_sha;
+
+      // If we have local_head_sha, use git show to get the HEAD version of the file
+      // This ensures line numbers match the diff's "before" state
+      if (localHeadSha) {
+        try {
+          const git = simpleGit(localPath);
+          // git show HEAD_SHA:path/to/file returns the file content at that commit
+          const content = await git.show([`${localHeadSha}:${fileName}`]);
+          const lines = content.split('\n');
+
+          return res.json({
+            fileName,
+            lines,
+            totalLines: lines.length
+          });
+        } catch (gitError) {
+          // Fall through to filesystem read if git show fails for any reason:
+          // - File might not exist at HEAD (new file in working directory)
+          // - Git command might fail for other reasons
+          logger.warn({ err: gitError, fileName }, 'Could not read file from HEAD commit in local mode, falling back to working directory');
+        }
+      }
+
+      // Fallback: Read from filesystem (working directory version)
+      // This handles new files or cases where git show fails
       const filePath = path.join(localPath, fileName);
 
       try {
@@ -652,7 +679,7 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
         // - File might not exist at base_sha (new file)
         // - Worktree might not be a valid git repo (test environment)
         // - Git command might fail for other reasons
-        console.log(`Could not read ${fileName} from base commit, falling back to HEAD: ${gitError.message}`);
+        logger.warn({ err: gitError, fileName }, 'Could not read file from base commit, falling back to HEAD');
       }
     }
 
