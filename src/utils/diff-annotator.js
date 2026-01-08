@@ -305,6 +305,8 @@ function annotateDiff(rawDiff) {
       oldLineNum++;
     } else if (line.startsWith(' ') || line === '') {
       // Context line: both line numbers
+      // Note: The `line === ''` check handles edge cases in malformed diffs or
+      // diffs where a blank line in the original file appears without a leading space
       const marker = getLineMarker(line);
       const content = line === '' ? '' : getLineContent(line);
       output.push(`${formatLineNum(oldLineNum, lineNumWidth)} | ${formatLineNum(newLineNum, lineNumWidth)} | ${marker} ${content}`);

@@ -168,11 +168,11 @@ function validateSuggestionLineNumbers(suggestions, fileLineCountMap, options = 
         is_file_level: true
       };
       result.converted.push(convertedSuggestion);
-      logger.warn(`[Line Validation] Converting suggestion to file-level: "${suggestion.title}" (invalid line ${lineStart} in ${filePath})`);
+      logger.warn(`[Line Validation] Converting suggestion to file-level: "${suggestion.title}" (${reason})`);
     } else {
       // Drop the suggestion
       result.dropped.push(suggestion);
-      logger.warn(`[Line Validation] Dropping suggestion: "${suggestion.title}" (invalid line ${lineStart} in ${filePath})`);
+      logger.warn(`[Line Validation] Dropping suggestion: "${suggestion.title}" (${reason})`);
     }
   }
 

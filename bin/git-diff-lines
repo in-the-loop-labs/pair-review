@@ -73,8 +73,9 @@ function executeGitDiff(args) {
     });
 
     gitProcess.on('close', (code) => {
-      if (code !== 0 && stderr) {
-        // Git diff can return non-zero for various reasons, only fail if there's stderr
+      // Exit code 1 from git diff means "differences found" (normal behavior)
+      // Exit code 2+ typically indicates actual errors
+      if (code > 1 || (code !== 0 && stderr)) {
         reject(new Error(`git diff failed: ${stderr.trim()}`));
       } else {
         resolve(stdout);

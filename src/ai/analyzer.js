@@ -315,9 +315,13 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
 
     const lines = ['', '## File Line Counts for Validation'];
     for (const [filePath, lineCount] of fileLineCountMap) {
-      if (lineCount > 0) { // Skip binary/missing files
+      if (lineCount === 0) {
+        // Empty files are valid text files - any line-specific suggestion would be invalid
+        lines.push(`- ${filePath}: 0 lines (empty file)`);
+      } else if (lineCount > 0) {
         lines.push(`- ${filePath}: ${lineCount} lines`);
       }
+      // Skip binary/missing files (lineCount === -1)
     }
     lines.push('');
     lines.push('Verify that all suggestion line numbers are within these bounds.');
@@ -646,9 +650,6 @@ ${prMetadata.description || '(No description provided)'}
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
     const lineNumberGuidance = this.buildLineNumberGuidance();
 
-    const diffCmd = this.buildGitDiffCommand(prMetadata);
-    const diffCmdWithFile = this.buildGitDiffCommand(prMetadata, '<file>');
-
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 2 Review - Analyze File Context
 ${lineNumberGuidance}
@@ -749,8 +750,6 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const lineNumberGuidance = this.buildLineNumberGuidance();
-
-    const diffCmd = this.buildGitDiffCommand(prMetadata);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 1 Review - Analyze Changes in Isolation

@@ -103,8 +103,13 @@ describe('diff-annotator', () => {
       expect(getLineMarker('-removed line')).toBe('[-]');
     });
 
-    it('should return spaces for context', () => {
+    it('should return spaces for context lines with leading space', () => {
       expect(getLineMarker(' context line')).toBe('   ');
+    });
+
+    it('should return spaces for lines without +/- prefix (default fallback)', () => {
+      // Lines without +/- prefix fall through to the default case
+      // This handles edge cases and malformed diffs
       expect(getLineMarker('context without leading space')).toBe('   ');
     });
   });

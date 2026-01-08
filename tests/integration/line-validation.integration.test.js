@@ -11,6 +11,8 @@ describe('Line Validation Integration', () => {
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'line-validation-'));
     // Create test files with varying content
+    // Note: 'small.js' has trailing newline to verify line counting logic handles it correctly
+    // (a file with "a\nb\nc\n" should count as 3 lines, not 4)
     fs.writeFileSync(path.join(tempDir, 'small.js'), 'line1\nline2\nline3\n');
     fs.writeFileSync(path.join(tempDir, 'large.js'), Array(100).fill('// line').join('\n'));
     fs.writeFileSync(path.join(tempDir, 'empty.js'), '');
