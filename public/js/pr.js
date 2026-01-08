@@ -694,6 +694,8 @@ class PRManager {
       const gapStartOld = prevBlockEnd.old + 1;
       const gapEndOld = (blockBounds.old || block.oldStart) - 1;
       const gapSize = gapEndOld - gapStartOld + 1;
+      // Calculate the corresponding NEW line number for correct right-side display
+      const gapStartNew = prevBlockEnd.new + 1;
 
       // Create gap section if there's a gap
       if (gapSize > 0 && !isFirstHunk) {
@@ -705,7 +707,8 @@ class PRManager {
           gapEndOld,
           gapSize,
           position,
-          (controls, direction, count) => this.expandGapContext(controls, direction, count)
+          (controls, direction, count) => this.expandGapContext(controls, direction, count),
+          gapStartNew  // Pass NEW line number for correct right-side display
         );
         tbody.appendChild(gapRow);
 
@@ -715,6 +718,9 @@ class PRManager {
         }
       } else if (gapSize > 0 && isFirstHunk) {
         // Create "expand up" section at file start
+        // For the gap before the first hunk, lines are unchanged context starting at line 1
+        // Both OLD and NEW versions have these lines, but their line numbers may differ
+        // if the first hunk doesn't start at the same position in both versions
         const gapRow = window.HunkParser.createGapSection(
           null,
           fileName,
@@ -722,7 +728,8 @@ class PRManager {
           gapEndOld,
           gapEndOld,
           'above',
-          (controls, direction, count) => this.expandGapContext(controls, direction, count)
+          (controls, direction, count) => this.expandGapContext(controls, direction, count),
+          1  // NEW also starts at line 1 for first-hunk gaps
         );
         tbody.appendChild(gapRow);
       }
@@ -909,6 +916,12 @@ class PRManager {
     const startLine = parseInt(controls.dataset.startLine);
     const endLine = parseInt(controls.dataset.endLine);
     const position = controls.dataset.position || 'between';
+    // Get the NEW line number start for correct right-side display
+    // Use nullish coalescing to handle edge case where startLineNew could be 0
+    const parsedStartLineNew = parseInt(controls.dataset.startLineNew);
+    const startLineNew = !isNaN(parsedStartLineNew) ? parsedStartLineNew : startLine;
+    // Calculate offset between OLD and NEW line numbers
+    const lineOffset = startLineNew - startLine;
 
     // Find the gap row by matching the controls element
     // The controls element is stored on the row as row.expandControls but is NOT in the DOM
@@ -976,7 +989,8 @@ class PRManager {
             newGapEnd,
             remainingGap,
             position, // Preserve original position (above/between/below)
-            (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt)
+            (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
+            startLineNew  // Preserve the NEW line number offset
           );
           fragment.appendChild(newGapRow);
         }
@@ -996,7 +1010,7 @@ class PRManager {
         const lineData = {
           type: 'context',
           oldNumber: lineNumber,
-          newNumber: lineNumber,
+          newNumber: lineNumber + lineOffset,  // Apply offset for correct right-side line number
           content: content || ''
         };
 
@@ -1011,13 +1025,18 @@ class PRManager {
       if (direction === 'down' && newGapStart <= endLine) {
         const remainingGap = endLine - newGapStart + 1;
         if (remainingGap > 0) {
+          // Calculate the new startLineNew for the remaining gap
+          // It should advance by the same amount as the OLD line numbers
+          const expandedCount = newGapStart - startLine;
+          const newStartLineNew = startLineNew + expandedCount;
           const newGapRow = window.HunkParser.createGapRowElement(
             fileName,
             newGapStart,
             endLine,
             remainingGap,
             position, // Preserve original position (above/between/below)
-            (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt)
+            (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
+            newStartLineNew  // Updated NEW line number for remaining gap
           );
           fragment.appendChild(newGapRow);
         }
@@ -1040,6 +1059,12 @@ class PRManager {
     const fileName = controls.dataset.fileName;
     const gapStart = parseInt(controls.dataset.startLine);
     const gapEnd = parseInt(controls.dataset.endLine);
+    // Get the NEW line number start for correct right-side display
+    // Use isNaN check to handle edge case where startLineNew could be 0
+    const parsedGapStartNew = parseInt(controls.dataset.startLineNew);
+    const gapStartNew = !isNaN(parsedGapStartNew) ? parsedGapStartNew : gapStart;
+    // Calculate offset between OLD and NEW line numbers
+    const lineOffset = gapStartNew - gapStart;
     const tbody = gapRow.closest('tbody');
 
     if (!tbody || !this.currentPR) return;
@@ -1065,7 +1090,8 @@ class PRManager {
           expandStart - 1,
           gapAboveSize,
           'above',
-          (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt)
+          (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
+          gapStartNew  // Preserve the NEW line number offset
         );
         fragment.appendChild(aboveRow);
       }
@@ -1077,7 +1103,7 @@ class PRManager {
         const lineData = {
           type: 'context',
           oldNumber: lineNumber,
-          newNumber: lineNumber,
+          newNumber: lineNumber + lineOffset,  // Apply offset for correct right-side line number
           content: content || ''
         };
 
@@ -1091,13 +1117,16 @@ class PRManager {
       // Create gap below if needed
       const gapBelowSize = gapEnd - expandEnd;
       if (gapBelowSize > 0) {
+        // Calculate the NEW start line for the gap below
+        const belowGapStartNew = (expandEnd + 1) + lineOffset;
         const belowRow = window.HunkParser.createGapRowElement(
           fileName,
           expandEnd + 1,
           gapEnd,
           gapBelowSize,
           'below',
-          (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt)
+          (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
+          belowGapStartNew  // Updated NEW line number for gap below
         );
         fragment.appendChild(belowRow);
       }
