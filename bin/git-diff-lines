@@ -24,10 +24,14 @@ const { annotateDiff } = require('../src/utils/diff-annotator');
 function printHelp() {
   console.log(`git-diff-lines - Annotated diff with explicit line numbers
 
-Usage: git-diff-lines [git-diff-options]
+Usage: git-diff-lines [--cwd <path>] [git-diff-options]
 
 This script wraps 'git diff' and adds explicit OLD and NEW line numbers
 to make it easier to reference specific lines in code reviews.
+
+Options:
+  --cwd <path>    Run git diff in the specified directory (useful when
+                  the script is invoked from a different working directory)
 
 Output format:
   === filename.js ===
@@ -41,6 +45,7 @@ All standard git diff options are supported:
   git-diff-lines main...feature   # Compare branches
   git-diff-lines -- src/          # Limit to specific path
   git-diff-lines --cached         # Show staged changes
+  git-diff-lines --cwd /path/to/repo HEAD~1  # Run in specific directory
 
 For git diff help, run: git diff --help`);
 }
@@ -48,14 +53,22 @@ For git diff help, run: git diff --help`);
 /**
  * Execute git diff with the provided arguments and return the output
  * @param {string[]} args - Arguments to pass to git diff
+ * @param {string|null} cwd - Optional working directory to run git diff in
  * @returns {Promise<string>} The git diff output
  */
-function executeGitDiff(args) {
+function executeGitDiff(args, cwd = null) {
   return new Promise((resolve, reject) => {
-    const gitProcess = spawn('git', ['diff', ...args], {
-      cwd: process.cwd(),
+    // Use explicit cwd if provided, otherwise let git inherit from parent process.
+    // The --cwd option is important when this script is invoked from an environment
+    // where the working directory may not match the target repository (e.g., when
+    // called by Claude Code, the CWD inheritance can be unreliable).
+    const spawnOptions = {
       stdio: ['inherit', 'pipe', 'pipe']
-    });
+    };
+    if (cwd) {
+      spawnOptions.cwd = cwd;
+    }
+    const gitProcess = spawn('git', ['diff', ...args], spawnOptions);
 
     let stdout = '';
     let stderr = '';
@@ -90,7 +103,7 @@ function executeGitDiff(args) {
 async function main() {
   try {
     // Get command line arguments (excluding 'node' and script path)
-    const args = process.argv.slice(2);
+    let args = process.argv.slice(2);
 
     // Check for help flags
     if (args.includes('-h') || args.includes('--help')) {
@@ -98,8 +111,21 @@ async function main() {
       return;
     }
 
+    // Parse --cwd option (must come before git diff args)
+    let cwd = null;
+    const cwdIndex = args.indexOf('--cwd');
+    if (cwdIndex !== -1) {
+      if (cwdIndex + 1 >= args.length) {
+        console.error('Error: --cwd requires a path argument');
+        process.exit(1);
+      }
+      cwd = args[cwdIndex + 1];
+      // Remove --cwd and its argument from args
+      args = [...args.slice(0, cwdIndex), ...args.slice(cwdIndex + 2)];
+    }
+
     // Execute git diff with the provided arguments
-    const rawDiff = await executeGitDiff(args);
+    const rawDiff = await executeGitDiff(args, cwd);
 
     // If no diff output, exit silently (same behavior as git diff)
     if (!rawDiff || rawDiff.trim() === '') {

@@ -747,6 +747,67 @@ describe('Analyzer.buildLineNumberGuidance', () => {
     expect(result).toContain('CONTEXT lines: use the NEW column number');
     expect(result).toContain('DELETED lines [-]: use the OLD column number');
   });
+
+  describe('--cwd option handling', () => {
+    it('should include --cwd option when worktreePath is provided', () => {
+      const worktreePath = '/path/to/worktree';
+      const result = analyzer.buildLineNumberGuidance(worktreePath);
+
+      expect(result).toContain('--cwd "/path/to/worktree"');
+    });
+
+    it('should omit --cwd when worktreePath is null', () => {
+      const result = analyzer.buildLineNumberGuidance(null);
+
+      // Should contain the script path but not --cwd
+      const scriptPath = analyzer.getAnnotatedDiffScriptPath();
+      expect(result).toContain(scriptPath);
+      expect(result).not.toContain('--cwd');
+    });
+
+    it('should omit --cwd when worktreePath is undefined (default)', () => {
+      const result = analyzer.buildLineNumberGuidance();
+
+      expect(result).not.toContain('--cwd');
+    });
+
+    it('should omit --cwd when worktreePath is empty string', () => {
+      const result = analyzer.buildLineNumberGuidance('');
+
+      expect(result).not.toContain('--cwd');
+    });
+
+    it('should properly quote worktreePath in the command', () => {
+      const worktreePath = '/path/with spaces/to/worktree';
+      const result = analyzer.buildLineNumberGuidance(worktreePath);
+
+      // The path should be quoted to handle spaces
+      expect(result).toContain('--cwd "/path/with spaces/to/worktree"');
+    });
+
+    it('should include --cwd in both the command block and example usage', () => {
+      const worktreePath = '/my/worktree';
+      const result = analyzer.buildLineNumberGuidance(worktreePath);
+      const scriptPath = analyzer.getAnnotatedDiffScriptPath();
+
+      // The command with --cwd should appear in the code block
+      const fullCommand = `${scriptPath} --cwd "/my/worktree"`;
+      expect(result).toContain(fullCommand);
+
+      // It should also appear in the example usage lines
+      expect(result).toContain(`${fullCommand} HEAD~1`);
+      expect(result).toContain(`${fullCommand} -- src/`);
+    });
+
+    it('should format command correctly with typical worktree path', () => {
+      const worktreePath = '/Users/dev/.pair-review/worktrees/pr-123';
+      const result = analyzer.buildLineNumberGuidance(worktreePath);
+      const scriptPath = analyzer.getAnnotatedDiffScriptPath();
+
+      const expectedCommand = `${scriptPath} --cwd "/Users/dev/.pair-review/worktrees/pr-123"`;
+      expect(result).toContain(expectedCommand);
+    });
+  });
 });
 
 describe('Analyzer.buildFileLineCountsSection', () => {
