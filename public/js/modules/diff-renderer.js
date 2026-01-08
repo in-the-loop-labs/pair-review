@@ -220,7 +220,10 @@ class DiffRenderer {
 
     // Add mouseover/mouseup handlers for drag selection
     if (lineNumber && options.lineTracker) {
-      row.style.userSelect = 'none';
+      // Note: We intentionally do NOT set user-select: none on the row
+      // Text selection in code is important for users to copy/paste code snippets
+      // The drag-to-select-lines feature uses mousedown on the comment button
+      // which already calls e.preventDefault() to prevent text selection interference
 
       if (options.onMouseOver) {
         row.onmouseover = (e) => options.onMouseOver(e, row, lineNumber, fileName);
