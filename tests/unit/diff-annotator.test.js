@@ -157,11 +157,12 @@ index abc123..def456 100644
 
       expect(lines[0]).toBe('=== test.js ===');
       expect(lines[1]).toBe(' OLD | NEW |');
-      expect(lines[2]).toMatch(/^\s+1 \|\s+1 \|     line 1$/);
-      expect(lines[3]).toMatch(/^\s+2 \|\s+2 \|     line 2$/);
-      expect(lines[4]).toMatch(/^\s+-- \|\s+3 \| \[\+\] new line 3$/);
-      expect(lines[5]).toMatch(/^\s+-- \|\s+4 \| \[\+\] new line 4$/);
-      expect(lines[6]).toMatch(/^\s+3 \|\s+5 \|     line 3$/);
+      expect(lines[2]).toBe('@@ OLD:1 NEW:1 @@'); // Hunk header
+      expect(lines[3]).toMatch(/^\s+1 \|\s+1 \|     line 1$/);
+      expect(lines[4]).toMatch(/^\s+2 \|\s+2 \|     line 2$/);
+      expect(lines[5]).toMatch(/^\s+-- \|\s+3 \| \[\+\] new line 3$/);
+      expect(lines[6]).toMatch(/^\s+-- \|\s+4 \| \[\+\] new line 4$/);
+      expect(lines[7]).toMatch(/^\s+3 \|\s+5 \|     line 3$/);
     });
 
     it('should annotate diff with deletions only', () => {
@@ -181,11 +182,12 @@ index abc123..def456 100644
 
       expect(lines[0]).toBe('=== test.js ===');
       expect(lines[1]).toBe(' OLD | NEW |');
-      expect(lines[2]).toMatch(/^\s+1 \|\s+1 \|     line 1$/);
-      expect(lines[3]).toMatch(/^\s+2 \|\s+-- \| \[-\] deleted line 2$/);
-      expect(lines[4]).toMatch(/^\s+3 \|\s+-- \| \[-\] deleted line 3$/);
-      expect(lines[5]).toMatch(/^\s+4 \|\s+2 \|     line 4$/);
-      expect(lines[6]).toMatch(/^\s+5 \|\s+3 \|     line 5$/);
+      expect(lines[2]).toBe('@@ OLD:1 NEW:1 @@'); // Hunk header
+      expect(lines[3]).toMatch(/^\s+1 \|\s+1 \|     line 1$/);
+      expect(lines[4]).toMatch(/^\s+2 \|\s+-- \| \[-\] deleted line 2$/);
+      expect(lines[5]).toMatch(/^\s+3 \|\s+-- \| \[-\] deleted line 3$/);
+      expect(lines[6]).toMatch(/^\s+4 \|\s+2 \|     line 4$/);
+      expect(lines[7]).toMatch(/^\s+5 \|\s+3 \|     line 5$/);
     });
 
     it('should annotate mixed additions/deletions/context', () => {
@@ -205,22 +207,23 @@ index abc123..def456 100644
 
       expect(lines[0]).toBe('=== helper.js ===');
       expect(lines[1]).toBe(' OLD | NEW |');
+      expect(lines[2]).toBe('@@ OLD:10 NEW:12 @@'); // Hunk header
       // Content preserves original spacing from the diff (source has 2-space indent)
-      expect(lines[2]).toContain('10 |');
-      expect(lines[2]).toContain('12 |');
-      expect(lines[2]).toContain('function calculate(a, b) {');
-      expect(lines[3]).toContain('11 |');
-      expect(lines[3]).toContain('[-]');
-      expect(lines[3]).toContain('const legacy = true;');
-      expect(lines[4]).toContain('13 |');
-      expect(lines[4]).toContain('[+]');
-      expect(lines[4]).toContain('const validated = validate(a);');
-      expect(lines[5]).toContain('12 |');
-      expect(lines[5]).toContain('14 |');
-      expect(lines[5]).toContain('return a + b;');
-      expect(lines[6]).toContain('13 |');
-      expect(lines[6]).toContain('15 |');
-      expect(lines[6]).toContain('}');
+      expect(lines[3]).toContain('10 |');
+      expect(lines[3]).toContain('12 |');
+      expect(lines[3]).toContain('function calculate(a, b) {');
+      expect(lines[4]).toContain('11 |');
+      expect(lines[4]).toContain('[-]');
+      expect(lines[4]).toContain('const legacy = true;');
+      expect(lines[5]).toContain('13 |');
+      expect(lines[5]).toContain('[+]');
+      expect(lines[5]).toContain('const validated = validate(a);');
+      expect(lines[6]).toContain('12 |');
+      expect(lines[6]).toContain('14 |');
+      expect(lines[6]).toContain('return a + b;');
+      expect(lines[7]).toContain('13 |');
+      expect(lines[7]).toContain('15 |');
+      expect(lines[7]).toContain('}');
     });
 
     it('should handle multiple files in one diff', () => {
@@ -462,6 +465,69 @@ index abc123..def456 100644
       const logCLine = lines.find(l => l.includes("console.log('c')"));
       expect(logCLine).toContain('12 |');
     });
+
+    it('should output hunk headers with line numbers for chunk boundaries', () => {
+      const rawDiff = `diff --git a/test.js b/test.js
+index abc123..def456 100644
+--- a/test.js
++++ b/test.js
+@@ -1,3 +1,4 @@
+ line 1
++new line
+ line 3
+ line 4`;
+
+      const result = annotateDiff(rawDiff);
+
+      // Should contain hunk header marker with starting line numbers
+      expect(result).toContain('@@ OLD:1 NEW:1 @@');
+    });
+
+    it('should output hunk headers with function context when present', () => {
+      const rawDiff = `diff --git a/test.js b/test.js
+index abc123..def456 100644
+--- a/test.js
++++ b/test.js
+@@ -50,4 +50,5 @@ function myFunction() {
+   const x = 1;
++  const y = 2;
+   return x;
+ }`;
+
+      const result = annotateDiff(rawDiff);
+
+      // Should contain hunk header with function context
+      expect(result).toContain('@@ OLD:50 NEW:50 @@ function myFunction() {');
+    });
+
+    it('should output multiple hunk headers for discontinuous chunks', () => {
+      const rawDiff = `diff --git a/test.js b/test.js
+index abc123..def456 100644
+--- a/test.js
++++ b/test.js
+@@ -1,3 +1,4 @@
+ line 1
++new line 2
+ line 3
+ line 4
+@@ -100,3 +101,4 @@ class Example {
+ method() {
++  // new comment
+   return true;
+ }`;
+
+      const result = annotateDiff(rawDiff);
+
+      // Should have two hunk headers marking chunk boundaries
+      expect(result).toContain('@@ OLD:1 NEW:1 @@');
+      expect(result).toContain('@@ OLD:100 NEW:101 @@ class Example {');
+
+      // Verify discontinuity is visible - lines jump from ~4 to ~100
+      const lines = result.split('\n');
+      const firstHunkIndex = lines.findIndex(l => l.includes('OLD:1 NEW:1'));
+      const secondHunkIndex = lines.findIndex(l => l.includes('OLD:100 NEW:101'));
+      expect(secondHunkIndex).toBeGreaterThan(firstHunkIndex);
+    });
   });
 
   describe('parseAnnotatedDiff', () => {
@@ -537,6 +603,74 @@ Binary file (not annotated)`;
       expect(files.length).toBe(1);
       expect(files[0].path).toBe('old.js -> new.js');
     });
+
+    it('should parse hunk headers as chunk boundaries', () => {
+      const annotated = `=== test.js ===
+ OLD | NEW |
+@@ OLD:1 NEW:1 @@
+   1 |   1 |     line 1
+  -- |   2 | [+] new line
+   2 |   3 |     line 2`;
+
+      const files = parseAnnotatedDiff(annotated);
+
+      expect(files.length).toBe(1);
+      expect(files[0].lines.length).toBe(4); // hunk header + 3 content lines
+
+      // First item should be hunk header
+      expect(files[0].lines[0]).toEqual({
+        type: 'hunk',
+        oldStart: 1,
+        newStart: 1,
+        context: null
+      });
+    });
+
+    it('should parse hunk headers with function context', () => {
+      const annotated = `=== test.js ===
+ OLD | NEW |
+@@ OLD:50 NEW:50 @@ function myFunction() {
+  50 |  50 |       const x = 1;
+  -- |  51 | [+]   const y = 2;`;
+
+      const files = parseAnnotatedDiff(annotated);
+
+      expect(files[0].lines[0]).toEqual({
+        type: 'hunk',
+        oldStart: 50,
+        newStart: 50,
+        context: 'function myFunction() {'
+      });
+    });
+
+    it('should parse multiple hunk headers for discontinuous chunks', () => {
+      const annotated = `=== test.js ===
+ OLD | NEW |
+@@ OLD:1 NEW:1 @@
+   1 |   1 |     line 1
+  -- |   2 | [+] new line
+@@ OLD:100 NEW:101 @@ class Example {
+ 100 | 101 |     method() {
+  -- | 102 | [+]   // comment`;
+
+      const files = parseAnnotatedDiff(annotated);
+
+      expect(files[0].lines.length).toBe(6); // 2 hunk headers + 4 content lines
+
+      expect(files[0].lines[0]).toEqual({
+        type: 'hunk',
+        oldStart: 1,
+        newStart: 1,
+        context: null
+      });
+
+      expect(files[0].lines[3]).toEqual({
+        type: 'hunk',
+        oldStart: 100,
+        newStart: 101,
+        context: 'class Example {'
+      });
+    });
   });
 
   describe('integration: round-trip parsing', () => {
@@ -557,7 +691,7 @@ index abc123..def456 100644
 
       expect(parsed.length).toBe(1);
       expect(parsed[0].path).toBe('test.js');
-      expect(parsed[0].lines.length).toBe(5);
+      expect(parsed[0].lines.length).toBe(6); // 1 hunk header + 5 content lines
 
       // Verify the modification
       const deletedLine = parsed[0].lines.find(l => l.type === 'delete');
@@ -570,6 +704,46 @@ index abc123..def456 100644
       expect(addedLine.content).toBe('const b = 3;');
       expect(addedLine.oldLineNum).toBeNull();
       expect(addedLine.newLineNum).toBe(2);
+    });
+
+    it('should preserve hunk headers in round-trip parsing', () => {
+      const rawDiff = `diff --git a/test.js b/test.js
+index abc123..def456 100644
+--- a/test.js
++++ b/test.js
+@@ -1,3 +1,4 @@
+ line 1
++new line
+ line 3
+ line 4
+@@ -50,3 +51,4 @@ function example() {
+ body
++new body line
+ end`;
+
+      const annotated = annotateDiff(rawDiff);
+      const parsed = parseAnnotatedDiff(annotated);
+
+      expect(parsed.length).toBe(1);
+      expect(parsed[0].path).toBe('test.js');
+
+      // Find hunk headers
+      const hunkHeaders = parsed[0].lines.filter(l => l.type === 'hunk');
+      expect(hunkHeaders.length).toBe(2);
+
+      expect(hunkHeaders[0]).toEqual({
+        type: 'hunk',
+        oldStart: 1,
+        newStart: 1,
+        context: null
+      });
+
+      expect(hunkHeaders[1]).toEqual({
+        type: 'hunk',
+        oldStart: 50,
+        newStart: 51,
+        context: 'function example() {'
+      });
     });
   });
 });

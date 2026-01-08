@@ -253,6 +253,15 @@ function annotateDiff(rawDiff) {
         fileHeaderOutput = true;
       }
 
+      // Output hunk header marker to preserve chunk boundaries
+      // Format: @@ OLD:start NEW:start @@ [function context]
+      // This gives context without the full git syntax, and indicates discontinuity
+      let hunkHeaderLine = `@@ OLD:${hunkInfo.oldStart} NEW:${hunkInfo.newStart} @@`;
+      if (hunkInfo.context) {
+        hunkHeaderLine += ` ${hunkInfo.context}`;
+      }
+      output.push(hunkHeaderLine);
+
       oldLineNum = hunkInfo.oldStart;
       newLineNum = hunkInfo.newStart;
       lineNumWidth = calculateLineNumWidth(hunkInfo);
@@ -352,6 +361,18 @@ function parseAnnotatedDiff(annotatedDiff) {
       if (currentFile) {
         currentFile.isBinary = true;
       }
+      continue;
+    }
+
+    // Parse hunk header (chunk boundary marker)
+    const hunkMatch = line.match(/^@@ OLD:(\d+) NEW:(\d+) @@(.*)$/);
+    if (hunkMatch && currentFile) {
+      currentFile.lines.push({
+        type: 'hunk',
+        oldStart: parseInt(hunkMatch[1], 10),
+        newStart: parseInt(hunkMatch[2], 10),
+        context: hunkMatch[3].trim() || null
+      });
       continue;
     }
 
