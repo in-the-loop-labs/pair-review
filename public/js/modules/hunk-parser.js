@@ -43,13 +43,14 @@ class HunkParser {
   /**
    * Create the expand controls metadata element
    * @param {string} fileName - File name
-   * @param {number} startLine - Start line number
-   * @param {number} endLine - End line number
+   * @param {number} startLine - Start line number (OLD/left side)
+   * @param {number} endLine - End line number (OLD/left side)
    * @param {number} gapSize - Number of hidden lines
    * @param {string} position - Position ('above', 'below', or 'between')
+   * @param {number} startLineNew - Start line number for NEW/right side (optional, defaults to startLine)
    * @returns {HTMLElement} The expand controls element with dataset properties
    */
-  static createExpandControlsElement(fileName, startLine, endLine, gapSize, position) {
+  static createExpandControlsElement(fileName, startLine, endLine, gapSize, position, startLineNew = null) {
     const expandControls = document.createElement('div');
     expandControls.className = 'context-expand-controls';
     expandControls.dataset.fileName = fileName;
@@ -58,6 +59,8 @@ class HunkParser {
     expandControls.dataset.hiddenCount = gapSize;
     expandControls.dataset.position = position;
     expandControls.dataset.isGap = 'true';
+    // Store the NEW line number start for correct right-side line numbers during expansion
+    expandControls.dataset.startLineNew = startLineNew ?? startLine;
     return expandControls;
   }
 
@@ -233,14 +236,15 @@ class HunkParser {
    * Create gap section for expandable context between diff blocks
    * @param {HTMLElement} tbody - Table body element
    * @param {string} fileName - File name
-   * @param {number} startLine - Start line number
-   * @param {number} endLine - End line number
+   * @param {number} startLine - Start line number (OLD/left side)
+   * @param {number} endLine - End line number (OLD/left side)
    * @param {number} gapSize - Number of hidden lines
    * @param {string} position - Position ('above', 'below', or 'between')
    * @param {Function} expandCallback - Callback function for expanding gaps
+   * @param {number} startLineNew - Start line number for NEW/right side (optional)
    * @returns {HTMLElement} The created gap row
    */
-  static createGapSection(tbody, fileName, startLine, endLine, gapSize, position, expandCallback) {
+  static createGapSection(tbody, fileName, startLine, endLine, gapSize, position, expandCallback, startLineNew = null) {
     // Create a row for the gap between diff blocks
     const row = document.createElement('tr');
     row.className = 'context-expand-row';
@@ -249,7 +253,7 @@ class HunkParser {
     const { oldLineCell, newLineCell } = HunkParser.createLineNumberCells();
 
     // Create expand controls container for metadata using helper
-    const expandControls = HunkParser.createExpandControlsElement(fileName, startLine, endLine, gapSize, position);
+    const expandControls = HunkParser.createExpandControlsElement(fileName, startLine, endLine, gapSize, position, startLineNew);
 
     // Create expand buttons using helper (handles position-based icon logic)
     const buttonContainer = HunkParser.createExpandButtons(gapSize, position, expandControls, expandCallback);
@@ -276,14 +280,15 @@ class HunkParser {
    * Create a gap row element for partial expansion
    * Similar to createGapSection but returns the element instead of appending to tbody
    * @param {string} fileName - File name
-   * @param {number} startLine - Start line number
-   * @param {number} endLine - End line number
+   * @param {number} startLine - Start line number (OLD/left side)
+   * @param {number} endLine - End line number (OLD/left side)
    * @param {number} gapSize - Number of hidden lines
    * @param {string} position - Position ('above', 'below', or 'between')
    * @param {Function} expandCallback - Callback function for expanding gaps
+   * @param {number} startLineNew - Start line number for NEW/right side (optional)
    * @returns {HTMLElement} The created gap row element
    */
-  static createGapRowElement(fileName, startLine, endLine, gapSize, position, expandCallback) {
+  static createGapRowElement(fileName, startLine, endLine, gapSize, position, expandCallback, startLineNew = null) {
     const row = document.createElement('tr');
     row.className = 'context-expand-row';
 
@@ -291,7 +296,7 @@ class HunkParser {
     const { oldLineCell, newLineCell } = HunkParser.createLineNumberCells();
 
     // Create expand controls with metadata using helper
-    const expandControls = HunkParser.createExpandControlsElement(fileName, startLine, endLine, gapSize, position);
+    const expandControls = HunkParser.createExpandControlsElement(fileName, startLine, endLine, gapSize, position, startLineNew);
 
     // Create expand buttons using helper
     // Note: This always uses 'between' position logic since partial expansions show expand-all

@@ -94,6 +94,10 @@ const mockAISuggestions = [
 ];
 
 const mockWorktreeResponses = {
+  // This diff tests the line number offset scenario:
+  // - utils.js: First hunk at line 1-8 has +3 net change (adds 4, removes 1)
+  // - utils.js: Second hunk at OLD line 50, NEW line 53 (offset = +3)
+  //   The gap between hunks (lines 9-49 in OLD) should map to (lines 12-52 in NEW)
   generateUnifiedDiff: `diff --git a/src/utils.js b/src/utils.js
 --- a/src/utils.js
 +++ b/src/utils.js
@@ -105,6 +109,12 @@ const mockWorktreeResponses = {
 +  // Improved implementation
 +  const result = computeValue();
 +  return result;
+ }
+@@ -50,4 +53,4 @@
+ // Another section of code
+ function exportData() {
+-  return data;
++  return JSON.stringify(data);
  }
 
 diff --git a/src/main.js b/src/main.js
@@ -123,7 +133,7 @@ diff --git a/src/main.js b/src/main.js
  }`,
   getWorktreePath: '/tmp/worktree/e2e-test',
   getChangedFiles: [
-    { file: 'src/utils.js', additions: 4, deletions: 1 },
+    { file: 'src/utils.js', additions: 5, deletions: 2 },
     { file: 'src/main.js', additions: 5, deletions: 0 }
   ]
 };

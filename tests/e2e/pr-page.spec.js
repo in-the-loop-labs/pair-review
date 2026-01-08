@@ -124,6 +124,75 @@ test.describe('PR Page', () => {
       const count = await hunkHeaders.count();
       expect(count).toBeGreaterThan(0);
     });
+
+    test('should show expandable gap section between hunks', async ({ page }) => {
+      await page.goto('/pr/test-owner/test-repo/1');
+      await waitForDiffToRender(page);
+
+      // Look for expand controls (context-expand-row) between hunks
+      // utils.js has a gap between line 8 and line 50 in the mock data
+      const expandRows = page.locator('.context-expand-row');
+      const count = await expandRows.count();
+
+      // There should be at least one expandable gap for utils.js (between hunks)
+      expect(count).toBeGreaterThan(0);
+    });
+
+    test('should expand context and show correct line numbers with offset', async ({ page }) => {
+      // This test verifies that when context is expanded between hunks,
+      // the line numbers correctly account for additions/deletions in previous hunks.
+      // The utils.js mock diff has: first hunk at lines 1-8 with +3 net change,
+      // second hunk at OLD line 50/NEW line 53. Gap between should have offset of +3.
+      //
+      // NOTE: For more comprehensive testing of line offset edge cases (multiple hunks,
+      // zero offsets, negative offsets), consider adding unit tests for the offset
+      // calculation logic in expandGapContext and expandGapRange functions.
+
+      await page.goto('/pr/test-owner/test-repo/1');
+      await waitForDiffToRender(page);
+
+      // Find the utils.js file wrapper (the main container, not individual rows)
+      const utilsSection = page.locator('.d2h-file-wrapper[data-file-name="src/utils.js"]');
+      await expect(utilsSection).toBeVisible();
+
+      // Look for expandable gap in utils.js (between first and second hunk)
+      // The gap is between OLD lines 8-49, but with +3 offset, NEW lines would be 11-52
+      const expandControls = utilsSection.locator('.context-expand-controls');
+      const expandControlsCount = await expandControls.count();
+
+      if (expandControlsCount > 0) {
+        // Get the expand button and click it
+        const expandButton = utilsSection.locator('.expand-button').first();
+
+        if (await expandButton.isVisible()) {
+          await expandButton.click();
+
+          // Wait for expanded lines to appear (expectation-based wait, not fixed timeout)
+          // The newly-expanded class is added to lines after expansion
+          const expandedLines = utilsSection.locator('.newly-expanded');
+          await expect(expandedLines.first()).toBeVisible({ timeout: 2000 });
+
+          // Verify we have expanded context lines
+          const linesCount = await expandedLines.count();
+          expect(linesCount).toBeGreaterThan(0);
+
+          // Verify line numbers have correct offset applied
+          // The first expanded line after hunk 1 (ending at OLD line 8) should have:
+          // - OLD line number: 9 (first line after hunk 1 ends at line 8)
+          // - NEW line number: 12 (9 + offset of 3, since hunk 1 added 3 net lines)
+          const firstExpandedLine = expandedLines.first();
+
+          // Get the line number spans from the expanded line
+          const oldLineNum = await firstExpandedLine.locator('.line-num1').textContent();
+          const newLineNum = await firstExpandedLine.locator('.line-num2').textContent();
+
+          // OLD line should be 9 (start of gap after first hunk)
+          expect(oldLineNum?.trim()).toBe('9');
+          // NEW line should be 12 (9 + 3 offset from first hunk's net additions)
+          expect(newLineNum?.trim()).toBe('12');
+        }
+      }
+    });
   });
 
   test.describe('File Navigation', () => {
