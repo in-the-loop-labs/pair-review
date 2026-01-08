@@ -815,3 +815,107 @@ describe('Analyzer.buildFileLineCountsSection', () => {
     expect(result).not.toContain('data.bin');
   });
 });
+
+describe('Analyzer.validateAndFinalizeSuggestions', () => {
+  let analyzer;
+  let warnSpy;
+  let infoSpy;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+    warnSpy = vi.spyOn(logger, 'warn');
+    infoSpy = vi.spyOn(logger, 'info');
+  });
+
+  it('should validate suggestions through both file path and line number validation', () => {
+    const suggestions = [
+      { file: 'src/valid.js', line_start: 5, line_end: 10, title: 'Valid suggestion', type: 'bug' }
+    ];
+    const fileLineCountMap = new Map([['src/valid.js', 100]]);
+    const validFiles = ['src/valid.js'];
+
+    const result = analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].file).toBe('src/valid.js');
+  });
+
+  it('should filter out suggestions with invalid file paths', () => {
+    const suggestions = [
+      { file: 'src/valid.js', line_start: 5, line_end: 10, title: 'Valid', type: 'bug' },
+      { file: 'src/invalid.js', line_start: 5, line_end: 10, title: 'Invalid path', type: 'bug' }
+    ];
+    const fileLineCountMap = new Map([['src/valid.js', 100]]);
+    const validFiles = ['src/valid.js'];
+
+    const result = analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].file).toBe('src/valid.js');
+  });
+
+  it('should convert suggestions with invalid line numbers to file-level', () => {
+    const suggestions = [
+      { file: 'src/foo.js', line_start: 500, line_end: 510, title: 'Invalid lines', type: 'bug' }
+    ];
+    const fileLineCountMap = new Map([['src/foo.js', 100]]);
+    const validFiles = ['src/foo.js'];
+
+    const result = analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].line_start).toBeNull();
+    expect(result[0].line_end).toBeNull();
+    expect(result[0].is_file_level).toBe(true);
+  });
+
+  it('should log info about validation steps', () => {
+    const suggestions = [
+      { file: 'src/foo.js', line_start: 5, line_end: 10, title: 'Test', type: 'bug' }
+    ];
+    const fileLineCountMap = new Map([['src/foo.js', 100]]);
+    const validFiles = ['src/foo.js'];
+
+    analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+
+    expect(infoSpy).toHaveBeenCalledWith('[Validation] Starting validation with 1 input suggestions');
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('[Validation] Final:'));
+  });
+
+  it('should log warning when all suggestions are filtered out', () => {
+    const suggestions = [
+      { file: 'src/invalid.js', line_start: 5, line_end: 10, title: 'Invalid', type: 'bug' }
+    ];
+    const fileLineCountMap = new Map([['src/valid.js', 100]]);
+    const validFiles = ['src/valid.js'];
+
+    const result = analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+
+    expect(result).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalledWith('[Validation] WARNING: All 1 suggestions were filtered out!');
+  });
+
+  it('should log filtering breakdown when suggestions are filtered', () => {
+    const suggestions = [
+      { file: 'src/invalid.js', line_start: 5, line_end: 10, title: 'Invalid path', type: 'bug' },
+      { file: 'src/valid.js', line_start: 5, line_end: 10, title: 'Valid', type: 'bug' }
+    ];
+    const fileLineCountMap = new Map([['src/valid.js', 100]]);
+    const validFiles = ['src/valid.js'];
+
+    analyzer.validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles);
+
+    expect(infoSpy).toHaveBeenCalledWith('[Validation] After file path validation: 1 suggestions (1 filtered)');
+  });
+
+  it('should handle empty suggestions array', () => {
+    const result = analyzer.validateAndFinalizeSuggestions([], new Map(), []);
+    expect(result).toEqual([]);
+  });
+
+  it('should handle null suggestions', () => {
+    const result = analyzer.validateAndFinalizeSuggestions(null, new Map(), []);
+    expect(result).toEqual([]);
+  });
+});

@@ -182,11 +182,19 @@ class Analyzer {
    * @returns {Array} Finalized suggestions (valid + converted)
    */
   validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles) {
+    const inputCount = suggestions?.length || 0;
+    logger.info(`[Validation] Starting validation with ${inputCount} input suggestions`);
+
     // Validate suggestion file paths against PR diff
     const validatedSuggestions = this.validateSuggestionFilePaths(
       suggestions,
       validFiles
     );
+
+    const afterPathValidation = validatedSuggestions.length;
+    if (afterPathValidation < inputCount) {
+      logger.info(`[Validation] After file path validation: ${afterPathValidation} suggestions (${inputCount - afterPathValidation} filtered)`);
+    }
 
     // Line number validation with conversion to file-level
     const lineValidationResult = validateSuggestionLineNumbers(
@@ -197,6 +205,25 @@ class Analyzer {
 
     if (lineValidationResult.converted.length > 0) {
       logger.warn(`[Line Validation] Converted ${lineValidationResult.converted.length} suggestions to file-level due to invalid line numbers`);
+    }
+
+    const finalCount = lineValidationResult.valid.length + lineValidationResult.converted.length;
+    logger.info(`[Validation] Final: ${finalCount} suggestions (${lineValidationResult.valid.length} valid, ${lineValidationResult.converted.length} converted)`);
+
+    // Debug: If all suggestions were filtered out, log details
+    if (finalCount === 0 && inputCount > 0) {
+      logger.warn(`[Validation] WARNING: All ${inputCount} suggestions were filtered out!`);
+      logger.warn(`[Validation] File path filtering removed: ${inputCount - afterPathValidation}`);
+      // Note: With convertToFileLevel=true, invalid line numbers are converted (not dropped)
+      // Log both converted and dropped counts for clarity
+      const droppedCount = lineValidationResult.dropped?.length || 0;
+      const convertedCount = lineValidationResult.converted?.length || 0;
+      if (droppedCount > 0) {
+        logger.warn(`[Validation] Line validation dropped: ${droppedCount}`);
+      }
+      if (convertedCount > 0) {
+        logger.warn(`[Validation] Line validation converted to file-level: ${convertedCount}`);
+      }
     }
 
     // Return valid + converted suggestions
@@ -2074,6 +2101,28 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       // Parse the orchestrated response
       const orchestratedSuggestions = this.parseResponse(response, 'orchestration');
+
+      // Debug: If orchestration returned 0 suggestions but there was input, log for investigation
+      const inputLevel1Count = allSuggestions.level1?.length || 0;
+      const inputLevel2Count = allSuggestions.level2?.length || 0;
+      const inputLevel3Count = allSuggestions.level3?.length || 0;
+      const hadInputSuggestions = inputLevel1Count > 0 || inputLevel2Count > 0 || inputLevel3Count > 0;
+
+      if (orchestratedSuggestions.length === 0 && hadInputSuggestions) {
+        logger.warn('[Orchestration] WARNING: Orchestration returned 0 suggestions despite input');
+        logger.warn(`[Orchestration] Input suggestion counts: Level1=${inputLevel1Count}, Level2=${inputLevel2Count}, Level3=${inputLevel3Count}`);
+        if (response.raw) {
+          logger.warn('[Orchestration] Raw AI response for debugging:');
+          logger.warn('--- BEGIN RAW ORCHESTRATION RESPONSE ---');
+          logger.warn(response.raw);
+          logger.warn('--- END RAW ORCHESTRATION RESPONSE ---');
+        } else if (response.suggestions) {
+          logger.warn('[Orchestration] Response had suggestions array but parsing returned 0. Response.suggestions:');
+          logger.warn(JSON.stringify(response.suggestions, null, 2));
+        } else {
+          logger.warn('[Orchestration] Response object keys: ' + Object.keys(response).join(', '));
+        }
+      }
 
       // Extract summary from the orchestration response
       let summary = `Analyzed PR with ${orchestratedSuggestions.length} curated suggestions`;
