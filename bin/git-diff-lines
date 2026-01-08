@@ -1,0 +1,119 @@
+#!/usr/bin/env node
+
+/**
+ * git-diff-lines - A CLI wrapper that annotates git diff output with line numbers
+ *
+ * Usage: git-diff-lines [git diff args...]
+ *
+ * All arguments are passed directly to `git diff`, and the output is annotated
+ * with two-column line numbers showing OLD (base) and NEW (head) line numbers.
+ *
+ * Examples:
+ *   git-diff-lines HEAD~1
+ *   git-diff-lines main...feature
+ *   git-diff-lines -- src/
+ *   git-diff-lines --cached
+ */
+
+const { spawn } = require('child_process');
+const { annotateDiff } = require('../src/utils/diff-annotator');
+
+/**
+ * Print help text and exit
+ */
+function printHelp() {
+  console.log(`git-diff-lines - Annotated diff with explicit line numbers
+
+Usage: git-diff-lines [git-diff-options]
+
+This script wraps 'git diff' and adds explicit OLD and NEW line numbers
+to make it easier to reference specific lines in code reviews.
+
+Output format:
+  === filename.js ===
+   OLD | NEW |
+    10 |  12 |      context line
+    11 |  -- | [-]  deleted line
+    -- |  13 | [+]  added line
+
+All standard git diff options are supported:
+  git-diff-lines HEAD~1           # Compare with previous commit
+  git-diff-lines main...feature   # Compare branches
+  git-diff-lines -- src/          # Limit to specific path
+  git-diff-lines --cached         # Show staged changes
+
+For git diff help, run: git diff --help`);
+}
+
+/**
+ * Execute git diff with the provided arguments and return the output
+ * @param {string[]} args - Arguments to pass to git diff
+ * @returns {Promise<string>} The git diff output
+ */
+function executeGitDiff(args) {
+  return new Promise((resolve, reject) => {
+    const gitProcess = spawn('git', ['diff', ...args], {
+      cwd: process.cwd(),
+      stdio: ['inherit', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    gitProcess.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    gitProcess.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    gitProcess.on('error', (error) => {
+      reject(new Error(`Failed to execute git diff: ${error.message}`));
+    });
+
+    gitProcess.on('close', (code) => {
+      if (code !== 0 && stderr) {
+        // Git diff can return non-zero for various reasons, only fail if there's stderr
+        reject(new Error(`git diff failed: ${stderr.trim()}`));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+
+/**
+ * Main entry point
+ */
+async function main() {
+  try {
+    // Get command line arguments (excluding 'node' and script path)
+    const args = process.argv.slice(2);
+
+    // Check for help flags
+    if (args.includes('-h') || args.includes('--help')) {
+      printHelp();
+      return;
+    }
+
+    // Execute git diff with the provided arguments
+    const rawDiff = await executeGitDiff(args);
+
+    // If no diff output, exit silently (same behavior as git diff)
+    if (!rawDiff || rawDiff.trim() === '') {
+      return;
+    }
+
+    // Annotate the diff with line numbers
+    const annotatedDiff = annotateDiff(rawDiff);
+
+    // Output the annotated diff
+    console.log(annotatedDiff);
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  }
+}
+
+main();

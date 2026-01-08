@@ -4,7 +4,8 @@
   "description": "AI-powered GitHub pull request review assistant",
   "main": "src/server.js",
   "bin": {
-    "pair-review": "./bin/pair-review.js"
+    "pair-review": "./bin/pair-review.js",
+    "git-diff-lines": "./bin/git-diff-lines"
   },
   "engines": {
     "node": ">=16.0.0"

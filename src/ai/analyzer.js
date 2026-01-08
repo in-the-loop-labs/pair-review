@@ -9,6 +9,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { normalizePath, pathExistsInList } = require('../utils/paths');
+const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
 
 class Analyzer {
   /**
@@ -51,6 +52,10 @@ class Analyzer {
     // Get changed files for validation (use provided list for local mode, or compute for PR mode)
     const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
     logger.info(`[Orchestration] Using ${validFiles.length} changed files for path validation`);
+
+    // Build file line count map for line number validation
+    const fileLineCountMap = await buildFileLineCountMap(worktreePath, validFiles);
+    logger.info(`[Line Validation] Built line count map for ${fileLineCountMap.size} files`);
 
     try {
       // Note: We no longer delete old AI suggestions to preserve analysis history.
@@ -111,23 +116,24 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, customInstructions);
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, customInstructions, fileLineCountMap);
 
-        // Validate suggestion file paths against PR diff
-        const validatedSuggestions = this.validateSuggestionFilePaths(
+        // Validate and finalize suggestions
+        const finalSuggestions = this.validateAndFinalizeSuggestions(
           orchestrationResult.suggestions,
+          fileLineCountMap,
           validFiles
         );
 
         // Store orchestrated results with ai_level = NULL (final suggestions)
         logger.info('Storing orchestrated suggestions in database...');
-        await this.storeSuggestions(prId, runId, validatedSuggestions, null, validFiles);
+        await this.storeSuggestions(prId, runId, finalSuggestions, null, validFiles);
 
-        logger.success(`Analysis complete: ${validatedSuggestions.length} final suggestions (${orchestrationResult.suggestions.length - validatedSuggestions.length} filtered for invalid paths)`);
+        logger.success(`Analysis complete: ${finalSuggestions.length} final suggestions`);
 
         return {
           runId,
-          suggestions: validatedSuggestions,
+          suggestions: finalSuggestions,
           levelResults,
           summary: orchestrationResult.summary
         };
@@ -143,19 +149,20 @@ class Analyzer {
           ...levelResults.level3.suggestions
         ];
 
-        // Validate suggestion file paths against PR diff (also in fallback path)
-        const validatedFallbackSuggestions = this.validateSuggestionFilePaths(
+        // Validate and finalize suggestions
+        const finalFallbackSuggestions = this.validateAndFinalizeSuggestions(
           fallbackSuggestions,
+          fileLineCountMap,
           validFiles
         );
 
-        await this.storeSuggestions(prId, runId, validatedFallbackSuggestions, null, validFiles);
+        await this.storeSuggestions(prId, runId, finalFallbackSuggestions, null, validFiles);
 
         return {
           runId,
-          suggestions: validatedFallbackSuggestions,
+          suggestions: finalFallbackSuggestions,
           levelResults,
-          summary: `Analysis complete (orchestration failed): ${validatedFallbackSuggestions.length} suggestions`,
+          summary: `Analysis complete (orchestration failed): ${finalFallbackSuggestions.length} suggestions`,
           orchestrationFailed: true
         };
       }
@@ -165,6 +172,35 @@ class Analyzer {
       logger.error(`Error stack: ${error.stack}`);
       throw error;
     }
+  }
+
+  /**
+   * Validate and finalize suggestions by checking file paths and line numbers
+   * @param {Array} suggestions - Array of suggestion objects
+   * @param {Map<string, number>} fileLineCountMap - Map of file paths to line counts
+   * @param {Array<string>} validFiles - List of valid file paths from the PR diff
+   * @returns {Array} Finalized suggestions (valid + converted)
+   */
+  validateAndFinalizeSuggestions(suggestions, fileLineCountMap, validFiles) {
+    // Validate suggestion file paths against PR diff
+    const validatedSuggestions = this.validateSuggestionFilePaths(
+      suggestions,
+      validFiles
+    );
+
+    // Line number validation with conversion to file-level
+    const lineValidationResult = validateSuggestionLineNumbers(
+      validatedSuggestions,
+      fileLineCountMap,
+      { convertToFileLevel: true }
+    );
+
+    if (lineValidationResult.converted.length > 0) {
+      logger.warn(`[Line Validation] Converted ${lineValidationResult.converted.length} suggestions to file-level due to invalid line numbers`);
+    }
+
+    // Return valid + converted suggestions
+    return [...lineValidationResult.valid, ...lineValidationResult.converted];
   }
 
   /**
@@ -180,6 +216,57 @@ class Analyzer {
       logger.warn(`Could not load generated file patterns: ${error.message}`);
       return [];
     }
+  }
+
+  /**
+   * Get the absolute path to the git-diff-lines script
+   * @returns {string} Absolute path to bin/git-diff-lines
+   */
+  getAnnotatedDiffScriptPath() {
+    return path.resolve(__dirname, '../../bin/git-diff-lines');
+  }
+
+  /**
+   * Build the line number guidance section for prompts
+   * @returns {string} Markdown guidance for line numbers
+   */
+  buildLineNumberGuidance() {
+    const scriptPath = this.getAnnotatedDiffScriptPath();
+    return `
+## Viewing Code Changes
+
+IMPORTANT: Use the annotated diff tool instead of \`git diff\` directly:
+\`\`\`
+${scriptPath}
+\`\`\`
+
+This shows explicit line numbers in two columns:
+\`\`\`
+ OLD | NEW |
+  10 |  12 |      context line
+  11 |  -- | [-]  deleted line (exists only in base)
+  -- |  13 | [+]  added line (exists only in PR)
+\`\`\`
+
+All git diff arguments work: \`${scriptPath} HEAD~1\`, \`${scriptPath} -- src/\`
+
+## Line Number Precision
+
+Your suggestions MUST reference the EXACT line where the issue exists:
+
+1. **Be literal, not conceptual**
+   - BAD: Commenting on function definition (line 10) when the bug is inside the function body (line 25)
+   - GOOD: Commenting on line 25 where the actual problematic code is
+
+2. **Use correct line numbers from the annotated diff**
+   - For ADDED lines [+]: use the NEW column number
+   - For CONTEXT lines: use the NEW column number
+   - For DELETED lines [-]: use the OLD column number
+
+3. **Verify before suggesting**
+   - Run the annotated diff tool to see exact line numbers
+   - Double-check line numbers match the output before submitting suggestions
+`;
   }
 
   /**
@@ -216,6 +303,27 @@ ${changedFiles.map(f => `- ${f}`).join('\n')}
 
 Do NOT create suggestions for any files not in this list. If you cannot find issues in these files, that's okay - just return fewer suggestions.
 `;
+  }
+
+  /**
+   * Build the file line counts section for orchestration prompt
+   * @param {Map<string, number>} fileLineCountMap - Map of file paths to line counts
+   * @returns {string} Prompt section or empty string
+   */
+  buildFileLineCountsSection(fileLineCountMap) {
+    if (!fileLineCountMap || fileLineCountMap.size === 0) return '';
+
+    const lines = ['', '## File Line Counts for Validation'];
+    for (const [filePath, lineCount] of fileLineCountMap) {
+      if (lineCount > 0) { // Skip binary/missing files
+        lines.push(`- ${filePath}: ${lineCount} lines`);
+      }
+    }
+    lines.push('');
+    lines.push('Verify that all suggestion line numbers are within these bounds.');
+    lines.push('If a suggestion has an invalid line number but valuable insight, convert it to a file-level suggestion.');
+    lines.push('');
+    return lines.join('\n');
   }
 
   /**
@@ -536,17 +644,19 @@ ${prMetadata.description || '(No description provided)'}
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
+    const lineNumberGuidance = this.buildLineNumberGuidance();
 
     const diffCmd = this.buildGitDiffCommand(prMetadata);
     const diffCmdWithFile = this.buildGitDiffCommand(prMetadata, '<file>');
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 2 Review - Analyze File Context
+${lineNumberGuidance}
 ${generatedFilesSection}${changedFilesSection}
 ## Analysis Process
 For each file with changes:
    - Read the full file content to understand context
-   - Run '${diffCmdWithFile}' to see what changed
+   - Run the annotated diff tool (shown above) with the file path to see what changed with line numbers
    - Analyze how changes fit within the file's overall structure
    - Focus on file-level patterns and consistency
    - Skip files where no file-level issues are found (efficiency focus)
@@ -567,8 +677,8 @@ Look for:
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
-- ${diffCmdWithFile}
-- cat <file> or any file reading command
+- The annotated diff tool shown above with file path (preferred for viewing changes with line numbers)
+- \`cat -n <file>\` to view files with line numbers
 - grep, find, ls commands as needed
 
 Note: You may optionally use parallel read-only Tasks to examine multiple files simultaneously if that would be helpful.
@@ -638,17 +748,18 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
+    const lineNumberGuidance = this.buildLineNumberGuidance();
 
     const diffCmd = this.buildGitDiffCommand(prMetadata);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 1 Review - Analyze Changes in Isolation
-
+${lineNumberGuidance}
 ## Speed and Scope Expectations
 **This level should be fast** - focusing only on the diff itself without exploring file context or surrounding unchanged code. That analysis is reserved for Level 2.
 ${generatedFilesSection}
 ## Initial Setup
-1. Run '${diffCmd}' to see the changes
+1. Run the annotated diff tool (shown above) to see the changes with line numbers
 2. Focus ONLY on the changed lines in the diff
 3. Do not analyze file context or surrounding unchanged code - that's for Level 2
 
@@ -666,8 +777,8 @@ Identify the following in changed code:
 
 ## Available Commands
 You have full access to the codebase and can run commands like:
-- ${diffCmd}
-- git diff --stat
+- The annotated diff tool shown above (preferred for viewing changes with line numbers)
+- \`cat -n <file>\` to view files with line numbers
 - ls, find, grep commands as needed
 
 Note: You may optionally use parallel Tasks to analyze different parts of the changes if that would be helpful.
@@ -1836,9 +1947,11 @@ Output JSON with this structure:
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
+    const lineNumberGuidance = this.buildLineNumberGuidance();
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 3 Review - Analyze Change Impact on Codebase
+${lineNumberGuidance}
 ${generatedFilesSection}${changedFilesSection}
 ## Purpose
 Level 3 analyzes how the changes connect to and impact the broader codebase.
@@ -1876,7 +1989,8 @@ Analyze how these changes affect or relate to:
 You have full access to the codebase and can run commands like:
 - find . -name "*.test.js" or similar to find test files
 - grep -r "pattern" to search for patterns
-- cat, ls, tree commands to explore structure
+- \`cat -n <file>\` to view files with line numbers
+- ls, tree commands to explore structure
 - Any other commands needed to understand how changes connect to the codebase
 
 Note: You may optionally use parallel Tasks to explore different areas of the codebase if that would be helpful.
@@ -1933,9 +2047,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} allSuggestions - Object containing suggestions from all levels: {level1: [...], level2: [...], level3: [...]}
    * @param {Object} prMetadata - PR metadata for context
    * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
+   * @param {Map<string, number>} fileLineCountMap - Optional map of file paths to line counts for validation
    * @returns {Promise<Array>} Curated suggestions array
    */
-  async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null) {
+  async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null) {
     logger.section('[Orchestration] AI Orchestration Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
@@ -1949,7 +2064,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       const aiProvider = createProvider(this.provider, this.model);
 
       // Build the orchestration prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions);
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, fileLineCountMap);
 
       // Execute Claude CLI for orchestration
       logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
@@ -2016,9 +2131,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} allSuggestions - Suggestions from all levels
    * @param {Object} prMetadata - PR metadata for context
    * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
+   * @param {Map<string, number>} fileLineCountMap - Optional map of file paths to line counts for validation
    * @returns {string} Orchestration prompt
    */
-  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null) {
+  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null) {
     const level1Count = allSuggestions.level1?.length || 0;
     const level2Count = allSuggestions.level2?.length || 0;
     const level3Count = allSuggestions.level3?.length || 0;
@@ -2035,6 +2151,10 @@ When curating suggestions, give higher priority to findings that align with thes
 `
       : '';
 
+    // Build file line counts section for validation
+    const fileLineCountsSection = this.buildFileLineCountsSection(fileLineCountMap);
+    const lineNumberGuidance = this.buildLineNumberGuidance();
+
     const isLocal = prMetadata.reviewType === 'local';
     const reviewDescription = isLocal
       ? `local changes (review #${prMetadata.number || 'local'})`
@@ -2043,7 +2163,7 @@ When curating suggestions, give higher priority to findings that align with thes
     return `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.
 
 # AI Suggestion Orchestration Task
-
+${lineNumberGuidance}
 ## CRITICAL OUTPUT REQUIREMENT
 Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
 
@@ -2071,7 +2191,7 @@ ${allSuggestions.level3 ? allSuggestions.level3.map(s =>
     ? `- [FILE-LEVEL] ${s.type}: ${s.title} (${s.file}) - ${s.description.substring(0, 100)}...`
     : `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
 ).join('\n') : 'No Level 3 suggestions'}
-
+${fileLineCountsSection}
 ## Orchestration Guidelines
 
 ### 1. Intelligent Merging
