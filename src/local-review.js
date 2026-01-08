@@ -397,10 +397,12 @@ async function generateLocalDiff(repoPath) {
         }
 
         if (fileDiff && fileDiff.trim()) {
-          // The diff output shows the absolute path, normalize it to relative path
-          // Replace /dev/null comparison paths with the relative file path
+          // The diff output from git diff --no-index shows the absolute path (without leading /),
+          // e.g., "diff --git a/Users/tim/src/repo/file.js b/Users/tim/src/repo/file.js"
+          // We need to normalize this to relative paths from the repo root,
+          // e.g., "diff --git a/file.js b/file.js"
           const normalizedDiff = fileDiff
-            .replace(/^diff --git a\/dev\/null b\/.+$/m, `diff --git a/${untracked.file} b/${untracked.file}`)
+            .replace(/^diff --git a\/.+ b\/.+$/m, `diff --git a/${untracked.file} b/${untracked.file}`)
             .replace(/^\+\+\+ b\/.+$/m, `+++ b/${untracked.file}`);
 
           if (diff) {

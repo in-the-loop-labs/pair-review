@@ -4,7 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
-const { computeLocalDiffDigest } = require('../../src/local-review');
+const { computeLocalDiffDigest, generateLocalDiff } = require('../../src/local-review');
 
 describe('computeLocalDiffDigest', () => {
   let testDir;
@@ -130,6 +130,91 @@ describe('computeLocalDiffDigest', () => {
       // Revert to original
       await fs.writeFile(path.join(testDir, 'file.txt'), originalContent);
       expect(await computeLocalDiffDigest(testDir)).toBe(baselineDigest);
+    });
+  });
+});
+
+describe('generateLocalDiff', () => {
+  let testDir;
+
+  beforeEach(async () => {
+    // Create a temporary directory with a git repo
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-diff-test-'));
+
+    // Initialize git repo
+    execSync('git init', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.name "Test User"', { cwd: testDir, stdio: 'pipe' });
+
+    // Create initial file and commit
+    await fs.writeFile(path.join(testDir, 'existing.txt'), 'initial content\n');
+    execSync('git add existing.txt', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "Initial commit"', { cwd: testDir, stdio: 'pipe' });
+  });
+
+  afterEach(async () => {
+    // Cleanup
+    if (testDir) {
+      await fs.rm(testDir, { recursive: true, force: true });
+    }
+  });
+
+  describe('untracked file path normalization', () => {
+    it('should normalize untracked file paths in diff to relative paths', async () => {
+      // Create an untracked file
+      await fs.writeFile(path.join(testDir, 'newfile.js'), 'console.log("hello");\n');
+
+      const result = await generateLocalDiff(testDir);
+
+      // The diff should contain relative paths, not absolute paths
+      expect(result.diff).toContain('diff --git a/newfile.js b/newfile.js');
+      expect(result.diff).toContain('+++ b/newfile.js');
+
+      // Should NOT contain the absolute path (testDir contains temp dir path)
+      // The temp path includes something like /tmp/pair-review-diff-test-xxxxx
+      expect(result.diff).not.toContain(testDir);
+    });
+
+    it('should normalize nested untracked file paths correctly', async () => {
+      // Create a nested directory structure
+      await fs.mkdir(path.join(testDir, 'src', 'utils'), { recursive: true });
+      await fs.writeFile(path.join(testDir, 'src', 'utils', 'helper.js'), 'export const helper = () => {};\n');
+
+      const result = await generateLocalDiff(testDir);
+
+      // The diff should contain the relative path from repo root
+      expect(result.diff).toContain('diff --git a/src/utils/helper.js b/src/utils/helper.js');
+      expect(result.diff).toContain('+++ b/src/utils/helper.js');
+
+      // Should NOT contain any part of the absolute path
+      expect(result.diff).not.toContain(testDir);
+    });
+
+    it('should include tracked file changes with relative paths', async () => {
+      // Modify an existing tracked file
+      await fs.writeFile(path.join(testDir, 'existing.txt'), 'modified content\n');
+
+      const result = await generateLocalDiff(testDir);
+
+      // Tracked file diffs should also have relative paths
+      expect(result.diff).toContain('diff --git a/existing.txt b/existing.txt');
+    });
+
+    it('should handle mix of tracked and untracked files with consistent paths', async () => {
+      // Modify tracked file
+      await fs.writeFile(path.join(testDir, 'existing.txt'), 'modified\n');
+
+      // Add untracked file
+      await fs.writeFile(path.join(testDir, 'newfile.txt'), 'new content\n');
+
+      const result = await generateLocalDiff(testDir);
+
+      // Both should use relative paths
+      expect(result.diff).toContain('diff --git a/existing.txt b/existing.txt');
+      expect(result.diff).toContain('diff --git a/newfile.txt b/newfile.txt');
+
+      // No absolute paths
+      expect(result.diff).not.toContain(testDir);
     });
   });
 });
