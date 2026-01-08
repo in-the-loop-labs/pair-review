@@ -332,12 +332,95 @@ class DiffRenderer {
       window.HunkParser.extractFunctionContext(header) :
       null;
 
+    // Store function context in data attribute for later visibility checks
+    if (functionContext) {
+      headerRow.dataset.functionContext = functionContext;
+    }
+
     const headerContent = functionContext
-      ? `<span class="hunk-context-icon" aria-label="Function context">f</span>${DiffRenderer.escapeHtml(functionContext)}`
+      ? `<span class="hunk-context-icon" aria-label="Function context">f</span><span class="hunk-context-text">${DiffRenderer.escapeHtml(functionContext)}</span>`
       : '<span class="hunk-divider" aria-label="Code section divider">...</span>';
 
     headerRow.innerHTML = `<td colspan="2" class="d2h-info">${headerContent}</td>`;
     return headerRow;
+  }
+
+  /**
+   * Remove a hunk header row when function context becomes visible
+   * Matches GitHub's behavior of removing the header entirely
+   * @param {HTMLElement} headerRow - The hunk header row to remove
+   */
+  static removeFunctionContextHeader(headerRow) {
+    if (!headerRow || !headerRow.classList.contains('d2h-info')) return;
+    headerRow.remove();
+  }
+
+  /**
+   * Check if a function context string matches a line of code
+   * Uses anchored matching to avoid false positives
+   * @param {string} lineText - The text content of the code line
+   * @param {string} functionContext - The function context from the hunk header
+   * @returns {boolean} True if the line contains the function definition
+   */
+  static isFunctionDefinitionLine(lineText, functionContext) {
+    if (!lineText || !functionContext) return false;
+
+    // Trim the line to handle leading whitespace
+    const trimmedLine = lineText.trim();
+    const trimmedContext = functionContext.trim();
+
+    // The function context should appear at or near the start of the line
+    // Check if the line starts with the function context (allowing for minor variations)
+    return trimmedLine.startsWith(trimmedContext) ||
+           trimmedLine.includes(trimmedContext + '(') ||
+           trimmedLine.includes(trimmedContext + ' ');
+  }
+
+  /**
+   * Update function context visibility for all hunk headers in a file's tbody
+   * Called once after any expansion in a file - checks all headers efficiently
+   * @param {HTMLElement} tbody - The table body containing the diff
+   */
+  static updateFunctionContextVisibility(tbody) {
+    if (!tbody) return;
+
+    // Get all rows once for efficiency
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+
+    // Find all hunk headers with function context
+    const headersToCheck = rows.filter(row =>
+      row.classList.contains('d2h-info') && row.dataset.functionContext
+    );
+
+    if (headersToCheck.length === 0) return;
+
+    // For each header, check if its function context is visible above it
+    for (const headerRow of headersToCheck) {
+      const functionContext = headerRow.dataset.functionContext;
+      const headerIndex = rows.indexOf(headerRow);
+      if (headerIndex <= 0) continue;
+
+      // Search lines above the header for the function context
+      for (let i = headerIndex - 1; i >= 0; i--) {
+        const row = rows[i];
+
+        // Stop at another hunk header - don't cross hunk boundaries
+        if (row.classList.contains('d2h-info')) break;
+
+        // Skip gap rows
+        if (row.classList.contains('context-expand-row')) continue;
+
+        // Check the content cell for matching text
+        const contentCell = row.querySelector('.d2h-code-line-ctn');
+        if (contentCell) {
+          const lineText = contentCell.textContent || '';
+          if (DiffRenderer.isFunctionDefinitionLine(lineText, functionContext)) {
+            DiffRenderer.removeFunctionContextHeader(headerRow);
+            break; // Found it, move to next header
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -367,5 +450,12 @@ class DiffRenderer {
   }
 }
 
-// Make DiffRenderer available globally
-window.DiffRenderer = DiffRenderer;
+// Make DiffRenderer available globally in browser
+if (typeof window !== 'undefined') {
+  window.DiffRenderer = DiffRenderer;
+}
+
+// Export for Node.js testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { DiffRenderer };
+}

@@ -265,6 +265,10 @@ class HunkParser {
     // Store expand controls reference on row
     row.expandControls = expandControls;
 
+    // Also add key data attributes to the row for testability
+    row.dataset.startLine = startLine;
+    row.dataset.endLine = endLine;
+
     row.appendChild(oldLineCell);
     row.appendChild(newLineCell);
     row.appendChild(contentCell);
@@ -307,6 +311,10 @@ class HunkParser {
     const contentCell = HunkParser.createContentCell(gapSize, expandControls, expandCallback);
 
     row.expandControls = expandControls;
+
+    // Also add key data attributes to the row for testability
+    row.dataset.startLine = startLine;
+    row.dataset.endLine = endLine;
     row.appendChild(oldLineCell);
     row.appendChild(newLineCell);
     row.appendChild(contentCell);

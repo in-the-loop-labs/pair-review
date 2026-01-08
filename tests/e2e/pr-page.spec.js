@@ -193,6 +193,72 @@ test.describe('PR Page', () => {
         }
       }
     });
+
+    test('should remove hunk header when expansion reveals the function definition', async ({ page }) => {
+      // This test verifies that when context is expanded to reveal the actual
+      // function definition line, the entire hunk header row is removed
+      // (matching GitHub's behavior).
+      //
+      // The mock diff has a second hunk at line 50 with function context
+      // "function exportSection()" - this function is defined at line 30.
+      // When we expand the gap to reveal line 30, the header should be removed.
+
+      await page.goto('/pr/test-owner/test-repo/1');
+      await waitForDiffToRender(page);
+
+      // Find the utils.js file section
+      const utilsSection = page.locator('.d2h-file-wrapper[data-file-name="src/utils.js"]');
+      await expect(utilsSection).toBeVisible();
+
+      // Find the hunk header with function context for the second hunk
+      // The header should contain "function exportSection()" initially
+      const hunkHeaders = utilsSection.locator('tr.d2h-info');
+      const initialHeaderCount = await hunkHeaders.count();
+
+      // Find the header with function context (has data-function-context attribute)
+      const functionContextHeader = utilsSection.locator('tr.d2h-info[data-function-context="function exportSection()"]');
+
+      // Verify the function context marker is initially visible
+      await expect(functionContextHeader).toBeVisible();
+      const contextIcon = functionContextHeader.locator('.hunk-context-icon');
+      const contextText = functionContextHeader.locator('.hunk-context-text');
+      await expect(contextIcon).toBeVisible();
+      await expect(contextText).toHaveText('function exportSection()');
+
+      // Find the gap row that comes before this hunk header
+      // The gap row should have data attributes for endLine around 49
+      const gapRows = utilsSection.locator('tr.context-expand-row');
+      const gapCount = await gapRows.count();
+
+      let targetGapRow = null;
+      for (let i = 0; i < gapCount; i++) {
+        const gapRow = gapRows.nth(i);
+        const endLine = await gapRow.getAttribute('data-end-line');
+        // The gap before the second hunk ends at line 49 (just before line 50)
+        if (endLine && parseInt(endLine) >= 40) {
+          targetGapRow = gapRow;
+          break;
+        }
+      }
+
+      expect(targetGapRow).toBeTruthy();
+
+      // Click the expand button in the center cell (expands all)
+      const expandCell = targetGapRow.locator('.clickable-expand');
+      await expandCell.click();
+
+      // Wait for expansion to complete
+      const expandedLines = utilsSection.locator('.newly-expanded');
+      await expect(expandedLines.first()).toBeVisible({ timeout: 3000 });
+
+      // After expansion reveals line 30 containing "function exportSection()",
+      // the entire hunk header row should be removed (matching GitHub behavior)
+      await expect(functionContextHeader).not.toBeVisible({ timeout: 3000 });
+
+      // Verify the header count decreased
+      const newHeaderCount = await hunkHeaders.count();
+      expect(newHeaderCount).toBeLessThan(initialHeaderCount);
+    });
   });
 
   test.describe('File Navigation', () => {

@@ -1,75 +1,10 @@
 import { describe, it, expect } from 'vitest';
 
-/**
- * Extract the formatComments logic from PreviewModal for testing
- * This is the same implementation as in public/js/components/PreviewModal.js
- */
-function formatComments(comments) {
-  if (!comments || comments.length === 0) {
-    return 'No comments to preview.';
-  }
+// Import the actual PreviewModal class from production code
+const { PreviewModal } = require('../../public/js/components/PreviewModal.js');
 
-  // Group comments by file, separating file-level and line-level
-  const commentsByFile = {};
-  comments.forEach(comment => {
-    if (!commentsByFile[comment.file]) {
-      commentsByFile[comment.file] = {
-        fileComments: [],
-        lineComments: []
-      };
-    }
-    // Check if this is a file-level comment
-    if (comment.is_file_level === 1) {
-      commentsByFile[comment.file].fileComments.push(comment);
-    } else {
-      commentsByFile[comment.file].lineComments.push(comment);
-    }
-  });
-
-  // Sort files alphabetically
-  const sortedFiles = Object.keys(commentsByFile).sort();
-
-  // Build formatted text
-  let text = '';
-
-  sortedFiles.forEach((file, fileIndex) => {
-    const { fileComments, lineComments } = commentsByFile[file];
-
-    // Add file header
-    if (fileIndex > 0) {
-      text += '\n';
-    }
-    text += `## ${file}\n`;
-
-    // Add file-level comments - each gets its own header
-    if (fileComments.length > 0) {
-      fileComments.forEach((comment, index) => {
-        text += `\n### File Comment ${index + 1}:\n`;
-        text += `${comment.body}\n`;
-      });
-    }
-
-    // Add line-level comments - each gets its own header
-    if (lineComments.length > 0) {
-      // Sort line comments by line number
-      lineComments.sort((a, b) => (a.line_start || 0) - (b.line_start || 0));
-
-      lineComments.forEach(comment => {
-        // Format line number(s) for header
-        let lineInfo;
-        if (comment.line_end && comment.line_end !== comment.line_start) {
-          lineInfo = `lines ${comment.line_start}-${comment.line_end}`;
-        } else {
-          lineInfo = `line ${comment.line_start}`;
-        }
-        text += `\n### Line Comment (${lineInfo}):\n`;
-        text += `${comment.body}\n`;
-      });
-    }
-  });
-
-  return text;
-}
+// Use the static formatComments method from the actual implementation
+const formatComments = PreviewModal.formatComments;
 
 describe('PreviewModal - formatComments', () => {
   describe('Empty/null handling', () => {

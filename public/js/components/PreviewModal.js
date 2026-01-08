@@ -174,7 +174,7 @@ class PreviewModal {
       this.currentComments = comments;
 
       // Format comments for preview
-      const formattedText = this.formatComments(comments);
+      const formattedText = PreviewModal.formatComments(comments);
       previewTextElement.textContent = formattedText;
 
     } catch (error) {
@@ -184,9 +184,9 @@ class PreviewModal {
   }
 
   /**
-   * Format comments grouped by file
+   * Format comments grouped by file (static for testability)
    */
-  formatComments(comments) {
+  static formatComments(comments) {
     if (!comments || comments.length === 0) {
       return 'No comments to preview.';
     }
@@ -335,4 +335,9 @@ if (typeof window !== 'undefined' && !window.previewModal) {
   } else {
     window.previewModal = new PreviewModal();
   }
+}
+
+// Export for Node.js testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { PreviewModal };
 }

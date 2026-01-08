@@ -98,6 +98,8 @@ const mockWorktreeResponses = {
   // - utils.js: First hunk at line 1-8 has +3 net change (adds 4, removes 1)
   // - utils.js: Second hunk at OLD line 50, NEW line 53 (offset = +3)
   //   The gap between hunks (lines 9-49 in OLD) should map to (lines 12-52 in NEW)
+  // - The second hunk header includes function context "function exportSection()"
+  //   which is defined at line 30 in the gap, for testing function context visibility
   generateUnifiedDiff: `diff --git a/src/utils.js b/src/utils.js
 --- a/src/utils.js
 +++ b/src/utils.js
@@ -110,7 +112,7 @@ const mockWorktreeResponses = {
 +  const result = computeValue();
 +  return result;
  }
-@@ -50,4 +53,4 @@
+@@ -50,4 +53,4 @@ function exportSection()
  // Another section of code
  function exportData() {
 -  return data;
@@ -522,6 +524,46 @@ async function globalSetup() {
       isStale: false,
       prState: 'open',
       merged: false
+    });
+  });
+
+  // Mock file-content-original endpoint for context expansion tests
+  // Returns mock file content with predictable line contents for testing
+  app.get('/api/file-content-original/:fileName(*)', (req, res) => {
+    const fileName = decodeURIComponent(req.params.fileName);
+
+    // Generate 60 lines of mock content for utils.js
+    // Line 30 contains the function context text to test visibility feature
+    if (fileName === 'src/utils.js') {
+      const lines = [];
+      for (let i = 1; i <= 60; i++) {
+        if (i === 30) {
+          // This matches the function context in the second hunk header
+          lines.push('function exportSection() {');
+        } else if (i <= 8) {
+          // First few lines match the first hunk
+          lines.push(`// Line ${i} of utils.js`);
+        } else if (i >= 50) {
+          // Last section for second hunk
+          lines.push(`// Line ${i} of utils.js - export section`);
+        } else {
+          // Middle section (gap area)
+          lines.push(`// Line ${i} - gap content`);
+        }
+      }
+      return res.json({
+        fileName,
+        lines,
+        totalLines: lines.length
+      });
+    }
+
+    // For other files, return generic content
+    const lines = Array.from({ length: 30 }, (_, i) => `// Line ${i + 1} of ${fileName}`);
+    res.json({
+      fileName,
+      lines,
+      totalLines: lines.length
     });
   });
 

@@ -2540,7 +2540,7 @@ describe('Local Review File-Level Comments', () => {
         });
 
       expect(response.status).toBe(400);
-      expect(response.body.error).toContain('Comment body cannot be empty');
+      expect(response.body.error).toContain('Comment body cannot be empty or whitespace only');
     });
 
     it('should return 404 when review not found', async () => {

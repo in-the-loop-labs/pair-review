@@ -906,6 +906,28 @@ class PRManager {
   }
 
   /**
+   * Fetch original file content for context expansion
+   * @param {string} fileName - The file path
+   * @returns {Promise<{lines: string[]}|null>} File content with lines array, or null on error
+   */
+  async fetchFileContent(fileName) {
+    if (!this.currentPR) return null;
+
+    const { owner, repo, number } = this.currentPR;
+    const response = await fetch(
+      `/api/file-content-original/${encodeURIComponent(fileName)}?owner=${owner}&repo=${repo}&number=${number}`
+    );
+    const data = await response.json();
+
+    if (!response.ok || !data.lines) {
+      console.error('Failed to fetch file content');
+      return null;
+    }
+
+    return data;
+  }
+
+  /**
    * Expand gap context
    * @param {Element} controls - The expand controls element
    * @param {string} direction - 'up', 'down', or 'all'
@@ -934,21 +956,14 @@ class PRManager {
       }
     }
 
-    if (!gapRow || !this.currentPR) return;
+    if (!gapRow) return;
+
+    const tbody = gapRow.closest('tbody');
+    if (!tbody) return;
 
     try {
-      // Fetch file content
-      const { owner, repo, number } = this.currentPR;
-      const response = await fetch(`/api/file-content-original/${encodeURIComponent(fileName)}?owner=${owner}&repo=${repo}&number=${number}`);
-      const data = await response.json();
-
-      if (!response.ok || !data.lines) {
-        console.error('Failed to fetch file content');
-        return;
-      }
-
-      const tbody = gapRow.closest('tbody');
-      if (!tbody) return;
+      const data = await this.fetchFileContent(fileName);
+      if (!data) return;
 
       let linesToShow = [];
       let newGapStart = startLine;
@@ -1047,6 +1062,12 @@ class PRManager {
       gapRow.parentNode.insertBefore(fragment, gapRow);
       gapRow.remove();
 
+      // Check all function context markers in this file and remove any whose
+      // function definitions are now visible
+      if (window.DiffRenderer) {
+        window.DiffRenderer.updateFunctionContextVisibility(tbody);
+      }
+
     } catch (error) {
       console.error('Error expanding gap context:', error);
     }
@@ -1067,17 +1088,11 @@ class PRManager {
     const lineOffset = gapStartNew - gapStart;
     const tbody = gapRow.closest('tbody');
 
-    if (!tbody || !this.currentPR) return;
+    if (!tbody) return;
 
     try {
-      const { owner, repo, number } = this.currentPR;
-      const response = await fetch(`/api/file-content-original/${encodeURIComponent(fileName)}?owner=${owner}&repo=${repo}&number=${number}`);
-      const data = await response.json();
-
-      if (!response.ok || !data.lines) {
-        console.error('Failed to fetch file content');
-        return;
-      }
+      const data = await this.fetchFileContent(fileName);
+      if (!data) return;
 
       const fragment = document.createDocumentFragment();
 
@@ -1134,6 +1149,12 @@ class PRManager {
       // Replace the gap row
       gapRow.parentNode.insertBefore(fragment, gapRow);
       gapRow.remove();
+
+      // Check all function context markers in this file and remove any whose
+      // function definitions are now visible
+      if (window.DiffRenderer) {
+        window.DiffRenderer.updateFunctionContextVisibility(tbody);
+      }
 
     } catch (error) {
       console.error('Error in expandGapRange:', error);
