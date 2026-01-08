@@ -696,3 +696,122 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
     expect(mockDb.run.mock.calls[1][1][13]).toBe(1);
   });
 });
+
+describe('Analyzer.getAnnotatedDiffScriptPath', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should return an absolute path', () => {
+    const result = analyzer.getAnnotatedDiffScriptPath();
+    expect(result.startsWith('/')).toBe(true);
+  });
+
+  it('should return path ending with bin/git-diff-lines', () => {
+    const result = analyzer.getAnnotatedDiffScriptPath();
+    expect(result.endsWith('bin/git-diff-lines')).toBe(true);
+  });
+});
+
+describe('Analyzer.buildLineNumberGuidance', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should return markdown formatted guidance', () => {
+    const result = analyzer.buildLineNumberGuidance();
+    expect(result).toContain('## Viewing Code Changes');
+    expect(result).toContain('## Line Number Precision');
+  });
+
+  it('should include the script path in the output', () => {
+    const result = analyzer.buildLineNumberGuidance();
+    const scriptPath = analyzer.getAnnotatedDiffScriptPath();
+    expect(result).toContain(scriptPath);
+  });
+
+  it('should include line number column explanations', () => {
+    const result = analyzer.buildLineNumberGuidance();
+    expect(result).toContain('OLD | NEW');
+    expect(result).toContain('[+]');
+    expect(result).toContain('[-]');
+  });
+
+  it('should include guidance for each line type', () => {
+    const result = analyzer.buildLineNumberGuidance();
+    expect(result).toContain('ADDED lines [+]: use the NEW column number');
+    expect(result).toContain('CONTEXT lines: use the NEW column number');
+    expect(result).toContain('DELETED lines [-]: use the OLD column number');
+  });
+});
+
+describe('Analyzer.buildFileLineCountsSection', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should return empty string for null map', () => {
+    const result = analyzer.buildFileLineCountsSection(null);
+    expect(result).toBe('');
+  });
+
+  it('should return empty string for empty map', () => {
+    const result = analyzer.buildFileLineCountsSection(new Map());
+    expect(result).toBe('');
+  });
+
+  it('should format files with line counts', () => {
+    const map = new Map([
+      ['src/foo.js', 50],
+      ['src/bar.js', 100]
+    ]);
+    const result = analyzer.buildFileLineCountsSection(map);
+    expect(result).toContain('- src/foo.js: 50 lines');
+    expect(result).toContain('- src/bar.js: 100 lines');
+  });
+
+  it('should include empty files with special notation', () => {
+    const map = new Map([
+      ['src/empty.js', 0],
+      ['src/normal.js', 10]
+    ]);
+    const result = analyzer.buildFileLineCountsSection(map);
+    expect(result).toContain('- src/empty.js: 0 lines (empty file)');
+    expect(result).toContain('- src/normal.js: 10 lines');
+  });
+
+  it('should skip binary/missing files (lineCount === -1)', () => {
+    const map = new Map([
+      ['image.png', -1],
+      ['src/code.js', 25]
+    ]);
+    const result = analyzer.buildFileLineCountsSection(map);
+    expect(result).not.toContain('image.png');
+    expect(result).toContain('- src/code.js: 25 lines');
+  });
+
+  it('should include validation instructions', () => {
+    const map = new Map([['src/foo.js', 10]]);
+    const result = analyzer.buildFileLineCountsSection(map);
+    expect(result).toContain('Verify that all suggestion line numbers are within these bounds');
+    expect(result).toContain('file-level suggestion');
+  });
+
+  it('should handle map with only binary files', () => {
+    const map = new Map([
+      ['image.png', -1],
+      ['data.bin', -1]
+    ]);
+    const result = analyzer.buildFileLineCountsSection(map);
+    // Should still have header but no file entries
+    expect(result).toContain('## File Line Counts for Validation');
+    expect(result).not.toContain('image.png');
+    expect(result).not.toContain('data.bin');
+  });
+});
