@@ -116,7 +116,7 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, customInstructions, fileLineCountMap);
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, customInstructions, fileLineCountMap, worktreePath);
 
         // Validate and finalize suggestions
         const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -255,16 +255,22 @@ class Analyzer {
 
   /**
    * Build the line number guidance section for prompts
+   * @param {string} worktreePath - Path to the git worktree (used to ensure git runs in correct directory)
    * @returns {string} Markdown guidance for line numbers
    */
-  buildLineNumberGuidance() {
+  buildLineNumberGuidance(worktreePath = null) {
     const scriptPath = this.getAnnotatedDiffScriptPath();
+    // Include --cwd option to ensure git runs in the correct directory
+    // This is critical when the script is invoked from an environment where
+    // the working directory may not match the target repository
+    const cwdOption = worktreePath ? ` --cwd "${worktreePath}"` : '';
+    const fullCommand = `${scriptPath}${cwdOption}`;
     return `
 ## Viewing Code Changes
 
 IMPORTANT: Use the annotated diff tool instead of \`git diff\` directly:
 \`\`\`
-${scriptPath}
+${fullCommand}
 \`\`\`
 
 This shows explicit line numbers in two columns:
@@ -275,7 +281,7 @@ This shows explicit line numbers in two columns:
   -- |  13 | [+]  added line (exists only in PR)
 \`\`\`
 
-All git diff arguments work: \`${scriptPath} HEAD~1\`, \`${scriptPath} -- src/\`
+All git diff arguments work: \`${fullCommand} HEAD~1\`, \`${fullCommand} -- src/\`
 
 ## Line Number Precision
 
@@ -675,7 +681,7 @@ ${prMetadata.description || '(No description provided)'}
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
-    const lineNumberGuidance = this.buildLineNumberGuidance();
+    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 2 Review - Analyze File Context
@@ -776,7 +782,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
-    const lineNumberGuidance = this.buildLineNumberGuidance();
+    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 1 Review - Analyze Changes in Isolation
@@ -1973,7 +1979,7 @@ Output JSON with this structure:
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
-    const lineNumberGuidance = this.buildLineNumberGuidance();
+    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 3 Review - Analyze Change Impact on Codebase
@@ -2076,7 +2082,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Map<string, number>} fileLineCountMap - Optional map of file paths to line counts for validation
    * @returns {Promise<Array>} Curated suggestions array
    */
-  async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null) {
+  async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null) {
     logger.section('[Orchestration] AI Orchestration Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
@@ -2090,7 +2096,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       const aiProvider = createProvider(this.provider, this.model);
 
       // Build the orchestration prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, fileLineCountMap);
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, fileLineCountMap, worktreePath);
 
       // Execute Claude CLI for orchestration
       logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
@@ -2182,7 +2188,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Map<string, number>} fileLineCountMap - Optional map of file paths to line counts for validation
    * @returns {string} Orchestration prompt
    */
-  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null) {
+  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null) {
     const level1Count = allSuggestions.level1?.length || 0;
     const level2Count = allSuggestions.level2?.length || 0;
     const level3Count = allSuggestions.level3?.length || 0;
@@ -2201,7 +2207,7 @@ When curating suggestions, give higher priority to findings that align with thes
 
     // Build file line counts section for validation
     const fileLineCountsSection = this.buildFileLineCountsSection(fileLineCountMap);
-    const lineNumberGuidance = this.buildLineNumberGuidance();
+    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
 
     const isLocal = prMetadata.reviewType === 'local';
     const reviewDescription = isLocal
