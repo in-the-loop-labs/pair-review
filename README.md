@@ -86,6 +86,8 @@ npx pair-review --local [path]
 |--------|-------------|
 | `<PR-number>` | PR number to review (requires being in a GitHub repo) |
 | `<PR-URL>` | Full GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
+| `-h`, `--help` | Show help message with full CLI documentation |
+| `-v`, `--version` | Show version number |
 | `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
 | `--model <name>` | Override the AI model (e.g., `opus`, `sonnet`, `haiku`). Equivalent to setting `PAIR_REVIEW_MODEL` |
 | `--ai` | Automatically run AI analysis when the review loads |

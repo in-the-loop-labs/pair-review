@@ -1,4 +1,4 @@
-const { loadConfig } = require('./config');
+const { loadConfig, getConfigDir } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -9,6 +9,102 @@ const { handleLocalReview } = require('./local-review');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
+
+/**
+ * Get the version from package.json
+ */
+function getVersion() {
+  const path = require('path');
+  const packageJson = require(path.join(__dirname, '..', 'package.json'));
+  return packageJson.version;
+}
+
+/**
+ * Print help text and exit
+ */
+function printHelp() {
+  const version = getVersion();
+  console.log(`
+pair-review v${version}
+AI-powered GitHub pull request review assistant
+
+USAGE:
+    pair-review [OPTIONS] [<PR-number-or-URL>]
+
+DESCRIPTION:
+    Review GitHub pull requests or local changes with AI-assisted analysis.
+    Opens a local web UI with a familiar GitHub-like interface.
+
+ARGUMENTS:
+    <PR-number>     PR number to review (requires being in a GitHub repository)
+    <PR-URL>        Full GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)
+
+OPTIONS:
+    -h, --help              Show this help message and exit
+    -v, --version           Show version number and exit
+    --local [path]          Review local uncommitted changes
+                            Optional path defaults to current directory
+    --model <name>          Override the AI model (e.g., opus, sonnet, haiku)
+                            Equivalent to setting PAIR_REVIEW_MODEL
+    --ai                    Automatically run AI analysis when the review loads
+    --ai-draft              Run AI analysis and save suggestions as a draft
+                            review on GitHub (headless mode)
+    --configure             Show configuration help
+
+EXAMPLES:
+    # Review PR #123 in the current repository
+    pair-review 123
+
+    # Review a PR from any repository
+    pair-review https://github.com/facebook/react/pull/456
+
+    # Review local changes in current directory
+    pair-review --local
+
+    # Review local changes in a specific project
+    pair-review --local /path/to/project
+
+    # Review with a specific model
+    pair-review 123 --model opus
+
+    # Review and auto-run AI analysis
+    pair-review 123 --ai
+
+    # Create a draft review with AI suggestions (no browser)
+    pair-review 123 --ai-draft --model haiku
+
+    # Just start the server (no PR context)
+    pair-review
+
+ENVIRONMENT VARIABLES:
+    PAIR_REVIEW_CLAUDE_CMD  Custom command to invoke Claude CLI (default: claude)
+    PAIR_REVIEW_GEMINI_CMD  Custom command to invoke Gemini CLI (default: gemini)
+    PAIR_REVIEW_CODEX_CMD   Custom command to invoke Codex CLI (default: codex)
+    PAIR_REVIEW_MODEL       Override the AI model (same as --model flag)
+
+CONFIGURATION:
+    Config file: ~/.pair-review/config.json
+
+    {
+      "github_token": "ghp_your_token_here",
+      "port": 3000,
+      "theme": "light"
+    }
+
+    Create a GitHub Personal Access Token with 'repo' scope:
+    https://github.com/settings/tokens/new
+
+MORE INFO:
+    https://github.com/in-the-loop-labs/pair-review
+`);
+}
+
+/**
+ * Print version and exit
+ */
+function printVersion() {
+  console.log(`pair-review v${getVersion()}`);
+}
 
 /**
  * Asynchronously cleanup stale worktrees (runs in background, doesn't block)
@@ -80,7 +176,19 @@ function parseArgs(args) {
 async function main() {
   try {
     const args = process.argv.slice(2);
-    
+
+    // Handle help flag (before any other processing)
+    if (args.includes('-h') || args.includes('--help')) {
+      printHelp();
+      process.exit(0);
+    }
+
+    // Handle version flag
+    if (args.includes('-v') || args.includes('--version')) {
+      printVersion();
+      process.exit(0);
+    }
+
     // Handle configuration command
     if (args.includes('--configure')) {
       console.log('Configuration is handled automatically.');
@@ -96,7 +204,6 @@ async function main() {
     db = await initializeDatabase();
 
     // Migrate existing worktrees to database (if any)
-    const { getConfigDir } = require('./config');
     const path = require('path');
     const worktreeBaseDir = path.join(getConfigDir(), 'worktrees');
     const migrationResult = await migrateExistingWorktrees(db, worktreeBaseDir);
