@@ -10,6 +10,8 @@ class RepoSettingsPage {
     this.originalSettings = {};
     this.currentSettings = {};
     this.hasUnsavedChanges = false;
+    this.providers = {};
+    this.selectedProvider = null;
 
     this.init();
   }
@@ -27,12 +29,15 @@ class RepoSettingsPage {
     // Setup event listeners
     this.setupEventListeners();
 
+    // Load providers first (needed to render model cards)
+    await this.loadProviders();
+
     // Load settings
     await this.loadSettings();
   }
 
   /**
-   * Initialize back-to-PR link if user navigated from a PR page
+   * Initialize back link if user navigated from a PR page or local review
    */
   initBackLink() {
     const backLink = document.getElementById('back-to-pr');
@@ -43,20 +48,44 @@ class RepoSettingsPage {
       const referrerData = localStorage.getItem('settingsReferrer');
       if (!referrerData) return;
 
-      const { prNumber, owner, repo } = JSON.parse(referrerData);
+      const data = JSON.parse(referrerData);
 
-      // Only show the link if it matches the current repo
-      if (owner === this.owner && repo === this.repo && prNumber) {
-        backLink.href = `/pr/${owner}/${repo}/${prNumber}`;
-        backLinkText.textContent = `Return to PR #${prNumber}`;
-        backLink.style.display = 'inline-flex';
+      // Check if this is a local review referrer
+      if (data.type === 'local' && data.localReviewId) {
+        // Only show the link if it matches the current repo
+        if (data.owner === this.owner && data.repo === this.repo) {
+          backLink.href = `/local/${data.localReviewId}`;
+          backLinkText.textContent = 'Return to Local Review';
+          backLink.style.display = 'inline-flex';
 
-        // Clear the referrer when clicking the back link
-        backLink.addEventListener('click', () => {
+          // Clear the referrer when clicking the back link
+          backLink.addEventListener('click', () => {
+            localStorage.removeItem('settingsReferrer');
+          });
+        } else {
+          // Different repo, clear the stale referrer
           localStorage.removeItem('settingsReferrer');
-        });
+        }
+      } else if (data.prNumber) {
+        // PR referrer (original behavior)
+        const { prNumber, owner, repo } = data;
+
+        // Only show the link if it matches the current repo
+        if (owner === this.owner && repo === this.repo && prNumber) {
+          backLink.href = `/pr/${owner}/${repo}/${prNumber}`;
+          backLinkText.textContent = `Return to PR #${prNumber}`;
+          backLink.style.display = 'inline-flex';
+
+          // Clear the referrer when clicking the back link
+          backLink.addEventListener('click', () => {
+            localStorage.removeItem('settingsReferrer');
+          });
+        } else {
+          // Different repo, clear the stale referrer
+          localStorage.removeItem('settingsReferrer');
+        }
       } else {
-        // Different repo, clear the stale referrer
+        // Unknown referrer format, clear it
         localStorage.removeItem('settingsReferrer');
       }
     } catch (error) {
@@ -108,10 +137,8 @@ class RepoSettingsPage {
   }
 
   setupEventListeners() {
-    // Model card selection
-    document.querySelectorAll('.model-card').forEach(card => {
-      card.addEventListener('click', () => this.selectModel(card.dataset.model));
-    });
+    // Model card and provider button listeners are attached dynamically
+    // when renderProviderButtons() and renderModelCards() are called
 
     // Instructions textarea
     const textarea = document.getElementById('default-instructions');
@@ -153,6 +180,178 @@ class RepoSettingsPage {
     });
   }
 
+  /**
+   * Load provider definitions from the backend API
+   */
+  async loadProviders() {
+    try {
+      const response = await fetch('/api/providers');
+      if (!response.ok) {
+        throw new Error('Failed to fetch providers');
+      }
+
+      const data = await response.json();
+
+      // Convert array to object keyed by provider id
+      this.providers = {};
+      for (const provider of data.providers) {
+        this.providers[provider.id] = provider;
+      }
+
+      // Render provider buttons now that we have data
+      this.renderProviderButtons();
+
+    } catch (error) {
+      console.error('Error loading providers:', error);
+      // Last-resort degraded mode: hardcoded Claude fallback when the /api/providers
+      // endpoint is unavailable. This allows basic functionality even if the backend
+      // is partially broken. The canonical provider definitions live in
+      // src/ai/claude-provider.js - this fallback should mirror those values.
+      this.providers = {
+        claude: {
+          id: 'claude',
+          name: 'Claude',
+          models: [
+            { id: 'haiku', name: 'Haiku', tier: 'fast', badge: 'Fastest', badgeClass: 'badge-speed', tagline: 'Lightning Fast', description: 'Quick analysis for simple changes' },
+            { id: 'sonnet', name: 'Sonnet', tier: 'balanced', default: true, badge: 'Recommended', badgeClass: 'badge-recommended', tagline: 'Best Balance', description: 'Recommended for most reviews' },
+            { id: 'opus', name: 'Opus', tier: 'thorough', badge: 'Most Thorough', badgeClass: 'badge-power', tagline: 'Most Capable', description: 'Deep analysis for complex code' }
+          ],
+          defaultModel: 'sonnet'
+        }
+      };
+      this.renderProviderButtons();
+    }
+  }
+
+  /**
+   * Render provider toggle buttons
+   */
+  renderProviderButtons() {
+    const container = document.getElementById('provider-toggle');
+    if (!container) return;
+
+    const providerIds = Object.keys(this.providers);
+    container.innerHTML = providerIds.map(providerId => {
+      const provider = this.providers[providerId];
+      return `
+        <button type="button" class="provider-btn ${providerId === this.selectedProvider ? 'selected' : ''}" data-provider="${providerId}">
+          ${provider.name}
+        </button>
+      `;
+    }).join('');
+
+    // Attach event listeners
+    container.querySelectorAll('.provider-btn').forEach(btn => {
+      btn.addEventListener('click', () => this.selectProvider(btn.dataset.provider));
+    });
+  }
+
+  /**
+   * Select a provider and update model cards
+   */
+  selectProvider(providerId, markAsChanged = true) {
+    if (!this.providers[providerId]) return;
+
+    const previousProvider = this.selectedProvider;
+    this.selectedProvider = providerId;
+
+    if (markAsChanged) {
+      this.currentSettings.default_provider = providerId;
+    }
+
+    // Update provider buttons UI
+    document.querySelectorAll('.provider-btn').forEach(btn => {
+      btn.classList.toggle('selected', btn.dataset.provider === providerId);
+    });
+
+    // Re-render model cards for the new provider
+    this.renderModelCards();
+
+    // If provider changed and we're tracking changes, try to map the model to the new provider
+    if (markAsChanged && previousProvider && previousProvider !== providerId) {
+      const oldProvider = this.providers[previousProvider];
+      const newProvider = this.providers[providerId];
+
+      // If old provider no longer exists (e.g., was removed from available providers),
+      // fall back to the new provider's default model
+      if (!oldProvider) {
+        const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
+        this.selectModel(defaultModel.id, markAsChanged);
+        this.checkForChanges();
+        return;
+      }
+
+      // Find the model with same tier as currently selected
+      const currentModel = oldProvider.models.find(m => m.id === this.currentSettings.default_model);
+
+      if (currentModel) {
+        const matchingModel = newProvider.models.find(m => m.tier === currentModel.tier);
+        const defaultModel = newProvider.models.find(m => m.default);
+        const fallbackModel = matchingModel || defaultModel || newProvider.models[0];
+
+        if (!matchingModel && !defaultModel) {
+          console.warn(`No matching tier or default model found for provider "${providerId}", using first available model`);
+        }
+
+        this.selectModel(fallbackModel.id, markAsChanged);
+      } else {
+        // No current model selected, use default for new provider
+        const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
+        this.selectModel(defaultModel.id, markAsChanged);
+      }
+
+      this.checkForChanges();
+    }
+  }
+
+  /**
+   * Render model cards for the currently selected provider
+   */
+  renderModelCards() {
+    const container = document.getElementById('model-cards');
+    if (!container) return;
+
+    const provider = this.providers[this.selectedProvider];
+    if (!provider) {
+      container.innerHTML = '';
+      return;
+    }
+
+    container.innerHTML = provider.models.map(model => `
+      <button type="button" class="model-card ${model.id === this.currentSettings.default_model ? 'selected' : ''}" data-model="${model.id}" data-tier="${model.tier}">
+        <div class="model-badge ${model.badgeClass || ''}">${model.badge || ''}</div>
+        <div class="model-icon">${this.getModelIcon(model.tier)}</div>
+        <div class="model-info">
+          <span class="model-name">${model.name}</span>
+          <span class="model-tagline">${model.tagline || ''}</span>
+        </div>
+        <p class="model-description">${model.description || ''}</p>
+        <div class="model-selected-indicator">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
+          </svg>
+        </div>
+      </button>
+    `).join('');
+
+    // Attach event listeners
+    container.querySelectorAll('.model-card').forEach(card => {
+      card.addEventListener('click', () => this.selectModel(card.dataset.model));
+    });
+  }
+
+  /**
+   * Get model icon based on tier
+   */
+  getModelIcon(tier) {
+    switch (tier) {
+      case 'fast': return '⚡';
+      case 'balanced': return '✦';
+      case 'thorough': return '◆';
+      default: return '●';
+    }
+  }
+
   async loadSettings() {
     if (!this.owner || !this.repo) return;
 
@@ -167,6 +366,7 @@ class RepoSettingsPage {
 
       // Store original settings for comparison
       this.originalSettings = {
+        default_provider: settings.default_provider || null,
         default_model: settings.default_model || null,
         default_instructions: settings.default_instructions || ''
       };
@@ -181,6 +381,7 @@ class RepoSettingsPage {
       console.error('Error loading settings:', error);
       // Use defaults if no settings exist
       this.originalSettings = {
+        default_provider: null,
         default_model: null,
         default_instructions: ''
       };
@@ -190,6 +391,20 @@ class RepoSettingsPage {
   }
 
   updateUI() {
+    // Update provider selection - validate provider exists before selecting
+    let providerId = this.currentSettings.default_provider;
+    const availableProviders = Object.keys(this.providers);
+
+    if (!providerId || !this.providers[providerId]) {
+      // Provider doesn't exist, fall back to first available
+      // Update currentSettings directly so state is consistent for saves,
+      // but don't mark as changed (no unsaved changes indicator)
+      providerId = availableProviders[0] || 'claude';
+      this.currentSettings.default_provider = providerId;
+    }
+
+    this.selectProvider(providerId, false);
+
     // Update model selection
     if (this.currentSettings.default_model) {
       this.selectModel(this.currentSettings.default_model, false);
@@ -203,9 +418,9 @@ class RepoSettingsPage {
     }
   }
 
-  selectModel(modelId, trackChange = true) {
+  selectModel(modelId, markAsChanged = true) {
     // Update current settings
-    if (trackChange) {
+    if (markAsChanged) {
       this.currentSettings.default_model = modelId;
       this.checkForChanges();
     }
@@ -224,10 +439,12 @@ class RepoSettingsPage {
   }
 
   checkForChanges() {
-    const modelChanged = this.currentSettings.default_model !== this.originalSettings.default_model;
-    const instructionsChanged = this.currentSettings.default_instructions !== this.originalSettings.default_instructions;
+    // Use nullish coalescing to normalize null/undefined for consistent comparison
+    const providerChanged = (this.currentSettings.default_provider ?? null) !== (this.originalSettings.default_provider ?? null);
+    const modelChanged = (this.currentSettings.default_model ?? null) !== (this.originalSettings.default_model ?? null);
+    const instructionsChanged = (this.currentSettings.default_instructions ?? '') !== (this.originalSettings.default_instructions ?? '');
 
-    this.hasUnsavedChanges = modelChanged || instructionsChanged;
+    this.hasUnsavedChanges = providerChanged || modelChanged || instructionsChanged;
 
     // Show/hide action bar
     const actionBar = document.getElementById('action-bar');
@@ -257,6 +474,7 @@ class RepoSettingsPage {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
+          default_provider: this.currentSettings.default_provider,
           default_model: this.currentSettings.default_model,
           default_instructions: this.currentSettings.default_instructions
         })
@@ -314,7 +532,7 @@ class RepoSettingsPage {
 
   async handleReset() {
     const confirmed = confirm(
-      'This will remove all custom settings for this repository. The default model will not be pre-selected and no default instructions will be used. Continue?'
+      'This will remove all custom settings for this repository. The default provider and model will not be pre-selected and no default instructions will be used. Continue?'
     );
 
     if (!confirmed) return;
@@ -327,6 +545,7 @@ class RepoSettingsPage {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
+          default_provider: null,
           default_model: null,
           default_instructions: ''
         })
@@ -338,22 +557,15 @@ class RepoSettingsPage {
 
       // Clear all settings
       this.originalSettings = {
+        default_provider: null,
         default_model: null,
         default_instructions: ''
       };
       this.currentSettings = { ...this.originalSettings };
       this.hasUnsavedChanges = false;
 
-      // Update UI
-      document.querySelectorAll('.model-card').forEach(card => {
-        card.classList.remove('selected');
-      });
-
-      const textarea = document.getElementById('default-instructions');
-      if (textarea) {
-        textarea.value = '';
-        this.updateCharCount(0);
-      }
+      // Update UI using updateUI() which handles all the display logic
+      this.updateUI();
 
       // Hide action bar
       const actionBar = document.getElementById('action-bar');

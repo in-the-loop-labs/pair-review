@@ -952,12 +952,6 @@ class LocalManager {
       githubLink.style.display = 'none';
     }
 
-    // Hide settings link (no repo settings for local mode)
-    const settingsLink = document.getElementById('settings-link');
-    if (settingsLink) {
-      settingsLink.style.display = 'none';
-    }
-
     // Hide refresh button (no remote to refresh from)
     const refreshBtn = document.getElementById('refresh-pr');
     if (refreshBtn) {
@@ -1205,6 +1199,41 @@ class LocalManager {
     if (commitSha && reviewData.localHeadSha) {
       commitSha.textContent = reviewData.localHeadSha.substring(0, 7);
       commitSha.dataset.fullSha = reviewData.localHeadSha;
+    }
+
+    // Update settings link visibility and href
+    const settingsLink = document.getElementById('settings-link');
+    if (settingsLink) {
+      const repository = reviewData.repository;
+      const parts = repository ? repository.split('/') : [];
+
+      if (repository && parts.length === 2) {
+        // Valid owner/repo format - enable settings link
+        const [owner, repo] = parts;
+        settingsLink.href = `/settings/${owner}/${repo}`;
+        settingsLink.style.display = '';
+        settingsLink.classList.remove('disabled');
+        settingsLink.title = 'Repository settings';
+
+        // Store referrer data for back navigation from settings page
+        settingsLink.addEventListener('click', () => {
+          localStorage.setItem('settingsReferrer', JSON.stringify({
+            type: 'local',
+            localReviewId: this.reviewId,
+            owner: owner,
+            repo: repo
+          }));
+        });
+      } else if (repository) {
+        // Repository detected but not in owner/repo format - show disabled
+        settingsLink.href = '#';
+        settingsLink.style.display = '';
+        settingsLink.classList.add('disabled');
+        settingsLink.title = 'Repository settings unavailable (no repo identified)';
+      } else {
+        // No repository detected - hide the link
+        settingsLink.style.display = 'none';
+      }
     }
   }
 

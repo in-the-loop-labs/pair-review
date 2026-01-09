@@ -268,6 +268,46 @@ html, body {
 }
 
 /* ============================================
+   Provider Toggle (matching AnalysisConfigModal)
+   ============================================ */
+
+.provider-toggle {
+  display: flex;
+  gap: 8px;
+  padding: 4px;
+  background: var(--color-bg-tertiary);
+  border-radius: 8px;
+  width: fit-content;
+}
+
+.provider-btn {
+  padding: 8px 20px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.provider-btn:hover {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.provider-btn.selected {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+[data-theme="dark"] .provider-btn.selected {
+  background: var(--color-bg-secondary);
+}
+
+/* ============================================
    Model Cards (matching AnalysisConfigModal)
    ============================================ */
 

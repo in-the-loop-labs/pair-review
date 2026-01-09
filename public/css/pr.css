@@ -5189,6 +5189,16 @@ body::before {
   color: var(--color-text-primary);
 }
 
+.header .settings-link.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+body.theme-dark .header .settings-link.disabled {
+  opacity: 0.5;
+}
+
 /* GitHub link in header - override generic .github-link styling */
 .header #github-link {
   background: transparent;

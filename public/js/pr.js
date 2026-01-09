@@ -519,7 +519,16 @@ class PRManager {
     // Update settings link
     const settingsLink = document.getElementById('settings-link');
     if (settingsLink && pr.owner && pr.repo) {
-      settingsLink.href = `/repo-settings.html?owner=${encodeURIComponent(pr.owner)}&repo=${encodeURIComponent(pr.repo)}`;
+      settingsLink.href = `/settings/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}`;
+
+      // Store referrer data for back navigation from settings page
+      settingsLink.addEventListener('click', () => {
+        localStorage.setItem('settingsReferrer', JSON.stringify({
+          prNumber: pr.number,
+          owner: pr.owner,
+          repo: pr.repo
+        }));
+      });
     }
   }
 

@@ -90,6 +90,21 @@
 
                 <!-- Settings Form -->
                 <form class="settings-form" id="settings-form">
+                    <!-- Default Provider Section -->
+                    <section class="settings-section">
+                        <div class="section-header">
+                            <h2>
+                                Default AI Provider
+                            </h2>
+                            <p class="section-description">
+                                This AI provider will be pre-selected when starting analysis on any PR in this repository.
+                            </p>
+                        </div>
+                        <div class="provider-toggle" id="provider-toggle">
+                            <!-- Provider buttons rendered dynamically by JavaScript -->
+                        </div>
+                    </section>
+
                     <!-- Default Model Section -->
                     <section class="settings-section">
                         <div class="section-header">
@@ -101,54 +116,13 @@
                             </p>
                         </div>
                         <div class="model-cards" id="model-cards">
-                            <button type="button" class="model-card" data-model="haiku">
-                                <div class="model-badge badge-speed">Fastest</div>
-                                <div class="model-icon">⚡</div>
-                                <div class="model-info">
-                                    <span class="model-name">Haiku</span>
-                                    <span class="model-tagline">Lightning Fast</span>
-                                </div>
-                                <p class="model-description">Quick analysis for simple changes</p>
-                                <div class="model-selected-indicator">
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                        <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-                                    </svg>
-                                </div>
-                            </button>
-                            <button type="button" class="model-card" data-model="sonnet">
-                                <div class="model-badge badge-recommended">Recommended</div>
-                                <div class="model-icon">✦</div>
-                                <div class="model-info">
-                                    <span class="model-name">Sonnet</span>
-                                    <span class="model-tagline">Best Balance</span>
-                                </div>
-                                <p class="model-description">Recommended for most reviews</p>
-                                <div class="model-selected-indicator">
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                        <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-                                    </svg>
-                                </div>
-                            </button>
-                            <button type="button" class="model-card" data-model="opus">
-                                <div class="model-badge badge-power">Most Thorough</div>
-                                <div class="model-icon">◆</div>
-                                <div class="model-info">
-                                    <span class="model-name">Opus</span>
-                                    <span class="model-tagline">Most Capable</span>
-                                </div>
-                                <p class="model-description">Deep analysis for complex code</p>
-                                <div class="model-selected-indicator">
-                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                        <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-                                    </svg>
-                                </div>
-                            </button>
+                            <!-- Model cards rendered dynamically by JavaScript -->
                         </div>
                         <p class="model-hint">
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                                 <path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 100-2 1 1 0 000 2z"/>
                             </svg>
-                            Users can still override this choice when starting each analysis.
+                            Users can still override these choices when starting each analysis.
                         </p>
                     </section>
 
