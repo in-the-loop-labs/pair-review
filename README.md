@@ -65,6 +65,58 @@ npx pair-review --local
 4. **Export feedback** - Copy as markdown to paste back to your coding agent
 5. **Submit review** - Post to GitHub with approval status (or keep it local)
 
+## Command Line Interface
+
+### Basic Usage
+
+```bash
+# Review a pull request by number
+npx pair-review <PR-number>
+
+# Review a pull request by URL
+npx pair-review <PR-URL>
+
+# Review local uncommitted changes
+npx pair-review --local [path]
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `<PR-number>` | PR number to review (requires being in a GitHub repo) |
+| `<PR-URL>` | Full GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
+| `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
+| `--model <name>` | Override the AI model (e.g., `opus`, `sonnet`, `haiku`). Equivalent to setting `PAIR_REVIEW_MODEL` |
+| `--ai` | Automatically run AI analysis when the review loads |
+| `--ai-draft` | Run AI analysis and save suggestions as a draft review on GitHub |
+| `--configure` | Show configuration help |
+
+### Examples
+
+```bash
+# Review PR #123 in the current repository
+npx pair-review 123
+
+# Review a PR from any repository
+npx pair-review https://github.com/facebook/react/pull/456
+
+# Review local changes in current directory
+npx pair-review --local
+
+# Review local changes in a specific project
+npx pair-review --local /path/to/project
+
+# Review with a specific model
+npx pair-review 123 --model opus
+
+# Review and auto-run AI analysis
+npx pair-review 123 --ai
+
+# Review local changes with AI draft comments
+npx pair-review --local --ai-draft --model haiku
+```
+
 ## Configuration
 
 On first run, Pair Review creates `~/.pair-review/config.json`:
@@ -76,6 +128,45 @@ On first run, Pair Review creates `~/.pair-review/config.json`:
   "theme": "light"
 }
 ```
+
+### Environment Variables
+
+Pair Review supports several environment variables for customizing AI provider commands and behavior:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PAIR_REVIEW_CLAUDE_CMD` | Custom command to invoke Claude CLI | `claude` |
+| `PAIR_REVIEW_GEMINI_CMD` | Custom command to invoke Gemini CLI | `gemini` |
+| `PAIR_REVIEW_CODEX_CMD` | Custom command to invoke Codex CLI | `codex` |
+| `PAIR_REVIEW_MODEL` | Override the AI model to use (same as `--model` flag) | Provider default |
+
+**Note:** The `--model` CLI flag is shorthand for setting `PAIR_REVIEW_MODEL`. If both are specified, the CLI flag takes precedence.
+
+These variables are useful when:
+- Your CLI tools are installed in a non-standard location
+- You need to use a wrapper script or custom binary
+- You want to force a specific model for all reviews
+
+**Examples:**
+
+```bash
+# Use a custom path for Claude CLI
+PAIR_REVIEW_CLAUDE_CMD="/usr/local/bin/claude" npx pair-review 123
+
+# Use a wrapper command (supports multi-word commands)
+PAIR_REVIEW_CLAUDE_CMD="devx claude" npx pair-review 123
+
+# Use Gemini with npx
+PAIR_REVIEW_GEMINI_CMD="npx gemini" npx pair-review --local
+
+# Force a specific model for this review
+PAIR_REVIEW_MODEL="opus" npx pair-review 123
+
+# Combine multiple settings
+PAIR_REVIEW_CLAUDE_CMD="/opt/claude/bin/claude" PAIR_REVIEW_MODEL="haiku" npx pair-review 123
+```
+
+**Note:** Multi-word commands (containing spaces) are supported. The application automatically handles these by using shell mode for execution.
 
 ### GitHub Token
 
