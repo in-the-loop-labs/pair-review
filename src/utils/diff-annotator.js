@@ -18,12 +18,13 @@ function parseHunkHeader(header) {
     return null;
   }
 
+  const context = match[5].trim();
   return {
     oldStart: parseInt(match[1], 10),
     oldCount: match[2] !== undefined ? parseInt(match[2], 10) : 1,
     newStart: parseInt(match[3], 10),
     newCount: match[4] !== undefined ? parseInt(match[4], 10) : 1,
-    context: match[5].trim()
+    context: context || null  // null for no context, not empty string
   };
 }
 
@@ -253,14 +254,9 @@ function annotateDiff(rawDiff) {
         fileHeaderOutput = true;
       }
 
-      // Output hunk header marker to preserve chunk boundaries
-      // Format: @@ OLD:start NEW:start @@ [function context]
-      // This gives context without the full git syntax, and indicates discontinuity
-      let hunkHeaderLine = `@@ OLD:${hunkInfo.oldStart} NEW:${hunkInfo.newStart} @@`;
-      if (hunkInfo.context) {
-        hunkHeaderLine += ` ${hunkInfo.context}`;
-      }
-      output.push(hunkHeaderLine);
+      // Output original hunk header to preserve chunk boundaries
+      // Pass through the original git hunk header format unchanged
+      output.push(line);
 
       oldLineNum = hunkInfo.oldStart;
       newLineNum = hunkInfo.newStart;
@@ -364,14 +360,16 @@ function parseAnnotatedDiff(annotatedDiff) {
       continue;
     }
 
-    // Parse hunk header (chunk boundary marker)
-    const hunkMatch = line.match(/^@@ OLD:(\d+) NEW:(\d+) @@(.*)$/);
-    if (hunkMatch && currentFile) {
+    // Parse hunk header (original git format: @@ -old,count +new,count @@ context)
+    const hunkInfo = parseHunkHeader(line);
+    if (hunkInfo && currentFile) {
       currentFile.lines.push({
         type: 'hunk',
-        oldStart: parseInt(hunkMatch[1], 10),
-        newStart: parseInt(hunkMatch[2], 10),
-        context: hunkMatch[3].trim() || null
+        oldStart: hunkInfo.oldStart,
+        oldCount: hunkInfo.oldCount,
+        newStart: hunkInfo.newStart,
+        newCount: hunkInfo.newCount,
+        context: hunkInfo.context  // already null when no context (normalized in parseHunkHeader)
       });
       continue;
     }

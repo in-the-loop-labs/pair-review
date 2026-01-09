@@ -31,7 +31,7 @@ describe('diff-annotator', () => {
         oldCount: 1,
         newStart: 1,
         newCount: 1,
-        context: ''
+        context: null
       });
     });
 
@@ -42,7 +42,7 @@ describe('diff-annotator', () => {
         oldCount: 3,
         newStart: 15,
         newCount: 1,
-        context: ''
+        context: null
       });
     });
 
@@ -53,7 +53,7 @@ describe('diff-annotator', () => {
         oldCount: 1,
         newStart: 8,
         newCount: 4,
-        context: ''
+        context: null
       });
     });
 
@@ -64,7 +64,7 @@ describe('diff-annotator', () => {
         oldCount: 0,
         newStart: 1,
         newCount: 5,
-        context: ''
+        context: null
       });
     });
 
@@ -157,7 +157,7 @@ index abc123..def456 100644
 
       expect(lines[0]).toBe('=== test.js ===');
       expect(lines[1]).toBe(' OLD | NEW |');
-      expect(lines[2]).toBe('@@ OLD:1 NEW:1 @@'); // Hunk header
+      expect(lines[2]).toBe('@@ -1,3 +1,5 @@'); // Original git hunk header
       expect(lines[3]).toMatch(/^\s+1 \|\s+1 \|     line 1$/);
       expect(lines[4]).toMatch(/^\s+2 \|\s+2 \|     line 2$/);
       expect(lines[5]).toMatch(/^\s+-- \|\s+3 \| \[\+\] new line 3$/);
@@ -182,7 +182,7 @@ index abc123..def456 100644
 
       expect(lines[0]).toBe('=== test.js ===');
       expect(lines[1]).toBe(' OLD | NEW |');
-      expect(lines[2]).toBe('@@ OLD:1 NEW:1 @@'); // Hunk header
+      expect(lines[2]).toBe('@@ -1,5 +1,3 @@'); // Original git hunk header
       expect(lines[3]).toMatch(/^\s+1 \|\s+1 \|     line 1$/);
       expect(lines[4]).toMatch(/^\s+2 \|\s+-- \| \[-\] deleted line 2$/);
       expect(lines[5]).toMatch(/^\s+3 \|\s+-- \| \[-\] deleted line 3$/);
@@ -207,7 +207,7 @@ index abc123..def456 100644
 
       expect(lines[0]).toBe('=== helper.js ===');
       expect(lines[1]).toBe(' OLD | NEW |');
-      expect(lines[2]).toBe('@@ OLD:10 NEW:12 @@'); // Hunk header
+      expect(lines[2]).toBe('@@ -10,5 +12,5 @@'); // Original git hunk header
       // Content preserves original spacing from the diff (source has 2-space indent)
       expect(lines[3]).toContain('10 |');
       expect(lines[3]).toContain('12 |');
@@ -466,7 +466,7 @@ index abc123..def456 100644
       expect(logCLine).toContain('12 |');
     });
 
-    it('should output hunk headers with line numbers for chunk boundaries', () => {
+    it('should output original hunk headers for chunk boundaries', () => {
       const rawDiff = `diff --git a/test.js b/test.js
 index abc123..def456 100644
 --- a/test.js
@@ -479,8 +479,8 @@ index abc123..def456 100644
 
       const result = annotateDiff(rawDiff);
 
-      // Should contain hunk header marker with starting line numbers
-      expect(result).toContain('@@ OLD:1 NEW:1 @@');
+      // Should contain original git hunk header
+      expect(result).toContain('@@ -1,3 +1,4 @@');
     });
 
     it('should output hunk headers with function context when present', () => {
@@ -496,8 +496,8 @@ index abc123..def456 100644
 
       const result = annotateDiff(rawDiff);
 
-      // Should contain hunk header with function context
-      expect(result).toContain('@@ OLD:50 NEW:50 @@ function myFunction() {');
+      // Should contain original hunk header with function context
+      expect(result).toContain('@@ -50,4 +50,5 @@ function myFunction() {');
     });
 
     it('should output multiple hunk headers for discontinuous chunks', () => {
@@ -518,14 +518,14 @@ index abc123..def456 100644
 
       const result = annotateDiff(rawDiff);
 
-      // Should have two hunk headers marking chunk boundaries
-      expect(result).toContain('@@ OLD:1 NEW:1 @@');
-      expect(result).toContain('@@ OLD:100 NEW:101 @@ class Example {');
+      // Should have two original hunk headers marking chunk boundaries
+      expect(result).toContain('@@ -1,3 +1,4 @@');
+      expect(result).toContain('@@ -100,3 +101,4 @@ class Example {');
 
       // Verify discontinuity is visible - lines jump from ~4 to ~100
       const lines = result.split('\n');
-      const firstHunkIndex = lines.findIndex(l => l.includes('OLD:1 NEW:1'));
-      const secondHunkIndex = lines.findIndex(l => l.includes('OLD:100 NEW:101'));
+      const firstHunkIndex = lines.findIndex(l => l.includes('@@ -1,3'));
+      const secondHunkIndex = lines.findIndex(l => l.includes('@@ -100,3'));
       expect(secondHunkIndex).toBeGreaterThan(firstHunkIndex);
     });
   });
@@ -607,7 +607,7 @@ Binary file (not annotated)`;
     it('should parse hunk headers as chunk boundaries', () => {
       const annotated = `=== test.js ===
  OLD | NEW |
-@@ OLD:1 NEW:1 @@
+@@ -1,3 +1,4 @@
    1 |   1 |     line 1
   -- |   2 | [+] new line
    2 |   3 |     line 2`;
@@ -617,11 +617,13 @@ Binary file (not annotated)`;
       expect(files.length).toBe(1);
       expect(files[0].lines.length).toBe(4); // hunk header + 3 content lines
 
-      // First item should be hunk header
+      // First item should be hunk header with full git info
       expect(files[0].lines[0]).toEqual({
         type: 'hunk',
         oldStart: 1,
+        oldCount: 3,
         newStart: 1,
+        newCount: 4,
         context: null
       });
     });
@@ -629,7 +631,7 @@ Binary file (not annotated)`;
     it('should parse hunk headers with function context', () => {
       const annotated = `=== test.js ===
  OLD | NEW |
-@@ OLD:50 NEW:50 @@ function myFunction() {
+@@ -50,4 +50,5 @@ function myFunction() {
   50 |  50 |       const x = 1;
   -- |  51 | [+]   const y = 2;`;
 
@@ -638,7 +640,9 @@ Binary file (not annotated)`;
       expect(files[0].lines[0]).toEqual({
         type: 'hunk',
         oldStart: 50,
+        oldCount: 4,
         newStart: 50,
+        newCount: 5,
         context: 'function myFunction() {'
       });
     });
@@ -646,10 +650,10 @@ Binary file (not annotated)`;
     it('should parse multiple hunk headers for discontinuous chunks', () => {
       const annotated = `=== test.js ===
  OLD | NEW |
-@@ OLD:1 NEW:1 @@
+@@ -1,3 +1,4 @@
    1 |   1 |     line 1
   -- |   2 | [+] new line
-@@ OLD:100 NEW:101 @@ class Example {
+@@ -100,3 +101,4 @@ class Example {
  100 | 101 |     method() {
   -- | 102 | [+]   // comment`;
 
@@ -660,14 +664,18 @@ Binary file (not annotated)`;
       expect(files[0].lines[0]).toEqual({
         type: 'hunk',
         oldStart: 1,
+        oldCount: 3,
         newStart: 1,
+        newCount: 4,
         context: null
       });
 
       expect(files[0].lines[3]).toEqual({
         type: 'hunk',
         oldStart: 100,
+        oldCount: 3,
         newStart: 101,
+        newCount: 4,
         context: 'class Example {'
       });
     });
@@ -734,14 +742,18 @@ index abc123..def456 100644
       expect(hunkHeaders[0]).toEqual({
         type: 'hunk',
         oldStart: 1,
+        oldCount: 3,
         newStart: 1,
+        newCount: 4,
         context: null
       });
 
       expect(hunkHeaders[1]).toEqual({
         type: 'hunk',
         oldStart: 50,
+        oldCount: 3,
         newStart: 51,
+        newCount: 4,
         context: 'function example() {'
       });
     });
