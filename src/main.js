@@ -33,7 +33,7 @@ USAGE:
 
 DESCRIPTION:
     Review GitHub pull requests or local changes with AI-assisted analysis.
-    Opens a local web UI with a familiar GitHub-like interface.
+    Opens a local web UI with a familiar review interface.
 
 ARGUMENTS:
     <PR-number>     PR number to review (requires being in a GitHub repository)
@@ -42,39 +42,21 @@ ARGUMENTS:
 OPTIONS:
     -h, --help              Show this help message and exit
     -v, --version           Show version number and exit
-    --local [path]          Review local uncommitted changes
+    -l, --local [path]      Review local uncommitted changes
                             Optional path defaults to current directory
-    --model <name>          Override the AI model (e.g., opus, sonnet, haiku)
-                            Equivalent to setting PAIR_REVIEW_MODEL
+    --model <name>          Override the AI model. Claude is the default provider.
+                            Available models: opus, sonnet, haiku (Claude);
+                            or use provider-specific models with Gemini/Codex
     --ai                    Automatically run AI analysis when the review loads
     --ai-draft              Run AI analysis and save suggestions as a draft
                             review on GitHub (headless mode)
-    --configure             Show configuration help
+    --configure             Show setup instructions and configuration options
 
 EXAMPLES:
-    # Review PR #123 in the current repository
-    pair-review 123
-
-    # Review a PR from any repository
-    pair-review https://github.com/facebook/react/pull/456
-
-    # Review local changes in current directory
-    pair-review --local
-
-    # Review local changes in a specific project
-    pair-review --local /path/to/project
-
-    # Review with a specific model
-    pair-review 123 --model opus
-
-    # Review and auto-run AI analysis
-    pair-review 123 --ai
-
-    # Create a draft review with AI suggestions (no browser)
-    pair-review 123 --ai-draft --model haiku
-
-    # Just start the server (no PR context)
-    pair-review
+    pair-review 123                    # Review PR #123 in current repo
+    pair-review https://github.com/owner/repo/pull/456
+    pair-review --local                # Review uncommitted local changes
+    pair-review 123 --ai               # Auto-run AI analysis
 
 ENVIRONMENT VARIABLES:
     PAIR_REVIEW_CLAUDE_CMD  Custom command to invoke Claude CLI (default: claude)
@@ -91,8 +73,9 @@ CONFIGURATION:
       "theme": "light"
     }
 
-    Create a GitHub Personal Access Token with 'repo' scope:
-    https://github.com/settings/tokens/new
+    GitHub Personal Access Token (create at https://github.com/settings/tokens/new):
+      - repo (required for private repositories)
+      - public_repo (sufficient for public repositories only)
 
 MORE INFO:
     https://github.com/in-the-loop-labs/pair-review
@@ -124,14 +107,30 @@ function cleanupStaleWorktreesAsync(config) {
   });
 }
 
+// Known flags that are valid (for validation)
+const KNOWN_FLAGS = new Set([
+  '-h', '--help',
+  '-v', '--version',
+  '-l', '--local',
+  '--model',
+  '--ai',
+  '--ai-draft',
+  '--configure'
+]);
+
 /**
- * Parse command line arguments to separate PR arguments from flags
+ * Parse command line arguments to separate PR arguments from flags.
+ *
+ * Note: This is a simple hand-rolled parser. If the CLI grows more complex,
+ * consider using a library like 'commander', 'yargs', or 'meow'.
+ *
  * @param {Array<string>} args - Raw command line arguments
  * @returns {Object} { prArgs: Array<string>, flags: Object }
  */
 function parseArgs(args) {
   const prArgs = [];
   const flags = {};
+  const unknownFlags = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -142,29 +141,37 @@ function parseArgs(args) {
       flags.aiDraft = true;
     } else if (arg === '--model') {
       // Next argument is the model name
-      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         flags.model = args[i + 1];
         i++; // Skip next argument since we consumed it
       } else {
-        throw new Error('--model flag requires a model name (e.g., --model opus)');
+        throw new Error('--model flag requires a model name (e.g., --model sonnet)');
       }
-    } else if (arg === '--local') {
-      // --local flag is always a boolean
+    } else if (arg === '-l' || arg === '--local') {
+      // -l/--local flag is always a boolean
       flags.local = true;
-      // Next argument is optional path (if not starting with --)
-      if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
+      // Next argument is optional path (if not starting with -)
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
         flags.localPath = args[i + 1];
         i++; // Skip next argument since we consumed it
       }
       // localPath will be resolved to cwd if not provided
-    } else if (arg === '--configure') {
-      // Skip --configure as it's handled earlier
+    } else if (arg === '--configure' || arg === '-h' || arg === '--help' || arg === '-v' || arg === '--version') {
+      // Skip flags that are handled earlier in main()
       continue;
-    } else if (!arg.startsWith('--')) {
+    } else if (arg.startsWith('-')) {
+      // Unknown flag - collect for error reporting
+      unknownFlags.push(arg);
+    } else {
       // This is a PR argument (number or URL)
       prArgs.push(arg);
     }
-    // Ignore other unknown flags
+  }
+
+  // Error on unknown flags
+  if (unknownFlags.length > 0) {
+    const flagList = unknownFlags.join(', ');
+    throw new Error(`Unknown flag${unknownFlags.length > 1 ? 's' : ''}: ${flagList}\nRun 'pair-review --help' for usage information.`);
   }
 
   return { prArgs, flags };
@@ -191,8 +198,42 @@ async function main() {
 
     // Handle configuration command
     if (args.includes('--configure')) {
-      console.log('Configuration is handled automatically.');
-      console.log('Edit ~/.pair-review/config.json to set your GitHub token.');
+      console.log(`
+pair-review Configuration
+=========================
+
+CONFIG FILE:
+    Location: ~/.pair-review/config.json
+    Created automatically on first run.
+
+    Example config:
+    {
+      "github_token": "ghp_your_token_here",
+      "port": 3000,
+      "theme": "light"
+    }
+
+GITHUB TOKEN:
+    Create a Personal Access Token at:
+    https://github.com/settings/tokens/new
+
+    Required scopes:
+      - repo (for private repositories)
+      - public_repo (sufficient for public repositories only)
+
+ENVIRONMENT VARIABLES:
+    PAIR_REVIEW_CLAUDE_CMD  Custom Claude CLI command (default: claude)
+    PAIR_REVIEW_GEMINI_CMD  Custom Gemini CLI command (default: gemini)
+    PAIR_REVIEW_CODEX_CMD   Custom Codex CLI command (default: codex)
+    PAIR_REVIEW_MODEL       Default AI model (e.g., opus, sonnet, haiku)
+
+AI PROVIDERS:
+    Claude (default): Requires 'claude' CLI installed
+    Gemini: Requires 'gemini' CLI installed
+    Codex: Requires 'codex' CLI installed
+
+    Select provider per-repository in the web UI settings.
+`);
       process.exit(0);
     }
 

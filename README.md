@@ -88,35 +88,19 @@ npx pair-review --local [path]
 | `<PR-URL>` | Full GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
 | `-h`, `--help` | Show help message with full CLI documentation |
 | `-v`, `--version` | Show version number |
-| `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
-| `--model <name>` | Override the AI model (e.g., `opus`, `sonnet`, `haiku`). Equivalent to setting `PAIR_REVIEW_MODEL` |
+| `-l`, `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
+| `--model <name>` | Override the AI model. Claude is the default provider. Options: `opus`, `sonnet`, `haiku` |
 | `--ai` | Automatically run AI analysis when the review loads |
 | `--ai-draft` | Run AI analysis and save suggestions as a draft review on GitHub |
-| `--configure` | Show configuration help |
+| `--configure` | Show setup instructions and configuration options |
 
 ### Examples
 
 ```bash
-# Review PR #123 in the current repository
-npx pair-review 123
-
-# Review a PR from any repository
-npx pair-review https://github.com/facebook/react/pull/456
-
-# Review local changes in current directory
-npx pair-review --local
-
-# Review local changes in a specific project
-npx pair-review --local /path/to/project
-
-# Review with a specific model
-npx pair-review 123 --model opus
-
-# Review and auto-run AI analysis
-npx pair-review 123 --ai
-
-# Review local changes with AI draft comments
-npx pair-review --local --ai-draft --model haiku
+npx pair-review 123                    # Review PR #123 in current repo
+npx pair-review https://github.com/owner/repo/pull/456
+npx pair-review --local                # Review uncommitted local changes
+npx pair-review 123 --ai               # Auto-run AI analysis
 ```
 
 ## Configuration

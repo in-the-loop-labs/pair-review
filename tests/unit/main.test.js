@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { execSync, spawnSync } from 'child_process';
 
 // Test the parseArgs function which is exported from main.js
 const { parseArgs } = require('../../src/main');
@@ -43,11 +44,29 @@ describe('main.js parseArgs', () => {
       expect(result.flags.localPath).toBe('/path/to/repo');
     });
 
-    it('should not consume next argument as localPath if it starts with --', () => {
+    it('should parse -l short flag without path', () => {
+      const result = parseArgs(['-l']);
+      expect(result.flags.local).toBe(true);
+      expect(result.flags.localPath).toBeUndefined();
+    });
+
+    it('should parse -l short flag with path', () => {
+      const result = parseArgs(['-l', '/path/to/repo']);
+      expect(result.flags.local).toBe(true);
+      expect(result.flags.localPath).toBe('/path/to/repo');
+    });
+
+    it('should not consume next argument as localPath if it starts with -', () => {
       const result = parseArgs(['--local', '--ai']);
       expect(result.flags.local).toBe(true);
       expect(result.flags.localPath).toBeUndefined();
       expect(result.flags.ai).toBe(true);
+    });
+
+    it('should not consume next argument as localPath if it starts with short flag', () => {
+      const result = parseArgs(['-l', '-h']);
+      expect(result.flags.local).toBe(true);
+      expect(result.flags.localPath).toBeUndefined();
     });
 
     it('should parse PR number as prArgs', () => {
@@ -68,10 +87,20 @@ describe('main.js parseArgs', () => {
       expect(result.prArgs).toEqual(['123']);
     });
 
-    it('should ignore unknown flags', () => {
-      const result = parseArgs(['123', '--unknown-flag']);
-      expect(result.prArgs).toEqual(['123']);
-      // Unknown flags are silently ignored
+    it('should throw error on unknown flags', () => {
+      expect(() => parseArgs(['123', '--unknown-flag'])).toThrow('Unknown flag: --unknown-flag');
+    });
+
+    it('should throw error on multiple unknown flags', () => {
+      expect(() => parseArgs(['123', '--foo', '--bar'])).toThrow('Unknown flags: --foo, --bar');
+    });
+
+    it('should throw error on unknown short flags', () => {
+      expect(() => parseArgs(['123', '-x'])).toThrow('Unknown flag: -x');
+    });
+
+    it('should include help suggestion in unknown flag error', () => {
+      expect(() => parseArgs(['123', '--hepl'])).toThrow("Run 'pair-review --help' for usage information");
     });
 
     it('should handle flags in any order', () => {
@@ -86,6 +115,26 @@ describe('main.js parseArgs', () => {
       expect(result.prArgs).toEqual([]);
       expect(result.flags).toEqual({});
     });
+
+    it('should skip -h and --help flags', () => {
+      const result = parseArgs(['-h']);
+      expect(result.prArgs).toEqual([]);
+      expect(result.flags).toEqual({});
+
+      const result2 = parseArgs(['--help']);
+      expect(result2.prArgs).toEqual([]);
+      expect(result2.flags).toEqual({});
+    });
+
+    it('should skip -v and --version flags', () => {
+      const result = parseArgs(['-v']);
+      expect(result.prArgs).toEqual([]);
+      expect(result.flags).toEqual({});
+
+      const result2 = parseArgs(['--version']);
+      expect(result2.prArgs).toEqual([]);
+      expect(result2.flags).toEqual({});
+    });
   });
 });
 
@@ -93,8 +142,7 @@ describe('CLI help and version', () => {
   // These are integration tests that actually invoke the CLI
   // They test that the binary responds correctly to -h and -v flags
 
-  it('should show help text when --help is passed', async () => {
-    const { execSync } = require('child_process');
+  it('should show help text when --help is passed', () => {
     const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
 
     expect(output).toContain('pair-review');
@@ -109,30 +157,26 @@ describe('CLI help and version', () => {
     expect(output).toContain('--ai-draft');
   });
 
-  it('should show help text when -h is passed', async () => {
-    const { execSync } = require('child_process');
+  it('should show help text when -h is passed', () => {
     const output = execSync('node bin/pair-review.js -h', { encoding: 'utf-8' });
 
     expect(output).toContain('USAGE:');
     expect(output).toContain('OPTIONS:');
   });
 
-  it('should show version when --version is passed', async () => {
-    const { execSync } = require('child_process');
+  it('should show version when --version is passed', () => {
     const output = execSync('node bin/pair-review.js --version', { encoding: 'utf-8' });
 
     expect(output).toMatch(/pair-review v\d+\.\d+\.\d+/);
   });
 
-  it('should show version when -v is passed', async () => {
-    const { execSync } = require('child_process');
+  it('should show version when -v is passed', () => {
     const output = execSync('node bin/pair-review.js -v', { encoding: 'utf-8' });
 
     expect(output).toMatch(/pair-review v\d+\.\d+\.\d+/);
   });
 
-  it('help output should contain environment variables section', async () => {
-    const { execSync } = require('child_process');
+  it('help output should contain environment variables section', () => {
     const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
 
     expect(output).toContain('ENVIRONMENT VARIABLES:');
@@ -142,12 +186,65 @@ describe('CLI help and version', () => {
     expect(output).toContain('PAIR_REVIEW_MODEL');
   });
 
-  it('help output should contain configuration section', async () => {
-    const { execSync } = require('child_process');
+  it('help output should contain configuration section', () => {
     const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
 
     expect(output).toContain('CONFIGURATION:');
     expect(output).toContain('~/.pair-review/config.json');
     expect(output).toContain('github_token');
+  });
+
+  it('help output should mention -l short flag for local', () => {
+    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+
+    expect(output).toContain('-l, --local');
+  });
+
+  it('help output should mention Claude as default provider', () => {
+    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+
+    expect(output).toContain('Claude is the default provider');
+  });
+
+  it('--help should exit with code 0', () => {
+    const result = spawnSync('node', ['bin/pair-review.js', '--help']);
+    expect(result.status).toBe(0);
+  });
+
+  it('-h should exit with code 0', () => {
+    const result = spawnSync('node', ['bin/pair-review.js', '-h']);
+    expect(result.status).toBe(0);
+  });
+
+  it('--version should exit with code 0', () => {
+    const result = spawnSync('node', ['bin/pair-review.js', '--version']);
+    expect(result.status).toBe(0);
+  });
+
+  it('-v should exit with code 0', () => {
+    const result = spawnSync('node', ['bin/pair-review.js', '-v']);
+    expect(result.status).toBe(0);
+  });
+});
+
+describe('CLI --configure', () => {
+  it('should show comprehensive configuration help', () => {
+    const output = execSync('node bin/pair-review.js --configure', { encoding: 'utf-8' });
+
+    expect(output).toContain('pair-review Configuration');
+    expect(output).toContain('CONFIG FILE:');
+    expect(output).toContain('~/.pair-review/config.json');
+    expect(output).toContain('GITHUB TOKEN:');
+    expect(output).toContain('github.com/settings/tokens/new');
+    expect(output).toContain('repo');
+    expect(output).toContain('public_repo');
+    expect(output).toContain('ENVIRONMENT VARIABLES:');
+    expect(output).toContain('AI PROVIDERS:');
+    expect(output).toContain('Claude (default)');
+  });
+
+  it('--configure should exit with code 0', () => {
+    const result = spawnSync('node', ['bin/pair-review.js', '--configure']);
+    expect(result.status).toBe(0);
   });
 });
