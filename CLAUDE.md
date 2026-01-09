@@ -3,6 +3,12 @@
 ## Overview
 Pair-Review is a local web application that assists human reviewers with GitHub pull request reviews by providing AI-powered suggestions and insights. The AI acts as a pair programming partner, highlighting potential issues and noteworthy aspects to accelerate the review process while keeping the human reviewer in control.
 
+## Core Value Propositions
+
+1. **Tight Feedback Loop for AI Coding Agents**: Enable humans to review AI-generated code and provide structured feedback back to the coding agent (Claude Code, Cursor, etc.) for iteration. This creates a continuous improvement cycle where the human stays in control while working collaboratively with AI agents.
+
+2. **AI-Assisted Human Review Partner**: Help humans perform better code reviews by acting as a collaborative partner that highlights issues, insights, and noteworthy aspects. This is not just an automated bug finder or AI review tool - it's a partner that assists the human reviewer in making informed decisions.
+
 ## Core Architecture
 - **Backend**: Node.js with Express server
 - **Frontend**: Vanilla JavaScript (no framework) - familiar GitHub-like UI
@@ -115,7 +121,9 @@ Test structure:
 - Handle errors gracefully with informative messages
 - Aim to keep file sizes below 20K tokens
 - CRITICAL: Complete, professional implementation - no stubs, prototypes, or partial work
-- CRITICAL: Include appropriate test coverage when making changes
+- CRITICAL: All change must support both Local mode and PR mode
+- CRITICAL: Include appropriate test coverage when making changes, especially bug fixes
+- Important: Consider whether a change also requires a README update
 - CRITICAL: When completing a change, run the relevant tests
 - CRITICAL: When completing changes that modify frontend code, use a Task tool run E2E tests
 
