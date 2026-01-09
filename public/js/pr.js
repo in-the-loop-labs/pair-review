@@ -565,6 +565,10 @@ class PRManager {
           diffContainer.appendChild(fileWrapper);
         }
       });
+
+      // Async validate end-of-file gaps - removes any that have no trailing lines
+      // This runs after render to avoid blocking initial display
+      this.validatePendingEofGaps();
     } else {
       diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
     }
@@ -800,6 +804,28 @@ class PRManager {
         new: endBounds.new || (block.newStart + block.lines.filter(l => !l.startsWith('-')).length - 1)
       };
     });
+
+    // Add end-of-file gap section after the last hunk
+    // This handles the case where there are unchanged lines after the last change
+    // Use EOF_SENTINEL (-1) for endLine to indicate "rest of file" (unknown size)
+    // The gap is marked as pending validation and will be removed async if no lines exist
+    if (blocks.length > 0) {
+      const gapStartOld = prevBlockEnd.old + 1;
+      const gapStartNew = prevBlockEnd.new + 1;
+      const gapRow = window.HunkParser.createGapSection(
+        null,
+        fileName,
+        gapStartOld,
+        window.HunkParser.EOF_SENTINEL,  // Sentinel: end of file (unknown size)
+        window.HunkParser.EOF_SENTINEL,  // Sentinel: gap size unknown until file is fetched
+        'below',
+        (controls, direction, count) => this.expandGapContext(controls, direction, count),
+        gapStartNew
+      );
+      // Mark for async validation - will be removed if no trailing lines exist
+      gapRow.dataset.pendingEofValidation = 'true';
+      tbody.appendChild(gapRow);
+    }
   }
 
   /**
@@ -937,6 +963,65 @@ class PRManager {
   }
 
   /**
+   * Validate pending end-of-file gaps asynchronously
+   * Removes gap rows where there are no trailing lines to expand
+   * This ensures users don't see expand buttons that do nothing
+   */
+  async validatePendingEofGaps() {
+    const pendingGaps = document.querySelectorAll('tr.context-expand-row[data-pending-eof-validation="true"]');
+
+    // Process all pending gaps in parallel for efficiency
+    const validationPromises = Array.from(pendingGaps).map(async (gapRow) => {
+      const controls = gapRow.expandControls;
+      if (!controls) {
+        gapRow.remove();
+        return;
+      }
+
+      const fileName = controls.dataset.fileName;
+      const startLine = parseInt(controls.dataset.startLine);
+
+      try {
+        const data = await this.fetchFileContent(fileName);
+        if (!data) {
+          // Can't validate - remove the gap to be safe
+          gapRow.remove();
+          return;
+        }
+
+        const totalLines = data.lines.length;
+
+        // If startLine is beyond file length, there are no remaining lines
+        if (startLine > totalLines) {
+          gapRow.remove();
+        } else {
+          // Gap is valid - update with actual count and remove pending flag
+          const actualGapSize = totalLines - startLine + 1;
+          controls.dataset.endLine = totalLines;
+          controls.dataset.hiddenCount = actualGapSize;
+          gapRow.removeAttribute('data-pending-eof-validation');
+
+          // Update the display text with actual count
+          const expandInfo = gapRow.querySelector('.expand-info');
+          if (expandInfo) {
+            expandInfo.textContent = `${actualGapSize} hidden lines`;
+          }
+          const contentCell = gapRow.querySelector('.clickable-expand');
+          if (contentCell) {
+            contentCell.title = 'Expand all';
+          }
+        }
+      } catch (error) {
+        console.error('Error validating EOF gap:', error);
+        // On error, remove the gap to be safe
+        gapRow.remove();
+      }
+    });
+
+    await Promise.all(validationPromises);
+  }
+
+  /**
    * Expand gap context
    * @param {Element} controls - The expand controls element
    * @param {string} direction - 'up', 'down', or 'all'
@@ -974,24 +1059,36 @@ class PRManager {
       const data = await this.fetchFileContent(fileName);
       if (!data) return;
 
+      // Handle EOF_SENTINEL for end-of-file gaps with unknown size
+      // When endLine is EOF_SENTINEL, determine actual file size from fetched content
+      let actualEndLine = endLine;
+      if (endLine === window.HunkParser.EOF_SENTINEL) {
+        actualEndLine = data.lines.length;
+        // If startLine is beyond file length, there are no remaining lines
+        if (startLine > actualEndLine) {
+          gapRow.remove();
+          return;
+        }
+      }
+
       let linesToShow = [];
       let newGapStart = startLine;
-      let newGapEnd = endLine;
+      let newGapEnd = actualEndLine;
 
       if (direction === 'all') {
         // Show all lines in the gap
-        linesToShow = data.lines.slice(startLine - 1, endLine);
-        newGapStart = endLine + 1; // No remaining gap
+        linesToShow = data.lines.slice(startLine - 1, actualEndLine);
+        newGapStart = actualEndLine + 1; // No remaining gap
       } else if (direction === 'up') {
         // Show lines from the bottom of the gap (expanding upward)
-        const expandEnd = endLine;
-        const expandStart = Math.max(startLine, endLine - count + 1);
+        const expandEnd = actualEndLine;
+        const expandStart = Math.max(startLine, actualEndLine - count + 1);
         linesToShow = data.lines.slice(expandStart - 1, expandEnd);
         newGapEnd = expandStart - 1;
       } else if (direction === 'down') {
         // Show lines from the top of the gap (expanding downward)
         const expandStart = startLine;
-        const expandEnd = Math.min(endLine, startLine + count - 1);
+        const expandEnd = Math.min(actualEndLine, startLine + count - 1);
         linesToShow = data.lines.slice(expandStart - 1, expandEnd);
         newGapStart = expandEnd + 1;
       }
@@ -1026,7 +1123,7 @@ class PRManager {
         if (direction === 'down') {
           lineNumber = startLine + idx;
         } else if (direction === 'up') {
-          lineNumber = Math.max(startLine, endLine - count + 1) + idx;
+          lineNumber = Math.max(startLine, actualEndLine - count + 1) + idx;
         } else {
           lineNumber = startLine + idx;
         }
@@ -1046,8 +1143,8 @@ class PRManager {
       });
 
       // If expanding down, add remaining gap LAST (it appears below expanded lines)
-      if (direction === 'down' && newGapStart <= endLine) {
-        const remainingGap = endLine - newGapStart + 1;
+      if (direction === 'down' && newGapStart <= actualEndLine) {
+        const remainingGap = actualEndLine - newGapStart + 1;
         if (remainingGap > 0) {
           // Calculate the new startLineNew for the remaining gap
           // It should advance by the same amount as the OLD line numbers
@@ -1056,7 +1153,7 @@ class PRManager {
           const newGapRow = window.HunkParser.createGapRowElement(
             fileName,
             newGapStart,
-            endLine,
+            actualEndLine,
             remainingGap,
             position, // Preserve original position (above/between/below)
             (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),

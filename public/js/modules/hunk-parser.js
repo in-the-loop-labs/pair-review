@@ -36,6 +36,10 @@ class HunkParser {
   // Auto-expand threshold - gaps smaller than this are expanded automatically (2x standard context of 3 lines)
   static AUTO_EXPAND_THRESHOLD = 6;
 
+  // Sentinel value for end-of-file gaps where the file size is unknown
+  // Used for both endLine and gapSize to indicate "rest of file"
+  static EOF_SENTINEL = -1;
+
   // ========================================
   // Helper functions for gap section creation
   // ========================================
@@ -153,7 +157,8 @@ class HunkParser {
     const contentCell = document.createElement('td');
     contentCell.className = 'diff-code expand-content clickable-expand';
     contentCell.colSpan = 2;
-    contentCell.title = 'Expand all';
+    // Handle EOF_SENTINEL for end-of-file gaps with unknown size
+    contentCell.title = gapSize === HunkParser.EOF_SENTINEL ? 'Expand to end of file' : 'Expand all';
 
     const contentWrapper = document.createElement('div');
     contentWrapper.className = 'expand-content-wrapper';
@@ -164,16 +169,21 @@ class HunkParser {
 
     const expandInfo = document.createElement('span');
     expandInfo.className = 'expand-info';
-    expandInfo.textContent = `${gapSize} hidden lines`;
+    // Handle EOF_SENTINEL for end-of-file gaps with unknown size
+    expandInfo.textContent = gapSize === HunkParser.EOF_SENTINEL ? 'Expand to end of file' : `${gapSize} hidden lines`;
 
     contentWrapper.appendChild(expandIcon);
     contentWrapper.appendChild(expandInfo);
     contentCell.appendChild(contentWrapper);
 
     // Make content cell clickable to expand all
+    // For EOF_SENTINEL gaps, pass 0 as count since direction='all' doesn't use it
+    // and expandGapContext will determine actual size from file content
     contentCell.addEventListener('click', () => {
-      const hiddenCount = parseInt(expandControls.dataset.hiddenCount) || gapSize;
-      expandCallback(expandControls, 'all', hiddenCount);
+      const hiddenCount = parseInt(expandControls.dataset.hiddenCount);
+      // If hiddenCount is EOF_SENTINEL or NaN, pass 0 (direction='all' ignores count anyway)
+      const count = (isNaN(hiddenCount) || hiddenCount === HunkParser.EOF_SENTINEL) ? 0 : hiddenCount;
+      expandCallback(expandControls, 'all', count);
     });
 
     return contentCell;
@@ -336,5 +346,12 @@ class HunkParser {
   }
 }
 
-// Make HunkParser available globally
-window.HunkParser = HunkParser;
+// Make HunkParser available globally in browser
+if (typeof window !== 'undefined') {
+  window.HunkParser = HunkParser;
+}
+
+// Export for Node.js testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { HunkParser };
+}
