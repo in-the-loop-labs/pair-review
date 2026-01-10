@@ -510,6 +510,8 @@ class LocalManager {
             throw new Error(error.error || 'Failed to delete comment');
           }
 
+          const apiResult = await response.json();
+
           const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
           if (commentRow) {
             commentRow.remove();
@@ -519,6 +521,11 @@ class LocalManager {
           // Notify AI Panel about the deleted comment
           if (window.aiPanel?.removeComment) {
             window.aiPanel.removeComment(commentId);
+          }
+
+          // If a parent suggestion was dismissed, update its UI state
+          if (apiResult.dismissedSuggestionId && manager.updateDismissedSuggestionUI) {
+            manager.updateDismissedSuggestionUI(apiResult.dismissedSuggestionId);
           }
         } catch (error) {
           console.error('Error deleting comment:', error);
@@ -754,6 +761,13 @@ class LocalManager {
           // Update comment count display
           manager.updateCommentCount();
 
+          // Update dismissed suggestions in the UI
+          if (result.dismissedSuggestionIds && result.dismissedSuggestionIds.length > 0 && manager.updateDismissedSuggestionUI) {
+            for (const suggestionId of result.dismissedSuggestionIds) {
+              manager.updateDismissedSuggestionUI(suggestionId);
+            }
+          }
+
           // Show success toast notification
           if (window.toast) {
             window.toast.showSuccess(`Cleared ${deletedCount} comment${deletedCount !== 1 ? 's' : ''}`);
@@ -868,6 +882,14 @@ class LocalManager {
 
     // Note: openPreviewModal is NOT patched - PreviewModal now automatically
     // detects local mode and uses the correct API endpoint.
+
+    // Add updateDismissedSuggestionUI method for local mode
+    // Delegates to the shared SuggestionUI utility
+    manager.updateDismissedSuggestionUI = function(suggestionId) {
+      if (window.SuggestionUI?.updateDismissedSuggestionUI) {
+        window.SuggestionUI.updateDismissedSuggestionUI(suggestionId);
+      }
+    };
 
     console.log('PRManager patched for local mode');
   }

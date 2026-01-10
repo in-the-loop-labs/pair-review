@@ -1472,6 +1472,7 @@
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   display: inline-flex;
+  gap: 4px;
   flex-shrink: 0;
   margin-left: auto;
 }

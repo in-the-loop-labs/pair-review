@@ -1090,6 +1090,47 @@ describe('User Comment Endpoints', () => {
       const comment = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [lastID]);
       expect(comment.status).toBe('inactive');
     });
+
+    it('should return dismissedSuggestionId when deleting an adopted comment', async () => {
+      // Create an AI suggestion
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', 'run-1')
+      `, [prId]);
+      const suggestionId = suggestionResult.lastID;
+
+      // Create a user comment adopted from the AI suggestion
+      const commentResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'test.js', 10, 'User comment', 'active', ?)
+      `, [prId, suggestionId]);
+
+      const response = await request(app)
+        .delete(`/api/user-comment/${commentResult.lastID}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.dismissedSuggestionId).toBe(suggestionId);
+
+      // Verify the AI suggestion status was changed to dismissed
+      const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestionId]);
+      expect(suggestion.status).toBe('dismissed');
+    });
+
+    it('should return null dismissedSuggestionId when deleting a non-adopted comment', async () => {
+      // Create a user comment without a parent AI suggestion
+      const commentResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 10, 'User comment', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .delete(`/api/user-comment/${commentResult.lastID}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.dismissedSuggestionId).toBeNull();
+    });
   });
 
   describe('DELETE /api/pr/:owner/:repo/:number/user-comments', () => {
@@ -1151,6 +1192,80 @@ describe('User Comment Endpoints', () => {
         SELECT status FROM comments WHERE pr_id = ? AND source = 'user' ORDER BY line_start
       `, [prId]);
       expect(comments.every(c => c.status === 'inactive')).toBe(true);
+    });
+
+    it('should return dismissedSuggestionIds when bulk deleting adopted comments', async () => {
+      // Create two AI suggestions
+      const suggestion1Result = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion 1', 'adopted', 'run-1')
+      `, [prId]);
+      const suggestion1Id = suggestion1Result.lastID;
+
+      const suggestion2Result = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 20, 'AI suggestion 2', 'adopted', 'run-1')
+      `, [prId]);
+      const suggestion2Id = suggestion2Result.lastID;
+
+      // Create user comments adopted from the AI suggestions
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active', ?)
+      `, [prId, suggestion1Id]);
+
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active', ?)
+      `, [prId, suggestion2Id]);
+
+      const response = await request(app)
+        .delete('/api/pr/owner/repo/1/user-comments');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(2);
+      expect(response.body.dismissedSuggestionIds).toEqual(
+        expect.arrayContaining([suggestion1Id, suggestion2Id])
+      );
+      expect(response.body.dismissedSuggestionIds).toHaveLength(2);
+
+      // Verify both AI suggestions were dismissed
+      const suggestion1 = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestion1Id]);
+      const suggestion2 = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestion2Id]);
+      expect(suggestion1.status).toBe('dismissed');
+      expect(suggestion2.status).toBe('dismissed');
+    });
+
+    it('should return empty dismissedSuggestionIds when deleting non-adopted comments', async () => {
+      // Create user comments without parent AI suggestions
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active')
+      `, [prId]);
+
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .delete('/api/pr/owner/repo/1/user-comments');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(2);
+      expect(response.body.dismissedSuggestionIds).toEqual([]);
+    });
+
+    it('should return 0 deletedCount and empty dismissedSuggestionIds when no comments exist', async () => {
+      const response = await request(app)
+        .delete('/api/pr/owner/repo/1/user-comments');
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(0);
+      expect(response.body.dismissedSuggestionIds).toEqual([]);
     });
   });
 });
@@ -2982,6 +3097,225 @@ describe('Local Review File-Level Comments', () => {
       // File-level should come first due to ORDER BY is_file_level DESC
       expect(response.body.suggestions[0].is_file_level).toBe(1);
       expect(response.body.suggestions[1].line_start).toBe(10);
+    });
+  });
+});
+
+// ============================================================================
+// Local Routes Dismissal Response Tests
+// ============================================================================
+
+describe('Local Routes Dismissal Response Structure', () => {
+  let app, db, reviewId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    // Create a local review
+    const reviewResult = await run(db, `
+      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+    reviewId = reviewResult.lastID;
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('DELETE /api/local/:reviewId/user-comments/:commentId', () => {
+    it('should return dismissedSuggestionId when deleting an adopted comment', async () => {
+      // Create an AI suggestion
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      // Create a user comment adopted from the AI suggestion
+      const commentResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'test.js', 10, 'User comment', 'active', ?)
+      `, [reviewId, suggestionId]);
+
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/user-comments/${commentResult.lastID}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.dismissedSuggestionId).toBe(suggestionId);
+
+      // Verify the AI suggestion status was changed to dismissed
+      const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestionId]);
+      expect(suggestion.status).toBe('dismissed');
+    });
+
+    it('should return null dismissedSuggestionId when deleting a non-adopted comment', async () => {
+      // Create a user comment without a parent AI suggestion
+      const commentResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 10, 'User comment', 'active')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/user-comments/${commentResult.lastID}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.dismissedSuggestionId).toBeNull();
+    });
+
+    it('should return 404 for non-existent comment', async () => {
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/user-comments/9999`);
+
+      expect(response.status).toBe(404);
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .delete('/api/local/invalid/user-comments/1');
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should return 400 for invalid comment ID', async () => {
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/user-comments/invalid`);
+
+      expect(response.status).toBe(400);
+    });
+  });
+
+  describe('DELETE /api/local/:reviewId/user-comments', () => {
+    it('should return dismissedSuggestionIds when bulk deleting adopted comments', async () => {
+      // Create two AI suggestions
+      const suggestion1Result = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion 1', 'adopted', 'run-1')
+      `, [reviewId]);
+      const suggestion1Id = suggestion1Result.lastID;
+
+      const suggestion2Result = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 20, 'AI suggestion 2', 'adopted', 'run-1')
+      `, [reviewId]);
+      const suggestion2Id = suggestion2Result.lastID;
+
+      // Create user comments adopted from the AI suggestions
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active', ?)
+      `, [reviewId, suggestion1Id]);
+
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active', ?)
+      `, [reviewId, suggestion2Id]);
+
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/user-comments`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(2);
+      expect(response.body.dismissedSuggestionIds).toEqual(
+        expect.arrayContaining([suggestion1Id, suggestion2Id])
+      );
+      expect(response.body.dismissedSuggestionIds).toHaveLength(2);
+
+      // Verify both AI suggestions were dismissed
+      const suggestion1 = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestion1Id]);
+      const suggestion2 = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestion2Id]);
+      expect(suggestion1.status).toBe('dismissed');
+      expect(suggestion2.status).toBe('dismissed');
+    });
+
+    it('should deduplicate dismissedSuggestionIds when multiple user comments share same parent', async () => {
+      // Create one AI suggestion
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      // Create multiple user comments adopted from the SAME AI suggestion
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active', ?)
+      `, [reviewId, suggestionId]);
+
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'test.js', 12, 'User comment 2', 'active', ?)
+      `, [reviewId, suggestionId]);
+
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'test.js', 14, 'User comment 3', 'active', ?)
+      `, [reviewId, suggestionId]);
+
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/user-comments`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(3);
+      // Should contain only one suggestion ID, not duplicated
+      expect(response.body.dismissedSuggestionIds).toEqual([suggestionId]);
+      expect(response.body.dismissedSuggestionIds).toHaveLength(1);
+
+      // Verify the AI suggestion was dismissed
+      const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestionId]);
+      expect(suggestion.status).toBe('dismissed');
+    });
+
+    it('should return empty dismissedSuggestionIds when deleting non-adopted comments', async () => {
+      // Create user comments without parent AI suggestions
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active')
+      `, [reviewId]);
+
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/user-comments`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(2);
+      expect(response.body.dismissedSuggestionIds).toEqual([]);
+    });
+
+    it('should return 0 deletedCount and empty dismissedSuggestionIds when no comments exist', async () => {
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/user-comments`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(0);
+      expect(response.body.dismissedSuggestionIds).toEqual([]);
+    });
+
+    it('should return 404 for non-existent review', async () => {
+      const response = await request(app)
+        .delete('/api/local/9999/user-comments');
+
+      expect(response.status).toBe(404);
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .delete('/api/local/invalid/user-comments');
+
+      expect(response.status).toBe(400);
     });
   });
 });

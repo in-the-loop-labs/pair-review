@@ -1693,6 +1693,7 @@ class PRManager {
 
   /**
    * Delete user comment
+   * If the comment was adopted from an AI suggestion, the suggestion is transitioned to dismissed state.
    */
   async deleteUserComment(commentId) {
     if (!window.confirmDialog) {
@@ -1713,6 +1714,8 @@ class PRManager {
       const response = await fetch(`/api/user-comment/${commentId}`, { method: 'DELETE' });
       if (!response.ok) throw new Error('Failed to delete comment');
 
+      const apiResult = await response.json();
+
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       if (commentRow) {
         commentRow.remove();
@@ -1723,9 +1726,25 @@ class PRManager {
       if (window.aiPanel?.removeComment) {
         window.aiPanel.removeComment(commentId);
       }
+
+      // If a parent suggestion was dismissed, update its UI state
+      if (apiResult.dismissedSuggestionId) {
+        this.updateDismissedSuggestionUI(apiResult.dismissedSuggestionId);
+      }
     } catch (error) {
       console.error('Error deleting comment:', error);
       alert('Failed to delete comment');
+    }
+  }
+
+  /**
+   * Update the UI for a dismissed AI suggestion
+   * Delegates to the shared SuggestionUI utility
+   * @param {number} suggestionId - The suggestion ID that was dismissed
+   */
+  updateDismissedSuggestionUI(suggestionId) {
+    if (window.SuggestionUI?.updateDismissedSuggestionUI) {
+      window.SuggestionUI.updateDismissedSuggestionUI(suggestionId);
     }
   }
 
@@ -1799,6 +1818,13 @@ class PRManager {
 
       // Update comment count display
       this.updateCommentCount();
+
+      // Update dismissed suggestions in the UI
+      if (result.dismissedSuggestionIds && result.dismissedSuggestionIds.length > 0) {
+        for (const suggestionId of result.dismissedSuggestionIds) {
+          this.updateDismissedSuggestionUI(suggestionId);
+        }
+      }
 
       // Show success toast notification
       if (window.toast) {
@@ -2045,9 +2071,29 @@ class PRManager {
 
   /**
    * Dismiss an AI suggestion
+   * If the suggestion was adopted (hiddenForAdoption === 'true'), only toggle visibility
+   * without changing the underlying status - the suggestion remains "adopted"
    */
   async dismissSuggestion(suggestionId) {
     try {
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      const suggestionRow = suggestionDiv?.closest('tr');
+
+      // If this suggestion was adopted, only toggle visibility - don't change status
+      // The adoption still exists (there's a user comment linked to this suggestion)
+      if (suggestionRow?.dataset.hiddenForAdoption === 'true') {
+        // suggestionDiv is guaranteed to exist since suggestionRow was derived from it
+        suggestionDiv.classList.add('collapsed');
+
+        const button = suggestionDiv.querySelector('.btn-restore');
+        if (button) {
+          button.title = 'Show suggestion';
+          const btnText = button.querySelector('.btn-text');
+          if (btnText) btnText.textContent = 'Show';
+        }
+        return;
+      }
+
       const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2056,7 +2102,6 @@ class PRManager {
 
       if (!response.ok) throw new Error('Failed to dismiss suggestion');
 
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (suggestionDiv) {
         suggestionDiv.classList.add('collapsed');
         const restoreButton = suggestionDiv.querySelector('.btn-restore');
@@ -2123,6 +2168,10 @@ class PRManager {
           s.id === suggestionId ? { ...s, status: 'active' } : s
         );
         this.suggestionNavigator.updateSuggestions(updatedSuggestions);
+      }
+
+      if (window.aiPanel) {
+        window.aiPanel.updateFindingStatus(suggestionId, 'active');
       }
     } catch (error) {
       console.error('Error restoring suggestion:', error);
@@ -3111,15 +3160,22 @@ class PRManager {
   }
 }
 
-// Initialize PR manager when DOM is loaded
+// Initialize PR manager when DOM is loaded (browser environment only)
 let prManager;
-document.addEventListener('DOMContentLoaded', () => {
-  // Clean up legacy localStorage on startup (shared module loaded via HTML)
-  if (typeof window.cleanupLegacyLocalStorage === 'function') {
-    window.cleanupLegacyLocalStorage();
-  }
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    // Clean up legacy localStorage on startup (shared module loaded via HTML)
+    if (typeof window.cleanupLegacyLocalStorage === 'function') {
+      window.cleanupLegacyLocalStorage();
+    }
 
-  prManager = new PRManager();
-  // CRITICAL FIX: Make prManager available globally for component access
-  window.prManager = prManager;
-});
+    prManager = new PRManager();
+    // CRITICAL FIX: Make prManager available globally for component access
+    window.prManager = prManager;
+  });
+}
+
+// Export for testing (Node.js environment)
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { PRManager };
+}

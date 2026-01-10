@@ -419,6 +419,8 @@ router.put('/api/user-comment/:id', async (req, res) => {
 
 /**
  * Delete user comment
+ * If the comment was adopted from an AI suggestion, the parent suggestion
+ * is automatically transitioned to 'dismissed' state.
  */
 router.delete('/api/user-comment/:id', async (req, res) => {
   try {
@@ -427,12 +429,13 @@ router.delete('/api/user-comment/:id', async (req, res) => {
     const db = req.app.get('db');
     const commentRepo = new CommentRepository(db);
 
-    // Soft delete using repository
-    await commentRepo.deleteComment(id);
+    // Soft delete using repository (also dismisses parent AI suggestion if applicable)
+    const result = await commentRepo.deleteComment(id);
 
     res.json({
       success: true,
-      message: 'Comment deleted successfully'
+      message: 'Comment deleted successfully',
+      dismissedSuggestionId: result.dismissedSuggestionId
     });
 
   } catch (error) {
@@ -453,6 +456,7 @@ router.delete('/api/user-comment/:id', async (req, res) => {
 
 /**
  * Bulk delete all user comments for a PR
+ * Also dismisses any AI suggestions that were parents of the deleted comments.
  */
 router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
   try {
@@ -484,17 +488,18 @@ router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => 
     await run(db, 'BEGIN TRANSACTION');
 
     try {
-      // Bulk delete using repository
+      // Bulk delete using repository (also dismisses parent AI suggestions)
       const commentRepo = new CommentRepository(db);
-      const deletedCount = await commentRepo.bulkDeleteComments(prMetadata.id);
+      const result = await commentRepo.bulkDeleteComments(prMetadata.id);
 
       // Commit transaction
       await run(db, 'COMMIT');
 
       res.json({
         success: true,
-        deletedCount,
-        message: `Deleted ${deletedCount} user comment${deletedCount !== 1 ? 's' : ''}`
+        deletedCount: result.deletedCount,
+        dismissedSuggestionIds: result.dismissedSuggestionIds,
+        message: `Deleted ${result.deletedCount} user comment${result.deletedCount !== 1 ? 's' : ''}`
       });
 
     } catch (transactionError) {
