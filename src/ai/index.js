@@ -22,6 +22,7 @@ const {
 require('./claude-provider');
 require('./gemini-provider');
 require('./codex-provider');
+require('./copilot-provider');
 
 // Export the unified API
 module.exports = {

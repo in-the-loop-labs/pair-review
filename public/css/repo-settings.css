@@ -382,6 +382,11 @@ html, body {
   color: white;
 }
 
+.badge-premium {
+  background: linear-gradient(135deg, #ec4899 0%, #db2777 100%);
+  color: white;
+}
+
 .model-icon {
   font-size: 32px;
   margin-bottom: 10px;
