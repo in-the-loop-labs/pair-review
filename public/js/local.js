@@ -93,6 +93,53 @@ class LocalManager {
     // Store reference to this for closures
     const self = this;
 
+    // Initialize collapse and viewed state Sets (ensure they exist)
+    if (!manager.collapsedFiles) {
+      manager.collapsedFiles = new Set();
+    }
+    if (!manager.viewedFiles) {
+      manager.viewedFiles = new Set();
+    }
+
+    // Override saveViewedState to use localStorage with scoped key
+    manager.saveViewedState = function() {
+      if (!manager.currentPR || !manager.currentPR.localPath || !manager.currentPR.head_sha) return;
+
+      const localPath = manager.currentPR.localPath;
+      const headSha = manager.currentPR.head_sha;
+      // Use encodeURIComponent + unescape for proper UTF-8 to Base64 conversion (handles non-Latin1 paths)
+      const key = `pair-review-local-viewed:${btoa(unescape(encodeURIComponent(localPath)))}:${headSha}`;
+      const viewedArray = Array.from(manager.viewedFiles);
+
+      try {
+        localStorage.setItem(key, JSON.stringify(viewedArray));
+      } catch (error) {
+        console.warn('Error saving viewed state to localStorage:', error);
+      }
+    };
+
+    // Override loadViewedState to use localStorage with scoped key
+    manager.loadViewedState = async function() {
+      if (!manager.currentPR || !manager.currentPR.localPath || !manager.currentPR.head_sha) return;
+
+      const localPath = manager.currentPR.localPath;
+      const headSha = manager.currentPR.head_sha;
+      // Use encodeURIComponent + unescape for proper UTF-8 to Base64 conversion (handles non-Latin1 paths)
+      const key = `pair-review-local-viewed:${btoa(unescape(encodeURIComponent(localPath)))}:${headSha}`;
+
+      try {
+        const stored = localStorage.getItem(key);
+        if (stored) {
+          manager.viewedFiles = new Set(JSON.parse(stored));
+        } else {
+          manager.viewedFiles = new Set();
+        }
+      } catch (error) {
+        console.warn('Error loading viewed state from localStorage:', error);
+        manager.viewedFiles = new Set();
+      }
+    };
+
     // Override init to prevent default PR loading
     manager.init = async function() {
       // Local mode init is handled by LocalManager
@@ -1353,6 +1400,9 @@ class LocalManager {
 
       // Update file list sidebar
       manager.updateFileList(files);
+
+      // Load viewed state before rendering so files can start collapsed
+      await manager.loadViewedState();
 
       // Render diff
       manager.renderDiff({ changed_files: files });

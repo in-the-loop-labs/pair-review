@@ -495,44 +495,102 @@ class AIPanel {
     }
 
     /**
-     * Scroll to an AI finding/suggestion in the diff view
+     * Expand a file if it is collapsed
+     * @param {string} file - The file path
+     * @returns {boolean} True if the file was expanded
      */
-    scrollToFinding(findingId, file, line) {
-        let targetSuggestion = null;
+    expandFileIfCollapsed(file) {
+        if (!file) return false;
 
-        // First, try to find by exact ID match (most reliable)
-        if (findingId) {
-            targetSuggestion = document.querySelector(`.ai-suggestion[data-suggestion-id="${findingId}"]`);
-        }
+        // Find the file wrapper - try exact match first, then partial match
+        let fileWrapper = document.querySelector(`[data-file-name="${file}"]`);
 
-        // Fallback: match by file and line (for suggestions without IDs)
-        if (!targetSuggestion && file) {
-            const suggestions = document.querySelectorAll('.ai-suggestion');
-            for (const suggestion of suggestions) {
-                const suggestionFile = suggestion.closest('[data-file-name]')?.dataset?.fileName;
-                if (suggestionFile && suggestionFile.includes(file)) {
-                    // If we have a line number, try to match more precisely
-                    if (line) {
-                        const row = suggestion.closest('tr');
-                        const prevRow = row?.previousElementSibling;
-                        const rowLine = prevRow?.querySelector('.line-num2')?.textContent?.trim();
-                        if (rowLine === line) {
-                            targetSuggestion = suggestion;
-                            break;
-                        }
-                    } else {
-                        // No line specified, take first match in file
-                        targetSuggestion = suggestion;
-                        break;
-                    }
+        // Fallback: partial path match
+        if (!fileWrapper) {
+            const allWrappers = document.querySelectorAll('.d2h-file-wrapper');
+            for (const wrapper of allWrappers) {
+                const wrapperFile = wrapper.dataset.fileName;
+                if (wrapperFile && (wrapperFile.includes(file) || file.includes(wrapperFile))) {
+                    fileWrapper = wrapper;
+                    break;
                 }
             }
         }
 
-        if (targetSuggestion) {
-            targetSuggestion.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            targetSuggestion.classList.add('current-suggestion');
-            setTimeout(() => targetSuggestion.classList.remove('current-suggestion'), 2000);
+        if (!fileWrapper) return false;
+
+        // Check if collapsed
+        if (fileWrapper.classList.contains('collapsed')) {
+            // Use prManager's toggle method if available (keeps state in sync)
+            const filePath = fileWrapper.dataset.fileName;
+            if (window.prManager?.toggleFileCollapse) {
+                window.prManager.toggleFileCollapse(filePath);
+            } else {
+                // Fallback: directly manipulate the DOM
+                fileWrapper.classList.remove('collapsed');
+                const header = fileWrapper.querySelector('.d2h-file-header');
+                if (header && window.DiffRenderer) {
+                    window.DiffRenderer.updateFileHeaderState(header, true);
+                }
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Scroll to an AI finding/suggestion in the diff view
+     */
+    scrollToFinding(findingId, file, line) {
+        // Expand the file first if it's collapsed
+        const wasExpanded = this.expandFileIfCollapsed(file);
+
+        // Small delay if we expanded to allow DOM to update
+        const doScroll = () => {
+            let targetSuggestion = null;
+
+            // First, try to find by exact ID match (most reliable)
+            if (findingId) {
+                targetSuggestion = document.querySelector(`.ai-suggestion[data-suggestion-id="${findingId}"]`);
+            }
+
+            // Fallback: match by file and line (for suggestions without IDs)
+            if (!targetSuggestion && file) {
+                const suggestions = document.querySelectorAll('.ai-suggestion');
+                for (const suggestion of suggestions) {
+                    const suggestionFile = suggestion.closest('[data-file-name]')?.dataset?.fileName;
+                    if (suggestionFile && suggestionFile.includes(file)) {
+                        // If we have a line number, try to match more precisely
+                        if (line) {
+                            const row = suggestion.closest('tr');
+                            const prevRow = row?.previousElementSibling;
+                            const rowLine = prevRow?.querySelector('.line-num2')?.textContent?.trim();
+                            if (rowLine === line) {
+                                targetSuggestion = suggestion;
+                                break;
+                            }
+                        } else {
+                            // No line specified, take first match in file
+                            targetSuggestion = suggestion;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (targetSuggestion) {
+                targetSuggestion.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                targetSuggestion.classList.add('current-suggestion');
+                setTimeout(() => targetSuggestion.classList.remove('current-suggestion'), 2000);
+            }
+        };
+
+        if (wasExpanded) {
+            // Give the DOM a moment to update after expanding
+            setTimeout(doScroll, 50);
+        } else {
+            doScroll();
         }
     }
 
@@ -540,52 +598,64 @@ class AIPanel {
      * Scroll to a user comment in the diff view
      */
     scrollToComment(commentId, file, line) {
-        let targetElement = null;
-        let isFileLevel = false;
+        // Expand the file first if it's collapsed
+        const wasExpanded = this.expandFileIfCollapsed(file);
 
-        // Check if this is a file-level comment
-        const comment = this.comments.find(c => String(c.id) === String(commentId));
-        if (comment && (comment.is_file_level === 1 || comment.is_file_level === true)) {
-            isFileLevel = true;
-        }
+        const doScroll = () => {
+            let targetElement = null;
+            let isFileLevel = false;
 
-        // For file-level comments, find the comment card in the file-comments-zone
-        if (isFileLevel && commentId) {
-            targetElement = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+            // Check if this is a file-level comment
+            const comment = this.comments.find(c => String(c.id) === String(commentId));
+            if (comment && (comment.is_file_level === 1 || comment.is_file_level === true)) {
+                isFileLevel = true;
+            }
 
-            // If found, make sure the zone is expanded
+            // For file-level comments, find the comment card in the file-comments-zone
+            if (isFileLevel && commentId) {
+                targetElement = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+
+                // If found, make sure the zone is expanded
+                if (targetElement) {
+                    const zone = targetElement.closest('.file-comments-zone');
+                    if (zone && zone.classList.contains('collapsed')) {
+                        zone.classList.remove('collapsed');
+                    }
+                }
+            }
+
+            // For line-level comments, try to find by exact comment ID
+            if (!targetElement && commentId) {
+                targetElement = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
+            }
+
+            // Fallback: find by file and line if no direct match
+            if (!targetElement && file && line) {
+                const commentRows = document.querySelectorAll('.user-comment-row');
+                for (const row of commentRows) {
+                    if (row.dataset.file === file && row.dataset.lineStart === line) {
+                        targetElement = row;
+                        break;
+                    }
+                }
+            }
+
             if (targetElement) {
-                const zone = targetElement.closest('.file-comments-zone');
-                if (zone && zone.classList.contains('collapsed')) {
-                    zone.classList.remove('collapsed');
+                targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // Add highlight effect
+                const commentDiv = isFileLevel ? targetElement : targetElement.querySelector('.user-comment');
+                if (commentDiv) {
+                    commentDiv.classList.add('highlight-flash');
+                    setTimeout(() => commentDiv.classList.remove('highlight-flash'), 2000);
                 }
             }
-        }
+        };
 
-        // For line-level comments, try to find by exact comment ID
-        if (!targetElement && commentId) {
-            targetElement = document.querySelector(`.user-comment-row[data-comment-id="${commentId}"]`);
-        }
-
-        // Fallback: find by file and line if no direct match
-        if (!targetElement && file && line) {
-            const commentRows = document.querySelectorAll('.user-comment-row');
-            for (const row of commentRows) {
-                if (row.dataset.file === file && row.dataset.lineStart === line) {
-                    targetElement = row;
-                    break;
-                }
-            }
-        }
-
-        if (targetElement) {
-            targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            // Add highlight effect
-            const commentDiv = isFileLevel ? targetElement : targetElement.querySelector('.user-comment');
-            if (commentDiv) {
-                commentDiv.classList.add('highlight-flash');
-                setTimeout(() => commentDiv.classList.remove('highlight-flash'), 2000);
-            }
+        if (wasExpanded) {
+            // Give the DOM a moment to update after expanding
+            setTimeout(doScroll, 50);
+        } else {
+            doScroll();
         }
     }
 

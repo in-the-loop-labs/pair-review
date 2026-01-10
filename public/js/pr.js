@@ -123,6 +123,10 @@ class PRManager {
     this.userComments = [];
     // Analysis config modal
     this.analysisConfigModal = null;
+    // File collapse state - tracks which files are manually collapsed
+    this.collapsedFiles = new Set();
+    // File viewed state - tracks which files are marked as viewed
+    this.viewedFiles = new Set();
 
     // Initialize modules
     this.lineTracker = new window.LineTracker();
@@ -378,6 +382,9 @@ class PRManager {
         // Update sidebar with file list
         this.updateFileList(filesWithPatches);
 
+        // Load viewed state before rendering so files can start collapsed
+        await this.loadViewedState();
+
         // Render diff using the existing renderDiff method
         this.renderDiff({ changed_files: filesWithPatches });
 
@@ -592,18 +599,36 @@ class PRManager {
 
     // Check if this is a generated file
     const isGenerated = file.generated || this.generatedFiles.has(file.file);
+    // Determine initial collapse state:
+    // - Generated files start collapsed
+    // - Files marked as viewed start collapsed
+    // - Files in collapsedFiles set are collapsed
+    const isViewed = this.viewedFiles.has(file.file);
+    const isCollapsed = isGenerated || isViewed || this.collapsedFiles.has(file.file);
+
     if (isGenerated) {
-      wrapper.classList.add('generated-file', 'collapsed');
+      wrapper.classList.add('generated-file');
+    }
+    if (isCollapsed) {
+      wrapper.classList.add('collapsed');
     }
 
-    // Create file header
-    const header = window.DiffRenderer.createFileHeader(
-      file.file,
+    // Get file stats for collapsed view
+    const fileStats = {
+      insertions: file.insertions || 0,
+      deletions: file.deletions || 0
+    };
+
+    // Create file header with new options API
+    const header = window.DiffRenderer.createFileHeader(file.file, {
       isGenerated,
-      !wrapper.classList.contains('collapsed'),
-      isGenerated ? this.generatedFiles.get(file.file) : null,
-      (path) => this.toggleGeneratedFile(path)
-    );
+      isExpanded: !isCollapsed,
+      isViewed,
+      generatedInfo: isGenerated ? this.generatedFiles.get(file.file) : null,
+      fileStats,
+      onToggleCollapse: (path) => this.toggleFileCollapse(path),
+      onToggleViewed: (path, checked) => this.toggleFileViewed(path, checked)
+    });
     wrapper.appendChild(header);
 
     // Create file-level comments zone (between header and diff)
@@ -921,29 +946,120 @@ class PRManager {
   }
 
   /**
-   * Toggle visibility of generated file diff
+   * Toggle collapse state of a file diff
    * @param {string} filePath - Path of the file
    */
-  toggleGeneratedFile(filePath) {
+  toggleFileCollapse(filePath) {
     const wrapper = document.querySelector(`[data-file-name="${filePath}"]`);
     if (!wrapper) return;
 
     const isCollapsed = wrapper.classList.contains('collapsed');
-    const toggleBtn = wrapper.querySelector('.generated-toggle');
+    const header = wrapper.querySelector('.d2h-file-header');
 
     if (isCollapsed) {
       wrapper.classList.remove('collapsed');
-      if (toggleBtn) {
-        toggleBtn.innerHTML = window.DiffRenderer.EYE_CLOSED_ICON;
-        toggleBtn.title = 'Hide generated file diff';
-      }
+      this.collapsedFiles.delete(filePath);
     } else {
       wrapper.classList.add('collapsed');
-      if (toggleBtn) {
-        toggleBtn.innerHTML = window.DiffRenderer.EYE_ICON;
-        toggleBtn.title = 'Show generated file diff';
+      this.collapsedFiles.add(filePath);
+    }
+
+    // Update header state
+    if (header) {
+      window.DiffRenderer.updateFileHeaderState(header, !wrapper.classList.contains('collapsed'));
+    }
+  }
+
+  /**
+   * Toggle viewed state of a file
+   * @param {string} filePath - Path of the file
+   * @param {boolean} isViewed - Whether the file is now viewed
+   */
+  toggleFileViewed(filePath, isViewed) {
+    const wrapper = document.querySelector(`[data-file-name="${filePath}"]`);
+
+    if (isViewed) {
+      this.viewedFiles.add(filePath);
+      // Auto-collapse when marking as viewed
+      if (wrapper && !wrapper.classList.contains('collapsed')) {
+        wrapper.classList.add('collapsed');
+        this.collapsedFiles.add(filePath);
+        const header = wrapper.querySelector('.d2h-file-header');
+        if (header) {
+          window.DiffRenderer.updateFileHeaderState(header, false);
+        }
+      }
+    } else {
+      this.viewedFiles.delete(filePath);
+    }
+
+    // Persist viewed state
+    this.saveViewedState();
+  }
+
+  /**
+   * Save viewed files state to storage
+   * Persists per PR for later retrieval
+   */
+  async saveViewedState() {
+    if (!this.currentPR) return;
+
+    const { owner, repo, number } = this.currentPR;
+    const viewedArray = Array.from(this.viewedFiles);
+
+    try {
+      await fetch(`/api/pr/${owner}/${repo}/${number}/files/viewed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: viewedArray })
+      });
+    } catch (error) {
+      console.error('Failed to save viewed state:', error);
+      // Fallback to localStorage
+      const key = PRManager.getRepoStorageKey('pair-review-viewed', owner, repo) + `:${number}`;
+      localStorage.setItem(key, JSON.stringify(viewedArray));
+    }
+  }
+
+  /**
+   * Load viewed files state from storage
+   * Retrieves per-PR viewed state
+   */
+  async loadViewedState() {
+    if (!this.currentPR) return;
+
+    const { owner, repo, number } = this.currentPR;
+
+    try {
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/files/viewed`);
+      if (response.ok) {
+        const data = await response.json();
+        this.viewedFiles = new Set(data.files || []);
+        return;
+      }
+    } catch (error) {
+      console.error('Failed to load viewed state from API:', error);
+    }
+
+    // Fallback to localStorage
+    const key = PRManager.getRepoStorageKey('pair-review-viewed', owner, repo) + `:${number}`;
+    const stored = localStorage.getItem(key);
+    if (stored) {
+      try {
+        this.viewedFiles = new Set(JSON.parse(stored));
+      } catch (e) {
+        this.viewedFiles = new Set();
       }
     }
+  }
+
+  /**
+   * Toggle visibility of generated file diff
+   * @param {string} filePath - Path of the file
+   * @deprecated Use toggleFileCollapse instead - kept for backward compatibility
+   */
+  toggleGeneratedFile(filePath) {
+    this.toggleFileCollapse(filePath);
   }
 
   /**

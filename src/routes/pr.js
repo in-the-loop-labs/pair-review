@@ -985,6 +985,127 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 });
 
 /**
+ * Get viewed files for a PR
+ */
+router.get('/api/pr/:owner/:repo/:number/files/viewed', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+
+    // Get PR metadata from database
+    const prMetadata = await queryOne(db, `
+      SELECT pr_data
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found in repository ${repository}`
+      });
+    }
+
+    // Parse pr_data and extract viewedFiles
+    let viewedFiles = [];
+    if (prMetadata.pr_data) {
+      try {
+        const prData = JSON.parse(prMetadata.pr_data);
+        viewedFiles = prData.viewedFiles || [];
+      } catch (parseError) {
+        console.warn('Error parsing pr_data JSON:', parseError);
+      }
+    }
+
+    res.json({ files: viewedFiles });
+
+  } catch (error) {
+    console.error('Error fetching viewed files:', error);
+    res.status(500).json({
+      error: 'Internal server error while fetching viewed files'
+    });
+  }
+});
+
+/**
+ * Save viewed files for a PR
+ */
+router.post('/api/pr/:owner/:repo/:number/files/viewed', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const { files } = req.body;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    if (!Array.isArray(files)) {
+      return res.status(400).json({
+        error: 'files must be an array of file paths'
+      });
+    }
+
+    const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
+
+    // Get existing PR metadata
+    const prMetadata = await queryOne(db, `
+      SELECT pr_data
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
+
+    if (!prMetadata) {
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found in repository ${repository}`
+      });
+    }
+
+    // Parse existing pr_data and merge with new viewedFiles
+    let prData = {};
+    if (prMetadata.pr_data) {
+      try {
+        prData = JSON.parse(prMetadata.pr_data);
+      } catch (parseError) {
+        console.warn('Error parsing existing pr_data JSON:', parseError);
+      }
+    }
+
+    // Update viewedFiles
+    prData.viewedFiles = files;
+
+    // Save back to database
+    await run(db, `
+      UPDATE pr_metadata
+      SET pr_data = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE pr_number = ? AND repository = ?
+    `, [JSON.stringify(prData), prNumber, repository]);
+
+    res.json({
+      success: true,
+      files: files
+    });
+
+  } catch (error) {
+    console.error('Error saving viewed files:', error);
+    res.status(500).json({
+      error: 'Internal server error while saving viewed files'
+    });
+  }
+});
+
+/**
  * Health check for PR API
  */
 router.get('/api/pr/health', (req, res) => {

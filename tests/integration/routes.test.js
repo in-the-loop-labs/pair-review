@@ -473,6 +473,146 @@ describe('PR Management Endpoints', () => {
       expect(response.body.prs.length).toBe(2);
     });
   });
+
+  describe('GET /api/pr/:owner/:repo/:number/files/viewed', () => {
+    it('should return 400 for invalid PR number', async () => {
+      const response = await request(app)
+        .get('/api/pr/owner/repo/invalid/files/viewed');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid pull request number');
+    });
+
+    it('should return 404 for non-existent PR', async () => {
+      const response = await request(app)
+        .get('/api/pr/owner/repo/999/files/viewed');
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should return empty array when no files viewed', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/files/viewed');
+
+      expect(response.status).toBe(200);
+      expect(response.body.files).toEqual([]);
+    });
+
+    it('should return viewed files from pr_data', async () => {
+      // Insert PR with viewedFiles in pr_data
+      const prData = JSON.stringify({
+        state: 'open',
+        viewedFiles: ['src/file1.js', 'src/file2.ts']
+      });
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, pr_data)
+        VALUES (?, ?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR', prData]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/files/viewed');
+
+      expect(response.status).toBe(200);
+      expect(response.body.files).toEqual(['src/file1.js', 'src/file2.ts']);
+    });
+  });
+
+  describe('POST /api/pr/:owner/:repo/:number/files/viewed', () => {
+    it('should return 400 for invalid PR number', async () => {
+      const response = await request(app)
+        .post('/api/pr/owner/repo/invalid/files/viewed')
+        .send({ files: [] });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid pull request number');
+    });
+
+    it('should return 400 when files is not an array', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/files/viewed')
+        .send({ files: 'not-an-array' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('files must be an array');
+    });
+
+    it('should return 404 for non-existent PR', async () => {
+      const response = await request(app)
+        .post('/api/pr/owner/repo/999/files/viewed')
+        .send({ files: ['file.js'] });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should save viewed files successfully', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/files/viewed')
+        .send({ files: ['src/file1.js', 'src/file2.ts'] });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.files).toEqual(['src/file1.js', 'src/file2.ts']);
+
+      // Verify it was persisted
+      const prMetadata = await queryOne(db, `
+        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ?
+      `, [1, 'owner/repo']);
+      const prData = JSON.parse(prMetadata.pr_data);
+      expect(prData.viewedFiles).toEqual(['src/file1.js', 'src/file2.ts']);
+    });
+
+    it('should preserve other pr_data fields when saving viewed files', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/files/viewed')
+        .send({ files: ['new-file.js'] });
+
+      expect(response.status).toBe(200);
+
+      // Verify original pr_data fields are preserved
+      const prMetadata = await queryOne(db, `
+        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ?
+      `, [1, 'owner/repo']);
+      const prData = JSON.parse(prMetadata.pr_data);
+      expect(prData.viewedFiles).toEqual(['new-file.js']);
+      expect(prData.state).toBe('open');
+      expect(prData.head_sha).toBe('def456');
+    });
+
+    it('should overwrite previous viewed files', async () => {
+      // Insert PR with existing viewedFiles
+      const initialPrData = JSON.stringify({
+        state: 'open',
+        viewedFiles: ['old-file.js']
+      });
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, pr_data)
+        VALUES (?, ?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR', initialPrData]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/files/viewed')
+        .send({ files: ['new-file1.js', 'new-file2.js'] });
+
+      expect(response.status).toBe(200);
+
+      // Verify viewedFiles was overwritten
+      const prMetadata = await queryOne(db, `
+        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ?
+      `, [1, 'owner/repo']);
+      const prData = JSON.parse(prMetadata.pr_data);
+      expect(prData.viewedFiles).toEqual(['new-file1.js', 'new-file2.js']);
+    });
+  });
 });
 
 // ============================================================================

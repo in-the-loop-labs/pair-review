@@ -1378,6 +1378,140 @@
   background-color: rgba(56, 139, 253, 0.15);
 }
 
+/* File collapse toggle button (chevron) */
+.file-collapse-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--color-text-secondary, #656d76);
+  transition: background-color 0.15s, color 0.15s, transform 0.15s;
+  flex-shrink: 0;
+}
+
+.file-collapse-toggle:hover {
+  background-color: var(--color-bg-hover, rgba(0, 0, 0, 0.05));
+  color: var(--color-text-primary, #1f2328);
+}
+
+.file-collapse-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+[data-theme="dark"] .file-collapse-toggle {
+  color: #8b949e;
+}
+
+[data-theme="dark"] .file-collapse-toggle:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #c9d1d9;
+}
+
+/* File viewed checkbox label */
+.file-viewed-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-text-secondary, #656d76);
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background-color 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.file-viewed-label:hover {
+  background-color: var(--color-bg-hover, rgba(0, 0, 0, 0.05));
+  color: var(--color-text-primary, #1f2328);
+}
+
+.file-viewed-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #0969da;
+}
+
+.file-viewed-checkbox:checked + span,
+.file-viewed-label:has(.file-viewed-checkbox:checked) {
+  color: #0969da;
+}
+
+[data-theme="dark"] .file-viewed-label {
+  color: #8b949e;
+}
+
+[data-theme="dark"] .file-viewed-label:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #c9d1d9;
+}
+
+[data-theme="dark"] .file-viewed-checkbox {
+  accent-color: #58a6ff;
+}
+
+[data-theme="dark"] .file-viewed-checkbox:checked + span,
+[data-theme="dark"] .file-viewed-label:has(.file-viewed-checkbox:checked) {
+  color: #58a6ff;
+}
+
+/* File stats summary (always visible in header) */
+.file-stats-summary {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.file-stats-summary .additions {
+  color: var(--color-success-fg, #1a7f37);
+}
+
+.file-stats-summary .deletions {
+  color: var(--color-danger-fg, #cf222e);
+}
+
+[data-theme="dark"] .file-stats-summary .additions {
+  color: #3fb950;
+}
+
+[data-theme="dark"] .file-stats-summary .deletions {
+  color: #f85149;
+}
+
+/* Hide diff table when collapsed */
+.d2h-file-wrapper.collapsed .d2h-diff-table {
+  display: none;
+}
+
+/* Hide file comments zone when collapsed */
+.d2h-file-wrapper.collapsed .file-comments-zone {
+  display: none;
+}
+
+/* Remove bottom border from header when collapsed */
+.d2h-file-wrapper.collapsed .d2h-file-header {
+  border-bottom: none;
+}
+
+/* Make header clickable for collapse toggle */
+.d2h-file-wrapper .d2h-file-header {
+  cursor: pointer;
+}
+
 .d2h-diff-table {
   width: 100%;
   border-collapse: collapse;
@@ -4768,51 +4902,6 @@ tr.line-range-start .d2h-code-line-ctn {
    Generated Files Styles
    ============================================ */
 
-/* Generated file wrapper - collapsed state hides diff content */
-.d2h-file-wrapper.generated-file.collapsed .d2h-diff-table {
-  display: none;
-}
-
-/* Generated file header styling */
-.d2h-file-wrapper.generated-file .d2h-file-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background-color: var(--color-bg-secondary, #f6f8fa);
-  cursor: pointer;
-}
-
-.d2h-file-wrapper.generated-file.collapsed .d2h-file-header {
-  border-bottom: none;
-}
-
-/* Generated toggle button */
-.generated-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  margin: 0;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  color: var(--color-text-secondary, #656d76);
-  transition: background-color 0.15s, color 0.15s;
-}
-
-.generated-toggle:hover {
-  background-color: var(--color-bg-hover, rgba(0, 0, 0, 0.05));
-  color: var(--color-text-primary, #1f2328);
-}
-
-.generated-toggle svg {
-  width: 16px;
-  height: 16px;
-}
-
 /* Generated badge */
 .generated-badge {
   display: inline-flex;
@@ -4825,25 +4914,6 @@ tr.line-range-start .d2h-code-line-ctn {
   border-radius: 12px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-}
-
-/* Generated file stats (visible in collapsed mode) */
-.generated-stats {
-  font-size: 12px;
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-}
-
-.generated-stats .additions {
-  color: var(--color-success-fg, #1a7f37);
-}
-
-.generated-stats .deletions {
-  color: var(--color-danger-fg, #cf222e);
-}
-
-/* Hide stats when expanded */
-.d2h-file-wrapper.generated-file:not(.collapsed) .generated-stats {
-  display: none;
 }
 
 /* File tree - generated file indicator */
@@ -4874,33 +4944,12 @@ tr.line-range-start .d2h-code-line-ctn {
   background-color: #30363d;
 }
 
-[data-theme="dark"] .generated-toggle {
-  color: #8b949e;
-}
-
-[data-theme="dark"] .generated-toggle:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-  color: #c9d1d9;
-}
-
-[data-theme="dark"] .d2h-file-wrapper.generated-file .d2h-file-header {
-  background-color: #161b22;
-}
-
 [data-theme="dark"] .tree-file.generated {
   opacity: 0.65;
 }
 
 [data-theme="dark"] .file-generated-indicator {
   color: #8b949e;
-}
-
-[data-theme="dark"] .generated-stats .additions {
-  color: #3fb950;
-}
-
-[data-theme="dark"] .generated-stats .deletions {
-  color: #f85149;
 }
 
 

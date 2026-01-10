@@ -5,6 +5,20 @@
  */
 
 class DiffRenderer {
+  // Chevron icon for expand/collapse (pointing right when collapsed)
+  static CHEVRON_RIGHT_ICON = `
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path fill-rule="evenodd" d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/>
+    </svg>
+  `;
+
+  // Chevron icon pointing down (when expanded)
+  static CHEVRON_DOWN_ICON = `
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path fill-rule="evenodd" d="M12.78 6.22a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L3.22 7.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L8 9.94l3.72-3.72a.75.75 0 0 1 1.06 0Z"/>
+    </svg>
+  `;
+
   // Eye icon for showing hidden content (GitHub Octicons "eye")
   static EYE_ICON = `
     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
@@ -274,51 +288,119 @@ class DiffRenderer {
   /**
    * Create file header element
    * @param {string} filePath - File path
-   * @param {boolean} isGenerated - Whether file is generated
-   * @param {boolean} isExpanded - Whether file is expanded (for generated files)
-   * @param {Object} generatedInfo - Info about generated file (insertions, deletions)
-   * @param {Function} toggleCallback - Callback for toggling generated file
+   * @param {Object} options - Header options
+   * @param {boolean} [options.isGenerated=false] - Whether file is generated
+   * @param {boolean} [options.isExpanded=true] - Whether file is expanded
+   * @param {boolean} [options.isViewed=false] - Whether file is marked as viewed
+   * @param {Object} [options.generatedInfo] - Info about generated file (insertions, deletions)
+   * @param {Object} [options.fileStats] - File stats for collapsed view {insertions, deletions}
+   * @param {Function} [options.onToggleCollapse] - Callback for toggling collapse state
+   * @param {Function} [options.onToggleViewed] - Callback for toggling viewed state
    * @returns {HTMLElement} File header element
    */
-  static createFileHeader(filePath, isGenerated, isExpanded, generatedInfo, toggleCallback) {
+  static createFileHeader(filePath, options = {}) {
+    const {
+      isGenerated = false,
+      isExpanded = true,
+      isViewed = false,
+      generatedInfo = null,
+      fileStats = null,
+      onToggleCollapse = null,
+      onToggleViewed = null
+    } = options;
+
     const fileHeader = document.createElement('div');
     fileHeader.className = 'd2h-file-header';
 
-    // Add generated badge and expand/collapse toggle if this is a generated file
-    if (isGenerated) {
-      // Create toggle button with eye icon
-      const toggleBtn = document.createElement('button');
-      toggleBtn.className = 'generated-toggle';
-      toggleBtn.title = isExpanded ? 'Hide generated file diff' : 'Show generated file diff';
-      toggleBtn.innerHTML = isExpanded ? DiffRenderer.EYE_CLOSED_ICON : DiffRenderer.EYE_ICON;
-      toggleBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (toggleCallback) toggleCallback(filePath);
-      });
-      fileHeader.appendChild(toggleBtn);
+    // Chevron toggle button for expand/collapse (all files)
+    const chevronBtn = document.createElement('button');
+    chevronBtn.className = 'file-collapse-toggle';
+    chevronBtn.title = isExpanded ? 'Collapse file' : 'Expand file';
+    chevronBtn.innerHTML = isExpanded ? DiffRenderer.CHEVRON_DOWN_ICON : DiffRenderer.CHEVRON_RIGHT_ICON;
+    chevronBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (onToggleCollapse) onToggleCollapse(filePath);
+    });
+    fileHeader.appendChild(chevronBtn);
 
+    // Add generated file indicators if applicable
+    if (isGenerated) {
       // Add generated badge
       const badge = document.createElement('span');
       badge.className = 'generated-badge';
       badge.textContent = 'Generated file';
       badge.title = 'This file is marked as generated in .gitattributes';
       fileHeader.appendChild(badge);
-
-      // Add stats summary for collapsed view (colored like other diff stats)
-      if (generatedInfo) {
-        const statsSummary = document.createElement('span');
-        statsSummary.className = 'generated-stats';
-        statsSummary.innerHTML = `<span class="additions">+${generatedInfo.insertions}</span> <span class="deletions">-${generatedInfo.deletions}</span>`;
-        fileHeader.appendChild(statsSummary);
-      }
     }
 
+    // File name
     const fileName = document.createElement('span');
     fileName.className = 'd2h-file-name';
     fileName.textContent = filePath;
     fileHeader.appendChild(fileName);
 
+    // File stats summary (visible in collapsed view)
+    const stats = generatedInfo || fileStats;
+    if (stats) {
+      const statsSummary = document.createElement('span');
+      statsSummary.className = 'file-stats-summary';
+      statsSummary.innerHTML = `<span class="additions">+${stats.insertions || 0}</span> <span class="deletions">-${stats.deletions || 0}</span>`;
+      fileHeader.appendChild(statsSummary);
+    }
+
+    // Viewed checkbox (right side)
+    const viewedLabel = document.createElement('label');
+    viewedLabel.className = 'file-viewed-label';
+    viewedLabel.title = 'Mark file as viewed';
+
+    const viewedCheckbox = document.createElement('input');
+    viewedCheckbox.type = 'checkbox';
+    viewedCheckbox.className = 'file-viewed-checkbox';
+    viewedCheckbox.checked = isViewed;
+    viewedCheckbox.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (onToggleViewed) onToggleViewed(filePath, viewedCheckbox.checked);
+    });
+
+    viewedLabel.appendChild(viewedCheckbox);
+    viewedLabel.appendChild(document.createTextNode('Viewed'));
+    fileHeader.appendChild(viewedLabel);
+
+    // Add click handler to header for collapse toggle (excluding checkbox area)
+    fileHeader.addEventListener('click', (e) => {
+      // Ignore clicks on the checkbox, label, or chevron button (which has its own handler)
+      if (e.target.closest('.file-viewed-label') || e.target.closest('.file-collapse-toggle')) {
+        return;
+      }
+      if (onToggleCollapse) onToggleCollapse(filePath);
+    });
+
     return fileHeader;
+  }
+
+  /**
+   * Update file header expand/collapse state
+   * @param {HTMLElement} header - The file header element
+   * @param {boolean} isExpanded - Whether the file is now expanded
+   */
+  static updateFileHeaderState(header, isExpanded) {
+    const chevronBtn = header.querySelector('.file-collapse-toggle');
+    if (chevronBtn) {
+      chevronBtn.innerHTML = isExpanded ? DiffRenderer.CHEVRON_DOWN_ICON : DiffRenderer.CHEVRON_RIGHT_ICON;
+      chevronBtn.title = isExpanded ? 'Collapse file' : 'Expand file';
+    }
+  }
+
+  /**
+   * Update file viewed checkbox state
+   * @param {HTMLElement} header - The file header element
+   * @param {boolean} isViewed - Whether the file is marked as viewed
+   */
+  static updateFileViewedState(header, isViewed) {
+    const checkbox = header.querySelector('.file-viewed-checkbox');
+    if (checkbox) {
+      checkbox.checked = isViewed;
+    }
   }
 
   /**
