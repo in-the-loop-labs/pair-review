@@ -1410,8 +1410,10 @@ class CommentRepository {
 
   /**
    * Soft delete a user comment (set status to inactive)
+   * If the comment was adopted from an AI suggestion (has parent_id),
+   * the parent AI suggestion is automatically transitioned to 'dismissed' state.
    * @param {number} id - Comment ID
-   * @returns {Promise<boolean>} True if deleted successfully
+   * @returns {Promise<{deleted: boolean, dismissedSuggestionId: number|null}>} Result with deleted status and dismissed suggestion ID if applicable
    */
   async deleteComment(id) {
     // Verify it's a user comment
@@ -1420,28 +1422,72 @@ class CommentRepository {
       throw new Error('User comment not found');
     }
 
+    // Soft delete the user comment
     const result = await run(this.db, `
       UPDATE comments
       SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `, [id]);
 
-    return result.changes > 0;
+    let dismissedSuggestionId = null;
+
+    // If this comment was adopted from an AI suggestion, dismiss the parent suggestion
+    if (comment.parent_id) {
+      await this.updateSuggestionStatus(comment.parent_id, 'dismissed');
+      dismissedSuggestionId = comment.parent_id;
+    }
+
+    return { deleted: result.changes > 0, dismissedSuggestionId };
   }
 
   /**
    * Bulk delete all user comments for a PR
+   * Also dismisses any AI suggestions that were parents of the deleted comments.
    * @param {number} prId - PR or review ID
-   * @returns {Promise<number>} Number of comments deleted
+   * @returns {Promise<{deletedCount: number, dismissedSuggestionIds: number[]}>} Number of comments deleted and list of dismissed suggestion IDs
    */
   async bulkDeleteComments(prId) {
+    // Implementation note: We use a two-query approach (SELECT then UPDATE) because:
+    // 1. SQLite's RETURNING clause was added in v3.35 (2021) and may not be available
+    //    on all systems, especially older deployments
+    // 2. We need to return the dismissed suggestion IDs to the frontend so it can
+    //    update the UI (collapse suggestions, update AI panel status)
+    // 3. A single UPDATE with subquery would dismiss the suggestions but not return
+    //    the IDs to the caller
+    // The caller is responsible for wrapping this in a transaction if atomicity
+    // with other operations is required.
+
+    // First, find all user comments with parent_id (adopted from AI suggestions)
+    const adoptedComments = await query(this.db, `
+      SELECT parent_id FROM comments
+      WHERE pr_id = ? AND source = 'user' AND parent_id IS NOT NULL
+        AND status IN ('active', 'submitted', 'draft')
+    `, [prId]);
+
+    // Soft delete all user comments
     const result = await run(this.db, `
       UPDATE comments
       SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
       WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
     `, [prId]);
 
-    return result.changes;
+    // Dismiss all parent AI suggestions with a single UPDATE statement
+    // Note: parent_id is already guaranteed non-null by the SQL query above
+    // Use a Set to deduplicate IDs in case multiple user comments share the same parent
+    const dismissedSuggestionIds = Array.from(
+      new Set(adoptedComments.map(c => c.parent_id))
+    );
+
+    if (dismissedSuggestionIds.length > 0) {
+      const placeholders = dismissedSuggestionIds.map(() => '?').join(',');
+      await run(this.db, `
+        UPDATE comments
+        SET status = 'dismissed', updated_at = CURRENT_TIMESTAMP
+        WHERE id IN (${placeholders})
+      `, dismissedSuggestionIds);
+    }
+
+    return { deletedCount: result.changes, dismissedSuggestionIds };
   }
 
   /**

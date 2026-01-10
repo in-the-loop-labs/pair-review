@@ -378,7 +378,10 @@ describe('CommentRepository', () => {
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Test comment', 'active']);
 
-      await commentRepo.deleteComment(commentId.lastID);
+      const result = await commentRepo.deleteComment(commentId.lastID);
+
+      expect(result.deleted).toBe(true);
+      expect(result.dismissedSuggestionId).toBeNull();
 
       const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [commentId.lastID]);
       expect(comment.status).toBe('inactive');
@@ -386,6 +389,29 @@ describe('CommentRepository', () => {
 
     it('should throw error if comment not found', async () => {
       await expect(commentRepo.deleteComment(999)).rejects.toThrow('User comment not found');
+    });
+
+    it('should dismiss parent AI suggestion when deleting adopted comment', async () => {
+      // Create an AI suggestion
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted']);
+
+      // Create a user comment that adopted the AI suggestion
+      const userCommentId = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active', aiSuggestionId.lastID]);
+
+      const result = await commentRepo.deleteComment(userCommentId.lastID);
+
+      expect(result.deleted).toBe(true);
+      expect(result.dismissedSuggestionId).toBe(aiSuggestionId.lastID);
+
+      // Verify the AI suggestion was dismissed
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status).toBe('dismissed');
     });
   });
 
@@ -407,9 +433,10 @@ describe('CommentRepository', () => {
         VALUES (?, ?, ?, ?, ?, ?)
       `, [2, 'user', 'test.js', 30, 'Comment 3', 'active']);
 
-      const deletedCount = await commentRepo.bulkDeleteComments(1);
+      const result = await commentRepo.bulkDeleteComments(1);
 
-      expect(deletedCount).toBe(2);
+      expect(result.deletedCount).toBe(2);
+      expect(result.dismissedSuggestionIds).toEqual([]);
 
       // Verify comments were soft deleted
       const comments = await query(db, 'SELECT * FROM comments WHERE pr_id = ? AND status = ?', [1, 'inactive']);
@@ -421,8 +448,32 @@ describe('CommentRepository', () => {
     });
 
     it('should return 0 if no comments to delete', async () => {
-      const deletedCount = await commentRepo.bulkDeleteComments(999);
-      expect(deletedCount).toBe(0);
+      const result = await commentRepo.bulkDeleteComments(999);
+      expect(result.deletedCount).toBe(0);
+      expect(result.dismissedSuggestionIds).toEqual([]);
+    });
+
+    it('should dismiss parent AI suggestions when deleting adopted comments', async () => {
+      // Create an AI suggestion
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted']);
+
+      // Create a user comment that adopted the AI suggestion
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active', aiSuggestionId.lastID]);
+
+      const result = await commentRepo.bulkDeleteComments(1);
+
+      expect(result.deletedCount).toBe(1);
+      expect(result.dismissedSuggestionIds).toContain(aiSuggestionId.lastID);
+
+      // Verify the AI suggestion was dismissed
+      const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
+      expect(suggestion.status).toBe('dismissed');
     });
   });
 

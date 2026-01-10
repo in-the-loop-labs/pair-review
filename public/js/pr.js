@@ -1693,6 +1693,7 @@ class PRManager {
 
   /**
    * Delete user comment
+   * If the comment was adopted from an AI suggestion, the suggestion is transitioned to dismissed state.
    */
   async deleteUserComment(commentId) {
     if (!window.confirmDialog) {
@@ -1713,6 +1714,8 @@ class PRManager {
       const response = await fetch(`/api/user-comment/${commentId}`, { method: 'DELETE' });
       if (!response.ok) throw new Error('Failed to delete comment');
 
+      const apiResult = await response.json();
+
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       if (commentRow) {
         commentRow.remove();
@@ -1723,9 +1726,25 @@ class PRManager {
       if (window.aiPanel?.removeComment) {
         window.aiPanel.removeComment(commentId);
       }
+
+      // If a parent suggestion was dismissed, update its UI state
+      if (apiResult.dismissedSuggestionId) {
+        this.updateDismissedSuggestionUI(apiResult.dismissedSuggestionId);
+      }
     } catch (error) {
       console.error('Error deleting comment:', error);
       alert('Failed to delete comment');
+    }
+  }
+
+  /**
+   * Update the UI for a dismissed AI suggestion
+   * Delegates to the shared SuggestionUI utility
+   * @param {number} suggestionId - The suggestion ID that was dismissed
+   */
+  updateDismissedSuggestionUI(suggestionId) {
+    if (window.SuggestionUI?.updateDismissedSuggestionUI) {
+      window.SuggestionUI.updateDismissedSuggestionUI(suggestionId);
     }
   }
 
@@ -1799,6 +1818,13 @@ class PRManager {
 
       // Update comment count display
       this.updateCommentCount();
+
+      // Update dismissed suggestions in the UI
+      if (result.dismissedSuggestionIds && result.dismissedSuggestionIds.length > 0) {
+        for (const suggestionId of result.dismissedSuggestionIds) {
+          this.updateDismissedSuggestionUI(suggestionId);
+        }
+      }
 
       // Show success toast notification
       if (window.toast) {

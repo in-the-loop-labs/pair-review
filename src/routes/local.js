@@ -1341,6 +1341,7 @@ router.put('/api/local/:reviewId/user-comments/:commentId', async (req, res) => 
 
 /**
  * Bulk delete all user comments for a local review
+ * Also dismisses any AI suggestions that were parents of the deleted comments.
  */
 router.delete('/api/local/:reviewId/user-comments', async (req, res) => {
   try {
@@ -1368,23 +1369,18 @@ router.delete('/api/local/:reviewId/user-comments', async (req, res) => {
     await run(db, 'BEGIN TRANSACTION');
 
     try {
-      // Soft delete all user comments for this review (active, submitted, or draft)
-      const result = await run(db, `
-        UPDATE comments
-        SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-        WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
-      `, [reviewId]);
+      // Bulk delete using repository (also dismisses parent AI suggestions)
+      const commentRepo = new CommentRepository(db);
+      const result = await commentRepo.bulkDeleteComments(reviewId);
 
       // Commit transaction
       await run(db, 'COMMIT');
 
-      // Use actual number of affected rows from the UPDATE
-      const deletedCount = result.changes;
-
       res.json({
         success: true,
-        deletedCount: deletedCount,
-        message: `Deleted ${deletedCount} user comment${deletedCount !== 1 ? 's' : ''}`
+        deletedCount: result.deletedCount,
+        dismissedSuggestionIds: result.dismissedSuggestionIds,
+        message: `Deleted ${result.deletedCount} user comment${result.deletedCount !== 1 ? 's' : ''}`
       });
 
     } catch (transactionError) {
@@ -1403,6 +1399,8 @@ router.delete('/api/local/:reviewId/user-comments', async (req, res) => {
 
 /**
  * Delete user comment from a local review
+ * If the comment was adopted from an AI suggestion, the parent suggestion
+ * is automatically transitioned to 'dismissed' state.
  */
 router.delete('/api/local/:reviewId/user-comments/:commentId', async (req, res) => {
   try {
@@ -1434,16 +1432,14 @@ router.delete('/api/local/:reviewId/user-comments/:commentId', async (req, res) 
       });
     }
 
-    // Soft delete by setting status to inactive
-    await run(db, `
-      UPDATE comments
-      SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [commentId]);
+    // Use CommentRepository to delete (also dismisses parent AI suggestion if applicable)
+    const commentRepo = new CommentRepository(db);
+    const result = await commentRepo.deleteComment(commentId);
 
     res.json({
       success: true,
-      message: 'Comment deleted successfully'
+      message: 'Comment deleted successfully',
+      dismissedSuggestionId: result.dismissedSuggestionId
     });
 
   } catch (error) {
