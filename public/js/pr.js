@@ -2124,6 +2124,10 @@ class PRManager {
         );
         this.suggestionNavigator.updateSuggestions(updatedSuggestions);
       }
+
+      if (window.aiPanel) {
+        window.aiPanel.updateFindingStatus(suggestionId, 'active');
+      }
     } catch (error) {
       console.error('Error restoring suggestion:', error);
       alert('Failed to restore suggestion');
