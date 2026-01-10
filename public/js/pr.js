@@ -2071,9 +2071,29 @@ class PRManager {
 
   /**
    * Dismiss an AI suggestion
+   * If the suggestion was adopted (hiddenForAdoption === 'true'), only toggle visibility
+   * without changing the underlying status - the suggestion remains "adopted"
    */
   async dismissSuggestion(suggestionId) {
     try {
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      const suggestionRow = suggestionDiv?.closest('tr');
+
+      // If this suggestion was adopted, only toggle visibility - don't change status
+      // The adoption still exists (there's a user comment linked to this suggestion)
+      if (suggestionRow?.dataset.hiddenForAdoption === 'true') {
+        // suggestionDiv is guaranteed to exist since suggestionRow was derived from it
+        suggestionDiv.classList.add('collapsed');
+
+        const button = suggestionDiv.querySelector('.btn-restore');
+        if (button) {
+          button.title = 'Show suggestion';
+          const btnText = button.querySelector('.btn-text');
+          if (btnText) btnText.textContent = 'Show';
+        }
+        return;
+      }
+
       const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2082,7 +2102,6 @@ class PRManager {
 
       if (!response.ok) throw new Error('Failed to dismiss suggestion');
 
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (suggestionDiv) {
         suggestionDiv.classList.add('collapsed');
         const restoreButton = suggestionDiv.querySelector('.btn-restore');
@@ -3141,15 +3160,22 @@ class PRManager {
   }
 }
 
-// Initialize PR manager when DOM is loaded
+// Initialize PR manager when DOM is loaded (browser environment only)
 let prManager;
-document.addEventListener('DOMContentLoaded', () => {
-  // Clean up legacy localStorage on startup (shared module loaded via HTML)
-  if (typeof window.cleanupLegacyLocalStorage === 'function') {
-    window.cleanupLegacyLocalStorage();
-  }
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    // Clean up legacy localStorage on startup (shared module loaded via HTML)
+    if (typeof window.cleanupLegacyLocalStorage === 'function') {
+      window.cleanupLegacyLocalStorage();
+    }
 
-  prManager = new PRManager();
-  // CRITICAL FIX: Make prManager available globally for component access
-  window.prManager = prManager;
-});
+    prManager = new PRManager();
+    // CRITICAL FIX: Make prManager available globally for component access
+    window.prManager = prManager;
+  });
+}
+
+// Export for testing (Node.js environment)
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { PRManager };
+}

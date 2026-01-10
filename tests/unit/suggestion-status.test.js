@@ -4,7 +4,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  * Unit tests for PRManager suggestion status management
  * Tests dismissSuggestion() and restoreSuggestion() methods
  * focusing on their integration with window.aiPanel.updateFindingStatus()
+ *
+ * IMPORTANT: These tests import the actual PRManager class from production code
+ * to ensure tests verify real behavior, not a reimplementation.
  */
+
+// Import the actual PRManager class from production code
+const { PRManager } = require('../../public/js/pr.js');
 
 // Mock global fetch
 const mockFetch = vi.fn();
@@ -40,106 +46,28 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// Create a minimal PRManager instance for testing
-function createPRManager() {
-  // Minimal PRManager with just the methods we need to test
-  return {
-    suggestionNavigator: {
-      suggestions: [],
-      updateSuggestions: vi.fn()
-    },
+/**
+ * Create a minimal PRManager instance for testing.
+ * Uses the actual PRManager class, but only initializes the properties
+ * needed for the specific methods being tested.
+ */
+function createTestPRManager() {
+  // Create a real PRManager instance
+  const prManager = Object.create(PRManager.prototype);
 
-    async dismissSuggestion(suggestionId) {
-      try {
-        const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'dismissed' })
-        });
-
-        if (!response.ok) throw new Error('Failed to dismiss suggestion');
-
-        const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-        if (suggestionDiv) {
-          suggestionDiv.classList.add('collapsed');
-          const restoreButton = suggestionDiv.querySelector('.btn-restore');
-          if (restoreButton) {
-            restoreButton.title = 'Show suggestion';
-            const btnText = restoreButton.querySelector('.btn-text');
-            if (btnText) btnText.textContent = 'Show';
-          }
-        }
-
-        if (this.suggestionNavigator?.suggestions) {
-          const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
-            s.id === suggestionId ? { ...s, status: 'dismissed' } : s
-          );
-          this.suggestionNavigator.updateSuggestions(updatedSuggestions);
-        }
-
-        if (window.aiPanel) {
-          window.aiPanel.updateFindingStatus(suggestionId, 'dismissed');
-        }
-      } catch (error) {
-        console.error('Error dismissing suggestion:', error);
-        alert('Failed to dismiss suggestion');
-      }
-    },
-
-    async restoreSuggestion(suggestionId) {
-      try {
-        const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-        const suggestionRow = suggestionDiv?.closest('tr');
-
-        if (suggestionRow?.dataset.hiddenForAdoption === 'true') {
-          const div = suggestionRow.querySelector('.ai-suggestion');
-          if (div) {
-            div.classList.toggle('collapsed');
-
-            const button = suggestionRow.querySelector('.btn-restore');
-            if (button) {
-              const isNowCollapsed = div.classList.contains('collapsed');
-              button.title = isNowCollapsed ? 'Show suggestion' : 'Hide suggestion';
-              button.querySelector('.btn-text').textContent = isNowCollapsed ? 'Show' : 'Hide';
-            }
-          }
-          return;
-        }
-
-        const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'active' })
-        });
-
-        if (!response.ok) throw new Error('Failed to restore suggestion');
-
-        if (suggestionDiv) {
-          suggestionDiv.classList.remove('collapsed');
-        }
-
-        if (this.suggestionNavigator?.suggestions) {
-          const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
-            s.id === suggestionId ? { ...s, status: 'active' } : s
-          );
-          this.suggestionNavigator.updateSuggestions(updatedSuggestions);
-        }
-
-        if (window.aiPanel) {
-          window.aiPanel.updateFindingStatus(suggestionId, 'active');
-        }
-      } catch (error) {
-        console.error('Error restoring suggestion:', error);
-        alert('Failed to restore suggestion');
-      }
-    }
+  // Initialize only the properties needed for dismissSuggestion/restoreSuggestion
+  prManager.suggestionNavigator = {
+    suggestions: [],
+    updateSuggestions: vi.fn()
   };
+
+  return prManager;
 }
 
 describe('PRManager Suggestion Status', () => {
   describe('dismissSuggestion', () => {
     it('should call window.aiPanel.updateFindingStatus with dismissed status', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-123';
 
       // Mock successful API response
@@ -156,7 +84,7 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('should call API with correct parameters when dismissing', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-456';
 
       mockFetch.mockResolvedValueOnce({ ok: true });
@@ -175,7 +103,7 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('should not call aiPanel.updateFindingStatus when API fails', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-789';
 
       // Mock failed API response
@@ -189,7 +117,7 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('should handle missing aiPanel gracefully', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-abc';
 
       mockFetch.mockResolvedValueOnce({ ok: true });
@@ -201,11 +129,55 @@ describe('PRManager Suggestion Status', () => {
       // Should not throw
       await expect(prManager.dismissSuggestion(suggestionId)).resolves.not.toThrow();
     });
+
+    it('should not call API or update status for adopted suggestions (hiddenForAdoption)', async () => {
+      const prManager = createTestPRManager();
+      const suggestionId = 'test-suggestion-adopted';
+
+      // Mock element that is hidden for adoption (was adopted and user comment still exists)
+      const mockDiv = {
+        classList: {
+          add: vi.fn()
+        },
+        querySelector: vi.fn().mockReturnValue(null)
+      };
+      const mockButton = {
+        title: '',
+        querySelector: vi.fn().mockReturnValue({ textContent: '' })
+      };
+      const mockRow = {
+        dataset: { hiddenForAdoption: 'true' },
+        querySelector: vi.fn((selector) => {
+          if (selector === '.btn-restore') return mockButton;
+          return null;
+        })
+      };
+      const mockElement = {
+        closest: vi.fn().mockReturnValue(mockRow),
+        classList: mockDiv.classList,
+        querySelector: vi.fn((selector) => {
+          if (selector === '.btn-restore') return mockButton;
+          return null;
+        })
+      };
+      document.querySelector.mockReturnValue(mockElement);
+
+      await prManager.dismissSuggestion(suggestionId);
+
+      // API should NOT be called for adopted suggestions
+      expect(mockFetch).not.toHaveBeenCalled();
+      // aiPanel.updateFindingStatus should NOT be called - status remains 'adopted'
+      expect(window.aiPanel.updateFindingStatus).not.toHaveBeenCalled();
+      // suggestionNavigator should NOT be updated
+      expect(prManager.suggestionNavigator.updateSuggestions).not.toHaveBeenCalled();
+      // But the visual collapse should still happen
+      expect(mockDiv.classList.add).toHaveBeenCalledWith('collapsed');
+    });
   });
 
   describe('restoreSuggestion', () => {
     it('should call window.aiPanel.updateFindingStatus with active status', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-restore-123';
 
       // Mock successful API response
@@ -228,7 +200,7 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('should call API with correct parameters when restoring', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-restore-456';
 
       mockFetch.mockResolvedValueOnce({ ok: true });
@@ -250,7 +222,7 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('should not call aiPanel.updateFindingStatus when API fails', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-restore-789';
 
       // Mock failed API response
@@ -268,7 +240,7 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('should not call API for hidden-for-adoption suggestions', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-hidden';
 
       // Mock element that is hidden for adoption
@@ -304,7 +276,7 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('should handle missing aiPanel gracefully', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-restore-abc';
 
       mockFetch.mockResolvedValueOnce({ ok: true });
@@ -321,7 +293,7 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('should update suggestionNavigator when restoring', async () => {
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-suggestion-nav';
 
       // Setup navigator with existing suggestions
@@ -355,7 +327,7 @@ describe('PRManager Suggestion Status', () => {
         }
       };
 
-      const prManager = createPRManager();
+      const prManager = createTestPRManager();
       const suggestionId = 'test-symmetry';
 
       mockFetch.mockResolvedValue({ ok: true });
@@ -378,6 +350,114 @@ describe('PRManager Suggestion Status', () => {
 
       // Both should have been called
       expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('adopted suggestion workflow', () => {
+    it('should preserve adopted status when showing and dismissing adopted suggestion', async () => {
+      // Re-setup aiPanel
+      global.window = {
+        aiPanel: {
+          updateFindingStatus: vi.fn()
+        }
+      };
+
+      const prManager = createTestPRManager();
+      const suggestionId = 'test-adopted-workflow';
+
+      // Simulate an adopted suggestion: hiddenForAdoption is 'true'
+      // This means there's a user comment linked to this suggestion
+      let isCollapsed = true;
+      const mockDiv = {
+        classList: {
+          add: vi.fn(() => { isCollapsed = true; }),
+          toggle: vi.fn(() => { isCollapsed = !isCollapsed; }),
+          contains: vi.fn(() => isCollapsed)
+        }
+      };
+      const mockButton = {
+        title: 'Show suggestion',
+        querySelector: vi.fn().mockReturnValue({ textContent: 'Show' })
+      };
+      const mockRow = {
+        dataset: { hiddenForAdoption: 'true' },
+        querySelector: vi.fn((selector) => {
+          if (selector === '.ai-suggestion') return mockDiv;
+          if (selector === '.btn-restore') return mockButton;
+          return null;
+        })
+      };
+      const mockElement = {
+        closest: vi.fn().mockReturnValue(mockRow),
+        classList: mockDiv.classList,
+        querySelector: vi.fn((selector) => {
+          if (selector === '.btn-restore') return mockButton;
+          return null;
+        })
+      };
+      document.querySelector.mockReturnValue(mockElement);
+
+      // User clicks "Show" to reveal the adopted suggestion
+      await prManager.restoreSuggestion(suggestionId);
+
+      // API should NOT be called (just visual toggle)
+      expect(mockFetch).not.toHaveBeenCalled();
+      // Status should NOT be updated (remains 'adopted')
+      expect(window.aiPanel.updateFindingStatus).not.toHaveBeenCalled();
+
+      // User clicks "Dismiss" on the revealed suggestion
+      await prManager.dismissSuggestion(suggestionId);
+
+      // API should still NOT be called (just visual collapse)
+      expect(mockFetch).not.toHaveBeenCalled();
+      // Status should still NOT be updated (remains 'adopted')
+      expect(window.aiPanel.updateFindingStatus).not.toHaveBeenCalled();
+      // Visual collapse should happen
+      expect(mockDiv.classList.add).toHaveBeenCalledWith('collapsed');
+    });
+
+    it('should properly dismiss when hiddenForAdoption is false (adoption deleted)', async () => {
+      // Re-setup aiPanel
+      global.window = {
+        aiPanel: {
+          updateFindingStatus: vi.fn()
+        }
+      };
+
+      const prManager = createTestPRManager();
+      const suggestionId = 'test-orphaned-suggestion';
+
+      mockFetch.mockResolvedValue({ ok: true });
+
+      // Simulate a suggestion that was adopted but the user comment was deleted
+      // hiddenForAdoption is now 'false' (or not set)
+      const mockDiv = {
+        classList: {
+          add: vi.fn()
+        }
+      };
+      const mockRow = {
+        dataset: { hiddenForAdoption: 'false' },
+        querySelector: vi.fn().mockReturnValue(null)
+      };
+      const mockElement = {
+        closest: vi.fn().mockReturnValue(mockRow),
+        classList: mockDiv.classList,
+        querySelector: vi.fn().mockReturnValue(null)
+      };
+      document.querySelector.mockReturnValue(mockElement);
+
+      await prManager.dismissSuggestion(suggestionId);
+
+      // API SHOULD be called since adoption was deleted
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/ai-suggestion/${suggestionId}/status`,
+        expect.objectContaining({
+          body: JSON.stringify({ status: 'dismissed' })
+        })
+      );
+      // Status SHOULD be updated to 'dismissed'
+      expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledWith(suggestionId, 'dismissed');
     });
   });
 });
