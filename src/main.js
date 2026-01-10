@@ -40,17 +40,18 @@ ARGUMENTS:
     <PR-URL>        Full GitHub PR URL (e.g., https://github.com/owner/repo/pull/123)
 
 OPTIONS:
-    -h, --help              Show this help message and exit
-    -v, --version           Show version number and exit
-    -l, --local [path]      Review local uncommitted changes
-                            Optional path defaults to current directory
-    --model <name>          Override the AI model. Claude is the default provider.
-                            Available models: opus, sonnet, haiku (Claude);
-                            or use provider-specific models with Gemini/Codex
     --ai                    Automatically run AI analysis when the review loads
     --ai-draft              Run AI analysis and save suggestions as a draft
                             review on GitHub (headless mode)
     --configure             Show setup instructions and configuration options
+    -d, --debug             Enable verbose debug logging
+    -h, --help              Show this help message and exit
+    -l, --local [path]      Review local uncommitted changes
+                            Optional path defaults to current directory
+    --model <name>          Override the AI model. Claude Code is the default provider.
+                            Available models: opus, sonnet, haiku (Claude Code);
+                            or use provider-specific models with Gemini/Codex
+    -v, --version           Show version number and exit
 
 EXAMPLES:
     pair-review 123                    # Review PR #123 in current repo
@@ -109,13 +110,14 @@ function cleanupStaleWorktreesAsync(config) {
 
 // Known flags that are valid (for validation)
 const KNOWN_FLAGS = new Set([
-  '-h', '--help',
-  '-v', '--version',
-  '-l', '--local',
-  '--model',
   '--ai',
   '--ai-draft',
-  '--configure'
+  '--configure',
+  '-d', '--debug',
+  '-h', '--help',
+  '-l', '--local',
+  '--model',
+  '-v', '--version'
 ]);
 
 /**
@@ -135,7 +137,10 @@ function parseArgs(args) {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
-    if (arg === '--ai') {
+    if (arg === '-d' || arg === '--debug') {
+      flags.debug = true;
+      process.env.DEBUG = 'true';
+    } else if (arg === '--ai') {
       flags.ai = true;
     } else if (arg === '--ai-draft') {
       flags.aiDraft = true;

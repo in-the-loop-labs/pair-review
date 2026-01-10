@@ -582,7 +582,7 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
           // Fall through to filesystem read if git show fails for any reason:
           // - File might not exist at HEAD (new file in working directory)
           // - Git command might fail for other reasons
-          logger.warn(`Could not read file ${fileName} from HEAD: ${gitError.message}, falling back to working directory`);
+          logger.debug(`Could not read file ${fileName} from HEAD: ${gitError.message}, falling back to working directory`);
         }
       }
 
@@ -679,7 +679,7 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
         // - File might not exist at base_sha (new file)
         // - Worktree might not be a valid git repo (test environment)
         // - Git command might fail for other reasons
-        logger.warn(`Could not read file ${fileName} from base commit: ${gitError.message}, falling back to HEAD`);
+        logger.debug(`Could not read file ${fileName} from base commit: ${gitError.message}, falling back to HEAD`);
       }
     }
 

@@ -86,13 +86,14 @@ npx pair-review --local [path]
 |--------|-------------|
 | `<PR-number>` | PR number to review (requires being in a GitHub repo) |
 | `<PR-URL>` | Full GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`) |
-| `-h`, `--help` | Show help message with full CLI documentation |
-| `-v`, `--version` | Show version number |
-| `-l`, `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
-| `--model <name>` | Override the AI model. Claude is the default provider. Options: `opus`, `sonnet`, `haiku` |
 | `--ai` | Automatically run AI analysis when the review loads |
 | `--ai-draft` | Run AI analysis and save suggestions as a draft review on GitHub |
 | `--configure` | Show setup instructions and configuration options |
+| `-d`, `--debug` | Enable verbose debug logging for troubleshooting |
+| `-h`, `--help` | Show help message with full CLI documentation |
+| `-l`, `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
+| `--model <name>` | Override the AI model. Claude Code is the default provider. Options: `opus`, `sonnet`, `haiku` |
+| `-v`, `--version` | Show version number |
 
 ### Examples
 

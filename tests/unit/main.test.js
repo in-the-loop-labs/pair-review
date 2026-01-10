@@ -135,6 +135,40 @@ describe('main.js parseArgs', () => {
       expect(result2.prArgs).toEqual([]);
       expect(result2.flags).toEqual({});
     });
+
+    it('should parse --debug flag', () => {
+      const result = parseArgs(['123', '--debug']);
+      expect(result.flags.debug).toBe(true);
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should parse -d short flag for debug', () => {
+      const result = parseArgs(['123', '-d']);
+      expect(result.flags.debug).toBe(true);
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should set DEBUG environment variable when --debug flag is present', () => {
+      // Reset DEBUG env var before test
+      delete process.env.DEBUG;
+
+      parseArgs(['123', '--debug']);
+      expect(process.env.DEBUG).toBe('true');
+
+      // Clean up
+      delete process.env.DEBUG;
+    });
+
+    it('should set DEBUG environment variable when -d flag is present', () => {
+      // Reset DEBUG env var before test
+      delete process.env.DEBUG;
+
+      parseArgs(['123', '-d']);
+      expect(process.env.DEBUG).toBe('true');
+
+      // Clean up
+      delete process.env.DEBUG;
+    });
   });
 });
 
@@ -155,6 +189,7 @@ describe('CLI help and version', () => {
     expect(output).toContain('--model');
     expect(output).toContain('--ai');
     expect(output).toContain('--ai-draft');
+    expect(output).toContain('--debug');
   });
 
   it('should show help text when -h is passed', () => {
@@ -200,10 +235,16 @@ describe('CLI help and version', () => {
     expect(output).toContain('-l, --local');
   });
 
-  it('help output should mention Claude as default provider', () => {
+  it('help output should mention -d short flag for debug', () => {
     const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
 
-    expect(output).toContain('Claude is the default provider');
+    expect(output).toContain('-d, --debug');
+  });
+
+  it('help output should mention Claude Code as default provider', () => {
+    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+
+    expect(output).toContain('Claude Code is the default provider');
   });
 
   it('--help should exit with code 0', () => {
