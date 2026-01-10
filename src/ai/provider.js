@@ -35,6 +35,14 @@ const MODEL_TIERS = {
     description: 'Deep analysis for complex code',
     badge: 'Most Thorough',
     badgeClass: 'badge-power'
+  },
+  premium: {
+    id: 'premium',
+    name: 'Premium',
+    tagline: 'Best Available',
+    description: 'The most capable models for critical reviews',
+    badge: 'Premium',
+    badgeClass: 'badge-premium'
   }
 };
 

@@ -335,14 +335,10 @@ class RepoSettingsPage {
 
   /**
    * Get model icon based on tier
+   * Delegates to shared utility in utils/tier-icons.js
    */
   getModelIcon(tier) {
-    switch (tier) {
-      case 'fast': return '⚡';
-      case 'balanced': return '✦';
-      case 'thorough': return '◆';
-      default: return '●';
-    }
+    return window.getTierIcon(tier);
   }
 
   async loadSettings() {

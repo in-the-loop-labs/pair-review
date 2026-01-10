@@ -208,6 +208,17 @@ const TEST_PROVIDERS = {
       { id: 'gpt-4o', name: 'GPT-4o', tier: 'balanced', default: true }
     ],
     defaultModel: 'gpt-4o'
+  },
+  copilot: {
+    id: 'copilot',
+    name: 'Copilot',
+    models: [
+      { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Mini', tier: 'fast' },
+      { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro', tier: 'balanced', default: true },
+      { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Max', tier: 'thorough' },
+      { id: 'claude-opus-4.5', name: 'Claude Opus 4.5', tier: 'premium' }
+    ],
+    defaultModel: 'gemini-3-pro-preview'
   }
 };
 
@@ -601,6 +612,133 @@ describe('RepoSettingsPage', () => {
           default_model: null,
           default_instructions: ''
         }
+      });
+
+      instance.checkForChanges();
+      expect(instance.hasUnsavedChanges).toBe(false);
+    });
+  });
+
+  describe('premium tier settings', () => {
+    it('should save and load premium tier model selection', () => {
+      const instance = createRepoSettingsInstance({
+        providers: { copilot: TEST_PROVIDERS.copilot },
+        currentSettings: {
+          default_provider: 'copilot',
+          default_model: 'claude-opus-4.5',
+          default_instructions: ''
+        },
+        originalSettings: {
+          default_provider: 'copilot',
+          default_model: 'claude-opus-4.5',
+          default_instructions: ''
+        },
+        selectedProvider: 'copilot'
+      });
+
+      // Verify premium model is selected
+      expect(instance.currentSettings.default_model).toBe('claude-opus-4.5');
+      expect(instance.selectedProvider).toBe('copilot');
+
+      // Verify payload includes premium model
+      const payload = instance.getSavePayload();
+      expect(payload.default_provider).toBe('copilot');
+      expect(payload.default_model).toBe('claude-opus-4.5');
+    });
+
+    it('should map premium tier when switching between providers with premium support', () => {
+      // Create a second provider with premium tier for testing tier mapping
+      const premiumProvider = {
+        id: 'premium-test',
+        name: 'Premium Test',
+        models: [
+          { id: 'basic', name: 'Basic', tier: 'fast' },
+          { id: 'standard', name: 'Standard', tier: 'balanced', default: true },
+          { id: 'advanced', name: 'Advanced', tier: 'thorough' },
+          { id: 'ultimate', name: 'Ultimate', tier: 'premium' }
+        ],
+        defaultModel: 'standard'
+      };
+
+      const instance = createRepoSettingsInstance({
+        providers: { copilot: TEST_PROVIDERS.copilot, 'premium-test': premiumProvider },
+        currentSettings: {
+          default_provider: 'copilot',
+          default_model: 'claude-opus-4.5', // premium tier
+          default_instructions: ''
+        },
+        originalSettings: {
+          default_provider: 'copilot',
+          default_model: 'claude-opus-4.5',
+          default_instructions: ''
+        },
+        selectedProvider: 'copilot'
+      });
+
+      // Switch to provider with premium tier support
+      instance.selectProvider('premium-test', true);
+
+      // Should map to premium-test's premium tier model (ultimate)
+      expect(instance.currentSettings.default_model).toBe('ultimate');
+    });
+
+    it('should fall back to default when switching from premium tier to provider without premium', () => {
+      const instance = createRepoSettingsInstance({
+        providers: { copilot: TEST_PROVIDERS.copilot, claude: TEST_PROVIDERS.claude },
+        currentSettings: {
+          default_provider: 'copilot',
+          default_model: 'claude-opus-4.5', // premium tier
+          default_instructions: ''
+        },
+        originalSettings: {
+          default_provider: 'copilot',
+          default_model: 'claude-opus-4.5',
+          default_instructions: ''
+        },
+        selectedProvider: 'copilot'
+      });
+
+      // Switch to claude which has no premium tier
+      instance.selectProvider('claude', true);
+
+      // Should fall back to claude's default model (sonnet) since no premium tier exists
+      expect(instance.currentSettings.default_model).toBe('sonnet');
+    });
+
+    it('should detect changes when premium model is selected', () => {
+      const instance = createRepoSettingsInstance({
+        providers: { copilot: TEST_PROVIDERS.copilot },
+        currentSettings: {
+          default_provider: 'copilot',
+          default_model: 'claude-opus-4.5', // changed to premium
+          default_instructions: ''
+        },
+        originalSettings: {
+          default_provider: 'copilot',
+          default_model: 'gemini-3-pro-preview', // was balanced tier
+          default_instructions: ''
+        },
+        selectedProvider: 'copilot'
+      });
+
+      instance.checkForChanges();
+      expect(instance.hasUnsavedChanges).toBe(true);
+    });
+
+    it('should not detect changes when premium model matches original', () => {
+      const instance = createRepoSettingsInstance({
+        providers: { copilot: TEST_PROVIDERS.copilot },
+        currentSettings: {
+          default_provider: 'copilot',
+          default_model: 'claude-opus-4.5',
+          default_instructions: ''
+        },
+        originalSettings: {
+          default_provider: 'copilot',
+          default_model: 'claude-opus-4.5',
+          default_instructions: ''
+        },
+        selectedProvider: 'copilot'
       });
 
       instance.checkForChanges();
