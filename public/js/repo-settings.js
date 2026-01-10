@@ -44,53 +44,46 @@ class RepoSettingsPage {
     const backLinkText = document.getElementById('back-to-pr-text');
     if (!backLink || !backLinkText) return;
 
+    // Use scoped key to prevent collision between multiple tabs
+    const referrerKey = `settingsReferrer:${this.owner}/${this.repo}`;
+
     try {
-      const referrerData = localStorage.getItem('settingsReferrer');
+      const referrerData = localStorage.getItem(referrerKey);
       if (!referrerData) return;
 
       const data = JSON.parse(referrerData);
 
       // Check if this is a local review referrer
       if (data.type === 'local' && data.localReviewId) {
-        // Only show the link if it matches the current repo
-        if (data.owner === this.owner && data.repo === this.repo) {
-          backLink.href = `/local/${data.localReviewId}`;
-          backLinkText.textContent = 'Return to Local Review';
-          backLink.style.display = 'inline-flex';
+        backLink.href = `/local/${data.localReviewId}`;
+        backLinkText.textContent = 'Return to Local Review';
+        backLink.style.display = 'inline-flex';
 
-          // Clear the referrer when clicking the back link
-          backLink.addEventListener('click', () => {
-            localStorage.removeItem('settingsReferrer');
-          });
-        } else {
-          // Different repo, clear the stale referrer
-          localStorage.removeItem('settingsReferrer');
-        }
+        // Clear the referrer when clicking the back link
+        backLink.addEventListener('click', () => {
+          localStorage.removeItem(referrerKey);
+        });
       } else if (data.prNumber) {
-        // PR referrer (original behavior)
-        const { prNumber, owner, repo } = data;
-
-        // Only show the link if it matches the current repo
-        if (owner === this.owner && repo === this.repo && prNumber) {
-          backLink.href = `/pr/${owner}/${repo}/${prNumber}`;
-          backLinkText.textContent = `Return to PR #${prNumber}`;
-          backLink.style.display = 'inline-flex';
-
-          // Clear the referrer when clicking the back link
-          backLink.addEventListener('click', () => {
-            localStorage.removeItem('settingsReferrer');
-          });
-        } else {
-          // Different repo, clear the stale referrer
-          localStorage.removeItem('settingsReferrer');
+        // PR referrer - validate stored data matches current page context as sanity check
+        // (Key is already scoped by repo, but this provides extra safety)
+        if (data.owner && data.repo && (data.owner !== this.owner || data.repo !== this.repo)) {
+          console.warn('PR referrer owner/repo mismatch - clearing stale data');
+          localStorage.removeItem(referrerKey);
+          return;
         }
-      } else {
-        // Unknown referrer format, clear it
-        localStorage.removeItem('settingsReferrer');
+        backLink.href = `/pr/${this.owner}/${this.repo}/${data.prNumber}`;
+        backLinkText.textContent = `Return to PR #${data.prNumber}`;
+        backLink.style.display = 'inline-flex';
+
+        // Clear the referrer when clicking the back link
+        backLink.addEventListener('click', () => {
+          localStorage.removeItem(referrerKey);
+        });
       }
+      // No else clause needed - if format is unknown, just don't show the link
     } catch (error) {
       console.warn('Error parsing settings referrer:', error);
-      localStorage.removeItem('settingsReferrer');
+      localStorage.removeItem(referrerKey);
     }
   }
 

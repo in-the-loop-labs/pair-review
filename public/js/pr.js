@@ -522,13 +522,19 @@ class PRManager {
       settingsLink.href = `/settings/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}`;
 
       // Store referrer data for back navigation from settings page
-      settingsLink.addEventListener('click', () => {
-        localStorage.setItem('settingsReferrer', JSON.stringify({
-          prNumber: pr.number,
-          owner: pr.owner,
-          repo: pr.repo
-        }));
-      });
+      // Key is scoped by repo to prevent collision between multiple tabs
+      // Guard against adding duplicate listeners (renderPRHeader can be called multiple times)
+      if (!settingsLink.dataset.listenerAttached) {
+        settingsLink.dataset.listenerAttached = 'true';
+        settingsLink.addEventListener('click', () => {
+          const referrerKey = `settingsReferrer:${pr.owner}/${pr.repo}`;
+          localStorage.setItem(referrerKey, JSON.stringify({
+            prNumber: pr.number,
+            owner: pr.owner,
+            repo: pr.repo
+          }));
+        });
+      }
     }
   }
 
@@ -1371,10 +1377,6 @@ class PRManager {
 
   hideCommentForm() {
     this.commentManager.hideCommentForm();
-  }
-
-  autoSaveComment(textarea) {
-    this.commentManager.autoSaveComment(textarea);
   }
 
   autoResizeTextarea(textarea, minRows = 4) {
@@ -2996,6 +2998,11 @@ class PRManager {
 // Initialize PR manager when DOM is loaded
 let prManager;
 document.addEventListener('DOMContentLoaded', () => {
+  // Clean up legacy localStorage on startup (shared module loaded via HTML)
+  if (typeof window.cleanupLegacyLocalStorage === 'function') {
+    window.cleanupLegacyLocalStorage();
+  }
+
   prManager = new PRManager();
   // CRITICAL FIX: Make prManager available globally for component access
   window.prManager = prManager;

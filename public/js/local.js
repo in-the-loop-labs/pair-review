@@ -394,10 +394,6 @@ class LocalManager {
 
           const result = await response.json();
 
-          // Clear draft
-          const draftKey = `draft_local_${reviewId}_${fileName}_${lineNumber}`;
-          localStorage.removeItem(draftKey);
-
           // Build comment object
           const commentData = {
             id: result.commentId,
@@ -1216,14 +1212,20 @@ class LocalManager {
         settingsLink.title = 'Repository settings';
 
         // Store referrer data for back navigation from settings page
-        settingsLink.addEventListener('click', () => {
-          localStorage.setItem('settingsReferrer', JSON.stringify({
-            type: 'local',
-            localReviewId: this.reviewId,
-            owner: owner,
-            repo: repo
-          }));
-        });
+        // Key is scoped by repo to prevent collision between multiple tabs
+        // Guard against adding duplicate listeners (updateLocalHeader can be called multiple times)
+        if (!settingsLink.dataset.listenerAttached) {
+          settingsLink.dataset.listenerAttached = 'true';
+          settingsLink.addEventListener('click', () => {
+            const referrerKey = `settingsReferrer:${owner}/${repo}`;
+            localStorage.setItem(referrerKey, JSON.stringify({
+              type: 'local',
+              localReviewId: this.reviewId,
+              owner: owner,
+              repo: repo
+            }));
+          });
+        }
       } else if (repository) {
         // Repository detected but not in owner/repo format - show disabled
         settingsLink.href = '#';

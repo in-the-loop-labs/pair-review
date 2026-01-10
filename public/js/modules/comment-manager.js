@@ -130,9 +130,8 @@ class CommentManager {
     this.autoResizeTextarea(textarea);
     this.updateSuggestionButtonState(textarea, suggestionBtn);
 
-    // Auto-save on input, auto-resize textarea, update suggestion button and save button state
+    // Auto-resize textarea, update suggestion button and save button state on input
     textarea.addEventListener('input', () => {
-      this.autoSaveComment(textarea);
       this.autoResizeTextarea(textarea);
       this.updateSuggestionButtonState(textarea, suggestionBtn);
       // Enable/disable save button based on content
@@ -155,27 +154,6 @@ class CommentManager {
       this.currentCommentForm = null;
     }
     // Note: Don't clear range selection here - let the caller decide
-  }
-
-  /**
-   * Auto-save comment draft (silently, no indicator)
-   * @param {HTMLTextAreaElement} textarea - The textarea element
-   */
-  autoSaveComment(textarea) {
-    const fileName = textarea.dataset.file;
-    const lineNumber = textarea.dataset.line;
-    const content = textarea.value.trim();
-
-    // Save to localStorage as draft
-    const prNumber = this.prManager?.currentPR?.number;
-    const draftKey = `draft_${prNumber}_${fileName}_${lineNumber}`;
-
-    if (content) {
-      localStorage.setItem(draftKey, content);
-    } else {
-      // Clear draft if content is empty
-      localStorage.removeItem(draftKey);
-    }
   }
 
   /**
@@ -377,11 +355,6 @@ class CommentManager {
       }
 
       const result = await response.json();
-
-      // Clear draft
-      const prNumber = this.prManager?.currentPR?.number;
-      const draftKey = `draft_${prNumber}_${fileName}_${lineNumber}`;
-      localStorage.removeItem(draftKey);
 
       // Build comment object
       const commentData = {
