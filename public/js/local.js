@@ -530,7 +530,7 @@ class LocalManager {
                 data-line-end="${lineEnd}"
               >${manager.escapeHtml(currentText)}</textarea>
               <div class="comment-edit-actions">
-                <button class="btn btn-sm btn-primary save-edit-btn">Save comment</button>
+                <button class="btn btn-sm btn-primary save-edit-btn">Save</button>
                 <button class="btn btn-sm btn-secondary cancel-edit-btn">Cancel</button>
               </div>
             </div>
