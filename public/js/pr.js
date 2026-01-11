@@ -127,6 +127,8 @@ class PRManager {
     this.collapsedFiles = new Set();
     // File viewed state - tracks which files are marked as viewed
     this.viewedFiles = new Set();
+    // Canonical file order - sorted file paths for consistent ordering across components
+    this.canonicalFileOrder = new Map();
 
     // Initialize modules
     this.lineTracker = new window.LineTracker();
@@ -379,14 +381,28 @@ class PRManager {
           patch: filePatchMap.get(file.file) || ''
         }));
 
+        // Sort files alphabetically by path for consistent ordering across all components
+        if (!window.FileOrderUtils) {
+          console.warn('FileOrderUtils not loaded - file ordering will be inconsistent');
+        }
+        const sortedFiles = window.FileOrderUtils?.sortFilesByPath(filesWithPatches) || filesWithPatches;
+
+        // Store canonical file order for use by AIPanel and other components
+        this.canonicalFileOrder = window.FileOrderUtils?.createFileOrderMap(sortedFiles) || new Map();
+
+        // Pass file order to AIPanel
+        if (window.aiPanel?.setFileOrder) {
+          window.aiPanel.setFileOrder(this.canonicalFileOrder);
+        }
+
         // Update sidebar with file list
-        this.updateFileList(filesWithPatches);
+        this.updateFileList(sortedFiles);
 
         // Load viewed state before rendering so files can start collapsed
         await this.loadViewedState();
 
         // Render diff using the existing renderDiff method
-        this.renderDiff({ changed_files: filesWithPatches });
+        this.renderDiff({ changed_files: sortedFiles });
 
       } else {
         const diffContainer = document.getElementById('diff-container');

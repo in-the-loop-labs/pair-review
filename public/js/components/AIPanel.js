@@ -20,6 +20,9 @@ class AIPanel {
         // Track selected item by stable identifier for restoration
         this.selectedItemKey = null; // Format: "file:lineNumber:itemType"
 
+        // Canonical file order for consistent sorting across components
+        this.fileOrder = new Map(); // Map of file path -> index
+
         this.initElements();
         this.bindEvents();
         this.setupKeyboardNavigation();
@@ -110,6 +113,27 @@ class AIPanel {
     setPR(owner, repo, number) {
         this.currentPRKey = `${owner}/${repo}#${number}`;
         this.restoreSegmentSelection();
+    }
+
+    /**
+     * Set the canonical file order for consistent sorting across components.
+     * Call this when files are loaded to ensure AIPanel sorts items in the same order.
+     *
+     * Lifecycle: This method should be called during file loading (by LocalManager or
+     * PRManager), before or shortly after findings/comments arrive. The file order
+     * establishes the canonical sort order that will be used when rendering items.
+     *
+     * This method should only be called once per file load. Multiple calls with the
+     * same data will trigger unnecessary re-renders.
+     *
+     * @param {Map<string, number>|null|undefined} orderMap - Map of file path to index
+     */
+    setFileOrder(orderMap) {
+        this.fileOrder = orderMap || new Map();
+        // Re-render to apply new ordering
+        if (this.findings.length > 0 || this.comments.length > 0) {
+            this.renderFindings();
+        }
     }
 
     /**
@@ -345,28 +369,58 @@ class AIPanel {
      * @returns {Array} Array of items with an added _itemType property
      */
     getFilteredItems() {
+        let items;
         switch (this.selectedSegment) {
             case 'ai':
-                return this.findings.map(f => ({ ...f, _itemType: 'finding' }));
+                items = this.findings.map(f => ({ ...f, _itemType: 'finding' }));
+                break;
             case 'comments':
-                return this.comments.map(c => ({ ...c, _itemType: 'comment' }));
+                items = this.comments.map(c => ({ ...c, _itemType: 'comment' }));
+                break;
             case 'all':
             default:
-                // Combine findings and comments, sorted by file and line for logical grouping
-                const allItems = [
+                // Combine findings and comments
+                items = [
                     ...this.findings.map(f => ({ ...f, _itemType: 'finding' })),
                     ...this.comments.map(c => ({ ...c, _itemType: 'comment' }))
                 ];
-                // Sort by file, then by line number
-                return allItems.sort((a, b) => {
-                    const fileA = a.file || '';
-                    const fileB = b.file || '';
-                    if (fileA !== fileB) return fileA.localeCompare(fileB);
-                    const lineA = a.line_start || a.line || 0;
-                    const lineB = b.line_start || b.line || 0;
-                    return lineA - lineB;
-                });
+                break;
         }
+
+        // Sort by canonical file order, then file-level first, then line number
+        return this.sortItemsByFileOrder(items);
+    }
+
+    /**
+     * Sort items by canonical file order, with file-level comments first, then by line number.
+     * @param {Array} items - Array of items to sort
+     * @returns {Array} New sorted array (does not modify input)
+     */
+    sortItemsByFileOrder(items) {
+        const fileOrder = this.fileOrder;
+        const maxOrder = fileOrder.size || 0;
+
+        // Create a defensive copy to avoid mutating the input array
+        return [...items].sort((a, b) => {
+            const fileA = a.file || '';
+            const fileB = b.file || '';
+
+            // First, sort by file order (canonical order from file navigator)
+            const orderA = fileOrder.has(fileA) ? fileOrder.get(fileA) : maxOrder;
+            const orderB = fileOrder.has(fileB) ? fileOrder.get(fileB) : maxOrder;
+            if (orderA !== orderB) return orderA - orderB;
+
+            // Within the same file, file-level comments come first
+            const isFileLevelA = a.is_file_level === 1 || a.is_file_level === true;
+            const isFileLevelB = b.is_file_level === 1 || b.is_file_level === true;
+            if (isFileLevelA && !isFileLevelB) return -1;
+            if (!isFileLevelA && isFileLevelB) return 1;
+
+            // Then sort by line number (null/undefined treated as file-level, comes first)
+            const lineA = a.line_start ?? a.line ?? 0;
+            const lineB = b.line_start ?? b.line ?? 0;
+            return lineA - lineB;
+        });
     }
 
     renderFindings() {

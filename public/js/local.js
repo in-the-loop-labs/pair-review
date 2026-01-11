@@ -1425,21 +1425,35 @@ class LocalManager {
         totalDeletions += deletions;
       }
 
+      // Sort files alphabetically by path for consistent ordering across all components
+      if (!window.FileOrderUtils) {
+        console.warn('FileOrderUtils not loaded - file ordering will be inconsistent');
+      }
+      const sortedFiles = window.FileOrderUtils?.sortFilesByPath(files) || files;
+
+      // Store canonical file order for use by AIPanel and other components
+      manager.canonicalFileOrder = window.FileOrderUtils?.createFileOrderMap(sortedFiles) || new Map();
+
+      // Pass file order to AIPanel
+      if (window.aiPanel?.setFileOrder) {
+        window.aiPanel.setFileOrder(manager.canonicalFileOrder);
+      }
+
       // Update stats display
       this.updateDiffStats({
         additions: totalAdditions,
         deletions: totalDeletions,
-        fileCount: files.length
+        fileCount: sortedFiles.length
       });
 
       // Update file list sidebar
-      manager.updateFileList(files);
+      manager.updateFileList(sortedFiles);
 
       // Load viewed state before rendering so files can start collapsed
       await manager.loadViewedState();
 
       // Render diff
-      manager.renderDiff({ changed_files: files });
+      manager.renderDiff({ changed_files: sortedFiles });
 
     } catch (error) {
       console.error('Error loading local diff:', error);
