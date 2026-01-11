@@ -1,6 +1,6 @@
 const express = require('express');
 const path = require('path');
-const { loadConfig } = require('./config');
+const { loadConfig, getGitHubToken } = require('./config');
 const { initializeDatabase, getDatabaseStatus } = require('./database');
 
 let db = null;
@@ -85,9 +85,12 @@ async function startServer(sharedDb = null) {
     // Load configuration
     const config = await loadConfig();
     
+    // Get GitHub token (env var takes precedence over config)
+    const githubToken = getGitHubToken(config);
+
     // Warn if no GitHub token is configured
-    if (!config.github_token) {
-      console.warn('Warning: No GitHub token configured. GitHub API functionality will be limited.');
+    if (!githubToken) {
+      console.warn('Warning: No GitHub token configured. Set GITHUB_TOKEN environment variable or add github_token to ~/.pair-review/config.json');
     }
     
     // Use shared database or initialize new one
@@ -178,7 +181,7 @@ async function startServer(sharedDb = null) {
     
     // Store database instance, GitHub token, and config for routes
     app.set('db', db);
-    app.set('githubToken', config.github_token);
+    app.set('githubToken', githubToken);
     app.set('config', config);
 
     // API routes - split into focused modules

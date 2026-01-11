@@ -118,14 +118,17 @@ On first run, Pair Review creates `~/.pair-review/config.json`:
 
 ### Environment Variables
 
-Pair Review supports several environment variables for customizing AI provider commands and behavior:
+Pair Review supports several environment variables for customizing behavior:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `GITHUB_TOKEN` | GitHub Personal Access Token (takes precedence over config file) | - |
 | `PAIR_REVIEW_CLAUDE_CMD` | Custom command to invoke Claude CLI | `claude` |
 | `PAIR_REVIEW_GEMINI_CMD` | Custom command to invoke Gemini CLI | `gemini` |
 | `PAIR_REVIEW_CODEX_CMD` | Custom command to invoke Codex CLI | `codex` |
 | `PAIR_REVIEW_MODEL` | Override the AI model to use (same as `--model` flag) | Provider default |
+
+**Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
 
 **Note:** The `--model` CLI flag is shorthand for setting `PAIR_REVIEW_MODEL`. If both are specified, the CLI flag takes precedence.
 
@@ -137,6 +140,9 @@ These variables are useful when:
 **Examples:**
 
 ```bash
+# Use GitHub token from environment variable (CI/CD friendly)
+GITHUB_TOKEN="ghp_xxxx" npx pair-review 123
+
 # Use a custom path for Claude CLI
 PAIR_REVIEW_CLAUDE_CMD="/usr/local/bin/claude" npx pair-review 123
 

@@ -215,6 +215,7 @@ describe('CLI help and version', () => {
     const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
 
     expect(output).toContain('ENVIRONMENT VARIABLES:');
+    expect(output).toContain('GITHUB_TOKEN');
     expect(output).toContain('PAIR_REVIEW_CLAUDE_CMD');
     expect(output).toContain('PAIR_REVIEW_GEMINI_CMD');
     expect(output).toContain('PAIR_REVIEW_CODEX_CMD');
@@ -280,8 +281,16 @@ describe('CLI --configure', () => {
     expect(output).toContain('repo');
     expect(output).toContain('public_repo');
     expect(output).toContain('ENVIRONMENT VARIABLES:');
+    expect(output).toContain('GITHUB_TOKEN');
     expect(output).toContain('AI PROVIDERS:');
     expect(output).toContain('Claude (default)');
+  });
+
+  it('should mention GITHUB_TOKEN takes precedence over config file', () => {
+    const output = execSync('node bin/pair-review.js --configure', { encoding: 'utf-8' });
+
+    expect(output).toContain('GITHUB_TOKEN environment variable');
+    expect(output).toContain('takes precedence');
   });
 
   it('--configure should exit with code 0', () => {

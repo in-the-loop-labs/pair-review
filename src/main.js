@@ -1,4 +1,4 @@
-const { loadConfig, getConfigDir } = require('./config');
+const { loadConfig, getConfigDir, getGitHubToken } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -60,6 +60,7 @@ EXAMPLES:
     pair-review 123 --ai               # Auto-run AI analysis
 
 ENVIRONMENT VARIABLES:
+    GITHUB_TOKEN            GitHub Personal Access Token (takes precedence over config file)
     PAIR_REVIEW_CLAUDE_CMD  Custom command to invoke Claude CLI (default: claude)
     PAIR_REVIEW_GEMINI_CMD  Custom command to invoke Gemini CLI (default: gemini)
     PAIR_REVIEW_CODEX_CMD   Custom command to invoke Codex CLI (default: codex)
@@ -226,7 +227,12 @@ GITHUB TOKEN:
       - repo (for private repositories)
       - public_repo (sufficient for public repositories only)
 
+    You can provide the token via:
+      1. GITHUB_TOKEN environment variable (takes precedence)
+      2. github_token field in config file
+
 ENVIRONMENT VARIABLES:
+    GITHUB_TOKEN            GitHub Personal Access Token (takes precedence over config file)
     PAIR_REVIEW_CLAUDE_CMD  Custom Claude CLI command (default: claude)
     PAIR_REVIEW_GEMINI_CMD  Custom Gemini CLI command (default: gemini)
     PAIR_REVIEW_CODEX_CMD   Custom Codex CLI command (default: codex)
@@ -315,19 +321,20 @@ async function handlePullRequest(args, config, db, flags = {}) {
   let prInfo = null; // Declare prInfo outside try block for error handling
   
   try {
-    // Validate GitHub token
-    if (!config.github_token) {
-      throw new Error('GitHub token not found. Run: npx pair-review --configure');
+    // Get GitHub token (env var takes precedence over config)
+    const githubToken = getGitHubToken(config);
+    if (!githubToken) {
+      throw new Error('GitHub token not found. Set GITHUB_TOKEN environment variable or run: npx pair-review --configure');
     }
 
     // Parse PR arguments
     const parser = new PRArgumentParser();
     prInfo = await parser.parsePRArguments(args);
-    
+
     console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo}`);
 
     // Create GitHub client and validate token
-    const githubClient = new GitHubClient(config.github_token);
+    const githubClient = new GitHubClient(githubToken);
     const tokenValid = await githubClient.validateToken();
     if (!tokenValid) {
       throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
@@ -652,9 +659,10 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
   let prInfo = null;
 
   try {
-    // Validate GitHub token
-    if (!config.github_token) {
-      throw new Error('GitHub token not found. Run: npx pair-review --configure');
+    // Get GitHub token (env var takes precedence over config)
+    const githubToken = getGitHubToken(config);
+    if (!githubToken) {
+      throw new Error('GitHub token not found. Set GITHUB_TOKEN environment variable or run: npx pair-review --configure');
     }
 
     // Parse PR arguments
@@ -664,7 +672,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in draft mode`);
 
     // Create GitHub client and validate token
-    const githubClient = new GitHubClient(config.github_token);
+    const githubClient = new GitHubClient(githubToken);
     const tokenValid = await githubClient.validateToken();
     if (!tokenValid) {
       throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');

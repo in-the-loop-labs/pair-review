@@ -111,9 +111,28 @@ function getConfigDir() {
   return CONFIG_DIR;
 }
 
+/**
+ * Gets the GitHub token with environment variable taking precedence over config file.
+ * Priority:
+ *   1. GITHUB_TOKEN environment variable (highest priority)
+ *   2. config.github_token from ~/.pair-review/config.json
+ *
+ * @param {Object} config - Configuration object from loadConfig()
+ * @returns {string} - GitHub token or empty string if not configured
+ */
+function getGitHubToken(config) {
+  // Environment variable takes precedence
+  if (process.env.GITHUB_TOKEN) {
+    return process.env.GITHUB_TOKEN;
+  }
+  // Fall back to config file
+  return config.github_token || '';
+}
+
 module.exports = {
   loadConfig,
   saveConfig,
   getConfigDir,
-  validatePort
+  validatePort,
+  getGitHubToken
 };
