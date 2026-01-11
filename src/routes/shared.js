@@ -79,9 +79,9 @@ function determineCompletionInfo(result) {
     totalSuggestions = level1Count + level2Count + level3Count;
 
     const levelDetails = [];
-    if (level1Count > 0) levelDetails.push(`Level 1: ${level1Count}`);
-    if (level2Count > 0) levelDetails.push(`Level 2: ${level2Count}`);
-    if (level3Count > 0) levelDetails.push(`Level 3: ${level3Count}`);
+    if (level1Count > 0) levelDetails.push(`[Level 1] ${level1Count}`);
+    if (level2Count > 0) levelDetails.push(`[Level 2] ${level2Count}`);
+    if (level3Count > 0) levelDetails.push(`[Level 3] ${level3Count}`);
 
     progressMessage = `Analysis complete: ${totalSuggestions} suggestions found (${levelDetails.join(', ')})`;
   }

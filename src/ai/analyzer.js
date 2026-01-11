@@ -528,7 +528,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `Level 1: ${step}...`;
+        const progress = `[Level 1] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -581,7 +581,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
 
       return {
         suggestions,
-        summary: response.summary || `Level 1: Found ${suggestions.length} suggestions`
+        summary: response.summary || `[Level 1] Found ${suggestions.length} suggestions`
       };
 
     } catch (error) {
@@ -1340,7 +1340,7 @@ Output JSON with this structure:
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `Level 2: ${step}...`;
+        const progress = `[Level 2] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -1393,7 +1393,7 @@ Output JSON with this structure:
 
       return {
         suggestions,
-        summary: response.summary || `Level 2: Found ${suggestions.length} file context suggestions`
+        summary: response.summary || `[Level 2] Found ${suggestions.length} file context suggestions`
       };
 
     } catch (error) {
@@ -1432,7 +1432,7 @@ Output JSON with this structure:
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `Level 3: ${step}...`;
+        const progress = `[Level 3] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -1489,7 +1489,7 @@ Output JSON with this structure:
 
       return {
         suggestions,
-        summary: response.summary || `Level 3: Found ${suggestions.length} codebase context suggestions`
+        summary: response.summary || `[Level 3] Found ${suggestions.length} codebase context suggestions`
       };
 
     } catch (error) {
@@ -1530,7 +1530,7 @@ Output JSON with this structure:
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `Level 2: ${step}...`;
+        const progress = `[Level 2] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -1878,7 +1878,7 @@ Output JSON with this structure:
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `Level 3: ${step}...`;
+        const progress = `[Level 3] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
