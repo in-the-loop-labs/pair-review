@@ -636,10 +636,10 @@ class PRManager {
       const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(file.file);
       wrapper.appendChild(fileCommentsZone);
 
-      // Add file comment button to header - toggles visibility only
+      // Add file comment button to header - directly adds a file comment (like GitHub)
       const fileCommentBtn = document.createElement('button');
       fileCommentBtn.className = 'file-header-comment-btn';
-      fileCommentBtn.title = 'Toggle file comments';
+      fileCommentBtn.title = 'Add file comment';
       fileCommentBtn.dataset.file = file.file;
       // Outline icon (no comments) - will be updated by updateHeaderButtonState
       fileCommentBtn.innerHTML = `
@@ -652,9 +652,8 @@ class PRManager {
       `;
       fileCommentBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        this.fileCommentManager.toggleZone(fileCommentsZone);
-        // Update expanded state class on button
-        fileCommentBtn.classList.toggle('expanded', !fileCommentsZone.classList.contains('collapsed'));
+        // Directly open the comment form (like GitHub's behavior)
+        this.fileCommentManager.showCommentForm(fileCommentsZone, file.file);
       });
       header.appendChild(fileCommentBtn);
 
@@ -1791,20 +1790,9 @@ class PRManager {
         const zone = card.closest('.file-comments-zone');
         card.remove();
 
-        // Show empty state in the file comments zone if no more comments remain
-        if (zone) {
-          const container = zone.querySelector('.file-comments-container');
-          const hasComments = container?.querySelectorAll('.file-comment-card').length > 0;
-          if (!hasComments) {
-            const emptyState = container?.querySelector('.file-comments-empty');
-            if (emptyState) {
-              emptyState.style.display = 'block';
-            }
-          }
-          // Update the file comment zone header button state
-          if (this.fileCommentManager) {
-            this.fileCommentManager.updateCommentCount(zone);
-          }
+        // Update the file comment zone header button state
+        if (zone && this.fileCommentManager) {
+          this.fileCommentManager.updateCommentCount(zone);
         }
       });
 

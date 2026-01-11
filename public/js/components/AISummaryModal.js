@@ -104,8 +104,16 @@ class AISummaryModal {
   setupEventListeners() {
     // Handle close actions via event delegation
     this.modal.addEventListener('click', (e) => {
+      // Check for explicit close action
       const action = e.target.closest('[data-action]')?.dataset.action;
       if (action === 'close') {
+        this.hide();
+        return;
+      }
+
+      // Also close when clicking directly on the overlay (outside the modal container)
+      // This handles clicks on the overlay background that miss the backdrop element
+      if (e.target === this.modal) {
         this.hide();
       }
     });

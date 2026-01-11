@@ -119,8 +119,9 @@ test.describe('AI Summary Modal', () => {
     await page.locator('#ai-summary-btn').click();
     await expect(page.locator('#ai-summary-modal')).toBeVisible();
 
-    // Click backdrop
-    await page.locator('.modal-backdrop[data-action="close"]').click({ force: true });
+    // Click on the backdrop area (outside the modal container)
+    // We click near the top-left corner of the backdrop to avoid hitting the centered modal
+    await page.locator('.modal-backdrop[data-action="close"]').click({ position: { x: 10, y: 10 } });
 
     // Modal should be hidden
     await expect(page.locator('#ai-summary-modal')).toBeHidden();

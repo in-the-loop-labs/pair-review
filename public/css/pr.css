@@ -7147,114 +7147,56 @@ body:not([data-theme="dark"]) .theme-icon-light {
   --file-comment-header-bg: #21262d;
 }
 
-/* File Comments Zone Container */
+/* File Comments Zone Container - always visible (no collapse) */
+/* Zone is invisible when empty - styling only applied when has content via :has() */
 .file-comments-zone {
+  /* No default styling - completely invisible when empty */
+}
+
+/* Conditional styling - only show background/border when zone has actual content */
+.file-comments-zone:has(.file-comment-card),
+.file-comments-zone:has(.file-comment-form) {
   background: var(--file-comment-bg);
   border-bottom: 1px solid var(--file-comment-border);
-  overflow: hidden;
-  transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-              border-bottom-color 0.3s ease,
-              opacity 0.2s ease;
 }
 
-.file-comments-zone.collapsed {
-  max-height: 0 !important;
-  border-bottom-color: transparent;
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* Zone Header - Toggle & Add Button */
-.file-comments-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
-  background: var(--file-comment-header-bg);
-  border-bottom: 1px solid var(--color-border-secondary);
-  min-height: 40px;
-}
-
-.file-comments-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: none;
-  border: none;
-  color: var(--color-text-secondary);
-  font-family: var(--font-sans);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  padding: 4px 8px;
-  margin: -4px -8px;
-  border-radius: 4px;
-  transition: all 0.15s ease;
-}
-
-.file-comments-toggle:hover {
-  background: var(--color-bg-secondary);
-  color: var(--color-text-primary);
-}
-
-.file-comments-toggle .toggle-icon {
-  transition: transform 0.25s ease;
-  display: flex;
-  align-items: center;
-}
-
-.file-comments-zone.collapsed .file-comments-toggle .toggle-icon {
-  transform: rotate(-90deg);
-}
-
-/* Add File Comment Button */
-.add-file-comment-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: transparent;
-  border: 1px solid var(--color-border-primary);
-  border-radius: 6px;
-  color: var(--color-text-secondary);
-  font-family: var(--font-sans);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.add-file-comment-btn:hover {
-  background: var(--color-bg-secondary);
-  border-color: var(--color-accent-primary);
-  color: var(--color-accent-primary);
-}
-
-.add-file-comment-btn svg {
-  opacity: 0.7;
-  width: 14px;
-  height: 14px;
-}
-
-.add-file-comment-btn:hover svg {
-  opacity: 1;
-}
-
-/* Comments Container */
+/* Comments Container - only has padding when there's content */
 .file-comments-container {
-  padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-/* Empty State */
-.file-comments-empty {
-  text-align: center;
-  padding: 24px;
-  color: var(--color-text-muted);
-  font-size: 14px;
+/* Only add padding when container has visible content */
+.file-comments-container:has(.file-comment-card),
+.file-comments-container:has(.file-comment-form) {
+  padding: 12px 16px;
 }
+
+/* ==========================================================================
+   File Comment Badge - indicates file-level scope (like GitHub)
+   ========================================================================== */
+.file-comment-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-secondary);
+  white-space: nowrap;
+}
+
+/* Dark theme adjustments for file comment badge */
+[data-theme="dark"] .file-comment-badge {
+  background: rgba(110, 118, 129, 0.2);
+  border-color: rgba(110, 118, 129, 0.4);
+  color: #8b949e;
+}
+
 
 /* ==========================================================================
    File-Level Comment Card

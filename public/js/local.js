@@ -756,20 +756,9 @@ class LocalManager {
             const zone = card.closest('.file-comments-zone');
             card.remove();
 
-            // Show empty state in the file comments zone if no more comments remain
-            if (zone) {
-              const container = zone.querySelector('.file-comments-container');
-              const hasComments = container?.querySelectorAll('.file-comment-card').length > 0;
-              if (!hasComments) {
-                const emptyState = container?.querySelector('.file-comments-empty');
-                if (emptyState) {
-                  emptyState.style.display = 'block';
-                }
-              }
-              // Update the file comment zone header button state
-              if (manager.fileCommentManager) {
-                manager.fileCommentManager.updateCommentCount(zone);
-              }
+            // Update the file comment zone header button state
+            if (zone && manager.fileCommentManager) {
+              manager.fileCommentManager.updateCommentCount(zone);
             }
           });
 

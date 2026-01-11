@@ -26,8 +26,6 @@ class FileCommentManager {
     this.prManager = prManagerRef;
     // Track file-level comments by file path
     this.fileComments = new Map();
-    // Current open form
-    this.currentForm = null;
   }
 
   /**
@@ -124,81 +122,25 @@ class FileCommentManager {
 
   /**
    * Create the file comments zone element for a file
+   * File comments are always visible (no collapsible behavior).
+   * The comment icon button in the file header directly adds a new comment.
    * @param {string} fileName - The file path
    * @returns {HTMLElement} The file comments zone element
    */
   createFileCommentsZone(fileName) {
     const zone = document.createElement('div');
-    zone.className = 'file-comments-zone collapsed';
+    zone.className = 'file-comments-zone';
     zone.dataset.fileName = fileName;
 
-    // Zone Header
-    const header = document.createElement('div');
-    header.className = 'file-comments-header';
-
-    // Toggle button
-    const toggleBtn = document.createElement('button');
-    toggleBtn.className = 'file-comments-toggle';
-    toggleBtn.innerHTML = `
-      <span class="toggle-icon">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M12.78 6.22a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L3.22 7.28a.75.75 0 0 1 1.06-1.06L8 9.94l3.72-3.72a.75.75 0 0 1 1.06 0z"/>
-        </svg>
-      </span>
-      File Comments
-    `;
-    toggleBtn.addEventListener('click', () => this.toggleZone(zone));
-
-    // Add comment button
-    const addBtn = document.createElement('button');
-    addBtn.className = 'add-file-comment-btn';
-    addBtn.innerHTML = `
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M8 0a.75.75 0 0 1 .75.75v6.5h6.5a.75.75 0 0 1 0 1.5h-6.5v6.5a.75.75 0 0 1-1.5 0v-6.5H.75a.75.75 0 0 1 0-1.5h6.5V.75A.75.75 0 0 1 8 0z"/>
-      </svg>
-      Add comment
-    `;
-    addBtn.addEventListener('click', () => this.showCommentForm(zone, fileName));
-
-    header.appendChild(toggleBtn);
-    header.appendChild(addBtn);
-
-    // Comments container
+    // Comments container (no header with toggle/add buttons - always visible)
     const container = document.createElement('div');
     container.className = 'file-comments-container';
 
-    // Empty state
-    const emptyState = document.createElement('div');
-    emptyState.className = 'file-comments-empty';
-    emptyState.textContent = 'No file-level comments yet. Click "Add comment" to start a discussion about this file.';
-    container.appendChild(emptyState);
-
-    zone.appendChild(header);
     zone.appendChild(container);
 
     return zone;
   }
 
-  /**
-   * Toggle the file comments zone visibility
-   * @param {HTMLElement} zone - The zone element
-   */
-  toggleZone(zone) {
-    zone.classList.toggle('collapsed');
-    // Update header button state after toggling
-    const container = zone.querySelector('.file-comments-container');
-    const userComments = container.querySelectorAll('.file-comment-card:not(.ai-suggestion)').length;
-    const aiSuggestions = container.querySelectorAll('.file-comment-card.ai-suggestion').length;
-    this.updateHeaderButtonState(zone, userComments + aiSuggestions);
-  }
-
-  /**
-   * Expand the zone (show it)
-   * @param {HTMLElement} zone - The zone element
-   */
-  expandZone(zone) {
-    zone.classList.remove('collapsed');
-  }
 
   /**
    * Show the comment form for a file
@@ -206,16 +148,7 @@ class FileCommentManager {
    * @param {string} fileName - The file path
    */
   showCommentForm(zone, fileName) {
-    // Expand zone if collapsed
-    this.expandZone(zone);
-
     const container = zone.querySelector('.file-comments-container');
-
-    // Hide empty state if present
-    const emptyState = container.querySelector('.file-comments-empty');
-    if (emptyState) {
-      emptyState.style.display = 'none';
-    }
 
     // Close any existing form in this zone
     const existingForm = container.querySelector('.file-comment-form');
@@ -282,7 +215,6 @@ class FileCommentManager {
       }
     });
 
-    this.currentForm = form;
   }
 
   /**
@@ -295,14 +227,6 @@ class FileCommentManager {
 
     if (form) {
       form.remove();
-      this.currentForm = null;
-    }
-
-    // Show empty state if no comments
-    const hasComments = container.querySelectorAll('.file-comment-card').length > 0;
-    const emptyState = container.querySelector('.file-comments-empty');
-    if (emptyState && !hasComments) {
-      emptyState.style.display = 'block';
     }
   }
 
@@ -364,7 +288,9 @@ class FileCommentManager {
 
     } catch (error) {
       console.error('Error saving file-level comment:', error);
-      alert('Failed to save file-level comment');
+      if (window.toast) {
+        window.toast.showError('Failed to save file-level comment');
+      }
     }
   }
 
@@ -375,12 +301,6 @@ class FileCommentManager {
    */
   displayUserComment(zone, comment) {
     const container = zone.querySelector('.file-comments-container');
-
-    // Hide empty state
-    const emptyState = container.querySelector('.file-comments-empty');
-    if (emptyState) {
-      emptyState.style.display = 'none';
-    }
 
     const card = document.createElement('div');
     // Match line-level: add adopted-comment and comment-ai-origin classes when AI-originated
@@ -417,7 +337,7 @@ class FileCommentManager {
         <span class="comment-origin-icon">
           ${commentIcon}
         </span>
-        <span class="user-comment-line-info">File</span>
+        <span class="file-comment-badge" title="Comment applies to the entire file">File comment</span>
         ${praiseBadge}
         ${titleHtml}
         <span class="user-comment-timestamp">${this.formatTimestamp(comment.created_at)}</span>
@@ -461,12 +381,6 @@ class FileCommentManager {
   displayAISuggestion(zone, suggestion) {
     const container = zone.querySelector('.file-comments-container');
 
-    // Hide empty state
-    const emptyState = container.querySelector('.file-comments-empty');
-    if (emptyState) {
-      emptyState.style.display = 'none';
-    }
-
     // Use the same structure as line-level AI suggestions for consistency
     const card = document.createElement('div');
     // Include ai-type-${type} class for proper category styling (especially praise badge)
@@ -504,6 +418,7 @@ class FileCommentManager {
           ${suggestion.type === 'praise'
             ? `<span class="praise-badge" title="Nice Work"><svg viewBox="0 0 16 16"><path d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Nice Work</span>`
             : `<span class="ai-suggestion-badge" data-type="${suggestion.type}" title="AI Suggestion"><svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901L3.2 5.86a.213.213 0 0 1-.4 0l-.203-.556A3.2 3.2 0 0 0 .696 3.403L.14 3.2a.213.213 0 0 1 0-.4l.556-.203A3.2 3.2 0 0 0 2.597.696L2.8.14Z"/></svg>AI Suggestion</span>`}
+          <span class="file-comment-badge" title="Comment applies to the entire file">File comment</span>
           ${categoryLabel ? `<span class="ai-suggestion-category">${this.escapeHtml(categoryLabel)}</span>` : ''}
           <span class="ai-title">${this.escapeHtml(suggestion.title || '')}</span>
         </div>
@@ -647,7 +562,9 @@ class FileCommentManager {
 
     } catch (error) {
       console.error('Error adopting suggestion:', error);
-      alert('Failed to adopt suggestion');
+      if (window.toast) {
+        window.toast.showError('Failed to adopt suggestion');
+      }
     }
   }
 
@@ -687,7 +604,9 @@ class FileCommentManager {
 
     } catch (error) {
       console.error('Error dismissing suggestion:', error);
-      alert('Failed to dismiss suggestion');
+      if (window.toast) {
+        window.toast.showError('Failed to dismiss suggestion');
+      }
     }
   }
 
@@ -709,16 +628,7 @@ class FileCommentManager {
    * @param {Object} suggestion - The suggestion data
    */
   editAndAdoptAISuggestion(zone, suggestion) {
-    // Show form pre-filled with suggestion body
-    this.expandZone(zone);
-
     const container = zone.querySelector('.file-comments-container');
-
-    // Hide empty state
-    const emptyState = container.querySelector('.file-comments-empty');
-    if (emptyState) {
-      emptyState.style.display = 'none';
-    }
 
     // Close any existing form
     const existingForm = container.querySelector('.file-comment-form');
@@ -872,7 +782,9 @@ class FileCommentManager {
 
     } catch (error) {
       console.error('Error adopting suggestion with edit:', error);
-      alert('Failed to adopt suggestion');
+      if (window.toast) {
+        window.toast.showError('Failed to adopt suggestion');
+      }
     }
   }
 
@@ -960,7 +872,9 @@ class FileCommentManager {
 
     } catch (error) {
       console.error('Error updating comment:', error);
-      alert('Failed to update comment');
+      if (window.toast) {
+        window.toast.showError('Failed to update comment');
+      }
     }
   }
 
@@ -971,7 +885,9 @@ class FileCommentManager {
    */
   async deleteFileComment(zone, commentId) {
     if (!window.confirmDialog) {
-      alert('Confirmation dialog unavailable. Please refresh the page.');
+      if (window.toast) {
+        window.toast.showError('Confirmation dialog unavailable. Please refresh the page.');
+      }
       return;
     }
 
@@ -1003,16 +919,6 @@ class FileCommentManager {
 
       this.updateCommentCount(zone);
 
-      // Show empty state if no more comments
-      const container = zone.querySelector('.file-comments-container');
-      const hasComments = container.querySelectorAll('.file-comment-card').length > 0;
-      if (!hasComments) {
-        const emptyState = container.querySelector('.file-comments-empty');
-        if (emptyState) {
-          emptyState.style.display = 'block';
-        }
-      }
-
       // Update parent comment count
       if (this.prManager?.updateCommentCount) {
         this.prManager.updateCommentCount();
@@ -1020,7 +926,9 @@ class FileCommentManager {
 
     } catch (error) {
       console.error('Error deleting comment:', error);
-      alert('Failed to delete comment');
+      if (window.toast) {
+        window.toast.showError('Failed to delete comment');
+      }
     }
   }
 
@@ -1037,17 +945,18 @@ class FileCommentManager {
 
     // Update header button icon state (outline vs filled)
     this.updateHeaderButtonState(zone, total);
-
-    // If there are comments, expand the zone
-    if (total > 0 && zone.classList.contains('collapsed')) {
-      this.expandZone(zone);
-    }
   }
 
   /**
-   * Update the header button icon state based on comment count
-   * @param {HTMLElement} zone - The file comments zone
-   * @param {number} count - Total comment count
+   * Update the header button icon state based on comment count.
+   *
+   * Note: The `zone.headerButton` property is injected externally by pr.js
+   * during file header rendering. This coupling allows the file-comment-manager
+   * to update the header's comment icon state (outline vs filled) without
+   * needing direct access to the header DOM structure.
+   *
+   * @param {HTMLElement} zone - The file comments zone element
+   * @param {number} count - Total comment count (user + AI suggestions)
    */
   updateHeaderButtonState(zone, count) {
     const headerBtn = zone.headerButton;
@@ -1061,20 +970,13 @@ class FileCommentManager {
       if (outlineIcon) outlineIcon.style.display = 'none';
       if (filledIcon) filledIcon.style.display = '';
       headerBtn.classList.add('has-comments');
-      headerBtn.title = `View ${count} comment${count > 1 ? 's' : ''}`;
+      headerBtn.title = `${count} file comment${count > 1 ? 's' : ''} - click to add more`;
     } else {
       // No comments - show outline icon
       if (outlineIcon) outlineIcon.style.display = '';
       if (filledIcon) filledIcon.style.display = 'none';
       headerBtn.classList.remove('has-comments');
       headerBtn.title = 'Add file comment';
-    }
-
-    // Update expanded state
-    const isExpanded = !zone.classList.contains('collapsed');
-    headerBtn.classList.toggle('expanded', isExpanded);
-    if (isExpanded) {
-      headerBtn.title = count > 0 ? 'Hide comments' : 'Hide comment panel';
     }
   }
 
@@ -1134,13 +1036,6 @@ class FileCommentManager {
           for (const card of existingUserComments) {
             card.remove();
           }
-        }
-
-        // Update empty state based on remaining/new content
-        const emptyState = container.querySelector('.file-comments-empty');
-        const remainingCards = container.querySelectorAll('.file-comment-card').length;
-        if (emptyState) {
-          emptyState.style.display = remainingCards > 0 ? 'none' : 'block';
         }
       }
 

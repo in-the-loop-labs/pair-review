@@ -155,6 +155,7 @@ const SCHEMA_SQL = `
     submitted_at DATETIME,
     review_data TEXT,
     custom_instructions TEXT,
+    summary TEXT,
     UNIQUE(pr_number, repository)
   );
 
