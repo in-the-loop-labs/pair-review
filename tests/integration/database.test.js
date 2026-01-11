@@ -48,7 +48,8 @@ function createTestDatabase() {
               custom_instructions TEXT,
               review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
               local_path TEXT,
-              local_head_sha TEXT
+              local_head_sha TEXT,
+              summary TEXT
             )
           `,
           comments: `
@@ -72,6 +73,7 @@ function createTestDatabase() {
               status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
               adopted_as_id INTEGER,
               parent_id INTEGER,
+              is_file_level INTEGER DEFAULT 0,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
@@ -744,6 +746,51 @@ describe('ReviewRepository', () => {
       // Verify persisted
       const retrieved = await reviewRepo.getReviewByPR(123, 'owner/repo');
       expect(retrieved.custom_instructions).toBe('Updated');
+    });
+  });
+
+  describe('updateSummary()', () => {
+    it('should update summary for existing review', async () => {
+      const created = await reviewRepo.createReview({
+        prNumber: 123,
+        repository: 'owner/repo'
+      });
+
+      const result = await reviewRepo.updateSummary(created.id, 'This is the analysis summary');
+      expect(result).toBe(true);
+
+      // Verify persisted
+      const retrieved = await reviewRepo.getReview(created.id);
+      expect(retrieved.summary).toBe('This is the analysis summary');
+    });
+
+    it('should return false for non-existent review', async () => {
+      const result = await reviewRepo.updateSummary(999, 'Summary');
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('upsertSummary()', () => {
+    it('should create new review when none exists', async () => {
+      const review = await reviewRepo.upsertSummary(123, 'owner/repo', 'New summary');
+
+      expect(review.pr_number).toBe(123);
+      expect(review.summary).toBe('New summary');
+    });
+
+    it('should update existing review summary', async () => {
+      await reviewRepo.createReview({
+        prNumber: 123,
+        repository: 'owner/repo',
+        summary: 'Original summary'
+      });
+
+      const updated = await reviewRepo.upsertSummary(123, 'owner/repo', 'Updated summary');
+      expect(updated.summary).toBe('Updated summary');
+
+      // Verify persisted
+      const retrieved = await reviewRepo.getReviewByPR(123, 'owner/repo');
+      expect(retrieved.summary).toBe('Updated summary');
     });
   });
 

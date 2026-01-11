@@ -8,7 +8,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 7;
 
 /**
  * Database schema SQL statements
@@ -28,7 +28,8 @@ const SCHEMA_SQL = {
       custom_instructions TEXT,
       review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
       local_path TEXT,
-      local_head_sha TEXT
+      local_head_sha TEXT,
+      summary TEXT
     )
   `,
   
@@ -490,6 +491,50 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 6 complete');
+  },
+
+  // Migration to version 7: adds summary column to reviews table for storing AI analysis summary
+  7: async (db) => {
+    console.log('Running migration to schema version 7...');
+
+    // Helper to check if column exists
+    const columnExists = async (table, column) => {
+      return new Promise((resolve, reject) => {
+        db.all(`PRAGMA table_info(${table})`, (error, rows) => {
+          if (error) reject(error);
+          else resolve(rows ? rows.some(row => row.name === column) : false);
+        });
+      });
+    };
+
+    // Helper to run SQL safely
+    const runSql = (sql) => {
+      return new Promise((resolve, reject) => {
+        db.run(sql, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      });
+    };
+
+    // Add summary column to reviews if it doesn't exist
+    const hasSummary = await columnExists('reviews', 'summary');
+    if (!hasSummary) {
+      try {
+        await runSql(`ALTER TABLE reviews ADD COLUMN summary TEXT`);
+        console.log('  Added summary column to reviews');
+      } catch (error) {
+        // Ignore duplicate column errors (race condition protection)
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column summary already exists (race condition)');
+      }
+    } else {
+      console.log('  Column summary already exists');
+    }
+
+    console.log('Migration to schema version 7 complete');
   }
 };
 
@@ -1540,18 +1585,20 @@ class ReviewRepository {
    * @param {string} [reviewInfo.status='draft'] - Review status
    * @param {Object} [reviewInfo.reviewData] - Additional review data (will be JSON stringified)
    * @param {string} [reviewInfo.customInstructions] - Custom instructions used for AI analysis
+   * @param {string} [reviewInfo.summary] - AI analysis summary
    * @returns {Promise<Object>} Created review record
    */
-  async createReview({ prNumber, repository, status = 'draft', reviewData = null, customInstructions = null }) {
+  async createReview({ prNumber, repository, status = 'draft', reviewData = null, customInstructions = null, summary = null }) {
     const result = await run(this.db, `
-      INSERT INTO reviews (pr_number, repository, status, review_data, custom_instructions)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO reviews (pr_number, repository, status, review_data, custom_instructions, summary)
+      VALUES (?, ?, ?, ?, ?, ?)
     `, [
       prNumber,
       repository,
       status,
       reviewData ? JSON.stringify(reviewData) : null,
-      customInstructions
+      customInstructions,
+      summary
     ]);
 
     return {
@@ -1561,6 +1608,7 @@ class ReviewRepository {
       status,
       review_data: reviewData,
       custom_instructions: customInstructions,
+      summary,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -1574,6 +1622,7 @@ class ReviewRepository {
    * @param {number} [updates.reviewId] - GitHub review ID after submission
    * @param {Object} [updates.reviewData] - Additional review data (will be JSON stringified)
    * @param {string} [updates.customInstructions] - Custom instructions used for AI analysis
+   * @param {string} [updates.summary] - AI analysis summary
    * @param {Date|string} [updates.submittedAt] - Submission timestamp
    * @returns {Promise<boolean>} True if record was updated
    */
@@ -1599,6 +1648,11 @@ class ReviewRepository {
     if (updates.customInstructions !== undefined) {
       setClauses.push('custom_instructions = ?');
       params.push(updates.customInstructions);
+    }
+
+    if (updates.summary !== undefined) {
+      setClauses.push('summary = ?');
+      params.push(updates.summary);
     }
 
     if (updates.submittedAt !== undefined) {
@@ -1634,7 +1688,7 @@ class ReviewRepository {
   async getReview(id) {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
-             created_at, updated_at, submitted_at, review_data, custom_instructions
+             created_at, updated_at, submitted_at, review_data, custom_instructions, summary
       FROM reviews
       WHERE id = ?
     `, [id]);
@@ -1657,7 +1711,7 @@ class ReviewRepository {
   async getReviewByPR(prNumber, repository) {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
-             created_at, updated_at, submitted_at, review_data, custom_instructions
+             created_at, updated_at, submitted_at, review_data, custom_instructions, summary
       FROM reviews
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
@@ -1734,7 +1788,7 @@ class ReviewRepository {
     const rows = await query(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
-             review_type, local_path, local_head_sha
+             review_type, local_path, local_head_sha, summary
       FROM reviews
       WHERE repository = ?
       ORDER BY updated_at DESC
@@ -1789,7 +1843,7 @@ class ReviewRepository {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
-             review_type, local_path, local_head_sha
+             review_type, local_path, local_head_sha, summary
       FROM reviews
       WHERE review_type = 'local' AND local_path = ? AND local_head_sha = ?
     `, [localPath, localHeadSha]);
@@ -1811,7 +1865,7 @@ class ReviewRepository {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
-             review_type, local_path, local_head_sha
+             review_type, local_path, local_head_sha, summary
       FROM reviews
       WHERE id = ? AND review_type = 'local'
     `, [id]);
@@ -1822,6 +1876,34 @@ class ReviewRepository {
       ...row,
       review_data: row.review_data ? JSON.parse(row.review_data) : null
     };
+  }
+
+  /**
+   * Update the summary for a review
+   * @param {number} id - Review ID
+   * @param {string} summary - AI analysis summary
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async updateSummary(id, summary) {
+    return this.updateReview(id, { summary });
+  }
+
+  /**
+   * Upsert summary for a review - creates if not exists, updates if exists
+   * @param {number} prNumber - Pull request number
+   * @param {string} repository - Repository in owner/repo format
+   * @param {string} summary - AI analysis summary to save
+   * @returns {Promise<Object>} The updated or created review record
+   */
+  async upsertSummary(prNumber, repository, summary) {
+    const existing = await this.getReviewByPR(prNumber, repository);
+
+    if (existing) {
+      await this.updateReview(existing.id, { summary });
+      return this.getReview(existing.id);
+    }
+
+    return this.createReview({ prNumber, repository, summary });
   }
 }
 

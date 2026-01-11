@@ -15,6 +15,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
+const { mergeInstructions } = require('../utils/instructions');
 const {
   activeAnalyses,
   prToAnalysisId,
@@ -57,6 +58,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Check if PR exists in database
     const db = req.app.get('db');
+    // Create ReviewRepository once for reuse throughout the handler
+    const reviewRepo = new ReviewRepository(db);
     const prMetadata = await queryOne(db, `
       SELECT id, base_branch, title, description, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
@@ -119,24 +122,13 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         selectedModel = getModel(req);
       }
 
-      // Combine custom instructions with XML-like tags for AI clarity
-      // Server is the single source of truth for how instructions are merged
-      let mergedInstructions = null;
+      // Merge custom instructions using shared utility
       const repoInstructions = fetchedRepoSettings?.default_instructions;
-      if (repoInstructions || requestInstructions) {
-        const parts = [];
-        if (repoInstructions) {
-          parts.push(`These are default instructions for this repository:\n<repo_instructions>\n${repoInstructions}\n</repo_instructions>`);
-        }
-        if (requestInstructions) {
-          parts.push(`These are custom instructions for this analysis run. The following instructions take precedence over the repo_instructions in areas where they overlap or conflict:\n<custom_instructions>\n${requestInstructions}\n</custom_instructions>`);
-        }
-        mergedInstructions = parts.join('\n\n');
-      }
+      const mergedInstructions = mergeInstructions(repoInstructions, requestInstructions);
 
       // Save custom instructions to the review record using upsert
+      // Uses reviewRepo created at the start of the handler
       if (requestInstructions) {
-        const reviewRepo = new ReviewRepository(db);
         await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
       }
 
@@ -239,6 +231,18 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
           logger.info(`Updated pr_metadata with last_ai_run_id: ${result.runId}`);
         } catch (updateError) {
           logger.warn(`Failed to update pr_metadata with last_ai_run_id: ${updateError.message}`);
+        }
+
+        // Save summary to review record (reuse reviewRepo from handler start)
+        if (result.summary) {
+          try {
+            await reviewRepo.upsertSummary(prNumber, repository, result.summary);
+            logger.info(`Saved analysis summary to review record`);
+            logger.section('Analysis Summary');
+            logger.info(result.summary);
+          } catch (summaryError) {
+            logger.warn(`Failed to save analysis summary: ${summaryError.message}`);
+          }
         }
         result.suggestions.forEach(s => {
           const icon = s.type === 'bug' ? '🐛' :

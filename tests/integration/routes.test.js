@@ -138,7 +138,8 @@ async function createTestDatabase() {
               custom_instructions TEXT,
               review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
               local_path TEXT,
-              local_head_sha TEXT
+              local_head_sha TEXT,
+              summary TEXT
             )
           `,
           comments: `

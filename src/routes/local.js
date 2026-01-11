@@ -16,6 +16,7 @@ const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, CommentR
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
+const { mergeInstructions } = require('../utils/instructions');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 const {
   activeAnalyses,
@@ -292,23 +293,9 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       selectedModel = getModel(req);
     }
 
-    // Combine custom instructions with XML-like tags for AI clarity
-    // Server is the single source of truth for how instructions are merged
-    // Note: This merging logic is duplicated with PR mode (analysis.js).
-    // Kept as duplication rather than extracting to shared utility since it's
-    // simple string concatenation and the two modes may diverge in the future.
-    let combinedInstructions = null;
+    // Merge custom instructions using shared utility
     const repoInstructions = repoSettings?.default_instructions;
-    if (repoInstructions || requestInstructions) {
-      const parts = [];
-      if (repoInstructions) {
-        parts.push(`These are default instructions for this repository:\n<repo_instructions>\n${repoInstructions}\n</repo_instructions>`);
-      }
-      if (requestInstructions) {
-        parts.push(`These are custom instructions for this analysis run. The following instructions take precedence over the repo_instructions in areas where they overlap or conflict:\n<custom_instructions>\n${requestInstructions}\n</custom_instructions>`);
-      }
-      combinedInstructions = parts.join('\n\n');
-    }
+    const combinedInstructions = mergeInstructions(repoInstructions, requestInstructions);
 
     // Save custom instructions to the review record
     // Only update when requestInstructions has a value - updateReview would accept
@@ -414,10 +401,22 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
 
     // Start analysis asynchronously (pass changedFiles for local mode path validation)
     analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, combinedInstructions, changedFiles)
-      .then(result => {
+      .then(async result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);
         logger.success(`Found ${result.suggestions.length} suggestions`);
+
+        // Save summary to review record (reuse reviewRepo from handler start)
+        if (result.summary) {
+          try {
+            await reviewRepo.updateSummary(reviewId, result.summary);
+            logger.info(`Saved analysis summary to review record`);
+            logger.section('Analysis Summary');
+            logger.info(result.summary);
+          } catch (summaryError) {
+            logger.warn(`Failed to save analysis summary: ${summaryError.message}`);
+          }
+        }
 
         // Determine completion status
         const completionInfo = determineCompletionInfo(result);
