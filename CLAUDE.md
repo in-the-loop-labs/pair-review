@@ -114,18 +114,20 @@ Test structure:
 
 ## Development workflow
 - **Git workflow**: Ask before committing to main or pushing to remote
+- Add a 'SPDX-License-Identifier: GPL-3.0-or-later' notice at the start of all source code files.
 - Package name: `pair-review`
 - No specific Node version requirement (use modern/recent)
 - Adapter pattern for AI providers to enable future extensibility
 - Verbose logging to stdout for debugging
 - Handle errors gracefully with informative messages
 - Aim to keep file sizes below 20K tokens
-- CRITICAL: Complete, professional implementation - no stubs, prototypes, or partial work
-- CRITICAL: All change must support both Local mode and PR mode
-- CRITICAL: Include appropriate test coverage when making changes, especially bug fixes
-- Important: Consider whether a change also requires a README update
-- CRITICAL: When completing a change, run the relevant tests
-- CRITICAL: When completing changes that modify frontend code, use a Task tool run E2E tests
+- **CRITICAL** Requirements:
+  - Complete, professional implementation - no stubs, prototypes, or partial work
+  - All change must support BOTH Local mode and PR mode
+  - Include appropriate test coverage when making changes, especially for bug fixes
+  - Consider whether a change also requires a README update
+  - When completing a change, run the relevant tests
+  - When completing changes that modify frontend code, use a Task tool run E2E tests
 
 ## Project Documentation Structure
 - **CLAUDE.md**: Stable requirements (this file)
