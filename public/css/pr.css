@@ -1460,6 +1460,7 @@
 
 [data-theme="dark"] .file-viewed-checkbox {
   accent-color: #58a6ff;
+  filter: brightness(0.7);
 }
 
 [data-theme="dark"] .file-viewed-checkbox:checked + span,
