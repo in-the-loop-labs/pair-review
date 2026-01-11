@@ -20,6 +20,7 @@
 
     <!-- PR Display Styles -->
     <link rel="stylesheet" href="/css/pr.css">
+    <link rel="stylesheet" href="/css/ai-summary-modal.css">
     <link rel="stylesheet" href="/css/styles.css">
 
     <!-- Highlight.js for syntax highlighting -->
@@ -311,12 +312,12 @@
             <aside class="ai-panel" id="ai-panel">
                 <div class="ai-panel-header">
                     <div class="ai-panel-title">
-                        <div class="ai-avatar-small">
+                        <button class="ai-avatar-small ai-summary-btn" id="ai-summary-btn" aria-label="View AI summary" title="View AI Summary">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
                                 <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
                                 <path d="M18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/>
                             </svg>
-                        </div>
+                        </button>
                         <span>Review</span>
                     </div>
                     <button class="ai-panel-close" id="ai-panel-close" title="Close panel">
@@ -386,6 +387,7 @@
     <script src="/js/components/ReviewModal.js"></script>
     <script src="/js/components/PreviewModal.js"></script>
     <script src="/js/components/SplitButton.js"></script>
+    <script src="/js/components/AISummaryModal.js"></script>
     <script src="/js/components/AIPanel.js"></script>
 
     <!-- PR Modules (must load before pr.js) -->

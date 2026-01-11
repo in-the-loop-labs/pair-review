@@ -16,6 +16,7 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { mergeInstructions } = require('../utils/instructions');
+const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const {
   activeAnalyses,
   prToAnalysisId,
@@ -770,9 +771,32 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       analysisHasRun = hasSuggestions;
     }
 
+    // Get AI summary from the review record
+    let summary = null;
+    try {
+      const reviewRepo = new ReviewRepository(db);
+      const review = await reviewRepo.getReviewByPR(prNumber, repository);
+      summary = review?.summary || null;
+    } catch (e) {
+      console.warn('Error fetching AI summary:', e);
+    }
+
+    // Get stats for AI suggestions (issues vs praise for final level only)
+    let stats = { issues: 0, praise: 0 };
+    if (hasSuggestions) {
+      try {
+        const statsResult = await query(db, getStatsQuery(), [prMetadata.id]);
+        stats = calculateStats(statsResult);
+      } catch (e) {
+        console.warn('Error fetching AI suggestion stats:', e);
+      }
+    }
+
     res.json({
       hasSuggestions: hasSuggestions,
-      analysisHasRun: analysisHasRun
+      analysisHasRun: analysisHasRun,
+      summary: summary,
+      stats: stats
     });
   } catch (error) {
     console.error('Error checking for AI suggestions:', error);

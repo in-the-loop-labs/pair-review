@@ -1,0 +1,183 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/**
+ * AI Summary Modal Styles
+ * Extracted from pr.css for better organization
+ */
+
+/* AI Summary Button (sparkle icon in panel header) */
+.ai-summary-btn {
+  background: none;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.ai-summary-btn:hover {
+  transform: scale(1.1);
+  opacity: 0.8;
+  border-color: var(--color-accent-emphasis, #0969da);
+}
+
+.ai-summary-btn:focus {
+  outline: none;
+  border-color: var(--color-accent-emphasis, #0969da);
+}
+
+.ai-summary-btn:active {
+  transform: scale(0.95);
+}
+
+/* AI Summary Modal Overlay */
+.ai-summary-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+/* AI Summary Modal Container */
+.ai-summary-modal-container {
+  background: var(--color-bg-primary, white);
+  border-radius: 16px;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  max-width: 600px;
+  width: 90%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* AI Summary Modal Body */
+.ai-summary-modal-body {
+  padding: 0 24px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* AI Summary Stats Bar */
+.ai-summary-stats {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  background: var(--color-bg-secondary, #f6f8fa);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.ai-summary-stat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-secondary, #656d76);
+}
+
+.ai-summary-stat svg {
+  flex-shrink: 0;
+}
+
+.ai-summary-stat-count {
+  font-weight: 600;
+  color: var(--color-text-primary, #24292f);
+}
+
+.ai-summary-stat-label {
+  color: var(--color-text-tertiary, #8c959f);
+}
+
+/* Stat type colors */
+.ai-summary-stat-issues svg {
+  color: #cf222e;
+}
+
+.ai-summary-stat-suggestions svg {
+  color: #bf8700;
+}
+
+.ai-summary-stat-praise svg {
+  color: #1a7f37;
+}
+
+/* AI Summary Content */
+.ai-summary-content {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text-primary, #24292f);
+}
+
+.ai-summary-content p {
+  margin: 0 0 12px;
+}
+
+.ai-summary-content p:last-child {
+  margin-bottom: 0;
+}
+
+.ai-summary-content ul,
+.ai-summary-content ol {
+  margin: 0 0 12px;
+  padding-left: 20px;
+}
+
+.ai-summary-content li {
+  margin-bottom: 4px;
+}
+
+.ai-summary-empty {
+  color: var(--color-text-tertiary, #8c959f);
+  font-style: italic;
+  text-align: center;
+  padding: 24px 0;
+}
+
+/* AI Summary Modal Footer */
+.ai-summary-modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--color-border-primary, #d1d9e0);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Dark theme AI Summary Modal */
+[data-theme="dark"] .ai-summary-modal-container {
+  background: #0d1117;
+  box-shadow: 0 16px 32px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .ai-summary-stats {
+  background: #161b22;
+}
+
+[data-theme="dark"] .ai-summary-stat-issues svg {
+  color: #f85149;
+}
+
+[data-theme="dark"] .ai-summary-stat-suggestions svg {
+  color: #d29922;
+}
+
+[data-theme="dark"] .ai-summary-stat-praise svg {
+  color: #3fb950;
+}
+
+[data-theme="dark"] .ai-summary-modal-footer {
+  border-top-color: #30363d;
+}
+
+[data-theme="dark"] .ai-summary-btn:hover,
+[data-theme="dark"] .ai-summary-btn:focus {
+  border-color: var(--color-accent-emphasis, #58a6ff);
+}

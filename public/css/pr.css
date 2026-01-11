@@ -7623,3 +7623,34 @@ body:not([data-theme="dark"]) .theme-icon-light {
   }
 }
 
+/* AI Summary Modal Styles are in ai-summary-modal.css */
+
+/* ========================================
+   Review Modal - Copy AI Summary Link
+   ======================================== */
+
+/* Review label row for label + link layout */
+.review-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+/* Copy AI summary link styling */
+.copy-ai-summary-link {
+  font-size: 12px;
+  color: var(--color-accent-emphasis, #0969da);
+  text-decoration: none;
+  font-weight: 500;
+  transition: opacity 0.15s ease;
+}
+
+.copy-ai-summary-link:hover {
+  text-decoration: underline;
+  opacity: 0.8;
+}
+
+[data-theme="dark"] .copy-ai-summary-link {
+  color: #58a6ff;
+}
