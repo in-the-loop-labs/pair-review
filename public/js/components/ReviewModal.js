@@ -131,12 +131,20 @@ class ReviewModal {
 
   /**
    * Setup event listeners
+   * Uses static class-level handlers to prevent duplicate listeners when multiple instances are created
    */
   setupEventListeners() {
-    // Handle escape key
+    // Skip if listeners are already registered (class-level flag)
+    if (ReviewModal._listenersRegistered) {
+      return;
+    }
+    ReviewModal._listenersRegistered = true;
+
+    // Handle escape key - uses window.reviewModal to get the current instance
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.isVisible && !this.isSubmitting) {
-        this.hide();
+      const instance = window.reviewModal;
+      if (e.key === 'Escape' && instance?.isVisible && !instance?.isSubmitting) {
+        instance.hide();
       }
     });
 
@@ -144,7 +152,7 @@ class ReviewModal {
     document.addEventListener('click', (e) => {
       if (e.target.closest('#copy-ai-summary-link')) {
         e.preventDefault();
-        this.appendAISummary();
+        window.reviewModal?.appendAISummary();
       }
     });
   }

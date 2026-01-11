@@ -1538,8 +1538,8 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
     // Get AI summary from the review record
     const summary = review?.summary || null;
 
-    // Get stats for AI suggestions (issues vs praise for final level only)
-    let stats = { issues: 0, praise: 0 };
+    // Get stats for AI suggestions (issues/suggestions/praise for final level only)
+    let stats = { issues: 0, suggestions: 0, praise: 0 };
     if (hasSuggestions) {
       try {
         const statsResult = await query(db, getStatsQuery(), [reviewId]);

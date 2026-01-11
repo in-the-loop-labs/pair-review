@@ -9,21 +9,29 @@
 
 /**
  * Calculate stats from AI suggestion query results.
- * Counts suggestions by type: praise vs not-praise (issues).
+ * Counts suggestions by type into three buckets:
+ * - issues: actual problems (bug, security, performance)
+ * - suggestions: recommendations (suggestion, improvement, design, code-style, etc.)
+ * - praise: positive feedback (praise)
  *
  * @param {Array<{type: string, count: number}>} rows - Query results with type and count
- * @returns {{issues: number, praise: number}} Stats object
+ * @returns {{issues: number, suggestions: number, praise: number}} Stats object
  */
 function calculateStats(rows) {
-  const stats = { issues: 0, praise: 0 };
+  const stats = { issues: 0, suggestions: 0, praise: 0 };
+
+  // Types that represent actual problems/issues
+  const issueTypes = ['bug', 'security', 'performance'];
 
   for (const row of rows) {
     const typeLower = (row.type || '').toLowerCase();
     if (typeLower === 'praise') {
       stats.praise += row.count;
-    } else {
-      // All non-praise types count as issues
+    } else if (issueTypes.includes(typeLower)) {
       stats.issues += row.count;
+    } else {
+      // All other types (suggestion, improvement, design, code-style, etc.) are suggestions
+      stats.suggestions += row.count;
     }
   }
 

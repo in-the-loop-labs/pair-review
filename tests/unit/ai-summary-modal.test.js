@@ -57,17 +57,20 @@ describe('AISummaryModal Pure Logic', () => {
   });
 
   describe('Stats structure', () => {
-    it('should have correct default stats structure', () => {
-      const defaultStats = { issues: 0, praise: 0 };
+    it('should have correct default stats structure with three buckets', () => {
+      const defaultStats = { issues: 0, suggestions: 0, praise: 0 };
       expect(defaultStats).toHaveProperty('issues');
+      expect(defaultStats).toHaveProperty('suggestions');
       expect(defaultStats).toHaveProperty('praise');
       expect(defaultStats.issues).toBe(0);
+      expect(defaultStats.suggestions).toBe(0);
       expect(defaultStats.praise).toBe(0);
     });
 
     it('should accept numeric values for stats', () => {
-      const stats = { issues: 5, praise: 3 };
+      const stats = { issues: 5, suggestions: 2, praise: 3 };
       expect(stats.issues).toBe(5);
+      expect(stats.suggestions).toBe(2);
       expect(stats.praise).toBe(3);
     });
   });
@@ -77,20 +80,20 @@ describe('AISummaryModal Pure Logic', () => {
     function processData(data) {
       return {
         summary: data?.summary || null,
-        stats: data?.stats || { issues: 0, praise: 0 }
+        stats: data?.stats || { issues: 0, suggestions: 0, praise: 0 }
       };
     }
 
     it('should handle null data', () => {
       const result = processData(null);
       expect(result.summary).toBeNull();
-      expect(result.stats).toEqual({ issues: 0, praise: 0 });
+      expect(result.stats).toEqual({ issues: 0, suggestions: 0, praise: 0 });
     });
 
     it('should handle undefined data', () => {
       const result = processData(undefined);
       expect(result.summary).toBeNull();
-      expect(result.stats).toEqual({ issues: 0, praise: 0 });
+      expect(result.stats).toEqual({ issues: 0, suggestions: 0, praise: 0 });
     });
 
     it('should extract summary from data', () => {
@@ -99,8 +102,8 @@ describe('AISummaryModal Pure Logic', () => {
     });
 
     it('should extract stats from data', () => {
-      const result = processData({ stats: { issues: 3, praise: 2 } });
-      expect(result.stats).toEqual({ issues: 3, praise: 2 });
+      const result = processData({ stats: { issues: 3, suggestions: 2, praise: 1 } });
+      expect(result.stats).toEqual({ issues: 3, suggestions: 2, praise: 1 });
     });
 
     it('should handle empty summary string', () => {
@@ -112,7 +115,8 @@ describe('AISummaryModal Pure Logic', () => {
     it('should handle partial stats', () => {
       const result = processData({ stats: { issues: 5 } });
       expect(result.stats.issues).toBe(5);
-      // praise should be preserved from input (undefined in this case)
+      // suggestions and praise should be preserved from input (undefined in this case)
+      expect(result.stats.suggestions).toBeUndefined();
       expect(result.stats.praise).toBeUndefined();
     });
   });

@@ -781,8 +781,8 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       console.warn('Error fetching AI summary:', e);
     }
 
-    // Get stats for AI suggestions (issues vs praise for final level only)
-    let stats = { issues: 0, praise: 0 };
+    // Get stats for AI suggestions (issues/suggestions/praise for final level only)
+    let stats = { issues: 0, suggestions: 0, praise: 0 };
     if (hasSuggestions) {
       try {
         const statsResult = await query(db, getStatsQuery(), [prMetadata.id]);

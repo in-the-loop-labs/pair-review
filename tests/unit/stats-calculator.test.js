@@ -15,53 +15,75 @@ describe('Stats Calculator', () => {
       const stats = calculateStats(rows);
       expect(stats.praise).toBe(5);
       expect(stats.issues).toBe(0);
+      expect(stats.suggestions).toBe(0);
     });
 
-    it('should count non-praise types as issues', () => {
+    it('should count issue types (bug, security, performance) as issues', () => {
       const rows = [
         { type: 'bug', count: 3 },
-        { type: 'improvement', count: 2 },
-        { type: 'security', count: 1 }
+        { type: 'security', count: 2 },
+        { type: 'performance', count: 1 }
       ];
       const stats = calculateStats(rows);
       expect(stats.issues).toBe(6);
+      expect(stats.suggestions).toBe(0);
       expect(stats.praise).toBe(0);
     });
 
-    it('should handle mixed types', () => {
+    it('should count recommendation types as suggestions', () => {
+      const rows = [
+        { type: 'suggestion', count: 3 },
+        { type: 'improvement', count: 2 },
+        { type: 'design', count: 1 },
+        { type: 'code-style', count: 1 }
+      ];
+      const stats = calculateStats(rows);
+      expect(stats.suggestions).toBe(7);
+      expect(stats.issues).toBe(0);
+      expect(stats.praise).toBe(0);
+    });
+
+    it('should handle mixed types across all three buckets', () => {
       const rows = [
         { type: 'bug', count: 2 },
         { type: 'praise', count: 4 },
-        { type: 'suggestion', count: 3 }
+        { type: 'suggestion', count: 3 },
+        { type: 'security', count: 1 }
       ];
       const stats = calculateStats(rows);
-      expect(stats.issues).toBe(5); // bug + suggestion
+      expect(stats.issues).toBe(3); // bug + security
+      expect(stats.suggestions).toBe(3); // suggestion
       expect(stats.praise).toBe(4);
     });
 
     it('should handle empty array', () => {
       const stats = calculateStats([]);
       expect(stats.issues).toBe(0);
+      expect(stats.suggestions).toBe(0);
       expect(stats.praise).toBe(0);
     });
 
-    it('should be case-insensitive for praise', () => {
+    it('should be case-insensitive for all types', () => {
       const rows = [
         { type: 'PRAISE', count: 2 },
-        { type: 'Praise', count: 3 }
+        { type: 'Praise', count: 3 },
+        { type: 'BUG', count: 1 },
+        { type: 'SUGGESTION', count: 2 }
       ];
       const stats = calculateStats(rows);
       expect(stats.praise).toBe(5);
-      expect(stats.issues).toBe(0);
+      expect(stats.issues).toBe(1);
+      expect(stats.suggestions).toBe(2);
     });
 
-    it('should handle null type as issue', () => {
+    it('should handle null/undefined type as suggestion', () => {
       const rows = [
         { type: null, count: 2 },
         { type: undefined, count: 1 }
       ];
       const stats = calculateStats(rows);
-      expect(stats.issues).toBe(3);
+      expect(stats.suggestions).toBe(3);
+      expect(stats.issues).toBe(0);
       expect(stats.praise).toBe(0);
     });
   });

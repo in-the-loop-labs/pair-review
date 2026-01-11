@@ -20,12 +20,12 @@
 .ai-summary-btn:hover {
   transform: scale(1.1);
   opacity: 0.8;
-  border-color: var(--color-accent-emphasis, #0969da);
+  border-color: var(--ai-primary, #d97706);
 }
 
 .ai-summary-btn:focus {
   outline: none;
-  border-color: var(--color-accent-emphasis, #0969da);
+  border-color: var(--ai-primary, #d97706);
 }
 
 .ai-summary-btn:active {
@@ -179,5 +179,5 @@
 
 [data-theme="dark"] .ai-summary-btn:hover,
 [data-theme="dark"] .ai-summary-btn:focus {
-  border-color: var(--color-accent-emphasis, #58a6ff);
+  border-color: var(--ai-primary, #f59e0b);
 }
