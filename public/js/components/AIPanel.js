@@ -30,6 +30,7 @@ class AIPanel {
         // Panel elements
         this.closeBtn = document.getElementById('ai-panel-close');
         this.toggleBtn = document.getElementById('ai-panel-toggle');
+        this.summaryBtn = document.getElementById('ai-summary-btn');
 
         // Segment control
         this.segmentControl = document.getElementById('segment-control');
@@ -42,6 +43,9 @@ class AIPanel {
         // Findings
         this.findingsCount = document.getElementById('findings-count');
         this.findingsList = document.getElementById('findings-list');
+
+        // AI Summary data
+        this.summaryData = null;
     }
 
     bindEvents() {
@@ -52,6 +56,11 @@ class AIPanel {
 
         if (this.toggleBtn) {
             this.toggleBtn.addEventListener('click', () => this.toggle());
+        }
+
+        // AI Summary button
+        if (this.summaryBtn) {
+            this.summaryBtn.addEventListener('click', () => this.showSummaryModal());
         }
 
         // Segment control buttons
@@ -1138,6 +1147,48 @@ class AIPanel {
 
         if (this.findingsCount) {
             this.findingsCount.textContent = `${currentDisplay} of ${items.length}`;
+        }
+    }
+
+    // ========================================
+    // AI Summary Methods
+    // ========================================
+
+    /**
+     * Set AI summary data for the panel
+     * @param {Object} data - Summary data { summary, stats }
+     */
+    setSummaryData(data) {
+        this.summaryData = data;
+        // Update modal if it exists
+        if (window.aiSummaryModal) {
+            window.aiSummaryModal.setData(data);
+        }
+    }
+
+    /**
+     * Get AI summary data
+     * @returns {Object|null} Summary data or null
+     */
+    getSummaryData() {
+        return this.summaryData;
+    }
+
+    /**
+     * Get AI summary text
+     * @returns {string|null} Summary text or null
+     */
+    getSummary() {
+        return this.summaryData?.summary || null;
+    }
+
+    /**
+     * Show the AI Summary modal
+     */
+    showSummaryModal() {
+        if (window.aiSummaryModal) {
+            window.aiSummaryModal.setData(this.summaryData);
+            window.aiSummaryModal.show();
         }
     }
 }

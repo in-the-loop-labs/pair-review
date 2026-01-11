@@ -1912,6 +1912,14 @@ class PRManager {
         if (checkResponse.ok) {
           const checkData = await checkResponse.json();
           analysisHasRun = checkData.analysisHasRun;
+
+          // Store summary data in the AI panel for the AI Summary modal
+          if (window.aiPanel?.setSummaryData) {
+            window.aiPanel.setSummaryData({
+              summary: checkData.summary,
+              stats: checkData.stats
+            });
+          }
         }
       } catch (checkError) {
         console.warn('Error checking analysis status:', checkError);

@@ -215,6 +215,29 @@ class LocalManager {
       if (!manager.currentPR) return;
 
       try {
+        // First, check if analysis has been run and get summary data
+        try {
+          const checkResponse = await fetch(`/api/local/${reviewId}/has-ai-suggestions`);
+          if (checkResponse.ok) {
+            const checkData = await checkResponse.json();
+
+            // Store summary data in the AI panel for the AI Summary modal
+            if (window.aiPanel?.setSummaryData) {
+              window.aiPanel.setSummaryData({
+                summary: checkData.summary,
+                stats: checkData.stats
+              });
+            }
+
+            // Set analysis state based on whether we have suggestions
+            if (window.aiPanel?.setAnalysisState) {
+              window.aiPanel.setAnalysisState(checkData.hasSuggestions ? 'complete' : 'unknown');
+            }
+          }
+        } catch (checkError) {
+          console.warn('Error checking analysis status:', checkError);
+        }
+
         const filterLevel = level || manager.selectedLevel || 'final';
         const url = `/api/local/${reviewId}/suggestions?levels=${filterLevel}`;
 
@@ -695,7 +718,7 @@ class LocalManager {
         const totalComments = lineCommentRows.length + fileCommentCards.length;
 
         if (totalComments === 0) {
-          if (window.toast) {
+          if (window.toast?.showInfo) {
             window.toast.showInfo('No comments to clear');
           }
           return;

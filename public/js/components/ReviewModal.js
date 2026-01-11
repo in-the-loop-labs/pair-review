@@ -42,7 +42,10 @@ class ReviewModal {
         <div class="modal-body review-modal-body">
           <div class="review-form">
             <div class="review-summary-section">
-              <label for="review-body-modal" class="review-label">Review Summary</label>
+              <div class="review-label-row">
+                <label for="review-body-modal" class="review-label">Review Summary</label>
+                <a href="#" class="copy-ai-summary-link" id="copy-ai-summary-link" style="display: none;">Copy AI summary</a>
+              </div>
               <textarea
                 class="review-body-textarea"
                 id="review-body-modal"
@@ -128,12 +131,28 @@ class ReviewModal {
 
   /**
    * Setup event listeners
+   * Uses static class-level handlers to prevent duplicate listeners when multiple instances are created
    */
   setupEventListeners() {
-    // Handle escape key
+    // Skip if listeners are already registered (class-level flag)
+    if (ReviewModal._listenersRegistered) {
+      return;
+    }
+    ReviewModal._listenersRegistered = true;
+
+    // Handle escape key - uses window.reviewModal to get the current instance
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.isVisible && !this.isSubmitting) {
-        this.hide();
+      const instance = window.reviewModal;
+      if (e.key === 'Escape' && instance?.isVisible && !instance?.isSubmitting) {
+        instance.hide();
+      }
+    });
+
+    // Handle copy AI summary link (delegated since modal is recreated)
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('#copy-ai-summary-link')) {
+        e.preventDefault();
+        window.reviewModal?.appendAISummary();
       }
     });
   }
@@ -174,6 +193,9 @@ class ReviewModal {
         textarea.focus();
       }
     }, 100);
+
+    // Update AI summary link visibility
+    this.updateAISummaryLink();
   }
 
   /**
@@ -414,6 +436,49 @@ class ReviewModal {
       if (isDraft && handleBeforeUnload) {
         window.removeEventListener('beforeunload', handleBeforeUnload);
       }
+    }
+  }
+
+  /**
+   * Update AI summary link visibility
+   * Shows the link only when an AI summary is available
+   */
+  updateAISummaryLink() {
+    const link = this.modal?.querySelector('#copy-ai-summary-link');
+    if (!link) return;
+
+    // Check if AI summary is available via the AI panel
+    const summary = window.aiPanel?.getSummary?.();
+    link.style.display = summary ? 'inline' : 'none';
+  }
+
+  /**
+   * Append AI summary to the review textarea
+   */
+  appendAISummary() {
+    const textarea = this.modal?.querySelector('#review-body-modal');
+    if (!textarea) return;
+
+    // Get AI summary from the AI panel
+    const summary = window.aiPanel?.getSummary?.();
+    if (!summary) {
+      if (window.toast) {
+        window.toast.showWarning('No AI summary available');
+      }
+      return;
+    }
+
+    // Append to existing text (with newline if there's existing content)
+    const currentValue = textarea.value.trim();
+    if (currentValue) {
+      textarea.value = currentValue + '\n\n' + summary;
+    } else {
+      textarea.value = summary;
+    }
+
+    // Show success feedback
+    if (window.toast) {
+      window.toast.showSuccess('AI summary added to review');
     }
   }
 

@@ -17,6 +17,7 @@ const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { mergeInstructions } = require('../utils/instructions');
+const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 const {
   activeAnalyses,
@@ -1534,8 +1535,24 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
 
     const hasSuggestions = result?.has_suggestions === 1;
 
+    // Get AI summary from the review record
+    const summary = review?.summary || null;
+
+    // Get stats for AI suggestions (issues/suggestions/praise for final level only)
+    let stats = { issues: 0, suggestions: 0, praise: 0 };
+    if (hasSuggestions) {
+      try {
+        const statsResult = await query(db, getStatsQuery(), [reviewId]);
+        stats = calculateStats(statsResult);
+      } catch (e) {
+        console.warn('Error fetching AI suggestion stats:', e);
+      }
+    }
+
     res.json({
-      hasSuggestions: hasSuggestions
+      hasSuggestions: hasSuggestions,
+      summary: summary,
+      stats: stats
     });
 
   } catch (error) {
