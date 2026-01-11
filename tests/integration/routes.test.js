@@ -1511,6 +1511,64 @@ describe('AI Suggestion Endpoints', () => {
       expect(response.body.hasSuggestions).toBe(false);
       expect(response.body.analysisHasRun).toBe(true);
     });
+
+    it('should calculate stats only from the latest ai_run_id', async () => {
+      // Insert suggestions from two different analysis runs
+      // First run (older) - 3 bugs, 2 suggestions, 1 praise
+      const oldTime = '2024-01-01 10:00:00';
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        VALUES (?, 'ai', 'file.js', 10, 'Old bug 1', 'bug', 'run-1', NULL, 'active', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        VALUES (?, 'ai', 'file.js', 20, 'Old bug 2', 'bug', 'run-1', NULL, 'active', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        VALUES (?, 'ai', 'file.js', 30, 'Old bug 3', 'bug', 'run-1', NULL, 'active', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        VALUES (?, 'ai', 'file.js', 40, 'Old suggestion 1', 'suggestion', 'run-1', NULL, 'active', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        VALUES (?, 'ai', 'file.js', 50, 'Old suggestion 2', 'suggestion', 'run-1', NULL, 'active', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        VALUES (?, 'ai', 'file.js', 60, 'Old praise', 'praise', 'run-1', NULL, 'active', ?)
+      `, [prId, oldTime]);
+
+      // Second run (newer) - 1 bug, 1 suggestion, 1 praise (total 3 items)
+      const newTime = '2024-01-01 11:00:00';
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        VALUES (?, 'ai', 'file.js', 10, 'New bug', 'bug', 'run-2', NULL, 'active', ?)
+      `, [prId, newTime]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        VALUES (?, 'ai', 'file.js', 20, 'New suggestion', 'suggestion', 'run-2', NULL, 'active', ?)
+      `, [prId, newTime]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        VALUES (?, 'ai', 'file.js', 30, 'New praise', 'praise', 'run-2', NULL, 'active', ?)
+      `, [prId, newTime]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/has-ai-suggestions');
+
+      expect(response.status).toBe(200);
+      expect(response.body.hasSuggestions).toBe(true);
+      // Stats should only reflect the LATEST run (run-2): 1 issue, 1 suggestion, 1 praise
+      // NOT the combined total (4 issues, 3 suggestions, 2 praise)
+      expect(response.body.stats).toEqual({
+        issues: 1,      // Only the new bug, not old bugs
+        suggestions: 1, // Only the new suggestion, not old suggestions
+        praise: 1       // Only the new praise, not old praise
+      });
+    });
   });
 });
 
@@ -3099,6 +3157,118 @@ describe('Local Review File-Level Comments', () => {
       expect(response.body.suggestions[0].is_file_level).toBe(1);
       expect(response.body.suggestions[1].line_start).toBe(10);
     });
+  });
+});
+
+// ============================================================================
+// Local Mode Has-AI-Suggestions Endpoint Tests
+// ============================================================================
+
+describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
+  let app, db, reviewId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    // Create a local review
+    const reviewResult = await run(db, `
+      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+    reviewId = reviewResult.lastID;
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  it('should return false when no suggestions exist', async () => {
+    const response = await request(app)
+      .get(`/api/local/${reviewId}/has-ai-suggestions`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.hasSuggestions).toBe(false);
+  });
+
+  it('should return true when suggestions exist', async () => {
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+      VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active', 'run-1')
+    `, [reviewId]);
+
+    const response = await request(app)
+      .get(`/api/local/${reviewId}/has-ai-suggestions`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.hasSuggestions).toBe(true);
+  });
+
+  it('should calculate stats only from the latest ai_run_id', async () => {
+    // Insert suggestions from two different analysis runs
+    // First run (older) - 3 bugs, 2 suggestions, 1 praise
+    const oldTime = '2024-01-01 10:00:00';
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      VALUES (?, 'ai', 'file.js', 10, 'Old bug 1', 'bug', 'run-1', NULL, 'active', ?)
+    `, [reviewId, oldTime]);
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      VALUES (?, 'ai', 'file.js', 20, 'Old bug 2', 'bug', 'run-1', NULL, 'active', ?)
+    `, [reviewId, oldTime]);
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      VALUES (?, 'ai', 'file.js', 30, 'Old bug 3', 'bug', 'run-1', NULL, 'active', ?)
+    `, [reviewId, oldTime]);
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      VALUES (?, 'ai', 'file.js', 40, 'Old suggestion 1', 'suggestion', 'run-1', NULL, 'active', ?)
+    `, [reviewId, oldTime]);
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      VALUES (?, 'ai', 'file.js', 50, 'Old suggestion 2', 'suggestion', 'run-1', NULL, 'active', ?)
+    `, [reviewId, oldTime]);
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      VALUES (?, 'ai', 'file.js', 60, 'Old praise', 'praise', 'run-1', NULL, 'active', ?)
+    `, [reviewId, oldTime]);
+
+    // Second run (newer) - 1 bug, 1 suggestion, 1 praise (total 3 items)
+    const newTime = '2024-01-01 11:00:00';
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      VALUES (?, 'ai', 'file.js', 10, 'New bug', 'bug', 'run-2', NULL, 'active', ?)
+    `, [reviewId, newTime]);
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      VALUES (?, 'ai', 'file.js', 20, 'New suggestion', 'suggestion', 'run-2', NULL, 'active', ?)
+    `, [reviewId, newTime]);
+    await run(db, `
+      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      VALUES (?, 'ai', 'file.js', 30, 'New praise', 'praise', 'run-2', NULL, 'active', ?)
+    `, [reviewId, newTime]);
+
+    const response = await request(app)
+      .get(`/api/local/${reviewId}/has-ai-suggestions`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.hasSuggestions).toBe(true);
+    // Stats should only reflect the LATEST run (run-2): 1 issue, 1 suggestion, 1 praise
+    // NOT the combined total (4 issues, 3 suggestions, 2 praise)
+    expect(response.body.stats).toEqual({
+      issues: 1,      // Only the new bug, not old bugs
+      suggestions: 1, // Only the new suggestion, not old suggestions
+      praise: 1       // Only the new praise, not old praise
+    });
+  });
+
+  it('should return 404 for non-existent review', async () => {
+    const response = await request(app)
+      .get('/api/local/99999/has-ai-suggestions');
+
+    expect(response.status).toBe(404);
   });
 });
 

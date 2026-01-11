@@ -40,8 +40,12 @@ function calculateStats(rows) {
 
 /**
  * Build the SQL query for getting stats.
- * Only counts final/overall level suggestions, ignoring status (adopted/dismissed).
+ * Only counts final/overall level suggestions from the latest analysis run,
+ * ignoring status (adopted/dismissed).
  * Final suggestions have ai_level IS NULL (orchestrated/curated results).
+ *
+ * Note: The pr_id parameter must be passed twice (once for the outer WHERE,
+ * once for the subquery that finds the latest ai_run_id).
  *
  * @returns {string} SQL query string
  */
@@ -49,6 +53,12 @@ function getStatsQuery() {
   return `
     SELECT type, COUNT(*) as count FROM comments
     WHERE pr_id = ? AND source = 'ai' AND ai_level IS NULL
+      AND ai_run_id = (
+        SELECT ai_run_id FROM comments
+        WHERE pr_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+      )
     GROUP BY type
   `;
 }

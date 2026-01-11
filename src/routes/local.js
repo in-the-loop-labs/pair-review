@@ -1542,7 +1542,7 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
     let stats = { issues: 0, suggestions: 0, praise: 0 };
     if (hasSuggestions) {
       try {
-        const statsResult = await query(db, getStatsQuery(), [reviewId]);
+        const statsResult = await query(db, getStatsQuery(), [reviewId, reviewId]);
         stats = calculateStats(statsResult);
       } catch (e) {
         console.warn('Error fetching AI suggestion stats:', e);

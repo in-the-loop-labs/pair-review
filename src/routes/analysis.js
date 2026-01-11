@@ -785,7 +785,7 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
     let stats = { issues: 0, suggestions: 0, praise: 0 };
     if (hasSuggestions) {
       try {
-        const statsResult = await query(db, getStatsQuery(), [prMetadata.id]);
+        const statsResult = await query(db, getStatsQuery(), [prMetadata.id, prMetadata.id]);
         stats = calculateStats(statsResult);
       } catch (e) {
         console.warn('Error fetching AI suggestion stats:', e);
