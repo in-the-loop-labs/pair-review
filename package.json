@@ -1,12 +1,19 @@
 {
   "name": "pair-review",
   "version": "1.0.0",
-  "description": "AI-powered GitHub pull request review assistant",
+  "description": "Your AI-powered code review partner - Close the feedback loop with AI coding agents",
   "main": "src/server.js",
   "bin": {
     "pair-review": "./bin/pair-review.js",
     "git-diff-lines": "./bin/git-diff-lines"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "public/",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=16.0.0"
   },
@@ -21,14 +28,29 @@
     "test:e2e:debug": "playwright test --debug"
   },
   "keywords": [
-    "github",
-    "pull-request",
     "code-review",
+    "pull-request",
+    "github",
     "ai",
-    "claude"
+    "developer-tools",
+    "cli",
+    "ai-coding-agent",
+    "claude",
+    "cursor",
+    "copilot",
+    "codex",
+    "gemini"
   ],
-  "author": "",
+  "author": "Tim Perkins",
   "license": "GPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/in-the-loop-labs/pair-review.git"
+  },
+  "bugs": {
+    "url": "https://github.com/in-the-loop-labs/pair-review/issues"
+  },
+  "homepage": "https://github.com/in-the-loop-labs/pair-review#readme",
   "dependencies": {
     "@octokit/rest": "^19.0.11",
     "express": "^4.18.2",
