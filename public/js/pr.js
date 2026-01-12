@@ -1165,16 +1165,12 @@ class PRManager {
    * @param {number} count - Number of lines to expand
    */
   async expandGapContext(controls, direction, count) {
+    const coords = window.GapCoordinates?.getGapCoordinates(controls);
+    if (!coords) return;
+    const { gapStart: startLine, gapEnd: endLine, gapStartNew: startLineNew, offset: lineOffset } = coords;
+
     const fileName = controls.dataset.fileName;
-    const startLine = parseInt(controls.dataset.startLine);
-    const endLine = parseInt(controls.dataset.endLine);
     const position = controls.dataset.position || 'between';
-    // Get the NEW line number start for correct right-side display
-    // Use nullish coalescing to handle edge case where startLineNew could be 0
-    const parsedStartLineNew = parseInt(controls.dataset.startLineNew);
-    const startLineNew = !isNaN(parsedStartLineNew) ? parsedStartLineNew : startLine;
-    // Calculate offset between OLD and NEW line numbers
-    const lineOffset = startLineNew - startLine;
 
     // Find the gap row by matching the controls element
     // The controls element is stored on the row as row.expandControls but is NOT in the DOM
@@ -1320,15 +1316,11 @@ class PRManager {
    * Expand a specific range within a gap
    */
   async expandGapRange(gapRow, controls, expandStart, expandEnd) {
+    const coords = window.GapCoordinates?.getGapCoordinates(controls);
+    if (!coords) return;
+    const { gapStart, gapEnd, gapStartNew, offset: lineOffset } = coords;
+
     const fileName = controls.dataset.fileName;
-    const gapStart = parseInt(controls.dataset.startLine);
-    const gapEnd = parseInt(controls.dataset.endLine);
-    // Get the NEW line number start for correct right-side display
-    // Use isNaN check to handle edge case where startLineNew could be 0
-    const parsedGapStartNew = parseInt(controls.dataset.startLineNew);
-    const gapStartNew = !isNaN(parsedGapStartNew) ? parsedGapStartNew : gapStart;
-    // Calculate offset between OLD and NEW line numbers
-    const lineOffset = gapStartNew - gapStart;
     const tbody = gapRow.closest('tbody');
 
     if (!tbody) return;
@@ -1406,9 +1398,16 @@ class PRManager {
 
   /**
    * Expand for suggestion - reveal lines that an AI suggestion targets
+   *
+   * Uses GapCoordinates module for coordinate handling.
+   * See public/js/modules/gap-coordinates.js for detailed documentation on:
+   *   - OLD vs NEW coordinate systems
+   *   - When offsets are non-zero
+   *   - Which functions use which coordinate system
    */
   async expandForSuggestion(file, lineStart, lineEnd = lineStart) {
-    console.log(`[expandForSuggestion] Attempting to reveal ${file}:${lineStart}-${lineEnd}`);
+    const { findMatchingGap, convertNewToOldCoords, debugLog } = window.GapCoordinates || {};
+    debugLog?.('expandForSuggestion', `Attempting to reveal ${file}:${lineStart}-${lineEnd}`);
 
     const fileElement = this.findFileElement(file);
     if (!fileElement) {
@@ -1418,43 +1417,48 @@ class PRManager {
 
     // Check if file is collapsed (generated files)
     if (fileElement.classList.contains('collapsed')) {
-      console.log(`[expandForSuggestion] File is collapsed, expanding first`);
+      debugLog?.('expandForSuggestion', 'File is collapsed, expanding first');
       this.toggleGeneratedFile(file);
       await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    // Find the gap section containing the target lines
+    // Find the gap section containing the target lines using the shared module
+    // which checks NEW coordinates first (AI suggestions target NEW line numbers)
     const gapRows = fileElement.querySelectorAll('tr.context-expand-row');
-    let targetGapRow = null;
-    let targetControls = null;
+    const match = findMatchingGap?.(gapRows, lineStart, lineEnd);
 
-    for (const row of gapRows) {
-      const controls = row.expandControls;
-      if (!controls) continue;
-
-      const gapStart = parseInt(controls.dataset.startLine);
-      const gapEnd = parseInt(controls.dataset.endLine);
-
-      if (lineStart <= gapEnd && lineEnd >= gapStart) {
-        targetGapRow = row;
-        targetControls = controls;
-        break;
-      }
-    }
-
-    if (!targetGapRow || !targetControls) {
+    if (!match) {
       console.warn(`[expandForSuggestion] Could not find gap for lines ${lineStart}-${lineEnd}`);
       return false;
     }
 
-    const gapStart = parseInt(targetControls.dataset.startLine);
-    const gapEnd = parseInt(targetControls.dataset.endLine);
+    const { row: targetGapRow, controls: targetControls, coords, matchedInNewCoords } = match;
+    const { gapStart, gapEnd, gapStartNew, gapEndNew } = coords;
     const gapSize = gapEnd - gapStart + 1;
 
-    // Calculate expansion range with context
+    if (matchedInNewCoords) {
+      debugLog?.('expandForSuggestion', `Found gap match in NEW coords: gap ${gapStartNew}-${gapEndNew}, suggestion ${lineStart}-${lineEnd}`);
+    } else {
+      debugLog?.('expandForSuggestion', `Found gap match in OLD coords: gap ${gapStart}-${gapEnd}, suggestion ${lineStart}-${lineEnd}`);
+    }
+
+    // If suggestion matched in NEW coordinates, convert to OLD for expansion
+    // since expandGapRange() uses OLD line numbers internally
+    let targetLineStart = lineStart;
+    let targetLineEnd = lineEnd;
+    if (matchedInNewCoords) {
+      const converted = convertNewToOldCoords?.(targetControls, lineStart, lineEnd);
+      if (converted) {
+        targetLineStart = converted.targetLineStart;
+        targetLineEnd = converted.targetLineEnd;
+        debugLog?.('expandForSuggestion', `Converted NEW coords ${lineStart}-${lineEnd} to OLD coords ${targetLineStart}-${targetLineEnd} (offset: ${converted.offset})`);
+      }
+    }
+
+    // Calculate expansion range with context (using OLD coordinates)
     const contextRadius = 3;
-    const expandStart = Math.max(gapStart, lineStart - contextRadius);
-    const expandEnd = Math.min(gapEnd, lineEnd + contextRadius);
+    const expandStart = Math.max(gapStart, targetLineStart - contextRadius);
+    const expandEnd = Math.min(gapEnd, targetLineEnd + contextRadius);
     const linesToExpand = expandEnd - expandStart + 1;
 
     if (gapSize <= 10 || linesToExpand >= gapSize * 0.7) {
