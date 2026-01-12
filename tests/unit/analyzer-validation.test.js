@@ -542,6 +542,88 @@ describe('Analyzer.validateFileLevelSuggestions', () => {
     expect(result[0].file).toBe('src/baz.js');
     expect(result[0].confidence).toBe(0.5);
   });
+
+  it('should set old_or_new to null for file-level suggestions', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'design',
+        title: 'File-level concern',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].old_or_new).toBeNull();
+  });
+});
+
+describe('Analyzer.validateSuggestions old_or_new field', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should preserve old_or_new=OLD from AI response', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line: 10,
+        old_or_new: 'OLD',
+        type: 'bug',
+        title: 'Issue on deleted line',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].old_or_new).toBe('OLD');
+  });
+
+  it('should preserve old_or_new=NEW from AI response', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line: 10,
+        old_or_new: 'NEW',
+        type: 'bug',
+        title: 'Issue on added line',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].old_or_new).toBe('NEW');
+  });
+
+  it('should default old_or_new to NEW when not specified', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line: 10,
+        // old_or_new not specified
+        type: 'bug',
+        title: 'Some issue',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].old_or_new).toBe('NEW');
+  });
 });
 
 describe('Analyzer.parseResponse with file-level suggestions', () => {
@@ -636,11 +718,14 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
     await analyzer.storeSuggestions(1, 'run-123', suggestions, 2);
 
     expect(mockDb.run).toHaveBeenCalledTimes(1);
-    // The is_file_level parameter is the 14th param (index 13)
+    // Parameter indices after adding 'side' at index 9:
+    // 0:pr_id, 1:source, 2:author, 3:ai_run_id, 4:ai_level, 5:ai_confidence,
+    // 6:file, 7:line_start, 8:line_end, 9:side, 10:type, 11:title, 12:body, 13:status, 14:is_file_level
     const params = mockDb.run.mock.calls[0][1];
-    expect(params[13]).toBe(1); // is_file_level should be 1
+    expect(params[14]).toBe(1); // is_file_level should be 1
     expect(params[7]).toBeNull(); // line_start should be null
     expect(params[8]).toBeNull(); // line_end should be null
+    expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT for file-level (null old_or_new)
   });
 
   it('should set is_file_level=0 for line-level suggestions', async () => {
@@ -660,8 +745,9 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     expect(mockDb.run).toHaveBeenCalledTimes(1);
     const params = mockDb.run.mock.calls[0][1];
-    expect(params[13]).toBe(0); // is_file_level should be 0
+    expect(params[14]).toBe(0); // is_file_level should be 0
     expect(params[7]).toBe(10); // line_start should be 10
+    expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT (NEW is default)
   });
 
   it('should handle mixed line-level and file-level suggestions', async () => {
@@ -691,9 +777,72 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     expect(mockDb.run).toHaveBeenCalledTimes(2);
     // First call (line-level)
-    expect(mockDb.run.mock.calls[0][1][13]).toBe(0);
+    expect(mockDb.run.mock.calls[0][1][14]).toBe(0);
     // Second call (file-level)
-    expect(mockDb.run.mock.calls[1][1][13]).toBe(1);
+    expect(mockDb.run.mock.calls[1][1][14]).toBe(1);
+  });
+
+  it('should map old_or_new=OLD to side=LEFT', async () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 10,
+        old_or_new: 'OLD',
+        type: 'bug',
+        title: 'Deleted line issue',
+        description: 'Issue on deleted line',
+        confidence: 0.8
+      }
+    ];
+
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
+
+    expect(mockDb.run).toHaveBeenCalledTimes(1);
+    const params = mockDb.run.mock.calls[0][1];
+    expect(params[9]).toBe('LEFT'); // side should be LEFT for OLD
+  });
+
+  it('should map old_or_new=NEW to side=RIGHT', async () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 10,
+        old_or_new: 'NEW',
+        type: 'bug',
+        title: 'Added line issue',
+        description: 'Issue on added line',
+        confidence: 0.8
+      }
+    ];
+
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
+
+    expect(mockDb.run).toHaveBeenCalledTimes(1);
+    const params = mockDb.run.mock.calls[0][1];
+    expect(params[9]).toBe('RIGHT'); // side should be RIGHT for NEW
+  });
+
+  it('should default to side=RIGHT when old_or_new is not specified', async () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 10,
+        // old_or_new not specified
+        type: 'bug',
+        title: 'Line issue',
+        description: 'Issue',
+        confidence: 0.8
+      }
+    ];
+
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
+
+    expect(mockDb.run).toHaveBeenCalledTimes(1);
+    const params = mockDb.run.mock.calls[0][1];
+    expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT
   });
 });
 

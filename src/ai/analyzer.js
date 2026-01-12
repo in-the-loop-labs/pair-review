@@ -731,6 +731,7 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
+    "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why full file context was needed",
@@ -747,6 +748,14 @@ Output JSON with this structure:
   }],
   "summary": "Brief summary of file context findings"
 }
+
+## Line Number Reference (old_or_new field)
+The "old_or_new" field indicates which file version the line number refers to:
+- **"OLD"**: Line numbers in the **original file** (before changes). Use ONLY for DELETED lines [-].
+- **"NEW"** (default): Line numbers in the **modified file** (after changes). Use for ADDED lines [+] and CONTEXT lines.
+
+In the annotated diff, OLD line numbers appear in the first column, NEW line numbers in the second column.
+Most suggestions target added or context lines, so "NEW" is the default. If you are unsure, you are probably seeing the NEW line number looking at the current file.
 
 ## File-Level Suggestions
 In addition to line-specific suggestions, you may include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
@@ -832,6 +841,7 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
+    "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation",
@@ -840,6 +850,14 @@ Output JSON with this structure:
   }],
   "summary": "Brief summary of findings"
 }
+
+## Line Number Reference (old_or_new field)
+The "old_or_new" field indicates which file version the line number refers to:
+- **"OLD"**: Line numbers in the **original file** (before changes). Use ONLY for DELETED lines [-].
+- **"NEW"** (default): Line numbers in the **modified file** (after changes). Use for ADDED lines [+] and CONTEXT lines.
+
+In the annotated diff, OLD line numbers appear in the first column, NEW line numbers in the second column.
+Most suggestions target added or context lines, so "NEW" is the default. If you are unsure, you are probably seeing the NEW line number looking at the current file.
 
 ## Category Definitions
 - bug: Errors, crashes, or incorrect behavior
@@ -952,6 +970,7 @@ Output JSON with this structure:
         file: s.file,
         line_start: null,  // File-level suggestions have no line numbers
         line_end: null,
+        old_or_new: null,  // Not applicable for file-level suggestions
         type: s.type,
         title: s.title,
         description: s.description || '',
@@ -1049,6 +1068,7 @@ Output JSON with this structure:
         file: s.file,
         line_start: s.line,
         line_end: s.lineEnd || s.line,
+        old_or_new: s.old_or_new || 'NEW',  // Default to NEW for added/context lines
         type: s.type,
         title: s.title,
         description: s.description || '',
@@ -1213,11 +1233,15 @@ Output JSON with this structure:
       // File-level suggestions have is_file_level=true or have null line_start
       const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;
 
+      // Map old_or_new to database side column: OLD -> LEFT, NEW -> RIGHT
+      // File-level suggestions (null old_or_new) default to RIGHT
+      const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';
+
       await run(this.db, `
         INSERT INTO comments (
           pr_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, type, title, body, status, is_file_level
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          file, line_start, line_end, side, type, title, body, status, is_file_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         prId,
         'ai',
@@ -1228,6 +1252,7 @@ Output JSON with this structure:
         suggestion.file,
         suggestion.line_start,
         suggestion.line_end,
+        side,
         suggestion.type,
         suggestion.title,
         body,
@@ -2047,6 +2072,7 @@ Output JSON with this structure:
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
+    "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation mentioning why codebase context was needed",
@@ -2063,6 +2089,14 @@ Output JSON with this structure:
   }],
   "summary": "Brief summary of how these changes connect to and impact the codebase"
 }
+
+## Line Number Reference (old_or_new field)
+The "old_or_new" field indicates which file version the line number refers to:
+- **"OLD"**: Line numbers in the **original file** (before changes). Use ONLY for DELETED lines [-].
+- **"NEW"** (default): Line numbers in the **modified file** (after changes). Use for ADDED lines [+] and CONTEXT lines.
+
+In the annotated diff, OLD line numbers appear in the first column, NEW line numbers in the second column.
+Most suggestions target added or context lines, so "NEW" is the default. If you are unsure, you are probably seeing the NEW line number looking at the current file.
 
 ## File-Level Suggestions
 In addition to line-specific suggestions, you may include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
@@ -2291,6 +2325,7 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
   "suggestions": [{
     "file": "path/to/file",
     "line": 42,
+    "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title describing the curated insight",
     "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
@@ -2307,6 +2342,13 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
   }],
   "summary": "Brief summary of orchestration results and key patterns found"
 }
+
+## Line Number Reference (old_or_new field)
+The "old_or_new" field indicates which file version the line number refers to:
+- **"OLD"**: Line numbers in the **original file** (before changes). Use ONLY for DELETED lines.
+- **"NEW"** (default): Line numbers in the **modified file** (after changes). Use for ADDED lines and CONTEXT lines.
+
+Preserve the old_or_new value from input suggestions when merging. If you are unsure, you are probably seeing the NEW line number looking at the current file.
 
 ## File-Level Suggestions
 Some input suggestions are marked as [FILE-LEVEL]. These are observations about entire files, not tied to specific lines:
