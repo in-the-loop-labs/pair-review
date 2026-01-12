@@ -709,11 +709,14 @@ Look for:
    - Missing documentation for file-level changes
    - Good practices worth praising in the file's context
 
-## Available Commands
-You have full access to the codebase and can run commands like:
+## Available Commands (READ-ONLY)
+You have READ-ONLY access to the codebase. You may run commands like:
 - The annotated diff tool shown above with file path (preferred for viewing changes with line numbers)
 - \`cat -n <file>\` to view files with line numbers
 - grep, find, ls commands as needed
+
+IMPORTANT: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.).
+Your role is strictly to analyze and report findings.
 
 Note: You may optionally use parallel read-only Tasks to examine multiple files simultaneously if that would be helpful.
 
@@ -807,13 +810,16 @@ Identify the following in changed code:
    - Documentation issues visible in the changed lines
    - Good practices worth praising
 
-## Available Commands
-You have full access to the codebase and can run commands like:
+## Available Commands (READ-ONLY)
+You have READ-ONLY access to the codebase. You may run commands like:
 - The annotated diff tool shown above (preferred for viewing changes with line numbers)
 - \`cat -n <file>\` to view files with line numbers
 - ls, find, grep commands as needed
 
-Note: You may optionally use parallel Tasks to analyze different parts of the changes if that would be helpful.
+IMPORTANT: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.).
+Your role is strictly to analyze and report findings.
+
+Note: You may optionally use parallel read-only Tasks to analyze different parts of the changes if that would be helpful.
 
 ## Output Format
 
@@ -2017,15 +2023,18 @@ Analyze how these changes affect or relate to:
    - Security of connected systems: do these changes introduce security risks in other parts?
    - Data flow security: how do these changes affect security across data flows?
 
-## Available Commands
-You have full access to the codebase and can run commands like:
+## Available Commands (READ-ONLY)
+You have READ-ONLY access to the codebase. You may run commands like:
 - find . -name "*.test.js" or similar to find test files
 - grep -r "pattern" to search for patterns
 - \`cat -n <file>\` to view files with line numbers
 - ls, tree commands to explore structure
-- Any other commands needed to understand how changes connect to the codebase
+- Any other read-only commands needed to understand how changes connect to the codebase
 
-Note: You may optionally use parallel Tasks to explore different areas of the codebase if that would be helpful.
+IMPORTANT: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.).
+Your role is strictly to analyze and report findings.
+
+Note: You may optionally use parallel read-only Tasks to explore different areas of the codebase if that would be helpful.
 
 ## Output Format
 

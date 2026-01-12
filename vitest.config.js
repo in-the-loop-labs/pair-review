@@ -27,7 +27,12 @@ export default defineConfig({
     // Timeout for tests (10 seconds)
     testTimeout: 10000,
 
-    // Parallel execution
-    pool: 'threads',
+    // Use forks pool for better test isolation (prevents SQLite race conditions)
+    pool: 'forks',
+
+    // Run tests sequentially within each file to prevent database race conditions
+    sequence: {
+      concurrent: false,
+    },
   },
 });

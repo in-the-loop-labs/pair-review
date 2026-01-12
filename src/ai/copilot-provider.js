@@ -70,17 +70,61 @@ class CopilotProvider extends AIProvider {
     // Store base args for later - prompt value will be inserted after -p flag
     // -p: non-interactive prompt mode (exits after completion)
     // --model: specify the AI model
-    // --allow-all-tools: required for non-interactive mode
     // -s: silent mode (output only agent response, no stats)
-    if (this.useShell) {
-      // In shell mode, we'll build the full command in execute()
-      this.command = copilotCmd;
-      this.baseArgs = ['--model', model, '--allow-all-tools', '-s'];
-    } else {
-      this.command = copilotCmd;
-      // Args without the prompt - prompt will be added as value to -p flag in execute()
-      this.baseArgs = ['--model', model, '--allow-all-tools', '-s'];
-    }
+    //
+    // SECURITY: Use --allow-tool and --deny-tool to control tool permissions.
+    //
+    // Copilot CLI permission flags:
+    // - --allow-tool <pattern>: Whitelist tools (supports glob patterns)
+    // - --deny-tool <pattern>: Blacklist tools (takes precedence over allow)
+    // - --allow-all-tools: Auto-approve all tools without prompts
+    //
+    // For shell commands, use shell(<prefix>) syntax to match command prefixes.
+    // E.g., shell(git) allows "git status", "git diff", etc.
+    // ============================================================================
+    const readOnlyArgs = [
+      // Allow specific read-only git commands (not blanket 'git' to block git commit, push, etc.)
+      '--allow-tool', 'shell(git diff)',
+      '--allow-tool', 'shell(git log)',
+      '--allow-tool', 'shell(git show)',
+      '--allow-tool', 'shell(git status)',
+      '--allow-tool', 'shell(git branch)',
+      '--allow-tool', 'shell(git rev-parse)',
+      // Custom tool for annotated diff line mapping (matches both direct and path invocations)
+      '--allow-tool', 'shell(git-diff-lines)',
+      '--allow-tool', 'shell(*/git-diff-lines)',  // Absolute path invocation
+      // Allow read-only shell commands
+      '--allow-tool', 'shell(ls)',            // Directory listing
+      '--allow-tool', 'shell(cat)',           // File content viewing
+      '--allow-tool', 'shell(pwd)',           // Current directory
+      '--allow-tool', 'shell(head)',          // File head viewing
+      '--allow-tool', 'shell(tail)',          // File tail viewing
+      '--allow-tool', 'shell(wc)',            // Word/line count
+      '--allow-tool', 'shell(find)',          // File finding
+      '--allow-tool', 'shell(grep)',          // Pattern searching
+      // Deny dangerous shell commands (takes precedence over allow)
+      '--deny-tool', 'shell(rm)',
+      '--deny-tool', 'shell(mv)',
+      '--deny-tool', 'shell(chmod)',
+      '--deny-tool', 'shell(chown)',
+      '--deny-tool', 'shell(sudo)',
+      '--deny-tool', 'shell(git commit)',
+      '--deny-tool', 'shell(git push)',
+      '--deny-tool', 'shell(git checkout)',
+      '--deny-tool', 'shell(git reset)',
+      '--deny-tool', 'shell(git rebase)',
+      '--deny-tool', 'shell(git merge)',
+      // Block file write tools
+      '--deny-tool', 'write',
+      // Auto-approve remaining tools to avoid interactive prompts
+      '--allow-all-tools',
+    ];
+
+    // Command and base args are the same regardless of shell mode
+    // (shell mode only affects how command is built in execute())
+    this.command = copilotCmd;
+    // Args without the prompt - prompt will be added as value to -p flag in execute()
+    this.baseArgs = ['--model', model, ...readOnlyArgs, '-s'];
   }
 
   /**
@@ -105,11 +149,11 @@ class CopilotProvider extends AIProvider {
       if (this.useShell) {
         // Escape the prompt for shell
         const escapedPrompt = prompt.replace(/'/g, "'\\''");
-        // Build: copilot --model X --allow-all-tools -s -p 'prompt'
+        // Build: copilot --model X --deny-tool ... -s -p 'prompt'
         fullCommand = `${this.command} ${this.baseArgs.join(' ')} -p '${escapedPrompt}'`;
         fullArgs = [];
       } else {
-        // Build args array: --model X --allow-all-tools -s -p <prompt>
+        // Build args array: --model X --deny-tool ... -s -p <prompt>
         fullArgs = [...this.baseArgs, '-p', prompt];
       }
 

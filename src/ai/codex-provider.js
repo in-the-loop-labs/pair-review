@@ -60,13 +60,29 @@ class CodexProvider extends AIProvider {
     // For multi-word commands, use shell mode (same pattern as Claude provider)
     this.useShell = codexCmd.includes(' ');
 
+    // SECURITY: Codex sandbox modes and shell execution
+    //
+    // Codex sandbox modes:
+    // - read-only: Can browse files but CANNOT run shell commands (too restrictive)
+    // - workspace-write: Can read, edit, run commands in working directory only
+    // - danger-full-access: Full system access (too permissive)
+    //
+    // For code review, we need shell commands (git, git-diff-lines) but don't need
+    // network access or writes outside the worktree. We use "workspace-write" because:
+    // 1. We run in a dedicated worktree, not the main repo
+    // 2. "read-only" prevents ALL shell commands including git-diff-lines
+    // 3. The AI is instructed to only analyze code, not modify it
+    //
+    // --full-auto: Non-interactive mode that auto-approves within sandbox bounds.
+    // Combined with workspace-write sandbox, this limits damage to the worktree only.
+    // Note: The -a flag is for interactive mode only; exec subcommand uses --full-auto.
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${codexCmd} exec -m ${model} --json -`;
+      this.command = `${codexCmd} exec -m ${model} --json --sandbox workspace-write --full-auto -`;
       this.args = [];
     } else {
       this.command = codexCmd;
-      this.args = ['exec', '-m', model, '--json', '-'];
+      this.args = ['exec', '-m', model, '--json', '--sandbox', 'workspace-write', '--full-auto', '-'];
     }
   }
 

@@ -53,12 +53,37 @@ class ClaudeProvider extends AIProvider {
     // For multi-word commands like "devx claude", use shell mode
     this.useShell = claudeCmd.includes(' ');
 
+    // SECURITY: Claude CLI with -p (print mode) requires explicit tool permissions.
+    // We use --allowedTools to grant only read-only operations needed for code review:
+    // - Read: Read file contents
+    // - Bash(git *): Git commands (read operations like diff, log, show, status)
+    // - Bash(*git-diff-lines*): Our annotated diff script
+    // - Bash(cat *), Bash(ls *), Bash(grep *), Bash(find *): Read-only shell commands
+    //
+    // Dangerous operations (Write, Edit, Bash(rm *), Bash(git push*), etc.) are NOT allowed.
+    const allowedTools = [
+      'Read',
+      'Bash(git diff*)',
+      'Bash(git log*)',
+      'Bash(git show*)',
+      'Bash(git status*)',
+      'Bash(git branch*)',
+      'Bash(git rev-parse*)',
+      'Bash(*git-diff-lines*)',
+      'Bash(cat *)',
+      'Bash(ls *)',
+      'Bash(head *)',
+      'Bash(tail *)',
+      'Bash(grep *)',
+      'Bash(find *)',
+    ].join(',');
+
     if (this.useShell) {
-      this.command = `${claudeCmd} -p --model ${model}`;
+      this.command = `${claudeCmd} -p --model ${model} --allowedTools "${allowedTools}"`;
       this.args = [];
     } else {
       this.command = claudeCmd;
-      this.args = ['-p', '--model', model];
+      this.args = ['-p', '--model', model, '--allowedTools', allowedTools];
     }
   }
 
@@ -91,13 +116,21 @@ class ClaudeProvider extends AIProvider {
       let stdout = '';
       let stderr = '';
       let timeoutId = null;
+      let settled = false;  // Guard against multiple resolve/reject calls
+
+      const settle = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        fn(value);
+      };
 
       // Set timeout
       if (timeout) {
         timeoutId = setTimeout(() => {
           logger.error(`${levelPrefix} Process ${pid} timed out after ${timeout}ms`);
           claude.kill('SIGTERM');
-          reject(new Error(`${levelPrefix} Claude CLI timed out after ${timeout}ms`));
+          settle(reject, new Error(`${levelPrefix} Claude CLI timed out after ${timeout}ms`));
         }, timeout);
       }
 
@@ -113,7 +146,7 @@ class ClaudeProvider extends AIProvider {
 
       // Handle completion
       claude.on('close', (code) => {
-        if (timeoutId) clearTimeout(timeoutId);
+        if (settled) return;  // Already settled by timeout or error
 
         // Always log stderr if present
         if (stderr.trim()) {
@@ -126,7 +159,7 @@ class ClaudeProvider extends AIProvider {
 
         if (code !== 0) {
           logger.error(`${levelPrefix} Claude CLI exited with code ${code}`);
-          reject(new Error(`${levelPrefix} Claude CLI exited with code ${code}: ${stderr}`));
+          settle(reject, new Error(`${levelPrefix} Claude CLI exited with code ${code}: ${stderr}`));
           return;
         }
 
@@ -134,25 +167,23 @@ class ClaudeProvider extends AIProvider {
         const extracted = extractJSON(stdout, level);
         if (extracted.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
-          resolve(extracted.data);
+          settle(resolve, extracted.data);
         } else {
           logger.warn(`${levelPrefix} Failed to extract JSON: ${extracted.error}`);
           logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
           logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-          resolve({ raw: stdout, parsed: false });
+          settle(resolve, { raw: stdout, parsed: false });
         }
       });
 
       // Handle errors
       claude.on('error', (error) => {
-        if (timeoutId) clearTimeout(timeoutId);
-
         if (error.code === 'ENOENT') {
           logger.error(`${levelPrefix} Claude CLI not found. Please ensure Claude CLI is installed.`);
-          reject(new Error(`${levelPrefix} Claude CLI not found. ${ClaudeProvider.getInstallInstructions()}`));
+          settle(reject, new Error(`${levelPrefix} Claude CLI not found. ${ClaudeProvider.getInstallInstructions()}`));
         } else {
           logger.error(`${levelPrefix} Claude process error: ${error}`);
-          reject(error);
+          settle(reject, error);
         }
       });
 
@@ -160,9 +191,8 @@ class ClaudeProvider extends AIProvider {
       claude.stdin.write(prompt, (err) => {
         if (err) {
           logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
-          if (timeoutId) clearTimeout(timeoutId);
           claude.kill('SIGTERM');
-          reject(new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
+          settle(reject, new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
         }
       });
       claude.stdin.end();

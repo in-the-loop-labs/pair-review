@@ -168,8 +168,39 @@ describe('CopilotProvider', () => {
       const provider = new CopilotProvider('gpt-5.1-codex-max');
       expect(provider.baseArgs).toContain('--model');
       expect(provider.baseArgs).toContain('gpt-5.1-codex-max');
-      expect(provider.baseArgs).toContain('--allow-all-tools');
       expect(provider.baseArgs).toContain('-s');
+    });
+
+    it('should use read-only tool restrictions for security', () => {
+      const provider = new CopilotProvider();
+      const args = provider.baseArgs;
+
+      // SECURITY: Should use --allow-tool with specific git command prefixes (not blanket 'git')
+      expect(args).toContain('--allow-tool');
+      expect(args).toContain('shell(git diff)');     // git diff commands
+      expect(args).toContain('shell(git status)');   // git status commands
+      expect(args).toContain('shell(git-diff-lines)'); // custom line mapping tool
+      expect(args).toContain('shell(*/git-diff-lines)'); // absolute path invocation
+      expect(args).toContain('shell(ls)');           // directory listing
+      expect(args).toContain('shell(cat)');          // file reading
+
+      // Should NOT allow blanket 'git' (too permissive, allows git commit, push, etc.)
+      expect(args).not.toContain('shell(git)');
+
+      // Should deny dangerous shell commands
+      expect(args).toContain('--deny-tool');
+      expect(args).toContain('shell(rm)');           // block destructive commands
+      expect(args).toContain('shell(git commit)');   // block git commit
+      expect(args).toContain('shell(git push)');     // block git push
+
+      // Should deny write tools
+      expect(args).toContain('write');
+
+      // Should have --allow-all-tools to auto-approve remaining tools for non-interactive mode
+      expect(args).toContain('--allow-all-tools');
+
+      // Should NOT use --available-tools (too restrictive, blocks external scripts)
+      expect(args).not.toContain('--available-tools');
     });
 
     it('should not include -p in base args (added in execute)', () => {

@@ -54,13 +54,71 @@ class GeminiProvider extends AIProvider {
     // For multi-word commands, use shell mode (same pattern as Claude provider)
     this.useShell = geminiCmd.includes(' ');
 
+    // ============================================================================
+    // SECURITY LIMITATION - READ CAREFULLY
+    // ============================================================================
+    //
+    // IMPORTANT: Unlike Claude and Copilot providers, Gemini CLI does NOT have a
+    // mechanism to restrict which tools the model can request. The --allowed-tools
+    // flag only controls which tools are AUTO-APPROVED (no interactive prompt), but
+    // all tools remain available to the model.
+    //
+    // Gemini tool names (from asking the CLI):
+    // - list_directory, read_file, search_file_content, glob: File system read operations
+    // - run_shell_command: Execute shell commands (needed for git, git-diff-lines)
+    // - google_web_search: Web search
+    // - write_file, replace: Write operations (NOT auto-approved but still available)
+    //
+    // In non-interactive mode (-o json), if the model requests a tool not in --allowed-tools,
+    // the operation may fail or the tool may still execute without explicit user approval.
+    //
+    // MITIGATION STRATEGY:
+    // 1. Prompt engineering: The analysis prompts in analyzer.js explicitly instruct
+    //    the AI to only use read-only operations and never modify files
+    // 2. Worktree isolation: Analysis runs in a git worktree, limiting blast radius
+    // 3. Shell command restrictions: Use prefix-based allowlist for shell commands
+    //
+    // If a mechanism to restrict tool visibility becomes available in Gemini CLI,
+    // it should be added here similar to Copilot's --excluded-tools flag.
+    // ============================================================================
+    //
+    // SHELL COMMAND PREFIX SYNTAX:
+    // The --allowed-tools flag supports prefix matching via run_shell_command(prefix).
+    // E.g., run_shell_command(git) allows "git status", "git diff", etc.
+    // Commands NOT matching any prefix will be denied in non-interactive mode.
+    // ============================================================================
+    const readOnlyTools = [
+      // File system tools (read-only)
+      'list_directory',
+      'read_file',
+      'glob',
+      'search_file_content',
+      // Specific read-only git commands (not blanket 'git' to avoid git commit, push, etc.)
+      'run_shell_command(git diff)',
+      'run_shell_command(git log)',
+      'run_shell_command(git show)',
+      'run_shell_command(git status)',
+      'run_shell_command(git branch)',
+      'run_shell_command(git rev-parse)',
+      // Custom tool for annotated diff line mapping
+      'run_shell_command(git-diff-lines)',
+      // Read-only shell commands
+      'run_shell_command(ls)',           // Directory listing
+      'run_shell_command(cat)',          // File content viewing
+      'run_shell_command(pwd)',          // Current directory
+      'run_shell_command(head)',         // File head viewing
+      'run_shell_command(tail)',         // File tail viewing
+      'run_shell_command(wc)',           // Word/line count
+      'run_shell_command(find)',         // File finding
+      'run_shell_command(grep)',         // Pattern searching
+    ].join(',');
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${geminiCmd} -m ${model} -o json -y`;
+      this.command = `${geminiCmd} -m ${model} -o json --allowed-tools "${readOnlyTools}"`;
       this.args = [];
     } else {
       this.command = geminiCmd;
-      this.args = ['-m', model, '-o', 'json', '-y'];
+      this.args = ['-m', model, '-o', 'json', '--allowed-tools', readOnlyTools];
     }
   }
 
