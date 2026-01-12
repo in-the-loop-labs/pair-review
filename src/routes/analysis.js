@@ -876,6 +876,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         file,
         line_start,
         line_end,
+        side,
         type,
         title,
         body,

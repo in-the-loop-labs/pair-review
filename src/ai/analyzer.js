@@ -750,12 +750,16 @@ Output JSON with this structure:
 }
 
 ## Line Number Reference (old_or_new field)
-The "old_or_new" field indicates which file version the line number refers to:
-- **"OLD"**: Line numbers in the **original file** (before changes). Use ONLY for DELETED lines [-].
-- **"NEW"** (default): Line numbers in the **modified file** (after changes). Use for ADDED lines [+] and CONTEXT lines.
+The "old_or_new" field indicates which line number column to use:
+- **"NEW"** (default): Use the NEW column number. This is correct for:
+  - ADDED lines marked with [+]
+  - CONTEXT lines (unchanged lines that appear in both versions)
+- **"OLD"**: Use the OLD column number. ONLY use this for DELETED lines marked with [-].
 
-In the annotated diff, OLD line numbers appear in the first column, NEW line numbers in the second column.
-Most suggestions target added or context lines, so "NEW" is the default. If you are unsure, you are probably seeing the NEW line number looking at the current file.
+**IMPORTANT**: Context lines exist in BOTH the old and new file - always use "NEW" for context lines.
+Only use "OLD" when the line is prefixed with [-] indicating it was deleted.
+
+If you are unsure, use "NEW" - it is correct for the vast majority of suggestions.
 
 ## File-Level Suggestions
 In addition to line-specific suggestions, you may include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
@@ -852,12 +856,16 @@ Output JSON with this structure:
 }
 
 ## Line Number Reference (old_or_new field)
-The "old_or_new" field indicates which file version the line number refers to:
-- **"OLD"**: Line numbers in the **original file** (before changes). Use ONLY for DELETED lines [-].
-- **"NEW"** (default): Line numbers in the **modified file** (after changes). Use for ADDED lines [+] and CONTEXT lines.
+The "old_or_new" field indicates which line number column to use:
+- **"NEW"** (default): Use the NEW column number. This is correct for:
+  - ADDED lines marked with [+]
+  - CONTEXT lines (unchanged lines that appear in both versions)
+- **"OLD"**: Use the OLD column number. ONLY use this for DELETED lines marked with [-].
 
-In the annotated diff, OLD line numbers appear in the first column, NEW line numbers in the second column.
-Most suggestions target added or context lines, so "NEW" is the default. If you are unsure, you are probably seeing the NEW line number looking at the current file.
+**IMPORTANT**: Context lines exist in BOTH the old and new file - always use "NEW" for context lines.
+Only use "OLD" when the line is prefixed with [-] indicating it was deleted.
+
+If you are unsure, use "NEW" - it is correct for the vast majority of suggestions.
 
 ## Category Definitions
 - bug: Errors, crashes, or incorrect behavior
@@ -2091,12 +2099,16 @@ Output JSON with this structure:
 }
 
 ## Line Number Reference (old_or_new field)
-The "old_or_new" field indicates which file version the line number refers to:
-- **"OLD"**: Line numbers in the **original file** (before changes). Use ONLY for DELETED lines [-].
-- **"NEW"** (default): Line numbers in the **modified file** (after changes). Use for ADDED lines [+] and CONTEXT lines.
+The "old_or_new" field indicates which line number column to use:
+- **"NEW"** (default): Use the NEW column number. This is correct for:
+  - ADDED lines marked with [+]
+  - CONTEXT lines (unchanged lines that appear in both versions)
+- **"OLD"**: Use the OLD column number. ONLY use this for DELETED lines marked with [-].
 
-In the annotated diff, OLD line numbers appear in the first column, NEW line numbers in the second column.
-Most suggestions target added or context lines, so "NEW" is the default. If you are unsure, you are probably seeing the NEW line number looking at the current file.
+**IMPORTANT**: Context lines exist in BOTH the old and new file - always use "NEW" for context lines.
+Only use "OLD" when the line is prefixed with [-] indicating it was deleted.
+
+If you are unsure, use "NEW" - it is correct for the vast majority of suggestions.
 
 ## File-Level Suggestions
 In addition to line-specific suggestions, you may include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
@@ -2344,11 +2356,12 @@ Output ONLY the JSON object below with no additional text before or after. Do NO
 }
 
 ## Line Number Reference (old_or_new field)
-The "old_or_new" field indicates which file version the line number refers to:
-- **"OLD"**: Line numbers in the **original file** (before changes). Use ONLY for DELETED lines.
-- **"NEW"** (default): Line numbers in the **modified file** (after changes). Use for ADDED lines and CONTEXT lines.
+The "old_or_new" field indicates which line number column to use:
+- **"NEW"** (default): Correct for ADDED lines and CONTEXT lines (unchanged lines in both versions)
+- **"OLD"**: ONLY for DELETED lines marked with [-]
 
-Preserve the old_or_new value from input suggestions when merging. If you are unsure, you are probably seeing the NEW line number looking at the current file.
+**IMPORTANT**: Context lines exist in BOTH versions - always use "NEW" for them.
+Preserve the old_or_new value from input suggestions when merging.
 
 ## File-Level Suggestions
 Some input suggestions are marked as [FILE-LEVEL]. These are observations about entire files, not tied to specific lines:

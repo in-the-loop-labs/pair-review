@@ -86,6 +86,8 @@ class SuggestionManager {
       const file = suggestion.file;
       const line = suggestion.line_start;
       const lineEnd = suggestion.line_end || line;
+      // Get side from suggestion, default to 'RIGHT' for backwards compatibility
+      const side = suggestion.side || 'RIGHT';
 
       // Find the file wrapper
       const fileElement = window.DiffRenderer ?
@@ -97,7 +99,7 @@ class SuggestionManager {
         continue;
       }
 
-      // Check if any line in the range is visible
+      // Check if any line in the range is visible (with matching side)
       let anyLineVisible = false;
       const lineTracker = this.prManager?.lineTracker || (window.LineTracker ? new window.LineTracker() : null);
 
@@ -105,7 +107,9 @@ class SuggestionManager {
         const lineRows = fileElement.querySelectorAll('tr');
         for (const row of lineRows) {
           const lineNum = lineTracker ? lineTracker.getLineNumber(row) : null;
-          if (lineNum === checkLine) {
+          const rowSide = row.dataset.side || 'RIGHT';
+          // Match both line number AND side to correctly identify visible lines
+          if (lineNum === checkLine && rowSide === side) {
             anyLineVisible = true;
             break;
           }
@@ -114,8 +118,8 @@ class SuggestionManager {
       }
 
       if (!anyLineVisible) {
-        console.log(`[findHiddenSuggestions] Hidden: ${file}:${line}-${lineEnd}`);
-        hiddenItems.push({ file, line, lineEnd });
+        console.log(`[findHiddenSuggestions] Hidden: ${file}:${line}-${lineEnd} (${side})`);
+        hiddenItems.push({ file, line, lineEnd, side });
       }
     }
 
@@ -145,6 +149,9 @@ class SuggestionManager {
       console.log(`[UI] Removed ${existingSuggestionRows.length} existing suggestion rows`);
 
       // Auto-expand hidden lines for suggestions that target non-visible lines
+      // Note: Hidden lines in gaps are context lines from the NEW file version,
+      // so expandForSuggestion doesn't need the side parameter - gap-coordinates
+      // module handles the NEW coordinate system for expansion.
       const hiddenSuggestions = this.findHiddenSuggestions(suggestions);
       if (hiddenSuggestions.length > 0) {
         console.log(`[UI] Found ${hiddenSuggestions.length} suggestions targeting hidden lines, expanding...`);
@@ -199,11 +206,16 @@ class SuggestionManager {
         this.prManager.fileCommentManager.loadFileComments([], fileLevelSuggestions);
       }
 
-      // Group line-level suggestions by file and line
+      // Group line-level suggestions by file, line, and side
+      // Side is important because the same line number can exist in both OLD (LEFT/deleted)
+      // and NEW (RIGHT/added) ranges when viewing a unified diff
       const suggestionsByLocation = {};
 
       lineLevelSuggestions.forEach(suggestion => {
-        const key = `${suggestion.file}:${suggestion.line_start}`;
+        // Include side in the key to differentiate between OLD and NEW line coordinates
+        // Default to 'RIGHT' for backwards compatibility with suggestions that don't have side
+        const side = suggestion.side || 'RIGHT';
+        const key = `${suggestion.file}:${suggestion.line_start}:${side}`;
         if (!suggestionsByLocation[key]) {
           suggestionsByLocation[key] = [];
         }
@@ -214,7 +226,14 @@ class SuggestionManager {
 
       // Find diff rows and insert line-level suggestions
       Object.entries(suggestionsByLocation).forEach(([location, locationSuggestions]) => {
-        const [file, lineStr] = location.split(':');
+        // Parse the location key: "file:line:side"
+        // We parse from the end because file paths may contain colons (e.g., Windows C:\path
+        // or macOS/Linux paths with colons in directory names, though the latter is rare).
+        // This handles typical cases but could fail for paths with colons in unusual positions.
+        const parts = location.split(':');
+        const side = parts.pop(); // Last part is side
+        const lineStr = parts.pop(); // Second-to-last is line number
+        const file = parts.join(':'); // Remaining parts are file path (may contain colons)
         const line = parseInt(lineStr);
 
         // Use helper method for file lookup
@@ -235,6 +254,8 @@ class SuggestionManager {
         }
 
         // Find the line in the diff using helper method
+        // Must match both line number AND side to correctly place suggestions
+        // on deleted (LEFT) vs added/context (RIGHT) lines
         const lineRows = fileElement.querySelectorAll('tr');
         let suggestionInserted = false;
         const lineTracker = this.prManager?.lineTracker;
@@ -243,9 +264,13 @@ class SuggestionManager {
           if (suggestionInserted) break;
 
           const lineNum = lineTracker ? lineTracker.getLineNumber(row) : null;
+          // Get the row's side from dataset, default to 'RIGHT' for backwards compatibility
+          const rowSide = row.dataset.side || 'RIGHT';
 
-          if (lineNum === line) {
-            console.log(`[UI] Found line ${line} in file ${file}, inserting suggestion`);
+          // Match both line number AND side to correctly place suggestions
+          // This prevents placing a suggestion for a deleted line on an added line with the same number
+          if (lineNum === line && rowSide === side) {
+            console.log(`[UI] Found line ${line} (${side}) in file ${file}, inserting suggestion`);
             // Insert suggestion after this row
             const suggestionRow = this.createSuggestionRow(locationSuggestions);
             row.parentNode.insertBefore(suggestionRow, row.nextSibling);
@@ -258,9 +283,10 @@ class SuggestionManager {
           // 1. The expansion didn't reveal the target line
           // 2. The line number is outside the diff hunks
           // 3. The AI suggested an incorrect line number
-          console.warn(`[UI] Line ${line} not found in file "${file}" after expansion. The line may be outside the diff context or the AI may have suggested an incorrect line number.`);
+          // 4. The side doesn't match (e.g., suggestion targets deleted line but row is added)
+          console.warn(`[UI] Line ${line} (${side}) not found in file "${file}" after expansion. The line may be outside the diff context or the AI may have suggested an incorrect line number/side.`);
           locationSuggestions.forEach(s => {
-            if (!s._displayError) s._displayError = `Line ${line} not found in diff for file "${file}"`;
+            if (!s._displayError) s._displayError = `Line ${line} (${side}) not found in diff for file "${file}"`;
           });
         }
       });

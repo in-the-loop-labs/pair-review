@@ -1398,6 +1398,99 @@ describe('AI Suggestion Endpoints', () => {
       expect(response.body.suggestions[0].body).toBe('New run suggestion');
       expect(response.body.suggestions[0].ai_run_id).toBe('run-2');
     });
+
+    it('should return side field for AI suggestions', async () => {
+      // Insert AI suggestions with different side values (LEFT for deleted lines, RIGHT for added lines)
+      // Using ai_level=NULL to match the default filter (final/orchestrated suggestions)
+      const runId = 'test-run-side';
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
+        VALUES (?, 'ai', 'file.js', 10, 'Comment on added line', 'active', ?, NULL, 'RIGHT')
+      `, [prId, runId]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
+        VALUES (?, 'ai', 'file.js', 5, 'Comment on deleted line', 'active', ?, NULL, 'LEFT')
+      `, [prId, runId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/ai-suggestions');
+
+      expect(response.status).toBe(200);
+      // Filter by our test run ID to ensure test isolation
+      const testSuggestions = response.body.suggestions.filter(s => s.ai_run_id === runId);
+      expect(testSuggestions.length).toBe(2);
+
+      // Verify side field is returned for both suggestions
+      const rightSideSuggestion = testSuggestions.find(s => s.side === 'RIGHT');
+      const leftSideSuggestion = testSuggestions.find(s => s.side === 'LEFT');
+
+      expect(rightSideSuggestion).toBeDefined();
+      expect(rightSideSuggestion.body).toBe('Comment on added line');
+      expect(rightSideSuggestion.line_start).toBe(10);
+
+      expect(leftSideSuggestion).toBeDefined();
+      expect(leftSideSuggestion.body).toBe('Comment on deleted line');
+      expect(leftSideSuggestion.line_start).toBe(5);
+    });
+
+    it('should default side to RIGHT when not explicitly set', async () => {
+      // Insert AI suggestion without explicitly setting side (uses database default)
+      // Using ai_level=NULL to match the default filter (final/orchestrated suggestions)
+      const runId = 'test-run-default-side';
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level)
+        VALUES (?, 'ai', 'file.js', 10, 'Suggestion with default side', 'active', ?, NULL)
+      `, [prId, runId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/ai-suggestions');
+
+      expect(response.status).toBe(200);
+      // Filter by our test run ID to ensure test isolation
+      const testSuggestions = response.body.suggestions.filter(s => s.ai_run_id === runId);
+      expect(testSuggestions.length).toBe(1);
+      // Side should be 'RIGHT' (the database default for added/context lines)
+      expect(testSuggestions[0].side).toBe('RIGHT');
+    });
+
+    it('should return distinct suggestions when same line number has different sides', async () => {
+      // This is the critical edge case: same line number exists in both OLD (deleted) and NEW (added)
+      // Using ai_level=NULL to match the default filter (final/orchestrated suggestions)
+      const runId = 'test-run-same-line-different-sides';
+      const sameLine = 15;
+
+      // Insert suggestions for the same line number but different sides
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
+        VALUES (?, 'ai', 'file.js', ?, 'Issue on deleted line 15', 'active', ?, NULL, 'LEFT')
+      `, [prId, sameLine, runId]);
+      await run(db, `
+        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
+        VALUES (?, 'ai', 'file.js', ?, 'Issue on added line 15', 'active', ?, NULL, 'RIGHT')
+      `, [prId, sameLine, runId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/ai-suggestions');
+
+      expect(response.status).toBe(200);
+      // Filter by our test run ID
+      const testSuggestions = response.body.suggestions.filter(s => s.ai_run_id === runId);
+
+      // Should have 2 distinct suggestions even though they share the same line number
+      expect(testSuggestions.length).toBe(2);
+
+      // Both should be on line 15 but with different sides
+      const leftSide = testSuggestions.find(s => s.side === 'LEFT');
+      const rightSide = testSuggestions.find(s => s.side === 'RIGHT');
+
+      expect(leftSide).toBeDefined();
+      expect(leftSide.line_start).toBe(sameLine);
+      expect(leftSide.body).toBe('Issue on deleted line 15');
+
+      expect(rightSide).toBeDefined();
+      expect(rightSide.line_start).toBe(sameLine);
+      expect(rightSide.body).toBe('Issue on added line 15');
+    });
   });
 
   describe('POST /api/ai-suggestion/:id/status', () => {
