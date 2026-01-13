@@ -22,7 +22,7 @@
  * Usage: node scripts/verify-ai-permissions.js [--provider <name>]
  *
  * Options:
- *   --provider <name>  Test only a specific provider (claude, copilot, codex, gemini)
+ *   --provider <name>  Test only a specific provider (claude, copilot, codex, gemini, cursor-agent)
  *   --help, -h         Show this help message
  */
 
@@ -105,6 +105,7 @@ function loadProviders() {
     require('../src/ai/copilot-provider');
     require('../src/ai/codex-provider');
     require('../src/ai/gemini-provider');
+    require('../src/ai/cursor-agent-provider');
 
     // Get the provider registry
     const { getProviderClass, getRegisteredProviderIds } = require('../src/ai/provider');
@@ -206,6 +207,36 @@ const providerTestConfigs = {
         stdin: testPrompt,
         useShell: provider.useShell,
       };
+    },
+  },
+
+  'cursor-agent': {
+    name: 'Cursor Agent',
+    envVar: 'PAIR_REVIEW_CURSOR_AGENT_CMD',
+    defaultCmd: 'cursor-agent',
+    checkArgs: ['--version'],
+    // Known limitation: Cursor Agent sandbox mode behavior is not fully documented.
+    // Security relies on prompt engineering and worktree isolation.
+    writeBlockKnownLimitation: 'Cursor Agent sandbox mode is undocumented. Security relies on prompt engineering and worktree isolation.',
+    buildTestCommands: (provider, testPrompt) => {
+      // Cursor Agent takes prompt as a positional argument (not stdin)
+      const useShell = provider.useShell;
+      if (useShell) {
+        const escapedPrompt = testPrompt.replace(/'/g, "'\\''");
+        return {
+          command: `${provider.command} '${escapedPrompt}'`,
+          args: [],
+          stdin: null,
+          useShell: true,
+        };
+      } else {
+        return {
+          command: provider.command,
+          args: [...provider.args, testPrompt],
+          stdin: null,
+          useShell: false,
+        };
+      }
     },
   },
 };
@@ -764,7 +795,7 @@ Usage: node scripts/verify-ai-permissions.js [options]
 
 Options:
   --provider <name>  Test only a specific provider
-                     Valid values: claude, copilot, codex, gemini
+                     Valid values: claude, copilot, codex, gemini, cursor-agent
   --help, -h         Show this help message
 
 Examples:
