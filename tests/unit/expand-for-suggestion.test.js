@@ -341,6 +341,92 @@ describe('findMatchingGap - multiple gaps', () => {
   });
 });
 
+describe('EOF_SENTINEL handling', () => {
+  // EOF_SENTINEL is -1, used for end-of-file gaps with unknown size
+  const EOF_SENTINEL = -1;
+
+  it('should parse EOF_SENTINEL (-1) as gapEnd', () => {
+    // When a gap extends to end of file, gapEnd is EOF_SENTINEL
+    const gapRow = createMockGapRow(45, EOF_SENTINEL, 47);
+    const coords = getGapCoordinates(gapRow.expandControls);
+
+    expect(coords.gapStart).toBe(45);
+    expect(coords.gapEnd).toBe(EOF_SENTINEL);
+    expect(coords.gapStartNew).toBe(47);
+    // gapEndNew = gapEnd + offset = -1 + 2 = 1 (this is wrong, but expected before resolution)
+    expect(coords.gapEndNew).toBe(1);
+  });
+
+  it('should produce negative gapSize when gapEnd is EOF_SENTINEL (bug demonstration)', () => {
+    // This test documents the bug behavior before fix in expandForSuggestion
+    // gapSize = gapEnd - gapStart + 1 = -1 - 45 + 1 = -45
+    const gapRow = createMockGapRow(45, EOF_SENTINEL);
+    const coords = getGapCoordinates(gapRow.expandControls);
+
+    const gapSize = coords.gapEnd - coords.gapStart + 1;
+    expect(gapSize).toBe(-45); // This is the bug - should be resolved first
+  });
+
+  it('should find gap containing lines when gapEnd is EOF_SENTINEL', () => {
+    // Gap from line 45 to EOF (represented as -1)
+    // With startLineNew=47, the NEW range would be 47 to -1+2=1 which is invalid
+    // However, rangesOverlap should handle this by checking if suggestion is >= gapStart
+    const gapRow = createMockGapRow(45, EOF_SENTINEL, 47);
+    const gapRows = [gapRow];
+
+    // Suggestion on line 50 - should match via OLD coords fallback
+    // since NEW range (47 to 1) doesn't make sense
+    const result = findMatchingGap(gapRows, 50, 50);
+
+    // Line 50 is >= 45 (gapStart) and the gap extends to EOF
+    // However, rangesOverlap(50, 50, 45, -1) returns false because 50 > -1
+    // This means the gap won't match until EOF_SENTINEL is resolved
+    expect(result).toBeNull(); // Current behavior - needs resolution first
+  });
+
+  it('should correctly match lines in EOF gap after resolution', () => {
+    // After EOF_SENTINEL is resolved to actual file length (e.g., 100),
+    // the gap coordinates become valid
+    const actualFileLength = 100;
+    const gapRow = createMockGapRow(45, actualFileLength, 47);
+    const gapRows = [gapRow];
+
+    // Suggestion on line 50 - inside the resolved gap (45-100 OLD, 47-102 NEW)
+    const result = findMatchingGap(gapRows, 50, 50);
+
+    expect(result).not.toBeNull();
+    expect(result.matchedInNewCoords).toBe(true);
+    expect(result.coords.gapEnd).toBe(100);
+  });
+
+  it('should handle suggestion at end of file after EOF_SENTINEL resolution', () => {
+    // File has 100 lines, gap is from 45 to EOF (resolved to 100)
+    const actualFileLength = 100;
+    const gapRow = createMockGapRow(45, actualFileLength, 47);
+    const gapRows = [gapRow];
+
+    // Suggestion on line 102 (NEW coords) - at the very end of the file
+    // NEW range is 47-102, so line 102 should match
+    const result = findMatchingGap(gapRows, 102, 102);
+
+    expect(result).not.toBeNull();
+    expect(result.matchedInNewCoords).toBe(true);
+  });
+
+  it('should convert coordinates correctly for EOF gap after resolution', () => {
+    // After resolution: OLD range 45-100, NEW range 47-102
+    const actualFileLength = 100;
+    const gapRow = createMockGapRow(45, actualFileLength, 47);
+
+    // Suggestion at NEW line 100, should convert to OLD line 98
+    const converted = convertNewToOldCoords(gapRow.expandControls, 100, 100);
+
+    expect(converted.offset).toBe(2);
+    expect(converted.targetLineStart).toBe(98);
+    expect(converted.targetLineEnd).toBe(98);
+  });
+});
+
 describe('findMatchingGap - edge cases', () => {
   it('should handle missing startLineNew (fallback to OLD)', () => {
     // Gap without startLineNew - should treat NEW same as OLD

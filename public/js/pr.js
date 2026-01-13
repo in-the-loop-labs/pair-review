@@ -1433,7 +1433,24 @@ class PRManager {
     }
 
     const { row: targetGapRow, controls: targetControls, coords, matchedInNewCoords } = match;
-    const { gapStart, gapEnd, gapStartNew, gapEndNew } = coords;
+    let { gapStart, gapEnd, gapStartNew, gapEndNew } = coords;
+
+    // Handle EOF_SENTINEL for end-of-file gaps with unknown size
+    // When gapEnd is EOF_SENTINEL, determine actual file size from fetched content
+    if (gapEnd === window.HunkParser.EOF_SENTINEL) {
+      const data = await this.fetchFileContent(file);
+      if (data && data.lines) {
+        gapEnd = data.lines.length;
+        // Also update gapEndNew to maintain the same offset
+        const offset = gapStartNew - gapStart;
+        gapEndNew = gapEnd + offset;
+        debugLog?.('expandForSuggestion', `Resolved EOF_SENTINEL: gapEnd=${gapEnd}, gapEndNew=${gapEndNew}`);
+      } else {
+        console.warn(`[expandForSuggestion] Could not fetch file content to resolve EOF_SENTINEL for: ${file}`);
+        return false;
+      }
+    }
+
     const gapSize = gapEnd - gapStart + 1;
 
     if (matchedInNewCoords) {
