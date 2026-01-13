@@ -39,13 +39,17 @@
 /**
  * Parse gap coordinates from a gap control element's dataset
  *
- * @param {Object} controls - Element with dataset containing startLine, endLine, startLineNew
+ * @param {Object} controls - Element with dataset containing startLine, endLine, startLineNew, endLineNew
  * @returns {Object} Gap coordinates with both OLD and NEW systems plus computed offset
  *   - gapStart: OLD coordinate start line
  *   - gapEnd: OLD coordinate end line
  *   - gapStartNew: NEW coordinate start line (equals gapStart if not specified)
- *   - gapEndNew: NEW coordinate end line (computed from gapEnd + offset)
- *   - offset: Difference between NEW and OLD coordinates (NEW - OLD)
+ *   - gapEndNew: NEW coordinate end line (uses endLineNew if specified, else computed from offset)
+ *   - offset: Difference between NEW and OLD start coordinates (gapStartNew - gapStart)
+ *
+ * Note: endLineNew allows for non-uniform offsets (start-of-file gaps where both files start
+ * at line 1 but have different gap sizes). If endLineNew is not specified, gapEndNew is
+ * computed as gapEnd + offset (uniform offset assumption).
  */
 function getGapCoordinates(controls) {
   const gapStart = parseInt(controls.dataset.startLine);
@@ -58,7 +62,10 @@ function getGapCoordinates(controls) {
   const parsedGapStartNew = parseInt(controls.dataset.startLineNew);
   const gapStartNew = !isNaN(parsedGapStartNew) ? parsedGapStartNew : gapStart;
   const offset = gapStartNew - gapStart;
-  const gapEndNew = gapEnd + offset;
+
+  // Support explicit endLineNew for non-uniform offset gaps (e.g., start-of-file gaps)
+  const parsedGapEndNew = parseInt(controls.dataset.endLineNew);
+  const gapEndNew = !isNaN(parsedGapEndNew) ? parsedGapEndNew : gapEnd + offset;
 
   return {
     gapStart,
@@ -85,13 +92,9 @@ function rangesOverlap(lineStart, lineEnd, rangeStart, rangeEnd) {
 /**
  * Find a gap that contains the specified line range
  *
- * When side is specified:
+ * The side parameter determines which coordinate system to check:
  *   - 'RIGHT': Check NEW coordinates ONLY (right side = modified/new file)
  *   - 'LEFT': Check OLD coordinates ONLY (left side = original/old file)
- *
- * When side is not specified (legacy behavior):
- *   Checks NEW coordinates FIRST since AI suggestions typically target NEW line numbers
- *   (added/modified lines). Falls back to OLD coordinates only if NEW doesn't match.
  *
  * This is important because:
  *   1. AI analyzes the modified code and references line numbers it sees
@@ -103,14 +106,14 @@ function rangesOverlap(lineStart, lineEnd, rangeStart, rangeEnd) {
  * @param {Array} gapRows - Array of gap row elements with expandControls property
  * @param {number} lineStart - Start line of the range to find
  * @param {number} lineEnd - End line of the range to find
- * @param {string} [side] - Optional side: 'RIGHT' for NEW coords, 'LEFT' for OLD coords
+ * @param {string} side - Required: 'RIGHT' for NEW coords, 'LEFT' for OLD coords
  * @returns {Object|null} Match result or null if no gap contains the range
  *   - row: The matching gap row element
  *   - controls: The expand controls element
  *   - coords: The parsed gap coordinates
  *   - matchedInNewCoords: true if matched via NEW coordinates
  */
-function findMatchingGap(gapRows, lineStart, lineEnd, side = null) {
+function findMatchingGap(gapRows, lineStart, lineEnd, side) {
   for (const row of gapRows) {
     const controls = row.expandControls;
     if (!controls) continue;
@@ -118,35 +121,17 @@ function findMatchingGap(gapRows, lineStart, lineEnd, side = null) {
     const coords = getGapCoordinates(controls);
     if (!coords) continue;
 
-    // When side is specified, check ONLY the appropriate coordinate system
+    // Check the appropriate coordinate system based on side
     if (side === 'RIGHT') {
       // RIGHT side = NEW coordinates (modified file)
       if (rangesOverlap(lineStart, lineEnd, coords.gapStartNew, coords.gapEndNew)) {
         return { row, controls, coords, matchedInNewCoords: true };
       }
-      // Don't fall back to OLD when side is explicitly RIGHT
-      continue;
-    }
-
-    if (side === 'LEFT') {
+    } else if (side === 'LEFT') {
       // LEFT side = OLD coordinates (original file)
       if (rangesOverlap(lineStart, lineEnd, coords.gapStart, coords.gapEnd)) {
         return { row, controls, coords, matchedInNewCoords: false };
       }
-      // Don't fall back to NEW when side is explicitly LEFT
-      continue;
-    }
-
-    // Legacy behavior when side is not specified:
-    // Check NEW coordinates FIRST since AI suggestions target NEW line numbers
-    // (the modified file that the AI analyzed)
-    if (rangesOverlap(lineStart, lineEnd, coords.gapStartNew, coords.gapEndNew)) {
-      return { row, controls, coords, matchedInNewCoords: true };
-    }
-
-    // Fall back to OLD coordinates for context lines or when offset is zero
-    if (rangesOverlap(lineStart, lineEnd, coords.gapStart, coords.gapEnd)) {
-      return { row, controls, coords, matchedInNewCoords: false };
     }
   }
   return null;
