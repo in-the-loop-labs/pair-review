@@ -6,6 +6,7 @@ const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { handleLocalReview } = require('./local-review');
+const logger = require('./utils/logger');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
@@ -140,7 +141,7 @@ function parseArgs(args) {
 
     if (arg === '-d' || arg === '--debug') {
       flags.debug = true;
-      process.env.DEBUG = 'true';
+      logger.setDebugEnabled(true);
     } else if (arg === '--ai') {
       flags.ai = true;
     } else if (arg === '--ai-draft') {

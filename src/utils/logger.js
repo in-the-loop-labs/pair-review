@@ -27,11 +27,27 @@ const COLORS = {
 class AILogger {
   constructor() {
     this.enabled = true;
-    this.debugEnabled = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
+    this.debugEnabled = false;
   }
 
   /**
-   * Log debug message (only shown when DEBUG=true)
+   * Enable or disable debug logging
+   * @param {boolean} enabled - Whether debug logging should be enabled
+   */
+  setDebugEnabled(enabled) {
+    this.debugEnabled = enabled;
+  }
+
+  /**
+   * Check if debug logging is enabled
+   * @returns {boolean} Whether debug logging is enabled
+   */
+  isDebugEnabled() {
+    return this.debugEnabled;
+  }
+
+  /**
+   * Log debug message (only shown when debug is enabled)
    */
   debug(message) {
     if (!this.enabled || !this.debugEnabled) return;

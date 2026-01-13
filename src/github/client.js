@@ -1,4 +1,5 @@
 const { Octokit } = require('@octokit/rest');
+const logger = require('../utils/logger');
 
 /**
  * GitHub API client wrapper with error handling and rate limiting
@@ -108,7 +109,7 @@ class GitHubClient {
    */
   async handleApiError(error, owner, repo, pullNumber) {
     // Only log detailed errors for debugging if verbose mode is enabled
-    if (process.env.VERBOSE || process.env.DEBUG) {
+    if (process.env.VERBOSE || logger.isDebugEnabled()) {
       console.error('GitHub API error:', error);
     }
 

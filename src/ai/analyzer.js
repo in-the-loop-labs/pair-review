@@ -1245,6 +1245,13 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       // File-level suggestions (null old_or_new) default to RIGHT
       const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';
 
+      // Log overall suggestions at debug level (level === null means orchestrated/final suggestions)
+      // Short-circuit: check debug flag first to avoid string construction when disabled
+      if (level === null && logger.isDebugEnabled()) {
+        const lineInfo = suggestion.line_start !== null ? `L${suggestion.line_start}` : 'file-level';
+        logger.debug(`[Suggestion] ${suggestion.file}:${lineInfo} (${side}) - ${suggestion.title || '(no title)'}`);
+      }
+
       await run(this.db, `
         INSERT INTO comments (
           pr_id, source, author, ai_run_id, ai_level, ai_confidence,

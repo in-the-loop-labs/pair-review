@@ -3,6 +3,7 @@ import { execSync, spawnSync } from 'child_process';
 
 // Test the parseArgs function which is exported from main.js
 const { parseArgs } = require('../../src/main');
+const logger = require('../../src/utils/logger');
 
 describe('main.js parseArgs', () => {
   describe('flag parsing', () => {
@@ -148,26 +149,26 @@ describe('main.js parseArgs', () => {
       expect(result.prArgs).toEqual(['123']);
     });
 
-    it('should set DEBUG environment variable when --debug flag is present', () => {
-      // Reset DEBUG env var before test
-      delete process.env.DEBUG;
+    it('should enable logger debug mode when --debug flag is present', () => {
+      // Reset logger debug mode before test
+      logger.setDebugEnabled(false);
 
       parseArgs(['123', '--debug']);
-      expect(process.env.DEBUG).toBe('true');
+      expect(logger.isDebugEnabled()).toBe(true);
 
       // Clean up
-      delete process.env.DEBUG;
+      logger.setDebugEnabled(false);
     });
 
-    it('should set DEBUG environment variable when -d flag is present', () => {
-      // Reset DEBUG env var before test
-      delete process.env.DEBUG;
+    it('should enable logger debug mode when -d flag is present', () => {
+      // Reset logger debug mode before test
+      logger.setDebugEnabled(false);
 
       parseArgs(['123', '-d']);
-      expect(process.env.DEBUG).toBe('true');
+      expect(logger.isDebugEnabled()).toBe(true);
 
       // Clean up
-      delete process.env.DEBUG;
+      logger.setDebugEnabled(false);
     });
   });
 });
