@@ -777,19 +777,29 @@ class PRManager {
         }
       } else if (gapSize > 0 && isFirstHunk) {
         // Create "expand up" section at file start
-        // For the gap before the first hunk, lines are unchanged context starting at line 1
-        // Both OLD and NEW versions have these lines, but their line numbers may differ
-        // if the first hunk doesn't start at the same position in both versions
+        // For the gap before the first hunk, lines are unchanged context starting at line 1.
+        // Both OLD and NEW versions start at line 1, but the gap may have different sizes
+        // if the first hunk doesn't start at the same position in both versions.
+        //
+        // Example: @@ -10,5 +12,7 @@ means:
+        //   - OLD gap covers lines 1-9 (gapEndOld = 10 - 1 = 9)
+        //   - NEW gap covers lines 1-11 (gapEndNew = 12 - 1 = 11)
+        //
+        // This is a non-uniform offset case: both start at 1, but end at different lines.
+        // We use endLineNew to specify the NEW end explicitly.
+        const gapEndNew = block.newStart - 1;
         const gapRow = window.HunkParser.createGapSection(
           null,
           fileName,
-          1,
-          gapEndOld,
-          gapEndOld,
+          1,         // OLD starts at line 1
+          gapEndOld, // OLD ends before hunk.oldStart
+          gapEndOld, // gapSize based on OLD lines
           'above',
           (controls, direction, count) => this.expandGapContext(controls, direction, count),
-          1  // NEW also starts at line 1 for first-hunk gaps
+          1          // NEW also starts at line 1
         );
+        // Set endLineNew explicitly for correct NEW range in findMatchingGap
+        gapRow.expandControls.dataset.endLineNew = gapEndNew;
         tbody.appendChild(gapRow);
       }
 
@@ -1167,7 +1177,10 @@ class PRManager {
   async expandGapContext(controls, direction, count) {
     const coords = window.GapCoordinates?.getGapCoordinates(controls);
     if (!coords) return;
-    const { gapStart: startLine, gapEnd: endLine, gapStartNew: startLineNew, offset: lineOffset } = coords;
+    const { gapStart: startLine, gapEnd: endLine, gapStartNew: startLineNew, gapEndNew: endLineNew, offset: lineOffset } = coords;
+
+    // Check if original gap has explicit endLineNew (for non-uniform offset gaps)
+    const hasExplicitEndLineNew = !isNaN(parseInt(controls.dataset.endLineNew));
 
     const fileName = controls.dataset.fileName;
     const position = controls.dataset.position || 'between';
@@ -1246,6 +1259,12 @@ class PRManager {
             (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
             startLineNew  // Preserve the NEW line number offset
           );
+          // Propagate endLineNew for non-uniform offset gaps (e.g., start-of-file gaps)
+          // The remaining gap's NEW end is calculated based on how many lines remain
+          if (hasExplicitEndLineNew) {
+            const newEndLineNew = startLineNew + (newGapEnd - startLine);
+            newGapRow.expandControls.dataset.endLineNew = newEndLineNew;
+          }
           fragment.appendChild(newGapRow);
         }
       }
@@ -1292,6 +1311,11 @@ class PRManager {
             (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
             newStartLineNew  // Updated NEW line number for remaining gap
           );
+          // Propagate endLineNew for non-uniform offset gaps (e.g., start-of-file gaps)
+          // The remaining gap's NEW end stays the same (we're just moving the start)
+          if (hasExplicitEndLineNew) {
+            newGapRow.expandControls.dataset.endLineNew = endLineNew;
+          }
           fragment.appendChild(newGapRow);
         }
       }
@@ -1318,7 +1342,10 @@ class PRManager {
   async expandGapRange(gapRow, controls, expandStart, expandEnd) {
     const coords = window.GapCoordinates?.getGapCoordinates(controls);
     if (!coords) return;
-    const { gapStart, gapEnd, gapStartNew, offset: lineOffset } = coords;
+    const { gapStart, gapEnd, gapStartNew, gapEndNew, offset: lineOffset } = coords;
+
+    // Check if original gap has explicit endLineNew (for non-uniform offset gaps)
+    const hasExplicitEndLineNew = !isNaN(parseInt(controls.dataset.endLineNew));
 
     const fileName = controls.dataset.fileName;
     const tbody = gapRow.closest('tbody');
@@ -1343,6 +1370,12 @@ class PRManager {
           (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
           gapStartNew  // Preserve the NEW line number offset
         );
+        // Propagate endLineNew for non-uniform offset gaps (e.g., start-of-file gaps)
+        // The gap above's NEW end is calculated based on how many lines remain
+        if (hasExplicitEndLineNew) {
+          const aboveEndLineNew = gapStartNew + (expandStart - 1 - gapStart);
+          aboveRow.expandControls.dataset.endLineNew = aboveEndLineNew;
+        }
         fragment.appendChild(aboveRow);
       }
 
@@ -1378,6 +1411,11 @@ class PRManager {
           (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
           belowGapStartNew  // Updated NEW line number for gap below
         );
+        // Propagate endLineNew for non-uniform offset gaps (e.g., start-of-file gaps)
+        // The gap below's NEW end stays the same as the original gap's end
+        if (hasExplicitEndLineNew) {
+          belowRow.expandControls.dataset.endLineNew = gapEndNew;
+        }
         fragment.appendChild(belowRow);
       }
 
@@ -1404,10 +1442,15 @@ class PRManager {
    *   - OLD vs NEW coordinate systems
    *   - When offsets are non-zero
    *   - Which functions use which coordinate system
+   *
+   * @param {string} file - File path
+   * @param {number} lineStart - Start line number
+   * @param {number} lineEnd - End line number (defaults to lineStart)
+   * @param {string} side - Required: 'RIGHT' for NEW coords, 'LEFT' for OLD coords
    */
-  async expandForSuggestion(file, lineStart, lineEnd = lineStart) {
+  async expandForSuggestion(file, lineStart, lineEnd = lineStart, side) {
     const { findMatchingGap, convertNewToOldCoords, debugLog } = window.GapCoordinates || {};
-    debugLog?.('expandForSuggestion', `Attempting to reveal ${file}:${lineStart}-${lineEnd}`);
+    debugLog?.('expandForSuggestion', `Attempting to reveal ${file}:${lineStart}-${lineEnd} (${side})`);
 
     const fileElement = this.findFileElement(file);
     if (!fileElement) {
@@ -1423,17 +1466,36 @@ class PRManager {
     }
 
     // Find the gap section containing the target lines using the shared module
-    // which checks NEW coordinates first (AI suggestions target NEW line numbers)
+    // Pass the side parameter so findMatchingGap uses the correct coordinate system:
+    // - 'RIGHT' = NEW coordinates (modified file, most common for AI suggestions)
+    // - 'LEFT' = OLD coordinates (deleted lines from original file)
     const gapRows = fileElement.querySelectorAll('tr.context-expand-row');
-    const match = findMatchingGap?.(gapRows, lineStart, lineEnd);
+    const match = findMatchingGap?.(gapRows, lineStart, lineEnd, side);
 
     if (!match) {
-      console.warn(`[expandForSuggestion] Could not find gap for lines ${lineStart}-${lineEnd}`);
+      console.warn(`[expandForSuggestion] Could not find gap for ${file}:${lineStart}-${lineEnd} (side=${side})`);
       return false;
     }
 
     const { row: targetGapRow, controls: targetControls, coords, matchedInNewCoords } = match;
-    const { gapStart, gapEnd, gapStartNew, gapEndNew } = coords;
+    let { gapStart, gapEnd, gapStartNew, gapEndNew } = coords;
+
+    // Handle EOF_SENTINEL for end-of-file gaps with unknown size
+    // When gapEnd is EOF_SENTINEL, determine actual file size from fetched content
+    if (gapEnd === window.HunkParser.EOF_SENTINEL) {
+      const data = await this.fetchFileContent(file);
+      if (data && data.lines) {
+        gapEnd = data.lines.length;
+        // Also update gapEndNew to maintain the same offset
+        const offset = gapStartNew - gapStart;
+        gapEndNew = gapEnd + offset;
+        debugLog?.('expandForSuggestion', `Resolved EOF_SENTINEL: gapEnd=${gapEnd}, gapEndNew=${gapEndNew}`);
+      } else {
+        console.warn(`[expandForSuggestion] Could not fetch file content to resolve EOF_SENTINEL for: ${file}`);
+        return false;
+      }
+    }
+
     const gapSize = gapEnd - gapStart + 1;
 
     if (matchedInNewCoords) {
