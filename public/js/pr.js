@@ -1473,7 +1473,7 @@ class PRManager {
     const match = findMatchingGap?.(gapRows, lineStart, lineEnd, side);
 
     if (!match) {
-      console.warn(`[expandForSuggestion] Could not find gap for lines ${lineStart}-${lineEnd}`);
+      console.warn(`[expandForSuggestion] Could not find gap for ${file}:${lineStart}-${lineEnd} (side=${side})`);
       return false;
     }
 
