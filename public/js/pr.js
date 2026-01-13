@@ -1404,10 +1404,15 @@ class PRManager {
    *   - OLD vs NEW coordinate systems
    *   - When offsets are non-zero
    *   - Which functions use which coordinate system
+   *
+   * @param {string} file - File path
+   * @param {number} lineStart - Start line number
+   * @param {number} lineEnd - End line number (defaults to lineStart)
+   * @param {string} [side='RIGHT'] - Side of diff: 'RIGHT' for NEW coords, 'LEFT' for OLD coords
    */
-  async expandForSuggestion(file, lineStart, lineEnd = lineStart) {
+  async expandForSuggestion(file, lineStart, lineEnd = lineStart, side = 'RIGHT') {
     const { findMatchingGap, convertNewToOldCoords, debugLog } = window.GapCoordinates || {};
-    debugLog?.('expandForSuggestion', `Attempting to reveal ${file}:${lineStart}-${lineEnd}`);
+    debugLog?.('expandForSuggestion', `Attempting to reveal ${file}:${lineStart}-${lineEnd} (${side})`);
 
     const fileElement = this.findFileElement(file);
     if (!fileElement) {
@@ -1423,9 +1428,11 @@ class PRManager {
     }
 
     // Find the gap section containing the target lines using the shared module
-    // which checks NEW coordinates first (AI suggestions target NEW line numbers)
+    // Pass the side parameter so findMatchingGap uses the correct coordinate system:
+    // - 'RIGHT' = NEW coordinates (modified file, most common for AI suggestions)
+    // - 'LEFT' = OLD coordinates (deleted lines from original file)
     const gapRows = fileElement.querySelectorAll('tr.context-expand-row');
-    const match = findMatchingGap?.(gapRows, lineStart, lineEnd);
+    const match = findMatchingGap?.(gapRows, lineStart, lineEnd, side);
 
     if (!match) {
       console.warn(`[expandForSuggestion] Could not find gap for lines ${lineStart}-${lineEnd}`);

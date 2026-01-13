@@ -149,15 +149,15 @@ class SuggestionManager {
       console.log(`[UI] Removed ${existingSuggestionRows.length} existing suggestion rows`);
 
       // Auto-expand hidden lines for suggestions that target non-visible lines
-      // Note: Hidden lines in gaps are context lines from the NEW file version,
-      // so expandForSuggestion doesn't need the side parameter - gap-coordinates
-      // module handles the NEW coordinate system for expansion.
+      // Pass the side parameter so expandForSuggestion knows which coordinate system to use:
+      // - RIGHT side = NEW coordinates (modified file, most common for AI suggestions)
+      // - LEFT side = OLD coordinates (deleted lines from original file)
       const hiddenSuggestions = this.findHiddenSuggestions(suggestions);
       if (hiddenSuggestions.length > 0) {
         console.log(`[UI] Found ${hiddenSuggestions.length} suggestions targeting hidden lines, expanding...`);
         for (const hidden of hiddenSuggestions) {
           if (this.prManager?.expandForSuggestion) {
-            await this.prManager.expandForSuggestion(hidden.file, hidden.line, hidden.lineEnd);
+            await this.prManager.expandForSuggestion(hidden.file, hidden.line, hidden.lineEnd, hidden.side);
           }
         }
         console.log(`[UI] Finished expanding hidden lines`);

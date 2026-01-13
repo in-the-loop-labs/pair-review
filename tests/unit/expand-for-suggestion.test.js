@@ -427,6 +427,148 @@ describe('EOF_SENTINEL handling', () => {
   });
 });
 
+describe('findMatchingGap - side parameter', () => {
+  it('should match only NEW coordinates when side is RIGHT', () => {
+    // Gap has OLD range 45-48, NEW range 47-50 (offset of 2)
+    const gapRow = createMockGapRow(45, 48, 47);
+    const gapRows = [gapRow];
+
+    // Line 50 is in NEW range (47-50) but NOT in OLD range (45-48)
+    // With side='RIGHT', should match via NEW coords
+    const result = findMatchingGap(gapRows, 50, 50, 'RIGHT');
+
+    expect(result).not.toBeNull();
+    expect(result.matchedInNewCoords).toBe(true);
+  });
+
+  it('should NOT fall back to OLD coordinates when side is RIGHT', () => {
+    // Gap has OLD range 45-48, NEW range 47-50 (offset of 2)
+    const gapRow = createMockGapRow(45, 48, 47);
+    const gapRows = [gapRow];
+
+    // Line 45 is in OLD range (45-48) but NOT in NEW range (47-50)
+    // With side='RIGHT', should NOT match because we only check NEW
+    const result = findMatchingGap(gapRows, 45, 45, 'RIGHT');
+
+    expect(result).toBeNull();
+  });
+
+  it('should match only OLD coordinates when side is LEFT', () => {
+    // Gap has OLD range 45-48, NEW range 47-50 (offset of 2)
+    const gapRow = createMockGapRow(45, 48, 47);
+    const gapRows = [gapRow];
+
+    // Line 45-46 is in OLD range (45-48) but NOT in NEW range (47-50)
+    // With side='LEFT', should match via OLD coords
+    const result = findMatchingGap(gapRows, 45, 46, 'LEFT');
+
+    expect(result).not.toBeNull();
+    expect(result.matchedInNewCoords).toBe(false);
+  });
+
+  it('should NOT fall back to NEW coordinates when side is LEFT', () => {
+    // Gap has OLD range 45-48, NEW range 47-50 (offset of 2)
+    const gapRow = createMockGapRow(45, 48, 47);
+    const gapRows = [gapRow];
+
+    // Line 50 is in NEW range (47-50) but NOT in OLD range (45-48)
+    // With side='LEFT', should NOT match because we only check OLD
+    const result = findMatchingGap(gapRows, 50, 50, 'LEFT');
+
+    expect(result).toBeNull();
+  });
+
+  it('should use legacy behavior when side is null', () => {
+    // Gap has OLD range 45-48, NEW range 47-50 (offset of 2)
+    const gapRow = createMockGapRow(45, 48, 47);
+    const gapRows = [gapRow];
+
+    // Line 45 is in OLD range only - legacy behavior checks NEW first, then OLD
+    const result = findMatchingGap(gapRows, 45, 45, null);
+
+    expect(result).not.toBeNull();
+    expect(result.matchedInNewCoords).toBe(false); // Matched via OLD fallback
+  });
+
+  it('should use legacy behavior when side is undefined', () => {
+    // Gap has OLD range 45-48, NEW range 47-50 (offset of 2)
+    const gapRow = createMockGapRow(45, 48, 47);
+    const gapRows = [gapRow];
+
+    // Line 50 is in NEW range - legacy behavior checks NEW first
+    const result = findMatchingGap(gapRows, 50, 50);
+
+    expect(result).not.toBeNull();
+    expect(result.matchedInNewCoords).toBe(true); // Matched via NEW (checked first)
+  });
+
+  it('asymmetric case: RIGHT side suggestion finds gap via NEW coords only', () => {
+    // This is the bug scenario: a gap where OLD and NEW ranges are different,
+    // and a RIGHT side suggestion targets a line in the NEW range
+    //
+    // Gap: OLD 100-110, NEW 120-130 (offset of 20 due to added lines)
+    const gapRow = createMockGapRow(100, 110, 120);
+    const gapRows = [gapRow];
+
+    // AI suggestion targets NEW line 125 (e.g., a comment on added code)
+    // This line does NOT exist in OLD range (100-110)
+    // Without side parameter or with wrong coordinate matching, this would fail
+    const result = findMatchingGap(gapRows, 125, 125, 'RIGHT');
+
+    expect(result).not.toBeNull();
+    expect(result.matchedInNewCoords).toBe(true);
+    expect(result.coords.gapStartNew).toBe(120);
+    expect(result.coords.gapEndNew).toBe(130);
+  });
+
+  it('asymmetric case: LEFT side suggestion finds gap via OLD coords only', () => {
+    // A LEFT side suggestion (deleted line) uses OLD coordinates
+    //
+    // Gap: OLD 100-110, NEW 120-130 (offset of 20)
+    const gapRow = createMockGapRow(100, 110, 120);
+    const gapRows = [gapRow];
+
+    // AI suggestion targets OLD line 105 (e.g., a comment on deleted code)
+    // This line does NOT exist in NEW range (120-130)
+    const result = findMatchingGap(gapRows, 105, 105, 'LEFT');
+
+    expect(result).not.toBeNull();
+    expect(result.matchedInNewCoords).toBe(false);
+    expect(result.coords.gapStart).toBe(100);
+    expect(result.coords.gapEnd).toBe(110);
+  });
+
+  it('should handle multiple gaps with side=RIGHT', () => {
+    // Gap1: OLD 10-20, NEW 10-20 (no offset)
+    // Gap2: OLD 100-110, NEW 120-130 (offset 20)
+    const gap1 = createMockGapRow(10, 20);
+    const gap2 = createMockGapRow(100, 110, 120);
+    const gapRows = [gap1, gap2];
+
+    // RIGHT side suggestion on NEW line 125 should match gap2
+    const result = findMatchingGap(gapRows, 125, 125, 'RIGHT');
+
+    expect(result).not.toBeNull();
+    expect(result.coords.gapStart).toBe(100);
+    expect(result.matchedInNewCoords).toBe(true);
+  });
+
+  it('should handle multiple gaps with side=LEFT', () => {
+    // Gap1: OLD 10-20, NEW 10-20 (no offset)
+    // Gap2: OLD 100-110, NEW 120-130 (offset 20)
+    const gap1 = createMockGapRow(10, 20);
+    const gap2 = createMockGapRow(100, 110, 120);
+    const gapRows = [gap1, gap2];
+
+    // LEFT side suggestion on OLD line 105 should match gap2
+    const result = findMatchingGap(gapRows, 105, 105, 'LEFT');
+
+    expect(result).not.toBeNull();
+    expect(result.coords.gapStart).toBe(100);
+    expect(result.matchedInNewCoords).toBe(false);
+  });
+});
+
 describe('findMatchingGap - edge cases', () => {
   it('should handle missing startLineNew (fallback to OLD)', () => {
     // Gap without startLineNew - should treat NEW same as OLD

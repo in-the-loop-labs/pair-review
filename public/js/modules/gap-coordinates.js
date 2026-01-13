@@ -85,23 +85,32 @@ function rangesOverlap(lineStart, lineEnd, rangeStart, rangeEnd) {
 /**
  * Find a gap that contains the specified line range
  *
- * Checks NEW coordinates FIRST since AI suggestions typically target NEW line numbers
- * (added/modified lines). Falls back to OLD coordinates only if NEW doesn't match.
- * This prioritization is important because:
+ * When side is specified:
+ *   - 'RIGHT': Check NEW coordinates ONLY (right side = modified/new file)
+ *   - 'LEFT': Check OLD coordinates ONLY (left side = original/old file)
+ *
+ * When side is not specified (legacy behavior):
+ *   Checks NEW coordinates FIRST since AI suggestions typically target NEW line numbers
+ *   (added/modified lines). Falls back to OLD coordinates only if NEW doesn't match.
+ *
+ * This is important because:
  *   1. AI analyzes the modified code and references line numbers it sees
  *   2. Those line numbers correspond to the NEW file (right side of diff)
- *   3. OLD coordinates are only relevant for context lines that existed before
+ *   3. OLD coordinates are only relevant for deleted lines or context lines
+ *   4. A suggestion with side='RIGHT' and line 50 means NEW line 50
+ *   5. A suggestion with side='LEFT' and line 50 means OLD line 50
  *
  * @param {Array} gapRows - Array of gap row elements with expandControls property
  * @param {number} lineStart - Start line of the range to find
  * @param {number} lineEnd - End line of the range to find
+ * @param {string} [side] - Optional side: 'RIGHT' for NEW coords, 'LEFT' for OLD coords
  * @returns {Object|null} Match result or null if no gap contains the range
  *   - row: The matching gap row element
  *   - controls: The expand controls element
  *   - coords: The parsed gap coordinates
  *   - matchedInNewCoords: true if matched via NEW coordinates
  */
-function findMatchingGap(gapRows, lineStart, lineEnd) {
+function findMatchingGap(gapRows, lineStart, lineEnd, side = null) {
   for (const row of gapRows) {
     const controls = row.expandControls;
     if (!controls) continue;
@@ -109,6 +118,26 @@ function findMatchingGap(gapRows, lineStart, lineEnd) {
     const coords = getGapCoordinates(controls);
     if (!coords) continue;
 
+    // When side is specified, check ONLY the appropriate coordinate system
+    if (side === 'RIGHT') {
+      // RIGHT side = NEW coordinates (modified file)
+      if (rangesOverlap(lineStart, lineEnd, coords.gapStartNew, coords.gapEndNew)) {
+        return { row, controls, coords, matchedInNewCoords: true };
+      }
+      // Don't fall back to OLD when side is explicitly RIGHT
+      continue;
+    }
+
+    if (side === 'LEFT') {
+      // LEFT side = OLD coordinates (original file)
+      if (rangesOverlap(lineStart, lineEnd, coords.gapStart, coords.gapEnd)) {
+        return { row, controls, coords, matchedInNewCoords: false };
+      }
+      // Don't fall back to NEW when side is explicitly LEFT
+      continue;
+    }
+
+    // Legacy behavior when side is not specified:
     // Check NEW coordinates FIRST since AI suggestions target NEW line numbers
     // (the modified file that the AI analyzed)
     if (rangesOverlap(lineStart, lineEnd, coords.gapStartNew, coords.gapEndNew)) {
