@@ -5300,7 +5300,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   border-right: 1px solid var(--color-border-primary);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   flex-shrink: 0;
 }
 
@@ -5668,7 +5668,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   border-left: 1px solid var(--color-border-primary);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   flex-shrink: 0;
   transition: width var(--transition-default), opacity var(--transition-default);
 }
@@ -5677,6 +5677,52 @@ body:not([data-theme="dark"]) .theme-icon-light {
   width: 0;
   opacity: 0;
   overflow: hidden;
+}
+
+/* --------------------------------------------------------------------------
+   Resize Handles for Panels
+   -------------------------------------------------------------------------- */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background-color 0.15s;
+}
+
+.resize-handle:hover,
+.resize-handle.dragging {
+  background: var(--border-color);
+}
+
+.resize-handle-right {
+  right: -3px;
+}
+
+.resize-handle-left {
+  left: -3px;
+}
+
+/* Ensure panels have position: relative for absolute handle positioning */
+.main-layout .sidebar {
+  position: relative;
+}
+
+.ai-panel {
+  position: relative;
+}
+
+/* Prevent text selection during drag */
+body.resizing {
+  user-select: none;
+  cursor: col-resize !important;
+}
+
+body.resizing * {
+  cursor: col-resize !important;
 }
 
 /* Hide AI panel toggle button when panel is visible */

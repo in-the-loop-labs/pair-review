@@ -250,7 +250,7 @@
                 <nav class="file-tree" id="file-list">
                     <!-- File tree will be loaded here -->
                 </nav>
-
+                <div class="resize-handle resize-handle-right" data-panel="sidebar"></div>
             </aside>
 
             <!-- Diff View (Center) -->
@@ -310,6 +310,7 @@
 
             <!-- AI Analysis Panel (Right) -->
             <aside class="ai-panel" id="ai-panel">
+                <div class="resize-handle resize-handle-left" data-panel="ai-panel"></div>
                 <div class="ai-panel-header">
                     <div class="ai-panel-title">
                         <button class="ai-avatar-small ai-summary-btn" id="ai-summary-btn" aria-label="View AI summary" title="View AI Summary">
@@ -402,6 +403,7 @@
     <script src="/js/modules/comment-manager.js"></script>
     <script src="/js/modules/suggestion-manager.js"></script>
     <script src="/js/modules/file-comment-manager.js"></script>
+    <script src="/js/modules/panel-resizer.js"></script>
 
     <!-- Local Mode Configuration -->
     <script>

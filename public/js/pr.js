@@ -3185,6 +3185,11 @@ if (typeof document !== 'undefined') {
       window.cleanupLegacyLocalStorage();
     }
 
+    // Initialize panel resizer for drag-to-resize functionality
+    if (typeof window.PanelResizer !== 'undefined') {
+      window.PanelResizer.init();
+    }
+
     prManager = new PRManager();
     // CRITICAL FIX: Make prManager available globally for component access
     window.prManager = prManager;
