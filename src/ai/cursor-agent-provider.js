@@ -117,7 +117,10 @@ class CursorAgentProvider extends AIProvider {
       let fullArgs;
 
       if (this.useShell) {
-        // Escape the prompt for shell
+        // Escape single quotes for Bash shell execution.
+        // Pattern: close quote ('), add escaped literal quote (\\'), reopen quote (')
+        // This is Bash-specific but sufficient for this local-only app.
+        // Note: Same pattern used in copilot-provider.js
         const escapedPrompt = prompt.replace(/'/g, "'\\''");
         // Build: cursor-agent -p --output-format json ... 'prompt'
         fullCommand = `${this.command} '${escapedPrompt}'`;
@@ -225,56 +228,40 @@ class CursorAgentProvider extends AIProvider {
    * @returns {{success: boolean, data?: Object, error?: string}}
    */
   parseCursorAgentResponse(stdout, level) {
-    const levelPrefix = `[Level ${level}]`;
+    let cursorResponse;
 
+    // Step 1: Try to parse stdout as JSON
     try {
-      // First, try to parse as JSON directly
-      const cursorResponse = JSON.parse(stdout);
-
-      // If the response has a specific structure, extract the content
-      // Cursor Agent JSON output format may vary - adapt as needed
-      if (cursorResponse.response) {
-        // Try to extract our review JSON from the response field
-        const extracted = extractJSON(cursorResponse.response, level);
-        if (extracted.success) {
-          return extracted;
-        }
-      }
-
-      if (cursorResponse.content) {
-        // Alternative structure with content field
-        const extracted = extractJSON(cursorResponse.content, level);
-        if (extracted.success) {
-          return extracted;
-        }
-      }
-
-      if (cursorResponse.text) {
-        // Alternative structure with text field
-        const extracted = extractJSON(cursorResponse.text, level);
-        if (extracted.success) {
-          return extracted;
-        }
-      }
-
-      // Maybe the parsed JSON is the content we need directly
-      if (cursorResponse.findings || cursorResponse.level) {
-        return { success: true, data: cursorResponse };
-      }
-
-      // Try extracting JSON from the stringified response
-      const extracted = extractJSON(stdout, level);
-      return extracted;
-
-    } catch (parseError) {
-      // stdout might not be valid JSON at all, try extracting JSON from it
-      const extracted = extractJSON(stdout, level);
-      if (extracted.success) {
-        return extracted;
-      }
-
-      return { success: false, error: `JSON parse error: ${parseError.message}` };
+      cursorResponse = JSON.parse(stdout);
+    } catch {
+      // Not valid JSON - fall back to extractJSON which handles text with embedded JSON
+      return extractJSON(stdout, level);
     }
+
+    // Step 2: Successfully parsed JSON - check if it's our review data directly
+    if (cursorResponse.findings || cursorResponse.level) {
+      logger.info(`[Level ${level}] JSON extraction successful using strategy 1`);
+      return { success: true, data: cursorResponse };
+    }
+
+    // Step 3: Check for wrapper structures (response, content, text fields)
+    // These may contain our review JSON as a string that needs extraction
+    const wrapperFields = ['response', 'content', 'text'];
+    for (const field of wrapperFields) {
+      if (cursorResponse[field]) {
+        const extracted = extractJSON(cursorResponse[field], level);
+        if (extracted.success) {
+          return extracted;
+        }
+      }
+    }
+
+    // Step 4: Parsed JSON doesn't match any expected structure
+    // Return a descriptive error rather than re-parsing
+    return {
+      success: false,
+      error: 'Parsed JSON but structure did not contain expected review data'
+    };
   }
 
   /**
