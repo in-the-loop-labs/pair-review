@@ -13,7 +13,18 @@
 const { TIERS, PROMPT_TYPES, resolveTier } = require('./config');
 
 // Import baseline prompts (lazy-loaded to avoid circular dependencies)
+let level1Fast = null;
+let level1Balanced = null;
+let level1Thorough = null;
+let level2Fast = null;
 let level2Balanced = null;
+let level2Thorough = null;
+let level3Fast = null;
+let level3Balanced = null;
+let level3Thorough = null;
+let orchestrationBalanced = null;
+let orchestrationFast = null;
+let orchestrationThorough = null;
 
 /**
  * Load a baseline prompt module
@@ -22,12 +33,89 @@ let level2Balanced = null;
  * @returns {Object|null} Baseline module or null if not found
  */
 function loadBaseline(promptType, tier) {
-  // Currently only Level 2 Balanced is implemented
+  // Level 1 Fast
+  if (promptType === 'level1' && tier === 'fast') {
+    if (!level1Fast) {
+      level1Fast = require('./baseline/level1/fast');
+    }
+    return level1Fast;
+  }
+  // Level 1 Balanced
+  if (promptType === 'level1' && tier === 'balanced') {
+    if (!level1Balanced) {
+      level1Balanced = require('./baseline/level1/balanced');
+    }
+    return level1Balanced;
+  }
+  // Level 1 Thorough
+  if (promptType === 'level1' && tier === 'thorough') {
+    if (!level1Thorough) {
+      level1Thorough = require('./baseline/level1/thorough');
+    }
+    return level1Thorough;
+  }
+  // Level 2 Fast
+  if (promptType === 'level2' && tier === 'fast') {
+    if (!level2Fast) {
+      level2Fast = require('./baseline/level2/fast');
+    }
+    return level2Fast;
+  }
+  // Level 2 Balanced
   if (promptType === 'level2' && tier === 'balanced') {
     if (!level2Balanced) {
       level2Balanced = require('./baseline/level2/balanced');
     }
     return level2Balanced;
+  }
+  // Level 2 Thorough
+  if (promptType === 'level2' && tier === 'thorough') {
+    if (!level2Thorough) {
+      level2Thorough = require('./baseline/level2/thorough');
+    }
+    return level2Thorough;
+  }
+  // Level 3 Fast
+  if (promptType === 'level3' && tier === 'fast') {
+    if (!level3Fast) {
+      level3Fast = require('./baseline/level3/fast');
+    }
+    return level3Fast;
+  }
+  // Level 3 Balanced
+  if (promptType === 'level3' && tier === 'balanced') {
+    if (!level3Balanced) {
+      level3Balanced = require('./baseline/level3/balanced');
+    }
+    return level3Balanced;
+  }
+  // Level 3 Thorough
+  if (promptType === 'level3' && tier === 'thorough') {
+    if (!level3Thorough) {
+      level3Thorough = require('./baseline/level3/thorough');
+    }
+    return level3Thorough;
+  }
+  // Orchestration Fast
+  if (promptType === 'orchestration' && tier === 'fast') {
+    if (!orchestrationFast) {
+      orchestrationFast = require('./baseline/orchestration/fast');
+    }
+    return orchestrationFast;
+  }
+  // Orchestration Balanced
+  if (promptType === 'orchestration' && tier === 'balanced') {
+    if (!orchestrationBalanced) {
+      orchestrationBalanced = require('./baseline/orchestration/balanced');
+    }
+    return orchestrationBalanced;
+  }
+  // Orchestration Thorough
+  if (promptType === 'orchestration' && tier === 'thorough') {
+    if (!orchestrationThorough) {
+      orchestrationThorough = require('./baseline/orchestration/thorough');
+    }
+    return orchestrationThorough;
   }
   return null;
 }
