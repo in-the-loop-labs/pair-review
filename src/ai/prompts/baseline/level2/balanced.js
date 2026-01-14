@@ -11,9 +11,9 @@
  * - optional: Can be removed entirely if unhelpful
  */
 
-const { validFilesSection } = require('../../shared/valid-files');
-const { outputSchemaSection } = require('../../shared/output-schema');
-const { diffInstructionsSection, fileLevelGuidanceSection } = require('../../shared/diff-instructions');
+// Note: Shared sections (valid-files, output-schema, diff-instructions) exist in ../shared/
+// for future variant generation and consistency checking. Baseline prompts are self-contained
+// with their own embedded section content to avoid runtime dependencies.
 
 /**
  * Tagged prompt template for Level 2 Balanced analysis
@@ -227,7 +227,7 @@ function parseSections() {
     // Extract tier attribute if present
     const tierMatch = attrs.match(/tier="([^"]+)"/);
     if (tierMatch) {
-      section.tier = tierMatch[1].split(',');
+      section.tier = tierMatch[1].split(',').map(t => t.trim());
     }
 
     parsed.push(section);
@@ -240,12 +240,5 @@ module.exports = {
   taggedPrompt,
   sections,
   defaultOrder,
-  parseSections,
-  // Re-export shared sections for convenience
-  sharedSections: {
-    validFilesSection,
-    outputSchemaSection,
-    diffInstructionsSection,
-    fileLevelGuidanceSection
-  }
+  parseSections
 };

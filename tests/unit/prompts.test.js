@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { getPromptBuilder, isPromptAvailable, interpolate, stripSectionTags } from '../../src/ai/prompts/index.js';
-import { resolveTier, getTierForModel, TIERS, PROMPT_TYPES } from '../../src/ai/prompts/config.js';
+import { resolveTier, TIERS, PROMPT_TYPES } from '../../src/ai/prompts/config.js';
 
 describe('Prompt System Configuration', () => {
   describe('resolveTier', () => {
@@ -21,27 +21,8 @@ describe('Prompt System Configuration', () => {
       expect(resolveTier('thorough')).toBe('thorough');
     });
 
-    it('should handle unknown tiers by returning as-is', () => {
-      expect(resolveTier('unknown')).toBe('unknown');
-    });
-  });
-
-  describe('getTierForModel', () => {
-    it('should return correct tier for Claude models', () => {
-      expect(getTierForModel('claude', 'haiku')).toBe('fast');
-      expect(getTierForModel('claude', 'sonnet')).toBe('balanced');
-      expect(getTierForModel('claude', 'opus')).toBe('thorough');
-    });
-
-    it('should return correct tier for Gemini models', () => {
-      expect(getTierForModel('gemini', 'gemini-2.0-flash')).toBe('fast');
-      expect(getTierForModel('gemini', 'gemini-2.5-pro')).toBe('balanced');
-    });
-
-    it('should return null for unknown models', () => {
-      // Explicit over implicit - we don't guess tiers for unknown models
-      expect(getTierForModel('claude', 'unknown-model')).toBeNull();
-      expect(getTierForModel('unknown-provider', 'any-model')).toBeNull();
+    it('should fall back to balanced for unknown tiers', () => {
+      expect(resolveTier('unknown')).toBe('balanced');
     });
   });
 
@@ -87,8 +68,11 @@ describe('Prompt Builder', () => {
       expect(() => getPromptBuilder('invalid', 'balanced')).toThrow('Invalid prompt type');
     });
 
-    it('should throw for invalid tiers', () => {
-      expect(() => getPromptBuilder('level2', 'invalid')).toThrow('Invalid tier');
+    it('should fall back to balanced for invalid tiers', () => {
+      // Invalid tiers are resolved to 'balanced' with a warning
+      const builder = getPromptBuilder('level2', 'invalid');
+      expect(builder).not.toBeNull();
+      expect(builder.tier).toBe('balanced');
     });
   });
 
@@ -249,8 +233,8 @@ Output JSON.
 });
 
 describe('Baseline Level 2 Balanced', () => {
-  it('should have all required sections', () => {
-    const baseline = require('../../src/ai/prompts/baseline/level2/balanced.js');
+  it('should have all required sections', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/level2/balanced.js');
 
     expect(baseline.taggedPrompt).toBeDefined();
     expect(baseline.sections).toBeDefined();
@@ -263,8 +247,8 @@ describe('Baseline Level 2 Balanced', () => {
     }
   });
 
-  it('should have valid locked sections', () => {
-    const baseline = require('../../src/ai/prompts/baseline/level2/balanced.js');
+  it('should have valid locked sections', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/level2/balanced.js');
     const parsed = baseline.parseSections();
 
     // Check that locked sections exist and are marked correctly
@@ -276,8 +260,8 @@ describe('Baseline Level 2 Balanced', () => {
     expect(lockedNames).toContain('output-schema');
   });
 
-  it('should parse sections correctly', () => {
-    const baseline = require('../../src/ai/prompts/baseline/level2/balanced.js');
+  it('should parse sections correctly', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/level2/balanced.js');
     const parsed = baseline.parseSections();
 
     expect(parsed.length).toBeGreaterThan(0);

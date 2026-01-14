@@ -22,7 +22,7 @@ const LEVEL2_OUTPUT_SCHEMA = {
     title: 'Brief title',
     description: 'Detailed explanation mentioning why full file context was needed',
     suggestion: 'How to fix/improve based on file context (omit for praise items)',
-    confidence: '0.0-1.0'
+    confidence: 0.8
   }],
   fileLevelSuggestions: [{
     file: 'path/to/file',
@@ -30,7 +30,7 @@ const LEVEL2_OUTPUT_SCHEMA = {
     title: 'Brief title describing file-level concern',
     description: 'Explanation of the file-level observation (architecture, organization, naming, etc.)',
     suggestion: 'How to address the file-level concern (omit for praise items)',
-    confidence: '0.0-1.0'
+    confidence: 0.8
   }],
   summary: 'Brief summary of file context findings'
 };

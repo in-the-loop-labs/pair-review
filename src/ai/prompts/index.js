@@ -93,7 +93,7 @@ function getPromptBuilder(promptType, tier, provider = 'claude') {
     throw new Error(`Invalid prompt type: ${promptType}. Valid types: ${PROMPT_TYPES.join(', ')}`);
   }
   if (!TIERS.includes(resolvedTier)) {
-    throw new Error(`Invalid tier: ${tier}. Valid tiers: ${TIERS.join(', ')}`);
+    throw new Error(`Invalid tier: ${tier} (resolved: ${resolvedTier}). Valid tiers: ${TIERS.join(', ')}`);
   }
 
   // Load baseline
