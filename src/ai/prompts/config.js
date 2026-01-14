@@ -2,7 +2,9 @@
 /**
  * Prompt optimization configuration
  *
- * Defines tier mappings and provider configurations for the prompt system.
+ * Defines tier mappings for the prompt system.
+ * Note: Provider-specific model-to-tier mappings are defined in each provider's
+ * getModels() method. Use getTierForModel() from src/ai/provider.js to query them.
  */
 
 /**
@@ -25,65 +27,26 @@ const TIERS = ['fast', 'balanced', 'thorough'];
 const PROMPT_TYPES = ['level1', 'level2', 'level3', 'orchestration'];
 
 /**
- * Provider configurations
- * Maps provider IDs to their model tier mappings
- */
-const PROVIDERS = {
-  claude: {
-    name: 'Anthropic Claude',
-    models: {
-      'haiku': { tier: 'fast' },
-      'sonnet': { tier: 'balanced' },
-      'opus': { tier: 'thorough' }
-    },
-    isBaseline: true // Claude prompts are canonical
-  },
-  gemini: {
-    name: 'Google Gemini',
-    models: {
-      'gemini-2.0-flash': { tier: 'fast' },
-      'gemini-2.5-pro': { tier: 'balanced' },
-      'gemini-ultra': { tier: 'thorough' }
-    }
-  },
-  openai: {
-    name: 'OpenAI',
-    models: {
-      'gpt-4o-mini': { tier: 'fast' },
-      'gpt-4o': { tier: 'balanced' },
-      'o1': { tier: 'thorough' }
-    }
-  }
-};
-
-/**
  * Resolve a user-friendly tier alias to internal tier
  * @param {string} tierOrAlias - Tier name or alias
  * @returns {string} Internal tier name
  */
 function resolveTier(tierOrAlias) {
-  return TIER_ALIASES[tierOrAlias] || tierOrAlias;
-}
-
-/**
- * Get tier for a specific model
- * @param {string} providerId - Provider ID
- * @param {string} model - Model name
- * @returns {string|null} Tier name or null if not found
- */
-function getTierForModel(providerId, model) {
-  const provider = PROVIDERS[providerId];
-  if (!provider || !provider.models[model]) {
-    return null;
+  if (TIER_ALIASES[tierOrAlias]) {
+    return TIER_ALIASES[tierOrAlias];
   }
-  return provider.models[model].tier;
+  if (TIERS.includes(tierOrAlias)) {
+    return tierOrAlias;
+  }
+  // Unknown tier - fall back to balanced with warning
+  const logger = require('../../utils/logger');
+  logger.warn(`Unknown tier "${tierOrAlias}", falling back to "balanced"`);
+  return 'balanced';
 }
 
 module.exports = {
   TIER_ALIASES,
   TIERS,
   PROMPT_TYPES,
-  PROVIDERS,
-  resolveTier,
-  getTierForModel
+  resolveTier
 };

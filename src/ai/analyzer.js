@@ -11,6 +11,7 @@ const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { normalizePath, pathExistsInList } = require('../utils/paths');
 const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
 const { getPromptBuilder } = require('./prompts');
+const { formatValidFiles } = require('./prompts/shared/valid-files');
 
 class Analyzer {
   /**
@@ -689,7 +690,7 @@ ${prMetadata.description || '(No description provided)'}
         customInstructions: this.buildCustomInstructionsSection(customInstructions),
         lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
         generatedFiles: this.buildGeneratedFilesExclusionSection(generatedPatterns),
-        validFiles: changedFiles.map(f => `- ${f}`).join('\n')
+        validFiles: formatValidFiles(changedFiles)
       };
 
       logger.debug('[Level 2] Using new prompt architecture');
