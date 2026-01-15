@@ -288,12 +288,69 @@ class PRManager {
   }
 
   /**
+   * Clear all session state before loading a new PR.
+   * This ensures no cross-contamination between PR review sessions.
+   * MUST be called UNCONDITIONALLY before any data loading.
+   */
+  clearSession() {
+    console.log('[Session] Clearing all session state');
+
+    // Clear PRManager internal state
+    this.currentPR = null;
+    this.userComments = [];
+    this.generatedFiles.clear();
+    this.collapsedFiles.clear();
+    this.viewedFiles.clear();
+    this.canonicalFileOrder.clear();
+    this.expandedFolders = new Set();
+    this.expandedSections = new Set();
+
+    // Clear AI Panel singleton state
+    if (window.aiPanel?.clearAllState) {
+      window.aiPanel.clearAllState();
+    }
+
+    // Clear manager states
+    if (this.suggestionManager) {
+      this.suggestionManager._isDisplayingSuggestions = false;
+    }
+    if (this.fileCommentManager) {
+      this.fileCommentManager.fileComments.clear();
+    }
+    if (this.commentManager) {
+      this.commentManager.currentCommentForm = null;
+    }
+    if (this.lineTracker) {
+      this.lineTracker.clearRangeSelection();
+    }
+
+    // UNCONDITIONAL DOM clearing - remove all review-related elements
+    this._clearReviewDOMElements();
+
+    console.log('[Session] Session state cleared');
+  }
+
+  /**
+   * Clear review-related DOM elements.
+   * @private
+   */
+  _clearReviewDOMElements() {
+    document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
+    document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
+    document.querySelectorAll('.file-comment-card').forEach(card => card.remove());
+    document.querySelectorAll('.comment-form-row').forEach(row => row.remove());
+  }
+
+  /**
    * Load PR data from the API
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
    * @param {string} number - PR number
    */
   async loadPR(owner, repo, number) {
+    // CRITICAL: Clear all state from previous session BEFORE loading new data
+    this.clearSession();
+
     this.setLoading(true);
 
     try {
@@ -3209,11 +3266,28 @@ class PRManager {
         const scrollPosition = window.scrollY;
         const expandedFolders = new Set(this.expandedFolders);
 
+        // CRITICAL: Clear review-related DOM elements before reload to prevent stale data
+        this._clearReviewDOMElements();
+
         // Update PR header with fresh data (title, description may have changed)
         this.renderPRHeader(data.data);
 
         // Reload the files/diff with fresh data
         await this.loadAndDisplayFiles(owner, repo, number);
+
+        // CRITICAL: Reload user comments and AI suggestions after refresh
+        // Wrap in try-catch to handle partial failures gracefully
+        try {
+          await this.loadUserComments();
+        } catch (commentsError) {
+          console.error('Error loading user comments during refresh:', commentsError);
+        }
+
+        try {
+          await this.loadAISuggestions();
+        } catch (suggestionsError) {
+          console.error('Error loading AI suggestions during refresh:', suggestionsError);
+        }
 
         // Restore expanded folders
         this.expandedFolders = expandedFolders;

@@ -1181,6 +1181,12 @@ class LocalManager {
       return;
     }
 
+    // CRITICAL: Clear all state from previous session BEFORE loading new data
+    // This prevents cross-contamination between review sessions
+    if (manager.clearSession) {
+      manager.clearSession();
+    }
+
     manager.setLoading(true);
 
     try {

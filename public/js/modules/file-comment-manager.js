@@ -1018,20 +1018,20 @@ class FileCommentManager {
       const fileName = zone.dataset.fileName;
       const container = zone.querySelector('.file-comments-container');
 
-      // Selectively clear existing cards based on what we're about to reload
-      // This prevents user comments from being cleared when only reloading AI suggestions
+      // CRITICAL: ALWAYS clear existing cards unconditionally.
+      // This prevents cross-contamination between sessions - old cards from
+      // a previous PR would persist if we only cleared when new data exists.
       if (container) {
-        // Only clear AI suggestions if we have suggestions to display
-        // (prevents stale suggestions from persisting when reloading or changing levels)
-        if (suggestions && suggestions.length > 0) {
+        // Always clear AI suggestions if suggestions array was provided (even if empty)
+        if (suggestions !== undefined) {
           const existingAISuggestions = container.querySelectorAll('.file-comment-card.ai-suggestion');
           for (const card of existingAISuggestions) {
             card.remove();
           }
         }
 
-        // Only clear user comments if we have comments to display
-        if (comments && comments.length > 0) {
+        // Always clear user comments if comments array was provided (even if empty)
+        if (comments !== undefined) {
           const existingUserComments = container.querySelectorAll('.file-comment-card.user-comment');
           for (const card of existingUserComments) {
             card.remove();

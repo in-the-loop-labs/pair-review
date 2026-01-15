@@ -916,6 +916,39 @@ class AIPanel {
         document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
     }
 
+    /**
+     * Clear all state for session boundary.
+     * Called when switching PRs to prevent cross-contamination.
+     * This is more comprehensive than clearAllFindings() - it resets ALL session state.
+     */
+    clearAllState() {
+        console.log('[AIPanel] Clearing all state for session boundary');
+
+        // Clear data arrays
+        this.findings = [];
+        this.comments = [];
+
+        // Clear navigation state
+        this.currentIndex = -1;
+        this.selectedItemKey = null;
+
+        // Clear PR-specific state
+        this.currentPRKey = null;
+        this.fileOrder = new Map();
+
+        // Clear analysis state
+        this.summaryData = null;
+        this.analysisState = 'unknown';
+
+        // Reset level filter (resetLevelFilter only updates DOM, so explicitly reset property too)
+        this.selectedLevel = 'final';
+
+        // Reset UI
+        this.updateSegmentCounts();
+        this.renderFindings();
+        this.resetLevelFilter();
+    }
+
     // ========================================
     // Comment Management Methods
     // ========================================
