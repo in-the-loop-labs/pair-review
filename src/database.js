@@ -546,15 +546,18 @@ async function recreateDatabase() {
 /**
  * Close database connection
  * @param {Database} db - Database instance
- * @returns {Promise<void>}
  */
-async function closeDatabase(db) {
+function closeDatabase(db) {
   db.close();
   console.log('Database connection closed');
 }
 
 /**
  * Execute a database query
+ *
+ * Note: async is retained for backward compatibility with existing callers,
+ * but the underlying better-sqlite3 operation is synchronous.
+ *
  * @param {Database} db - Database instance
  * @param {string} sql - SQL query
  * @param {Array} params - Query parameters
