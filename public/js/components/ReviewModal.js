@@ -155,6 +155,37 @@ class ReviewModal {
         window.reviewModal?.appendAISummary();
       }
     });
+
+    // Handle review type selection change (delegated since modal is recreated)
+    document.addEventListener('change', (e) => {
+      if (e.target.matches('input[name="review-event"]')) {
+        window.reviewModal?.updateTextareaState();
+      }
+    });
+  }
+
+  /**
+   * Update textarea disabled state based on selected review type
+   * Disables the textarea when Draft is selected since GitHub doesn't include
+   * the review body for draft reviews
+   */
+  updateTextareaState() {
+    const textarea = this.modal?.querySelector('#review-body-modal');
+    const selectedOption = this.modal?.querySelector('input[name="review-event"]:checked');
+
+    if (!textarea || !selectedOption) return;
+
+    const isDraft = selectedOption.value === 'DRAFT';
+
+    textarea.disabled = isDraft;
+
+    if (isDraft) {
+      textarea.title = 'Review summary is not included with draft reviews';
+      textarea.classList.add('disabled-textarea');
+    } else {
+      textarea.title = '';
+      textarea.classList.remove('disabled-textarea');
+    }
   }
 
   /**
@@ -178,7 +209,10 @@ class ReviewModal {
         radio.checked = true;
       }
     });
-    
+
+    // Update textarea state (ensures it's enabled since COMMENT is selected by default)
+    this.updateTextareaState();
+
     // Clear any errors or warnings
     this.hideError();
     this.updateLargeReviewWarning(0);

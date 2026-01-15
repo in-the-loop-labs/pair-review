@@ -4227,6 +4227,14 @@ tr.line-range-start .d2h-code-line-ctn {
   box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.1);
 }
 
+.review-modal-body .review-body-textarea:disabled,
+.review-modal-body .review-body-textarea.disabled-textarea {
+  background-color: #f6f8fa;
+  color: #656d76;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
 .review-type-options {
   display: flex;
   flex-direction: column;
@@ -4327,6 +4335,14 @@ tr.line-range-start .d2h-code-line-ctn {
 [data-theme="dark"] .review-modal-body .review-body-textarea:focus {
   border-color: #58a6ff;
   box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.1);
+}
+
+[data-theme="dark"] .review-modal-body .review-body-textarea:disabled,
+[data-theme="dark"] .review-modal-body .review-body-textarea.disabled-textarea {
+  background-color: #161b22;
+  color: #7d8590;
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 [data-theme="dark"] .review-type-label {

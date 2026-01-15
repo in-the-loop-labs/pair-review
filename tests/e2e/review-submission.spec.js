@@ -291,6 +291,30 @@ test.describe('Review Submission UI States', () => {
 });
 
 test.describe('Draft Review Submission', () => {
+  test('should disable textarea when DRAFT is selected', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await openReviewModal(page);
+
+    const textarea = page.locator('#review-body-modal');
+
+    // Textarea should be enabled by default (COMMENT selected)
+    await expect(textarea).toBeEnabled();
+
+    // Select DRAFT
+    await page.locator('input[value="DRAFT"]').click();
+
+    // Textarea should now be disabled
+    await expect(textarea).toBeDisabled();
+
+    // Should have tooltip explaining why
+    await expect(textarea).toHaveAttribute('title', 'Review summary is not included with draft reviews');
+
+    // Selecting a different option should re-enable it
+    await page.locator('input[value="APPROVE"]').click();
+    await expect(textarea).toBeEnabled();
+    await expect(textarea).toHaveAttribute('title', '');
+  });
+
   test('should be able to submit draft review', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await openReviewModal(page);
@@ -298,8 +322,8 @@ test.describe('Draft Review Submission', () => {
     // Select DRAFT
     await page.locator('input[value="DRAFT"]').click();
 
-    // Enter review body
-    await page.locator('#review-body-modal').fill('Work in progress review');
+    // Textarea is disabled for drafts - cannot enter body text
+    await expect(page.locator('#review-body-modal')).toBeDisabled();
 
     // Submit
     await page.locator('#submit-review-btn-modal').click();
