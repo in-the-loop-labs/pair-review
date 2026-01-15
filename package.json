@@ -57,7 +57,7 @@
     "markdown-it": "^13.0.2",
     "open": "^9.1.0",
     "simple-git": "^3.19.1",
-    "sqlite3": "^5.1.6",
+    "better-sqlite3": "^11.8.1",
     "uuid": "^11.1.0"
   },
   "devDependencies": {

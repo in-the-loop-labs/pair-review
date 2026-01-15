@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, beforeEach } from 'vitest';
-import sqlite3 from 'sqlite3';
+import Database from 'better-sqlite3';
 
 const database = require('../../src/database.js');
 const {
@@ -11,57 +12,46 @@ const {
 
 /**
  * Create an in-memory SQLite database with the proper schema for testing.
+ * Uses better-sqlite3 for synchronous operations.
  */
 function createTestDatabase() {
-  return new Promise((resolve, reject) => {
-    const db = new sqlite3.Database(':memory:', async (error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
+  const db = new Database(':memory:');
 
-      try {
-        // Create comments table with is_file_level column
-        await new Promise((res, rej) => {
-          db.run(`
-            CREATE TABLE IF NOT EXISTS comments (
-              id INTEGER PRIMARY KEY,
-              pr_id INTEGER,
-              source TEXT,
-              author TEXT,
-              ai_run_id TEXT,
-              ai_level INTEGER,
-              ai_confidence REAL,
-              file TEXT,
-              line_start INTEGER,
-              line_end INTEGER,
-              diff_position INTEGER,
-              side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT')),
-              commit_sha TEXT,
-              type TEXT,
-              title TEXT,
-              body TEXT,
-              status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
-              adopted_as_id INTEGER,
-              parent_id INTEGER,
-              is_file_level INTEGER DEFAULT 0,
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
-              FOREIGN KEY (parent_id) REFERENCES comments(id)
-            )
-          `, (err) => {
-            if (err) rej(err);
-            else res();
-          });
-        });
+  // Disable foreign keys to match legacy sqlite3 behavior
+  // (sqlite3 has foreign keys disabled by default, better-sqlite3 has them enabled)
+  db.pragma('foreign_keys = OFF');
 
-        resolve(db);
-      } catch (error) {
-        reject(error);
-      }
-    });
-  });
+  // Create comments table with is_file_level column
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS comments (
+      id INTEGER PRIMARY KEY,
+      pr_id INTEGER,
+      source TEXT,
+      author TEXT,
+      ai_run_id TEXT,
+      ai_level INTEGER,
+      ai_confidence REAL,
+      file TEXT,
+      line_start INTEGER,
+      line_end INTEGER,
+      diff_position INTEGER,
+      side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT')),
+      commit_sha TEXT,
+      type TEXT,
+      title TEXT,
+      body TEXT,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
+      adopted_as_id INTEGER,
+      parent_id INTEGER,
+      is_file_level INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
+      FOREIGN KEY (parent_id) REFERENCES comments(id)
+    )
+  `);
+
+  return db;
 }
 
 describe('CommentRepository', () => {
