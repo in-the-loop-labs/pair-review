@@ -169,7 +169,7 @@ class FileCommentManager {
       <textarea
         class="file-comment-textarea"
         placeholder="Write a comment about this file... (Ctrl+Enter to save)"
-        data-file="${this.escapeHtml(fileName)}"
+        data-file="${window.escapeHtmlAttribute(fileName)}"
       ></textarea>
       <div class="file-comment-form-footer">
         <button class="file-comment-form-btn submit submit-btn" disabled>Save</button>
@@ -354,7 +354,7 @@ class FileCommentManager {
           </button>
         </div>
       </div>
-      <div class="user-comment-body" data-original-markdown="${this.escapeHtml(comment.body)}">${renderedBody}</div>
+      <div class="user-comment-body" data-original-markdown="${window.escapeHtmlAttribute(comment.body)}">${renderedBody}</div>
     `;
 
     // Wire up edit/delete buttons
@@ -650,7 +650,7 @@ class FileCommentManager {
       <textarea
         class="file-comment-textarea"
         placeholder="Edit the suggestion..."
-        data-file="${this.escapeHtml(suggestion.file)}"
+        data-file="${window.escapeHtmlAttribute(suggestion.file)}"
       >${this.escapeHtml(suggestion.body)}</textarea>
       <div class="file-comment-form-footer">
         <button class="file-comment-form-btn submit submit-btn">Adopt</button>

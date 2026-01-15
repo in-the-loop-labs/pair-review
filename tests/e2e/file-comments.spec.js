@@ -444,6 +444,93 @@ test.describe('Editing File Comments', () => {
     const cardBody = card.locator('.user-comment-body');
     await expect(cardBody).toContainText('Original file comment');
   });
+
+  test('should correctly edit file comments containing double quotes', async ({ page }) => {
+    // This test verifies the fix for the quote escaping bug where comments
+    // with double quotes would get truncated when edited.
+    // Note: markdown-it with typographer enabled converts " to "smart quotes" in rendered output,
+    // but the raw markdown should preserve the original straight quotes.
+
+    const card = page.locator(`[data-comment-id="${commentId}"]`);
+    const editBtn = card.locator('.btn-edit-comment');
+    await editBtn.click();
+
+    // Wait for edit form
+    const editTextarea = card.locator('.file-comment-textarea');
+    await expect(editTextarea).toBeVisible({ timeout: 5000 });
+
+    // Enter text with double quotes - this was the bug trigger
+    const textWithQuotes = 'This file has a "config" issue and "settings" problem';
+    await editTextarea.fill(textWithQuotes);
+
+    // Set up API listener
+    const saveResponsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+    );
+
+    // Save the edit
+    const saveEditBtn = card.locator('.save-edit-btn');
+    await saveEditBtn.click();
+    await saveResponsePromise;
+
+    // Wait for edit form to close
+    await expect(editTextarea).not.toBeVisible({ timeout: 5000 });
+
+    // Verify the comment displays - use partial match for key words since markdown-it
+    // converts straight quotes to smart quotes in rendered output
+    const cardBody = card.locator('.user-comment-body');
+    await expect(cardBody).toContainText('config', { timeout: 5000 });
+    await expect(cardBody).toContainText('settings', { timeout: 5000 });
+
+    // Now edit again - this is where the bug would manifest (truncated text)
+    await editBtn.click();
+
+    // The textarea should contain the FULL text, not truncated
+    const editTextarea2 = card.locator('.file-comment-textarea');
+    await expect(editTextarea2).toBeVisible({ timeout: 5000 });
+
+    // This is the critical assertion - previously the text would be truncated at the first quote
+    // The raw markdown should preserve straight quotes even if rendered output has smart quotes
+    await expect(editTextarea2).toHaveValue(textWithQuotes);
+
+    // Cancel to clean up
+    const cancelEditBtn = card.locator('.cancel-edit-btn');
+    await cancelEditBtn.click();
+  });
+
+  test('should correctly edit file comments containing single quotes', async ({ page }) => {
+    // Test single quotes as well to ensure full coverage
+    const card = page.locator(`[data-comment-id="${commentId}"]`);
+    const editBtn = card.locator('.btn-edit-comment');
+    await editBtn.click();
+
+    const editTextarea = card.locator('.file-comment-textarea');
+    await expect(editTextarea).toBeVisible({ timeout: 5000 });
+
+    // Enter text with single quotes
+    const textWithQuotes = "This file's structure doesn't follow the team's conventions";
+    await editTextarea.fill(textWithQuotes);
+
+    const saveResponsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+    );
+
+    const saveEditBtn = card.locator('.save-edit-btn');
+    await saveEditBtn.click();
+    await saveResponsePromise;
+
+    await expect(editTextarea).not.toBeVisible({ timeout: 5000 });
+
+    // Edit again and verify full text is preserved
+    await editBtn.click();
+
+    const editTextarea2 = card.locator('.file-comment-textarea');
+    await expect(editTextarea2).toBeVisible({ timeout: 5000 });
+    await expect(editTextarea2).toHaveValue(textWithQuotes);
+
+    const cancelEditBtn = card.locator('.cancel-edit-btn');
+    await cancelEditBtn.click();
+  });
 });
 
 test.describe('Deleting File Comments', () => {

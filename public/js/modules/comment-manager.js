@@ -482,7 +482,7 @@ class CommentManager {
             </button>
           </div>
         </div>
-        <div class="user-comment-body" data-original-markdown="${escapeHtml(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : escapeHtml(comment.body)}</div>
+        <div class="user-comment-body" data-original-markdown="${window.escapeHtmlAttribute(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : escapeHtml(comment.body)}</div>
       </div>
     `;
 
@@ -550,7 +550,7 @@ class CommentManager {
           </div>
         </div>
         <!-- Hidden body div for saving - pre-populate with markdown rendered content and store original -->
-        <div class="user-comment-body" style="display: none;" data-original-markdown="${escapeHtml(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : escapeHtml(comment.body)}</div>
+        <div class="user-comment-body" style="display: none;" data-original-markdown="${window.escapeHtmlAttribute(comment.body)}">${window.renderMarkdown ? window.renderMarkdown(comment.body) : escapeHtml(comment.body)}</div>
         <div class="user-comment-edit-form">
           <div class="comment-form-toolbar">
             <button type="button" class="btn btn-sm suggestion-btn" title="Insert a suggestion (Ctrl+G)">

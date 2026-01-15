@@ -267,6 +267,97 @@ test.describe('Comment Editing', () => {
     const commentBody = page.locator('.user-comment-body');
     await expect(commentBody.first()).toContainText('Original comment text');
   });
+
+  test('should correctly edit comments containing double quotes', async ({ page }) => {
+    // This test verifies the fix for the quote escaping bug where comments
+    // with double quotes would get truncated when edited.
+    // Note: markdown-it with typographer enabled converts " to "smart quotes" in rendered output,
+    // but the raw markdown should preserve the original straight quotes.
+
+    // Get the comment row and update it with text containing quotes
+    const commentRow = page.locator('.user-comment-row').first();
+    const commentId = await commentRow.getAttribute('data-comment-id');
+
+    // Click edit button
+    await commentRow.locator('.btn-edit-comment').click();
+
+    // Wait for edit mode
+    const editTextarea = page.locator(`#edit-comment-${commentId}`);
+    await expect(editTextarea).toBeVisible({ timeout: 5000 });
+
+    // Enter text with double quotes - this was the bug trigger
+    const textWithQuotes = 'Check the "variable" assignment and "function" call';
+    await editTextarea.fill(textWithQuotes);
+
+    // Wait for API call to complete
+    const saveResponsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+    );
+
+    // Save the edit
+    await page.locator('.save-edit-btn').click();
+    await saveResponsePromise;
+
+    // Wait for edit form to close
+    await expect(page.locator('.user-comment-edit-form')).not.toBeVisible({ timeout: 5000 });
+
+    // Verify the comment displays - use partial match for key words since markdown-it
+    // converts straight quotes to smart quotes in rendered output
+    const updatedRow = page.locator(`[data-comment-id="${commentId}"]`);
+    const commentBody = updatedRow.locator('.user-comment-body');
+    await expect(commentBody).toContainText('variable', { timeout: 5000 });
+    await expect(commentBody).toContainText('assignment', { timeout: 5000 });
+    await expect(commentBody).toContainText('function', { timeout: 5000 });
+
+    // Now edit again - this is where the bug would manifest (truncated text)
+    await updatedRow.locator('.btn-edit-comment').click();
+
+    // The textarea should contain the FULL text, not truncated
+    const editTextarea2 = page.locator(`#edit-comment-${commentId}`);
+    await expect(editTextarea2).toBeVisible({ timeout: 5000 });
+
+    // This is the critical assertion - previously the text would be truncated at the first quote
+    // The raw markdown should preserve straight quotes even if rendered output has smart quotes
+    await expect(editTextarea2).toHaveValue(textWithQuotes);
+
+    // Cancel to clean up
+    await page.locator('.cancel-edit-btn').click();
+  });
+
+  test('should correctly edit comments containing single quotes', async ({ page }) => {
+    // Test single quotes as well to ensure full coverage
+    const commentRow = page.locator('.user-comment-row').first();
+    const commentId = await commentRow.getAttribute('data-comment-id');
+
+    // Click edit button
+    await commentRow.locator('.btn-edit-comment').click();
+
+    const editTextarea = page.locator(`#edit-comment-${commentId}`);
+    await expect(editTextarea).toBeVisible({ timeout: 5000 });
+
+    // Enter text with single quotes
+    const textWithQuotes = "It's important to check the value's type";
+    await editTextarea.fill(textWithQuotes);
+
+    const saveResponsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+    );
+
+    await page.locator('.save-edit-btn').click();
+    await saveResponsePromise;
+
+    await expect(page.locator('.user-comment-edit-form')).not.toBeVisible({ timeout: 5000 });
+
+    // Edit again and verify full text is preserved
+    const updatedRow = page.locator(`[data-comment-id="${commentId}"]`);
+    await updatedRow.locator('.btn-edit-comment').click();
+
+    const editTextarea2 = page.locator(`#edit-comment-${commentId}`);
+    await expect(editTextarea2).toBeVisible({ timeout: 5000 });
+    await expect(editTextarea2).toHaveValue(textWithQuotes);
+
+    await page.locator('.cancel-edit-btn').click();
+  });
 });
 
 test.describe('Comment Deletion', () => {

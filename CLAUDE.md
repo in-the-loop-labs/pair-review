@@ -132,3 +132,8 @@ Test structure:
 ## Project Documentation Structure
 - **CLAUDE.md**: Stable requirements (this file)
 
+## Learnings
+
+### Testing Practices
+- NEVER duplicate production code in tests. Always import and test the actual implementation.
+- If production code is structured in a way that makes it hard to test (e.g., browser-only IIFEs), refactor the production code to be testable rather than duplicating it.
