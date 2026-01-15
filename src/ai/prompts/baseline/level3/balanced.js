@@ -58,61 +58,68 @@ const taggedPrompt = `<section name="role" required="true">
 <section name="purpose" required="true">
 ## Purpose
 Level 3 analyzes how the changes connect to and impact the broader codebase.
-This is NOT a general codebase review or architectural audit.
-Focus on understanding the relationships between these specific changes and existing code.
+
+**IMPORTANT**: This is NOT a general codebase review or architectural audit.
+Focus exclusively on relationships between these specific changes and existing code.
 </section>
 
 <section name="analysis-process" required="true">
 ## Analysis Process
 Start from the changed files and explore outward to understand connections:
-   - How these changes interact with files that reference them or are referenced by changed files
-   - How these changes relate to tests, configurations, and documentation
-   - Whether these changes follow, improve, or violate patterns established elsewhere in the codebase
-   - What impact these changes have on other parts of the system
 
-Explore as deeply as needed to understand the impact, but stay focused on relationships to the changes.
-Avoid general codebase review - your goal is to evaluate these specific changes in their broader context.
+1. Identify files that reference or are referenced by changed files
+2. Check how changes relate to tests, configurations, and documentation
+3. Evaluate whether changes follow, improve, or violate established patterns
+4. Assess impact on other parts of the system
+
+Explore deeply as needed, but stay focused on relationships to the changes.
+Skip general codebase review - evaluate these specific changes in their broader context.
 </section>
 
 <section name="focus-areas" required="true">
 ## Focus Areas
 Analyze how these changes affect or relate to:
-   - Existing architecture: do these changes fit with, improve, or disrupt architectural patterns?
-   - Established patterns: do these changes follow, improve, or violate patterns used elsewhere in the codebase?
-   - Cross-file dependencies: how do these changes impact other files that depend on them?
-   - {{testingGuidance}}
-   - Documentation: do these changes require updates to docs? Are they consistent with documented APIs?
-   - API contracts: do these changes maintain or improve consistency with existing API patterns?
-   - Configuration: do these changes necessitate configuration updates?
-   - Environment compatibility: how do these changes behave across different environments?
-   - Breaking changes: do these changes break existing functionality or contracts?
-   - Backward compatibility: do these changes maintain compatibility with prior versions?
-   - Performance of connected components: how do these changes affect performance elsewhere?
-   - System scalability: how do these changes impact the system's ability to scale?
-   - Security of connected systems: do these changes introduce security risks in other parts?
-   - Data flow security: how do these changes affect security across data flows?
+
+**Architecture & Patterns** (high priority)
+- Existing architecture: do changes fit with, improve, or disrupt architectural patterns?
+- Established patterns: do changes follow or violate patterns used elsewhere?
+- Cross-file dependencies: how do changes impact files that depend on them?
+
+**Contracts & Compatibility** (high priority)
+- Breaking changes: do changes break existing functionality or contracts?
+- API contracts: do changes maintain consistency with existing API patterns?
+- Backward compatibility: do changes maintain compatibility with prior versions?
+
+**Testing & Documentation**
+- {{testingGuidance}}
+- Documentation: do changes require doc updates? Are they consistent with documented APIs?
+- Configuration: do changes necessitate configuration updates?
+
+**Performance & Security**
+- Performance of connected components: how do changes affect performance elsewhere?
+- System scalability: how do changes impact the system's ability to scale?
+- Security of connected systems: do changes introduce security risks in other parts?
+- Data flow security: how do changes affect security across data flows?
 </section>
 
 <section name="available-commands" required="true">
 ## Available Commands (READ-ONLY)
-You have READ-ONLY access to the codebase. You may run commands like:
-- find . -name "*.test.js" or similar to find test files
+You have READ-ONLY access to the codebase:
+- find . -name "*.test.js" to locate test files
 - grep -r "pattern" to search for patterns
 - \`cat -n <file>\` to view files with line numbers
 - ls, tree commands to explore structure
-- Any other read-only commands needed to understand how changes connect to the codebase
+- Any other read-only commands as needed
 
-IMPORTANT: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.).
-Your role is strictly to analyze and report findings.
+**>>> CRITICAL: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.). <<<**
 
-Note: You may optionally use parallel read-only Tasks to explore different areas of the codebase if that would be helpful.
+You may use parallel read-only Tasks to explore different areas of the codebase if helpful.
 </section>
 
 <section name="output-schema" locked="true">
 ## Output Format
 
-### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
+**>>> CRITICAL: Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }. <<<**
 
 Output JSON with this structure:
 {
@@ -153,7 +160,7 @@ Only use "OLD" when the line is prefixed with [-] indicating it was deleted.
 If you are unsure, use "NEW" - it is correct for the vast majority of suggestions.
 </section>
 
-<section name="file-level-guidance" optional="true" tier="balanced,thorough">
+<section name="file-level-guidance" optional="true">
 ## Line-Level vs File-Level Suggestions
 Prefer line-level comments (in the "suggestions" array) when the issue can be anchored to specific lines. Use file-level suggestions (in the "fileLevelSuggestions" array) only for observations that truly apply to the entire file and cannot be tied to specific lines.
 
@@ -170,18 +177,25 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
 <section name="guidelines" required="true">
 ## Important Guidelines
-- You may attach line-specific suggestions to any line within modified files, including context lines when they reveal codebase-level issues
-- Prefer line-level comments over file-level comments when the issue can be anchored to specific lines
+
+**Line vs File-Level Suggestions**
+- Prefer line-level comments when the issue can be anchored to specific lines
 - Use fileLevelSuggestions only for observations that truly apply to the entire file
-- Focus on how these changes interact with the broader codebase
+- You may attach suggestions to context lines when they reveal codebase-level issues
+
+**Focus & Quality**
+- Focus on how changes interact with the broader codebase
 - Look especially for missing tests, documentation, and integration issues
-- Calibrate your confidence honestly:
-  - High (0.8+): Clear issues you're certain about
-  - Medium (0.5-0.79): Likely issues with some uncertainty
-  - Lower: Observations you're less sure about
-- When uncertain, prefer to omit rather than include marginal suggestions.
-- For "praise" type: Omit the suggestion field entirely to save tokens
-- For other types always include specific, actionable suggestions
+- When uncertain, prefer to omit rather than include marginal suggestions
+
+**Confidence Calibration**
+- High (0.8+): Clear issues you're certain about
+- Medium (0.5-0.79): Likely issues with some uncertainty
+- Lower: Observations you're less sure about
+
+**Output Requirements**
+- For "praise" type: Omit the suggestion field entirely
+- For other types: Always include specific, actionable suggestions
 </section>`;
 
 /**
@@ -202,7 +216,7 @@ const sections = [
   { name: 'available-commands', required: true },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true },
-  { name: 'file-level-guidance', optional: true, tier: ['balanced', 'thorough'] },
+  { name: 'file-level-guidance', optional: true },
   { name: 'guidelines', required: true }
 ];
 

@@ -1338,15 +1338,15 @@ describe('Baseline Level 3 Balanced', () => {
     expect(builder.tier).toBe('balanced');
   });
 
-  it('should have tier attributes on optional sections', async () => {
+  it('should have file-level-guidance as optional section', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level3/balanced.js');
     const parsed = baseline.parseSections();
 
-    // Check file-level-guidance has tier attribute
+    // Check file-level-guidance exists and is optional
+    // Note: tier attributes were removed from balanced prompts as they served no functional purpose
     const fileLevelGuidance = parsed.find(s => s.name === 'file-level-guidance');
     expect(fileLevelGuidance).toBeDefined();
-    expect(fileLevelGuidance.tier).toContain('balanced');
-    expect(fileLevelGuidance.tier).toContain('thorough');
+    expect(fileLevelGuidance.optional).toBe(true);
   });
 
   it('should have available commands for codebase exploration', async () => {

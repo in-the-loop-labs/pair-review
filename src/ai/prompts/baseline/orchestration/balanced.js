@@ -144,7 +144,7 @@ Output JSON with this structure:
 ## Line Number Reference (old_or_new field)
 The "old_or_new" field indicates which line number column to use:
 - **"NEW"** (default): Correct for ADDED lines and CONTEXT lines (unchanged lines in both versions)
-- **"OLD"**: ONLY for DELETED lines marked with [-]
+- **"OLD"**: ONLY for DELETED lines (marked with [-] in the diff)
 
 **IMPORTANT**: Context lines exist in BOTH versions - always use "NEW" for them.
 Preserve the old_or_new value from input suggestions when merging.

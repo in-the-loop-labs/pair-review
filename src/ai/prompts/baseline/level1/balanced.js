@@ -2,8 +2,16 @@
 /**
  * Level 1 Balanced Prompt - Changes in Isolation Analysis
  *
- * This is the canonical baseline prompt for Level 1 analysis (diff-only).
- * It uses tagged XML format to enable machine-readable optimization.
+ * This is the balanced tier variant of Level 1 analysis, optimized for
+ * Claude Sonnet. It balances thoroughness with clarity.
+ *
+ * Optimizations applied:
+ * - ADDED: Emphasis markers (**>>> CRITICAL: ... <<<**) for output requirements
+ * - ADDED: "Default to NEW if unclear" fallback guidance in diff-instructions
+ * - TRIMMED: Verbose phrasing in valid-files, focus-areas, guidelines
+ * - STRUCTURED: Clear numbered steps in initial-setup
+ * - RETAINED: Category definitions (unlike fast tier) for precision
+ * - RETAINED: Speed expectations section for scope clarity
  *
  * Section categories:
  * - locked: Cannot be modified by variants (data integrity)
@@ -48,7 +56,7 @@ const taggedPrompt = `<section name="role" required="true">
 
 <section name="speed-expectations" required="true">
 ## Speed and Scope Expectations
-**This analysis should be fast** - focusing only on the diff itself without exploring file context or surrounding unchanged code.
+**This analysis should be fast** - focus only on the diff itself without exploring file context or surrounding unchanged code.
 </section>
 
 <section name="generated-files" optional="true">
@@ -57,7 +65,7 @@ const taggedPrompt = `<section name="role" required="true">
 
 <section name="valid-files" locked="true">
 ## Valid Files for Suggestions
-You should ONLY create suggestions for files in this list:
+ONLY create suggestions for files in this list:
 {{validFiles}}
 
 Do NOT create suggestions for any files not in this list. If you cannot find issues in these files, that's okay - just return fewer suggestions.
@@ -72,15 +80,14 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
 <section name="focus-areas" required="true">
 ## Analysis Focus Areas
 Identify the following in changed code:
-   - Bugs or errors in the modified code
-   - Logic issues in the changes
-   - Security concerns and vulnerabilities in the changed lines
-   - Performance issues and optimizations visible in the diff
-   - Code style and formatting issues
-   - Naming convention violations
-   - Design pattern violations visible in isolation
-   - Documentation issues visible in the changed lines
-   - Good practices worth praising
+- Bugs or errors in the modified code
+- Logic issues in the changes
+- Security vulnerabilities in the changed lines
+- Performance issues visible in the diff
+- Code style and naming convention violations
+- Design pattern violations visible in isolation
+- Documentation issues in changed lines
+- Good practices worth praising
 </section>
 
 <section name="available-commands" required="true">
@@ -94,9 +101,9 @@ Do NOT modify files or run write commands. Analyze and report only.
 
 <section name="output-schema" locked="true">
 ## Output Format
-Output ONLY valid JSON - no markdown blocks, no extra text. Start with { and end with }.
 
-JSON structure:
+**>>> CRITICAL: Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }. <<<**
+
 {
   "level": 1,
   "suggestions": [{
@@ -106,7 +113,7 @@ JSON structure:
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
     "description": "Detailed explanation",
-    "suggestion": "How to fix/improve (omit this field for praise items - no action needed)",
+    "suggestion": "How to fix/improve (omit for praise items)",
     "confidence": 0.0-1.0
   }],
   "summary": "Brief summary of findings"
@@ -116,15 +123,13 @@ JSON structure:
 <section name="diff-instructions" required="true">
 ## Line Number Reference (old_or_new field)
 The "old_or_new" field indicates which line number column to use:
-- **"NEW"** (default): Use the NEW column number. This is correct for:
+- **"NEW"** (default): Use the NEW column number for:
   - ADDED lines marked with [+]
-  - CONTEXT lines (unchanged lines that appear in both versions)
-- **"OLD"**: Use the OLD column number. ONLY use this for DELETED lines marked with [-].
+  - CONTEXT lines (unchanged lines in both versions)
+- **"OLD"**: Use the OLD column number ONLY for DELETED lines marked with [-]
 
-**IMPORTANT**: Context lines exist in BOTH the old and new file - always use "NEW" for context lines.
-Only use "OLD" when the line is prefixed with [-] indicating it was deleted.
-
-If you are unsure, use "NEW" - it is correct for the vast majority of suggestions.
+**IMPORTANT:** Context lines exist in BOTH old and new file - always use "NEW" for context lines.
+**Default to NEW if unclear** - it is correct for the vast majority of suggestions.
 </section>
 
 <section name="category-definitions" required="true">
@@ -140,16 +145,16 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 </section>
 
 <section name="guidelines" required="true">
-## Important Guidelines
-- Prioritize changed lines, but include unchanged lines when they reveal issues (missing error handling, inconsistent patterns)
+## Guidelines
+- Prioritize changed lines; include unchanged lines only when they reveal issues
 - Prefer line-level over file-level comments when applicable
-- For "praise": omit the suggestion field (no action needed)
-- For other types: include specific, actionable suggestions
+- **Praise:** omit the suggestion field (no action needed)
+- **Other types:** include specific, actionable suggestions
 
 Confidence calibration:
 - High (0.8+): Clear issues you're certain about
 - Medium (0.5-0.79): Likely issues with some uncertainty
-- Lower: Observations with less certainty - prefer to omit marginal suggestions
+- Lower (<0.5): Prefer to omit marginal suggestions
 </section>`;
 
 /**
