@@ -10,6 +10,8 @@ const { extractJSON } = require('../utils/json-extractor');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { normalizePath, pathExistsInList } = require('../utils/paths');
 const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
+const { getPromptBuilder } = require('./prompts');
+const { formatValidFiles } = require('./prompts/shared/valid-files');
 
 class Analyzer {
   /**
@@ -672,6 +674,39 @@ ${prMetadata.description || '(No description provided)'}
    * @param {Array<string>} changedFiles - List of changed file paths for grounding
    */
   buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = []) {
+    // Try new prompt architecture first
+    const promptBuilder = getPromptBuilder('level2', 'balanced');
+
+    if (promptBuilder) {
+      // Build context for the new tagged prompt system
+      const criticalNote = `Treat this description as the author's CLAIM about what they changed and why. As you analyze file-level consistency, verify if the actual changes align with this description. Be alert for:
+- Significant functionality changes not mentioned in the description
+- Inconsistencies between stated goals and implementation patterns
+- Scope creep beyond what was described`;
+
+      const context = {
+        reviewIntro: this.buildReviewIntroduction(prId, prMetadata),
+        prContext: this.buildPRContextSection(prMetadata, criticalNote),
+        customInstructions: this.buildCustomInstructionsSection(customInstructions),
+        lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
+        generatedFiles: this.buildGeneratedFilesExclusionSection(generatedPatterns),
+        validFiles: formatValidFiles(changedFiles)
+      };
+
+      logger.debug('[Level 2] Using new prompt architecture');
+      return promptBuilder.build(context);
+    }
+
+    // Fallback to legacy implementation if prompt not migrated
+    logger.debug('[Level 2] Using legacy prompt implementation');
+    return this._buildLevel2PromptLegacy(prId, worktreePath, prMetadata, generatedPatterns, customInstructions, changedFiles);
+  }
+
+  /**
+   * Legacy Level 2 prompt builder (fallback)
+   * @private
+   */
+  _buildLevel2PromptLegacy(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = []) {
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. As you analyze file-level consistency, verify if the actual changes align with this description. Be alert for:
 - Significant functionality changes not mentioned in the description

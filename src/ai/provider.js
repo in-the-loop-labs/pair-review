@@ -195,6 +195,24 @@ function createProvider(providerId, model = null) {
 }
 
 /**
+ * Get tier for a specific model from a provider
+ * Queries the provider's model definitions to find the tier
+ * @param {string} providerId - Provider ID (e.g., 'claude', 'gemini')
+ * @param {string} modelId - Model ID (e.g., 'sonnet', 'gemini-2.5-pro')
+ * @returns {string|null} Tier name or null if provider or model not found
+ */
+function getTierForModel(providerId, modelId) {
+  const ProviderClass = providerRegistry.get(providerId);
+  if (!ProviderClass) {
+    return null;
+  }
+
+  const models = ProviderClass.getModels();
+  const model = models.find(m => m.id === modelId);
+  return model?.tier || null;
+}
+
+/**
  * Test availability of a provider with timeout
  * @param {string} providerId - Provider ID
  * @param {number} timeout - Timeout in milliseconds (default 10 seconds)
@@ -234,5 +252,6 @@ module.exports = {
   getRegisteredProviderIds,
   getAllProvidersInfo,
   createProvider,
+  getTierForModel,
   testProviderAvailability
 };

@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "updatedAt": "2026-01-13T00:00:00Z",
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2026-01-13",
+      "changes": [
+        "Initial extraction of Level 2 Balanced prompt",
+        "Established tagged format baseline"
+      ]
+    }
+  ]
+}
