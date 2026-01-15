@@ -68,10 +68,8 @@ Quality matters more than speed for this review level. It's better to surface fe
 
 <section name="valid-files" locked="true">
 ## Valid Files for Suggestions
-You should ONLY create suggestions for files in this list:
+ONLY create suggestions for files in this list. If you cannot find issues in these files, that's okay - just return fewer suggestions.
 {{validFiles}}
-
-Do NOT create suggestions for any files not in this list. If you cannot find issues in these files, that's okay - just return fewer suggestions.
 </section>
 
 <section name="initial-setup" required="true" tier="thorough">
@@ -79,7 +77,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
 1. Run the annotated diff tool (shown above) to see the changes with line numbers
 2. Carefully read through all changes to understand the overall intent
 3. Focus on the changed lines in the diff, but note patterns across multiple changes
-4. Do not analyze file context or surrounding unchanged code - that's for Level 2
+4. Do not analyze file context or surrounding unchanged code
 5. Consider what could go wrong with each change
 </section>
 
@@ -181,32 +179,13 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
 <section name="confidence-guidance" required="true" tier="thorough">
 ## Confidence Calibration
-Assign confidence scores carefully based on the certainty of your assessment:
+**Confidence** reflects your certainty that something IS an issue:
+- High (0.8-1.0): You're certain this is a real problem
+- Medium (0.5-0.79): Likely an issue, but context might justify it
+- Low (0.3-0.49): Possibly an issue, requires human judgment
+- Very low (<0.3): Observation only - flag for human awareness
 
-**High confidence (0.8-1.0):**
-- Clear bugs that will definitely cause runtime errors
-- Obvious security vulnerabilities with well-known exploit patterns
-- Definite typos or syntax errors
-- Violations of language rules or type system errors
-
-**Medium confidence (0.5-0.79):**
-- Likely bugs that depend on runtime conditions
-- Potential security issues that need context to confirm
-- Performance concerns that may or may not be significant
-- Code style issues that deviate from common conventions
-
-**Low confidence (0.3-0.49):**
-- Possible issues that require more context to evaluate
-- Stylistic suggestions that are subjective
-- Performance optimizations that may be premature
-- Design suggestions based on limited information
-
-**Very low confidence (0.0-0.29):**
-- Uncertain observations that may not be issues
-- Questions about intent rather than definite problems
-- Exploratory suggestions for consideration
-
-Be honest about uncertainty. A well-calibrated low confidence score is more useful than an overconfident high score.
+Note: Confidence is about certainty, not severity. A minor style issue can have high confidence. A potential security issue might have low confidence if you're unsure it's exploitable.
 </section>
 
 <section name="category-definitions" required="true" tier="thorough">
@@ -238,12 +217,13 @@ Be honest about uncertainty. A well-calibrated low confidence score is more usef
 - You may comment on any line in modified files
 - Prioritize changed lines, but include unchanged lines when they reveal issues (missing error handling, inconsistent patterns, etc.)
 - Focus on issues visible in the diff itself - do not analyze file context
-- Do not review unchanged code or missing tests (that's for Level 3)
-- Do not analyze file-level patterns or consistency (that's for Level 2)
+- Prefer line-level comments over file-level comments when the suggestion applies to a specific line or range of lines
+- Do not review unchanged code or missing tests
+- Do not analyze file-level patterns or consistency
 
 ### Output Quality
 - For "praise" type suggestions: Omit the suggestion field entirely (no action needed)
-- For other types: Include specific, actionable suggestions that the developer can implement
+- For other types always include specific, actionable suggestions that the developer can implement
 - Provide enough context in the description that a developer can understand the issue without seeing the code
 - Avoid vague suggestions like "consider improving this" - be specific about what and how
 

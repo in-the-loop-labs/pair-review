@@ -86,7 +86,8 @@ For each file with changes, follow this thorough analysis approach:
    5. **Evaluate consistency** - Naming, error handling, code style, documentation
    6. **Consider completeness** - Are there related changes within the file that should accompany these changes?
    7. **Assess file-level implications** - Does the change affect the file's overall coherence?
-   8. **Skip files where no file-level issues are found** - Efficiency focus, don't force findings
+   8. **Generate line-level suggestions** - After analyzing file context, create suggestions attached to specific lines where issues manifest
+   9. **Skip files where no file-level issues are found** - Efficiency focus, don't force findings
 </section>
 
 <section name="focus-areas" required="true" tier="thorough">
@@ -199,33 +200,13 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
 <section name="confidence-guidance" required="true" tier="thorough">
 ## Confidence Calibration
-Assign confidence scores carefully based on the certainty of your assessment:
+**Confidence** reflects your certainty that something IS an issue:
+- High (0.8-1.0): You're certain this is a real problem
+- Medium (0.5-0.79): Likely an issue, but context might justify it
+- Low (0.3-0.49): Possibly an issue, requires human judgment
+- Very low (<0.3): Observation only - flag for human awareness
 
-**High confidence (0.8-1.0):**
-- Clear inconsistencies with well-established patterns in the file
-- Obvious integration issues that break file conventions
-- Definite missing related changes (e.g., import added but function not used)
-- Clear violations of the file's established security or error handling patterns
-
-**Medium confidence (0.5-0.79):**
-- Likely pattern violations that depend on file conventions being intentional
-- Potential consistency issues that may have valid reasons
-- Integration concerns that need more context to fully evaluate
-- Style issues that deviate from file norms but may be acceptable
-
-**Low confidence (0.3-0.49):**
-- Possible issues that require understanding file history
-- Stylistic suggestions based on inferred file conventions
-- Observations that may reflect intentional deviation from patterns
-- Suggestions for improvement based on limited file pattern evidence
-
-**Very low confidence (0.0-0.29):**
-- Uncertain observations about file patterns
-- Questions about intent rather than definite problems
-- Exploratory suggestions for file-level improvements
-- Observations where file context is unclear or ambiguous
-
-Be honest about uncertainty. A well-calibrated low confidence score is more useful than an overconfident high score.
+Note: Confidence is about certainty, not severity. A minor style issue can have high confidence. A potential security issue might have low confidence if you're unsure it's exploitable.
 </section>
 
 <section name="category-definitions" required="true" tier="thorough">
@@ -252,7 +233,7 @@ Be honest about uncertainty. A well-calibrated low confidence score is more usef
 
 <section name="file-level-guidance" required="true" tier="thorough">
 ## File-Level Suggestions
-In addition to line-specific suggestions, you SHOULD include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
+In addition to line-specific suggestions, you MAY include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
 - Overall file architecture or organization issues introduced by the changes
 - Naming convention concerns that affect the file/module as a whole
 - Missing tests for the file (if test patterns are visible in the codebase)
@@ -265,6 +246,7 @@ In addition to line-specific suggestions, you SHOULD include file-level observat
 File-level suggestions should NOT have a line number. They apply to the entire file.
 
 **When to use file-level suggestions:**
+- Line-level suggestions are preferred when they relate to a specific line or range of lines
 - The observation requires understanding the whole file, not just one line
 - The suggestion would improve overall file coherence
 - The issue cannot be addressed by changing a single line
@@ -282,7 +264,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
 ### Output Quality
 - For "praise" type suggestions: Omit the suggestion field entirely (no action needed)
-- For other types: Include specific, actionable suggestions grounded in file context
+- For other types always include specific, actionable suggestions grounded in file context
 - Explain WHY file context was needed to identify the issue
 - Provide enough context that a developer understands what file patterns they should follow
 - Avoid vague suggestions - be specific about what patterns exist and how to match them
@@ -293,13 +275,13 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 - Distinguish between "must fix for consistency" and "nice to have improvements"
 - When in doubt about file conventions, lower your confidence score
 - Praise good integration with file patterns to reinforce positive practices
-- Remember: Level 2 is about file context. If an issue could be found from the diff alone, it belongs in Level 1.
+- Remember: This review is about changes in the context of the entire file. If an issue could be found from the diff alone, skip it.
 
 ### Prioritization
 - High priority: Breaking file conventions that could cause bugs or security issues
 - Medium priority: Consistency issues that affect maintainability
 - Low priority: Stylistic suggestions that would improve file coherence
-- Always include: Praise for excellent integration with file patterns
+- Maybe include praise for excellent integration with file patterns
 </section>`;
 
 /**

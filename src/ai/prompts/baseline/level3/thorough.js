@@ -84,7 +84,7 @@ Key questions to answer:
 - How do these changes interact with the established architecture?
 - Are there patterns elsewhere in the codebase that these changes should follow?
 - What other parts of the system might be affected by these changes?
-- Are there missing changes (tests, documentation, configuration) that should accompany this PR?
+- Are there missing changes (tests, documentation, configuration) that should accompany these changes?
 </section>
 
 <section name="analysis-process" required="true" tier="thorough">
@@ -98,7 +98,7 @@ Start from the changed files and explore outward to understand connections:
    6. **Check completeness** - Are there tests, configurations, or documentation that should accompany these changes?
    7. **Consider evolution** - How do these changes affect the codebase's ability to evolve?
 
-Explore as deeply as needed to understand the impact, but stay focused on relationships to the PR changes.
+Explore as deeply as needed to understand the impact, but stay focused on relationships to the changes under review.
 Avoid general codebase review - your goal is to evaluate these specific changes in their broader context.
 </section>
 
@@ -249,37 +249,13 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
 <section name="confidence-guidance" required="true" tier="thorough">
 ## Confidence Calibration
-Assign confidence scores carefully based on the certainty of your assessment:
+**Confidence** reflects your certainty that something IS an issue:
+- High (0.8-1.0): You're certain this is a real problem
+- Medium (0.5-0.79): Likely an issue, but context might justify it
+- Low (0.3-0.49): Possibly an issue, requires human judgment
+- Very low (<0.3): Observation only - flag for human awareness
 
-**High confidence (0.8-1.0):**
-- Clear violations of well-established architectural patterns
-- Obvious breaking changes to public APIs with documented contracts
-- Definite missing tests for code paths that existing tests cover elsewhere
-- Clear security vulnerabilities that bypass established security patterns
-- Obvious dependency issues that will cause runtime failures
-
-**Medium confidence (0.5-0.79):**
-- Likely pattern violations that depend on project conventions being intentional
-- Potential architectural concerns that may have valid reasons
-- Integration issues that could have been addressed elsewhere
-- Performance concerns that need profiling to confirm
-- Missing tests that might be covered by integration tests
-
-**Low confidence (0.3-0.49):**
-- Possible issues that require understanding project history
-- Stylistic suggestions based on inferred project conventions
-- Observations that may reflect intentional deviation from patterns
-- Suggestions for improvement based on limited codebase evidence
-- Questions about whether a pattern should be followed or improved
-
-**Very low confidence (0.0-0.29):**
-- Uncertain observations about codebase patterns
-- Questions about intent rather than definite problems
-- Exploratory suggestions for codebase-level improvements
-- Observations where codebase context is unclear or ambiguous
-- Speculation about how other parts of the system might be affected
-
-Be honest about uncertainty. A well-calibrated low confidence score is more useful than an overconfident high score.
+Note: Confidence is about certainty, not severity. A minor style issue can have high confidence. A potential architectural concern might have low confidence if you're unsure about the codebase conventions.
 </section>
 
 <section name="category-definitions" required="true" tier="thorough">
@@ -335,14 +311,15 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 ## Important Guidelines
 
 ### What to Review
-- You may attach line-specific suggestions to any line within files touched by this PR, including unchanged context lines when analysis reveals issues
+- You may attach line-specific suggestions to any line within modified files, including unchanged context lines when analysis reveals issues
 - Focus on issues that REQUIRE understanding the codebase context - don't duplicate Level 1 or Level 2 findings
 - Look for patterns, conventions, and architectural issues that aren't visible from individual files alone
 - Include file-level suggestions for observations about overall codebase integration
+- Prefer line-level comments over file-level comments when the suggestion applies to a specific line or range of lines
 
 ### Output Quality
 - For "praise" type suggestions: Omit the suggestion field entirely (no action needed)
-- For other types: Include specific, actionable suggestions grounded in codebase context
+- For other types always include specific, actionable suggestions grounded in codebase context
 - Explain WHY codebase context was needed to identify the issue
 - Reference specific patterns or code elsewhere in the codebase when applicable
 - Provide enough context that a developer understands what codebase patterns they should follow
@@ -367,7 +344,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 - Look for similar implementations to compare against
 - Check how dependents use the changed code
 - Verify test coverage matches patterns elsewhere
-- Don't spend time on general code review - stay focused on PR impact
+- Don't spend time on general code review - stay focused on the impact of these changes
 </section>`;
 
 /**

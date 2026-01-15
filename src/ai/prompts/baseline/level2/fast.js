@@ -63,7 +63,7 @@ ONLY suggest for files in this list:
 ## Steps
 1. Run the annotated diff tool to see changes with line numbers
 2. Read full file content when needed for context
-3. Focus on file-level patterns and consistency
+3. Analyze in file context but anchor comments to specific lines
 4. Skip files without file-level issues
 </section>
 
@@ -126,9 +126,11 @@ When unsure, use "NEW".
 
 <section name="guidelines" required="true" tier="fast">
 ## Guidelines
-- Focus on issues requiring full file context
+- Focus on issues requiring full file context but locate comments on relevant lines within the file
+- Prefer line-level comments over file-level comments when the issue can be anchored to specific lines
 - For "praise" type: omit the suggestion field
-- For other types: include specific, actionable suggestions
+- For other types always include specific, actionable suggestions
+- Only include suggestions you're confident about. If you're uncertain whether something is actually an issue, skip it.
 </section>`;
 
 /**

@@ -99,6 +99,8 @@ Curate and merge suggestions from 3-level analysis into high-value, non-redundan
 - Limit praise to 2-3 items
 - Focus on actionable items
 - Quality over quantity
+- Prefer preserving line-level suggestions over file-level suggestions
+- For other types always include specific, actionable suggestions
 </section>
 
 <section name="human-centric-framing" required="true" tier="fast">
@@ -135,7 +137,7 @@ Output JSON with this structure:
     "suggestion": "How to address the file-level concern (omit for praise items)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Brief summary of orchestration results and key patterns found"
+  "summary": "Natural summary of key findings written as if from a single reviewer (do NOT mention orchestration, levels, merged analyses, or internal processes)"
 }
 </section>
 
@@ -153,6 +155,7 @@ Preserve old_or_new from input suggestions when merging.
 - Higher confidence for issues found in multiple levels
 - Only include modified files - discard suggestions for unmodified files
 - Preserve file-level insights in fileLevelSuggestions array
+- Only include suggestions you're confident about. If uncertain about a suggestion's validity, omit it.
 </section>`;
 
 /**

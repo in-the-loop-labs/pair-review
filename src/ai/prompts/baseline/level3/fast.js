@@ -134,8 +134,10 @@ When unsure, use "NEW".
 <section name="guidelines" required="true" tier="fast">
 ## Guidelines
 - Focus on codebase-level issues requiring broader context
+- Only include suggestions you're confident about. If you're uncertain whether something is actually an issue, skip it.
+- Prefer line-level comments over file-level comments when the suggestion applies to a specific line or range of lines
 - For "praise" type: omit the suggestion field
-- For other types: include specific, actionable suggestions
+- For other types always include specific, actionable suggestions
 </section>`;
 
 /**

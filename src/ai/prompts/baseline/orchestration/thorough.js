@@ -204,37 +204,13 @@ Frame all suggestions as guidance for a human reviewer, not automated mandates:
 
 <section name="confidence-guidance" required="true" tier="thorough">
 ## Confidence Calibration
-Assign confidence scores carefully based on the evidence and cross-level agreement:
+**Confidence** when curating reflects certainty the suggestion is valuable:
+- High (0.8-1.0): Clearly valuable insight for the reviewer
+- Medium (0.5-0.79): Likely helpful, worth including
+- Low (0.3-0.49): Marginal value, consider context
+- Very low (<0.3): May not add value - consider omitting
 
-**High confidence (0.8-1.0):**
-- Issue identified at multiple analysis levels with consistent assessment
-- Clear evidence visible in the code or diff
-- Well-understood issue type with established patterns
-- Security or correctness issues with obvious exploitation paths
-
-**Medium confidence (0.5-0.79):**
-- Issue identified at one level with strong evidence
-- Cross-level support exists but with different emphasis
-- Likely issues that depend on runtime conditions or external context
-- Performance or design concerns that may have valid tradeoffs
-
-**Low confidence (0.3-0.49):**
-- Possible issues based on patterns or conventions
-- Single-level finding without corroboration
-- Stylistic suggestions that may reflect personal preference
-- Observations that require more context to fully evaluate
-
-**Very low confidence (0.0-0.29):**
-- Uncertain observations that warrant consideration but may not be issues
-- Questions about intent rather than definite problems
-- Exploratory suggestions based on limited information
-- Items where reviewer judgment is essential
-
-**Confidence Adjustment Factors:**
-- **Increase** when multiple levels agree on the same issue
-- **Increase** when the issue has clear, demonstrable impact
-- **Decrease** when levels disagree or provide conflicting assessments
-- **Decrease** when the issue depends heavily on context not visible in the PR
+Note: Confidence is about certainty of value, not severity. A minor improvement suggestion can have high confidence if you're sure it's helpful.
 </section>
 
 <section name="output-schema" locked="true">
@@ -264,7 +240,7 @@ Output JSON with this structure:
     "suggestion": "How to address the file-level concern (omit for praise items)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Brief summary of orchestration results and key patterns found"
+  "summary": "Brief summary of the key findings and their significance to the reviewer. Focus on WHAT was found, not HOW it was found. Do NOT mention 'orchestration', 'levels', 'merged from Level 1/2/3' etc. Write as if a single reviewer produced this analysis."
 }
 </section>
 

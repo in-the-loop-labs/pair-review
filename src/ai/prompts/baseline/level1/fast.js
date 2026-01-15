@@ -116,9 +116,11 @@ When unsure, use "NEW".
 
 <section name="guidelines" required="true" tier="fast">
 ## Guidelines
+- Only include suggestions you're confident about. If you're uncertain whether something is actually an issue, skip it.
+- Prefer line-level comments over file-level comments when the suggestion applies to a specific line or range of lines
 - Prioritize changed lines, include unchanged only if they reveal issues
 - For "praise" type: omit the suggestion field
-- For other types: include specific, actionable suggestions
+- For other types: always include specific, actionable suggestions
 </section>`;
 
 /**
