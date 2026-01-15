@@ -8,10 +8,11 @@
  *
  * Tier-specific optimizations applied:
  * - EXTENDED: Reasoning encouragement section for thoughtful synthesis
- * - COMPREHENSIVE: Intelligent merging with detailed guidance
- * - COMPREHENSIVE: Priority-based curation with detailed considerations
+ * - COMPREHENSIVE: Intelligent merging with conflict resolution and confidence combining
+ * - COMPREHENSIVE: Priority-based curation with sub-tier reasoning and contextual adjustment
  * - ADDED: Confidence calibration guidance for orchestration decisions
  * - ADDED: Reasoning-encouragement section
+ * - ADDED: Summary synthesis guidance (forest vs trees)
  * - EXPANDED: Human-centric framing with additional context
  * - EXPANDED: Guidelines with additional considerations and review philosophy
  * - INCLUDED: All optional sections including file-level-guidance
@@ -108,19 +109,30 @@ Apply careful analysis when combining suggestions across levels:
 - Same issue identified at multiple levels (e.g., security concern found in diff AND flagged for codebase patterns)
 - Overlapping concerns that are better presented as a unified insight
 - Complementary details from different levels that enrich understanding
-- Related observations that form a coherent narrative when combined
 
 **When NOT to Merge:**
 - Issues that are genuinely distinct despite affecting similar code
 - Level-specific context that would be lost in merging
 - Situations where separate action items are clearer than combined ones
 
+**Handling Level Contradictions:**
+When levels disagree (e.g., Level 1 flags an issue that Level 3 says follows codebase patterns):
+- **Evaluate evidence quality**: Concrete code analysis > pattern matching > heuristics
+- **Consider scope**: Broader context (Level 3) may invalidate narrow concerns (Level 1)
+- **Weight intentionality**: If higher levels show the pattern is intentional, downgrade the concern
+- **When truly uncertain**: Include the suggestion with reduced confidence and note the tension in the description
+
+**Combining Confidence Scores:**
+- **Cross-level agreement**: If 2+ levels flag the same issue, boost confidence by 0.1-0.2
+- **Contradictory signals**: If levels disagree, use the lower confidence minus 0.1
+- **Single-level unique insight**: Preserve original confidence; don't penalize valuable unique findings
+- **Evidence-based adjustment**: Strong code evidence (specific line, concrete bug) > general observations
+
 **Merging Best Practices:**
 - Preserve the most actionable and specific details from each level
 - Use the clearest framing, regardless of which level provided it
-- Combine confidence signals appropriately (cross-level agreement = higher confidence)
 - Do NOT mention which level found the issue - focus on the insight itself
-- Maintain distinct suggestions when merging would lose important nuance
+- When merging would lose important nuance, keep suggestions distinct
 </section>
 
 <section name="priority-curation" required="true" tier="thorough">
@@ -143,11 +155,20 @@ Prioritize suggestions carefully based on impact and urgency:
 7. **Code style** - Formatting, naming conventions
 8. **Documentation** - Comments, README updates
 
-**Curation Considerations:**
-- Higher-level insights (Level 3) often have broader impact but may have lower certainty
-- Lower-level insights (Level 1) often have higher certainty but narrower scope
-- Cross-level agreement strongly increases priority
-- Consider the reviewer's time - focus on what matters most
+**Sub-tier Reasoning Within Priority Levels:**
+Within each priority tier, further rank by:
+- **Certainty of impact**: Definite bug > potential bug > possible edge case
+- **Blast radius**: Affects many users/codepaths > affects edge cases
+- **Reversibility**: Hard to fix later > easy to fix later
+- **Cross-level validation**: Found by multiple levels > single level finding
+
+**Contextual Priority Adjustment:**
+Adjust the base priority based on PR context:
+- **Hot path code**: Elevate performance and correctness concerns
+- **Public API changes**: Elevate contract and compatibility concerns
+- **Security-sensitive areas**: Elevate all security-adjacent observations
+- **Refactoring PRs**: Deprioritize behavior changes (likely intentional); elevate consistency concerns
+- **New feature PRs**: Elevate design and architecture concerns; slight deprioritization of style nits
 </section>
 
 <section name="balanced-output" required="true" tier="thorough">
@@ -211,6 +232,24 @@ Frame all suggestions as guidance for a human reviewer, not automated mandates:
 - Very low (<0.3): May not add value - consider omitting
 
 Note: Confidence is about certainty of value, not severity. A minor improvement suggestion can have high confidence if you're sure it's helpful.
+</section>
+
+<section name="summary-synthesis" required="true" tier="thorough">
+## Summary Synthesis Guidance
+The summary field is not a list of findings - it's a synthesis that helps the reviewer see the forest, not just the trees.
+
+**Effective Summary Approach:**
+- **Synthesize, don't summarize**: Identify the overarching narrative of this PR's quality and concerns
+- **Lead with the most important insight**: What single thing should the reviewer understand first?
+- **Connect the dots**: How do individual findings relate to each other or to a common theme?
+- **Calibrate severity**: Is this PR fundamentally sound with minor issues, or does it have structural problems?
+- **Respect reviewer time**: A good summary lets the reviewer decide where to focus attention
+
+**Summary Anti-patterns to Avoid:**
+- Listing findings ("Found 3 bugs, 2 improvements, 1 praise...")
+- Implementation details ("Merged Level 1 and Level 2 suggestions...")
+- Vague platitudes ("This PR has some issues to consider...")
+- Excessive length (2-3 sentences is ideal)
 </section>
 
 <section name="output-schema" locked="true">
@@ -337,6 +376,7 @@ const sections = [
   { name: 'balanced-output', required: true, tier: ['thorough'] },
   { name: 'human-centric-framing', required: true, tier: ['thorough'] },
   { name: 'confidence-guidance', required: true, tier: ['thorough'] },
+  { name: 'summary-synthesis', required: true, tier: ['thorough'] },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['thorough'] },
   { name: 'file-level-guidance', required: true, tier: ['thorough'] },
@@ -362,6 +402,7 @@ const defaultOrder = [
   'balanced-output',
   'human-centric-framing',
   'confidence-guidance',
+  'summary-synthesis',
   'output-schema',
   'diff-instructions',
   'file-level-guidance',

@@ -970,18 +970,23 @@ describe('Baseline Level 2 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('### Documentation');
   });
 
-  it('should have reasoning encouragement', async () => {
+  it('should have reasoning framework', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level2/thorough.js');
 
-    expect(baseline.taggedPrompt).toContain('Reasoning Approach');
-    expect(baseline.taggedPrompt).toContain('Quality matters more than speed');
+    // Opus-optimized: Multi-phase reasoning framework for sophisticated analysis
+    expect(baseline.taggedPrompt).toContain('Reasoning Framework');
+    expect(baseline.taggedPrompt).toContain('Phase 1');
+    expect(baseline.taggedPrompt).toContain('Phase 2');
+    expect(baseline.taggedPrompt).toContain('Phase 3');
+    expect(baseline.taggedPrompt).toContain('Output Calibration');
   });
 
-  it('should have detailed file-level guidance', async () => {
+  it('should have file-level guidance', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level2/thorough.js');
 
-    expect(baseline.taggedPrompt).toContain('File-Level Suggestions');
-    expect(baseline.taggedPrompt).toContain('When to use file-level suggestions');
+    // Opus-optimized: Streamlined file-level vs line-level guidance
+    expect(baseline.taggedPrompt).toContain('File-Level vs Line-Level Suggestions');
+    expect(baseline.taggedPrompt).toContain('fileLevelSuggestions');
   });
 
   it('should have Level 2 specific sections', async () => {
@@ -1445,8 +1450,8 @@ describe('Baseline Level 3 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('Medium (0.5-0.79)');
     expect(baseline.taggedPrompt).toContain('Low (0.3-0.49)');
     expect(baseline.taggedPrompt).toContain('Very low (<0.3)');
-    // Key conceptual distinction
-    expect(baseline.taggedPrompt).toContain('Confidence is about certainty, not severity');
+    // Key conceptual distinction - confidence is about epistemic certainty, not severity
+    expect(baseline.taggedPrompt).toContain('Confidence != severity');
   });
 
   it('should have extended focus areas with codebase context emphasis', async () => {
@@ -1469,6 +1474,9 @@ describe('Baseline Level 3 Thorough', () => {
     const baseline = await import('../../src/ai/prompts/baseline/level3/thorough.js');
 
     expect(baseline.taggedPrompt).toContain('Reasoning Approach');
+    // Should guide sophisticated codebase analysis with dependency tracing and architectural thinking
+    expect(baseline.taggedPrompt).toContain('Dependency tracing');
+    expect(baseline.taggedPrompt).toContain('Architectural thinking');
     expect(baseline.taggedPrompt).toContain('Quality matters more than speed');
   });
 
@@ -1572,10 +1580,12 @@ describe('Baseline Level 3 Thorough', () => {
     expect(baseline.taggedPrompt).toContain('parallel read-only Tasks');
   });
 
-  it('should have exploration strategy in guidelines', async () => {
+  it('should have scope guidance and exploration strategy in guidelines', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level3/thorough.js');
 
-    // Thorough should have exploration strategy
+    // Thorough should have scope guidance distinguishing Level 3 from Level 1/2
+    expect(baseline.taggedPrompt).toContain('### Scope: Level 3 vs Level 1/2');
+    // And exploration strategy
     expect(baseline.taggedPrompt).toContain('### Exploration Strategy');
     expect(baseline.taggedPrompt).toContain('Start with the changed files');
   });
@@ -2092,8 +2102,11 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('When NOT to Merge');
     expect(baseline.taggedPrompt).toContain('Merging Best Practices');
     expect(baseline.taggedPrompt).toContain('combining suggestions across levels');
-    expect(baseline.taggedPrompt).toContain('unique insights');
     expect(baseline.taggedPrompt).toContain('Do NOT mention which level');
+    // Opus-optimized conflict resolution guidance
+    expect(baseline.taggedPrompt).toContain('Handling Level Contradictions');
+    expect(baseline.taggedPrompt).toContain('Combining Confidence Scores');
+    expect(baseline.taggedPrompt).toContain('Cross-level agreement');
   });
 
   it('should have detailed priority-based curation', async () => {
@@ -2103,7 +2116,8 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('High Priority');
     expect(baseline.taggedPrompt).toContain('Medium Priority');
     expect(baseline.taggedPrompt).toContain('Lower Priority');
-    expect(baseline.taggedPrompt).toContain('Curation Considerations');
+    expect(baseline.taggedPrompt).toContain('Sub-tier Reasoning Within Priority Levels');
+    expect(baseline.taggedPrompt).toContain('Contextual Priority Adjustment');
     expect(baseline.taggedPrompt).toContain('Security vulnerabilities');
     expect(baseline.taggedPrompt).toContain('Bugs and errors');
     expect(baseline.taggedPrompt).toContain('Architecture concerns');
@@ -2140,6 +2154,19 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('Good Examples of File-Level Suggestions');
     expect(baseline.taggedPrompt).toContain('When to Create File-Level Suggestions');
     expect(baseline.taggedPrompt).toContain('Merging File-Level Suggestions');
+  });
+
+  it('should have summary synthesis guidance', async () => {
+    const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
+
+    // Opus-optimized summary guidance - synthesize, not summarize
+    expect(baseline.taggedPrompt).toContain('Summary Synthesis Guidance');
+    expect(baseline.taggedPrompt).toContain('Effective Summary Approach');
+    expect(baseline.taggedPrompt).toContain('Synthesize, don\'t summarize');
+    expect(baseline.taggedPrompt).toContain('forest, not just the trees');
+    expect(baseline.taggedPrompt).toContain('Summary Anti-patterns to Avoid');
+    // Should be in sections array and defaultOrder
+    expect(baseline.defaultOrder).toContain('summary-synthesis');
   });
 
   it('should have synthesis strategy in guidelines', async () => {

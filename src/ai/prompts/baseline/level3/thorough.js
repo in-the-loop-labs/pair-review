@@ -54,16 +54,25 @@ const taggedPrompt = `<section name="role" required="true" tier="thorough">
 
 <section name="reasoning-encouragement" required="true" tier="thorough">
 ## Reasoning Approach
-Take your time to analyze how these changes affect the broader codebase. For each potential issue you identify:
-1. Trace the connections between changed files and the rest of the codebase
-2. Evaluate whether the changes follow, improve, or disrupt established patterns
-3. Consider the ripple effects - what other code might be affected?
-4. Think through edge cases and failure modes at the system level
-5. Assess the architectural implications and long-term maintainability impact
-6. Consider whether the issue is a genuine problem or an acceptable deviation
-7. Formulate clear, actionable suggestions grounded in codebase context
+Approach this analysis systematically, building understanding from specific changes to their broader implications.
 
-Quality matters more than speed for this review level. It's better to surface fewer, high-confidence issues that require codebase-wide understanding than many observations that could be made from file context alone.
+**Dependency tracing**: For each changed function, class, or module:
+- Who calls this code? Trace the call graph to understand impact radius
+- What does this code depend on? Check if dependencies are being used correctly
+- Are there interface contracts (explicit or implicit) being modified?
+
+**Pattern recognition**: Actively search for established patterns:
+- Find 2-3 similar implementations elsewhere in the codebase before evaluating conformance
+- Distinguish between "this is how it's done here" vs "this is how it should be done"
+- Consider whether the change should establish a new pattern or follow existing ones
+
+**Architectural thinking**: Reason about system-level implications:
+- Map how data flows through the changed code paths
+- Identify trust boundaries and security perimeters being crossed
+- Consider failure modes: what happens when this code fails?
+- Evaluate whether changes maintain appropriate layering
+
+**Calibrate your output**: Quality matters more than speed. Surface fewer high-confidence findings that genuinely require codebase-wide understanding.
 </section>
 
 <section name="generated-files" optional="true" tier="balanced,thorough">
@@ -89,17 +98,40 @@ Key questions to answer:
 
 <section name="analysis-process" required="true" tier="thorough">
 ## Analysis Process
-Start from the changed files and explore outward to understand connections:
-   1. **Map the change scope** - Identify all files and areas that could be affected
-   2. **Trace dependencies** - How do these changes interact with files that reference them or are referenced by them?
-   3. **Identify patterns** - What conventions and patterns exist elsewhere in the codebase?
-   4. **Evaluate conformance** - Do these changes follow, improve, or violate established patterns?
-   5. **Assess ripple effects** - What impact do these changes have on other parts of the system?
-   6. **Check completeness** - Are there tests, configurations, or documentation that should accompany these changes?
-   7. **Consider evolution** - How do these changes affect the codebase's ability to evolve?
+A structured framework for codebase exploration:
 
-Explore as deeply as needed to understand the impact, but stay focused on relationships to the changes under review.
-Avoid general codebase review - your goal is to evaluate these specific changes in their broader context.
+1. **Map the change scope** - Before analyzing details, understand what's changing:
+   - List all modified functions/classes and their public interfaces
+   - Identify which changes are additive vs modifications to existing behavior
+
+2. **Trace dependencies** - Build the dependency graph:
+   - Use grep/find to locate all callers of modified code
+   - Check for dependents that might break due to interface changes
+   - Identify transitive dependencies that could be affected
+
+3. **Identify patterns** - Search before judging:
+   - Find 2-3 similar implementations in the codebase
+   - Note the conventions: naming, error handling, logging, validation
+   - Determine if there's a canonical way this type of code is written here
+
+4. **Evaluate conformance** - With patterns identified, assess the changes:
+   - Do they follow established conventions?
+   - Are deviations justified improvements or inconsistencies?
+   - Would following the pattern make the code better or worse?
+
+5. **Assess ripple effects** - Consider downstream impact:
+   - What breaks if these changes have bugs?
+   - Are there integration points that need updating?
+   - Could these changes cause issues in untested code paths?
+
+6. **Check completeness** - Identify missing pieces:
+   - Tests: do similar modules have tests? What patterns do they follow?
+   - Docs: would users/developers need updated documentation?
+   - Config: are there environment or deployment considerations?
+
+7. **Consider evolution** - Think long-term:
+   - Do these changes make future modifications easier or harder?
+   - Is technical debt being paid down or accumulated?
 </section>
 
 <section name="focus-areas" required="true" tier="thorough">
@@ -249,13 +281,21 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
 <section name="confidence-guidance" required="true" tier="thorough">
 ## Confidence Calibration
-**Confidence** reflects your certainty that something IS an issue:
-- High (0.8-1.0): You're certain this is a real problem
-- Medium (0.5-0.79): Likely an issue, but context might justify it
-- Low (0.3-0.49): Possibly an issue, requires human judgment
-- Very low (<0.3): Observation only - flag for human awareness
+**Confidence** measures epistemic certainty - how sure are you that this IS a problem?
 
-Note: Confidence is about certainty, not severity. A minor style issue can have high confidence. A potential architectural concern might have low confidence if you're unsure about the codebase conventions.
+- **High (0.8-1.0)**: You verified the issue. You traced the code paths, found the callers, checked the patterns. This is definitely a problem.
+- **Medium (0.5-0.79)**: Strong evidence but incomplete verification. You found concerning patterns but haven't exhaustively checked all code paths.
+- **Low (0.3-0.49)**: Suspicion based on heuristics. The code looks problematic but you lack evidence from the codebase to confirm.
+- **Very low (<0.3)**: Observation for human review. You're not sure if this is actually an issue.
+
+**Critical distinction**: Confidence != severity. Examples:
+- Naming inconsistency: high confidence (easy to verify), low severity
+- Potential race condition: low confidence (hard to verify without runtime analysis), high severity
+
+Lower your confidence when:
+- You couldn't find similar code to compare against
+- The codebase conventions are unclear or inconsistent
+- The issue depends on runtime behavior you can't verify statically
 </section>
 
 <section name="category-definitions" required="true" tier="thorough">
@@ -308,43 +348,27 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 </section>
 
 <section name="guidelines" required="true" tier="thorough">
-## Important Guidelines
+## Guidelines
 
-### What to Review
-- You may attach line-specific suggestions to any line within modified files, including unchanged context lines when analysis reveals issues
-- Focus on issues that REQUIRE understanding the codebase context - don't duplicate Level 1 or Level 2 findings
-- Look for patterns, conventions, and architectural issues that aren't visible from individual files alone
-- Include file-level suggestions for observations about overall codebase integration
-- Prefer line-level comments over file-level comments when the suggestion applies to a specific line or range of lines
+### Scope: Level 3 vs Level 1/2
+Level 3 findings must require codebase context. If an issue could be identified from the file alone, it belongs in Level 2. Ask yourself: "Did I need to look at other files to find this?" If no, omit it.
 
-### Output Quality
-- For "praise" type suggestions: Omit the suggestion field entirely (no action needed)
-- For other types always include specific, actionable suggestions grounded in codebase context
-- Explain WHY codebase context was needed to identify the issue
-- Reference specific patterns or code elsewhere in the codebase when applicable
-- Provide enough context that a developer understands what codebase patterns they should follow
-- Avoid vague suggestions - be specific about what patterns exist and how to match them
-
-### Review Philosophy
-- Be constructive, not critical - the goal is to help maintain codebase consistency
-- Consider the project's established conventions as authoritative unless clearly outdated
-- Distinguish between "must fix for consistency/safety" and "nice to have improvements"
-- When in doubt about codebase conventions, lower your confidence score
-- Praise good integration with codebase patterns to reinforce positive practices
-- Remember: Level 3 is about codebase context. If an issue could be found from the file alone, it belongs in Level 2.
-
-### Prioritization
-- High priority: Breaking changes, security issues, or violations that could cause system-wide problems
-- Medium priority: Consistency issues that affect maintainability across the codebase
-- Low priority: Stylistic suggestions that would improve codebase coherence
-- Always include: Praise for excellent integration with codebase patterns
+### Output Standards
+- **Line-level vs file-level**: Anchor to specific lines when possible. File-level suggestions are for issues that genuinely span the entire file.
+- **Actionable suggestions**: Reference specific patterns or files. Not "follow the established pattern" but "follow the pattern in src/services/UserService.js lines 45-60".
+- **Praise items**: Omit the suggestion field. Explain what they did well relative to codebase conventions.
+- **Evidence-based**: When citing a pattern, you should have actually found it via grep/find.
 
 ### Exploration Strategy
 - Start with the changed files and work outward
 - Look for similar implementations to compare against
 - Check how dependents use the changed code
 - Verify test coverage matches patterns elsewhere
-- Don't spend time on general code review - stay focused on the impact of these changes
+
+### Calibration
+- Prefer fewer high-confidence findings over many uncertain observations
+- Lower confidence when codebase conventions are unclear or inconsistent
+- Distinguish "must fix" (breaks things, security risk) from "should consider" (consistency, maintainability)
 </section>`;
 
 /**

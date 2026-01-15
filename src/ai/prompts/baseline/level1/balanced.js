@@ -65,9 +65,8 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
 
 <section name="initial-setup" required="true">
 ## Initial Setup
-1. Run the annotated diff tool (shown above) to see the changes with line numbers
-2. Focus ONLY on the changed lines in the diff
-3. Do not analyze file context or surrounding unchanged code
+1. Run the annotated diff tool (shown above) to see changes with line numbers
+2. Focus on changed lines only - do not analyze surrounding context
 </section>
 
 <section name="focus-areas" required="true">
@@ -86,24 +85,18 @@ Identify the following in changed code:
 
 <section name="available-commands" required="true">
 ## Available Commands (READ-ONLY)
-You have READ-ONLY access to the codebase. You may run commands like:
-- The annotated diff tool shown above (required for viewing changes with line numbers)
+- The annotated diff tool shown above (required)
 - \`cat -n <file>\` to view files with line numbers
-- ls, find, grep commands as needed
+- ls, find, grep as needed
 
-IMPORTANT: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.).
-Your role is strictly to analyze and report findings.
-
-Note: You may optionally use parallel read-only Tasks to analyze different files or different parts of the changes if that would be helpful.
+Do NOT modify files or run write commands. Analyze and report only.
 </section>
 
 <section name="output-schema" locked="true">
 ## Output Format
+Output ONLY valid JSON - no markdown blocks, no extra text. Start with { and end with }.
 
-### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
-
-Output JSON with this structure:
+JSON structure:
 {
   "level": 1,
   "suggestions": [{
@@ -148,21 +141,15 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
 <section name="guidelines" required="true">
 ## Important Guidelines
-- You may comment on any line in modified files. Prioritize changed lines, but include unchanged lines when they reveal issues (missing error handling, inconsistent patterns, etc.)
-- Prefer line-level comments over file-level comments when the suggestion applies to a specific line or range of lines
-- Focus on issues visible in the diff itself - do not analyze file context
-- Do not review unchanged code or missing tests
-- Do not analyze file-level patterns or consistency
-- For "praise" type suggestions: Omit the suggestion field entirely (no action needed)
-- For other types, always include specific, actionable suggestions
-- This saves tokens and prevents empty suggestion sections
+- Prioritize changed lines, but include unchanged lines when they reveal issues (missing error handling, inconsistent patterns)
+- Prefer line-level over file-level comments when applicable
+- For "praise": omit the suggestion field (no action needed)
+- For other types: include specific, actionable suggestions
 
-Calibrate your confidence honestly:
+Confidence calibration:
 - High (0.8+): Clear issues you're certain about
 - Medium (0.5-0.79): Likely issues with some uncertainty
-- Lower: Observations you're less sure about
-
-When uncertain, prefer to omit rather than include marginal suggestions.
+- Lower: Observations with less certainty - prefer to omit marginal suggestions
 </section>`;
 
 /**
