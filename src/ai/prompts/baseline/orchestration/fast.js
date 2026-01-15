@@ -76,7 +76,7 @@ Curate and merge 3-level suggestions. Remove duplicates. Keep high-value items o
 
 <section name="intelligent-merging" required="true" tier="fast">
 ## Rules
-Combine related suggestions. Merge overlapping concerns. Never mention levels in output.
+Combine related suggestions. Merge overlaps. Preserve unique insights. Never mention levels.
 </section>
 
 <section name="priority-curation" required="true" tier="fast">
@@ -127,7 +127,7 @@ Use "Consider...", "Worth noting..." - guidance not mandates.
 
 <section name="guidelines" required="true" tier="fast">
 ## Notes
-Quality over quantity. Higher confidence for multi-level findings. Only modified files. Omit uncertain suggestions.
+Quality over quantity. Higher confidence for multi-level findings. Only modified files. Omit uncertain suggestions. Preserve file-level insights.
 </section>`;
 
 /**

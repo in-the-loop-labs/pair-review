@@ -118,6 +118,7 @@ Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Must start with { and
 - Anchor file-context issues to specific lines when possible
 - Omit suggestion field for praise; include for all other types
 - Only include confident suggestions
+- Skip files with no issues to report
 </section>`;
 
 /**

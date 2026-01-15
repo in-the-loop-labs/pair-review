@@ -61,7 +61,8 @@ ONLY suggest for files in this list:
 
 <section name="initial-setup" required="true" tier="fast">
 ## Steps
-Run annotated diff tool. Focus ONLY on changed lines.
+1. Run annotated diff tool
+2. Focus ONLY on changed lines
 </section>
 
 <section name="focus-areas" required="true" tier="fast">
@@ -81,7 +82,7 @@ Annotated diff tool, \`cat -n\`, ls, find, grep. Do NOT modify files.
 <section name="output-schema" locked="true">
 ## Output Format
 
-Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }.
+**IMPORTANT:** Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }.
 
 {
   "level": 1,
@@ -103,6 +104,7 @@ Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with
 ## Line Numbers (old_or_new)
 - "NEW" (default): added [+] and context lines
 - "OLD": deleted [-] lines only
+Default to NEW if unclear.
 </section>
 
 <section name="guidelines" required="true" tier="fast">

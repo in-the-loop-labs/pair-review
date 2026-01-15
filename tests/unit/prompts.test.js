@@ -1899,8 +1899,9 @@ describe('Baseline Orchestration Fast', () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/fast.js');
 
     expect(baseline.taggedPrompt).toContain('Combine related suggestions');
-    expect(baseline.taggedPrompt).toContain('Merge overlapping concerns');
-    expect(baseline.taggedPrompt).toContain('Never mention levels in output');
+    expect(baseline.taggedPrompt).toContain('Merge overlaps');
+    expect(baseline.taggedPrompt).toContain('Preserve unique insights');
+    expect(baseline.taggedPrompt).toContain('Never mention levels');
   });
 
   it('should have simplified priority order', async () => {
