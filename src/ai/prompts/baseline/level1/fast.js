@@ -61,35 +61,28 @@ ONLY suggest for files in this list:
 
 <section name="initial-setup" required="true" tier="fast">
 ## Steps
-1. Run the annotated diff tool to see changes with line numbers
-2. Focus ONLY on changed lines - do not analyze file context
+Run annotated diff tool. Focus ONLY on changed lines.
 </section>
 
 <section name="focus-areas" required="true" tier="fast">
 ## What to Find
-- Bugs and errors in changed code
+- Bugs and errors
 - Logic issues
 - Security vulnerabilities
 - Performance problems
-- Good practices worth praising
+- Good practices (praise)
 </section>
 
 <section name="available-commands" required="true" tier="fast">
 ## Commands (READ-ONLY)
-- Annotated diff tool (preferred)
-- \`cat -n <file>\` for file content
-- ls, find, grep as needed
-
-Do NOT modify files.
+Annotated diff tool, \`cat -n\`, ls, find, grep. Do NOT modify files.
 </section>
 
 <section name="output-schema" locked="true">
 ## Output Format
 
-### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
+Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }.
 
-Output JSON with this structure:
 {
   "level": 1,
   "suggestions": [{
@@ -98,29 +91,26 @@ Output JSON with this structure:
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
-    "description": "Detailed explanation",
-    "suggestion": "How to fix/improve (omit this field for praise items - no action needed)",
+    "description": "Explanation",
+    "suggestion": "How to fix (omit for praise)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Brief summary of findings"
+  "summary": "Brief summary"
 }
 </section>
 
 <section name="diff-instructions" required="true" tier="fast">
 ## Line Numbers (old_or_new)
-- **"NEW"** (default): For added lines [+] and context lines
-- **"OLD"**: Only for deleted lines [-]
-
-When unsure, use "NEW".
+- "NEW" (default): added [+] and context lines
+- "OLD": deleted [-] lines only
 </section>
 
 <section name="guidelines" required="true" tier="fast">
 ## Guidelines
-- Only include suggestions you're confident about. If you're uncertain whether something is actually an issue, skip it.
-- Prefer line-level comments over file-level comments when the suggestion applies to a specific line or range of lines
-- Prioritize changed lines, include unchanged only if they reveal issues
-- For "praise" type: omit the suggestion field
-- For other types: always include specific, actionable suggestions
+- High confidence only, skip uncertain issues
+- Prefer line-level over file-level comments
+- Prioritize changed lines
+- Praise: omit suggestion field; Others: include actionable fix
 </section>`;
 
 /**

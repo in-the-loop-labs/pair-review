@@ -1900,23 +1900,21 @@ describe('Baseline Orchestration Fast', () => {
 
     expect(baseline.taggedPrompt).toContain('Combine related suggestions');
     expect(baseline.taggedPrompt).toContain('Merge overlapping concerns');
-    expect(baseline.taggedPrompt).toContain('Do NOT mention which level');
+    expect(baseline.taggedPrompt).toContain('Never mention levels in output');
   });
 
   it('should have simplified priority order', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/fast.js');
 
-    expect(baseline.taggedPrompt).toContain('Priority Order');
-    expect(baseline.taggedPrompt).toContain('Security vulnerabilities');
-    expect(baseline.taggedPrompt).toContain('Bugs and errors');
-    expect(baseline.taggedPrompt).toContain('Architecture concerns');
+    expect(baseline.taggedPrompt).toContain('### Priority');
+    expect(baseline.taggedPrompt).toContain('Security > Bugs > Architecture > Performance > Style');
   });
 
   it('should have simplified human-centric framing', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/fast.js');
 
-    expect(baseline.taggedPrompt).toContain('guidance, not mandates');
-    expect(baseline.taggedPrompt).toContain('reviewer autonomy');
+    expect(baseline.taggedPrompt).toContain('guidance not mandates');
+    expect(baseline.taggedPrompt).toContain('Consider...');
   });
 
   it('should build correctly with context', () => {
@@ -1934,7 +1932,7 @@ describe('Baseline Orchestration Fast', () => {
     const prompt = builder.build(context);
 
     expect(prompt).toContain('You are orchestrating AI-powered code review');
-    expect(prompt).toContain('# Quick AI Suggestion Orchestration');
+    expect(prompt).toContain('# Suggestion Orchestration');
     expect(prompt).toContain('Level 1 - Diff Analysis');
     expect(prompt).toContain('Level 2 - File Context');
     expect(prompt).toContain('Level 3 - Codebase Context');
@@ -1956,15 +1954,15 @@ describe('Baseline Orchestration Fast', () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/fast.js');
 
     expect(baseline.taggedPrompt).toContain('Quality over quantity');
-    expect(baseline.taggedPrompt).toContain('Only include modified files');
+    expect(baseline.taggedPrompt).toContain('Only modified files');
   });
 
   it('should have diff instructions for line number reference', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/fast.js');
 
     expect(baseline.taggedPrompt).toContain('old_or_new');
-    expect(baseline.taggedPrompt).toContain('Preserve old_or_new from input suggestions');
-    expect(baseline.taggedPrompt).toContain('deleted lines');
+    expect(baseline.taggedPrompt).toContain('Preserve from input');
+    expect(baseline.taggedPrompt).toContain('deleted');
   });
 });
 

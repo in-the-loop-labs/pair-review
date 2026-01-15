@@ -61,37 +61,29 @@ ONLY suggest for files in this list:
 
 <section name="analysis-process" required="true" tier="fast">
 ## Steps
-1. Run the annotated diff tool to see changes with line numbers
-2. Read full file content when needed for context
-3. Analyze in file context but anchor comments to specific lines
-4. Skip files without file-level issues
+1. Run annotated diff tool for changes with line numbers
+2. Read full file when context needed
+3. Anchor comments to specific lines
 </section>
 
 <section name="focus-areas" required="true" tier="fast">
-## What to Find
-- Inconsistencies within files (naming, patterns, error handling)
-- Missing related changes within files
-- Security patterns and vulnerabilities
-- Code style violations
-- Good practices worth praising
+## Find
+- File inconsistencies (naming, patterns, error handling)
+- Missing related changes
+- Security issues
+- Style violations
+- Good practices (praise)
 </section>
 
 <section name="available-commands" required="true" tier="fast">
 ## Commands (READ-ONLY)
-- Annotated diff tool (preferred)
-- \`cat -n <file>\` for file content
-- ls, find, grep as needed
-
-Do NOT modify files.
+Annotated diff tool (preferred), \`cat -n <file>\`, ls, find, grep. Do NOT modify files.
 </section>
 
 <section name="output-schema" locked="true">
 ## Output Format
+Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Must start with { and end with }.
 
-### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
-
-Output JSON with this structure:
 {
   "level": 2,
   "suggestions": [{
@@ -100,37 +92,32 @@ Output JSON with this structure:
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title",
-    "description": "Detailed explanation mentioning why full file context was needed",
-    "suggestion": "How to fix/improve based on file context (omit for praise items)",
+    "description": "Why file context was needed",
+    "suggestion": "How to fix (omit for praise)",
     "confidence": 0.0-1.0
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
-    "title": "Brief title describing file-level concern",
-    "description": "Explanation of the file-level observation (architecture, organization, naming, etc.)",
-    "suggestion": "How to address the file-level concern (omit for praise items)",
+    "title": "File-level concern",
+    "description": "File-level observation",
+    "suggestion": "How to address (omit for praise)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Brief summary of file context findings"
+  "summary": "Brief summary"
 }
 </section>
 
 <section name="diff-instructions" required="true" tier="fast">
-## Line Numbers (old_or_new)
-- **"NEW"** (default): For added lines [+] and context lines
-- **"OLD"**: Only for deleted lines [-]
-
-When unsure, use "NEW".
+## Line Numbers
+"NEW" (default): added [+] and context lines. "OLD": only deleted [-] lines.
 </section>
 
 <section name="guidelines" required="true" tier="fast">
 ## Guidelines
-- Focus on issues requiring full file context but locate comments on relevant lines within the file
-- Prefer line-level comments over file-level comments when the issue can be anchored to specific lines
-- For "praise" type: omit the suggestion field
-- For other types always include specific, actionable suggestions
-- Only include suggestions you're confident about. If you're uncertain whether something is actually an issue, skip it.
+- Anchor file-context issues to specific lines when possible
+- Omit suggestion field for praise; include for all other types
+- Only include confident suggestions
 </section>`;
 
 /**

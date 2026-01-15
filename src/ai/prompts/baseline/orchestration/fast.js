@@ -37,7 +37,7 @@ const taggedPrompt = `<section name="role" required="true" tier="fast">
 </section>
 
 <section name="task-header" required="true" tier="fast">
-# Quick AI Suggestion Orchestration
+# Suggestion Orchestration
 </section>
 
 <section name="line-number-guidance" required="true" tier="fast">
@@ -45,13 +45,12 @@ const taggedPrompt = `<section name="role" required="true" tier="fast">
 </section>
 
 <section name="critical-output" locked="true">
-## CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
+Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }.
 </section>
 
 <section name="role-description" required="true" tier="fast">
-## Your Role
-Curate and merge suggestions from 3-level analysis into high-value, non-redundant guidance for the human reviewer.
+## Task
+Curate and merge 3-level suggestions. Remove duplicates. Keep high-value items only.
 </section>
 
 <section name="custom-instructions" optional="true" tier="fast,balanced,thorough">
@@ -76,47 +75,27 @@ Curate and merge suggestions from 3-level analysis into high-value, non-redundan
 </section>
 
 <section name="intelligent-merging" required="true" tier="fast">
-## Orchestration Guidelines
-
-### 1. Merging
-- Combine related suggestions across levels
-- Merge overlapping concerns
-- Preserve unique insights
-- Do NOT mention which level found issues
+## Rules
+Combine related suggestions. Merge overlapping concerns. Never mention levels in output.
 </section>
 
 <section name="priority-curation" required="true" tier="fast">
-### 2. Priority Order
-1. Security vulnerabilities
-2. Bugs and errors
-3. Architecture concerns
-4. Performance
-5. Code style
+### Priority
+Security > Bugs > Architecture > Performance > Style
 </section>
 
 <section name="balanced-output" required="true" tier="fast">
-### 3. Output Constraints
-- Limit praise to 2-3 items
-- Focus on actionable items
-- Quality over quantity
-- Prefer preserving line-level suggestions over file-level suggestions
-- For other types always include specific, actionable suggestions
+### Output
+Max 2-3 praise items. Prefer line-level over file-level. Include actionable suggestions.
 </section>
 
 <section name="human-centric-framing" required="true" tier="fast">
-### 4. Framing
-- Frame as guidance, not mandates
-- Use "Consider...", "Worth noting..."
-- Preserve reviewer autonomy
+### Framing
+Use "Consider...", "Worth noting..." - guidance not mandates.
 </section>
 
 <section name="output-schema" locked="true">
-## Output Format
-
-### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
-
-Output JSON with this structure:
+## JSON Schema
 {
   "level": "orchestrated",
   "suggestions": [{
@@ -124,38 +103,31 @@ Output JSON with this structure:
     "line": 42,
     "old_or_new": "NEW",
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
-    "title": "Brief title describing the curated insight",
-    "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
-    "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
+    "title": "Brief title",
+    "description": "Why it matters",
+    "suggestion": "What to do (omit for praise)",
     "confidence": 0.0-1.0
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
-    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
-    "title": "Brief title describing file-level concern",
-    "description": "Explanation of the file-level observation",
-    "suggestion": "How to address the file-level concern (omit for praise items)",
+    "type": "...",
+    "title": "Brief title",
+    "description": "File-level observation",
+    "suggestion": "How to fix (omit for praise)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Natural summary of key findings written as if from a single reviewer (do NOT mention orchestration, levels, merged analyses, or internal processes)"
+  "summary": "Key findings as if from single reviewer (no mention of levels/orchestration)"
 }
 </section>
 
 <section name="diff-instructions" required="true" tier="fast">
-## Line Numbers (old_or_new)
-- **"NEW"** (default): For added lines [+] and context lines
-- **"OLD"**: Only for deleted lines [-]
-
-Preserve old_or_new from input suggestions when merging.
+## old_or_new
+"NEW" (default): added [+] and context lines. "OLD": deleted [-] only. Preserve from input.
 </section>
 
 <section name="guidelines" required="true" tier="fast">
-## Guidelines
-- Quality over quantity - 8 excellent suggestions > 20 mediocre ones
-- Higher confidence for issues found in multiple levels
-- Only include modified files - discard suggestions for unmodified files
-- Preserve file-level insights in fileLevelSuggestions array
-- Only include suggestions you're confident about. If uncertain about a suggestion's validity, omit it.
+## Notes
+Quality over quantity. Higher confidence for multi-level findings. Only modified files. Omit uncertain suggestions.
 </section>`;
 
 /**
