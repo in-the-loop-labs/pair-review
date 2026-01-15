@@ -70,7 +70,7 @@ Start from the changed files and explore outward to understand connections:
    - Whether these changes follow, improve, or violate patterns established elsewhere in the codebase
    - What impact these changes have on other parts of the system
 
-Explore as deeply as needed to understand the impact, but stay focused on relationships to the PR changes.
+Explore as deeply as needed to understand the impact, but stay focused on relationships to the changes.
 Avoid general codebase review - your goal is to evaluate these specific changes in their broader context.
 </section>
 
@@ -154,8 +154,10 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 </section>
 
 <section name="file-level-guidance" optional="true" tier="balanced,thorough">
-## File-Level Suggestions
-In addition to line-specific suggestions, you may include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
+## Line-Level vs File-Level Suggestions
+Prefer line-level comments (in the "suggestions" array) when the issue can be anchored to specific lines. Use file-level suggestions (in the "fileLevelSuggestions" array) only for observations that truly apply to the entire file and cannot be tied to specific lines.
+
+File-level suggestions are appropriate for:
 - Architectural concerns about the file's role in the codebase
 - Missing tests for the file's functionality
 - Integration issues with other parts of the codebase
@@ -168,11 +170,18 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
 <section name="guidelines" required="true">
 ## Important Guidelines
-- You may attach line-specific suggestions to any line within files touched by this PR, including unchanged context lines when analysis reveals issues.
+- You may attach line-specific suggestions to any line within modified files, including context lines when they reveal codebase-level issues
+- Prefer line-level comments over file-level comments when the issue can be anchored to specific lines
+- Use fileLevelSuggestions only for observations that truly apply to the entire file
 - Focus on how these changes interact with the broader codebase
 - Look especially for missing tests, documentation, and integration issues
+- Calibrate your confidence honestly:
+  - High (0.8+): Clear issues you're certain about
+  - Medium (0.5-0.79): Likely issues with some uncertainty
+  - Lower: Observations you're less sure about
+- When uncertain, prefer to omit rather than include marginal suggestions.
 - For "praise" type: Omit the suggestion field entirely to save tokens
-- For other types: Include specific, actionable suggestions
+- For other types always include specific, actionable suggestions
 </section>`;
 
 /**

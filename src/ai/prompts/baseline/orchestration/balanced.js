@@ -48,7 +48,7 @@ Output ONLY valid JSON with no additional text, explanations, or markdown code b
 
 <section name="role-description" required="true">
 ## Your Role
-You are helping a human reviewer by intelligently curating and merging suggestions from a 3-level analysis system. Your goal is to provide the most valuable, non-redundant guidance to accelerate the human review process.
+You are helping a human reviewer by intelligently curating and merging suggestions from a multi-level analysis system. Your goal is to provide the most valuable, non-redundant guidance to accelerate the human review process.
 </section>
 
 <section name="custom-instructions" optional="true">
@@ -79,6 +79,7 @@ You are helping a human reviewer by intelligently curating and merging suggestio
 - **Combine related suggestions** across levels into comprehensive insights
 - **Merge overlapping concerns** (e.g., same security issue found in multiple levels)
 - **Preserve unique insights** that only one level discovered
+- **Prefer preserving line-level suggestions** over file-level suggestions when curating
 - **Do NOT mention which level found the issue** - focus on the insight itself
 </section>
 
@@ -124,7 +125,7 @@ Output JSON with this structure:
     "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
     "title": "Brief title describing the curated insight",
     "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
-    "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
+    "suggestion": "Specific, actionable guidance for the reviewer. For praise items this can be omitted. For other types always include specific, actionable suggestions.",
     "confidence": 0.0-1.0
   }],
   "fileLevelSuggestions": [{
@@ -135,7 +136,7 @@ Output JSON with this structure:
     "suggestion": "How to address the file-level concern (omit for praise items)",
     "confidence": 0.0-1.0
   }],
-  "summary": "Brief summary of orchestration results and key patterns found"
+  "summary": "Brief summary of the key findings and their significance to the reviewer. Focus on WHAT was found, not HOW it was found. Do NOT mention 'orchestration', 'levels', 'merged from Level 1/2/3' etc. Write as if a single reviewer produced this analysis."
 }
 </section>
 
@@ -166,6 +167,14 @@ Some input suggestions are marked as [FILE-LEVEL]. These are observations about 
 - **Suggestions may target any line in modified files** - Context lines can reveal issues too
 - **Only include modified files** - Discard any suggestions for files not modified in this PR
 - **Preserve file-level insights** - Don't discard valuable file-level observations
+
+**Confidence Calibration:**
+Calibrate your confidence honestly when curating:
+- High (0.8+): Clear issues you're certain should be included
+- Medium (0.5-0.79): Likely valuable suggestions
+- Lower: Consider omitting marginal suggestions
+
+When uncertain, prefer quality over quantity.
 </section>`;
 
 /**

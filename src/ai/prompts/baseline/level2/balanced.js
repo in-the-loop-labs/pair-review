@@ -143,8 +143,10 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 </section>
 
 <section name="file-level-guidance" optional="true" tier="balanced,thorough">
-## File-Level Suggestions
-In addition to line-specific suggestions, you may include file-level observations in the "fileLevelSuggestions" array. These are observations about an entire file that are not tied to specific lines, such as:
+## Line-Level vs File-Level Suggestions
+Prefer line-level comments (in the "suggestions" array) when the issue can be anchored to specific lines. Use file-level suggestions (in the "fileLevelSuggestions" array) only for observations that truly apply to the entire file and cannot be tied to specific lines.
+
+File-level suggestions are appropriate for:
 - Overall file architecture or organization issues
 - Naming convention concerns for the file/module
 - Missing tests for the file
@@ -157,11 +159,20 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
 <section name="guidelines" required="true">
 ## Important Guidelines
-- You may attach line-specific suggestions to any line within modified files, including context lines when they reveal file-level issues.
+- You may attach line-specific suggestions to any line within modified files, including context lines when they reveal file-level issues
+- Prefer line-level comments over file-level comments when the issue can be anchored to specific lines
+- Use fileLevelSuggestions only for observations that truly apply to the entire file
 - Focus on issues that require understanding the full file context
 - Focus on file-level patterns and consistency
 - For "praise" type: Omit the suggestion field entirely to save tokens
-- For other types: Include specific, actionable suggestions
+- For other types, always include specific, actionable suggestions
+
+Calibrate your confidence honestly:
+- High (0.8+): Clear issues you're certain about
+- Medium (0.5-0.79): Likely issues with some uncertainty
+- Lower: Observations you're less sure about
+
+When uncertain, prefer to omit rather than include marginal suggestions.
 </section>`;
 
 /**

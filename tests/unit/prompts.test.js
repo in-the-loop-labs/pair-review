@@ -648,14 +648,16 @@ describe('Baseline Level 1 Thorough', () => {
     }
   });
 
-  it('should have detailed confidence guidance', async () => {
+  it('should have focused confidence guidance', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level1/thorough.js');
 
-    // Should have detailed confidence calibration
-    expect(baseline.taggedPrompt).toContain('High confidence (0.8-1.0)');
-    expect(baseline.taggedPrompt).toContain('Medium confidence (0.5-0.79)');
-    expect(baseline.taggedPrompt).toContain('Low confidence (0.3-0.49)');
-    expect(baseline.taggedPrompt).toContain('Very low confidence (0.0-0.29)');
+    // Should have confidence calibration that separates confidence from severity
+    expect(baseline.taggedPrompt).toContain('High (0.8-1.0)');
+    expect(baseline.taggedPrompt).toContain('Medium (0.5-0.79)');
+    expect(baseline.taggedPrompt).toContain('Low (0.3-0.49)');
+    expect(baseline.taggedPrompt).toContain('Very low (<0.3)');
+    // Key conceptual distinction
+    expect(baseline.taggedPrompt).toContain('Confidence is about certainty, not severity');
   });
 
   it('should have extended focus areas', async () => {
@@ -944,14 +946,16 @@ describe('Baseline Level 2 Thorough', () => {
     }
   });
 
-  it('should have detailed confidence guidance', async () => {
+  it('should have focused confidence guidance', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level2/thorough.js');
 
-    // Should have detailed confidence calibration
-    expect(baseline.taggedPrompt).toContain('High confidence (0.8-1.0)');
-    expect(baseline.taggedPrompt).toContain('Medium confidence (0.5-0.79)');
-    expect(baseline.taggedPrompt).toContain('Low confidence (0.3-0.49)');
-    expect(baseline.taggedPrompt).toContain('Very low confidence (0.0-0.29)');
+    // Should have confidence calibration that separates confidence from severity
+    expect(baseline.taggedPrompt).toContain('High (0.8-1.0)');
+    expect(baseline.taggedPrompt).toContain('Medium (0.5-0.79)');
+    expect(baseline.taggedPrompt).toContain('Low (0.3-0.49)');
+    expect(baseline.taggedPrompt).toContain('Very low (<0.3)');
+    // Key conceptual distinction
+    expect(baseline.taggedPrompt).toContain('Confidence is about certainty, not severity');
   });
 
   it('should have extended focus areas with file context emphasis', async () => {
@@ -1433,14 +1437,16 @@ describe('Baseline Level 3 Thorough', () => {
     }
   });
 
-  it('should have detailed confidence guidance', async () => {
+  it('should have focused confidence guidance', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/level3/thorough.js');
 
-    // Should have detailed confidence calibration
-    expect(baseline.taggedPrompt).toContain('High confidence (0.8-1.0)');
-    expect(baseline.taggedPrompt).toContain('Medium confidence (0.5-0.79)');
-    expect(baseline.taggedPrompt).toContain('Low confidence (0.3-0.49)');
-    expect(baseline.taggedPrompt).toContain('Very low confidence (0.0-0.29)');
+    // Should have confidence calibration that separates confidence from severity
+    expect(baseline.taggedPrompt).toContain('High (0.8-1.0)');
+    expect(baseline.taggedPrompt).toContain('Medium (0.5-0.79)');
+    expect(baseline.taggedPrompt).toContain('Low (0.3-0.49)');
+    expect(baseline.taggedPrompt).toContain('Very low (<0.3)');
+    // Key conceptual distinction
+    expect(baseline.taggedPrompt).toContain('Confidence is about certainty, not severity');
   });
 
   it('should have extended focus areas with codebase context emphasis', async () => {
@@ -2037,14 +2043,14 @@ describe('Baseline Orchestration Thorough', () => {
     }
   });
 
-  it('should have detailed confidence guidance', async () => {
+  it('should have focused confidence guidance', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
-    // Should have detailed confidence calibration
-    expect(baseline.taggedPrompt).toContain('High confidence (0.8-1.0)');
-    expect(baseline.taggedPrompt).toContain('Medium confidence (0.5-0.79)');
-    expect(baseline.taggedPrompt).toContain('Low confidence (0.3-0.49)');
-    expect(baseline.taggedPrompt).toContain('Very low confidence (0.0-0.29)');
+    // Should have confidence calibration focused on curation value
+    expect(baseline.taggedPrompt).toContain('High (0.8-1.0)');
+    expect(baseline.taggedPrompt).toContain('Medium (0.5-0.79)');
+    expect(baseline.taggedPrompt).toContain('Low (0.3-0.49)');
+    expect(baseline.taggedPrompt).toContain('Very low (<0.3)');
   });
 
   it('should have reasoning encouragement', async () => {
@@ -2114,13 +2120,16 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('pair programming partner');
   });
 
-  it('should have confidence adjustment factors', async () => {
+  it('should have focused confidence guidance for orchestration', async () => {
     const baseline = await import('../../src/ai/prompts/baseline/orchestration/thorough.js');
 
-    expect(baseline.taggedPrompt).toContain('Confidence Adjustment Factors');
-    expect(baseline.taggedPrompt).toContain('Increase');
-    expect(baseline.taggedPrompt).toContain('Decrease');
-    expect(baseline.taggedPrompt).toContain('cross-level agreement');
+    // Should have confidence calibration focused on curation value
+    expect(baseline.taggedPrompt).toContain('High (0.8-1.0)');
+    expect(baseline.taggedPrompt).toContain('Medium (0.5-0.79)');
+    expect(baseline.taggedPrompt).toContain('Low (0.3-0.49)');
+    expect(baseline.taggedPrompt).toContain('Very low (<0.3)');
+    // Key conceptual distinction
+    expect(baseline.taggedPrompt).toContain('Confidence is about certainty of value, not severity');
   });
 
   it('should have detailed file-level guidance', async () => {
