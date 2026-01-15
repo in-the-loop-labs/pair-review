@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Pull Request UI Management
  * Main orchestrator that coordinates the extracted modules:
@@ -1642,9 +1643,7 @@ class PRManager {
         <div class="user-comment-edit-form">
           <div class="comment-form-toolbar">
             <button type="button" class="btn btn-sm suggestion-btn" title="Insert a suggestion">
-              <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
-                <path fill-rule="evenodd" d="M14.064 0a8.75 8.75 0 00-6.187 2.563l-.459.458c-.314.314-.616.641-.904.979H3.31a1.75 1.75 0 00-1.49.833L.11 7.607a.75.75 0 00.418 1.11l3.102.954c.037.051.079.1.124.145l2.429 2.428c.046.046.094.088.145.125l.954 3.102a.75.75 0 001.11.418l2.774-1.707a1.75 1.75 0 00.833-1.49V9.485c.338-.288.665-.59.979-.904l.458-.459A8.75 8.75 0 0016 1.936V1.75A1.75 1.75 0 0014.25 0h-.186z"></path>
-              </svg>
+              ${CommentManager.SUGGESTION_ICON_SVG}
             </button>
           </div>
           <textarea
