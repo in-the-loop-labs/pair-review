@@ -200,18 +200,59 @@ describe('Analyzer.validateSuggestionFilePaths', () => {
   });
 });
 
+/**
+ * Helper to create a better-sqlite3 compatible mock database.
+ *
+ * Usage:
+ *   const { mockDb, runCalls, getCalls } = createBetterSqliteMock();
+ *   // Configure get results:
+ *   mockDb.setGetResult({ pr_data: '...' });
+ *   // After test:
+ *   expect(runCalls).toHaveLength(2);
+ *   expect(runCalls[0].params[6]).toBe('src/foo.js');
+ */
+function createBetterSqliteMock() {
+  const runCalls = [];
+  const getCalls = [];
+  const allCalls = [];
+
+  let getResult = null;
+  let allResult = [];
+
+  const mockDb = {
+    prepare: vi.fn((sql) => ({
+      run: vi.fn((...params) => {
+        runCalls.push({ sql, params });
+        return { changes: 1, lastInsertRowid: runCalls.length };
+      }),
+      get: vi.fn((...params) => {
+        getCalls.push({ sql, params });
+        return getResult;
+      }),
+      all: vi.fn((...params) => {
+        allCalls.push({ sql, params });
+        return allResult;
+      })
+    })),
+    setGetResult: (result) => { getResult = result; },
+    setAllResult: (result) => { allResult = result; }
+  };
+
+  return { mockDb, runCalls, getCalls, allCalls };
+}
+
 describe('Analyzer.storeSuggestions database failsafe filter', () => {
   let analyzer;
   let mockDb;
+  let runCalls;
   let warnSpy;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Create a mock database object with run and get methods
-    mockDb = {
-      run: vi.fn((sql, params, callback) => callback(null)),
-      get: vi.fn((sql, params, callback) => callback(null, null))
-    };
+    // Create a mock database object using better-sqlite3's API
+    const mock = createBetterSqliteMock();
+    mockDb = mock.mockDb;
+    runCalls = mock.runCalls;
     analyzer = new Analyzer(mockDb, 'sonnet', 'claude');
     // Spy on logger.warn
     warnSpy = vi.spyOn(logger, 'warn');
@@ -220,12 +261,10 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
   describe('filtering suggestions with invalid paths', () => {
     it('should filter out suggestions with paths not in PR diff', async () => {
       // Mock the PR metadata with valid file paths
-      mockDb.get.mockImplementation((sql, params, callback) => {
-        callback(null, {
-          pr_data: JSON.stringify({
-            changed_files: ['src/valid.js', 'src/also-valid.js']
-          })
-        });
+      mockDb.setGetResult({
+        pr_data: JSON.stringify({
+          changed_files: ['src/valid.js', 'src/also-valid.js']
+        })
       });
 
       const suggestions = [
@@ -237,10 +276,10 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
       await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
       // Should have called run twice (once for each valid suggestion)
-      expect(mockDb.run).toHaveBeenCalledTimes(2);
+      expect(runCalls).toHaveLength(2);
 
       // Verify the valid suggestions were stored - file is the 7th param (index 6) in the params array
-      const storedFiles = mockDb.run.mock.calls.map(call => call[1][6]);
+      const storedFiles = runCalls.map(call => call.params[6]);
       expect(storedFiles).toContain('src/valid.js');
       expect(storedFiles).toContain('src/also-valid.js');
       expect(storedFiles).not.toContain('src/invalid.js');
@@ -252,12 +291,10 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
     });
 
     it('should filter all suggestions when none match valid paths', async () => {
-      mockDb.get.mockImplementation((sql, params, callback) => {
-        callback(null, {
-          pr_data: JSON.stringify({
-            changed_files: ['src/real-file.js']
-          })
-        });
+      mockDb.setGetResult({
+        pr_data: JSON.stringify({
+          changed_files: ['src/real-file.js']
+        })
       });
 
       const suggestions = [
@@ -268,7 +305,7 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
       await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
       // Should not have stored any suggestions
-      expect(mockDb.run).not.toHaveBeenCalled();
+      expect(runCalls).toHaveLength(0);
 
       // Should log warnings about filtered suggestions
       expect(warnSpy).toHaveBeenCalledWith(
@@ -277,12 +314,10 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
     });
 
     it('should handle path normalization in failsafe filter', async () => {
-      mockDb.get.mockImplementation((sql, params, callback) => {
-        callback(null, {
-          pr_data: JSON.stringify({
-            changed_files: ['src/foo.js']
-          })
-        });
+      mockDb.setGetResult({
+        pr_data: JSON.stringify({
+          changed_files: ['src/foo.js']
+        })
       });
 
       const suggestions = [
@@ -294,14 +329,12 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
       await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
       // All three should be stored (they all normalize to src/foo.js)
-      expect(mockDb.run).toHaveBeenCalledTimes(3);
+      expect(runCalls).toHaveLength(3);
     });
 
     it('should allow all suggestions when PR metadata is missing (fail-open)', async () => {
-      // Mock missing PR metadata
-      mockDb.get.mockImplementation((sql, params, callback) => {
-        callback(null, null);
-      });
+      // Mock missing PR metadata - leave default null
+      mockDb.setGetResult(null);
 
       const suggestions = [
         { file: 'any/file.js', title: 'Test', type: 'bug', description: 'Test', line_start: 1, line_end: 1, confidence: 0.8 }
@@ -310,7 +343,7 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
       await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
       // Should store the suggestion (fail-open behavior)
-      expect(mockDb.run).toHaveBeenCalledTimes(1);
+      expect(runCalls).toHaveLength(1);
 
       // Should log a warning about bypassed validation
       expect(warnSpy).toHaveBeenCalledWith(
@@ -319,12 +352,10 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
     });
 
     it('should allow all suggestions when changed_files is empty (fail-open)', async () => {
-      mockDb.get.mockImplementation((sql, params, callback) => {
-        callback(null, {
-          pr_data: JSON.stringify({
-            changed_files: []
-          })
-        });
+      mockDb.setGetResult({
+        pr_data: JSON.stringify({
+          changed_files: []
+        })
       });
 
       const suggestions = [
@@ -334,7 +365,7 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
       await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
       // Should store the suggestion (fail-open behavior)
-      expect(mockDb.run).toHaveBeenCalledTimes(1);
+      expect(runCalls).toHaveLength(1);
 
       // Should log a warning about bypassed validation
       expect(warnSpy).toHaveBeenCalledWith(
@@ -343,15 +374,13 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
     });
 
     it('should handle changed_files as objects with file property', async () => {
-      mockDb.get.mockImplementation((sql, params, callback) => {
-        callback(null, {
-          pr_data: JSON.stringify({
-            changed_files: [
-              { file: 'src/valid.js', additions: 10, deletions: 5 },
-              { file: 'src/also-valid.js', additions: 3, deletions: 0 }
-            ]
-          })
-        });
+      mockDb.setGetResult({
+        pr_data: JSON.stringify({
+          changed_files: [
+            { file: 'src/valid.js', additions: 10, deletions: 5 },
+            { file: 'src/also-valid.js', additions: 3, deletions: 0 }
+          ]
+        })
       });
 
       const suggestions = [
@@ -362,8 +391,8 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
       await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
       // Should only store the valid suggestion
-      expect(mockDb.run).toHaveBeenCalledTimes(1);
-      expect(mockDb.run.mock.calls[0][1][6]).toBe('src/valid.js');
+      expect(runCalls).toHaveLength(1);
+      expect(runCalls[0].params[6]).toBe('src/valid.js');
     });
   });
 
@@ -685,19 +714,19 @@ describe('Analyzer.parseResponse with file-level suggestions', () => {
 describe('Analyzer.storeSuggestions with file-level suggestions', () => {
   let analyzer;
   let mockDb;
+  let runCalls;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDb = {
-      run: vi.fn((sql, params, callback) => callback(null)),
-      get: vi.fn((sql, params, callback) => {
-        callback(null, {
-          pr_data: JSON.stringify({
-            changed_files: ['src/foo.js']
-          })
-        });
+    const mock = createBetterSqliteMock();
+    mockDb = mock.mockDb;
+    runCalls = mock.runCalls;
+    // Configure default PR metadata with valid file path
+    mockDb.setGetResult({
+      pr_data: JSON.stringify({
+        changed_files: ['src/foo.js']
       })
-    };
+    });
     analyzer = new Analyzer(mockDb, 'sonnet', 'claude');
   });
 
@@ -717,11 +746,11 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     await analyzer.storeSuggestions(1, 'run-123', suggestions, 2);
 
-    expect(mockDb.run).toHaveBeenCalledTimes(1);
+    expect(runCalls).toHaveLength(1);
     // Parameter indices after adding 'side' at index 9:
     // 0:pr_id, 1:source, 2:author, 3:ai_run_id, 4:ai_level, 5:ai_confidence,
     // 6:file, 7:line_start, 8:line_end, 9:side, 10:type, 11:title, 12:body, 13:status, 14:is_file_level
-    const params = mockDb.run.mock.calls[0][1];
+    const params = runCalls[0].params;
     expect(params[14]).toBe(1); // is_file_level should be 1
     expect(params[7]).toBeNull(); // line_start should be null
     expect(params[8]).toBeNull(); // line_end should be null
@@ -743,8 +772,8 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
-    expect(mockDb.run).toHaveBeenCalledTimes(1);
-    const params = mockDb.run.mock.calls[0][1];
+    expect(runCalls).toHaveLength(1);
+    const params = runCalls[0].params;
     expect(params[14]).toBe(0); // is_file_level should be 0
     expect(params[7]).toBe(10); // line_start should be 10
     expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT (NEW is default)
@@ -775,11 +804,11 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     await analyzer.storeSuggestions(1, 'run-123', suggestions, 2);
 
-    expect(mockDb.run).toHaveBeenCalledTimes(2);
+    expect(runCalls).toHaveLength(2);
     // First call (line-level)
-    expect(mockDb.run.mock.calls[0][1][14]).toBe(0);
+    expect(runCalls[0].params[14]).toBe(0);
     // Second call (file-level)
-    expect(mockDb.run.mock.calls[1][1][14]).toBe(1);
+    expect(runCalls[1].params[14]).toBe(1);
   });
 
   it('should map old_or_new=OLD to side=LEFT', async () => {
@@ -798,8 +827,8 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
-    expect(mockDb.run).toHaveBeenCalledTimes(1);
-    const params = mockDb.run.mock.calls[0][1];
+    expect(runCalls).toHaveLength(1);
+    const params = runCalls[0].params;
     expect(params[9]).toBe('LEFT'); // side should be LEFT for OLD
   });
 
@@ -819,8 +848,8 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
-    expect(mockDb.run).toHaveBeenCalledTimes(1);
-    const params = mockDb.run.mock.calls[0][1];
+    expect(runCalls).toHaveLength(1);
+    const params = runCalls[0].params;
     expect(params[9]).toBe('RIGHT'); // side should be RIGHT for NEW
   });
 
@@ -840,8 +869,8 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
 
-    expect(mockDb.run).toHaveBeenCalledTimes(1);
-    const params = mockDb.run.mock.calls[0][1];
+    expect(runCalls).toHaveLength(1);
+    const params = runCalls[0].params;
     expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT
   });
 });

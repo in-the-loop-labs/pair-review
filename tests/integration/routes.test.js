@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import sqlite3 from 'sqlite3';
+import Database from 'better-sqlite3';
 
 /**
  * API Route Integration Tests
@@ -113,143 +114,128 @@ const { query, queryOne, run, WorktreeRepository, RepoSettingsRepository, Review
 
 /**
  * Create an in-memory SQLite database with proper schema for testing.
+ * Uses better-sqlite3 for synchronous operations.
  */
-async function createTestDatabase() {
-  return new Promise((resolve, reject) => {
-    const db = new sqlite3.Database(':memory:', async (error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
+function createTestDatabase() {
+  const db = new Database(':memory:');
 
-      try {
-        const SCHEMA_SQL = {
-          reviews: `
-            CREATE TABLE IF NOT EXISTS reviews (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              pr_number INTEGER,
-              repository TEXT NOT NULL,
-              status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'submitted', 'pending')),
-              review_id INTEGER,
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              submitted_at DATETIME,
-              review_data TEXT,
-              custom_instructions TEXT,
-              review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
-              local_path TEXT,
-              local_head_sha TEXT,
-              summary TEXT
-            )
-          `,
-          comments: `
-            CREATE TABLE IF NOT EXISTS comments (
-              id INTEGER PRIMARY KEY,
-              pr_id INTEGER,
-              source TEXT,
-              author TEXT,
-              ai_run_id TEXT,
-              ai_level INTEGER,
-              ai_confidence REAL,
-              file TEXT,
-              line_start INTEGER,
-              line_end INTEGER,
-              diff_position INTEGER,
-              side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT')),
-              commit_sha TEXT,
-              type TEXT,
-              title TEXT,
-              body TEXT,
-              status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
-              adopted_as_id INTEGER,
-              parent_id INTEGER,
-              is_file_level INTEGER DEFAULT 0,
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
-              FOREIGN KEY (parent_id) REFERENCES comments(id)
-            )
-          `,
-          pr_metadata: `
-            CREATE TABLE IF NOT EXISTS pr_metadata (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              pr_number INTEGER NOT NULL,
-              repository TEXT NOT NULL,
-              title TEXT,
-              description TEXT,
-              author TEXT,
-              base_branch TEXT,
-              head_branch TEXT,
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              pr_data TEXT,
-              last_ai_run_id TEXT,
-              UNIQUE(pr_number, repository)
-            )
-          `,
-          worktrees: `
-            CREATE TABLE IF NOT EXISTS worktrees (
-              id TEXT PRIMARY KEY,
-              pr_number INTEGER NOT NULL,
-              repository TEXT NOT NULL,
-              branch TEXT NOT NULL,
-              path TEXT NOT NULL,
-              created_at TEXT NOT NULL,
-              last_accessed_at TEXT NOT NULL,
-              UNIQUE(pr_number, repository)
-            )
-          `,
-          repo_settings: `
-            CREATE TABLE IF NOT EXISTS repo_settings (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              repository TEXT NOT NULL UNIQUE,
-              default_instructions TEXT,
-              default_provider TEXT,
-              default_model TEXT,
-              created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-              updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-          `
-        };
+  // Disable foreign keys to match legacy sqlite3 behavior
+  // (sqlite3 has foreign keys disabled by default, better-sqlite3 has them enabled)
+  db.pragma('foreign_keys = OFF');
 
-        const INDEX_SQL = [
-          'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
-          'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start)',
-          'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
-          'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
-          'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
-          'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
-          'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
-          'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)'
-        ];
+  const SCHEMA_SQL = {
+    reviews: `
+      CREATE TABLE IF NOT EXISTS reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_number INTEGER,
+        repository TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft', 'submitted', 'pending')),
+        review_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        submitted_at DATETIME,
+        review_data TEXT,
+        custom_instructions TEXT,
+        review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
+        local_path TEXT,
+        local_head_sha TEXT,
+        summary TEXT
+      )
+    `,
+    comments: `
+      CREATE TABLE IF NOT EXISTS comments (
+        id INTEGER PRIMARY KEY,
+        pr_id INTEGER,
+        source TEXT,
+        author TEXT,
+        ai_run_id TEXT,
+        ai_level INTEGER,
+        ai_confidence REAL,
+        file TEXT,
+        line_start INTEGER,
+        line_end INTEGER,
+        diff_position INTEGER,
+        side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT')),
+        commit_sha TEXT,
+        type TEXT,
+        title TEXT,
+        body TEXT,
+        status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
+        adopted_as_id INTEGER,
+        parent_id INTEGER,
+        is_file_level INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
+        FOREIGN KEY (parent_id) REFERENCES comments(id)
+      )
+    `,
+    pr_metadata: `
+      CREATE TABLE IF NOT EXISTS pr_metadata (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_number INTEGER NOT NULL,
+        repository TEXT NOT NULL,
+        title TEXT,
+        description TEXT,
+        author TEXT,
+        base_branch TEXT,
+        head_branch TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        pr_data TEXT,
+        last_ai_run_id TEXT,
+        UNIQUE(pr_number, repository)
+      )
+    `,
+    worktrees: `
+      CREATE TABLE IF NOT EXISTS worktrees (
+        id TEXT PRIMARY KEY,
+        pr_number INTEGER NOT NULL,
+        repository TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_accessed_at TEXT NOT NULL,
+        UNIQUE(pr_number, repository)
+      )
+    `,
+    repo_settings: `
+      CREATE TABLE IF NOT EXISTS repo_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repository TEXT NOT NULL UNIQUE,
+        default_instructions TEXT,
+        default_provider TEXT,
+        default_model TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `
+  };
 
-        for (const sql of Object.values(SCHEMA_SQL)) {
-          await new Promise((res, rej) => {
-            db.run(sql, (err) => err ? rej(err) : res());
-          });
-        }
+  const INDEX_SQL = [
+    'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
+    'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start)',
+    'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
+    'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
+    'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
+    'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)'
+  ];
 
-        for (const sql of INDEX_SQL) {
-          await new Promise((res, rej) => {
-            db.run(sql, (err) => err ? rej(err) : res());
-          });
-        }
+  for (const sql of Object.values(SCHEMA_SQL)) {
+    db.exec(sql);
+  }
 
-        resolve(db);
-      } catch (err) {
-        reject(err);
-      }
-    });
-  });
+  for (const sql of INDEX_SQL) {
+    db.exec(sql);
+  }
+
+  return db;
 }
 
 function closeTestDatabase(db) {
-  return new Promise((resolve, reject) => {
-    db.close((error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
+  db.close();
 }
 
 // Load the route modules once (will use the mocked modules)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Playwright Global Setup
  *
@@ -6,7 +7,7 @@
 
 const express = require('express');
 const path = require('path');
-const sqlite3 = require('sqlite3');
+const Database = require('better-sqlite3');
 
 // Mock analysis timing - how long the simulated AI analysis takes
 const MOCK_ANALYSIS_DURATION_MS = 500;
@@ -238,25 +239,15 @@ let db = null;
  * For better isolation, see issue pair_review-3e6d.
  */
 function createTestDatabase() {
-  return new Promise((resolve, reject) => {
-    db = new sqlite3.Database(':memory:', (error) => {
-      if (error) {
-        return reject(error);
-      }
-      db.exec(SCHEMA_SQL, (err) => {
-        if (err) {
-          return reject(err);
-        }
-        resolve(db);
-      });
-    });
-  });
+  db = new Database(':memory:');
+  db.exec(SCHEMA_SQL);
+  return db;
 }
 
 /**
  * Insert test data
  */
-async function insertTestData() {
+function insertTestData() {
   const prData = JSON.stringify({
     state: 'open',
     diff: mockWorktreeResponses.generateUnifiedDiff,
@@ -269,25 +260,18 @@ async function insertTestData() {
     node_id: 'PR_test_node_123'
   });
 
-  return new Promise((resolve, reject) => {
-    db.serialize(() => {
-      // Insert PR metadata
-      db.run(`
-        INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
-        VALUES (1, 'test-owner/test-repo', 'Test PR for E2E', 'Test description', 'testuser', 'main', 'feature-test', ?)
-      `, [prData]);
+  // Insert PR metadata
+  db.prepare(`
+    INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+    VALUES (1, 'test-owner/test-repo', 'Test PR for E2E', 'Test description', 'testuser', 'main', 'feature-test', ?)
+  `).run(prData);
 
-      // Insert worktree
-      const now = new Date().toISOString();
-      db.run(`
-        INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
-        VALUES ('e2e-test-id', 1, 'test-owner/test-repo', 'feature-test', '/tmp/worktree/e2e-test', ?, ?)
-      `, [now, now], (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  });
+  // Insert worktree
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
+    VALUES ('e2e-test-id', 1, 'test-owner/test-repo', 'feature-test', '/tmp/worktree/e2e-test', ?, ?)
+  `).run(now, now);
 }
 
 /**
@@ -297,8 +281,8 @@ async function globalSetup() {
   console.log('Starting E2E test server...');
 
   // Create test database
-  await createTestDatabase();
-  await insertTestData();
+  createTestDatabase();
+  insertTestData();
 
   // Mock modules before requiring routes
   const { GitHubClient } = require('../../src/github/client');
@@ -371,53 +355,44 @@ async function globalSetup() {
   let analysisHasRun = false;
 
   // Mock AI analysis endpoint - responds with mock suggestions
-  app.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
+  app.post('/api/analyze/:owner/:repo/:pr', (req, res) => {
     const { owner, repo, pr } = req.params;
     analysisId = `test-analysis-${Date.now()}`;
     analysisRunning = true;
     analysisHasRun = true;
 
     // Get PR metadata ID from database
-    const prMetadata = await new Promise((resolve, reject) => {
-      db.get('SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?',
-        [parseInt(pr), `${owner}/${repo}`],
-        (err, row) => err ? reject(err) : resolve(row)
-      );
-    });
+    const prMetadata = db.prepare('SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?')
+      .get(parseInt(pr), `${owner}/${repo}`);
 
     if (prMetadata) {
       // Update last_ai_run_id to mark that analysis has been run
-      await new Promise((resolve, reject) => {
-        db.run('UPDATE pr_metadata SET last_ai_run_id = ? WHERE id = ?',
-          ['test-run-001', prMetadata.id],
-          (err) => err ? reject(err) : resolve()
-        );
-      });
+      db.prepare('UPDATE pr_metadata SET last_ai_run_id = ? WHERE id = ?')
+        .run('test-run-001', prMetadata.id);
 
       // Insert mock AI suggestions into the database
+      const insertStmt = db.prepare(`
+        INSERT INTO comments (
+          pr_id, source, ai_run_id, ai_level, file, line_start, line_end,
+          type, title, body, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
       for (const suggestion of mockAISuggestions) {
-        await new Promise((resolve, reject) => {
-          db.run(`
-            INSERT INTO comments (
-              pr_id, source, ai_run_id, ai_level, file, line_start, line_end,
-              type, title, body, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [
-            prMetadata.id,
-            'ai',
-            suggestion.ai_run_id,
-            suggestion.ai_level,
-            suggestion.file,
-            suggestion.line_start,
-            suggestion.line_end,
-            suggestion.type,
-            suggestion.title,
-            suggestion.body,
-            suggestion.status,
-            suggestion.created_at,
-            suggestion.updated_at
-          ], (err) => err ? reject(err) : resolve());
-        });
+        insertStmt.run(
+          prMetadata.id,
+          'ai',
+          suggestion.ai_run_id,
+          suggestion.ai_level,
+          suggestion.file,
+          suggestion.line_start,
+          suggestion.line_end,
+          suggestion.type,
+          suggestion.title,
+          suggestion.body,
+          suggestion.status,
+          suggestion.created_at,
+          suggestion.updated_at
+        );
       }
     }
 
@@ -497,19 +472,14 @@ async function globalSetup() {
   });
 
   // Mock has-ai-suggestions endpoint
-  app.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) => {
+  app.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', (req, res) => {
     const { owner, repo, number } = req.params;
     try {
-      const result = await new Promise((resolve, reject) => {
-        db.get(`
-          SELECT COUNT(*) as count FROM comments c
-          JOIN pr_metadata p ON c.pr_id = p.id
-          WHERE p.pr_number = ? AND p.repository = ? AND c.source = 'ai'
-        `, [parseInt(number), `${owner}/${repo}`], (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        });
-      });
+      const result = db.prepare(`
+        SELECT COUNT(*) as count FROM comments c
+        JOIN pr_metadata p ON c.pr_id = p.id
+        WHERE p.pr_number = ? AND p.repository = ? AND c.source = 'ai'
+      `).get(parseInt(number), `${owner}/${repo}`);
       res.json({
         hasSuggestions: result?.count > 0,
         analysisHasRun: analysisHasRun || result?.count > 0
