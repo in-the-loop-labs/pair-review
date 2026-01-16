@@ -121,6 +121,41 @@ test.describe('AI Analysis Button', () => {
   });
 });
 
+test.describe('Analysis Config Modal', () => {
+  test('should trigger analysis with Cmd+Enter keyboard shortcut', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Click analyze button to open config modal
+    const analyzeBtn = page.locator('#analyze-btn, button:has-text("Analyze")').first();
+    await analyzeBtn.click();
+
+    // Handle confirm dialog if it appears (for re-running analysis)
+    const confirmDialog = page.locator('#confirm-dialog');
+    if (await confirmDialog.isVisible().catch(() => false)) {
+      await page.locator('#confirm-dialog .btn-danger, #confirm-dialog button:has-text("Continue")').first().click();
+    }
+
+    // Wait for config modal to appear
+    const configModal = page.locator('#analysis-config-modal');
+    await configModal.waitFor({ state: 'visible', timeout: 3000 });
+
+    // Focus the custom instructions textarea and type something
+    const textarea = page.locator('#custom-instructions');
+    await textarea.focus();
+    await textarea.fill('Test instructions');
+
+    // Press Cmd+Enter (or Ctrl+Enter on non-Mac)
+    const isMac = process.platform === 'darwin';
+    await page.keyboard.press(isMac ? 'Meta+Enter' : 'Control+Enter');
+
+    // Config modal should close and progress modal should appear
+    await configModal.waitFor({ state: 'hidden', timeout: 3000 });
+    const progressModal = page.locator('#progress-modal');
+    await expect(progressModal).toBeVisible({ timeout: 5000 });
+  });
+});
+
 test.describe('Progress Modal', () => {
   test('should show progress modal when analysis starts', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');

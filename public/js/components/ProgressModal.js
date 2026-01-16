@@ -9,7 +9,8 @@ class ProgressModal {
     this.currentAnalysisId = null;
     this.eventSource = null;
     this.statusCheckInterval = null;
-    
+    this.isRunningInBackground = false;
+
     this.createModal();
     this.setupEventListeners();
   }
@@ -183,7 +184,7 @@ class ProgressModal {
     }
 
     try {
-      // Make cancel request (not implemented in backend yet, but structure ready)
+      // Make cancel request to backend
       const response = await fetch(`/api/analyze/cancel/${this.currentAnalysisId}`, {
         method: 'POST'
       });
@@ -201,6 +202,11 @@ class ProgressModal {
     // Reset button
     if (window.prManager) {
       window.prManager.resetButton();
+    }
+
+    // Reset AI panel to non-loading state
+    if (window.aiPanel?.setAnalysisState) {
+      window.aiPanel.setAnalysisState('unknown');
     }
   }
 
@@ -244,6 +250,21 @@ class ProgressModal {
         progressContainer.style.display = 'none';
       }
     }
+
+    // Reset footer buttons to initial state
+    const runBackgroundBtn = document.getElementById('run-background-btn');
+    const cancelBtn = document.getElementById('cancel-btn');
+
+    if (runBackgroundBtn) {
+      runBackgroundBtn.textContent = 'Run in Background';
+      runBackgroundBtn.disabled = false;
+    }
+    if (cancelBtn) {
+      cancelBtn.textContent = 'Cancel';
+    }
+
+    // Reset background running state
+    this.isRunningInBackground = false;
   }
 
   /**
@@ -274,9 +295,9 @@ class ProgressModal {
         
         if (data.type === 'progress') {
           this.updateProgress(data);
-          
-          // Stop monitoring if analysis is complete or failed
-          if (data.status === 'completed' || data.status === 'failed') {
+
+          // Stop monitoring if analysis is complete, failed, or cancelled
+          if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
             this.stopProgressMonitoring();
           }
         }
@@ -316,9 +337,9 @@ class ProgressModal {
         
         const status = await response.json();
         this.updateProgress(status);
-        
-        // Stop monitoring if analysis is complete or failed
-        if (status.status === 'completed' || status.status === 'failed') {
+
+        // Stop monitoring if analysis is complete, failed, or cancelled
+        if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
           this.stopProgressMonitoring();
         }
       } catch (error) {
@@ -364,11 +385,13 @@ class ProgressModal {
     // Update overall progress message
     this.updateStatus(status.progress || 'Running...');
 
-    // Handle completion
+    // Handle completion, failure, or cancellation
     if (status.status === 'completed') {
       this.handleCompletion(status);
     } else if (status.status === 'failed') {
       this.handleFailure(status);
+    } else if (status.status === 'cancelled') {
+      this.handleCancellation(status);
     }
   }
 
@@ -437,6 +460,17 @@ class ProgressModal {
       statusText.style.display = 'block';
 
       // Hide progress bar for failed levels
+      if (progressContainer) {
+        progressContainer.style.display = 'none';
+      }
+
+    } else if (levelStatus.status === 'cancelled') {
+      icon.className = 'icon cancelled';
+      icon.textContent = '⊘';
+      statusText.textContent = 'Cancelled';
+      statusText.style.display = 'block';
+
+      // Hide progress bar for cancelled levels
       if (progressContainer) {
         progressContainer.style.display = 'none';
       }
@@ -547,6 +581,41 @@ class ProgressModal {
     // Reset button on failure
     if (window.prManager) {
       window.prManager.resetButton();
+    }
+  }
+
+  /**
+   * Handle analysis cancellation (via SSE status)
+   * @param {Object} status - Cancellation status object
+   */
+  handleCancellation(status) {
+    // Update buttons to show cancelled state
+    const runBackgroundBtn = document.getElementById('run-background-btn');
+    const cancelBtn = document.getElementById('cancel-btn');
+
+    if (runBackgroundBtn) {
+      runBackgroundBtn.textContent = 'Analysis Cancelled';
+      runBackgroundBtn.disabled = true;
+    }
+    if (cancelBtn) {
+      cancelBtn.textContent = 'Close';
+    }
+
+    // Reset the analyze button and AI panel state
+    if (window.prManager) {
+      window.prManager.resetButton();
+    }
+
+    // Reset AI panel to non-loading state
+    if (window.aiPanel?.setAnalysisState) {
+      window.aiPanel.setAnalysisState('unknown');
+    }
+
+    // Hide modal after a brief delay
+    if (this.isVisible) {
+      setTimeout(() => {
+        this.hide();
+      }, 1500);
     }
   }
 

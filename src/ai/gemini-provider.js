@@ -8,6 +8,7 @@ const { spawn } = require('child_process');
 const { AIProvider, registerProvider } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
+const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
 
 /**
  * Gemini model definitions with tier mappings
@@ -130,7 +131,7 @@ class GeminiProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown' } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess } = options;
 
       const levelPrefix = `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Gemini CLI...`);
@@ -147,6 +148,12 @@ class GeminiProvider extends AIProvider {
 
       const pid = gemini.pid;
       logger.info(`${levelPrefix} Spawned Gemini CLI process: PID ${pid}`);
+
+      // Register process for cancellation tracking if analysisId provided
+      if (analysisId && registerProcess) {
+        registerProcess(analysisId, gemini);
+        logger.info(`${levelPrefix} Registered process ${pid} for analysis ${analysisId}`);
+      }
 
       let stdout = '';
       let stderr = '';
@@ -182,6 +189,14 @@ class GeminiProvider extends AIProvider {
       // Handle completion
       gemini.on('close', (code) => {
         if (settled) return;  // Already settled by timeout or error
+
+        // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
+        const isCancellationCode = code === 143 || code === 137;
+        if (isCancellationCode && analysisId && isAnalysisCancelled(analysisId)) {
+          logger.info(`${levelPrefix} Gemini CLI terminated due to analysis cancellation (exit code ${code})`);
+          settle(reject, new CancellationError(`${levelPrefix} Analysis cancelled by user`));
+          return;
+        }
 
         // Always log stderr if present
         if (stderr.trim()) {

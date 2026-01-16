@@ -24,7 +24,10 @@ const {
   getPRKey,
   getModel,
   determineCompletionInfo,
-  broadcastProgress
+  broadcastProgress,
+  killProcesses,
+  isAnalysisCancelled,
+  CancellationError
 } = require('./shared');
 
 const router = express.Router();
@@ -224,7 +227,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Start analysis asynchronously with progress callback and custom instructions
     // Use review.id (not prMetadata.id) to avoid ID collision with local mode
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, combinedInstructions)
+    // Pass analysisId for process tracking/cancellation
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, combinedInstructions, null, { analysisId })
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -307,12 +311,20 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         broadcastProgress(analysisId, completedStatus);
       })
       .catch(error => {
-        logger.error(`Analysis failed for PR #${prNumber}: ${error.message}`);
         const currentStatus = activeAnalyses.get(analysisId);
         if (!currentStatus) {
           console.warn('Analysis status not found during error handling:', analysisId);
           return;
         }
+
+        // Handle cancellation gracefully - don't log as error
+        if (error.isCancellation) {
+          logger.info(`Analysis cancelled for PR #${prNumber}`);
+          // Status is already set to 'cancelled' by the cancel endpoint
+          return;
+        }
+
+        logger.error(`Analysis failed for PR #${prNumber}: ${error.message}`);
 
         // Mark all levels as failed
         for (let i = 1; i <= 4; i++) {
@@ -679,6 +691,97 @@ router.get('/api/analyze/status/:id', async (req, res) => {
     console.error('Error fetching analysis status:', error);
     res.status(500).json({
       error: 'Failed to fetch analysis status'
+    });
+  }
+});
+
+/**
+ * Cancel an active AI analysis
+ */
+router.post('/api/analyze/cancel/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const analysis = activeAnalyses.get(id);
+
+    if (!analysis) {
+      return res.status(404).json({
+        error: 'Analysis not found'
+      });
+    }
+
+    // Check if already completed/failed/cancelled
+    if (['completed', 'failed', 'cancelled'].includes(analysis.status)) {
+      return res.json({
+        success: true,
+        message: `Analysis already ${analysis.status}`,
+        status: analysis.status
+      });
+    }
+
+    logger.section(`Cancelling Analysis: ${id}`);
+    // Log context based on review type (PR mode vs local mode)
+    if (analysis.reviewType === 'local') {
+      logger.log('API', `Local review #${analysis.reviewId} in ${analysis.repository}`, 'yellow');
+    } else {
+      logger.log('API', `PR #${analysis.prNumber} in ${analysis.repository}`, 'yellow');
+    }
+
+    // Kill all running child processes for this analysis
+    const killedCount = killProcesses(id);
+    logger.info(`Killed ${killedCount} running process(es)`);
+
+    // Update analysis status to cancelled
+    const cancelledStatus = {
+      ...analysis,
+      status: 'cancelled',
+      cancelledAt: new Date().toISOString(),
+      progress: 'Analysis cancelled by user',
+      levels: {
+        ...analysis.levels,
+        // Mark any running levels as cancelled
+        // Note: Level 4 represents orchestration (the synthesis phase after levels 1-3)
+        1: analysis.levels?.[1]?.status === 'running'
+          ? { status: 'cancelled', progress: 'Cancelled' }
+          : analysis.levels?.[1],
+        2: analysis.levels?.[2]?.status === 'running'
+          ? { status: 'cancelled', progress: 'Cancelled' }
+          : analysis.levels?.[2],
+        3: analysis.levels?.[3]?.status === 'running'
+          ? { status: 'cancelled', progress: 'Cancelled' }
+          : analysis.levels?.[3],
+        4: analysis.levels?.[4]?.status === 'running'
+          ? { status: 'cancelled', progress: 'Cancelled' }
+          : analysis.levels?.[4]
+      }
+    };
+
+    activeAnalyses.set(id, cancelledStatus);
+
+    // Broadcast cancelled status to SSE clients
+    broadcastProgress(id, cancelledStatus);
+
+    // Clean up PR to analysis ID mapping (PR mode only)
+    // Local mode cleanup is handled in the local.js analyze endpoint's .finally() block
+    if (analysis.reviewType !== 'local' && analysis.repository && analysis.prNumber) {
+      const [owner, repo] = analysis.repository.split('/');
+      const prKey = getPRKey(owner, repo, analysis.prNumber);
+      prToAnalysisId.delete(prKey);
+    }
+
+    logger.success(`Analysis ${id} cancelled successfully`);
+
+    res.json({
+      success: true,
+      message: 'Analysis cancelled',
+      processesKilled: killedCount,
+      status: 'cancelled'
+    });
+
+  } catch (error) {
+    logger.error(`Error cancelling analysis: ${error.message}`);
+    res.status(500).json({
+      error: 'Failed to cancel analysis'
     });
   }
 });

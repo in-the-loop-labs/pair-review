@@ -68,6 +68,8 @@ class AIProvider {
    * @param {string} options.cwd - Working directory for execution
    * @param {number} options.timeout - Timeout in milliseconds
    * @param {string|number} options.level - Analysis level for logging
+   * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
+   * @param {Function} options.registerProcess - Function to register child process for cancellation
    * @returns {Promise<Object>} Parsed JSON response or { raw, parsed: false }
    */
   async execute(prompt, options = {}) {

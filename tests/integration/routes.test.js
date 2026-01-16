@@ -2157,6 +2157,167 @@ describe('Analysis Status Endpoints', () => {
       expect(response.body.error).toContain('not found');
     });
   });
+
+  describe('POST /api/analyze/cancel/:id', () => {
+    it('should return 404 for non-existent analysis', async () => {
+      const response = await request(app)
+        .post('/api/analyze/cancel/non-existent-id');
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should cancel a running analysis', async () => {
+      // Import the shared module to set up an active analysis
+      const { activeAnalyses, prToAnalysisId, getPRKey } = require('../../src/routes/shared');
+
+      const analysisId = 'test-cancel-analysis-id';
+      const prKey = getPRKey('owner', 'repo', 1);
+
+      // Set up an active analysis
+      activeAnalyses.set(analysisId, {
+        id: analysisId,
+        prNumber: 1,
+        repository: 'owner/repo',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        progress: 'Running analysis...',
+        levels: {
+          1: { status: 'running', progress: 'Running...' },
+          2: { status: 'running', progress: 'Running...' },
+          3: { status: 'running', progress: 'Running...' },
+          4: { status: 'pending', progress: 'Pending' }
+        }
+      });
+      prToAnalysisId.set(prKey, analysisId);
+
+      try {
+        const response = await request(app)
+          .post(`/api/analyze/cancel/${analysisId}`);
+
+        expect(response.status).toBe(200);
+        expect(response.body.success).toBe(true);
+        expect(response.body.status).toBe('cancelled');
+
+        // Verify the analysis status was updated
+        const updatedAnalysis = activeAnalyses.get(analysisId);
+        expect(updatedAnalysis.status).toBe('cancelled');
+        expect(updatedAnalysis.progress).toBe('Analysis cancelled by user');
+
+        // Verify running levels were marked as cancelled
+        expect(updatedAnalysis.levels[1].status).toBe('cancelled');
+        expect(updatedAnalysis.levels[2].status).toBe('cancelled');
+        expect(updatedAnalysis.levels[3].status).toBe('cancelled');
+
+        // Verify prToAnalysisId mapping was cleaned up
+        expect(prToAnalysisId.has(prKey)).toBe(false);
+      } finally {
+        // Cleanup always runs
+        activeAnalyses.delete(analysisId);
+      }
+    });
+
+    it('should return success for already completed analysis', async () => {
+      const { activeAnalyses } = require('../../src/routes/shared');
+
+      const analysisId = 'test-completed-analysis-id';
+
+      // Set up an already completed analysis
+      activeAnalyses.set(analysisId, {
+        id: analysisId,
+        prNumber: 1,
+        repository: 'owner/repo',
+        status: 'completed',
+        completedAt: new Date().toISOString()
+      });
+
+      try {
+        const response = await request(app)
+          .post(`/api/analyze/cancel/${analysisId}`);
+
+        expect(response.status).toBe(200);
+        expect(response.body.success).toBe(true);
+        expect(response.body.message).toContain('already completed');
+      } finally {
+        // Cleanup always runs
+        activeAnalyses.delete(analysisId);
+      }
+    });
+
+    it('should return success for already cancelled analysis', async () => {
+      const { activeAnalyses } = require('../../src/routes/shared');
+
+      const analysisId = 'test-already-cancelled-id';
+
+      // Set up an already cancelled analysis
+      activeAnalyses.set(analysisId, {
+        id: analysisId,
+        prNumber: 1,
+        repository: 'owner/repo',
+        status: 'cancelled',
+        cancelledAt: new Date().toISOString()
+      });
+
+      try {
+        const response = await request(app)
+          .post(`/api/analyze/cancel/${analysisId}`);
+
+        expect(response.status).toBe(200);
+        expect(response.body.success).toBe(true);
+        expect(response.body.message).toContain('already cancelled');
+      } finally {
+        // Cleanup always runs
+        activeAnalyses.delete(analysisId);
+      }
+    });
+
+    it('should cancel a running local mode analysis', async () => {
+      // Import the shared module to set up an active analysis
+      const { activeAnalyses } = require('../../src/routes/shared');
+
+      const analysisId = 'test-local-cancel-analysis-id';
+
+      // Set up an active LOCAL mode analysis
+      activeAnalyses.set(analysisId, {
+        id: analysisId,
+        reviewId: 123,
+        repository: 'owner/repo',
+        reviewType: 'local',  // Key difference: local mode
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        progress: 'Analyzing...',
+        levels: {
+          1: { status: 'running', progress: 'In progress...' },
+          2: { status: 'running', progress: 'In progress...' },
+          3: { status: 'running', progress: 'In progress...' },
+          4: { status: 'pending', progress: 'Pending' }
+        }
+      });
+
+      try {
+        const response = await request(app)
+          .post(`/api/analyze/cancel/${analysisId}`);
+
+        expect(response.status).toBe(200);
+        expect(response.body.success).toBe(true);
+        expect(response.body.status).toBe('cancelled');
+
+        // Verify the analysis status was updated
+        const updatedAnalysis = activeAnalyses.get(analysisId);
+        expect(updatedAnalysis.status).toBe('cancelled');
+        expect(updatedAnalysis.progress).toBe('Analysis cancelled by user');
+        expect(updatedAnalysis.reviewType).toBe('local');
+
+        // Verify running levels were marked as cancelled
+        expect(updatedAnalysis.levels[1].status).toBe('cancelled');
+        expect(updatedAnalysis.levels[2].status).toBe('cancelled');
+        expect(updatedAnalysis.levels[3].status).toBe('cancelled');
+      } finally {
+        // Cleanup always runs
+        activeAnalyses.delete(analysisId);
+      }
+    });
+  });
 });
 
 // ============================================================================

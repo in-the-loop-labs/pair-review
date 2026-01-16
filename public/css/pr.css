@@ -2409,6 +2409,10 @@ tr.newly-expanded .d2h-code-line-ctn {
   color: #cf222e;
 }
 
+.level-icon .icon.cancelled {
+  color: #9e6a03;
+}
+
 .level-content {
   flex: 1;
 }

@@ -253,6 +253,18 @@ class AnalysisConfigModal {
       this.updateCharacterCount(textarea.value.length);
     });
 
+    // Keyboard shortcut: Cmd+Enter / Ctrl+Enter to start analysis
+    textarea?.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        // Only submit if not over character limit (button would be disabled)
+        const submitBtn = this.modal.querySelector('[data-action="submit"]');
+        if (submitBtn && !submitBtn.disabled) {
+          this.handleSubmit();
+        }
+      }
+    });
+
     // Repo instructions toggle
     this.modal.querySelector('#toggle-repo-instructions')?.addEventListener('click', () => {
       this.modal.querySelector('#repo-instructions-banner').style.display = 'none';

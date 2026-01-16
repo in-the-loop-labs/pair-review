@@ -941,7 +941,7 @@ class LocalManager {
           if (data.type === 'progress') {
             modal.updateProgress(data);
 
-            if (data.status === 'completed' || data.status === 'failed') {
+            if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
               modal.stopProgressMonitoring();
             }
           }

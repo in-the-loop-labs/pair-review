@@ -7,6 +7,18 @@
 
 const logger = require('../utils/logger');
 
+/**
+ * Custom error class for analysis cancellation
+ * Used to distinguish user-initiated cancellation from actual errors
+ */
+class CancellationError extends Error {
+  constructor(message = 'Analysis cancelled by user') {
+    super(message);
+    this.name = 'CancellationError';
+    this.isCancellation = true;
+  }
+}
+
 // Store active analysis runs in memory for status tracking
 const activeAnalyses = new Map();
 
@@ -19,6 +31,10 @@ const progressClients = new Map();
 // Store local review diff data keyed by reviewId
 // Using a Map avoids process.env size limits and security concerns
 const localReviewDiffs = new Map();
+
+// Store active child processes for each analysis (for cancellation support)
+// Maps analysisId -> Set of ChildProcess objects
+const activeProcesses = new Map();
 
 /**
  * Generate a consistent PR key for mapping
@@ -123,13 +139,79 @@ function broadcastProgress(analysisId, progressData) {
   }
 }
 
+/**
+ * Register a child process for an analysis (for cancellation tracking)
+ * @param {string} analysisId - Analysis ID
+ * @param {ChildProcess} childProcess - The spawned child process
+ */
+function registerProcess(analysisId, childProcess) {
+  if (!activeProcesses.has(analysisId)) {
+    activeProcesses.set(analysisId, new Set());
+  }
+  activeProcesses.get(analysisId).add(childProcess);
+
+  // Auto-remove when process exits
+  childProcess.on('close', () => {
+    const processes = activeProcesses.get(analysisId);
+    if (processes) {
+      processes.delete(childProcess);
+      if (processes.size === 0) {
+        activeProcesses.delete(analysisId);
+      }
+    }
+  });
+}
+
+/**
+ * Kill all processes for an analysis
+ * @param {string} analysisId - Analysis ID
+ * @returns {number} Number of processes killed
+ */
+function killProcesses(analysisId) {
+  const processes = activeProcesses.get(analysisId);
+  if (!processes || processes.size === 0) {
+    return 0;
+  }
+
+  let killed = 0;
+  for (const proc of processes) {
+    try {
+      // Send SIGTERM to gracefully terminate the process
+      proc.kill('SIGTERM');
+      killed++;
+    } catch (err) {
+      // Process may have already exited
+      logger.warn(`Failed to kill process: ${err.message}`);
+    }
+  }
+
+  // Clear the set
+  activeProcesses.delete(analysisId);
+  return killed;
+}
+
+/**
+ * Check if an analysis has been cancelled
+ * @param {string} analysisId - Analysis ID
+ * @returns {boolean} True if cancelled
+ */
+function isAnalysisCancelled(analysisId) {
+  const analysis = activeAnalyses.get(analysisId);
+  return analysis?.status === 'cancelled';
+}
+
 module.exports = {
+  CancellationError,
   activeAnalyses,
   prToAnalysisId,
   progressClients,
   localReviewDiffs,
+  activeProcesses,
   getPRKey,
   getModel,
   determineCompletionInfo,
-  broadcastProgress
+  broadcastProgress,
+  registerProcess,
+  killProcesses,
+  isAnalysisCancelled
 };

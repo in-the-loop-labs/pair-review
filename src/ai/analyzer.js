@@ -12,6 +12,7 @@ const { normalizePath, pathExistsInList } = require('../utils/paths');
 const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
 const { getPromptBuilder } = require('./prompts');
 const { formatValidFiles } = require('./prompts/shared/valid-files');
+const { registerProcess, isAnalysisCancelled, CancellationError } = require('../routes/shared');
 
 class Analyzer {
   /**
@@ -35,14 +36,20 @@ class Analyzer {
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
+   * @param {Object} options - Additional options
+   * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null, changedFiles = null) {
+  async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
     const runId = uuidv4();
+    const { analysisId } = options;
 
     logger.section('Multi-Level AI Analysis Starting (Parallel Execution)');
     logger.info(`PR ID: ${prId}`);
     logger.info(`Analysis run ID: ${runId}`);
+    if (analysisId) {
+      logger.info(`Analysis ID (for cancellation): ${analysisId}`);
+    }
     logger.info(`Worktree path: ${worktreePath}`);
 
     // Load generated file patterns to skip during analysis
@@ -69,9 +76,9 @@ class Analyzer {
         logger.info(`Custom instructions provided: ${customInstructions.length} chars`);
       }
       const results = await Promise.allSettled([
-        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles),
-        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles),
-        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles)
+        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles, { analysisId }),
+        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles, { analysisId }),
+        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles, { analysisId })
       ]);
 
       // Step 3: Collect successful results
@@ -80,6 +87,15 @@ class Analyzer {
         level2: { suggestions: [], status: 'failed' },
         level3: { suggestions: [], status: 'failed' }
       };
+
+      // Check if any level was cancelled - if so, the whole analysis is cancelled
+      const hasCancellation = results.some(
+        r => r.status === 'rejected' && r.reason?.isCancellation
+      );
+      if (hasCancellation) {
+        logger.info('Analysis cancelled by user');
+        throw new CancellationError('Analysis cancelled by user');
+      }
 
       results.forEach((result, index) => {
         const levelName = ['level1', 'level2', 'level3'][index];
@@ -91,7 +107,10 @@ class Analyzer {
           };
           logger.success(`Level ${index + 1} completed: ${levelResults[levelName].suggestions.length} suggestions`);
         } else {
-          logger.warn(`Level ${index + 1} failed: ${result.reason?.message || 'Unknown error'}`);
+          // Don't log cancellation as a warning - it's expected
+          if (!result.reason?.isCancellation) {
+            logger.warn(`Level ${index + 1} failed: ${result.reason?.message || 'Unknown error'}`);
+          }
         }
       });
 
@@ -118,7 +137,7 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, customInstructions, fileLineCountMap, worktreePath);
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, customInstructions, fileLineCountMap, worktreePath, { analysisId });
 
         // Validate and finalize suggestions
         const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -170,6 +189,10 @@ class Analyzer {
       }
 
     } catch (error) {
+      // Don't log cancellation as an error - it's expected user behavior
+      if (error.isCancellation) {
+        throw error;
+      }
       logger.error(`Analysis failed: ${error.message}`);
       logger.error(`Error stack: ${error.stack}`);
       throw error;
@@ -503,11 +526,13 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
+   * @param {Object} options - Additional options
+   * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel1(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null, changedFiles = null) {
+  async analyzeLevel1(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
     // This is now a wrapper that calls the parallel implementation
-    return this.analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback, customInstructions, changedFiles);
+    return this.analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback, customInstructions, changedFiles, options);
   }
 
   /**
@@ -520,12 +545,20 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
+   * @param {Object} options - Additional options
+   * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null) {
+  async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
+    const { analysisId } = options;
     logger.info('[Level 1] Analysis Starting');
 
     try {
+      // Check if analysis was cancelled before starting
+      if (analysisId && isAnalysisCancelled(analysisId)) {
+        throw new CancellationError('Analysis was cancelled');
+      }
+
       // Create provider instance for this level
       const aiProvider = createProvider(this.provider, this.model);
 
@@ -551,7 +584,9 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 1
-        level: 1
+        level: 1,
+        analysisId,
+        registerProcess
       });
 
       // Parse and validate the response
@@ -587,10 +622,13 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       };
 
     } catch (error) {
-      logger.error(`Level 1 analysis failed: ${error.message}`);
+      // Don't log cancellation as an error - it's expected user behavior
+      if (!error.isCancellation) {
+        logger.error(`Level 1 analysis failed: ${error.message}`);
+      }
 
-      // Report failure to progress callback
-      if (progressCallback) {
+      // Report failure to progress callback (unless cancelled)
+      if (progressCallback && !error.isCancellation) {
         progressCallback({
           status: 'failed',
           progress: `Level 1 failed: ${error.message}`,
@@ -1411,12 +1449,20 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
+   * @param {Object} options - Additional options
+   * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null) {
+  async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
+    const { analysisId } = options;
     logger.info('[Level 2] Analysis Starting');
 
     try {
+      // Check if analysis was cancelled before starting
+      if (analysisId && isAnalysisCancelled(analysisId)) {
+        throw new CancellationError('Analysis was cancelled');
+      }
+
       // Create provider instance for this level
       const aiProvider = createProvider(this.provider, this.model);
 
@@ -1446,7 +1492,9 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 2
-        level: 2
+        level: 2,
+        analysisId,
+        registerProcess
       });
 
       // Parse and validate the response
@@ -1478,10 +1526,13 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       };
 
     } catch (error) {
-      logger.error(`Level 2 analysis failed: ${error.message}`);
+      // Don't log cancellation as an error - it's expected user behavior
+      if (!error.isCancellation) {
+        logger.error(`Level 2 analysis failed: ${error.message}`);
+      }
 
-      // Report failure to progress callback
-      if (progressCallback) {
+      // Report failure to progress callback (unless cancelled)
+      if (progressCallback && !error.isCancellation) {
         progressCallback({
           status: 'failed',
           progress: `Level 2 failed: ${error.message}`,
@@ -1503,12 +1554,20 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @param {Function} progressCallback - Callback for progress updates
    * @param {string} customInstructions - Optional custom instructions to include in prompts
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
+   * @param {Object} options - Additional options
+   * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null) {
+  async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
+    const { analysisId } = options;
     logger.info('[Level 3] Analysis Starting');
 
     try {
+      // Check if analysis was cancelled before starting
+      if (analysisId && isAnalysisCancelled(analysisId)) {
+        throw new CancellationError('Analysis was cancelled');
+      }
+
       // Create provider instance for this level
       const aiProvider = createProvider(this.provider, this.model);
 
@@ -1542,7 +1601,9 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout: 600000, // 10 minutes for Level 3
-        level: 3
+        level: 3,
+        analysisId,
+        registerProcess
       });
 
       // Parse and validate the response
@@ -1574,10 +1635,13 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       };
 
     } catch (error) {
-      logger.error(`Level 3 analysis failed: ${error.message}`);
+      // Don't log cancellation as an error - it's expected user behavior
+      if (!error.isCancellation) {
+        logger.error(`Level 3 analysis failed: ${error.message}`);
+      }
 
-      // Report failure to progress callback
-      if (progressCallback) {
+      // Report failure to progress callback (unless cancelled)
+      if (progressCallback && !error.isCancellation) {
         progressCallback({
           status: 'failed',
           progress: `Level 3 failed: ${error.message}`,
@@ -1660,8 +1724,11 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       };
 
     } catch (error) {
-      logger.error(`Level 2 analysis failed: ${error.message}`);
-      logger.error(`Error stack: ${error.stack}`);
+      // Don't log cancellation as an error - it's expected user behavior
+      if (!error.isCancellation) {
+        logger.error(`Level 2 analysis failed: ${error.message}`);
+        logger.error(`Error stack: ${error.stack}`);
+      }
       throw error;
     }
   }
@@ -2012,8 +2079,11 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       };
 
     } catch (error) {
-      logger.error(`Level 3 analysis failed: ${error.message}`);
-      logger.error(`Error stack: ${error.stack}`);
+      // Don't log cancellation as an error - it's expected user behavior
+      if (!error.isCancellation) {
+        logger.error(`Level 3 analysis failed: ${error.message}`);
+        logger.error(`Error stack: ${error.stack}`);
+      }
       throw error;
     }
   }
@@ -2177,9 +2247,13 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} prMetadata - PR metadata for context
    * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
    * @param {Map<string, number>} fileLineCountMap - Optional map of file paths to line counts for validation
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {Object} options - Additional options
+   * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @returns {Promise<Array>} Curated suggestions array
    */
-  async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null) {
+  async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null, options = {}) {
+    const { analysisId } = options;
     logger.section('[Orchestration] AI Orchestration Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
@@ -2189,6 +2263,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     logger.info(`[Orchestration] Orchestrating ${totalSuggestions} total suggestions across all levels`);
 
     try {
+      // Check if analysis was cancelled before starting
+      if (analysisId && isAnalysisCancelled(analysisId)) {
+        throw new CancellationError('Analysis was cancelled');
+      }
+
       // Create provider instance for orchestration
       const aiProvider = createProvider(this.provider, this.model);
 
@@ -2199,7 +2278,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
       const response = await aiProvider.execute(prompt, {
         timeout: 300000, // 5 minutes for orchestration
-        level: 'orchestration'
+        level: 'orchestration',
+        analysisId,
+        registerProcess
       });
 
       // Parse the orchestrated response

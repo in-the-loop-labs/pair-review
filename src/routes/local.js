@@ -25,7 +25,8 @@ const {
   localReviewDiffs,
   getModel,
   determineCompletionInfo,
-  broadcastProgress
+  broadcastProgress,
+  CancellationError
 } = require('./shared');
 
 const router = express.Router();
@@ -401,7 +402,8 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     };
 
     // Start analysis asynchronously (pass changedFiles for local mode path validation)
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, combinedInstructions, changedFiles)
+    // Pass analysisId for process tracking/cancellation
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, combinedInstructions, changedFiles, { analysisId })
       .then(async result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);
@@ -460,12 +462,20 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
         broadcastProgress(analysisId, completedStatus);
       })
       .catch(error => {
-        logger.error(`Local analysis failed for review #${reviewId}: ${error.message}`);
         const currentStatus = activeAnalyses.get(analysisId);
         if (!currentStatus) {
           console.warn('Analysis status not found during error handling:', analysisId);
           return;
         }
+
+        // Handle cancellation gracefully - don't log as error
+        if (error.isCancellation) {
+          logger.info(`Local analysis cancelled for review #${reviewId}`);
+          // Status is already set to 'cancelled' by the cancel endpoint
+          return;
+        }
+
+        logger.error(`Local analysis failed for review #${reviewId}: ${error.message}`);
 
         // Mark all levels as failed
         for (let i = 1; i <= 4; i++) {
