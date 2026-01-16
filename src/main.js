@@ -568,6 +568,9 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
     }
 
     // Create or update review record
+    // NOTE: Uses raw SQL instead of ReviewRepository to participate in the surrounding
+    // transaction and to update only review_data without overwriting custom_instructions
+    // or summary fields that may have been set by previous analysis runs.
     const existingReview = await queryOne(db, `
       SELECT id FROM reviews WHERE pr_number = ? AND repository = ?
     `, [prInfo.number, repository]);

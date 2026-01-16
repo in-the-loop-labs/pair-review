@@ -64,10 +64,10 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       });
     }
 
-    // Get or create a review record for this PR
+    // Get review record if it exists (don't create on GET - REST compliance)
     // The review.id is used for comments to avoid ID collision with local mode
     const reviewRepo = new ReviewRepository(req.app.get('db'));
-    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
 
     // Parse extended PR data
     let extendedData = {};
@@ -82,10 +82,11 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
 
     // Prepare response
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
+    // When no review exists yet, id will be null
     const response = {
       success: true,
       data: {
-        id: review.id,
+        id: review ? review.id : null,
         owner: repoOwner,
         repo: repoName,
         number: prMetadata.pr_number,
