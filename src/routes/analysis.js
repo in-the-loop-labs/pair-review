@@ -757,10 +757,20 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       });
     }
 
-    // Get or create a review record for this PR
+    // Get review record for this PR (don't create one - GET should not have side effects)
     // Comments are associated with review.id to avoid ID collision with local mode
     const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
+
+    // If no review exists, no analysis has been run
+    if (!review) {
+      return res.json({
+        hasSuggestions: false,
+        analysisHasRun: false,
+        summary: null,
+        stats: { issues: 0, suggestions: 0, praise: 0 }
+      });
+    }
 
     // Check if any AI suggestions exist for this PR using review.id
     const result = await queryOne(db, `
@@ -850,10 +860,15 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
       });
     }
 
-    // Get or create a review record for this PR
+    // Get review record for this PR (don't create one - GET should not have side effects)
     // Comments are associated with review.id to avoid ID collision with local mode
     const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
+
+    // If no review exists, return empty suggestions
+    if (!review) {
+      return res.json({ suggestions: [] });
+    }
 
     // Parse levels query parameter (e.g., ?levels=final,1,2)
     // Default to 'final' (orchestrated suggestions only) if not specified

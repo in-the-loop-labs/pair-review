@@ -1,5 +1,5 @@
 const { loadConfig, getConfigDir, getGitHubToken } = require('./config');
-const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository } = require('./database');
+const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
@@ -717,8 +717,13 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
       throw new Error('Failed to retrieve stored PR metadata');
     }
 
-    const prId = prMetadata.id;
     const storedPRData = JSON.parse(prMetadata.pr_data);
+
+    // Get or create a review record for this PR
+    // The review.id is passed to the analyzer so comments use review.id, not prMetadata.id
+    // This avoids ID collision with local mode where comments also use reviews.id
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getOrCreate({ prNumber: prInfo.number, repository });
 
     // Run AI analysis
     console.log('Running AI analysis (all 3 levels)...');
@@ -727,7 +732,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
 
     let analysisSummary = null;
     try {
-      const analysisResult = await analyzer.analyzeAllLevels(prId, worktreePath, storedPRData);
+      const analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData);
       analysisSummary = analysisResult.summary;
       console.log('AI analysis completed successfully');
     } catch (analysisError) {
@@ -738,6 +743,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     }
 
     // Query for final AI suggestions (orchestrated, not per-level)
+    // Use review.id (not prMetadata.id) to match how comments are stored
     const aiSuggestions = await query(db, `
       SELECT
         id,
@@ -750,7 +756,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
       FROM comments
       WHERE pr_id = ? AND source = 'ai' AND ai_level IS NULL AND status = 'active'
       ORDER BY file, line_start
-    `, [prId]);
+    `, [review.id]);
 
     console.log(`Found ${aiSuggestions.length} AI suggestions to submit`);
 
