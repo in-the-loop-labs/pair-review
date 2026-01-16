@@ -292,12 +292,19 @@ async function insertTestPR(db, prNumber = 1, repository = 'owner/repo') {
     node_id: 'PR_node123'
   });
 
-  const result = await run(db, `
+  await run(db, `
     INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `, [prNumber, repository, 'Test PR Title', 'Test Description', 'testuser', 'main', 'feature-branch', prData]);
 
-  return result.lastID;
+  // Also create a review record since comments are now associated with reviews.id
+  // This avoids ID collision between PR mode and local mode
+  const reviewResult = await run(db, `
+    INSERT INTO reviews (pr_number, repository, status, created_at, updated_at)
+    VALUES (?, ?, 'draft', datetime('now'), datetime('now'))
+  `, [prNumber, repository]);
+
+  return reviewResult.lastID;
 }
 
 /**
@@ -1121,11 +1128,15 @@ describe('User Comment Endpoints', () => {
   });
 
   describe('DELETE /api/pr/:owner/:repo/:number/user-comments', () => {
-    it('should return 404 for non-existent PR', async () => {
+    it('should return 200 with 0 deletions for non-existent PR', async () => {
+      // If no review exists for this PR, there are no comments to delete
       const response = await request(app)
         .delete('/api/pr/owner/repo/999/user-comments');
 
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(0);
+      expect(response.body.dismissedSuggestionIds).toEqual([]);
     });
 
     it('should bulk delete all user comments for PR', async () => {

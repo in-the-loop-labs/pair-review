@@ -8,9 +8,35 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, CommentRepository } = require('../database');
+const { query, queryOne, run, CommentRepository, ReviewRepository } = require('../database');
 
 const router = express.Router();
+
+/**
+ * Helper function to verify that a pr_id exists.
+ * Checks both reviews table (for PR and local mode) and pr_metadata table (legacy).
+ * @param {Database} db - Database instance
+ * @param {number} prId - The pr_id to verify
+ * @returns {Promise<boolean>} True if the ID exists in either table
+ */
+async function verifyPrIdExists(db, prId) {
+  // First check reviews table (preferred - handles both PR and local mode)
+  const review = await queryOne(db, `
+    SELECT id FROM reviews WHERE id = ?
+  `, [prId]);
+
+  if (review) {
+    return true;
+  }
+
+  // Fall back to checking pr_metadata for legacy compatibility
+  // This handles cases where old data used prMetadata.id directly
+  const prMetadata = await queryOne(db, `
+    SELECT id FROM pr_metadata WHERE id = ?
+  `, [prId]);
+
+  return !!prMetadata;
+}
 
 /**
  * Edit AI suggestion and adopt as user comment
@@ -44,14 +70,12 @@ router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
       });
     }
 
-    // Validate PR exists
-    const pr = await queryOne(db, `
-      SELECT id FROM pr_metadata WHERE id = ?
-    `, [suggestion.pr_id]);
+    // Validate PR/review exists (checks both reviews and pr_metadata tables)
+    const exists = await verifyPrIdExists(db, suggestion.pr_id);
 
-    if (!pr) {
+    if (!exists) {
       return res.status(404).json({
-        error: 'Associated pull request not found'
+        error: 'Associated pull request or review not found'
       });
     }
 
@@ -144,14 +168,12 @@ router.post('/api/file-comment', async (req, res) => {
 
     const db = req.app.get('db');
 
-    // Verify PR exists
-    const pr = await queryOne(db, `
-      SELECT id FROM pr_metadata WHERE id = ?
-    `, [pr_id]);
+    // Verify PR/review exists (checks both reviews and pr_metadata tables)
+    const exists = await verifyPrIdExists(db, pr_id);
 
-    if (!pr) {
+    if (!exists) {
       return res.status(404).json({
-        error: 'Pull request not found'
+        error: 'Pull request or review not found'
       });
     }
 
@@ -196,14 +218,12 @@ router.post('/api/user-comment', async (req, res) => {
 
     const db = req.app.get('db');
 
-    // Verify PR exists
-    const pr = await queryOne(db, `
-      SELECT id FROM pr_metadata WHERE id = ?
-    `, [pr_id]);
+    // Verify PR/review exists (checks both reviews and pr_metadata tables)
+    const exists = await verifyPrIdExists(db, pr_id);
 
-    if (!pr) {
+    if (!exists) {
       return res.status(404).json({
-        error: 'Pull request not found'
+        error: 'Pull request or review not found'
       });
     }
 
@@ -252,21 +272,21 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
     }
 
     const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
 
-    // Get PR ID first
-    const prMetadata = await queryOne(req.app.get('db'), `
-      SELECT id FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
-    `, [prNumber, repository]);
+    // Get or create a review record for this PR
+    // Comments are associated with review.id to avoid ID collision with local mode
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
 
-    if (!prMetadata) {
+    if (!review) {
       return res.json({
         success: true,
         comments: []
       });
     }
 
-    const comments = await query(req.app.get('db'), `
+    const comments = await query(db, `
       SELECT
         id,
         source,
@@ -287,7 +307,7 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
       FROM comments
       WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
       ORDER BY file, line_start, created_at
-    `, [prMetadata.id]);
+    `, [review.id]);
 
     res.json({
       success: true,
@@ -474,15 +494,18 @@ router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => 
     const db = req.app.get('db');
     const repository = `${owner}/${repo}`;
 
-    // Get the PR ID to verify it exists
-    const prMetadata = await queryOne(db, `
-      SELECT id FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
-    `, [prNumber, repository]);
+    // Get the review record to find associated comments
+    // Comments are associated with review.id to avoid ID collision with local mode
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
 
-    if (!prMetadata) {
-      return res.status(404).json({
-        error: 'Pull request not found'
+    // If no review exists, there are no comments to delete - return success with 0 deletions
+    if (!review) {
+      return res.json({
+        success: true,
+        deletedCount: 0,
+        dismissedSuggestionIds: [],
+        message: 'No comments to delete'
       });
     }
 
@@ -492,7 +515,7 @@ router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => 
     try {
       // Bulk delete using repository (also dismisses parent AI suggestions)
       const commentRepo = new CommentRepository(db);
-      const result = await commentRepo.bulkDeleteComments(prMetadata.id);
+      const result = await commentRepo.bulkDeleteComments(review.id);
 
       // Commit transaction
       await run(db, 'COMMIT');

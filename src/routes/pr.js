@@ -64,12 +64,10 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       });
     }
 
-    // Get review data if it exists
-    const reviewData = await queryOne(req.app.get('db'), `
-      SELECT status, created_at as review_created_at, updated_at as review_updated_at
-      FROM reviews
-      WHERE pr_number = ? AND repository = ?
-    `, [prNumber, repository]);
+    // Get or create a review record for this PR
+    // The review.id is used for comments to avoid ID collision with local mode
+    const reviewRepo = new ReviewRepository(req.app.get('db'));
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
 
     // Parse extended PR data
     let extendedData = {};
@@ -83,10 +81,11 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
     const [repoOwner, repoName] = repository.split('/');
 
     // Prepare response
+    // Use review.id instead of prMetadata.id to avoid ID collision with local mode
     const response = {
       success: true,
       data: {
-        id: prMetadata.id,
+        id: review.id,
         owner: repoOwner,
         repo: repoName,
         number: prMetadata.pr_number,
@@ -203,6 +202,11 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
 
     logger.info(`Successfully refreshed PR #${prNumber} for ${repository}`);
 
+    // Get or create a review record for this PR
+    // The review.id is used for comments to avoid ID collision with local mode
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
     // Fetch and return updated PR data (reuse the same structure as GET endpoint)
     const prMetadata = await queryOne(db, `
       SELECT
@@ -224,10 +228,11 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     const parsedData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
     const [repoOwner, repoName] = repository.split('/');
 
+    // Use review.id instead of prMetadata.id to avoid ID collision with local mode
     const response = {
       success: true,
       data: {
-        id: prMetadata.id,
+        id: review.id,
         owner: repoOwner,
         repo: repoName,
         number: prMetadata.pr_number,
@@ -777,7 +782,12 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
     const prData = JSON.parse(prMetadata.pr_data);
 
-    // Get all active user comments for this PR
+    // Get or create a review record for this PR
+    // Comments are associated with review.id, not prMetadata.id
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    // Get all active user comments for this PR using review.id
     const comments = await query(db, `
       SELECT
         id,
@@ -792,7 +802,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       FROM comments
       WHERE pr_id = ? AND source = 'user' AND status = 'active'
       ORDER BY file, line_start
-    `, [prMetadata.id]);
+    `, [review.id]);
 
     // Check if there are too many comments (GitHub API limit is ~50)
     if (comments.length > 50) {

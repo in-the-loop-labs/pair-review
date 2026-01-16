@@ -170,6 +170,11 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
+    // Get or create a review record for this PR
+    // The review.id is passed to the analyzer so comments use review.id, not prMetadata.id
+    // This avoids ID collision with local mode where comments also use reviews.id
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
     // Create analyzer instance with provider and model
     const analyzer = new Analyzer(req.app.get('db'), model, provider);
 
@@ -178,6 +183,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     logger.log('API', `Repository: ${repository}`, 'magenta');
     logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    logger.log('API', `Review ID: ${review.id}`, 'magenta');
     logger.log('API', `Provider: ${provider}`, 'cyan');
     logger.log('API', `Model: ${model}`, 'cyan');
     if (combinedInstructions) {
@@ -217,7 +223,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     };
 
     // Start analysis asynchronously with progress callback and custom instructions
-    analyzer.analyzeLevel1(prMetadata.id, worktreePath, prMetadata, progressCallback, combinedInstructions)
+    // Use review.id (not prMetadata.id) to avoid ID collision with local mode
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, combinedInstructions)
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -425,6 +432,11 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
+    // Get or create a review record for this PR
+    // The review.id is passed to the analyzer to avoid ID collision with local mode
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
     // Create analyzer instance with model from config/CLI
     const model = getModel(req);
     const analyzer = new Analyzer(req.app.get('db'), model);
@@ -432,6 +444,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
     logger.section(`Level 2 AI Analysis Request - PR #${prNumber}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    logger.log('API', `Review ID: ${review.id}`, 'magenta');
     logger.log('API', `Model: ${model}`, 'cyan');
 
     // Create progress callback function
@@ -446,8 +459,8 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
       broadcastProgress(analysisId, updatedStatus);
     };
 
-    // Start Level 2 analysis asynchronously
-    analyzer.analyzeLevel2(prMetadata.id, worktreePath, prMetadata, progressCallback)
+    // Start Level 2 analysis asynchronously using review.id
+    analyzer.analyzeLevel2(review.id, worktreePath, prMetadata, progressCallback)
       .then(result => {
         const completedStatus = {
           ...activeAnalyses.get(analysisId),
@@ -570,6 +583,11 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
+    // Get or create a review record for this PR
+    // The review.id is passed to the analyzer to avoid ID collision with local mode
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
     // Create analyzer instance with model from config/CLI
     const model = getModel(req);
     const analyzer = new Analyzer(req.app.get('db'), model);
@@ -577,6 +595,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
     logger.section(`Level 3 AI Analysis Request - PR #${prNumber}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    logger.log('API', `Review ID: ${review.id}`, 'magenta');
     logger.log('API', `Model: ${model}`, 'cyan');
 
     // Create progress callback function
@@ -591,8 +610,8 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
       broadcastProgress(analysisId, updatedStatus);
     };
 
-    // Start Level 3 analysis asynchronously
-    analyzer.analyzeLevel3(prMetadata.id, worktreePath, prMetadata, progressCallback)
+    // Start Level 3 analysis asynchronously using review.id
+    analyzer.analyzeLevel3(review.id, worktreePath, prMetadata, progressCallback)
       .then(result => {
         const completedStatus = {
           ...activeAnalyses.get(analysisId),
@@ -726,9 +745,7 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
     const repository = `${owner}/${repo}`;
     const db = req.app.get('db');
 
-    // Get PR metadata to find pr_id
-    // Note: We query 'id' only here, and handle last_ai_run_id separately
-    // to gracefully handle databases that haven't been migrated yet
+    // Get PR metadata to verify PR exists and get last_ai_run_id
     const prMetadata = await queryOne(db, `
       SELECT id FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
@@ -740,13 +757,18 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       });
     }
 
-    // Check if any AI suggestions exist for this PR
+    // Get or create a review record for this PR
+    // Comments are associated with review.id to avoid ID collision with local mode
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    // Check if any AI suggestions exist for this PR using review.id
     const result = await queryOne(db, `
       SELECT EXISTS(
         SELECT 1 FROM comments
         WHERE pr_id = ? AND source = 'ai'
       ) as has_suggestions
-    `, [prMetadata.id]);
+    `, [review.id]);
 
     const hasSuggestions = result?.has_suggestions === 1;
 
@@ -771,21 +793,14 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       analysisHasRun = hasSuggestions;
     }
 
-    // Get AI summary from the review record
-    let summary = null;
-    try {
-      const reviewRepo = new ReviewRepository(db);
-      const review = await reviewRepo.getReviewByPR(prNumber, repository);
-      summary = review?.summary || null;
-    } catch (e) {
-      console.warn('Error fetching AI summary:', e);
-    }
+    // Get AI summary from the review record (already fetched above)
+    const summary = review?.summary || null;
 
     // Get stats for AI suggestions (issues/suggestions/praise for final level only)
     let stats = { issues: 0, suggestions: 0, praise: 0 };
     if (hasSuggestions) {
       try {
-        const statsResult = await query(db, getStatsQuery(), [prMetadata.id, prMetadata.id]);
+        const statsResult = await query(db, getStatsQuery(), [review.id, review.id]);
         stats = calculateStats(statsResult);
       } catch (e) {
         console.warn('Error fetching AI suggestion stats:', e);
@@ -821,9 +836,10 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
     }
 
     const repository = `${owner}/${repo}`;
+    const db = req.app.get('db');
 
-    // Get PR ID
-    const prMetadata = await queryOne(req.app.get('db'), `
+    // Get PR metadata to verify PR exists
+    const prMetadata = await queryOne(db, `
       SELECT id FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
@@ -833,6 +849,11 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         error: `Pull request #${prNumber} not found`
       });
     }
+
+    // Get or create a review record for this PR
+    // Comments are associated with review.id to avoid ID collision with local mode
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
 
     // Parse levels query parameter (e.g., ?levels=final,1,2)
     // Default to 'final' (orchestrated suggestions only) if not specified
@@ -862,10 +883,10 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
     // comparison returns no rows. This is intentional - we only show suggestions
     // when there's a matching analysis run.
     //
-    // Note: prMetadata.id is passed twice because SQLite requires separate parameters
+    // Note: review.id is passed twice because SQLite requires separate parameters
     // for the outer WHERE clause and the subquery. A CTE could consolidate this but
     // adds complexity without meaningful benefit here.
-    const suggestions = await query(req.app.get('db'), `
+    const suggestions = await query(db, `
       SELECT
         id,
         source,
@@ -906,7 +927,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         is_file_level DESC,
         file,
         line_start
-    `, [prMetadata.id, prMetadata.id]);
+    `, [review.id, review.id]);
 
     res.json({ suggestions });
 
