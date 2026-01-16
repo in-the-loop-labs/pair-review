@@ -115,13 +115,13 @@ const { query, queryOne, run, WorktreeRepository, RepoSettingsRepository, Review
 /**
  * Create an in-memory SQLite database with proper schema for testing.
  * Uses better-sqlite3 for synchronous operations.
+ * Schema synchronized with production src/database.js
  */
 function createTestDatabase() {
   const db = new Database(':memory:');
 
-  // Disable foreign keys to match legacy sqlite3 behavior
-  // (sqlite3 has foreign keys disabled by default, better-sqlite3 has them enabled)
-  db.pragma('foreign_keys = OFF');
+  // Enable foreign key enforcement to match production behavior
+  db.pragma('foreign_keys = ON');
 
   const SCHEMA_SQL = {
     reviews: `
@@ -228,15 +228,19 @@ function createTestDatabase() {
     `
   };
 
+  // Indexes synchronized with production src/database.js
   const INDEX_SQL = [
     'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
     'CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start)',
     'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
     'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
+    'CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(review_id, file, is_file_level)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
     'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
     'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = 'local'",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = 'pr'",
     'CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)'
   ];
@@ -823,6 +827,13 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should retrieve file-level comment with metadata intact', async () => {
+      // First create a parent AI suggestion (required for foreign key constraint)
+      const parentResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, type, title, body, status, is_file_level)
+        VALUES (?, 'ai', 'test.js', 'suggestion', 'Parent Suggestion', 'Parent body', 'active', 1)
+      `, [prId]);
+      const parentId = parentResult.lastID;
+
       // Create a file-level comment with all metadata
       const createResponse = await request(app)
         .post('/api/file-comment')
@@ -830,7 +841,7 @@ describe('User Comment Endpoints', () => {
           review_id: prId,
           file: 'test.js',
           body: 'File comment with metadata',
-          parent_id: 999,
+          parent_id: parentId,
           type: 'ai',
           title: 'Test Title'
         });
@@ -842,7 +853,7 @@ describe('User Comment Endpoints', () => {
       const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [commentId]);
 
       // Verify all metadata persisted
-      expect(comment.parent_id).toBe(999);
+      expect(comment.parent_id).toBe(parentId);
       expect(comment.type).toBe('ai');
       expect(comment.title).toBe('Test Title');
       expect(comment.body).toBe('File comment with metadata');
@@ -871,6 +882,13 @@ describe('User Comment Endpoints', () => {
     });
 
     it('should persist metadata after page reload simulation', async () => {
+      // First create a parent AI suggestion (required for foreign key constraint)
+      const parentResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, type, title, body, status, is_file_level)
+        VALUES (?, 'ai', 'file.js', 'performance', 'Performance Issue', 'Original AI suggestion', 'active', 1)
+      `, [prId]);
+      const parentId = parentResult.lastID;
+
       // Simulate adopting an AI suggestion and saving it
       const response = await request(app)
         .post('/api/file-comment')
@@ -878,7 +896,7 @@ describe('User Comment Endpoints', () => {
           review_id: prId,
           file: 'file.js',
           body: 'Adopted suggestion body',
-          parent_id: 123,
+          parent_id: parentId,
           type: 'ai',
           title: 'Performance Issue'
         });
@@ -896,7 +914,7 @@ describe('User Comment Endpoints', () => {
       // Find our comment
       const savedComment = getResponse.body.comments.find(c => c.id === commentId);
       expect(savedComment).toBeDefined();
-      expect(savedComment.parent_id).toBe(123);
+      expect(savedComment.parent_id).toBe(parentId);
       expect(savedComment.type).toBe('ai');
       expect(savedComment.title).toBe('Performance Issue');
       expect(savedComment.body).toBe('Adopted suggestion body');
@@ -1564,18 +1582,30 @@ describe('AI Suggestion Endpoints', () => {
     });
 
     it('should restore suggestion to active and clear adopted_as_id', async () => {
-      const { lastID } = await run(db, `
-        INSERT INTO comments (review_id, source, file, line_start, body, status, adopted_as_id)
-        VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'adopted', 999)
+      // First create the AI suggestion without adopted_as_id
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
       `, [prId]);
 
+      // Create a user comment that "adopts" this suggestion (required for foreign key constraint)
+      const { lastID: adoptedCommentId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
+        VALUES (?, 'user', 'file.js', 10, 'Adopted Suggestion', 'active', ?)
+      `, [prId, suggestionId]);
+
+      // Now update the AI suggestion to 'adopted' status with adopted_as_id pointing to the user comment
+      await run(db, `
+        UPDATE comments SET status = 'adopted', adopted_as_id = ? WHERE id = ?
+      `, [adoptedCommentId, suggestionId]);
+
       const response = await request(app)
-        .post(`/api/ai-suggestion/${lastID}/status`)
+        .post(`/api/ai-suggestion/${suggestionId}/status`)
         .send({ status: 'active' });
 
       expect(response.status).toBe(200);
 
-      const suggestion = await queryOne(db, 'SELECT status, adopted_as_id FROM comments WHERE id = ?', [lastID]);
+      const suggestion = await queryOne(db, 'SELECT status, adopted_as_id FROM comments WHERE id = ?', [suggestionId]);
       expect(suggestion.status).toBe('active');
       expect(suggestion.adopted_as_id).toBeNull();
     });
