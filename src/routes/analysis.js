@@ -10,7 +10,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, withTransaction, RepoSettingsRepository, ReviewRepository } = require('../database');
+const { query, queryOne, run, withTransaction, RepoSettingsRepository, ReviewRepository, AnalysisRunRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
@@ -885,25 +885,26 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
 
     const hasSuggestions = result?.has_suggestions === 1;
 
-    // Try to check last_ai_run_id, but fall back if column doesn't exist
-    // This handles databases that haven't been migrated yet
+    // Check if any analysis has been run by looking for analysis_runs records
+    // Falls back to checking pr_metadata.last_ai_run_id for backwards compatibility
     let analysisHasRun = hasSuggestions;
     try {
-      const runCheck = await queryOne(db, `
-        SELECT last_ai_run_id FROM pr_metadata
-        WHERE id = ?
-      `, [prMetadata.id]);
-      // Analysis has been run if last_ai_run_id is set OR if there are any AI suggestions
-      // (backwards compatibility for PRs analyzed before this column was added)
-      analysisHasRun = !!(runCheck?.last_ai_run_id || hasSuggestions);
+      const analysisRunRepo = new AnalysisRunRepository(db);
+      const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
+      // Analysis has been run if there's an analysis_run record OR if there are any AI suggestions
+      analysisHasRun = !!(latestRun || hasSuggestions);
     } catch (e) {
-      // Only silence "no such column" errors (expected during migration)
-      // Log any other unexpected errors
-      if (!e.message.includes('no such column')) {
-        console.warn('Unexpected error checking last_ai_run_id:', e);
+      // If analysis_runs table doesn't exist yet, fall back to pr_metadata.last_ai_run_id
+      try {
+        const runCheck = await queryOne(db, `
+          SELECT last_ai_run_id FROM pr_metadata
+          WHERE id = ?
+        `, [prMetadata.id]);
+        analysisHasRun = !!(runCheck?.last_ai_run_id || hasSuggestions);
+      } catch (fallbackError) {
+        // Fall back to using hasSuggestions if both fail
+        analysisHasRun = hasSuggestions;
       }
-      // Fall back to using hasSuggestions
-      analysisHasRun = hasSuggestions;
     }
 
     // Get AI summary from the review record (already fetched above)
@@ -1110,6 +1111,69 @@ router.get('/api/pr/:id/ai-suggestions/status', (req, res) => {
       }
     }
   });
+});
+
+/**
+ * Get all analysis runs for a review
+ * Works for both PR mode (owner/repo/pr) and local mode (reviewId)
+ */
+router.get('/api/analysis-runs/:reviewId', async (req, res) => {
+  try {
+    const { reviewId } = req.params;
+    const db = req.app.locals.db;
+
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const runs = await analysisRunRepo.getByReviewId(parseInt(reviewId, 10));
+
+    res.json({ runs });
+  } catch (error) {
+    console.error('Error fetching analysis runs:', error);
+    res.status(500).json({ error: 'Failed to fetch analysis runs' });
+  }
+});
+
+/**
+ * Get the most recent analysis run for a review
+ */
+router.get('/api/analysis-runs/:reviewId/latest', async (req, res) => {
+  try {
+    const { reviewId } = req.params;
+    const db = req.app.locals.db;
+
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const run = await analysisRunRepo.getLatestByReviewId(parseInt(reviewId, 10));
+
+    if (!run) {
+      return res.status(404).json({ error: 'No analysis runs found' });
+    }
+
+    res.json({ run });
+  } catch (error) {
+    console.error('Error fetching latest analysis run:', error);
+    res.status(500).json({ error: 'Failed to fetch latest analysis run' });
+  }
+});
+
+/**
+ * Get a specific analysis run by ID
+ */
+router.get('/api/analysis-run/:runId', async (req, res) => {
+  try {
+    const { runId } = req.params;
+    const db = req.app.locals.db;
+
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const run = await analysisRunRepo.getById(runId);
+
+    if (!run) {
+      return res.status(404).json({ error: 'Analysis run not found' });
+    }
+
+    res.json({ run });
+  } catch (error) {
+    console.error('Error fetching analysis run:', error);
+    res.status(500).json({ error: 'Failed to fetch analysis run' });
+  }
 });
 
 module.exports = router;

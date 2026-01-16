@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_VERSION = 8;
 
 /**
  * Database schema SQL statements
@@ -123,6 +123,23 @@ const SCHEMA_SQL = {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  analysis_runs: `
+    CREATE TABLE IF NOT EXISTS analysis_runs (
+      id TEXT PRIMARY KEY,
+      review_id INTEGER NOT NULL,
+      provider TEXT,
+      model TEXT,
+      custom_instructions TEXT,
+      summary TEXT,
+      status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+      total_suggestions INTEGER DEFAULT 0,
+      files_analyzed INTEGER DEFAULT 0,
+      started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      completed_at TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
   `
 };
 
@@ -141,7 +158,10 @@ const INDEX_SQL = [
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = \'local\'',
   // Partial unique index for PR reviews only (NULL pr_number values for local reviews should not conflict)
-  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = \'pr\''
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = \'pr\'',
+  // Analysis runs indexes
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)'
 ];
 
 /**
@@ -425,6 +445,49 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 7 complete');
+  },
+
+  // Migration to version 8: adds analysis_runs table to track AI analysis run history
+  8: (db) => {
+    console.log('Running migration to schema version 8...');
+
+    // Helper to check if table exists
+    const tableExists = (tableName) => {
+      const row = db.prepare(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name=?`
+      ).get(tableName);
+      return !!row;
+    };
+
+    // Create analysis_runs table if it doesn't exist
+    if (!tableExists('analysis_runs')) {
+      db.exec(`
+        CREATE TABLE analysis_runs (
+          id TEXT PRIMARY KEY,
+          review_id INTEGER NOT NULL,
+          provider TEXT,
+          model TEXT,
+          custom_instructions TEXT,
+          summary TEXT,
+          status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+          total_suggestions INTEGER DEFAULT 0,
+          files_analyzed INTEGER DEFAULT 0,
+          started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          completed_at TIMESTAMP,
+          FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+        )
+      `);
+      console.log('  Created analysis_runs table');
+
+      // Create indexes
+      db.exec('CREATE INDEX idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)');
+      db.exec('CREATE INDEX idx_analysis_runs_status ON analysis_runs(status)');
+      console.log('  Created indexes for analysis_runs table');
+    } else {
+      console.log('  Table analysis_runs already exists');
+    }
+
+    console.log('Migration to schema version 8 complete');
   }
 };
 
@@ -1744,6 +1807,180 @@ async function migrateExistingWorktrees(db, worktreeBaseDir) {
   return result;
 }
 
+/**
+ * AnalysisRunRepository class for managing AI analysis run records
+ */
+class AnalysisRunRepository {
+  /**
+   * Create a new AnalysisRunRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a new analysis run record
+   * @param {Object} runInfo - Run information
+   * @param {string} runInfo.id - Unique run ID (UUID)
+   * @param {number} runInfo.reviewId - Review ID (references reviews.id, works for both PR and local modes)
+   * @param {string} [runInfo.provider] - AI provider (claude, gemini, etc.)
+   * @param {string} [runInfo.model] - AI model name
+   * @param {string} [runInfo.customInstructions] - Custom instructions used
+   * @returns {Promise<Object>} Created analysis run record
+   */
+  async create({ id, reviewId, provider = null, model = null, customInstructions = null }) {
+    await run(this.db, `
+      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, status)
+      VALUES (?, ?, ?, ?, ?, 'running')
+    `, [id, reviewId, provider, model, customInstructions]);
+
+    return {
+      id,
+      review_id: reviewId,
+      provider,
+      model,
+      custom_instructions: customInstructions,
+      status: 'running',
+      total_suggestions: 0,
+      files_analyzed: 0,
+      started_at: new Date().toISOString(),
+      completed_at: null
+    };
+  }
+
+  /**
+   * Update an analysis run with completion data
+   * @param {string} id - Analysis run ID
+   * @param {Object} updates - Fields to update
+   * @param {string} [updates.status] - New status
+   * @param {string} [updates.summary] - Analysis summary
+   * @param {number} [updates.totalSuggestions] - Total suggestions count
+   * @param {number} [updates.filesAnalyzed] - Files analyzed count
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async update(id, updates) {
+    const setClauses = [];
+    const params = [];
+
+    if (updates.status !== undefined) {
+      setClauses.push('status = ?');
+      params.push(updates.status);
+
+      // Set completed_at when status becomes terminal
+      if (['completed', 'failed', 'cancelled'].includes(updates.status)) {
+        setClauses.push('completed_at = CURRENT_TIMESTAMP');
+      }
+    }
+
+    if (updates.summary !== undefined) {
+      setClauses.push('summary = ?');
+      params.push(updates.summary);
+    }
+
+    if (updates.totalSuggestions !== undefined) {
+      setClauses.push('total_suggestions = ?');
+      params.push(updates.totalSuggestions);
+    }
+
+    if (updates.filesAnalyzed !== undefined) {
+      setClauses.push('files_analyzed = ?');
+      params.push(updates.filesAnalyzed);
+    }
+
+    if (setClauses.length === 0) {
+      return false;
+    }
+
+    params.push(id);
+
+    const result = await run(this.db, `
+      UPDATE analysis_runs
+      SET ${setClauses.join(', ')}
+      WHERE id = ?
+    `, params);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Get an analysis run by ID
+   * @param {string} id - Analysis run ID
+   * @returns {Promise<Object|null>} Analysis run record or null
+   */
+  async getById(id) {
+    const row = await queryOne(this.db, `
+      SELECT id, review_id, provider, model, custom_instructions, summary,
+             status, total_suggestions, files_analyzed, started_at, completed_at
+      FROM analysis_runs
+      WHERE id = ?
+    `, [id]);
+
+    if (!row) return null;
+    return row;
+  }
+
+  /**
+   * Get all analysis runs for a review, ordered by most recent first
+   * @param {number} reviewId - Review ID (works for both PR and local modes)
+   * @returns {Promise<Array<Object>>} Array of analysis run records
+   */
+  async getByReviewId(reviewId) {
+    return query(this.db, `
+      SELECT id, review_id, provider, model, custom_instructions, summary,
+             status, total_suggestions, files_analyzed, started_at, completed_at
+      FROM analysis_runs
+      WHERE review_id = ?
+      ORDER BY started_at DESC, id DESC
+    `, [reviewId]);
+  }
+
+  /**
+   * Get the most recent analysis run for a review
+   * @param {number} reviewId - Review ID (works for both PR and local modes)
+   * @returns {Promise<Object|null>} Most recent analysis run or null
+   */
+  async getLatestByReviewId(reviewId) {
+    const row = await queryOne(this.db, `
+      SELECT id, review_id, provider, model, custom_instructions, summary,
+             status, total_suggestions, files_analyzed, started_at, completed_at
+      FROM analysis_runs
+      WHERE review_id = ?
+      ORDER BY started_at DESC, id DESC
+      LIMIT 1
+    `, [reviewId]);
+
+    if (!row) return null;
+    return row;
+  }
+
+  /**
+   * Delete an analysis run by ID
+   * @param {string} id - Analysis run ID
+   * @returns {Promise<boolean>} True if record was deleted
+   */
+  async delete(id) {
+    const result = await run(this.db, `
+      DELETE FROM analysis_runs WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Delete all analysis runs for a review
+   * @param {number} reviewId - Review ID (works for both PR and local modes)
+   * @returns {Promise<number>} Number of records deleted
+   */
+  async deleteByReviewId(reviewId) {
+    const result = await run(this.db, `
+      DELETE FROM analysis_runs WHERE review_id = ?
+    `, [reviewId]);
+
+    return result.changes;
+  }
+}
+
 module.exports = {
   initializeDatabase,
   closeDatabase,
@@ -1762,6 +1999,7 @@ module.exports = {
   RepoSettingsRepository,
   ReviewRepository,
   CommentRepository,
+  AnalysisRunRepository,
   generateWorktreeId,
   migrateExistingWorktrees
 };

@@ -12,7 +12,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, CommentRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, CommentRepository, AnalysisRunRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
@@ -1547,6 +1547,17 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
 
     const hasSuggestions = result?.has_suggestions === 1;
 
+    // Check if any analysis has been run using analysis_runs table
+    let analysisHasRun = hasSuggestions;
+    try {
+      const analysisRunRepo = new AnalysisRunRepository(db);
+      const latestRun = await analysisRunRepo.getLatestByReviewId(reviewId);
+      analysisHasRun = !!(latestRun || hasSuggestions);
+    } catch (e) {
+      // Fall back to using hasSuggestions if analysis_runs table doesn't exist
+      analysisHasRun = hasSuggestions;
+    }
+
     // Get AI summary from the review record
     const summary = review?.summary || null;
 
@@ -1563,6 +1574,7 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
 
     res.json({
       hasSuggestions: hasSuggestions,
+      analysisHasRun: analysisHasRun,
       summary: summary,
       stats: stats
     });
@@ -1822,6 +1834,54 @@ router.post('/api/local/:reviewId/review-settings', async (req, res) => {
     res.status(500).json({
       error: 'Failed to save review settings'
     });
+  }
+});
+
+/**
+ * Get all analysis runs for a local review
+ */
+router.get('/api/local/:reviewId/analysis-runs', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId, 10);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+
+    const db = req.app.get('db');
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const runs = await analysisRunRepo.getByReviewId(reviewId);
+
+    res.json({ runs });
+  } catch (error) {
+    console.error('Error fetching analysis runs:', error);
+    res.status(500).json({ error: 'Failed to fetch analysis runs' });
+  }
+});
+
+/**
+ * Get the most recent analysis run for a local review
+ */
+router.get('/api/local/:reviewId/analysis-runs/latest', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId, 10);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({ error: 'Invalid review ID' });
+    }
+
+    const db = req.app.get('db');
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const run = await analysisRunRepo.getLatestByReviewId(reviewId);
+
+    if (!run) {
+      return res.status(404).json({ error: 'No analysis runs found' });
+    }
+
+    res.json({ run });
+  } catch (error) {
+    console.error('Error fetching latest analysis run:', error);
+    res.status(500).json({ error: 'Failed to fetch latest analysis run' });
   }
 });
 

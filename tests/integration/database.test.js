@@ -17,6 +17,7 @@ const {
   WorktreeRepository,
   RepoSettingsRepository,
   ReviewRepository,
+  AnalysisRunRepository,
   generateWorktreeId,
 } = database;
 
@@ -51,7 +52,7 @@ function createTestDatabase() {
     comments: `
       CREATE TABLE IF NOT EXISTS comments (
         id INTEGER PRIMARY KEY,
-        pr_id INTEGER,
+        review_id INTEGER,
         source TEXT,
         author TEXT,
         ai_run_id TEXT,
@@ -115,13 +116,29 @@ function createTestDatabase() {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
+    `,
+    analysis_runs: `
+      CREATE TABLE IF NOT EXISTS analysis_runs (
+        id TEXT PRIMARY KEY,
+        review_id INTEGER NOT NULL,
+        provider TEXT,
+        model TEXT,
+        custom_instructions TEXT,
+        summary TEXT,
+        status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+        total_suggestions INTEGER DEFAULT 0,
+        files_analyzed INTEGER DEFAULT 0,
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP,
+        FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+      )
     `
   };
 
   // Create indexes
   const INDEX_SQL = [
     'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
-    'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start)',
+    'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(review_id, file, line_start)',
     'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
     'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
@@ -130,7 +147,10 @@ function createTestDatabase() {
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_settings_repository ON repo_settings(repository)',
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = 'local'",
     // Partial unique index for PR reviews only (matches migration 5 schema)
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = 'pr'"
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = 'pr'",
+    // Analysis runs indexes
+    'CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)'
   ];
 
   // Execute table creation
@@ -206,7 +226,7 @@ describe('Database Initialization', () => {
     const columnNames = columns.map(c => c.name);
 
     expect(columnNames).toContain('id');
-    expect(columnNames).toContain('pr_id');
+    expect(columnNames).toContain('review_id');
     expect(columnNames).toContain('source');
     expect(columnNames).toContain('author');
     expect(columnNames).toContain('ai_run_id');
@@ -1406,14 +1426,14 @@ describe('Comments Table Operations', () => {
   describe('CRUD Operations', () => {
     it('should create a comment', async () => {
       const result = await run(db, `
-        INSERT INTO comments (pr_id, source, author, file, line_start, line_end, type, title, body, status)
+        INSERT INTO comments (review_id, source, author, file, line_start, line_end, type, title, body, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'claude', 'src/main.js', 10, 15, 'suggestion', 'Potential issue', 'Consider refactoring', 'active']);
 
       expect(result.lastID).toBe(1);
 
       const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [result.lastID]);
-      expect(comment.pr_id).toBe(1);
+      expect(comment.review_id).toBe(1);
       expect(comment.source).toBe('ai');
       expect(comment.file).toBe('src/main.js');
       expect(comment.line_start).toBe(10);
@@ -1422,16 +1442,16 @@ describe('Comments Table Operations', () => {
     });
 
     it('should read comments by PR', async () => {
-      await run(db, `INSERT INTO comments (pr_id, file, body, status) VALUES (1, 'a.js', 'Comment 1', 'active')`);
-      await run(db, `INSERT INTO comments (pr_id, file, body, status) VALUES (1, 'b.js', 'Comment 2', 'active')`);
-      await run(db, `INSERT INTO comments (pr_id, file, body, status) VALUES (2, 'c.js', 'Comment 3', 'active')`);
+      await run(db, `INSERT INTO comments (review_id, file, body, status) VALUES (1, 'a.js', 'Comment 1', 'active')`);
+      await run(db, `INSERT INTO comments (review_id, file, body, status) VALUES (1, 'b.js', 'Comment 2', 'active')`);
+      await run(db, `INSERT INTO comments (review_id, file, body, status) VALUES (2, 'c.js', 'Comment 3', 'active')`);
 
-      const comments = await query(db, 'SELECT * FROM comments WHERE pr_id = ?', [1]);
+      const comments = await query(db, 'SELECT * FROM comments WHERE review_id = ?', [1]);
       expect(comments).toHaveLength(2);
     });
 
     it('should update comment status', async () => {
-      const { lastID } = await run(db, `INSERT INTO comments (pr_id, file, body, status) VALUES (1, 'a.js', 'Test', 'active')`);
+      const { lastID } = await run(db, `INSERT INTO comments (review_id, file, body, status) VALUES (1, 'a.js', 'Test', 'active')`);
 
       await run(db, `UPDATE comments SET status = ? WHERE id = ?`, ['dismissed', lastID]);
 
@@ -1440,7 +1460,7 @@ describe('Comments Table Operations', () => {
     });
 
     it('should delete comment', async () => {
-      const { lastID } = await run(db, `INSERT INTO comments (pr_id, file, body, status) VALUES (1, 'a.js', 'Test', 'active')`);
+      const { lastID } = await run(db, `INSERT INTO comments (review_id, file, body, status) VALUES (1, 'a.js', 'Test', 'active')`);
 
       const result = await run(db, `DELETE FROM comments WHERE id = ?`, [lastID]);
       expect(result.changes).toBe(1);
@@ -1453,7 +1473,7 @@ describe('Comments Table Operations', () => {
   describe('AI Suggestion Fields', () => {
     it('should store AI-specific fields', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, source, ai_run_id, ai_level, ai_confidence, file, body, status)
+        INSERT INTO comments (review_id, source, ai_run_id, ai_level, ai_confidence, file, body, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'run-123', 2, 0.85, 'src/app.js', 'AI suggestion', 'active']);
 
@@ -1464,9 +1484,9 @@ describe('Comments Table Operations', () => {
     });
 
     it('should query by ai_run_id', async () => {
-      await run(db, `INSERT INTO comments (pr_id, ai_run_id, body, status) VALUES (1, 'run-a', 'C1', 'active')`);
-      await run(db, `INSERT INTO comments (pr_id, ai_run_id, body, status) VALUES (1, 'run-a', 'C2', 'active')`);
-      await run(db, `INSERT INTO comments (pr_id, ai_run_id, body, status) VALUES (1, 'run-b', 'C3', 'active')`);
+      await run(db, `INSERT INTO comments (review_id, ai_run_id, body, status) VALUES (1, 'run-a', 'C1', 'active')`);
+      await run(db, `INSERT INTO comments (review_id, ai_run_id, body, status) VALUES (1, 'run-a', 'C2', 'active')`);
+      await run(db, `INSERT INTO comments (review_id, ai_run_id, body, status) VALUES (1, 'run-b', 'C3', 'active')`);
 
       const comments = await query(db, 'SELECT * FROM comments WHERE ai_run_id = ?', ['run-a']);
       expect(comments).toHaveLength(2);
@@ -1478,7 +1498,7 @@ describe('Comments Table Operations', () => {
       const validStatuses = ['active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive'];
 
       for (const status of validStatuses) {
-        const { lastID } = await run(db, `INSERT INTO comments (pr_id, body, status) VALUES (?, ?, ?)`, [1, 'Test', status]);
+        const { lastID } = await run(db, `INSERT INTO comments (review_id, body, status) VALUES (?, ?, ?)`, [1, 'Test', status]);
         const comment = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [lastID]);
         expect(comment.status).toBe(status);
       }
@@ -1486,15 +1506,15 @@ describe('Comments Table Operations', () => {
 
     it('should reject invalid status values', async () => {
       await expect(
-        run(db, `INSERT INTO comments (pr_id, body, status) VALUES (?, ?, ?)`, [1, 'Test', 'invalid_status'])
+        run(db, `INSERT INTO comments (review_id, body, status) VALUES (?, ?, ?)`, [1, 'Test', 'invalid_status'])
       ).rejects.toThrow(/CHECK constraint failed/);
     });
   });
 
   describe('Side Constraints', () => {
     it('should accept valid side values', async () => {
-      const { lastID: leftId } = await run(db, `INSERT INTO comments (pr_id, body, side) VALUES (1, 'Test', 'LEFT')`);
-      const { lastID: rightId } = await run(db, `INSERT INTO comments (pr_id, body, side) VALUES (1, 'Test', 'RIGHT')`);
+      const { lastID: leftId } = await run(db, `INSERT INTO comments (review_id, body, side) VALUES (1, 'Test', 'LEFT')`);
+      const { lastID: rightId } = await run(db, `INSERT INTO comments (review_id, body, side) VALUES (1, 'Test', 'RIGHT')`);
 
       const left = await queryOne(db, 'SELECT side FROM comments WHERE id = ?', [leftId]);
       const right = await queryOne(db, 'SELECT side FROM comments WHERE id = ?', [rightId]);
@@ -1504,30 +1524,30 @@ describe('Comments Table Operations', () => {
     });
 
     it('should default to RIGHT', async () => {
-      const { lastID } = await run(db, `INSERT INTO comments (pr_id, body) VALUES (1, 'Test')`);
+      const { lastID } = await run(db, `INSERT INTO comments (review_id, body) VALUES (1, 'Test')`);
       const comment = await queryOne(db, 'SELECT side FROM comments WHERE id = ?', [lastID]);
       expect(comment.side).toBe('RIGHT');
     });
 
     it('should reject invalid side values', async () => {
       await expect(
-        run(db, `INSERT INTO comments (pr_id, body, side) VALUES (?, ?, ?)`, [1, 'Test', 'CENTER'])
+        run(db, `INSERT INTO comments (review_id, body, side) VALUES (?, ?, ?)`, [1, 'Test', 'CENTER'])
       ).rejects.toThrow(/CHECK constraint failed/);
     });
   });
 
   describe('Foreign Key Relationships', () => {
     it('should support parent_id self-reference', async () => {
-      const { lastID: parentId } = await run(db, `INSERT INTO comments (pr_id, body) VALUES (1, 'Parent')`);
-      const { lastID: childId } = await run(db, `INSERT INTO comments (pr_id, body, parent_id) VALUES (1, 'Child', ?)`, [parentId]);
+      const { lastID: parentId } = await run(db, `INSERT INTO comments (review_id, body) VALUES (1, 'Parent')`);
+      const { lastID: childId } = await run(db, `INSERT INTO comments (review_id, body, parent_id) VALUES (1, 'Child', ?)`, [parentId]);
 
       const child = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [childId]);
       expect(child.parent_id).toBe(parentId);
     });
 
     it('should support adopted_as_id self-reference', async () => {
-      const { lastID: aiId } = await run(db, `INSERT INTO comments (pr_id, source, body, status) VALUES (1, 'ai', 'AI suggestion', 'active')`);
-      const { lastID: adoptedId } = await run(db, `INSERT INTO comments (pr_id, source, body, status) VALUES (1, 'user', 'Adopted version', 'draft')`);
+      const { lastID: aiId } = await run(db, `INSERT INTO comments (review_id, source, body, status) VALUES (1, 'ai', 'AI suggestion', 'active')`);
+      const { lastID: adoptedId } = await run(db, `INSERT INTO comments (review_id, source, body, status) VALUES (1, 'user', 'Adopted version', 'draft')`);
 
       await run(db, `UPDATE comments SET status = 'adopted', adopted_as_id = ? WHERE id = ?`, [adoptedId, aiId]);
 
@@ -1540,7 +1560,7 @@ describe('Comments Table Operations', () => {
   describe('Diff Position Fields', () => {
     it('should store diff_position and commit_sha', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, file, body, diff_position, commit_sha)
+        INSERT INTO comments (review_id, file, body, diff_position, commit_sha)
         VALUES (1, 'src/app.js', 'Test', 42, 'abc123def456')
       `);
 
@@ -1632,7 +1652,7 @@ describe('Database Utilities', () => {
       // Add some data
       await run(db, `INSERT INTO reviews (pr_number, repository) VALUES (1, 'o/r1')`);
       await run(db, `INSERT INTO reviews (pr_number, repository) VALUES (2, 'o/r2')`);
-      await run(db, `INSERT INTO comments (pr_id, body) VALUES (1, 'Test')`);
+      await run(db, `INSERT INTO comments (review_id, body) VALUES (1, 'Test')`);
 
       const status = await getDatabaseStatus(db);
 
@@ -1784,6 +1804,221 @@ describe('Edge Cases and Error Handling', () => {
 
         await reviewRepo.deleteReview(review.id);
       }
+    });
+  });
+});
+
+// ============================================================================
+// AnalysisRunRepository Tests
+// ============================================================================
+
+describe('AnalysisRunRepository', () => {
+  let db;
+  let reviewRepo;
+  let analysisRunRepo;
+  let testReview;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    reviewRepo = new ReviewRepository(db);
+    analysisRunRepo = new AnalysisRunRepository(db);
+
+    // Create a test review to associate analysis runs with
+    testReview = await reviewRepo.createReview({
+      prNumber: 42,
+      repository: 'test/repo'
+    });
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('create()', () => {
+    it('should create an analysis run with required fields', async () => {
+      const runId = 'test-run-id-123';
+      const result = await analysisRunRepo.create({
+        id: runId,
+        reviewId: testReview.id
+      });
+
+      expect(result.id).toBe(runId);
+      expect(result.review_id).toBe(testReview.id);
+      expect(result.status).toBe('running');
+      expect(result.total_suggestions).toBe(0);
+      expect(result.files_analyzed).toBe(0);
+      expect(result.provider).toBeNull();
+      expect(result.model).toBeNull();
+    });
+
+    it('should create an analysis run with all optional fields', async () => {
+      const runId = 'test-run-id-456';
+      const result = await analysisRunRepo.create({
+        id: runId,
+        reviewId: testReview.id,
+        provider: 'claude',
+        model: 'sonnet',
+        customInstructions: 'Focus on security issues'
+      });
+
+      expect(result.id).toBe(runId);
+      expect(result.provider).toBe('claude');
+      expect(result.model).toBe('sonnet');
+      expect(result.custom_instructions).toBe('Focus on security issues');
+    });
+  });
+
+  describe('update()', () => {
+    it('should update status to completed and set completed_at', async () => {
+      const runId = 'test-run-id-update';
+      await analysisRunRepo.create({ id: runId, reviewId: testReview.id });
+
+      const updated = await analysisRunRepo.update(runId, {
+        status: 'completed',
+        summary: 'Analysis complete with 5 issues found',
+        totalSuggestions: 5,
+        filesAnalyzed: 10
+      });
+
+      expect(updated).toBe(true);
+
+      const retrieved = await analysisRunRepo.getById(runId);
+      expect(retrieved.status).toBe('completed');
+      expect(retrieved.summary).toBe('Analysis complete with 5 issues found');
+      expect(retrieved.total_suggestions).toBe(5);
+      expect(retrieved.files_analyzed).toBe(10);
+      expect(retrieved.completed_at).not.toBeNull();
+    });
+
+    it('should update status to failed and set completed_at', async () => {
+      const runId = 'test-run-id-failed';
+      await analysisRunRepo.create({ id: runId, reviewId: testReview.id });
+
+      await analysisRunRepo.update(runId, { status: 'failed' });
+
+      const retrieved = await analysisRunRepo.getById(runId);
+      expect(retrieved.status).toBe('failed');
+      expect(retrieved.completed_at).not.toBeNull();
+    });
+
+    it('should update status to cancelled and set completed_at', async () => {
+      const runId = 'test-run-id-cancelled';
+      await analysisRunRepo.create({ id: runId, reviewId: testReview.id });
+
+      await analysisRunRepo.update(runId, { status: 'cancelled' });
+
+      const retrieved = await analysisRunRepo.getById(runId);
+      expect(retrieved.status).toBe('cancelled');
+      expect(retrieved.completed_at).not.toBeNull();
+    });
+
+    it('should return false when no fields to update', async () => {
+      const runId = 'test-run-id-noop';
+      await analysisRunRepo.create({ id: runId, reviewId: testReview.id });
+
+      const updated = await analysisRunRepo.update(runId, {});
+      expect(updated).toBe(false);
+    });
+  });
+
+  describe('getById()', () => {
+    it('should retrieve an analysis run by ID', async () => {
+      const runId = 'test-run-id-get';
+      await analysisRunRepo.create({
+        id: runId,
+        reviewId: testReview.id,
+        provider: 'gemini',
+        model: 'gemini-2.5-pro'
+      });
+
+      const retrieved = await analysisRunRepo.getById(runId);
+      expect(retrieved).not.toBeNull();
+      expect(retrieved.id).toBe(runId);
+      expect(retrieved.provider).toBe('gemini');
+      expect(retrieved.model).toBe('gemini-2.5-pro');
+    });
+
+    it('should return null for non-existent ID', async () => {
+      const retrieved = await analysisRunRepo.getById('non-existent');
+      expect(retrieved).toBeNull();
+    });
+  });
+
+  describe('getByReviewId()', () => {
+    it('should retrieve all analysis runs for a review ordered by started_at DESC', async () => {
+      // Create multiple runs
+      await analysisRunRepo.create({ id: 'run-1', reviewId: testReview.id });
+      await analysisRunRepo.create({ id: 'run-2', reviewId: testReview.id });
+      await analysisRunRepo.create({ id: 'run-3', reviewId: testReview.id });
+
+      const runs = await analysisRunRepo.getByReviewId(testReview.id);
+      expect(runs).toHaveLength(3);
+      // Most recent first (run-3 was created last)
+      expect(runs[0].id).toBe('run-3');
+      expect(runs[1].id).toBe('run-2');
+      expect(runs[2].id).toBe('run-1');
+    });
+
+    it('should return empty array for review with no analysis runs', async () => {
+      const runs = await analysisRunRepo.getByReviewId(9999);
+      expect(runs).toEqual([]);
+    });
+  });
+
+  describe('getLatestByReviewId()', () => {
+    it('should retrieve the most recent analysis run', async () => {
+      // Use IDs that sort correctly when timestamps are identical
+      // (id DESC is used as tiebreaker, so 'run-2' > 'run-1')
+      await analysisRunRepo.create({ id: 'run-1', reviewId: testReview.id });
+      await analysisRunRepo.create({ id: 'run-2', reviewId: testReview.id });
+
+      const latest = await analysisRunRepo.getLatestByReviewId(testReview.id);
+      expect(latest).not.toBeNull();
+      expect(latest.id).toBe('run-2');
+    });
+
+    it('should return null for review with no analysis runs', async () => {
+      const latest = await analysisRunRepo.getLatestByReviewId(9999);
+      expect(latest).toBeNull();
+    });
+  });
+
+  describe('delete()', () => {
+    it('should delete an analysis run by ID', async () => {
+      const runId = 'test-run-delete';
+      await analysisRunRepo.create({ id: runId, reviewId: testReview.id });
+
+      const deleted = await analysisRunRepo.delete(runId);
+      expect(deleted).toBe(true);
+
+      const retrieved = await analysisRunRepo.getById(runId);
+      expect(retrieved).toBeNull();
+    });
+
+    it('should return false when deleting non-existent run', async () => {
+      const deleted = await analysisRunRepo.delete('non-existent');
+      expect(deleted).toBe(false);
+    });
+  });
+
+  describe('deleteByReviewId()', () => {
+    it('should delete all analysis runs for a review', async () => {
+      await analysisRunRepo.create({ id: 'run-a', reviewId: testReview.id });
+      await analysisRunRepo.create({ id: 'run-b', reviewId: testReview.id });
+      await analysisRunRepo.create({ id: 'run-c', reviewId: testReview.id });
+
+      const deleted = await analysisRunRepo.deleteByReviewId(testReview.id);
+      expect(deleted).toBe(3);
+
+      const runs = await analysisRunRepo.getByReviewId(testReview.id);
+      expect(runs).toEqual([]);
+    });
+
+    it('should return 0 when no runs exist for review', async () => {
+      const deleted = await analysisRunRepo.deleteByReviewId(9999);
+      expect(deleted).toBe(0);
     });
   });
 });

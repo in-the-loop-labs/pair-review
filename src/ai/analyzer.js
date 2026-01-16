@@ -13,6 +13,7 @@ const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../uti
 const { getPromptBuilder } = require('./prompts');
 const { formatValidFiles } = require('./prompts/shared/valid-files');
 const { registerProcess, isAnalysisCancelled, CancellationError } = require('../routes/shared');
+const { AnalysisRunRepository } = require('../database');
 
 class Analyzer {
   /**
@@ -51,6 +52,22 @@ class Analyzer {
       logger.info(`Analysis ID (for cancellation): ${analysisId}`);
     }
     logger.info(`Worktree path: ${worktreePath}`);
+
+    // Create analysis run record in database
+    const analysisRunRepo = new AnalysisRunRepository(this.db);
+    try {
+      await analysisRunRepo.create({
+        id: runId,
+        reviewId: prId,  // prId is actually review.id (works for both PR and local modes)
+        provider: this.provider,
+        model: this.model,
+        customInstructions
+      });
+      logger.info(`Created analysis_run record: ${runId}`);
+    } catch (createError) {
+      logger.warn(`Failed to create analysis_run record: ${createError.message}`);
+      // Continue with analysis even if record creation fails
+    }
 
     // Load generated file patterns to skip during analysis
     const generatedPatterns = await this.loadGeneratedFilePatterns(worktreePath);
@@ -150,6 +167,19 @@ class Analyzer {
         logger.info('Storing orchestrated suggestions in database...');
         await this.storeSuggestions(prId, runId, finalSuggestions, null, validFiles);
 
+        // Update analysis_run record with completion data
+        try {
+          await analysisRunRepo.update(runId, {
+            status: 'completed',
+            summary: orchestrationResult.summary,
+            totalSuggestions: finalSuggestions.length,
+            filesAnalyzed: validFiles.length
+          });
+          logger.info(`Updated analysis_run record to completed: ${finalSuggestions.length} suggestions, ${validFiles.length} files`);
+        } catch (updateError) {
+          logger.warn(`Failed to update analysis_run record: ${updateError.message}`);
+        }
+
         logger.success(`Analysis complete: ${finalSuggestions.length} final suggestions`);
 
         return {
@@ -179,16 +209,43 @@ class Analyzer {
 
         await this.storeSuggestions(prId, runId, finalFallbackSuggestions, null, validFiles);
 
+        // Update analysis_run record with completion data (even though orchestration failed)
+        const fallbackSummary = `Analysis complete (orchestration failed): ${finalFallbackSuggestions.length} suggestions`;
+        try {
+          await analysisRunRepo.update(runId, {
+            status: 'completed',
+            summary: fallbackSummary,
+            totalSuggestions: finalFallbackSuggestions.length,
+            filesAnalyzed: validFiles.length
+          });
+          logger.info(`Updated analysis_run record to completed (fallback): ${finalFallbackSuggestions.length} suggestions`);
+        } catch (updateError) {
+          logger.warn(`Failed to update analysis_run record: ${updateError.message}`);
+        }
+
         return {
           runId,
           suggestions: finalFallbackSuggestions,
           levelResults,
-          summary: `Analysis complete (orchestration failed): ${finalFallbackSuggestions.length} suggestions`,
+          summary: fallbackSummary,
           orchestrationFailed: true
         };
       }
 
     } catch (error) {
+      // Update analysis_run record with appropriate status
+      try {
+        if (error.isCancellation) {
+          await analysisRunRepo.update(runId, { status: 'cancelled' });
+          logger.info(`Updated analysis_run record to cancelled`);
+        } else {
+          await analysisRunRepo.update(runId, { status: 'failed' });
+          logger.info(`Updated analysis_run record to failed`);
+        }
+      } catch (updateError) {
+        logger.warn(`Failed to update analysis_run record on error: ${updateError.message}`);
+      }
+
       // Don't log cancellation as an error - it's expected user behavior
       if (error.isCancellation) {
         throw error;
