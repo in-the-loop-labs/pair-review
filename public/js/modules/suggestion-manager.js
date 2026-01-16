@@ -528,7 +528,7 @@ class SuggestionManager {
     // Parse diff_position if it's a string (from dataset)
     const parsedDiffPosition = diffPosition ? parseInt(diffPosition) : null;
 
-    const prId = this.prManager?.currentPR?.id;
+    const reviewId = this.prManager?.currentPR?.id;
     const headSha = this.prManager?.currentPR?.head_sha;
 
     const createResponse = await fetch('/api/user-comment', {
@@ -537,7 +537,7 @@ class SuggestionManager {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        pr_id: prId,
+        review_id: reviewId,
         file: fileName,
         line_start: parseInt(lineNumber),
         line_end: parseInt(lineNumber),

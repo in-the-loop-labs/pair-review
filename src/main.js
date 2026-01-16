@@ -757,7 +757,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
         title,
         type
       FROM comments
-      WHERE pr_id = ? AND source = 'ai' AND ai_level IS NULL AND status = 'active'
+      WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL AND status = 'active'
       ORDER BY file, line_start
     `, [review.id]);
 

@@ -145,7 +145,7 @@ function createTestDatabase() {
     comments: `
       CREATE TABLE IF NOT EXISTS comments (
         id INTEGER PRIMARY KEY,
-        pr_id INTEGER,
+        review_id INTEGER,
         source TEXT,
         author TEXT,
         ai_run_id TEXT,
@@ -214,7 +214,7 @@ function createTestDatabase() {
 
   const INDEX_SQL = [
     'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
-    'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start)',
+    'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(review_id, file, line_start)',
     'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
     'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
@@ -634,7 +634,7 @@ describe('User Comment Endpoints', () => {
     it('should return 400 when required fields are missing', async () => {
       const response = await request(app)
         .post('/api/user-comment')
-        .send({ pr_id: prId });
+        .send({ review_id: prId });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Missing required fields');
@@ -644,7 +644,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/user-comment')
         .send({
-          pr_id: 9999,
+          review_id: 9999,
           file: 'file.js',
           line_start: 10,
           body: 'Test comment'
@@ -657,7 +657,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/user-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           line_start: 10,
           line_end: 15,
@@ -673,7 +673,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/user-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           line_start: 10,
           body: 'Test comment',
@@ -698,7 +698,7 @@ describe('User Comment Endpoints', () => {
     it('should return 400 when required fields are missing', async () => {
       const response = await request(app)
         .post('/api/file-comment')
-        .send({ pr_id: prId });
+        .send({ review_id: prId });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Missing required fields');
@@ -708,7 +708,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: 9999,
+          review_id: 9999,
           file: 'file.js',
           body: 'Test file-level comment'
         });
@@ -720,7 +720,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           body: 'This is a file-level comment'
         });
@@ -735,7 +735,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           body: 'File-level comment'
         });
@@ -756,7 +756,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           body: 'File-level comment with commit',
           commit_sha: 'abc123'
@@ -775,7 +775,7 @@ describe('User Comment Endpoints', () => {
     it('should save parent_id, type, and title for adopted AI suggestions', async () => {
       // First create an AI suggestion
       const aiSuggestion = await run(db, `
-        INSERT INTO comments (pr_id, source, file, type, title, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, type, title, body, status, is_file_level)
         VALUES (?, 'ai', ?, 'improvement', 'Consider refactoring', 'This could be improved', 'active', 1)
       `, [prId, 'file.js']);
 
@@ -783,7 +783,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           body: 'Adopted: This could be improved',
           parent_id: aiSuggestion.lastID,
@@ -809,7 +809,7 @@ describe('User Comment Endpoints', () => {
       const createResponse = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'test.js',
           body: 'File comment with metadata',
           parent_id: 999,
@@ -836,7 +836,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           body: 'Regular user file comment'
         });
@@ -857,7 +857,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           body: 'Adopted suggestion body',
           parent_id: 123,
@@ -888,7 +888,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           body: 'Comment with only type',
           type: 'suggestion'
@@ -906,7 +906,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           body: 'Comment with only title',
           title: 'Important Note'
@@ -924,7 +924,7 @@ describe('User Comment Endpoints', () => {
       const response = await request(app)
         .post('/api/file-comment')
         .send({
-          pr_id: prId,
+          review_id: prId,
           file: 'file.js',
           body: 'Comment without explicit type'
         });
@@ -948,7 +948,7 @@ describe('User Comment Endpoints', () => {
     it('should return user comments for PR', async () => {
       // Create a user comment
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file.js', 10, 'Test comment', 'active')
       `, [prId]);
 
@@ -963,11 +963,11 @@ describe('User Comment Endpoints', () => {
 
     it('should not return inactive comments', async () => {
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file.js', 10, 'Active comment', 'active')
       `, [prId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file.js', 20, 'Inactive comment', 'inactive')
       `, [prId]);
 
@@ -981,12 +981,12 @@ describe('User Comment Endpoints', () => {
     it('should include is_file_level in response', async () => {
       // Create a line-level comment (default is_file_level=0)
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, is_file_level)
         VALUES (?, 'user', 'file.js', 10, 'Line comment', 'active', 0)
       `, [prId]);
       // Create a file-level comment (is_file_level=1)
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
         VALUES (?, 'user', 'another.js', 'File comment', 'active', 1)
       `, [prId]);
 
@@ -1007,7 +1007,7 @@ describe('User Comment Endpoints', () => {
   describe('PUT /api/user-comment/:id', () => {
     it('should return 400 when body is empty', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file.js', 10, 'Original', 'active')
       `, [prId]);
 
@@ -1029,7 +1029,7 @@ describe('User Comment Endpoints', () => {
 
     it('should return 404 for AI comment (not user)', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'ai', 'file.js', 10, 'AI suggestion', 'active')
       `, [prId]);
 
@@ -1043,7 +1043,7 @@ describe('User Comment Endpoints', () => {
 
     it('should update user comment successfully', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file.js', 10, 'Original comment', 'active')
       `, [prId]);
 
@@ -1070,7 +1070,7 @@ describe('User Comment Endpoints', () => {
 
     it('should soft-delete user comment (set status to inactive)', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file.js', 10, 'To delete', 'active')
       `, [prId]);
 
@@ -1088,14 +1088,14 @@ describe('User Comment Endpoints', () => {
     it('should return dismissedSuggestionId when deleting an adopted comment', async () => {
       // Create an AI suggestion
       const suggestionResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
         VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', 'run-1')
       `, [prId]);
       const suggestionId = suggestionResult.lastID;
 
       // Create a user comment adopted from the AI suggestion
       const commentResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, 'user', 'test.js', 10, 'User comment', 'active', ?)
       `, [prId, suggestionId]);
 
@@ -1114,7 +1114,7 @@ describe('User Comment Endpoints', () => {
     it('should return null dismissedSuggestionId when deleting a non-adopted comment', async () => {
       // Create a user comment without a parent AI suggestion
       const commentResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'test.js', 10, 'User comment', 'active')
       `, [prId]);
 
@@ -1142,11 +1142,11 @@ describe('User Comment Endpoints', () => {
     it('should bulk delete all user comments for PR', async () => {
       // Create multiple comments
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file1.js', 10, 'Comment 1', 'active')
       `, [prId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file2.js', 20, 'Comment 2', 'active')
       `, [prId]);
 
@@ -1161,20 +1161,20 @@ describe('User Comment Endpoints', () => {
     it('should delete comments with active, submitted, and draft statuses', async () => {
       // Create comments with different statuses that should all be deleted
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file1.js', 10, 'Active comment', 'active')
       `, [prId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file2.js', 20, 'Submitted comment', 'submitted')
       `, [prId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file3.js', 30, 'Draft comment', 'draft')
       `, [prId]);
       // This inactive comment should NOT be deleted again
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'file4.js', 40, 'Already inactive', 'inactive')
       `, [prId]);
 
@@ -1187,7 +1187,7 @@ describe('User Comment Endpoints', () => {
 
       // Verify all deletable comments are now inactive
       const comments = await query(db, `
-        SELECT status FROM comments WHERE pr_id = ? AND source = 'user' ORDER BY line_start
+        SELECT status FROM comments WHERE review_id = ? AND source = 'user' ORDER BY line_start
       `, [prId]);
       expect(comments.every(c => c.status === 'inactive')).toBe(true);
     });
@@ -1195,25 +1195,25 @@ describe('User Comment Endpoints', () => {
     it('should return dismissedSuggestionIds when bulk deleting adopted comments', async () => {
       // Create two AI suggestions
       const suggestion1Result = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
         VALUES (?, 'ai', 'test.js', 10, 'AI suggestion 1', 'adopted', 'run-1')
       `, [prId]);
       const suggestion1Id = suggestion1Result.lastID;
 
       const suggestion2Result = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
         VALUES (?, 'ai', 'test.js', 20, 'AI suggestion 2', 'adopted', 'run-1')
       `, [prId]);
       const suggestion2Id = suggestion2Result.lastID;
 
       // Create user comments adopted from the AI suggestions
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active', ?)
       `, [prId, suggestion1Id]);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active', ?)
       `, [prId, suggestion2Id]);
 
@@ -1238,12 +1238,12 @@ describe('User Comment Endpoints', () => {
     it('should return empty dismissedSuggestionIds when deleting non-adopted comments', async () => {
       // Create user comments without parent AI suggestions
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active')
       `, [prId]);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active')
       `, [prId]);
 
@@ -1310,7 +1310,7 @@ describe('AI Suggestion Endpoints', () => {
     it('should return AI suggestions for PR', async () => {
       // Insert AI suggestion with ai_run_id (required for filtering by latest analysis run)
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, type, title, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, type, title, body, status, ai_run_id)
         VALUES (?, 'ai', 'file.js', 10, 'improvement', 'Test Suggestion', 'Suggestion body', 'active', 'test-run-1')
       `, [prId]);
 
@@ -1326,15 +1326,15 @@ describe('AI Suggestion Endpoints', () => {
       // Insert suggestions with different levels (all with same ai_run_id to simulate one analysis run)
       const runId = 'test-run-levels';
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
         VALUES (?, 'ai', 'file.js', 10, 1, 'Level 1 suggestion', 'active', ?)
       `, [prId, runId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
         VALUES (?, 'ai', 'file.js', 20, 2, 'Level 2 suggestion', 'active', ?)
       `, [prId, runId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
         VALUES (?, 'ai', 'file.js', 30, NULL, 'Final suggestion', 'active', ?)
       `, [prId, runId]);
 
@@ -1350,11 +1350,11 @@ describe('AI Suggestion Endpoints', () => {
     it('should default to final suggestions when no levels specified', async () => {
       const runId = 'test-run-default';
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
         VALUES (?, 'ai', 'file.js', 10, 1, 'Level 1', 'active', ?)
       `, [prId, runId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
         VALUES (?, 'ai', 'file.js', 20, NULL, 'Final', 'active', ?)
       `, [prId, runId]);
 
@@ -1372,17 +1372,17 @@ describe('AI Suggestion Endpoints', () => {
       const newTime = '2024-01-01 11:00:00';
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
         VALUES (?, 'ai', 'file.js', 10, NULL, 'Old run suggestion 1', 'active', 'run-1', ?)
       `, [prId, oldTime]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
         VALUES (?, 'ai', 'file.js', 20, NULL, 'Old run suggestion 2', 'active', 'run-1', ?)
       `, [prId, oldTime]);
 
       // run-2 has a later created_at timestamp, making it the newest analysis run
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id, created_at)
         VALUES (?, 'ai', 'file.js', 30, NULL, 'New run suggestion', 'active', 'run-2', ?)
       `, [prId, newTime]);
 
@@ -1401,11 +1401,11 @@ describe('AI Suggestion Endpoints', () => {
       // Using ai_level=NULL to match the default filter (final/orchestrated suggestions)
       const runId = 'test-run-side';
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
         VALUES (?, 'ai', 'file.js', 10, 'Comment on added line', 'active', ?, NULL, 'RIGHT')
       `, [prId, runId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
         VALUES (?, 'ai', 'file.js', 5, 'Comment on deleted line', 'active', ?, NULL, 'LEFT')
       `, [prId, runId]);
 
@@ -1435,7 +1435,7 @@ describe('AI Suggestion Endpoints', () => {
       // Using ai_level=NULL to match the default filter (final/orchestrated suggestions)
       const runId = 'test-run-default-side';
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id, ai_level)
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion with default side', 'active', ?, NULL)
       `, [prId, runId]);
 
@@ -1458,11 +1458,11 @@ describe('AI Suggestion Endpoints', () => {
 
       // Insert suggestions for the same line number but different sides
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
         VALUES (?, 'ai', 'file.js', ?, 'Issue on deleted line 15', 'active', ?, NULL, 'LEFT')
       `, [prId, sameLine, runId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id, ai_level, side)
         VALUES (?, 'ai', 'file.js', ?, 'Issue on added line 15', 'active', ?, NULL, 'RIGHT')
       `, [prId, sameLine, runId]);
 
@@ -1493,7 +1493,7 @@ describe('AI Suggestion Endpoints', () => {
   describe('POST /api/ai-suggestion/:id/status', () => {
     it('should return 400 for invalid status', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
       `, [prId]);
 
@@ -1515,7 +1515,7 @@ describe('AI Suggestion Endpoints', () => {
 
     it('should update suggestion status to dismissed', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
       `, [prId]);
 
@@ -1533,7 +1533,7 @@ describe('AI Suggestion Endpoints', () => {
 
     it('should update suggestion status to adopted', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
       `, [prId]);
 
@@ -1547,7 +1547,7 @@ describe('AI Suggestion Endpoints', () => {
 
     it('should restore suggestion to active and clear adopted_as_id', async () => {
       const { lastID } = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, adopted_as_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, adopted_as_id)
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'adopted', 999)
       `, [prId]);
 
@@ -1575,7 +1575,7 @@ describe('AI Suggestion Endpoints', () => {
 
     it('should return true when suggestions exist', async () => {
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
       `, [prId]);
 
@@ -1607,42 +1607,42 @@ describe('AI Suggestion Endpoints', () => {
       // First run (older) - 3 bugs, 2 suggestions, 1 praise
       const oldTime = '2024-01-01 10:00:00';
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
         VALUES (?, 'ai', 'file.js', 10, 'Old bug 1', 'bug', 'run-1', NULL, 'active', ?)
       `, [prId, oldTime]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
         VALUES (?, 'ai', 'file.js', 20, 'Old bug 2', 'bug', 'run-1', NULL, 'active', ?)
       `, [prId, oldTime]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
         VALUES (?, 'ai', 'file.js', 30, 'Old bug 3', 'bug', 'run-1', NULL, 'active', ?)
       `, [prId, oldTime]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
         VALUES (?, 'ai', 'file.js', 40, 'Old suggestion 1', 'suggestion', 'run-1', NULL, 'active', ?)
       `, [prId, oldTime]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
         VALUES (?, 'ai', 'file.js', 50, 'Old suggestion 2', 'suggestion', 'run-1', NULL, 'active', ?)
       `, [prId, oldTime]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
         VALUES (?, 'ai', 'file.js', 60, 'Old praise', 'praise', 'run-1', NULL, 'active', ?)
       `, [prId, oldTime]);
 
       // Second run (newer) - 1 bug, 1 suggestion, 1 praise (total 3 items)
       const newTime = '2024-01-01 11:00:00';
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
         VALUES (?, 'ai', 'file.js', 10, 'New bug', 'bug', 'run-2', NULL, 'active', ?)
       `, [prId, newTime]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
         VALUES (?, 'ai', 'file.js', 20, 'New suggestion', 'suggestion', 'run-2', NULL, 'active', ?)
       `, [prId, newTime]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
         VALUES (?, 'ai', 'file.js', 30, 'New praise', 'praise', 'run-2', NULL, 'active', ?)
       `, [prId, newTime]);
 
@@ -1729,17 +1729,17 @@ describe('Review Submission Endpoint', () => {
     it('should validate that comments are collected for submission', async () => {
       // Add user comments
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, diff_position, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
         VALUES (?, 'user', 'file.js', 10, 5, 'Comment 1', 'active')
       `, [prId]);
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, diff_position, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
         VALUES (?, 'user', 'file.js', 20, 10, 'Comment 2', 'active')
       `, [prId]);
 
       // Verify comments exist before submission attempt
       const comments = await query(db, `
-        SELECT * FROM comments WHERE pr_id = ? AND source = 'user' AND status = 'active'
+        SELECT * FROM comments WHERE review_id = ? AND source = 'user' AND status = 'active'
       `, [prId]);
 
       expect(comments.length).toBe(2);
@@ -1749,7 +1749,7 @@ describe('Review Submission Endpoint', () => {
       // Insert more than 50 comments (GitHub API limit)
       for (let i = 0; i < 55; i++) {
         await run(db, `
-          INSERT INTO comments (pr_id, source, file, line_start, diff_position, body, status)
+          INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
           VALUES (?, 'user', 'file.js', ?, ?, 'Comment', 'active')
         `, [prId, i + 1, i + 1]);
       }
@@ -1765,7 +1765,7 @@ describe('Review Submission Endpoint', () => {
     it('should submit file-level comments with isFileLevel flag', async () => {
       // Insert a file-level comment (is_file_level=1)
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
         VALUES (?, 'user', 'file.js', 'This is a file-level comment', 'active', 1)
       `, [prId]);
 
@@ -1793,13 +1793,13 @@ describe('Review Submission Endpoint', () => {
     it('should submit mixed file-level and line-level comments correctly', async () => {
       // Insert a file-level comment
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
         VALUES (?, 'user', 'file1.js', 'File-level comment', 'active', 1)
       `, [prId]);
 
       // Insert a line-level comment with diff_position (inside diff hunk)
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, diff_position, side, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status, is_file_level)
         VALUES (?, 'user', 'file2.js', 10, 5, 'RIGHT', 'Line-level comment', 'active', 0)
       `, [prId]);
 
@@ -1835,7 +1835,7 @@ describe('Review Submission Endpoint', () => {
     it('should submit draft review with file-level comments', async () => {
       // Insert a file-level comment
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
         VALUES (?, 'user', 'file.js', 'Draft file-level comment', 'active', 1)
       `, [prId]);
 
@@ -1860,7 +1860,7 @@ describe('Review Submission Endpoint', () => {
       // Insert an expanded context comment (no diff_position, not explicitly file-level)
       // This represents a comment on a line outside the diff hunk
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, side, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, line_start, side, body, status, is_file_level)
         VALUES (?, 'user', 'file.js', 42, 'RIGHT', 'Expanded context comment', 'active', 0)
       `, [prId]);
 
@@ -3159,7 +3159,7 @@ describe('Local Review File-Level Comments', () => {
     it('should create file-level comment with optional parent_id, type, and title', async () => {
       // First create an AI suggestion
       const aiResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, type, title, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, type, title, is_file_level)
         VALUES (?, 'ai', 'test.js', 'AI suggestion', 'active', 'suggestion', 'Consider refactoring', 1)
       `, [reviewId]);
 
@@ -3227,7 +3227,7 @@ describe('Local Review File-Level Comments', () => {
     it('should not update line-level comment via file-comment endpoint', async () => {
       // Create a line-level comment
       const lineCommentResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, is_file_level)
         VALUES (?, 'user', 'test.js', 10, 'Line comment', 'active', 0)
       `, [reviewId]);
 
@@ -3242,7 +3242,7 @@ describe('Local Review File-Level Comments', () => {
     it('should update file-level comment successfully', async () => {
       // Create a file-level comment
       const fileCommentResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
         VALUES (?, 'user', 'test.js', 'Original comment', 'active', 1)
       `, [reviewId]);
 
@@ -3291,7 +3291,7 @@ describe('Local Review File-Level Comments', () => {
     it('should not delete line-level comment via file-comment endpoint', async () => {
       // Create a line-level comment
       const lineCommentResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, is_file_level)
         VALUES (?, 'user', 'test.js', 10, 'Line comment', 'active', 0)
       `, [reviewId]);
 
@@ -3305,7 +3305,7 @@ describe('Local Review File-Level Comments', () => {
     it('should soft delete file-level comment successfully', async () => {
       // Create a file-level comment
       const fileCommentResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
         VALUES (?, 'user', 'test.js', 'File comment to delete', 'active', 1)
       `, [reviewId]);
 
@@ -3329,7 +3329,7 @@ describe('Local Review File-Level Comments', () => {
     it('should return file-level comments with is_file_level=1', async () => {
       // Create a file-level comment
       await run(db, `
-        INSERT INTO comments (pr_id, source, author, file, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, author, file, body, status, is_file_level)
         VALUES (?, 'user', 'Current User', 'test.js', 'File-level comment', 'active', 1)
       `, [reviewId]);
 
@@ -3345,13 +3345,13 @@ describe('Local Review File-Level Comments', () => {
     it('should return both file-level and line-level comments', async () => {
       // Create a file-level comment
       await run(db, `
-        INSERT INTO comments (pr_id, source, author, file, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, author, file, body, status, is_file_level)
         VALUES (?, 'user', 'Current User', 'test.js', 'File-level comment', 'active', 1)
       `, [reviewId]);
 
       // Create a line-level comment
       await run(db, `
-        INSERT INTO comments (pr_id, source, author, file, line_start, line_end, body, status)
+        INSERT INTO comments (review_id, source, author, file, line_start, line_end, body, status)
         VALUES (?, 'user', 'Current User', 'test.js', 10, 10, 'Line comment', 'active')
       `, [reviewId]);
 
@@ -3373,7 +3373,7 @@ describe('Local Review File-Level Comments', () => {
     it('should return file-level AI suggestions with is_file_level=1', async () => {
       // Create a file-level AI suggestion
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, ai_run_id, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, ai_run_id, is_file_level)
         VALUES (?, 'ai', 'test.js', 'File-level suggestion', 'active', 'run-1', 1)
       `, [reviewId]);
 
@@ -3389,13 +3389,13 @@ describe('Local Review File-Level Comments', () => {
     it('should order file-level suggestions before line-level suggestions', async () => {
       // Create line-level suggestion
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
         VALUES (?, 'ai', 'test.js', 10, 'Line suggestion', 'active', 'run-1')
       `, [reviewId]);
 
       // Create file-level suggestion
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, ai_run_id, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, ai_run_id, is_file_level)
         VALUES (?, 'ai', 'test.js', 'File suggestion', 'active', 'run-1', 1)
       `, [reviewId]);
 
@@ -3446,7 +3446,7 @@ describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
 
   it('should return true when suggestions exist', async () => {
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+      INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
       VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active', 'run-1')
     `, [reviewId]);
 
@@ -3462,42 +3462,42 @@ describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
     // First run (older) - 3 bugs, 2 suggestions, 1 praise
     const oldTime = '2024-01-01 10:00:00';
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
       VALUES (?, 'ai', 'file.js', 10, 'Old bug 1', 'bug', 'run-1', NULL, 'active', ?)
     `, [reviewId, oldTime]);
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
       VALUES (?, 'ai', 'file.js', 20, 'Old bug 2', 'bug', 'run-1', NULL, 'active', ?)
     `, [reviewId, oldTime]);
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
       VALUES (?, 'ai', 'file.js', 30, 'Old bug 3', 'bug', 'run-1', NULL, 'active', ?)
     `, [reviewId, oldTime]);
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
       VALUES (?, 'ai', 'file.js', 40, 'Old suggestion 1', 'suggestion', 'run-1', NULL, 'active', ?)
     `, [reviewId, oldTime]);
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
       VALUES (?, 'ai', 'file.js', 50, 'Old suggestion 2', 'suggestion', 'run-1', NULL, 'active', ?)
     `, [reviewId, oldTime]);
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
       VALUES (?, 'ai', 'file.js', 60, 'Old praise', 'praise', 'run-1', NULL, 'active', ?)
     `, [reviewId, oldTime]);
 
     // Second run (newer) - 1 bug, 1 suggestion, 1 praise (total 3 items)
     const newTime = '2024-01-01 11:00:00';
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
       VALUES (?, 'ai', 'file.js', 10, 'New bug', 'bug', 'run-2', NULL, 'active', ?)
     `, [reviewId, newTime]);
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
       VALUES (?, 'ai', 'file.js', 20, 'New suggestion', 'suggestion', 'run-2', NULL, 'active', ?)
     `, [reviewId, newTime]);
     await run(db, `
-      INSERT INTO comments (pr_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
+      INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, ai_level, status, created_at)
       VALUES (?, 'ai', 'file.js', 30, 'New praise', 'praise', 'run-2', NULL, 'active', ?)
     `, [reviewId, newTime]);
 
@@ -3552,14 +3552,14 @@ describe('Local Routes Dismissal Response Structure', () => {
     it('should return dismissedSuggestionId when deleting an adopted comment', async () => {
       // Create an AI suggestion
       const suggestionResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
         VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', 'run-1')
       `, [reviewId]);
       const suggestionId = suggestionResult.lastID;
 
       // Create a user comment adopted from the AI suggestion
       const commentResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, 'user', 'test.js', 10, 'User comment', 'active', ?)
       `, [reviewId, suggestionId]);
 
@@ -3578,7 +3578,7 @@ describe('Local Routes Dismissal Response Structure', () => {
     it('should return null dismissedSuggestionId when deleting a non-adopted comment', async () => {
       // Create a user comment without a parent AI suggestion
       const commentResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'test.js', 10, 'User comment', 'active')
       `, [reviewId]);
 
@@ -3616,25 +3616,25 @@ describe('Local Routes Dismissal Response Structure', () => {
     it('should return dismissedSuggestionIds when bulk deleting adopted comments', async () => {
       // Create two AI suggestions
       const suggestion1Result = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
         VALUES (?, 'ai', 'test.js', 10, 'AI suggestion 1', 'adopted', 'run-1')
       `, [reviewId]);
       const suggestion1Id = suggestion1Result.lastID;
 
       const suggestion2Result = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
         VALUES (?, 'ai', 'test.js', 20, 'AI suggestion 2', 'adopted', 'run-1')
       `, [reviewId]);
       const suggestion2Id = suggestion2Result.lastID;
 
       // Create user comments adopted from the AI suggestions
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active', ?)
       `, [reviewId, suggestion1Id]);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active', ?)
       `, [reviewId, suggestion2Id]);
 
@@ -3659,24 +3659,24 @@ describe('Local Routes Dismissal Response Structure', () => {
     it('should deduplicate dismissedSuggestionIds when multiple user comments share same parent', async () => {
       // Create one AI suggestion
       const suggestionResult = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, ai_run_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
         VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', 'run-1')
       `, [reviewId]);
       const suggestionId = suggestionResult.lastID;
 
       // Create multiple user comments adopted from the SAME AI suggestion
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active', ?)
       `, [reviewId, suggestionId]);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, 'user', 'test.js', 12, 'User comment 2', 'active', ?)
       `, [reviewId, suggestionId]);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, 'user', 'test.js', 14, 'User comment 3', 'active', ?)
       `, [reviewId, suggestionId]);
 
@@ -3698,12 +3698,12 @@ describe('Local Routes Dismissal Response Structure', () => {
     it('should return empty dismissedSuggestionIds when deleting non-adopted comments', async () => {
       // Create user comments without parent AI suggestions
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'test.js', 10, 'User comment 1', 'active')
       `, [reviewId]);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'user', 'test.js', 20, 'User comment 2', 'active')
       `, [reviewId]);
 

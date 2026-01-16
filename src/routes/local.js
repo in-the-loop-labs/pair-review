@@ -867,7 +867,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
       : 'ai_level IS NULL';
 
     // Get AI suggestions from the comments table
-    // For local reviews, pr_id corresponds to the review ID
+    // For local reviews, review_id stores the review ID
     // Only return suggestions from the latest analysis run (ai_run_id)
     // This preserves history while showing only the most recent results
     //
@@ -898,13 +898,13 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ?
+      WHERE review_id = ?
         AND source = 'ai'
         AND ${levelFilter}
         AND status IN ('active', 'dismissed', 'adopted')
         AND ai_run_id = (
           SELECT ai_run_id FROM comments
-          WHERE pr_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+          WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
           ORDER BY created_at DESC
           LIMIT 1
         )
@@ -976,7 +976,7 @@ router.get('/api/local/:reviewId/user-comments', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
       ORDER BY file, line_start, created_at
     `, [reviewId]);
 
@@ -1029,7 +1029,7 @@ router.post('/api/local/:reviewId/user-comments', async (req, res) => {
     // Create line-level comment using repository
     const commentRepo = new CommentRepository(db);
     const commentId = await commentRepo.createLineComment({
-      pr_id: reviewId,
+      review_id: reviewId,
       file,
       line_start,
       line_end,
@@ -1100,7 +1100,7 @@ router.post('/api/local/:reviewId/file-comment', async (req, res) => {
     // Create file-level comment using repository
     const commentRepo = new CommentRepository(db);
     const commentId = await commentRepo.createFileComment({
-      pr_id: reviewId,
+      review_id: reviewId,
       file,
       body: trimmedBody,
       type,
@@ -1154,7 +1154,7 @@ router.put('/api/local/:reviewId/file-comment/:commentId', async (req, res) => {
 
     // Verify the comment exists, belongs to this review, and is a file-level comment
     const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND pr_id = ? AND source = 'user' AND is_file_level = 1
+      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user' AND is_file_level = 1
     `, [commentId, reviewId]);
 
     if (!comment) {
@@ -1207,7 +1207,7 @@ router.delete('/api/local/:reviewId/file-comment/:commentId', async (req, res) =
 
     // Verify the comment exists, belongs to this review, and is a file-level comment
     const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND pr_id = ? AND source = 'user' AND is_file_level = 1
+      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user' AND is_file_level = 1
     `, [commentId, reviewId]);
 
     if (!comment) {
@@ -1260,7 +1260,7 @@ router.get('/api/local/:reviewId/user-comments/:commentId', async (req, res) => 
 
     // Get the comment and verify it belongs to this review
     const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND pr_id = ? AND source = 'user'
+      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user'
     `, [commentId, reviewId]);
 
     if (!comment) {
@@ -1322,7 +1322,7 @@ router.put('/api/local/:reviewId/user-comments/:commentId', async (req, res) => 
 
     // Verify the comment exists and belongs to this review
     const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND pr_id = ? AND source = 'user'
+      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user'
     `, [commentId, reviewId]);
 
     if (!comment) {
@@ -1435,7 +1435,7 @@ router.delete('/api/local/:reviewId/user-comments/:commentId', async (req, res) 
 
     // Verify the comment exists and belongs to this review
     const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND pr_id = ? AND source = 'user'
+      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user'
     `, [commentId, reviewId]);
 
     if (!comment) {
@@ -1541,7 +1541,7 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
     const result = await queryOne(db, `
       SELECT EXISTS(
         SELECT 1 FROM comments
-        WHERE pr_id = ? AND source = 'ai'
+        WHERE review_id = ? AND source = 'ai'
       ) as has_suggestions
     `, [reviewId]);
 

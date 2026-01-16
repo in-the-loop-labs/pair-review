@@ -879,7 +879,7 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
     const result = await queryOne(db, `
       SELECT EXISTS(
         SELECT 1 FROM comments
-        WHERE pr_id = ? AND source = 'ai'
+        WHERE review_id = ? AND source = 'ai'
       ) as has_suggestions
     `, [review.id]);
 
@@ -1025,13 +1025,13 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ?
+      WHERE review_id = ?
         AND source = 'ai'
         AND ${levelFilter}
         AND status IN ('active', 'dismissed', 'adopted')
         AND ai_run_id = (
           SELECT ai_run_id FROM comments
-          WHERE pr_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+          WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
           ORDER BY created_at DESC
           LIMIT 1
         )

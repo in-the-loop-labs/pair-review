@@ -64,7 +64,7 @@ class FileCommentManager {
    * @returns {Object} Object with endpoint and requestBody
    */
   _getFileCommentEndpoint(operation, options = {}) {
-    const prId = this.prManager?.currentPR?.id;
+    const reviewId = this.prManager?.currentPR?.id;
     const reviewType = this.prManager?.currentPR?.reviewType;
     const headSha = this.prManager?.currentPR?.head_sha;
     const isLocal = reviewType === 'local';
@@ -75,7 +75,7 @@ class FileCommentManager {
     switch (operation) {
       case 'create':
         endpoint = isLocal
-          ? `/api/local/${prId}/file-comment`
+          ? `/api/local/${reviewId}/file-comment`
           : '/api/file-comment';
 
         requestBody = isLocal
@@ -87,7 +87,7 @@ class FileCommentManager {
               title: options.title
             }
           : {
-              pr_id: prId,
+              review_id: reviewId,
               file: options.file,
               body: options.body,
               commit_sha: headSha,

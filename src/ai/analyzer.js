@@ -1384,7 +1384,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       await run(this.db, `
         INSERT INTO comments (
-          pr_id, source, author, ai_run_id, ai_level, ai_confidence,
+          review_id, source, author, ai_run_id, ai_level, ai_confidence,
           file, line_start, line_end, side, type, title, body, status, is_file_level
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
@@ -1481,7 +1481,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
     let sql = `
       SELECT * FROM comments
-      WHERE pr_id = ? AND source = 'ai'
+      WHERE review_id = ? AND source = 'ai'
     `;
     const params = [prId];
 

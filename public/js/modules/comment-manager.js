@@ -337,7 +337,7 @@ class CommentManager {
     }
 
     try {
-      const prId = this.prManager?.currentPR?.id;
+      const reviewId = this.prManager?.currentPR?.id;
       const headSha = this.prManager?.currentPR?.head_sha;
 
       const response = await fetch('/api/user-comment', {
@@ -346,7 +346,7 @@ class CommentManager {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          pr_id: prId,
+          review_id: reviewId,
           file: fileName,
           line_start: lineNumber,
           line_end: endLineNumber,

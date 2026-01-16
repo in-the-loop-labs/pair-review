@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 8;
+const CURRENT_SCHEMA_VERSION = 9;
 
 /**
  * Database schema SQL statements
@@ -51,7 +51,7 @@ const SCHEMA_SQL = {
   comments: `
     CREATE TABLE IF NOT EXISTS comments (
       id INTEGER PRIMARY KEY,
-      pr_id INTEGER,
+      review_id INTEGER,
       source TEXT,
       author TEXT,
 
@@ -148,10 +148,10 @@ const SCHEMA_SQL = {
  */
 const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository)',
-  'CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start)',
   'CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id)',
   'CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status)',
-  'CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(pr_id, file, is_file_level)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(review_id, file, is_file_level)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_metadata_unique ON pr_metadata(pr_number, repository)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_last_accessed ON worktrees(last_accessed_at)',
   'CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repository)',
@@ -488,6 +488,49 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 8 complete');
+  },
+
+  // Migration to version 9: rename pr_id column to review_id in comments table
+  9: (db) => {
+    console.log('Running migration to schema version 9...');
+
+    // Helper to check if column exists
+    const columnExists = (table, column) => {
+      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+      return rows ? rows.some(row => row.name === column) : false;
+    };
+
+    // Check if already migrated (review_id exists)
+    if (columnExists('comments', 'review_id')) {
+      console.log('  Column review_id already exists, skipping rename');
+    } else if (columnExists('comments', 'pr_id')) {
+      // Rename pr_id to review_id
+      db.prepare('ALTER TABLE comments RENAME COLUMN pr_id TO review_id').run();
+      console.log('  Renamed pr_id column to review_id in comments table');
+    } else {
+      console.log('  Neither pr_id nor review_id column found - table may have different schema');
+    }
+
+    // Drop old indexes if they exist and create new ones
+    // Note: SQLite doesn't have DROP INDEX IF EXISTS in all versions,
+    // so we ignore errors when dropping
+    try {
+      db.exec('DROP INDEX idx_comments_pr_file');
+    } catch (e) {
+      // Index may not exist, that's fine
+    }
+    try {
+      db.exec('DROP INDEX idx_comments_file_level');
+    } catch (e) {
+      // Index may not exist, that's fine
+    }
+
+    // Create new indexes with review_id
+    db.exec('CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_comments_file_level ON comments(review_id, file, is_file_level)');
+    console.log('  Updated indexes to use review_id');
+
+    console.log('Migration to schema version 9 complete');
   }
 };
 
@@ -1073,7 +1116,7 @@ class CommentRepository {
   /**
    * Create a line-level user comment
    * @param {Object} commentData - Comment data
-   * @param {number} commentData.pr_id - PR or review ID
+   * @param {number} commentData.review_id - Review ID (from reviews table)
    * @param {string} commentData.file - File path
    * @param {number} commentData.line_start - Starting line number
    * @param {number} [commentData.line_end] - Ending line number (defaults to line_start)
@@ -1088,7 +1131,7 @@ class CommentRepository {
    * @returns {Promise<number>} Created comment ID
    */
   async createLineComment({
-    pr_id,
+    review_id,
     file,
     line_start,
     line_end,
@@ -1102,8 +1145,8 @@ class CommentRepository {
     author = 'Current User'
   }) {
     // Validate required fields
-    if (!pr_id || !file || !line_start || !body) {
-      throw new Error('Missing required fields: pr_id, file, line_start, body');
+    if (!review_id || !file || !line_start || !body) {
+      throw new Error('Missing required fields: review_id, file, line_start, body');
     }
 
     // Validate side
@@ -1111,11 +1154,11 @@ class CommentRepository {
 
     const result = await run(this.db, `
       INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
+        review_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
         type, title, body, status, parent_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      pr_id,
+      review_id,
       'user',
       author,
       file,
@@ -1137,7 +1180,7 @@ class CommentRepository {
   /**
    * Create a file-level user comment
    * @param {Object} commentData - Comment data
-   * @param {number} commentData.pr_id - PR or review ID
+   * @param {number} commentData.review_id - Review ID (from reviews table)
    * @param {string} commentData.file - File path
    * @param {string} commentData.body - Comment body text
    * @param {string} [commentData.commit_sha] - Commit SHA
@@ -1148,7 +1191,7 @@ class CommentRepository {
    * @returns {Promise<number>} Created comment ID
    */
   async createFileComment({
-    pr_id,
+    review_id,
     file,
     body,
     commit_sha = null,
@@ -1158,17 +1201,17 @@ class CommentRepository {
     author = 'Current User'
   }) {
     // Validate required fields
-    if (!pr_id || !file || !body) {
-      throw new Error('Missing required fields: pr_id, file, body');
+    if (!review_id || !file || !body) {
+      throw new Error('Missing required fields: review_id, file, body');
     }
 
     const result = await run(this.db, `
       INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
+        review_id, source, author, file, line_start, line_end, diff_position, side, commit_sha,
         type, title, body, status, parent_id, is_file_level
       ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, 1)
     `, [
-      pr_id,
+      review_id,
       'user',
       author,
       file,
@@ -1212,12 +1255,12 @@ class CommentRepository {
     // Create user comment preserving metadata from the suggestion
     const result = await run(this.db, `
       INSERT INTO comments (
-        pr_id, source, author, file, line_start, line_end,
+        review_id, source, author, file, line_start, line_end,
         diff_position, side, commit_sha,
         type, title, body, status, parent_id, is_file_level
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      suggestion.pr_id,
+      suggestion.review_id,
       'user',
       'Current User',
       suggestion.file,
@@ -1347,12 +1390,12 @@ class CommentRepository {
   }
 
   /**
-   * Bulk delete all user comments for a PR
+   * Bulk delete all user comments for a review
    * Also dismisses any AI suggestions that were parents of the deleted comments.
-   * @param {number} prId - PR or review ID
+   * @param {number} reviewId - Review ID (from reviews table)
    * @returns {Promise<{deletedCount: number, dismissedSuggestionIds: number[]}>} Number of comments deleted and list of dismissed suggestion IDs
    */
-  async bulkDeleteComments(prId) {
+  async bulkDeleteComments(reviewId) {
     // Implementation note: We use a two-query approach (SELECT then UPDATE) because:
     // 1. SQLite's RETURNING clause was added in v3.35 (2021) and may not be available
     //    on all systems, especially older deployments
@@ -1366,16 +1409,16 @@ class CommentRepository {
     // First, find all user comments with parent_id (adopted from AI suggestions)
     const adoptedComments = await query(this.db, `
       SELECT parent_id FROM comments
-      WHERE pr_id = ? AND source = 'user' AND parent_id IS NOT NULL
+      WHERE review_id = ? AND source = 'user' AND parent_id IS NOT NULL
         AND status IN ('active', 'submitted', 'draft')
-    `, [prId]);
+    `, [reviewId]);
 
     // Soft delete all user comments
     const result = await run(this.db, `
       UPDATE comments
       SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-      WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
-    `, [prId]);
+      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+    `, [reviewId]);
 
     // Dismiss all parent AI suggestions with a single UPDATE statement
     // Note: parent_id is already guaranteed non-null by the SQL query above
@@ -1397,11 +1440,11 @@ class CommentRepository {
   }
 
   /**
-   * Get all user comments for a PR
-   * @param {number} prId - PR or review ID
+   * Get all user comments for a review
+   * @param {number} reviewId - Review ID (from reviews table)
    * @returns {Promise<Array<Object>>} Array of comment records
    */
-  async getUserComments(prId) {
+  async getUserComments(reviewId) {
     return await query(this.db, `
       SELECT
         id,
@@ -1420,9 +1463,9 @@ class CommentRepository {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
       ORDER BY file, line_start, created_at
-    `, [prId]);
+    `, [reviewId]);
   }
 }
 

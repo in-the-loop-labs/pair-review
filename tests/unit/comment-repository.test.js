@@ -25,7 +25,7 @@ function createTestDatabase() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS comments (
       id INTEGER PRIMARY KEY,
-      pr_id INTEGER,
+      review_id INTEGER,
       source TEXT,
       author TEXT,
       ai_run_id TEXT,
@@ -66,7 +66,7 @@ describe('CommentRepository', () => {
   describe('createLineComment', () => {
     it('should create a line-level user comment with all fields', async () => {
       const commentId = await commentRepo.createLineComment({
-        pr_id: 1,
+        review_id: 1,
         file: 'test.js',
         line_start: 10,
         line_end: 15,
@@ -85,7 +85,7 @@ describe('CommentRepository', () => {
 
       // Verify the comment was created correctly
       const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [commentId]);
-      expect(comment.pr_id).toBe(1);
+      expect(comment.review_id).toBe(1);
       expect(comment.file).toBe('test.js');
       expect(comment.line_start).toBe(10);
       expect(comment.line_end).toBe(15);
@@ -99,7 +99,7 @@ describe('CommentRepository', () => {
 
     it('should default line_end to line_start if not provided', async () => {
       const commentId = await commentRepo.createLineComment({
-        pr_id: 1,
+        review_id: 1,
         file: 'test.js',
         line_start: 10,
         body: 'Test comment'
@@ -111,7 +111,7 @@ describe('CommentRepository', () => {
 
     it('should default side to RIGHT if not provided', async () => {
       const commentId = await commentRepo.createLineComment({
-        pr_id: 1,
+        review_id: 1,
         file: 'test.js',
         line_start: 10,
         body: 'Test comment'
@@ -123,7 +123,7 @@ describe('CommentRepository', () => {
 
     it('should normalize side to LEFT or RIGHT', async () => {
       const commentId = await commentRepo.createLineComment({
-        pr_id: 1,
+        review_id: 1,
         file: 'test.js',
         line_start: 10,
         body: 'Test comment',
@@ -144,7 +144,7 @@ describe('CommentRepository', () => {
 
     it('should trim whitespace from body', async () => {
       const commentId = await commentRepo.createLineComment({
-        pr_id: 1,
+        review_id: 1,
         file: 'test.js',
         line_start: 10,
         body: '  Test comment  '
@@ -158,7 +158,7 @@ describe('CommentRepository', () => {
   describe('createFileComment', () => {
     it('should create a file-level user comment', async () => {
       const commentId = await commentRepo.createFileComment({
-        pr_id: 1,
+        review_id: 1,
         file: 'test.js',
         body: 'File-level comment',
         commit_sha: 'abc123',
@@ -170,7 +170,7 @@ describe('CommentRepository', () => {
       expect(commentId).toBeGreaterThan(0);
 
       const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [commentId]);
-      expect(comment.pr_id).toBe(1);
+      expect(comment.review_id).toBe(1);
       expect(comment.file).toBe('test.js');
       expect(comment.body).toBe('File-level comment');
       expect(comment.is_file_level).toBe(1);
@@ -190,7 +190,7 @@ describe('CommentRepository', () => {
 
     it('should trim whitespace from body', async () => {
       const commentId = await commentRepo.createFileComment({
-        pr_id: 1,
+        review_id: 1,
         file: 'test.js',
         body: '  File comment  '
       });
@@ -204,7 +204,7 @@ describe('CommentRepository', () => {
     it('should adopt an AI suggestion and create a user comment', async () => {
       // First create an AI suggestion
       const aiSuggestionId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, type, title)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, type, title)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'active', 'suggestion', 'AI Title']);
 
@@ -227,7 +227,7 @@ describe('CommentRepository', () => {
     it('should adopt a file-level AI suggestion', async () => {
       // Create a file-level AI suggestion
       const aiSuggestionId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, body, status, is_file_level)
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 'File-level AI suggestion', 'active', 1]);
 
@@ -244,7 +244,7 @@ describe('CommentRepository', () => {
 
     it('should throw error if suggestion is not active', async () => {
       const aiSuggestionId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'dismissed']);
 
@@ -255,7 +255,7 @@ describe('CommentRepository', () => {
   describe('updateSuggestionStatus', () => {
     it('should update suggestion status to dismissed', async () => {
       const aiSuggestionId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'active']);
 
@@ -267,7 +267,7 @@ describe('CommentRepository', () => {
 
     it('should update suggestion status to adopted with adoptedAsId', async () => {
       const aiSuggestionId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'active']);
 
@@ -280,7 +280,7 @@ describe('CommentRepository', () => {
 
     it('should restore to active and clear adopted_as_id', async () => {
       const aiSuggestionId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, adopted_as_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, adopted_as_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', 999]);
 
@@ -299,7 +299,7 @@ describe('CommentRepository', () => {
   describe('getComment', () => {
     it('should get a comment by id', async () => {
       const commentId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body)
+        INSERT INTO comments (review_id, source, file, line_start, body)
         VALUES (?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Test comment']);
 
@@ -310,7 +310,7 @@ describe('CommentRepository', () => {
 
     it('should filter by source', async () => {
       const commentId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body)
+        INSERT INTO comments (review_id, source, file, line_start, body)
         VALUES (?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 10, 'AI comment']);
 
@@ -325,7 +325,7 @@ describe('CommentRepository', () => {
   describe('updateComment', () => {
     it('should update a user comment body', async () => {
       const commentId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body)
+        INSERT INTO comments (review_id, source, file, line_start, body)
         VALUES (?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Original comment']);
 
@@ -341,7 +341,7 @@ describe('CommentRepository', () => {
 
     it('should throw error if body is empty', async () => {
       const commentId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body)
+        INSERT INTO comments (review_id, source, file, line_start, body)
         VALUES (?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Original comment']);
 
@@ -350,7 +350,7 @@ describe('CommentRepository', () => {
 
     it('should trim whitespace from updated body', async () => {
       const commentId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body)
+        INSERT INTO comments (review_id, source, file, line_start, body)
         VALUES (?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Original comment']);
 
@@ -364,7 +364,7 @@ describe('CommentRepository', () => {
   describe('deleteComment', () => {
     it('should soft delete a user comment', async () => {
       const commentId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Test comment', 'active']);
 
@@ -384,13 +384,13 @@ describe('CommentRepository', () => {
     it('should dismiss parent AI suggestion when deleting adopted comment', async () => {
       // Create an AI suggestion
       const aiSuggestionId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted']);
 
       // Create a user comment that adopted the AI suggestion
       const userCommentId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active', aiSuggestionId.lastID]);
 
@@ -409,17 +409,17 @@ describe('CommentRepository', () => {
     it('should delete multiple user comments for a PR', async () => {
       // Create multiple comments
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Comment 1', 'active']);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 20, 'Comment 2', 'active']);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [2, 'user', 'test.js', 30, 'Comment 3', 'active']);
 
@@ -429,11 +429,11 @@ describe('CommentRepository', () => {
       expect(result.dismissedSuggestionIds).toEqual([]);
 
       // Verify comments were soft deleted
-      const comments = await query(db, 'SELECT * FROM comments WHERE pr_id = ? AND status = ?', [1, 'inactive']);
+      const comments = await query(db, 'SELECT * FROM comments WHERE review_id = ? AND status = ?', [1, 'inactive']);
       expect(comments.length).toBe(2);
 
       // PR 2 comment should not be affected
-      const pr2Comment = await queryOne(db, 'SELECT * FROM comments WHERE pr_id = ?', [2]);
+      const pr2Comment = await queryOne(db, 'SELECT * FROM comments WHERE review_id = ?', [2]);
       expect(pr2Comment.status).toBe('active');
     });
 
@@ -446,13 +446,13 @@ describe('CommentRepository', () => {
     it('should dismiss parent AI suggestions when deleting adopted comments', async () => {
       // Create an AI suggestion
       const aiSuggestionId = await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted']);
 
       // Create a user comment that adopted the AI suggestion
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status, parent_id)
+        INSERT INTO comments (review_id, source, file, line_start, body, status, parent_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active', aiSuggestionId.lastID]);
 
@@ -470,22 +470,22 @@ describe('CommentRepository', () => {
   describe('getUserComments', () => {
     it('should get all active user comments for a PR', async () => {
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 10, 'Comment 1', 'active']);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 20, 'Comment 2', 'active']);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'user', 'test.js', 30, 'Comment 3', 'inactive']);
 
       await run(db, `
-        INSERT INTO comments (pr_id, source, file, line_start, body, status)
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 40, 'AI Comment', 'active']);
 

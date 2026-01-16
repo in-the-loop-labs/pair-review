@@ -44,7 +44,7 @@ function calculateStats(rows) {
  * ignoring status (adopted/dismissed).
  * Final suggestions have ai_level IS NULL (orchestrated/curated results).
  *
- * Note: The pr_id parameter must be passed twice (once for the outer WHERE,
+ * Note: The review_id parameter must be passed twice (once for the outer WHERE,
  * once for the subquery that finds the latest ai_run_id).
  *
  * @returns {string} SQL query string
@@ -52,10 +52,10 @@ function calculateStats(rows) {
 function getStatsQuery() {
   return `
     SELECT type, COUNT(*) as count FROM comments
-    WHERE pr_id = ? AND source = 'ai' AND ai_level IS NULL
+    WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL
       AND ai_run_id = (
         SELECT ai_run_id FROM comments
-        WHERE pr_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+        WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
         ORDER BY created_at DESC
         LIMIT 1
       )

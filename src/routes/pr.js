@@ -801,7 +801,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         commit_sha,
         is_file_level
       FROM comments
-      WHERE pr_id = ? AND source = 'user' AND status = 'active'
+      WHERE review_id = ? AND source = 'user' AND status = 'active'
       ORDER BY file, line_start
     `, [review.id]);
 

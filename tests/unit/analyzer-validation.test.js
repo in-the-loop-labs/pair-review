@@ -748,7 +748,7 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     expect(runCalls).toHaveLength(1);
     // Parameter indices after adding 'side' at index 9:
-    // 0:pr_id, 1:source, 2:author, 3:ai_run_id, 4:ai_level, 5:ai_confidence,
+    // 0:review_id, 1:source, 2:author, 3:ai_run_id, 4:ai_level, 5:ai_confidence,
     // 6:file, 7:line_start, 8:line_end, 9:side, 10:type, 11:title, 12:body, 13:status, 14:is_file_level
     const params = runCalls[0].params;
     expect(params[14]).toBe(1); // is_file_level should be 1

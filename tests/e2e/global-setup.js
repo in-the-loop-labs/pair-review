@@ -162,7 +162,7 @@ const SCHEMA_SQL = `
 
   CREATE TABLE IF NOT EXISTS comments (
     id INTEGER PRIMARY KEY,
-    pr_id INTEGER,
+    review_id INTEGER,
     source TEXT,
     author TEXT,
     ai_run_id TEXT,
@@ -223,7 +223,7 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository);
-  CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(pr_id, file, line_start);
+  CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(review_id, file, line_start);
   CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id);
   CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
 `;
@@ -373,7 +373,7 @@ async function globalSetup() {
       // Insert mock AI suggestions into the database
       const insertStmt = db.prepare(`
         INSERT INTO comments (
-          pr_id, source, ai_run_id, ai_level, file, line_start, line_end,
+          review_id, source, ai_run_id, ai_level, file, line_start, line_end,
           type, title, body, status, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
@@ -477,7 +477,7 @@ async function globalSetup() {
     try {
       const result = db.prepare(`
         SELECT COUNT(*) as count FROM comments c
-        JOIN pr_metadata p ON c.pr_id = p.id
+        JOIN pr_metadata p ON c.review_id = p.id
         WHERE p.pr_number = ? AND p.repository = ? AND c.source = 'ai'
       `).get(parseInt(number), `${owner}/${repo}`);
       res.json({

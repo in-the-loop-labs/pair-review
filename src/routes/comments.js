@@ -13,17 +13,17 @@ const { query, queryOne, run, CommentRepository, ReviewRepository } = require('.
 const router = express.Router();
 
 /**
- * Helper function to verify that a pr_id exists.
+ * Helper function to verify that a review_id exists.
  * Checks both reviews table (for PR and local mode) and pr_metadata table (legacy).
  * @param {Database} db - Database instance
- * @param {number} prId - The pr_id to verify
+ * @param {number} reviewId - The review_id to verify
  * @returns {Promise<boolean>} True if the ID exists in either table
  */
-async function verifyPrIdExists(db, prId) {
+async function verifyReviewIdExists(db, reviewId) {
   // First check reviews table (preferred - handles both PR and local mode)
   const review = await queryOne(db, `
     SELECT id FROM reviews WHERE id = ?
-  `, [prId]);
+  `, [reviewId]);
 
   if (review) {
     return true;
@@ -33,7 +33,7 @@ async function verifyPrIdExists(db, prId) {
   // This handles cases where old data used prMetadata.id directly
   const prMetadata = await queryOne(db, `
     SELECT id FROM pr_metadata WHERE id = ?
-  `, [prId]);
+  `, [reviewId]);
 
   return !!prMetadata;
 }
@@ -71,7 +71,7 @@ router.post('/api/ai-suggestion/:id/edit', async (req, res) => {
     }
 
     // Validate PR/review exists (checks both reviews and pr_metadata tables)
-    const exists = await verifyPrIdExists(db, suggestion.pr_id);
+    const exists = await verifyReviewIdExists(db, suggestion.review_id);
 
     if (!exists) {
       return res.status(404).json({
@@ -150,11 +150,11 @@ router.post('/api/ai-suggestion/:id/status', async (req, res) => {
  */
 router.post('/api/file-comment', async (req, res) => {
   try {
-    const { pr_id, file, body, commit_sha, parent_id, type, title } = req.body;
+    const { review_id, file, body, commit_sha, parent_id, type, title } = req.body;
 
-    if (!pr_id || !file || !body) {
+    if (!review_id || !file || !body) {
       return res.status(400).json({
-        error: 'Missing required fields: pr_id, file, body'
+        error: 'Missing required fields: review_id, file, body'
       });
     }
 
@@ -169,7 +169,7 @@ router.post('/api/file-comment', async (req, res) => {
     const db = req.app.get('db');
 
     // Verify PR/review exists (checks both reviews and pr_metadata tables)
-    const exists = await verifyPrIdExists(db, pr_id);
+    const exists = await verifyReviewIdExists(db, review_id);
 
     if (!exists) {
       return res.status(404).json({
@@ -180,7 +180,7 @@ router.post('/api/file-comment', async (req, res) => {
     // Create file-level user comment using repository
     const commentRepo = new CommentRepository(db);
     const commentId = await commentRepo.createFileComment({
-      pr_id,
+      review_id,
       file,
       body: trimmedBody,
       commit_sha,
@@ -208,18 +208,18 @@ router.post('/api/file-comment', async (req, res) => {
  */
 router.post('/api/user-comment', async (req, res) => {
   try {
-    const { pr_id, file, line_start, line_end, diff_position, side, commit_sha, body, parent_id, type, title } = req.body;
+    const { review_id, file, line_start, line_end, diff_position, side, commit_sha, body, parent_id, type, title } = req.body;
 
-    if (!pr_id || !file || !line_start || !body) {
+    if (!review_id || !file || !line_start || !body) {
       return res.status(400).json({
-        error: 'Missing required fields: pr_id, file, line_start, body'
+        error: 'Missing required fields: review_id, file, line_start, body'
       });
     }
 
     const db = req.app.get('db');
 
     // Verify PR/review exists (checks both reviews and pr_metadata tables)
-    const exists = await verifyPrIdExists(db, pr_id);
+    const exists = await verifyReviewIdExists(db, review_id);
 
     if (!exists) {
       return res.status(404).json({
@@ -230,7 +230,7 @@ router.post('/api/user-comment', async (req, res) => {
     // Create user comment using repository
     const commentRepo = new CommentRepository(db);
     const commentId = await commentRepo.createLineComment({
-      pr_id,
+      review_id,
       file,
       line_start,
       line_end,
@@ -305,7 +305,7 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
       ORDER BY file, line_start, created_at
     `, [review.id]);
 
@@ -354,7 +354,7 @@ router.get('/api/pr/:id/user-comments', async (req, res) => {
         created_at,
         updated_at
       FROM comments
-      WHERE pr_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
       ORDER BY file, line_start, created_at
     `, [prId]);
 
