@@ -1554,6 +1554,8 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
       const latestRun = await analysisRunRepo.getLatestByReviewId(reviewId);
       analysisHasRun = !!(latestRun || hasSuggestions);
     } catch (e) {
+      // Log the error at debug level before falling back
+      logger.debug('analysis_runs query failed in local mode, falling back to hasSuggestions:', e.message);
       // Fall back to using hasSuggestions if analysis_runs table doesn't exist
       analysisHasRun = hasSuggestions;
     }

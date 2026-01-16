@@ -587,6 +587,8 @@ function runVersionedMigrations(db) {
 async function initializeDatabase() {
   try {
     const db = new Database(DB_PATH);
+    // Enable foreign key enforcement (required for CASCADE to work)
+    db.pragma('foreign_keys = ON');
     setupSchema(db);
     return db;
   } catch (error) {
@@ -598,6 +600,8 @@ async function initializeDatabase() {
       await recreateDatabase();
       // Retry connection
       const newDb = new Database(DB_PATH);
+      // Enable foreign key enforcement (required for CASCADE to work)
+      newDb.pragma('foreign_keys = ON');
       setupSchema(newDb);
       return newDb;
     }
@@ -1878,18 +1882,8 @@ class AnalysisRunRepository {
       VALUES (?, ?, ?, ?, ?, 'running')
     `, [id, reviewId, provider, model, customInstructions]);
 
-    return {
-      id,
-      review_id: reviewId,
-      provider,
-      model,
-      custom_instructions: customInstructions,
-      status: 'running',
-      total_suggestions: 0,
-      files_analyzed: 0,
-      started_at: new Date().toISOString(),
-      completed_at: null
-    };
+    // Query back the inserted row to return actual database values (including timestamps)
+    return await this.getById(id);
   }
 
   /**

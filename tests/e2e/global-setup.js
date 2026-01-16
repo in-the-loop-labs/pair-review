@@ -222,10 +222,27 @@ const SCHEMA_SQL = `
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS analysis_runs (
+    id TEXT PRIMARY KEY,
+    review_id INTEGER NOT NULL,
+    provider TEXT,
+    model TEXT,
+    custom_instructions TEXT,
+    summary TEXT,
+    status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+    total_suggestions INTEGER DEFAULT 0,
+    files_analyzed INTEGER DEFAULT 0,
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP,
+    FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_reviews_pr ON reviews(pr_number, repository);
-  CREATE INDEX IF NOT EXISTS idx_comments_pr_file ON comments(review_id, file, line_start);
+  CREATE INDEX IF NOT EXISTS idx_comments_review_file ON comments(review_id, file, line_start);
   CREATE INDEX IF NOT EXISTS idx_comments_ai_run ON comments(ai_run_id);
   CREATE INDEX IF NOT EXISTS idx_comments_status ON comments(status);
+  CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status);
 `;
 
 let server = null;
@@ -265,6 +282,12 @@ function insertTestData() {
     INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
     VALUES (1, 'test-owner/test-repo', 'Test PR for E2E', 'Test description', 'testuser', 'main', 'feature-test', ?)
   `).run(prData);
+
+  // Insert review record (needed for comments to work - PR API returns review.id)
+  db.prepare(`
+    INSERT INTO reviews (pr_number, repository, status)
+    VALUES (1, 'test-owner/test-repo', 'draft')
+  `).run();
 
   // Insert worktree
   const now = new Date().toISOString();

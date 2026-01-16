@@ -137,3 +137,7 @@ Test structure:
 ### Testing Practices
 - NEVER duplicate production code in tests. Always import and test the actual implementation.
 - If production code is structured in a way that makes it hard to test (e.g., browser-only IIFEs), refactor the production code to be testable rather than duplicating it.
+- When adding database migrations or new tables, ALWAYS update the test schemas in:
+  - `tests/e2e/global-setup.js` (E2E test database)
+  - `tests/integration/routes.test.js` (Integration test database)
+  - Ensure index names match the production schema exactly

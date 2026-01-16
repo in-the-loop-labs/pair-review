@@ -894,6 +894,8 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       // Analysis has been run if there's an analysis_run record OR if there are any AI suggestions
       analysisHasRun = !!(latestRun || hasSuggestions);
     } catch (e) {
+      // Log the error at debug level before attempting fallback
+      logger.debug('analysis_runs query failed, falling back to pr_metadata:', e.message);
       // If analysis_runs table doesn't exist yet, fall back to pr_metadata.last_ai_run_id
       try {
         const runCheck = await queryOne(db, `
@@ -902,6 +904,7 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
         `, [prMetadata.id]);
         analysisHasRun = !!(runCheck?.last_ai_run_id || hasSuggestions);
       } catch (fallbackError) {
+        logger.debug('pr_metadata fallback also failed:', fallbackError.message);
         // Fall back to using hasSuggestions if both fail
         analysisHasRun = hasSuggestions;
       }

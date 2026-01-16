@@ -1474,16 +1474,19 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
   }
 
   /**
-   * Get AI suggestions for a PR
+   * Get AI suggestions for a review (PR or local)
+   * @param {number} reviewId - Review ID from the reviews table
+   * @param {string} [runId] - Optional AI run ID to filter by
+   * @returns {Promise<Array>} Array of AI suggestion comments
    */
-  async getSuggestions(prId, runId = null) {
+  async getSuggestions(reviewId, runId = null) {
     const { query } = require('../database');
 
     let sql = `
       SELECT * FROM comments
       WHERE review_id = ? AND source = 'ai'
     `;
-    const params = [prId];
+    const params = [reviewId];
 
     if (runId) {
       sql += ' AND ai_run_id = ?';
