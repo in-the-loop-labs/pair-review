@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, beforeEach } from 'vitest';
-import Database from 'better-sqlite3';
+import { createTestDatabase } from '../utils/schema.js';
 
 const database = require('../../src/database.js');
 const {
@@ -9,50 +9,6 @@ const {
   run,
   CommentRepository,
 } = database;
-
-/**
- * Create an in-memory SQLite database with the proper schema for testing.
- * Uses better-sqlite3 for synchronous operations.
- */
-function createTestDatabase() {
-  const db = new Database(':memory:');
-
-  // Disable foreign keys to match legacy sqlite3 behavior
-  // (sqlite3 has foreign keys disabled by default, better-sqlite3 has them enabled)
-  db.pragma('foreign_keys = OFF');
-
-  // Create comments table with is_file_level column
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS comments (
-      id INTEGER PRIMARY KEY,
-      review_id INTEGER,
-      source TEXT,
-      author TEXT,
-      ai_run_id TEXT,
-      ai_level INTEGER,
-      ai_confidence REAL,
-      file TEXT,
-      line_start INTEGER,
-      line_end INTEGER,
-      diff_position INTEGER,
-      side TEXT DEFAULT 'RIGHT' CHECK(side IN ('LEFT', 'RIGHT')),
-      commit_sha TEXT,
-      type TEXT,
-      title TEXT,
-      body TEXT,
-      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
-      adopted_as_id INTEGER,
-      parent_id INTEGER,
-      is_file_level INTEGER DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
-      FOREIGN KEY (parent_id) REFERENCES comments(id)
-    )
-  `);
-
-  return db;
-}
 
 describe('CommentRepository', () => {
   let db;
@@ -271,18 +227,30 @@ describe('CommentRepository', () => {
         VALUES (?, ?, ?, ?, ?, ?)
       `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'active']);
 
-      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'adopted', 999);
+      // Create a real user comment to use as the adopted_as_id (foreign key constraint)
+      const userCommentId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active']);
+
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'adopted', userCommentId.lastID);
 
       const suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [aiSuggestionId.lastID]);
       expect(suggestion.status).toBe('adopted');
-      expect(suggestion.adopted_as_id).toBe(999);
+      expect(suggestion.adopted_as_id).toBe(userCommentId.lastID);
     });
 
     it('should restore to active and clear adopted_as_id', async () => {
+      // Create a user comment first to satisfy the foreign key constraint
+      const userCommentId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [1, 'user', 'test.js', 10, 'Adopted comment', 'active']);
+
       const aiSuggestionId = await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, body, status, adopted_as_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', 999]);
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'adopted', userCommentId.lastID]);
 
       await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'active');
 
