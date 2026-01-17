@@ -59,7 +59,6 @@ const SCHEMA_SQL = {
       is_file_level INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
       FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
       FOREIGN KEY (parent_id) REFERENCES comments(id)
     )
