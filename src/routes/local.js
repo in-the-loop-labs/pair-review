@@ -1216,22 +1216,82 @@ router.delete('/api/local/:reviewId/file-comment/:commentId', async (req, res) =
       });
     }
 
-    // Soft delete by setting status to inactive
-    await run(db, `
-      UPDATE comments
-      SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [commentId]);
+    // Use CommentRepository to delete (also dismisses parent AI suggestion if applicable)
+    const commentRepo = new CommentRepository(db);
+    const result = await commentRepo.deleteComment(commentId);
 
     res.json({
       success: true,
-      message: 'File-level comment deleted successfully'
+      message: 'File-level comment deleted successfully',
+      dismissedSuggestionId: result.dismissedSuggestionId
     });
 
   } catch (error) {
     console.error('Error deleting file-level comment:', error);
     res.status(500).json({
       error: 'Failed to delete comment'
+    });
+  }
+});
+
+/**
+ * Update AI suggestion status for a local review
+ * Sets status to 'adopted', 'dismissed', or 'active' (restored)
+ */
+router.post('/api/local/:reviewId/ai-suggestion/:suggestionId/status', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const suggestionId = parseInt(req.params.suggestionId);
+    const { status } = req.body;
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    if (isNaN(suggestionId) || suggestionId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid suggestion ID'
+      });
+    }
+
+    if (!['adopted', 'dismissed', 'active'].includes(status)) {
+      return res.status(400).json({
+        error: 'Invalid status. Must be "adopted", "dismissed", or "active"'
+      });
+    }
+
+    const db = req.app.get('db');
+    const commentRepo = new CommentRepository(db);
+
+    // Get the suggestion and verify it belongs to this review
+    const suggestion = await commentRepo.getComment(suggestionId, 'ai');
+
+    if (!suggestion) {
+      return res.status(404).json({
+        error: 'AI suggestion not found'
+      });
+    }
+
+    if (suggestion.review_id !== reviewId) {
+      return res.status(403).json({
+        error: 'Suggestion does not belong to this review'
+      });
+    }
+
+    // Update suggestion status using repository
+    await commentRepo.updateSuggestionStatus(suggestionId, status);
+
+    res.json({
+      success: true,
+      status
+    });
+
+  } catch (error) {
+    console.error('Error updating AI suggestion status:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to update suggestion status'
     });
   }
 });

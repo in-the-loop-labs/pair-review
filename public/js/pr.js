@@ -959,9 +959,12 @@ class PRManager {
 
   /**
    * Get line number from a row - delegate to LineTracker
+   * @param {Element} row - Table row element
+   * @param {string} [side] - Optional side ('LEFT' or 'RIGHT') to get specific coordinate system
+   * @returns {number|null} The line number or null if not found
    */
-  getLineNumber(row) {
-    return this.lineTracker.getLineNumber(row);
+  getLineNumber(row, side) {
+    return this.lineTracker.getLineNumber(row, side);
   }
 
   /**
@@ -1807,9 +1810,11 @@ class PRManager {
         window.aiPanel.removeComment(commentId);
       }
 
-      // If a parent suggestion was dismissed, update its UI state
-      if (apiResult.dismissedSuggestionId) {
-        this.updateDismissedSuggestionUI(apiResult.dismissedSuggestionId);
+      // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
+      // Update AIPanel to show the suggestion as 'dismissed' (matching its visual state).
+      // User can click "Show" to restore it to active state if they want to re-adopt.
+      if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
+        window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
       }
     } catch (error) {
       console.error('Error deleting comment:', error);
@@ -1939,9 +1944,17 @@ class PRManager {
         const fileElement = this.findFileElement(comment.file);
         if (!fileElement) return;
 
+        // Use the comment's side to determine which coordinate system to search in
+        // LEFT side = OLD coordinates (deleted lines or context lines in OLD coords)
+        // RIGHT side = NEW coordinates (added lines or context lines in NEW coords)
+        const side = comment.side || 'RIGHT';
+
         const lineRows = fileElement.querySelectorAll('tr');
         for (const row of lineRows) {
-          const lineNum = this.getLineNumber(row);
+          // Pass side to getLineNumber() to get the correct coordinate system
+          // This allows context lines (which have BOTH old and new line numbers) to be found
+          // when the comment was placed on a LEFT-side line (old coordinate)
+          const lineNum = this.getLineNumber(row, side);
           if (lineNum === comment.line_start) {
             this.displayUserComment(comment, row);
             break;
@@ -2071,7 +2084,27 @@ class PRManager {
       if (!suggestionDiv) throw new Error('Suggestion element not found');
 
       const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
-      const { suggestionRow, lineNumber, fileName, diffPosition, side } = this.getFileAndLineInfo(suggestionDiv);
+      const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
+
+      // File-level suggestions use FileCommentManager for edit-and-adopt
+      if (isFileLevel) {
+        if (!this.fileCommentManager) throw new Error('FileCommentManager not initialized');
+        const zone = this.fileCommentManager.findZoneForFile(fileName);
+        if (!zone) throw new Error(`Could not find file comments zone for ${fileName}`);
+
+        // Build suggestion object for FileCommentManager
+        const suggestion = {
+          id: suggestionId,
+          file: fileName,
+          body: suggestionText,
+          type: suggestionType,
+          title: suggestionTitle
+        };
+
+        // Use editAndAdoptAISuggestion which opens an edit form
+        this.fileCommentManager.editAndAdoptAISuggestion(zone, suggestion);
+        return;
+      }
 
       await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
 
@@ -2113,7 +2146,26 @@ class PRManager {
       if (!suggestionDiv) throw new Error('Suggestion element not found');
 
       const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
-      const { suggestionRow, lineNumber, fileName, diffPosition, side } = this.getFileAndLineInfo(suggestionDiv);
+      const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
+
+      // File-level suggestions use FileCommentManager for adoption
+      if (isFileLevel) {
+        if (!this.fileCommentManager) throw new Error('FileCommentManager not initialized');
+        const zone = this.fileCommentManager.findZoneForFile(fileName);
+        if (!zone) throw new Error(`Could not find file comments zone for ${fileName}`);
+
+        // Build suggestion object for FileCommentManager
+        const suggestion = {
+          id: suggestionId,
+          file: fileName,
+          body: suggestionText,
+          type: suggestionType,
+          title: suggestionTitle
+        };
+
+        await this.fileCommentManager.adoptAISuggestion(zone, suggestion);
+        return;
+      }
 
       await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
 

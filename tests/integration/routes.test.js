@@ -3223,6 +3223,47 @@ describe('Local Review File-Level Comments', () => {
 
       expect(comment.status).toBe('inactive');
     });
+
+    it('should return dismissedSuggestionId when deleting an adopted file-level comment', async () => {
+      // Create a file-level AI suggestion
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 'AI file-level suggestion', 'adopted', 1, 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      // Create a user file-level comment adopted from the AI suggestion
+      const commentResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, body, status, parent_id, is_file_level)
+        VALUES (?, 'user', 'test.js', 'Adopted suggestion comment', 'active', ?, 1)
+      `, [reviewId, suggestionId]);
+
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/file-comment/${commentResult.lastID}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.dismissedSuggestionId).toBe(suggestionId);
+
+      // Verify the AI suggestion status was changed to dismissed
+      const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestionId]);
+      expect(suggestion.status).toBe('dismissed');
+    });
+
+    it('should return null dismissedSuggestionId when deleting a non-adopted file-level comment', async () => {
+      // Create a file-level user comment without a parent AI suggestion
+      const commentResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, body, status, is_file_level)
+        VALUES (?, 'user', 'test.js', 'User file-level comment', 'active', 1)
+      `, [reviewId]);
+
+      const response = await request(app)
+        .delete(`/api/local/${reviewId}/file-comment/${commentResult.lastID}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.dismissedSuggestionId).toBeNull();
+    });
   });
 
   describe('GET /api/local/:reviewId/user-comments', () => {
@@ -3638,6 +3679,164 @@ describe('Local Routes Dismissal Response Structure', () => {
         .delete('/api/local/invalid/user-comments');
 
       expect(response.status).toBe(400);
+    });
+  });
+});
+
+// ============================================================================
+// Local Review AI Suggestion Status Endpoint Tests
+// ============================================================================
+
+describe('Local Review AI Suggestion Status Endpoint', () => {
+  let app, db, reviewId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    // Create a local review
+    const reviewResult = await run(db, `
+      INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, [null, 'test-repo', 'draft', 'local', '/tmp/test-repo', 'abc123']);
+    reviewId = reviewResult.lastID;
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('POST /api/local/:reviewId/ai-suggestion/:suggestionId/status', () => {
+    it('should update suggestion status to adopted', async () => {
+      // Create an AI suggestion
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'active', 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .send({ status: 'adopted' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.status).toBe('adopted');
+
+      // Verify the status was updated in the database
+      const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestionId]);
+      expect(suggestion.status).toBe('adopted');
+    });
+
+    it('should update suggestion status to dismissed', async () => {
+      // Create an AI suggestion
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'active', 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .send({ status: 'dismissed' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.status).toBe('dismissed');
+
+      // Verify the status was updated in the database
+      const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestionId]);
+      expect(suggestion.status).toBe('dismissed');
+    });
+
+    it('should update suggestion status to active (restore)', async () => {
+      // Create a dismissed AI suggestion
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'dismissed', 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .send({ status: 'active' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.status).toBe('active');
+
+      // Verify the status was updated in the database
+      const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestionId]);
+      expect(suggestion.status).toBe('active');
+    });
+
+    it('should return 404 when suggestion not found', async () => {
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/ai-suggestion/9999/status`)
+        .send({ status: 'adopted' });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('AI suggestion not found');
+    });
+
+    it('should return 403 when suggestion belongs to different review', async () => {
+      // Create another review
+      const otherReviewResult = await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'other-repo', 'draft', 'local', '/tmp/other-repo', 'def456']);
+      const otherReviewId = otherReviewResult.lastID;
+
+      // Create an AI suggestion for the other review
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'active', 'run-1')
+      `, [otherReviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      // Try to update the suggestion using the wrong review ID
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .send({ status: 'adopted' });
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain('Suggestion does not belong to this review');
+    });
+
+    it('should return 400 for invalid status value', async () => {
+      // Create an AI suggestion
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'AI suggestion', 'active', 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .send({ status: 'invalid-status' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid status');
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .post('/api/local/invalid/ai-suggestion/1/status')
+        .send({ status: 'adopted' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return 400 for invalid suggestion ID', async () => {
+      const response = await request(app)
+        .post(`/api/local/${reviewId}/ai-suggestion/invalid/status`)
+        .send({ status: 'adopted' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid suggestion ID');
     });
   });
 });

@@ -20,15 +20,59 @@ class LineTracker {
   /**
    * Get the line number from a diff row
    * Handles both added/context lines (new line numbers) and deleted lines (old line numbers).
+   *
+   * When side is specified:
+   * - 'LEFT': Returns the OLD line number (for deleted lines or context lines in OLD coordinate system)
+   * - 'RIGHT': Returns the NEW line number (for added lines or context lines in NEW coordinate system)
+   *
+   * When side is not specified (default behavior):
+   * - Returns dataset.lineNumber which is the primary line number for the row's type
+   * - For deleted lines: returns oldNumber
+   * - For added/context lines: returns newNumber
+   *
    * Priority order:
-   * 1. dataset.lineNumber - most reliable, set during renderDiffLine
+   * 1. dataset.lineNumber (or oldLineNumber/newLineNumber based on side)
    * 2. .line-num2: new line numbers for added/context lines
    * 3. .line-num1: old line numbers for deleted lines
    * 4. Nested selectors as fallback
    * @param {Element} row - Table row element
+   * @param {string} [side] - Optional side ('LEFT' or 'RIGHT') to get specific coordinate system
    * @returns {number|null} The line number or null if not found
    */
-  getLineNumber(row) {
+  getLineNumber(row, side) {
+    // If a specific side is requested, use the appropriate line number
+    if (side === 'LEFT') {
+      // LEFT side: use old line number
+      // Check data-old-line-number first (available on deleted lines and context lines)
+      if (row.dataset?.oldLineNumber) {
+        const oldNum = parseInt(row.dataset.oldLineNumber);
+        if (!isNaN(oldNum)) return oldNum;
+      }
+      // Fallback to .line-num1 span
+      const lineNum1 = row.querySelector('.line-num1')?.textContent?.trim();
+      if (lineNum1) return parseInt(lineNum1);
+      return null;
+    }
+
+    if (side === 'RIGHT') {
+      // RIGHT side: use new line number
+      // Check data-new-line-number first (available on added lines and context lines)
+      if (row.dataset?.newLineNumber) {
+        const newNum = parseInt(row.dataset.newLineNumber);
+        if (!isNaN(newNum)) return newNum;
+      }
+      // Check data-line-number as fallback (for added/context lines, this is the new number)
+      if (row.dataset?.lineNumber && row.dataset?.side === 'RIGHT') {
+        const datasetNum = parseInt(row.dataset.lineNumber);
+        if (!isNaN(datasetNum)) return datasetNum;
+      }
+      // Fallback to .line-num2 span
+      const lineNum2 = row.querySelector('.line-num2')?.textContent?.trim();
+      if (lineNum2) return parseInt(lineNum2);
+      return null;
+    }
+
+    // Default behavior (no side specified): return the row's primary line number
     // Primary: use dataset.lineNumber if available (set during renderDiffLine)
     // This correctly handles both deleted lines (uses oldNumber) and added/context lines (uses newNumber)
     if (row.dataset?.lineNumber) {

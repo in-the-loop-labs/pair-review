@@ -99,7 +99,7 @@ class FileCommentManager {
 
       case 'update':
         endpoint = isLocal
-          ? `/api/local/${prId}/file-comment/${options.commentId}`
+          ? `/api/local/${reviewId}/file-comment/${options.commentId}`
           : `/api/user-comment/${options.commentId}`;
 
         requestBody = { body: options.body };
@@ -107,7 +107,7 @@ class FileCommentManager {
 
       case 'delete':
         endpoint = isLocal
-          ? `/api/local/${prId}/file-comment/${options.commentId}`
+          ? `/api/local/${reviewId}/file-comment/${options.commentId}`
           : `/api/user-comment/${options.commentId}`;
 
         // No body needed for DELETE
@@ -386,6 +386,17 @@ class FileCommentManager {
     // Include ai-type-${type} class for proper category styling (especially praise badge)
     card.className = `file-comment-card ai-suggestion ai-type-${suggestion.type || 'suggestion'}`;
     card.dataset.suggestionId = suggestion.id;
+    // Store original markdown body for adopt functionality via extractSuggestionData
+    // Use JSON.stringify to preserve newlines and special characters (matches line-level suggestions)
+    card.dataset.originalBody = JSON.stringify(suggestion.body || '');
+
+    // Store target info on the card for reliable retrieval in getFileAndLineInfo
+    // File-level suggestions don't have line numbers, just the file name
+    card.dataset.fileName = suggestion.file || '';
+    card.dataset.lineNumber = '';
+    card.dataset.side = '';
+    card.dataset.diffPosition = '';
+    card.dataset.isFileLevel = 'true';
 
     // Check if this suggestion was adopted by looking at status or user comments with matching parent_id
     // This mirrors the behavior in suggestion-manager.js for line-level suggestions
@@ -464,7 +475,7 @@ class FileCommentManager {
     adoptBtn.addEventListener('click', () => this.adoptAISuggestion(zone, suggestion));
     dismissBtn.addEventListener('click', () => this.dismissAISuggestion(zone, suggestion.id));
     editBtn.addEventListener('click', () => this.editAndAdoptAISuggestion(zone, suggestion));
-    restoreBtn.addEventListener('click', () => this.restoreAISuggestion(zone, suggestion.id));
+    restoreBtn.addEventListener('click', async () => await this.restoreAISuggestion(zone, suggestion.id));
 
     // Insert at the beginning (AI suggestions shown first)
     const firstUserComment = container.querySelector('.file-comment-card:not(.ai-suggestion)');
@@ -509,8 +520,9 @@ class FileCommentManager {
 
       const createResult = await createResponse.json();
 
-      // Update the AI suggestion status to adopted
-      const statusResponse = await fetch(`/api/ai-suggestion/${suggestion.id}/status`, {
+      // Update the AI suggestion status to adopted (mode-aware endpoint)
+      const statusEndpoint = this._getSuggestionStatusEndpoint(suggestion.id);
+      const statusResponse = await fetch(statusEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'adopted' })
@@ -575,8 +587,9 @@ class FileCommentManager {
    */
   async dismissAISuggestion(zone, suggestionId) {
     try {
-      // Update the AI suggestion status to dismissed
-      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+      // Update the AI suggestion status to dismissed (mode-aware endpoint)
+      const endpoint = this._getSuggestionStatusEndpoint(suggestionId);
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'dismissed' })
@@ -615,10 +628,39 @@ class FileCommentManager {
    * @param {HTMLElement} zone - The file comments zone
    * @param {number} suggestionId - The suggestion ID
    */
-  restoreAISuggestion(zone, suggestionId) {
-    const card = zone.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-    if (card) {
-      card.classList.remove('collapsed');
+  async restoreAISuggestion(zone, suggestionId) {
+    try {
+      // Use shared helper for mode-aware endpoint
+      const endpoint = this._getSuggestionStatusEndpoint(suggestionId);
+
+      // Call API to update suggestion status to active
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' })
+      });
+
+      if (!response.ok) throw new Error('Failed to restore suggestion');
+
+      // Update the UI - remove collapsed state
+      const card = zone.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      if (card) {
+        card.classList.remove('collapsed');
+      }
+
+      // Update finding status in AI Panel (mark suggestion as active)
+      if (window.aiPanel?.updateFindingStatus) {
+        window.aiPanel.updateFindingStatus(suggestionId, 'active');
+      }
+
+      // Update comment count (for consistency with dismissAISuggestion)
+      this.updateCommentCount(zone);
+
+    } catch (error) {
+      console.error('Error restoring suggestion:', error);
+      if (window.toast) {
+        window.toast.showError('Failed to restore suggestion');
+      }
     }
   }
 
@@ -729,8 +771,9 @@ class FileCommentManager {
 
       const createResult = await createResponse.json();
 
-      // Update the AI suggestion status to adopted
-      const statusResponse = await fetch(`/api/ai-suggestion/${suggestion.id}/status`, {
+      // Update the AI suggestion status to adopted (mode-aware endpoint)
+      const statusEndpoint = this._getSuggestionStatusEndpoint(suggestion.id);
+      const statusResponse = await fetch(statusEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'adopted' })
@@ -911,6 +954,8 @@ class FileCommentManager {
 
       if (!response.ok) throw new Error('Failed to delete comment');
 
+      const apiResult = await response.json();
+
       // Remove the card
       const card = zone.querySelector(`[data-comment-id="${commentId}"]`);
       if (card) {
@@ -924,12 +969,41 @@ class FileCommentManager {
         this.prManager.updateCommentCount();
       }
 
+      // Notify AI Panel about the deleted comment
+      if (window.aiPanel?.removeComment) {
+        window.aiPanel.removeComment(commentId);
+      }
+
+      // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
+      // Update AIPanel to show the suggestion as 'dismissed' (matching its visual state).
+      // User can click "Show" to restore it to active state if they want to re-adopt.
+      if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
+        window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
+      }
+
     } catch (error) {
       console.error('Error deleting comment:', error);
       if (window.toast) {
         window.toast.showError('Failed to delete comment');
       }
     }
+  }
+
+  /**
+   * Get the appropriate API endpoint for updating AI suggestion status
+   * Handles both local and PR modes.
+   * @private
+   * @param {number|string} suggestionId - The suggestion ID
+   * @returns {string} The API endpoint URL
+   */
+  _getSuggestionStatusEndpoint(suggestionId) {
+    const reviewId = this.prManager?.currentPR?.id;
+    const reviewType = this.prManager?.currentPR?.reviewType;
+    const isLocal = reviewType === 'local';
+
+    return isLocal
+      ? `/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`
+      : `/api/ai-suggestion/${suggestionId}/status`;
   }
 
   /**
@@ -1174,3 +1248,8 @@ class FileCommentManager {
 
 // Make FileCommentManager available globally
 window.FileCommentManager = FileCommentManager;
+
+// Export for CommonJS testing environments
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { FileCommentManager };
+}

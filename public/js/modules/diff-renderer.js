@@ -175,6 +175,12 @@ class DiffRenderer {
       if (diffPosition !== undefined) {
         row.dataset.diffPosition = diffPosition;
       }
+      // For context lines (unmodified), also store the old line number
+      // Context lines exist in BOTH coordinate systems: OLD (left) and NEW (right)
+      // This allows findLine() to locate context lines when searching by LEFT side
+      if (line.type === 'context' && line.oldNumber) {
+        row.dataset.oldLineNumber = line.oldNumber;
+      }
     }
 
     // Line numbers
