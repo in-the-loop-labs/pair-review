@@ -460,4 +460,108 @@ describe('PRManager Suggestion Status', () => {
       expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledWith(suggestionId, 'dismissed');
     });
   });
+
+  describe('deleteUserComment', () => {
+    let prManager;
+    let mockCommentRow;
+
+    beforeEach(() => {
+      // Setup window with standard mocks for delete tests
+      global.window = {
+        aiPanel: {
+          updateFindingStatus: vi.fn(),
+          removeComment: vi.fn()
+        },
+        confirmDialog: {
+          show: vi.fn().mockResolvedValue('confirm')
+        }
+      };
+
+      // Create PRManager instance with updateCommentCount mock
+      prManager = createTestPRManager();
+      prManager.updateCommentCount = vi.fn();
+
+      // Setup mock comment row
+      mockCommentRow = { remove: vi.fn() };
+      document.querySelector.mockReturnValue(mockCommentRow);
+    });
+
+    it('should update AIPanel with active status when deleting comment with parent_id', async () => {
+      const commentId = 'test-comment-123';
+      const parentSuggestionId = 'test-suggestion-456';
+
+      // Mock successful DELETE response with dismissedSuggestionId
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          success: true,
+          dismissedSuggestionId: parentSuggestionId
+        })
+      });
+
+      await prManager.deleteUserComment(commentId);
+
+      // Verify API was called with DELETE method
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/user-comment/${commentId}`,
+        { method: 'DELETE' }
+      );
+
+      // Verify AIPanel removeComment was called
+      expect(window.aiPanel.removeComment).toHaveBeenCalledWith(commentId);
+
+      // Verify AIPanel updateFindingStatus was called with 'dismissed' status
+      // When deleting a comment that adopted a suggestion, the suggestion card
+      // is still collapsed/dismissed in the diff view. User can click "Show" to restore.
+      expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledWith(parentSuggestionId, 'dismissed');
+    });
+
+    it('should not update AIPanel findingStatus when no parent_id exists', async () => {
+      const commentId = 'test-comment-no-parent';
+
+      // Mock successful DELETE response WITHOUT dismissedSuggestionId
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          success: true
+          // No dismissedSuggestionId - comment had no parent
+        })
+      });
+
+      await prManager.deleteUserComment(commentId);
+
+      // AIPanel removeComment should still be called
+      expect(window.aiPanel.removeComment).toHaveBeenCalledWith(commentId);
+
+      // But updateFindingStatus should NOT be called since no parent suggestion
+      expect(window.aiPanel.updateFindingStatus).not.toHaveBeenCalled();
+    });
+
+    it('should handle missing AIPanel gracefully when deleting comment', async () => {
+      window.aiPanel = null;
+
+      const commentId = 'test-comment-no-panel';
+      const parentSuggestionId = 'test-suggestion-789';
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          success: true,
+          dismissedSuggestionId: parentSuggestionId
+        })
+      });
+
+      // Should not throw even without aiPanel
+      await expect(prManager.deleteUserComment(commentId)).resolves.not.toThrow();
+    });
+
+    it('should not proceed with deletion when user cancels confirmation', async () => {
+      window.confirmDialog.show.mockResolvedValue('cancel'); // User cancels
+
+      await prManager.deleteUserComment('test-comment');
+
+      // API should NOT be called
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
 });

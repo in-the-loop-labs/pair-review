@@ -185,9 +185,17 @@ class LocalManager {
           const fileElement = manager.findFileElement(comment.file);
           if (!fileElement) return;
 
+          // Use the comment's side to determine which coordinate system to search in
+          // LEFT side = OLD coordinates (deleted lines or context lines in OLD coords)
+          // RIGHT side = NEW coordinates (added lines or context lines in NEW coords)
+          const side = comment.side || 'RIGHT';
+
           const lineRows = fileElement.querySelectorAll('tr');
           for (const row of lineRows) {
-            const lineNum = manager.getLineNumber(row);
+            // Pass side to getLineNumber() to get the correct coordinate system
+            // This allows context lines (which have BOTH old and new line numbers) to be found
+            // when the comment was placed on a LEFT-side line (old coordinate)
+            const lineNum = manager.getLineNumber(row, side);
             if (lineNum === comment.line_start) {
               manager.displayUserComment(comment, row);
               break;
@@ -547,9 +555,11 @@ class LocalManager {
             window.aiPanel.removeComment(commentId);
           }
 
-          // If a parent suggestion was dismissed, update its UI state
-          if (apiResult.dismissedSuggestionId && manager.updateDismissedSuggestionUI) {
-            manager.updateDismissedSuggestionUI(apiResult.dismissedSuggestionId);
+          // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
+          // Update AIPanel to show the suggestion as 'dismissed' (matching its visual state).
+          // User can click "Show" to restore it to active state if they want to re-adopt.
+          if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
+            window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
           }
         } catch (error) {
           console.error('Error deleting comment:', error);

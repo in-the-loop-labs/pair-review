@@ -106,10 +106,15 @@ class SuggestionManager {
       for (let checkLine = line; checkLine <= lineEnd; checkLine++) {
         const lineRows = fileElement.querySelectorAll('tr');
         for (const row of lineRows) {
-          const lineNum = lineTracker ? lineTracker.getLineNumber(row) : null;
-          const rowSide = row.dataset.side || 'RIGHT';
-          // Match both line number AND side to correctly identify visible lines
-          if (lineNum === checkLine && rowSide === side) {
+          // Pass side to getLineNumber() to get the correct coordinate system
+          // For LEFT side: returns old line number (deleted lines or context lines in OLD coords)
+          // For RIGHT side: returns new line number (added lines or context lines in NEW coords)
+          // Context lines have BOTH coordinates, so they can match either side when queried appropriately
+          const lineNum = lineTracker ? lineTracker.getLineNumber(row, side) : null;
+          // Match the line number returned for the requested side
+          // Note: We no longer need to check rowSide separately because getLineNumber(row, side)
+          // already returns the appropriate line number for the requested coordinate system
+          if (lineNum === checkLine) {
             anyLineVisible = true;
             break;
           }
@@ -263,16 +268,28 @@ class SuggestionManager {
         for (const row of lineRows) {
           if (suggestionInserted) break;
 
-          const lineNum = lineTracker ? lineTracker.getLineNumber(row) : null;
-          // Get the row's side from dataset, default to 'RIGHT' for backwards compatibility
-          const rowSide = row.dataset.side || 'RIGHT';
+          // Pass side to getLineNumber() to get the correct coordinate system
+          // This allows context lines (which have BOTH old and new line numbers) to be found
+          // when searching by either LEFT (old) or RIGHT (new) side
+          const lineNum = lineTracker ? lineTracker.getLineNumber(row, side) : null;
 
-          // Match both line number AND side to correctly place suggestions
-          // This prevents placing a suggestion for a deleted line on an added line with the same number
-          if (lineNum === line && rowSide === side) {
+          // Match the line number returned for the requested side
+          // For context lines, getLineNumber(row, 'LEFT') returns oldLineNumber
+          // and getLineNumber(row, 'RIGHT') returns newLineNumber
+          // This correctly handles the case where we're looking for a LEFT-side line number
+          // that happens to be on a context line (not a deleted line)
+          if (lineNum === line) {
             console.log(`[UI] Found line ${line} (${side}) in file ${file}, inserting suggestion`);
             // Insert suggestion after this row
-            const suggestionRow = this.createSuggestionRow(locationSuggestions);
+            // Pass target info so getFileAndLineInfo can retrieve it without DOM traversal
+            const diffPosition = row.dataset.diffPosition;
+            const suggestionRow = this.createSuggestionRow(locationSuggestions, {
+              fileName: file,
+              lineNumber: line,
+              side: side,
+              diffPosition: diffPosition,
+              isFileLevel: false
+            });
             row.parentNode.insertBefore(suggestionRow, row.nextSibling);
             suggestionInserted = true;
           }
@@ -304,9 +321,15 @@ class SuggestionManager {
   /**
    * Create a suggestion row for display
    * @param {Array} suggestions - Suggestions for this location
+   * @param {Object} targetInfo - Optional target info for reliable retrieval in getFileAndLineInfo
+   * @param {string} targetInfo.fileName - File name
+   * @param {number} targetInfo.lineNumber - Line number
+   * @param {string} targetInfo.side - Side (LEFT or RIGHT)
+   * @param {string} targetInfo.diffPosition - Diff position for GitHub API
+   * @param {boolean} targetInfo.isFileLevel - Whether this is a file-level suggestion
    * @returns {HTMLElement} The suggestion row element
    */
-  createSuggestionRow(suggestions) {
+  createSuggestionRow(suggestions, targetInfo = null) {
     const tr = document.createElement('tr');
     tr.className = 'ai-suggestion-row';
 
@@ -324,6 +347,17 @@ class SuggestionManager {
       // Store original markdown body for adopt functionality
       // Use JSON.stringify to preserve newlines and special characters
       suggestionDiv.dataset.originalBody = JSON.stringify(suggestion.body || '');
+
+      // Store target info on the suggestion div for reliable retrieval in getFileAndLineInfo
+      // This avoids fragile DOM traversal that fails when gap rows are between suggestion and target
+      if (targetInfo) {
+        suggestionDiv.dataset.fileName = targetInfo.fileName || '';
+        // Stringify for data attribute storage; parsed back to number in getFileAndLineInfo
+        suggestionDiv.dataset.lineNumber = targetInfo.lineNumber !== undefined ? String(targetInfo.lineNumber) : '';
+        suggestionDiv.dataset.side = targetInfo.side || 'RIGHT';
+        suggestionDiv.dataset.diffPosition = targetInfo.diffPosition || '';
+        suggestionDiv.dataset.isFileLevel = targetInfo.isFileLevel ? 'true' : 'false';
+      }
 
       // Convert suggestion.id to number for comparison since parent_id might be a number
       const suggestionIdNum = parseInt(suggestion.id);
@@ -430,18 +464,93 @@ class SuggestionManager {
   }
 
   /**
-   * Helper function to find target row and extract file/line info
-   * @param {HTMLElement} suggestionDiv - The suggestion element
-   * @returns {Object} File and line information
+   * Helper function to find the target diff row by skipping non-diff rows.
+   * Walks backward through siblings, skipping ai-suggestion-row, user-comment-row,
+   * and context-expand-row elements to find the actual diff line.
+   * @private
+   * @param {HTMLElement|null} startRow - The row to start searching from
+   * @returns {HTMLElement|null} The target diff row, or null if not found
    */
-  getFileAndLineInfo(suggestionDiv) {
-    const suggestionRow = suggestionDiv.closest('tr');
-    let targetRow = suggestionRow?.previousElementSibling;
-
-    // Find the actual diff line row (skip other suggestion/comment rows)
-    while (targetRow && (targetRow.classList.contains('ai-suggestion-row') || targetRow.classList.contains('user-comment-row'))) {
+  _findTargetDiffRow(startRow) {
+    let targetRow = startRow;
+    while (targetRow && (
+      targetRow.classList.contains('ai-suggestion-row') ||
+      targetRow.classList.contains('user-comment-row') ||
+      targetRow.classList.contains('context-expand-row')
+    )) {
       targetRow = targetRow.previousElementSibling;
     }
+    return targetRow;
+  }
+
+  /**
+   * Helper function to find target row and extract file/line info.
+   *
+   * IMPORTANT: Callers must check the `isFileLevel` property in the return value.
+   * When `isFileLevel` is true, `lineNumber`, `diffPosition`, `side`, and `targetRow`
+   * will all be null. File-level suggestions should be handled via FileCommentManager
+   * rather than line-level comment APIs.
+   *
+   * @param {HTMLElement} suggestionDiv - The suggestion element
+   * @returns {Object} File and line information
+   * @returns {HTMLElement|null} returns.targetRow - The target diff row (null for file-level)
+   * @returns {HTMLElement} returns.suggestionRow - The suggestion's containing row
+   * @returns {number|null} returns.lineNumber - Line number as integer (null for file-level)
+   * @returns {string} returns.fileName - The file path
+   * @returns {string|null} returns.diffPosition - Diff position for GitHub API (null for file-level)
+   * @returns {string|null} returns.side - 'LEFT' or 'RIGHT' (null for file-level)
+   * @returns {boolean} returns.isFileLevel - True if this is a file-level suggestion
+   */
+  getFileAndLineInfo(suggestionDiv) {
+    // First, try to read from data attributes stored at creation time
+    // This is the reliable method that works even with gap rows between suggestion and target
+    const storedFileName = suggestionDiv.dataset.fileName;
+    const storedLineNumber = suggestionDiv.dataset.lineNumber;
+    const storedSide = suggestionDiv.dataset.side;
+    const storedDiffPosition = suggestionDiv.dataset.diffPosition;
+    const storedIsFileLevel = suggestionDiv.dataset.isFileLevel;
+
+    // If we have stored data attributes, use them (reliable path)
+    if (storedFileName) {
+      const suggestionRow = suggestionDiv.closest('tr');
+
+      // For file-level suggestions, there is no target row
+      if (storedIsFileLevel === 'true') {
+        return {
+          targetRow: null,
+          suggestionRow,
+          lineNumber: null,
+          fileName: storedFileName,
+          diffPosition: null,
+          side: null,
+          isFileLevel: true
+        };
+      }
+
+      // For line-level suggestions with stored data, find the target row for display purposes
+      // but use stored values for the actual data
+      if (storedLineNumber) {
+        // DOM traversal is still done for targetRow even when using stored data.
+        // targetRow is needed for UI operations like highlighting and scrolling,
+        // but is not critical if it fails - the stored data has the authoritative values.
+        const targetRow = this._findTargetDiffRow(suggestionRow?.previousElementSibling);
+
+        return {
+          targetRow,
+          suggestionRow,
+          lineNumber: parseInt(storedLineNumber, 10),
+          fileName: storedFileName,
+          diffPosition: storedDiffPosition || null,
+          side: storedSide || 'RIGHT',
+          isFileLevel: false
+        };
+      }
+    }
+
+    // Fallback: DOM traversal for backward compatibility with suggestions created before this fix
+    // This method fails when gap rows (context-expand-row) are between the suggestion and target
+    const suggestionRow = suggestionDiv.closest('tr');
+    const targetRow = this._findTargetDiffRow(suggestionRow?.previousElementSibling);
 
     if (!targetRow) {
       throw new Error('Could not find target line for comment');
@@ -453,15 +562,18 @@ class SuggestionManager {
 
     // Get line number based on side - deleted lines (LEFT) use .line-num1, others use .line-num2
     const lineNumSelector = side === 'LEFT' ? '.line-num1' : '.line-num2';
-    const lineNumber = targetRow.querySelector(lineNumSelector)?.textContent?.trim();
+    const lineNumberText = targetRow.querySelector(lineNumSelector)?.textContent?.trim();
     const fileWrapper = targetRow.closest('.d2h-file-wrapper');
     const fileName = fileWrapper?.dataset?.fileName || '';
 
-    if (!lineNumber || !fileName) {
+    if (!lineNumberText || !fileName) {
       throw new Error('Could not determine file and line information');
     }
 
-    return { targetRow, suggestionRow, lineNumber, fileName, diffPosition, side };
+    // Parse line number to integer for type consistency with stored-data path
+    const lineNumber = parseInt(lineNumberText, 10);
+
+    return { targetRow, suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel: false };
   }
 
   /**
@@ -572,3 +684,8 @@ class SuggestionManager {
 
 // Make SuggestionManager available globally
 window.SuggestionManager = SuggestionManager;
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { SuggestionManager };
+}
