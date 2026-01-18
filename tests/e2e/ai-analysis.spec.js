@@ -642,6 +642,299 @@ test.describe('Suggestion Navigation', () => {
   });
 });
 
+test.describe('Quick Action Buttons in Review Panel', () => {
+  test('should show quick-action buttons on hover over active finding items', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Seed AI suggestions
+    await seedAISuggestions(page);
+
+    // Wait for findings to appear in the panel
+    await page.waitForSelector('.finding-item', { timeout: 5000 });
+
+    // Find an active finding (not dismissed or adopted)
+    const activeFinding = page.locator('.finding-item-wrapper:has(.finding-active)').first();
+    await expect(activeFinding).toBeVisible();
+
+    // Quick actions should be hidden initially
+    const quickActions = activeFinding.locator('.finding-quick-actions');
+    await expect(quickActions).toHaveCSS('opacity', '0');
+
+    // Hover over the finding
+    await activeFinding.hover();
+
+    // Quick actions should now be visible
+    await expect(quickActions).toHaveCSS('opacity', '1');
+
+    // Should have adopt button
+    const adoptBtn = quickActions.locator('.quick-action-adopt');
+    await expect(adoptBtn).toBeVisible();
+
+    // Should have dismiss button
+    const dismissBtn = quickActions.locator('.quick-action-dismiss');
+    await expect(dismissBtn).toBeVisible();
+  });
+
+  test('should adopt suggestion when clicking quick-action adopt button', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Seed AI suggestions
+    await seedAISuggestions(page);
+
+    // Wait for findings to appear
+    await page.waitForSelector('.finding-item', { timeout: 5000 });
+
+    // Find an active finding
+    const activeFinding = page.locator('.finding-item-wrapper:has(.finding-active)').first();
+    const findingId = await activeFinding.locator('.finding-item').getAttribute('data-id');
+
+    // Hover to reveal quick actions
+    await activeFinding.hover();
+
+    // Click adopt button
+    const adoptBtn = activeFinding.locator('.quick-action-adopt');
+    await adoptBtn.click();
+
+    // Finding should now be marked as adopted
+    const adoptedFinding = page.locator(`.finding-item[data-id="${findingId}"].finding-adopted`);
+    await expect(adoptedFinding).toBeVisible({ timeout: 5000 });
+  });
+
+  test('should dismiss suggestion when clicking quick-action dismiss button', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Seed AI suggestions
+    await seedAISuggestions(page);
+
+    // Wait for findings to appear
+    await page.waitForSelector('.finding-item', { timeout: 5000 });
+
+    // Find an active finding - use .last() to avoid conflicts with adopt test
+    // which uses .first(). Tests run sequentially and share database state.
+    const activeFindings = page.locator('.finding-item-wrapper:has(.finding-active)');
+    const count = await activeFindings.count();
+    expect(count).toBeGreaterThan(0);
+
+    const activeFinding = activeFindings.last();
+    await expect(activeFinding).toBeVisible();
+    const findingId = await activeFinding.locator('.finding-item').getAttribute('data-id');
+
+    // Hover to reveal quick actions
+    await activeFinding.hover();
+
+    // Wait for quick actions to be visible
+    const quickActions = activeFinding.locator('.finding-quick-actions');
+    await expect(quickActions).toHaveCSS('opacity', '1', { timeout: 2000 });
+
+    // Click dismiss button
+    const dismissBtn = activeFinding.locator('.quick-action-dismiss');
+    await dismissBtn.click();
+
+    // Wait for the status to change - check that finding is no longer active
+    // (it should have finding-dismissed class)
+    await page.waitForFunction(
+      (id) => {
+        const el = document.querySelector(`.finding-item[data-id="${id}"]`);
+        return el && el.classList.contains('finding-dismissed');
+      },
+      findingId,
+      { timeout: 5000 }
+    );
+
+    // Verify the finding is dismissed
+    const dismissedFinding = page.locator(`.finding-item[data-id="${findingId}"].finding-dismissed`);
+    await expect(dismissedFinding).toBeVisible();
+  });
+
+  test('should not show quick-action buttons on already-adopted findings', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Seed AI suggestions
+    await seedAISuggestions(page);
+
+    // Wait for findings to appear
+    await page.waitForSelector('.finding-item', { timeout: 5000 });
+
+    // First, adopt a finding to get an adopted state
+    const activeFinding = page.locator('.finding-item-wrapper:has(.finding-active)').first();
+    await activeFinding.hover();
+    await activeFinding.locator('.quick-action-adopt').click();
+
+    // Wait for adopted state using explicit wait for DOM state change
+    await page.waitForFunction(() => {
+      const wrapper = document.querySelector('.finding-item-wrapper:has(.finding-adopted)');
+      return wrapper !== null;
+    }, { timeout: 5000 });
+
+    // The adopted finding should not have quick-action buttons
+    const adoptedWrapper = page.locator('.finding-item-wrapper:has(.finding-adopted)').first();
+    const quickActions = adoptedWrapper.locator('.finding-quick-actions');
+    const quickActionsCount = await quickActions.count();
+    expect(quickActionsCount).toBe(0);
+  });
+
+  test('should show restore button on dismissed findings instead of adopt/dismiss', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Seed AI suggestions
+    await seedAISuggestions(page);
+
+    // Wait for findings to appear
+    await page.waitForSelector('.finding-item', { timeout: 5000 });
+
+    // Find an active finding and dismiss it - use the second-to-last to avoid conflicts
+    // with adopt test (.first()) and dismiss test (.last())
+    const activeFindings = page.locator('.finding-item-wrapper:has(.finding-active)');
+    const count = await activeFindings.count();
+    expect(count).toBeGreaterThan(0);
+    // Use second-to-last to avoid conflicts: .first() is adopted, .last() is dismissed by earlier tests
+    const activeFinding = count > 1 ? activeFindings.nth(count - 2) : activeFindings.first();
+    const findingId = await activeFinding.locator('.finding-item').getAttribute('data-id');
+    await activeFinding.hover();
+    await activeFinding.locator('.quick-action-dismiss').click();
+
+    // Wait for dismissed state using explicit wait for DOM state change
+    await page.waitForFunction(
+      (id) => {
+        const el = document.querySelector(`.finding-item[data-id="${id}"]`);
+        return el && el.classList.contains('finding-dismissed');
+      },
+      findingId,
+      { timeout: 5000 }
+    );
+
+    // The dismissed finding should have a restore button instead of adopt/dismiss buttons
+    const dismissedWrapper = page.locator(`.finding-item-wrapper:has(.finding-item[data-id="${findingId}"])`);
+    const restoreBtn = dismissedWrapper.locator('.quick-action-restore');
+    const adoptBtn = dismissedWrapper.locator('.quick-action-adopt');
+    const dismissBtn = dismissedWrapper.locator('.quick-action-dismiss');
+
+    // Should have restore button, but not adopt or dismiss
+    expect(await restoreBtn.count()).toBe(1);
+    expect(await adoptBtn.count()).toBe(0);
+    expect(await dismissBtn.count()).toBe(0);
+  });
+
+  test('should hide restore button by default and show on hover (same as adopt/dismiss)', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Seed AI suggestions
+    await seedAISuggestions(page);
+
+    // Wait for findings to appear
+    await page.waitForSelector('.finding-item', { timeout: 5000 });
+
+    // Find an active finding and dismiss it - dynamically select to avoid conflicts
+    // with adopt test (.first()), dismiss test (.last()), and restore button test
+    const activeFindings = page.locator('.finding-item-wrapper:has(.finding-active)');
+    const count = await activeFindings.count();
+    expect(count).toBeGreaterThan(0);
+    // Use middle finding if available, otherwise use what's available
+    const middleIndex = Math.floor(count / 2);
+    const activeFinding = activeFindings.nth(middleIndex);
+    const findingId = await activeFinding.locator('.finding-item').getAttribute('data-id');
+    await activeFinding.hover();
+    await activeFinding.locator('.quick-action-dismiss').click();
+
+    // Wait for dismissed state
+    await page.waitForFunction(
+      (id) => {
+        const el = document.querySelector(`.finding-item[data-id="${id}"]`);
+        return el && el.classList.contains('finding-dismissed');
+      },
+      findingId,
+      { timeout: 5000 }
+    );
+
+    // Move mouse away from any findings to ensure hover state is cleared
+    await page.mouse.move(0, 0);
+
+    // Get the dismissed finding by ID for precise targeting
+    const dismissedWrapper = page.locator(`.finding-item-wrapper:has(.finding-item[data-id="${findingId}"])`);
+    const quickActions = dismissedWrapper.locator('.finding-quick-actions');
+
+    // Quick actions should be hidden initially (opacity: 0)
+    await expect(quickActions).toHaveCSS('opacity', '0');
+
+    // Hover over the finding
+    await dismissedWrapper.hover();
+
+    // Quick actions should now be visible (opacity: 1)
+    await expect(quickActions).toHaveCSS('opacity', '1');
+
+    // Restore button should be visible when hovered
+    const restoreBtn = quickActions.locator('.quick-action-restore');
+    await expect(restoreBtn).toBeVisible();
+  });
+
+  test('should restore finding to active state when clicking restore button', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Seed AI suggestions
+    await seedAISuggestions(page);
+
+    // Wait for findings to appear
+    await page.waitForSelector('.finding-item', { timeout: 5000 });
+
+    // Step 1: Find an active finding and dismiss it - dynamically select to avoid conflicts
+    // with other tests. Use the last remaining active finding.
+    const activeFindings = page.locator('.finding-item-wrapper:has(.finding-active)');
+    const count = await activeFindings.count();
+    expect(count).toBeGreaterThan(0);
+    // Use last available active finding to maximize isolation from other tests
+    const activeFinding = activeFindings.last();
+    const findingId = await activeFinding.locator('.finding-item').getAttribute('data-id');
+    await activeFinding.hover();
+    await activeFinding.locator('.quick-action-dismiss').click();
+
+    // Wait for dismissed state
+    await page.waitForFunction(
+      (id) => {
+        const el = document.querySelector(`.finding-item[data-id="${id}"]`);
+        return el && el.classList.contains('finding-dismissed');
+      },
+      findingId,
+      { timeout: 5000 }
+    );
+
+    // Step 2: Click the restore button
+    const dismissedWrapper = page.locator(`.finding-item-wrapper:has(.finding-item[data-id="${findingId}"])`);
+    await dismissedWrapper.hover();
+    const restoreBtn = dismissedWrapper.locator('.quick-action-restore');
+    await restoreBtn.click();
+
+    // Step 3: Verify the finding returns to 'active' state with finding-active class
+    await page.waitForFunction(
+      (id) => {
+        const el = document.querySelector(`.finding-item[data-id="${id}"]`);
+        return el && el.classList.contains('finding-active');
+      },
+      findingId,
+      { timeout: 5000 }
+    );
+
+    const restoredFinding = page.locator(`.finding-item[data-id="${findingId}"].finding-active`);
+    await expect(restoredFinding).toBeVisible();
+
+    // Step 4: Verify adopt/dismiss buttons reappear
+    const restoredWrapper = page.locator(`.finding-item-wrapper:has(.finding-item[data-id="${findingId}"])`);
+    await restoredWrapper.hover();
+
+    const adoptBtn = restoredWrapper.locator('.quick-action-adopt');
+    const dismissBtn = restoredWrapper.locator('.quick-action-dismiss');
+
+    await expect(adoptBtn).toBeVisible();
+    await expect(dismissBtn).toBeVisible();
+  });
+});
+
 test.describe('Level Filtering', () => {
   test('should have level filter pills (if visible)', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');

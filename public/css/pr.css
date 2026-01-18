@@ -6141,6 +6141,78 @@ body.resizing * {
   color: var(--category-bug, #cf222e);
 }
 
+/* Quick-action buttons for AI suggestions */
+.finding-quick-actions {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  z-index: 1;
+}
+
+.finding-item-wrapper:hover .finding-quick-actions,
+.finding-item-wrapper:focus-within .finding-quick-actions {
+  opacity: 1;
+}
+
+.quick-action-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: none;
+  background: var(--color-bg-secondary, rgba(128, 128, 128, 0.1));
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 100ms ease, color 100ms ease, transform 100ms ease;
+  padding: 0;
+}
+
+.quick-action-btn:active {
+  transform: scale(0.9);
+}
+
+/* Adopt button - muted green */
+.quick-action-adopt {
+  color: var(--color-success, #3fb950);
+}
+
+.quick-action-adopt:hover {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--color-success, #3fb950);
+}
+
+/* Dismiss button - neutral, turns red on hover */
+.quick-action-dismiss {
+  color: var(--color-text-secondary, #8b949e);
+}
+
+.quick-action-dismiss:hover {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--color-danger, #f85149);
+}
+
+/* Restore button for dismissed findings */
+.quick-action-restore {
+  color: var(--color-text-secondary, #8b949e);
+}
+
+.quick-action-restore:hover {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--color-success, #3fb950);
+}
+
+/* When quick actions are visible, add padding to the finding item.
+   This padding is applied unconditionally (even when buttons are opacity:0)
+   to prevent layout shift when hovering - the space is always reserved. */
+.finding-item-wrapper:has(.finding-quick-actions) .finding-item {
+  padding-right: 56px; /* Space for two buttons */
+}
+
 .finding-item {
   display: flex;
   align-items: center;
@@ -6214,6 +6286,11 @@ body.resizing * {
 }
 
 /* Status indicator icon in lower right corner for dismissed - no-entry symbol (circle with diagonal line) */
+/* Hide when restore button is present (wrapper has restore button) */
+.finding-item-wrapper:has(.quick-action-restore) .finding-item.finding-dismissed::after {
+  display: none;
+}
+
 .finding-item.finding-dismissed::after {
   content: '';
   position: absolute;
@@ -6230,6 +6307,14 @@ body.resizing * {
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   opacity: 0.8;
+}
+
+/* Show restore button actions for dismissed findings on hover.
+   Note: opacity:0 is already set on .finding-quick-actions by default (line ~6151),
+   so we only need the hover/focus-within rule here. */
+.finding-item-wrapper:has(.finding-dismissed):hover .finding-quick-actions,
+.finding-item-wrapper:has(.finding-dismissed):focus-within .finding-quick-actions {
+  opacity: 1;
 }
 
 /* Adopted findings - brighter green success state with solid left border */

@@ -514,6 +514,32 @@ class AIPanel {
             });
         });
 
+        // Bind quick-action button events for AI suggestions
+        this.findingsList.querySelectorAll('.quick-action-adopt').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent triggering item click
+                const findingId = parseInt(btn.dataset.findingId, 10);
+                this.onAdoptSuggestion(findingId);
+            });
+        });
+
+        this.findingsList.querySelectorAll('.quick-action-dismiss').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent triggering item click
+                const findingId = parseInt(btn.dataset.findingId, 10);
+                this.onDismissSuggestion(findingId);
+            });
+        });
+
+        // Bind restore button events for dismissed AI suggestions
+        this.findingsList.querySelectorAll('.quick-action-restore').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent triggering item click
+                const findingId = parseInt(btn.dataset.findingId, 10);
+                this.onRestoreSuggestion(findingId);
+            });
+        });
+
         // Restore active state if we have a current index
         this.highlightCurrentItem();
     }
@@ -526,6 +552,39 @@ class AIPanel {
         // Use prManager's delete method which handles both UI and API
         if (window.prManager?.deleteUserComment) {
             window.prManager.deleteUserComment(commentId);
+        }
+    }
+
+    /**
+     * Handle adopt suggestion button click
+     * @param {number} findingId - The finding ID to adopt
+     */
+    onAdoptSuggestion(findingId) {
+        // Use prManager's adopt method which handles both UI and API
+        if (window.prManager?.adoptSuggestion) {
+            window.prManager.adoptSuggestion(findingId);
+        }
+    }
+
+    /**
+     * Handle dismiss suggestion button click
+     * @param {number} findingId - The finding ID to dismiss
+     */
+    onDismissSuggestion(findingId) {
+        // Use prManager's dismiss method which handles both UI and API
+        if (window.prManager?.dismissSuggestion) {
+            window.prManager.dismissSuggestion(findingId);
+        }
+    }
+
+    /**
+     * Handle restore suggestion button click
+     * @param {number} findingId - The finding ID to restore
+     */
+    onRestoreSuggestion(findingId) {
+        // Use prManager's restore method which handles both UI and API
+        if (window.prManager?.restoreSuggestion) {
+            window.prManager.restoreSuggestion(findingId);
         }
     }
 
@@ -798,21 +857,50 @@ class AIPanel {
         const statusClass = finding.status === 'dismissed' ? 'finding-dismissed' :
                            finding.status === 'adopted' ? 'finding-adopted' : 'finding-active';
         const category = finding.category || finding.type || '';
+        const isActive = finding.status !== 'dismissed' && finding.status !== 'adopted';
 
         // Use star icon for praise, dot for other types
         const indicator = type === 'praise'
             ? `<span class="finding-star">${this.getTypeIcon('praise')}</span>`
             : `<span class="finding-dot"></span>`;
 
+        // Quick-action buttons for active items (adopt/dismiss)
+        // For dismissed items, show restore button
+        let quickActions = '';
+        if (isActive) {
+            quickActions = `
+            <div class="finding-quick-actions">
+                <button class="quick-action-btn quick-action-adopt" data-finding-id="${finding.id}" title="Adopt" aria-label="Adopt suggestion">
+                    ${this.getAdoptIcon()}
+                </button>
+                <button class="quick-action-btn quick-action-dismiss" data-finding-id="${finding.id}" title="Dismiss" aria-label="Dismiss suggestion">
+                    ${this.getDismissIcon()}
+                </button>
+            </div>
+        `;
+        } else if (finding.status === 'dismissed') {
+            // Restore button for dismissed findings - undo/restore icon (counter-clockwise arrow)
+            quickActions = `
+            <div class="finding-quick-actions">
+                <button class="quick-action-btn quick-action-restore" data-finding-id="${finding.id}" title="Restore" aria-label="Restore suggestion">
+                    ${this.getRestoreIcon()}
+                </button>
+            </div>
+        `;
+        }
+
         return `
-            <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" data-item-type="finding" title="${fullLocation}">
-                ${indicator}
-                <div class="finding-content">
-                    <span class="finding-title">${this.escapeHtml(title)}</span>
-                    ${category ? `<span class="finding-category">${this.escapeHtml(category)}</span>` : ''}
-                    ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
-                </div>
-            </button>
+            <div class="finding-item-wrapper">
+                <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" data-item-type="finding" title="${fullLocation}">
+                    ${indicator}
+                    <div class="finding-content">
+                        <span class="finding-title">${this.escapeHtml(title)}</span>
+                        ${category ? `<span class="finding-category">${this.escapeHtml(category)}</span>` : ''}
+                        ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}</span>` : ''}
+                    </div>
+                </button>
+                ${quickActions}
+            </div>
         `;
     }
 
@@ -876,9 +964,39 @@ class AIPanel {
     }
 
     /**
+     * Get the adopt (checkmark) icon SVG for quick-action buttons
+     * @returns {string} SVG HTML string
+     */
+    getAdoptIcon() {
+        return `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path>
+        </svg>`;
+    }
+
+    /**
+     * Get the dismiss (X) icon SVG for quick-action buttons
+     * @returns {string} SVG HTML string
+     */
+    getDismissIcon() {
+        return `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path>
+        </svg>`;
+    }
+
+    /**
+     * Get the restore (counter-clockwise arrow) icon SVG for quick-action buttons
+     * @returns {string} SVG HTML string
+     */
+    getRestoreIcon() {
+        return `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path d="M1.705 8.005a.75.75 0 01.834.656 5.5 5.5 0 009.592 2.97l-1.204-1.204a.25.25 0 01.177-.427h3.646a.25.25 0 01.25.25v3.646a.25.25 0 01-.427.177l-1.38-1.38A7.002 7.002 0 011.05 8.84a.75.75 0 01.656-.834zM8 2.5a5.487 5.487 0 00-4.131 1.869l1.204 1.204A.25.25 0 014.896 6H1.25a.25.25 0 01-.25-.25V2.104a.25.25 0 01.427-.177l1.38 1.38A7.002 7.002 0 0114.95 7.16a.75.75 0 11-1.49.178A5.5 5.5 0 008 2.5z"></path>
+        </svg>`;
+    }
+
+    /**
      * Update finding status by ID
      * @param {number} findingId - The finding ID
-     * @param {string} status - The new status ('dismissed' or 'adopted')
+     * @param {string} status - The new status ('dismissed', 'adopted', or 'active')
      */
     updateFindingStatus(findingId, status) {
         // Update in our findings array
@@ -897,6 +1015,74 @@ class AIPanel {
                 findingEl.classList.add('finding-adopted');
             } else {
                 findingEl.classList.add('finding-active');
+            }
+
+            const wrapper = findingEl.closest('.finding-item-wrapper');
+            if (!wrapper) {
+                console.warn(`AIPanel.updateFindingStatus: wrapper element not found for finding ${findingId}. DOM structure may have changed.`);
+                return;
+            }
+            const existingQuickActions = wrapper.querySelector('.finding-quick-actions');
+
+            if (status === 'dismissed') {
+                // Replace adopt/dismiss buttons with restore button
+                if (existingQuickActions) {
+                    existingQuickActions.remove();
+                }
+                const restoreHtml = `
+                    <div class="finding-quick-actions">
+                        <button class="quick-action-btn quick-action-restore" data-finding-id="${findingId}" title="Restore" aria-label="Restore suggestion">
+                            ${this.getRestoreIcon()}
+                        </button>
+                    </div>
+                `;
+                wrapper.insertAdjacentHTML('beforeend', restoreHtml);
+
+                // Bind click event for the new restore button
+                const restoreBtn = wrapper.querySelector('.quick-action-restore');
+                if (restoreBtn) {
+                    restoreBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.onRestoreSuggestion(findingId);
+                    });
+                }
+            } else if (status === 'adopted') {
+                // Remove all quick-action buttons for adopted findings
+                if (existingQuickActions) {
+                    existingQuickActions.remove();
+                }
+            } else if (status === 'active') {
+                // Replace restore button with adopt/dismiss buttons
+                if (existingQuickActions) {
+                    existingQuickActions.remove();
+                }
+                const activeHtml = `
+                    <div class="finding-quick-actions">
+                        <button class="quick-action-btn quick-action-adopt" data-finding-id="${findingId}" title="Adopt" aria-label="Adopt suggestion">
+                            ${this.getAdoptIcon()}
+                        </button>
+                        <button class="quick-action-btn quick-action-dismiss" data-finding-id="${findingId}" title="Dismiss" aria-label="Dismiss suggestion">
+                            ${this.getDismissIcon()}
+                        </button>
+                    </div>
+                `;
+                wrapper.insertAdjacentHTML('beforeend', activeHtml);
+
+                // Bind click events for the new buttons
+                const adoptBtn = wrapper.querySelector('.quick-action-adopt');
+                const dismissBtn = wrapper.querySelector('.quick-action-dismiss');
+                if (adoptBtn) {
+                    adoptBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.onAdoptSuggestion(findingId);
+                    });
+                }
+                if (dismissBtn) {
+                    dismissBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.onDismissSuggestion(findingId);
+                    });
+                }
             }
         }
     }
