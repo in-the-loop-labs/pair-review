@@ -734,10 +734,9 @@ async function testProvider(providerId, ProviderClass, testConfig) {
   log('    Asking AI to run git-diff-lines - this should be ALLOWED...', colors.dim);
 
   // Ask the AI to run the same command and show the output
-  // For Gemini, use bare command name (matching how analyzer.js invokes it) since
-  // Gemini's --allowed-tools uses prefix matching and won't match absolute paths.
-  // For other providers, use the full path.
-  const scriptCommand = providerId === 'gemini' ? 'git-diff-lines' : GIT_DIFF_LINES_PATH;
+  // All providers now use the bare 'git-diff-lines' command since each provider
+  // has BIN_DIR prepended to PATH, making the script discoverable without full paths.
+  const scriptCommand = 'git-diff-lines';
   const readPrompt = `Run the git-diff-lines script using the command "${scriptCommand}" with the argument HEAD~1..HEAD and show me the complete output. Include the actual diff content in your response.`;
   const readTestConfig = testConfig.buildTestCommands(provider, readPrompt);
   const readResult = await runTest(readTestConfig);

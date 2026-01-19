@@ -26,14 +26,12 @@ const CopilotProvider = require('../src/ai/copilot-provider');
 
 /**
  * Provider class mapping
- * Note: 'openai' is kept as an alias for backwards compatibility with existing scripts
  */
 const PROVIDER_CLASSES = {
   gemini: GeminiProvider,
   claude: ClaudeProvider,
   codex: CodexProvider,
-  copilot: CopilotProvider,
-  openai: CopilotProvider  // Backwards-compatible alias for 'copilot'
+  copilot: CopilotProvider
 };
 
 /**
@@ -66,9 +64,8 @@ function getDefaultOptimizerModel(provider) {
 
 /**
  * Valid providers, tiers, and prompt types
- * Note: Both 'copilot' and 'openai' map to CopilotProvider for backwards compatibility
  */
-const VALID_PROVIDERS = ['gemini', 'copilot', 'openai', 'claude', 'codex'];
+const VALID_PROVIDERS = ['gemini', 'copilot', 'claude', 'codex'];
 const VALID_TIERS = ['fast', 'balanced', 'thorough'];
 const VALID_PROMPTS = ['level1', 'level2', 'level3', 'orchestration'];
 
@@ -140,7 +137,7 @@ Usage:
   node tools/optimize.js --provider gemini --tier fast --prompt level1
 
 Options:
-  --provider <name>       Provider to optimize for (gemini, copilot, openai, codex, claude)
+  --provider <name>       Provider to optimize for (gemini, copilot, codex, claude)
   --tier <tier>           Tier to optimize (fast, balanced, thorough)
   --prompt <type>         Prompt type (level1, level2, level3, orchestration)
   --optimizer-model <m>   Override optimizer model (default: thorough model for provider)
@@ -623,7 +620,7 @@ function executeClaudeCli(model, prompt) {
 /**
  * Dispatch to the appropriate provider CLI executor
  *
- * @param {string} provider - Provider name (gemini, codex, copilot, openai, claude)
+ * @param {string} provider - Provider name (gemini, codex, copilot, claude)
  * @param {string} model - Model to use
  * @param {string} prompt - Prompt to send
  * @returns {Promise<Object>} Parsed JSON response
@@ -635,7 +632,6 @@ async function executeProviderCli(provider, model, prompt) {
     case 'codex':
       return executeCodexCli(model, prompt);
     case 'copilot':
-    case 'openai':
       return executeCopilotCli(model, prompt);
     case 'claude':
       return executeClaudeCli(model, prompt);
