@@ -94,7 +94,7 @@ For each file with changes:
 
 1. **Build Context First**
    - Read the full file to understand its purpose and architecture
-   - Run the annotated diff tool with the file path to see precise line numbers
+   - Run git-diff-lines with the file path to see precise line numbers
    - Identify the file's implicit rules: How does it handle errors? What naming conventions does it use? What patterns recur?
 
 2. **Analyze Integration Quality**
@@ -161,7 +161,7 @@ Carefully identify and analyze the following within file context:
 <section name="available-commands" required="true" tier="thorough">
 ## Available Commands (READ-ONLY)
 You have READ-ONLY access to the codebase. You may run commands like:
-- The annotated diff tool shown above with file path (preferred for viewing changes with line numbers)
+- git-diff-lines shown above with file path (preferred for viewing changes with line numbers)
 - \`cat -n <file>\` to view files with line numbers
 - grep, find, ls commands as needed
 

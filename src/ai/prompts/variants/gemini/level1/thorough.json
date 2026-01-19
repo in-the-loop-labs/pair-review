@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "baseline": "level1/thorough",
+    "baselineHash": "b0990073",
+    "targetModel": "gemini-3-pro-preview",
+    "optimizerModel": "gemini-3-pro-preview",
+    "timestamp": "2026-01-18T17:06:58.879Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "output-schema",
+      "valid-files",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "initial-setup",
+      "reasoning-encouragement",
+      "diff-instructions",
+      "focus-areas",
+      "confidence-guidance",
+      "generated-files",
+      "available-commands",
+      "category-definitions",
+      "guidelines"
+    ],
+    "overrides": {
+      "initial-setup": "## Analysis Workflow\n1. **Review Diff**: Analyze the `git-diff-lines` output provided above.\n2. **Identify Patterns**: Read through changes to understand the architectural intent before spotting bugs.\n3. **Isolate Changes**: Focus strictly on modified lines and their immediate impact.\n4. **Simulate Execution**: Mentally trace the execution path for edge cases and failures.",
+      "reasoning-encouragement": "## Reasoning Framework\nLeverage your advanced reasoning capabilities to reduce false positives:\n1. **Contextualize**: Is this a stylistic preference or a functional defect?\n2. **Verify**: Double-check line numbers and logic paths.\n3. **Calibrate**: Assign confidence scores honestly. High confidence (0.8+) implies a certain defect. Low confidence implies a discussion point.\n\n**Quality over Quantity**: It is better to return fewer, high-value findings than to clutter the review with trivialities.",
+      "diff-instructions": "## Line Number Mapping (CRITICAL)\nCorrect line mapping is essential for the suggestions to be valid.\n\n- **\"NEW\"** (Default): Use for ADDED lines `[+]` and CONTEXT lines (unchanged lines present in both).\n- **\"OLD\"**: Use ONLY for DELETED lines `[-]`.\n\n**Rule**: If a line exists in the new file (even if unchanged), map it to \"NEW\". Only lines that effectively vanish use \"OLD\".",
+      "focus-areas": "## Analysis Rubric\n\n### 1. Functional Correctness\n- **Logic**: Off-by-one errors, infinite loops, incorrect branching.\n- **Data**: Null/undefined handling, type mismatches, data validation.\n- **State**: Race conditions, resource leaks, unhandled side effects.\n\n### 2. Security & Safety\n- **Injection**: SQL, XSS, Command Injection risks.\n- **Exposure**: Logging secrets, sensitive data leaks.\n- **Access**: Missing authorization checks.\n\n### 3. Maintainability & Performance\n- **Complexity**: Over-engineered solutions, duplicate logic.\n- **Efficiency**: N+1 queries, expensive loops in critical paths.\n- **Style**: Naming conventions, readability, comments.",
+      "confidence-guidance": "## Confidence Calibration\n- **0.8 - 1.0 (High)**: Proven bug or critical security flaw. Fix is required.\n- **0.5 - 0.79 (Medium)**: Strong indicator of an issue, or a significant code smell.\n- **0.3 - 0.49 (Low)**: Subjective improvement or minor consistency note.\n- **< 0.3**: Do not report unless it prevents a critical failure.",
+      "available-commands": "## Tool Use Constraints\nYou have READ-ONLY access. \n- The diff is your primary source of truth.\n- Do NOT attempt to modify files.\n- Do NOT provide code to run git commands in your output; only return the JSON analysis.",
+      "category-definitions": "## Category Tags\n- **bug**: Runtime errors, crashes, incorrect logic.\n- **security**: Vulnerabilities (XSS, injection, auth).\n- **performance**: Resource waste, latency risks.\n- **design**: Architectural flaws, coupling issues.\n- **improvement**: Refactoring for cleanliness/maintainability.\n- **code-style**: Formatting, naming (use sparingly).\n- **praise**: Exceptional implementations (no `suggestion` text needed).",
+      "guidelines": "## Final Review Checklist\n- Ensure all suggestions reference `valid-files`.\n- Verify `old_or_new` logic for every item.\n- Check that descriptions are self-contained and actionable.\n- Maintain a constructive, professional tone."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "output-schema",
+      "type": "reordered",
+      "rationale": "Moved to the top (immediately after context). 'Pro' models perform better when they understand the structural goal (JSON) before processing the analytical instructions."
+    },
+    {
+      "section": "valid-files",
+      "type": "reordered",
+      "rationale": "Grouped with output-schema to establish constraints early."
+    },
+    {
+      "section": "initial-setup",
+      "type": "modified",
+      "rationale": "Renamed to 'Analysis Workflow' and condensed into imperative steps. Removed redundant 'Run git-diff-lines' instruction as the diff is context-provided."
+    },
+    {
+      "section": "reasoning-encouragement",
+      "type": "modified",
+      "rationale": "Renamed to 'Reasoning Framework'. Focused on 'Contextualize' and 'Calibrate' to leverage the Pro model's ability to handle nuance and reduce false positives."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Clarified the 'Context Line' rule. This is a common failure point; explicit instruction to treat context as 'NEW' helps the model avoid mapping errors."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Renamed to 'Analysis Rubric'. Condensed the text into high-density keywords (Logic, Data, State) which Pro models parse efficiently, reducing token count while maintaining depth."
+    },
+    {
+      "section": "confidence-guidance",
+      "type": "modified",
+      "rationale": "Formatted as a clear range list. Added a '< 0.3' threshold to actively discourage low-value noise."
+    },
+    {
+      "section": "category-definitions",
+      "type": "modified",
+      "rationale": "Condensed into a concise list. Pro models have good semantic grasp of these terms; brief definitions suffice to align boundaries."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Clarified that this is a constraint section. Emphasized 'READ-ONLY' to prevent the model from hallucinating tool usage steps in the JSON output."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Converted to a 'Final Review Checklist' to encourage a self-correction pass before final output generation."
+    },
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Standard context setting, effective as is."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "User provided content, preservation is safer."
+    },
+    {
+      "section": "level-header",
+      "type": "unchanged",
+      "rationale": "Standard header."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Template data placeholder."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Contextual data placeholder."
+    }
+  ]
+}

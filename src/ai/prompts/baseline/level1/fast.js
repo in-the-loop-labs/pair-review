@@ -61,7 +61,7 @@ ONLY suggest for files in this list:
 
 <section name="initial-setup" required="true" tier="fast">
 ## Steps
-1. Run annotated diff tool
+1. Run git-diff-lines
 2. Focus ONLY on changed lines
 </section>
 
@@ -76,7 +76,7 @@ ONLY suggest for files in this list:
 
 <section name="available-commands" required="true" tier="fast">
 ## Commands (READ-ONLY)
-Annotated diff tool, \`cat -n\`, ls, find, grep. Do NOT modify files.
+git-diff-lines, \`cat -n\`, ls, find, grep. Do NOT modify files.
 </section>
 
 <section name="output-schema" locked="true">
