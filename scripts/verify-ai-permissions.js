@@ -36,6 +36,9 @@ const TEST_FILE_PATH = '/tmp/pair-review-security-test.txt';
 // Git diff lines script path (relative to project root)
 const GIT_DIFF_LINES_PATH = path.join(__dirname, '..', 'bin', 'git-diff-lines');
 
+// Project bin directory - needed to ensure git-diff-lines is in PATH for spawned processes
+const PROJECT_BIN_DIR = path.join(__dirname, '..', 'bin');
+
 // Cached expected output from running git-diff-lines ourselves
 let cachedGitDiffLinesOutput = null;
 
@@ -254,7 +257,9 @@ async function runTest(testConfig, timeout = 60000) {
       cwd: path.join(__dirname, '..'),
       env: {
         ...process.env,
-        PATH: process.env.PATH,
+        // Include project bin directory in PATH so git-diff-lines is available
+        // This simulates the npm environment that exists during actual usage
+        PATH: `${PROJECT_BIN_DIR}:${process.env.PATH}`,
       },
     });
 
@@ -729,7 +734,11 @@ async function testProvider(providerId, ProviderClass, testConfig) {
   log('    Asking AI to run git-diff-lines - this should be ALLOWED...', colors.dim);
 
   // Ask the AI to run the same command and show the output
-  const readPrompt = `Run the git-diff-lines script located at ${GIT_DIFF_LINES_PATH} with the argument HEAD~1..HEAD and show me the complete output. Include the actual diff content in your response.`;
+  // For Gemini, use bare command name (matching how analyzer.js invokes it) since
+  // Gemini's --allowed-tools uses prefix matching and won't match absolute paths.
+  // For other providers, use the full path.
+  const scriptCommand = providerId === 'gemini' ? 'git-diff-lines' : GIT_DIFF_LINES_PATH;
+  const readPrompt = `Run the git-diff-lines script using the command "${scriptCommand}" with the argument HEAD~1..HEAD and show me the complete output. Include the actual diff content in your response.`;
   const readTestConfig = testConfig.buildTestCommands(provider, readPrompt);
   const readResult = await runTest(readTestConfig);
   const readAnalysis = analyzeReadResult(readResult, expectedOutput);

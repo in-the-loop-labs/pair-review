@@ -7,7 +7,11 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
+const path = require('path');
 const { AIProvider, registerProvider } = require('./provider');
+
+// Path to the bin directory containing git-diff-lines script
+const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
