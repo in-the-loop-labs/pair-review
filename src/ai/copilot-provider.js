@@ -152,18 +152,19 @@ class CopilotProvider extends AIProvider {
 
       // Build the command with other args first, then -p <prompt> at the end
       // The -p flag expects the prompt value immediately after it
+      // --add-dir grants file access to the worktree directory (cwd)
       let fullCommand = this.command;
       let fullArgs;
 
       if (this.useShell) {
         // Escape the prompt for shell
         const escapedPrompt = prompt.replace(/'/g, "'\\''");
-        // Build: copilot --model X --deny-tool ... -s -p 'prompt'
-        fullCommand = `${this.command} ${this.baseArgs.join(' ')} -p '${escapedPrompt}'`;
+        // Build: copilot --add-dir <cwd> --model X --deny-tool ... -s -p 'prompt'
+        fullCommand = `${this.command} --add-dir '${cwd}' ${this.baseArgs.join(' ')} -p '${escapedPrompt}'`;
         fullArgs = [];
       } else {
-        // Build args array: --model X --deny-tool ... -s -p <prompt>
-        fullArgs = [...this.baseArgs, '-p', prompt];
+        // Build args array: --add-dir <cwd> --model X --deny-tool ... -s -p <prompt>
+        fullArgs = ['--add-dir', cwd, ...this.baseArgs, '-p', prompt];
       }
 
       const copilot = spawn(fullCommand, fullArgs, {
