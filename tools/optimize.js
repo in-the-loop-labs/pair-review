@@ -65,7 +65,7 @@ function getDefaultOptimizerModel(provider) {
 /**
  * Valid providers, tiers, and prompt types
  */
-const VALID_PROVIDERS = ['gemini', 'copilot', 'claude', 'codex'];
+const VALID_PROVIDERS = Object.keys(PROVIDER_CLASSES);
 const VALID_TIERS = ['fast', 'balanced', 'thorough'];
 const VALID_PROMPTS = ['level1', 'level2', 'level3', 'orchestration'];
 
@@ -492,8 +492,9 @@ function executeCodexCli(model, prompt) {
 /**
  * Execute the Copilot CLI and return the result
  *
- * Uses `copilot --model MODEL -s -p PROMPT` format.
+ * Uses `copilot --model MODEL -s` format with prompt via stdin.
  * The -s flag enables silent mode (only agent response, no stats).
+ * Prompt is sent via stdin to avoid ARG_MAX limitations with large prompts.
  *
  * @param {string} model - Model to use
  * @param {string} prompt - Prompt to send
@@ -501,8 +502,8 @@ function executeCodexCli(model, prompt) {
  */
 function executeCopilotCli(model, prompt) {
   return new Promise((resolve, reject) => {
-    // Build args: --model X -s -p <prompt>
-    const copilot = spawn('copilot', ['--model', model, '-s', '-p', prompt], {
+    // Build args: --model X -s (prompt sent via stdin)
+    const copilot = spawn('copilot', ['--model', model, '-s'], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -537,8 +538,8 @@ function executeCopilotCli(model, prompt) {
       }
     });
 
-    // Copilot uses -p flag for prompt, not stdin
-    // stdin is not used, but we should close it
+    // Send prompt to stdin (avoids ARG_MAX limit)
+    copilot.stdin.write(prompt);
     copilot.stdin.end();
   });
 }

@@ -132,7 +132,7 @@ class CopilotProvider extends AIProvider {
     // Command and base args are the same regardless of shell mode
     // (shell mode only affects how command is built in execute())
     this.command = copilotCmd;
-    // Args without the prompt - prompt will be added as value to -p flag in execute()
+    // Base args for Copilot CLI - prompt will be sent via stdin in execute()
     this.baseArgs = ['--model', model, ...readOnlyArgs, '-s'];
   }
 
@@ -150,8 +150,7 @@ class CopilotProvider extends AIProvider {
       logger.info(`${levelPrefix} Executing Copilot CLI...`);
       logger.info(`${levelPrefix} Writing prompt: ${prompt.length} bytes`);
 
-      // Build the command with other args first, then -p <prompt> at the end
-      // The -p flag expects the prompt value immediately after it
+      // Build the command args (prompt will be sent via stdin to avoid ARG_MAX limits)
       // --add-dir grants file access to specific directories:
       //   - cwd (worktree): where the PR files live
       //   - BIN_DIR: where git-diff-lines script lives
@@ -159,14 +158,12 @@ class CopilotProvider extends AIProvider {
       let fullArgs;
 
       if (this.useShell) {
-        // Escape the prompt for shell
-        const escapedPrompt = prompt.replace(/'/g, "'\\''");
-        // Build: copilot --add-dir <cwd> --add-dir <bin> --model X --deny-tool ... -s -p 'prompt'
-        fullCommand = `${this.command} --add-dir '${cwd}' --add-dir '${BIN_DIR}' ${this.baseArgs.join(' ')} -p '${escapedPrompt}'`;
+        // Build: copilot --add-dir <cwd> --add-dir <bin> --model X --deny-tool ... -s
+        fullCommand = `${this.command} --add-dir '${cwd}' --add-dir '${BIN_DIR}' ${this.baseArgs.join(' ')}`;
         fullArgs = [];
       } else {
-        // Build args array: --add-dir <cwd> --add-dir <bin> --model X --deny-tool ... -s -p <prompt>
-        fullArgs = ['--add-dir', cwd, '--add-dir', BIN_DIR, ...this.baseArgs, '-p', prompt];
+        // Build args array: --add-dir <cwd> --add-dir <bin> --model X --deny-tool ... -s
+        fullArgs = ['--add-dir', cwd, '--add-dir', BIN_DIR, ...this.baseArgs];
       }
 
       const copilot = spawn(fullCommand, fullArgs, {
@@ -268,6 +265,10 @@ class CopilotProvider extends AIProvider {
           settle(reject, error);
         }
       });
+
+      // Send prompt to stdin (avoids ARG_MAX limit with large prompts)
+      copilot.stdin.write(prompt);
+      copilot.stdin.end();
     });
   }
 
