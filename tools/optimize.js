@@ -26,12 +26,14 @@ const CopilotProvider = require('../src/ai/copilot-provider');
 
 /**
  * Provider class mapping
+ * Note: 'openai' is kept as an alias for backwards compatibility with existing scripts
  */
 const PROVIDER_CLASSES = {
   gemini: GeminiProvider,
   claude: ClaudeProvider,
   codex: CodexProvider,
-  openai: CopilotProvider  // OpenAI models accessed via Copilot provider
+  copilot: CopilotProvider,
+  openai: CopilotProvider  // Backwards-compatible alias for 'copilot'
 };
 
 /**
@@ -64,8 +66,9 @@ function getDefaultOptimizerModel(provider) {
 
 /**
  * Valid providers, tiers, and prompt types
+ * Note: Both 'copilot' and 'openai' map to CopilotProvider for backwards compatibility
  */
-const VALID_PROVIDERS = ['gemini', 'openai', 'claude', 'codex'];
+const VALID_PROVIDERS = ['gemini', 'copilot', 'openai', 'claude', 'codex'];
 const VALID_TIERS = ['fast', 'balanced', 'thorough'];
 const VALID_PROMPTS = ['level1', 'level2', 'level3', 'orchestration'];
 
@@ -137,7 +140,7 @@ Usage:
   node tools/optimize.js --provider gemini --tier fast --prompt level1
 
 Options:
-  --provider <name>       Provider to optimize for (gemini, openai, codex, claude)
+  --provider <name>       Provider to optimize for (gemini, copilot, openai, codex, claude)
   --tier <tier>           Tier to optimize (fast, balanced, thorough)
   --prompt <type>         Prompt type (level1, level2, level3, orchestration)
   --optimizer-model <m>   Override optimizer model (default: thorough model for provider)
@@ -146,7 +149,9 @@ Options:
 
 Examples:
   node tools/optimize.js --provider gemini --tier fast --prompt level1
-  node tools/optimize.js --provider openai --tier balanced --prompt level2
+  node tools/optimize.js --provider copilot --tier balanced --prompt level2
+  node tools/optimize.js --provider codex --tier thorough --prompt level3
+  node tools/optimize.js --provider claude --tier fast --prompt orchestration
 `);
 }
 
@@ -404,6 +409,242 @@ function executeGeminiCli(model, prompt) {
 }
 
 /**
+ * Execute the Codex CLI and return the result
+ *
+ * Uses `codex exec` command with JSONL output format.
+ * Parses the JSONL response to extract the agent_message content.
+ *
+ * @param {string} model - Model to use
+ * @param {string} prompt - Prompt to send
+ * @returns {Promise<Object>} Parsed JSON response
+ */
+function executeCodexCli(model, prompt) {
+  return new Promise((resolve, reject) => {
+    const codex = spawn('codex', ['exec', '-m', model, '--json', '--sandbox', 'workspace-write', '--full-auto', '-'], {
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    codex.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    codex.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    codex.on('error', (error) => {
+      reject(new Error(`Failed to spawn codex CLI: ${error.message}`));
+    });
+
+    codex.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Codex CLI exited with code ${code}: ${stderr}`));
+        return;
+      }
+
+      try {
+        // Codex outputs JSONL - parse lines to find agent_message
+        const lines = stdout.trim().split('\n').filter(line => line.trim());
+        let agentMessage = null;
+
+        for (const line of lines) {
+          try {
+            const event = JSON.parse(line);
+            // Look for agent_message items which contain the actual response
+            if (event.type === 'item.completed' &&
+                event.item?.type === 'agent_message' &&
+                event.item?.text) {
+              agentMessage = event.item.text;
+            }
+          } catch (lineError) {
+            // Skip malformed lines
+          }
+        }
+
+        if (agentMessage) {
+          // Use shared extractJSON utility for robust parsing
+          const extracted = extractJSON(agentMessage, 'optimize');
+          if (extracted.success) {
+            resolve(extracted.data);
+          } else {
+            reject(new Error(`Failed to extract JSON from Codex response: ${extracted.error}\nRaw output: ${agentMessage.substring(0, 1000)}`));
+          }
+        } else {
+          // No agent message found, try extracting JSON directly from stdout
+          const extracted = extractJSON(stdout, 'optimize');
+          if (extracted.success) {
+            resolve(extracted.data);
+          } else {
+            reject(new Error(`Failed to extract JSON from Codex response: ${extracted.error}\nRaw output: ${stdout.substring(0, 1000)}`));
+          }
+        }
+      } catch (parseError) {
+        reject(new Error(`Failed to parse Codex response: ${parseError.message}\nRaw output: ${stdout.substring(0, 1000)}`));
+      }
+    });
+
+    // Send prompt to stdin
+    codex.stdin.write(prompt);
+    codex.stdin.end();
+  });
+}
+
+/**
+ * Execute the Copilot CLI and return the result
+ *
+ * Uses `copilot --model MODEL -s -p PROMPT` format.
+ * The -s flag enables silent mode (only agent response, no stats).
+ *
+ * @param {string} model - Model to use
+ * @param {string} prompt - Prompt to send
+ * @returns {Promise<Object>} Parsed JSON response
+ */
+function executeCopilotCli(model, prompt) {
+  return new Promise((resolve, reject) => {
+    // Build args: --model X -s -p <prompt>
+    const copilot = spawn('copilot', ['--model', model, '-s', '-p', prompt], {
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    copilot.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    copilot.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    copilot.on('error', (error) => {
+      reject(new Error(`Failed to spawn copilot CLI: ${error.message}`));
+    });
+
+    copilot.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Copilot CLI exited with code ${code}: ${stderr}`));
+        return;
+      }
+
+      // Copilot with -s outputs direct text response
+      // Use shared extractJSON utility for robust parsing
+      const extracted = extractJSON(stdout, 'optimize');
+      if (extracted.success) {
+        resolve(extracted.data);
+      } else {
+        reject(new Error(`Failed to extract JSON from Copilot response: ${extracted.error}\nRaw output: ${stdout.substring(0, 1000)}`));
+      }
+    });
+
+    // Copilot uses -p flag for prompt, not stdin
+    // stdin is not used, but we should close it
+    copilot.stdin.end();
+  });
+}
+
+/**
+ * Execute the Claude CLI and return the result
+ *
+ * Uses `claude -p -m MODEL --output-format json` format.
+ * The -p flag enables print mode (non-interactive).
+ *
+ * @param {string} model - Model to use
+ * @param {string} prompt - Prompt to send
+ * @returns {Promise<Object>} Parsed JSON response
+ */
+function executeClaudeCli(model, prompt) {
+  return new Promise((resolve, reject) => {
+    const claude = spawn('claude', ['-p', '-m', model, '--output-format', 'json'], {
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    claude.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    claude.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    claude.on('error', (error) => {
+      reject(new Error(`Failed to spawn claude CLI: ${error.message}`));
+    });
+
+    claude.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`Claude CLI exited with code ${code}: ${stderr}`));
+        return;
+      }
+
+      try {
+        // Claude with --output-format json returns structured response
+        // The response format is { result: "...", ... }
+        const wrapper = JSON.parse(stdout);
+
+        let responseText;
+        if (wrapper.result) {
+          responseText = wrapper.result;
+        } else {
+          // Fallback if not wrapped
+          responseText = stdout;
+        }
+
+        // Use shared extractJSON utility for robust parsing
+        const extracted = extractJSON(responseText, 'optimize');
+        if (extracted.success) {
+          resolve(extracted.data);
+        } else {
+          reject(new Error(`Failed to extract JSON from Claude response: ${extracted.error}\nRaw output: ${responseText.substring(0, 1000)}`));
+        }
+      } catch (parseError) {
+        // If parsing fails, try extracting JSON directly
+        const extracted = extractJSON(stdout, 'optimize');
+        if (extracted.success) {
+          resolve(extracted.data);
+        } else {
+          reject(new Error(`Failed to parse Claude response as JSON: ${parseError.message}\nRaw output: ${stdout.substring(0, 1000)}`));
+        }
+      }
+    });
+
+    // Send prompt to stdin
+    claude.stdin.write(prompt);
+    claude.stdin.end();
+  });
+}
+
+/**
+ * Dispatch to the appropriate provider CLI executor
+ *
+ * @param {string} provider - Provider name (gemini, codex, copilot, openai, claude)
+ * @param {string} model - Model to use
+ * @param {string} prompt - Prompt to send
+ * @returns {Promise<Object>} Parsed JSON response
+ */
+async function executeProviderCli(provider, model, prompt) {
+  switch (provider) {
+    case 'gemini':
+      return executeGeminiCli(model, prompt);
+    case 'codex':
+      return executeCodexCli(model, prompt);
+    case 'copilot':
+    case 'openai':
+      return executeCopilotCli(model, prompt);
+    case 'claude':
+      return executeClaudeCli(model, prompt);
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+}
+
+/**
  * Ensure output directory exists
  * @param {string} outputPath - Output file path
  */
@@ -434,7 +675,7 @@ async function main() {
 
   let optimizerResult;
   try {
-    optimizerResult = await executeGeminiCli(config.optimizerModel, optimizationPrompt);
+    optimizerResult = await executeProviderCli(args.provider, config.optimizerModel, optimizationPrompt);
   } catch (error) {
     console.error(`Error calling optimizer model: ${error.message}`);
     process.exit(1);
