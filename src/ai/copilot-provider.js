@@ -152,19 +152,21 @@ class CopilotProvider extends AIProvider {
 
       // Build the command with other args first, then -p <prompt> at the end
       // The -p flag expects the prompt value immediately after it
-      // --add-dir grants file access to the worktree directory (cwd)
+      // --add-dir grants file access to specific directories:
+      //   - cwd (worktree): where the PR files live
+      //   - BIN_DIR: where git-diff-lines script lives
       let fullCommand = this.command;
       let fullArgs;
 
       if (this.useShell) {
         // Escape the prompt for shell
         const escapedPrompt = prompt.replace(/'/g, "'\\''");
-        // Build: copilot --add-dir <cwd> --model X --deny-tool ... -s -p 'prompt'
-        fullCommand = `${this.command} --add-dir '${cwd}' ${this.baseArgs.join(' ')} -p '${escapedPrompt}'`;
+        // Build: copilot --add-dir <cwd> --add-dir <bin> --model X --deny-tool ... -s -p 'prompt'
+        fullCommand = `${this.command} --add-dir '${cwd}' --add-dir '${BIN_DIR}' ${this.baseArgs.join(' ')} -p '${escapedPrompt}'`;
         fullArgs = [];
       } else {
-        // Build args array: --add-dir <cwd> --model X --deny-tool ... -s -p <prompt>
-        fullArgs = ['--add-dir', cwd, ...this.baseArgs, '-p', prompt];
+        // Build args array: --add-dir <cwd> --add-dir <bin> --model X --deny-tool ... -s -p <prompt>
+        fullArgs = ['--add-dir', cwd, '--add-dir', BIN_DIR, ...this.baseArgs, '-p', prompt];
       }
 
       const copilot = spawn(fullCommand, fullArgs, {
