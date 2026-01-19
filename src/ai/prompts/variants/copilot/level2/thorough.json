@@ -1,0 +1,126 @@
+{
+  "meta": {
+    "baseline": "level2/thorough",
+    "baselineHash": "e3e0013f",
+    "targetModel": "gpt-5.1-codex-max",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:53:27.483Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "custom-instructions",
+      "level-header",
+      "pr-context",
+      "valid-files",
+      "output-schema",
+      "diff-instructions",
+      "line-number-guidance",
+      "category-definitions",
+      "confidence-guidance",
+      "file-level-guidance",
+      "analysis-process",
+      "focus-areas",
+      "guidelines",
+      "reasoning-encouragement",
+      "available-commands"
+    ],
+    "overrides": {
+      "analysis-process": "## Analysis Process\n\nFor each file with changes:\n\n1. **Build Context First**\n   - Read the full file for purpose, architecture, and implicit rules (error handling, naming, patterns)\n   - Run git-diff-lines with the file path to see precise line numbers\n   - Note patterns that new code should follow\n\n2. **Analyze Integration Quality**\n   - Check if changes follow established patterns and boundaries\n   - Spot related sections that should change together\n   - Confirm abstraction levels remain consistent\n\n3. **Generate Contextual Findings**\n   - Report only issues needing full-file context\n   - Attach to the line where the issue manifests; skip files with no file-level concerns",
+      "focus-areas": "## Analysis Focus Areas\nCheck consistency with existing file patterns in naming, errors, logging, imports, ordering, and documentation. Verify integration quality, abstraction boundaries, and related sections. Scan for security, performance, design, code quality, duplication, magic numbers, and type usage consistent with the file. Note documentation gaps or outdated comments. Praise clean integrations that match file conventions.",
+      "guidelines": "## Guidelines\n- Scope: attach to any line in modified files; avoid Level 1 diff-only findings; focus on file-context patterns.\n- Output quality: omit suggestion for praise; otherwise provide specific, actionable fixes grounded in file context and explain why context was needed.\n- Philosophy: constructive, convention-first, distinguish must-fix vs nice-to-have, lower confidence when unsure, praise good integration.\n- Priority: (1) convention breaks causing bugs/security, (2) maintainability consistency, (3) style coherence, (4) praise.",
+      "reasoning-encouragement": "## Reasoning Framework\n- Understand file contract: implicit contracts, invariants, extension points.\n- Evaluate change integration: interactions, dependencies, boundary respect.\n- Analyze impacts: downstream effects, edge cases (null/empty/concurrent), future maintainability.\n- Calibrate output: report only file-context issues; skip diff-only observations."
+    },
+    "removedSections": [
+      "generated-files"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "reordered",
+      "rationale": "Placed upfront to set reviewer role immediately for the model."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked content preserved exactly while moved earlier for context."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "reordered",
+      "rationale": "Kept optional user overrides near role to apply early."
+    },
+    {
+      "section": "level-header",
+      "type": "reordered",
+      "rationale": "Moved near top to signal review depth early."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "reordered",
+      "rationale": "Placed near diff instructions to cluster line-handling rules."
+    },
+    {
+      "section": "reasoning-encouragement",
+      "type": "modified",
+      "rationale": "Condensed into direct bullets for faster comprehension while keeping intent."
+    },
+    {
+      "section": "generated-files",
+      "type": "removed",
+      "rationale": "Optional section removed to reduce prompt length and overhead."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked list kept intact for correctness."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Streamlined steps and phrasing to highlight actions and constraints clearly."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Condensed bullets into concise checklist suited for fast adherence."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Kept content but tightened language while retaining constraints."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked schema preserved; positioned early to emphasize format constraints."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "reordered",
+      "rationale": "Placed immediately after output schema to tie to formatting rules."
+    },
+    {
+      "section": "confidence-guidance",
+      "type": "reordered",
+      "rationale": "Moved near category definitions to cluster evaluation criteria."
+    },
+    {
+      "section": "category-definitions",
+      "type": "reordered",
+      "rationale": "Positioned before confidence to set taxonomy first."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "reordered",
+      "rationale": "Placed after definitions to clarify when to use file vs line suggestions."
+    },
+    {
+      "section": "guidelines",
+      "type": "reordered",
+      "rationale": "Moved after focus areas to consolidate execution rules."
+    }
+  ]
+}

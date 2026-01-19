@@ -1,0 +1,106 @@
+{
+  "meta": {
+    "baseline": "level2/balanced",
+    "baselineHash": "2e6a135c",
+    "targetModel": "gemini-3-pro-preview",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:53:12.560Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "valid-files",
+      "output-schema",
+      "level-header",
+      "line-number-guidance",
+      "analysis-process",
+      "focus-areas",
+      "guidelines",
+      "diff-instructions",
+      "available-commands",
+      "custom-instructions",
+      "generated-files",
+      "file-level-guidance"
+    ],
+    "overrides": {
+      "analysis-process": "## Analysis Process\nFor each file with changes:\n1. Run git-diff-lines to see changes with line numbers\n2. Read full file content only when context is needed\n3. Map changes to file structure and patterns\n4. Focus on consistency within the file\n5. **Skip files where no file-level issues are found**",
+      "focus-areas": "## Focus Areas\nLook for:\n- Inconsistencies within files (naming, patterns, error handling)\n- Missing related changes when one part changes\n- Security vulnerabilities in file context\n- Style violations or pattern deviations\n- Design pattern consistency\n- Documentation completeness for file-level changes\n- Good practices worth praising",
+      "guidelines": "## Guidelines\n\n**Priority rules:**\n1. Skip files with no issues when considering full file context\n2. Anchor suggestions to specific lines when possible\n3. Use fileLevelSuggestions only for true file-wide concerns\n4. Focus on issues requiring full file context\n\n**Output rules:**\n- For \"praise\": omit the suggestion field\n- For other types: provide specific, actionable suggestions\n\n**Confidence calibration:**\n- High (0.8+): clear issues\n- Medium (0.5-0.79): likely issues, some uncertainty\n- Lower: omit marginal suggestions"
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Kept required intro placeholder intact; concise enough for gemini-3-pro-preview."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly per rules."
+    },
+    {
+      "section": "valid-files",
+      "type": "reordered",
+      "rationale": "Moved earlier to front-load critical scope constraints for the model."
+    },
+    {
+      "section": "output-schema",
+      "type": "reordered",
+      "rationale": "Placed near top to emphasize JSON-only output and schema before other guidance."
+    },
+    {
+      "section": "level-header",
+      "type": "reordered",
+      "rationale": "Positioned after locked constraints to maintain clarity of review level once scope is set."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "reordered",
+      "rationale": "Kept required guidance early to anchor line handling before analysis steps."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Streamlined steps for brevity and clarity while retaining full meaning for the model."
+    },
+    {
+      "section": "focus-areas",
+      "type": "unchanged",
+      "rationale": "Already concise and relevant for pro model; left intact."
+    },
+    {
+      "section": "guidelines",
+      "type": "unchanged",
+      "rationale": "Content suited to model; no change needed beyond placement."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Precise instructions retained for correctness."
+    },
+    {
+      "section": "available-commands",
+      "type": "reordered",
+      "rationale": "Moved after diff/guidelines to group operational constraints once logic rules are set."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "reordered",
+      "rationale": "Kept optional section but moved later to avoid distracting from critical rules; still available for user overrides."
+    },
+    {
+      "section": "generated-files",
+      "type": "reordered",
+      "rationale": "Optional section retained and placed near other optional info to minimize overhead."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "reordered",
+      "rationale": "Kept optional clarity section at end to avoid interrupting core constraints while remaining available."
+    }
+  ]
+}

@@ -1,0 +1,114 @@
+{
+  "meta": {
+    "baseline": "orchestration/fast",
+    "baselineHash": "c34fd063",
+    "targetModel": "gpt-5.1-codex-mini",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:54:06.509Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "critical-output",
+      "output-schema",
+      "task-header",
+      "role-description",
+      "line-number-guidance",
+      "intelligent-merging",
+      "priority-curation",
+      "balanced-output",
+      "human-centric-framing",
+      "diff-instructions",
+      "guidelines",
+      "custom-instructions",
+      "input-suggestions"
+    ],
+    "overrides": {
+      "role-description": "## Task\nMerge and dedupe 3-level suggestions; keep only the highest-value items.",
+      "intelligent-merging": "## Rules\nCombine related items, merge overlaps, and keep unique insights. Never mention levels.",
+      "balanced-output": "### Output\nMax 2-3 praise items. Prefer line-level over file-level. Ensure suggestions are actionable.",
+      "human-centric-framing": "### Framing\nUse soft language: \"Consider...\", \"Worth noting...\" — guidance, not mandates."
+    },
+    "removedSections": [
+      "file-line-counts"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Keep intro placeholder intact; required content stays the same."
+    },
+    {
+      "section": "task-header",
+      "type": "unchanged",
+      "rationale": "Header is concise and clear for fast model."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder must remain for provided guidance."
+    },
+    {
+      "section": "critical-output",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly."
+    },
+    {
+      "section": "role-description",
+      "type": "modified",
+      "rationale": "Shortened to imperative summary suited to fast model."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional but retained to allow user-specific directives."
+    },
+    {
+      "section": "input-suggestions",
+      "type": "unchanged",
+      "rationale": "Locked content preserved exactly."
+    },
+    {
+      "section": "file-line-counts",
+      "type": "removed",
+      "rationale": "Optional detail removed to reduce prompt length for mini model."
+    },
+    {
+      "section": "intelligent-merging",
+      "type": "modified",
+      "rationale": "Tightened rules into direct commands for efficiency."
+    },
+    {
+      "section": "priority-curation",
+      "type": "unchanged",
+      "rationale": "Already concise priority ordering."
+    },
+    {
+      "section": "balanced-output",
+      "type": "modified",
+      "rationale": "Sharper directives to emphasize actionable, limited praise."
+    },
+    {
+      "section": "human-centric-framing",
+      "type": "modified",
+      "rationale": "Simplified phrasing to fit fast model while keeping intent."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked schema preserved exactly."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Already concise and clear for fast processing."
+    },
+    {
+      "section": "guidelines",
+      "type": "unchanged",
+      "rationale": "Concise notes maintained; no redundant wording."
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+{
+  "meta": {
+    "baseline": "level3/fast",
+    "baselineHash": "4206b838",
+    "targetModel": "gpt-5.1-codex-mini",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:53:43.472Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "output-schema",
+      "diff-instructions",
+      "guidelines",
+      "line-number-guidance",
+      "pr-context",
+      "changed-files",
+      "level-header",
+      "purpose",
+      "analysis-process",
+      "focus-areas",
+      "available-commands",
+      "custom-instructions"
+    ],
+    "overrides": {
+      "guidelines": "## Guidelines\n- Focus on codebase-level or cross-file issues\n- Include only confident findings; skip uncertain issues\n- Prefer line-level comments when tied to specific lines\n- For \"praise\" omit the suggestion field; otherwise give actionable suggestions",
+      "purpose": "## Purpose\nLevel 3 checks how changes link to the broader codebase.\nFocus on relationships to existing patterns.",
+      "analysis-process": "## Steps\n1. Map dependencies around changed files\n2. Check interactions with referencing/referenced files\n3. Confirm alignment with established patterns\n4. Skip areas without cross-cutting impact"
+    },
+    "removedSections": [
+      "generated-files"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "reordered",
+      "rationale": "Placed first to set context immediately for the fast model."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked content preserved while still providing repository context."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "reordered",
+      "rationale": "Moved to the end to avoid distracting from core constraints yet still allow user overrides."
+    },
+    {
+      "section": "level-header",
+      "type": "reordered",
+      "rationale": "Positioned after constraints and context to frame the task once rules are set."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "reordered",
+      "rationale": "Kept concise and moved near constraints to reinforce numbering rules early."
+    },
+    {
+      "section": "generated-files",
+      "type": "removed",
+      "rationale": "Optional section removed to reduce prompt length for the fast model."
+    },
+    {
+      "section": "changed-files",
+      "type": "unchanged",
+      "rationale": "Locked section left intact to preserve exact file context."
+    },
+    {
+      "section": "purpose",
+      "type": "modified",
+      "rationale": "Condensed wording to front-load the goal for a fast model."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Tightened steps into direct imperatives for quicker parsing."
+    },
+    {
+      "section": "focus-areas",
+      "type": "unchanged",
+      "rationale": "Content already concise and relevant for the fast model."
+    },
+    {
+      "section": "available-commands",
+      "type": "reordered",
+      "rationale": "Moved after focus areas to keep procedural guidance grouped."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked schema kept exact while being front-loaded for compliance emphasis."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "reordered",
+      "rationale": "Placed early with the schema to clarify output labeling rules up front."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Streamlined bullets to stress confidence and actionability for fast processing."
+    }
+  ]
+}

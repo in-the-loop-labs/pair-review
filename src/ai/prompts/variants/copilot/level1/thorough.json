@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "baseline": "level1/thorough",
+    "baselineHash": "b0990073",
+    "targetModel": "gpt-5.1-codex-max",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:52:54.318Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "valid-files",
+      "output-schema",
+      "diff-instructions",
+      "line-number-guidance",
+      "initial-setup",
+      "focus-areas",
+      "guidelines",
+      "confidence-guidance",
+      "category-definitions",
+      "reasoning-encouragement",
+      "available-commands",
+      "custom-instructions",
+      "level-header"
+    ],
+    "overrides": {
+      "role": "You are performing a Level 1 deep diff code review. Provide precise, high-confidence findings only.",
+      "diff-instructions": "## Line Number Reference (old_or_new field)\n- Use **NEW** for added lines [+] and all context lines (default).\n- Use **OLD** only for deleted lines [-].\n- If unsure, use **NEW**.",
+      "initial-setup": "## Initial Setup\n1. Run git-diff-lines to view changes with line numbers.\n2. Read the diff end-to-end to infer intent.\n3. Focus on changed lines; use surrounding context only as needed to validate issues.\n4. For each change, ask what could fail or regress.",
+      "focus-areas": "## Analysis Focus Areas\nCheck changed code for: correctness, security, performance, and code quality. Include documentation gaps visible in diff and reinforce notable good practices.",
+      "guidelines": "## Important Guidelines\n- Comment on any line in modified files; prioritize changed lines.\n- Base feedback on the diff; avoid broad file-level or project-wide audits.\n- For non-praise types, give specific, actionable fixes; omit suggestion field for praise.\n- Be concise, constructive, and distinguish must-fix from nice-to-have.",
+      "confidence-guidance": "## Confidence Calibration\nSet confidence to reflect certainty: High 0.8-1.0, Medium 0.5-0.79, Low 0.3-0.49, Very low <0.3. Confidence is about certainty, not severity.",
+      "category-definitions": "## Category Definitions\n- bug: incorrect behavior or runtime failure.\n- improvement: cleaner/maintainable alternative to working code.\n- praise: highlight good choices.\n- suggestion: optional ideas to consider.\n- design: structural/architectural concerns.\n- performance: speed/memory/resource issues.\n- security: vulnerabilities or unsafe patterns.\n- code-style: naming/formatting/style issues.",
+      "reasoning-encouragement": "## Reasoning Approach\nFor each issue: consider intent, edge cases, severity/likelihood, and whether it is a real problem vs style. Provide clear, actionable suggestions where appropriate; favor fewer, high-confidence findings over volume.",
+      "available-commands": "## Available Commands (READ-ONLY)\nYou have READ-ONLY access. You may run git-diff-lines, cat -n <file>, and basic ls/find/grep. Do NOT modify files or run write commands."
+    },
+    "removedSections": [
+      "generated-files"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "modified",
+      "rationale": "Front-loaded concise role and expectation for high-confidence findings suited to capable model."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked content must remain exact."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional dynamic instructions preserved for flexibility."
+    },
+    {
+      "section": "level-header",
+      "type": "unchanged",
+      "rationale": "Header retained as clear level marker."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder locked; kept as-is while diff rules clarified elsewhere."
+    },
+    {
+      "section": "reasoning-encouragement",
+      "type": "modified",
+      "rationale": "Condensed to imperative guidance aligned with codex-max while keeping intent."
+    },
+    {
+      "section": "generated-files",
+      "type": "removed",
+      "rationale": "Optional section removed to reduce prompt length without losing critical guidance."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked constraints preserved exactly."
+    },
+    {
+      "section": "initial-setup",
+      "type": "modified",
+      "rationale": "Simplified steps to emphasize intent derivation and failure-minded review."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Condensed focus list to core categories for clarity and speed."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Streamlined to essential read-only reminders."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked output format preserved exactly."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Simplified imperative rules for selecting line numbers."
+    },
+    {
+      "section": "confidence-guidance",
+      "type": "modified",
+      "rationale": "Compressed but kept calibration thresholds clear."
+    },
+    {
+      "section": "category-definitions",
+      "type": "modified",
+      "rationale": "Condensed definitions for quick parsing by advanced model."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Removed redundancy, emphasized actionable, diff-scoped feedback."
+    }
+  ]
+}
