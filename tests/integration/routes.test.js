@@ -3840,3 +3840,152 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
     });
   });
 });
+
+// ============================================================================
+// Worktree Tiered Discovery Tests
+// ============================================================================
+
+describe('Worktree Tiered Discovery', () => {
+  let db;
+  let app;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+    vi.clearAllMocks();
+  });
+
+  describe('POST /api/worktrees/create - Tier 0 (known local path lookup)', () => {
+    it('should check known local path from repo_settings first', async () => {
+      // Set up a known local path in repo_settings
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      await repoSettingsRepo.setLocalPath('owner/repo', '/known/repo/path');
+
+      // Track pathExists calls
+      const pathExistsCalls = [];
+      vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockImplementation(async (path) => {
+        pathExistsCalls.push(path);
+        // Return false to simulate path doesn't exist, forcing fallback
+        return false;
+      });
+
+      // Make the request - it will fail since paths don't exist,
+      // but we can verify the lookup order
+      const response = await request(app)
+        .post('/api/worktrees/create')
+        .send({ owner: 'owner', repo: 'repo', prNumber: 1 });
+
+      // The known path should have been checked first (Tier 0)
+      expect(pathExistsCalls[0]).toBe('/known/repo/path');
+    });
+
+    it('should clear local_path when path exists but is invalid', async () => {
+      // This tests the clearing logic indirectly via the database
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      // First set a local_path
+      await repoSettingsRepo.setLocalPath('owner/repo', '/stale/path');
+      let settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(settings.local_path).toBe('/stale/path');
+
+      // Clear it (simulating what happens when path is no longer valid)
+      await repoSettingsRepo.setLocalPath('owner/repo', null);
+
+      // Verify it's cleared
+      settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(settings.local_path).toBeNull();
+    });
+  });
+
+  describe('POST /api/worktrees/create - Tier 1 (existing worktree fallback)', () => {
+    it('should check for existing worktree when no known path', async () => {
+      // Insert an existing worktree record (no known local_path in repo_settings)
+      const now = new Date().toISOString();
+      await run(db, `
+        INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, ['wt-123', 1, 'owner/repo', 'feature', '/existing/worktree/path', now, now]);
+
+      // Track pathExists calls
+      const pathExistsCalls = [];
+      vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockImplementation(async (path) => {
+        pathExistsCalls.push(path);
+        // Return false to simulate path doesn't exist
+        return false;
+      });
+
+      const response = await request(app)
+        .post('/api/worktrees/create')
+        .send({ owner: 'owner', repo: 'repo', prNumber: 1 });
+
+      // Since there's no known local_path, it should check the existing worktree path (Tier 1)
+      expect(pathExistsCalls).toContain('/existing/worktree/path');
+    });
+  });
+
+  describe('RepoSettingsRepository.setLocalPath', () => {
+    it('should create new repo_settings record with local_path', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      await repoSettingsRepo.setLocalPath('new-owner/new-repo', '/path/to/repo');
+
+      const settings = await repoSettingsRepo.getRepoSettings('new-owner/new-repo');
+      expect(settings).not.toBeNull();
+      expect(settings.local_path).toBe('/path/to/repo');
+    });
+
+    it('should update existing repo_settings with local_path', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      // Create initial settings
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_instructions: 'Be thorough'
+      });
+
+      // Update with local_path
+      await repoSettingsRepo.setLocalPath('owner/repo', '/updated/path');
+
+      const settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(settings.local_path).toBe('/updated/path');
+      expect(settings.default_instructions).toBe('Be thorough');
+    });
+
+    it('should clear local_path when set to null', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      // Create initial settings with local_path
+      await repoSettingsRepo.setLocalPath('owner/repo', '/initial/path');
+
+      // Clear local_path
+      await repoSettingsRepo.setLocalPath('owner/repo', null);
+
+      const settings = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(settings.local_path).toBeNull();
+    });
+  });
+
+  describe('RepoSettingsRepository.getLocalPath', () => {
+    it('should return null for non-existent repository', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      const localPath = await repoSettingsRepo.getLocalPath('nonexistent/repo');
+
+      expect(localPath).toBeNull();
+    });
+
+    it('should return local_path for existing repository', async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+
+      await repoSettingsRepo.setLocalPath('owner/repo', '/my/repo/path');
+
+      const localPath = await repoSettingsRepo.getLocalPath('owner/repo');
+      expect(localPath).toBe('/my/repo/path');
+    });
+  });
+});

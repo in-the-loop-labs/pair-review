@@ -517,6 +517,64 @@ html, body {
 }
 
 /* ============================================
+   Local Path Display
+   ============================================ */
+
+.local-path-display {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.local-path-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+}
+
+.local-path-content code {
+  flex: 1;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+  word-break: break-all;
+}
+
+.local-path-content code.has-value {
+  color: var(--color-text-primary);
+}
+
+.local-path-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.local-path-hint svg {
+  flex-shrink: 0;
+}
+
+.local-path-hint code {
+  background: var(--color-bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+}
+
+.btn-small {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+/* ============================================
    Danger Zone
    ============================================ */
 

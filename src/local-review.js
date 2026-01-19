@@ -6,7 +6,7 @@ const fs = require('fs').promises;
 const { loadConfig } = require('./config');
 
 const execAsync = promisify(exec);
-const { initializeDatabase, ReviewRepository } = require('./database');
+const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { startServer } = require('./server');
 const { localReviewDiffs } = require('./routes/shared');
 const open = (...args) => import('open').then(({ default: open }) => open(...args));
@@ -26,6 +26,44 @@ const MAX_FILE_SIZE = 1024 * 1024;
  * (exit code 1 means differences exist, not an error)
  */
 const GIT_DIFF_HAS_DIFFERENCES = 1;
+
+/**
+ * Find the main git repository root, resolving through worktrees.
+ * For regular repos, returns the repo root.
+ * For worktrees, returns the parent/main repository root (not the worktree path).
+ *
+ * Uses `git rev-parse --git-common-dir` which returns the common .git directory:
+ * - For regular repos: returns ".git"
+ * - For worktrees: returns the path to the main repo's .git directory (e.g., "/path/to/main/.git")
+ *
+ * @param {string} repoPath - Path within a git repository (or worktree)
+ * @returns {Promise<string>} Absolute path to the main git repository root
+ * @throws {Error} If path is not within a git repository
+ */
+async function findMainGitRoot(repoPath) {
+  try {
+    const commonDir = execSync('git rev-parse --git-common-dir', {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+
+    // If commonDir is just ".git", this is a regular repo - return the repoPath
+    if (commonDir === '.git') {
+      return repoPath;
+    }
+
+    // For worktrees, commonDir is an absolute path like "/path/to/main/.git"
+    // or a relative path like "../main/.git"
+    // Resolve it and go up one level to get the main repo root
+    const resolvedCommonDir = path.resolve(repoPath, commonDir);
+    const mainRepoRoot = path.dirname(resolvedCommonDir);
+
+    return mainRepoRoot;
+  } catch (error) {
+    throw new Error(`Failed to find main git root: ${error.message}`);
+  }
+}
 
 /**
  * Find the git repository root by walking up the directory tree
@@ -472,6 +510,21 @@ async function handleLocalReview(targetPath, flags = {}) {
     const repository = await getRepositoryName(repoPath);
     console.log(`Repository: ${repository}`);
 
+    // If this is a GitHub repository (has owner/repo format), register the local path
+    // This enables future web UI sessions to find this repository without cloning
+    // Use findMainGitRoot to resolve worktrees to their parent repo
+    if (repository.includes('/')) {
+      try {
+        const mainRepoRoot = await findMainGitRoot(repoPath);
+        const repoSettingsRepo = new RepoSettingsRepository(db);
+        await repoSettingsRepo.setLocalPath(repository, mainRepoRoot);
+        console.log(`Registered repository location: ${mainRepoRoot}`);
+      } catch (error) {
+        // Non-fatal: registration failure shouldn't block the review
+        console.warn(`Could not register repository location: ${error.message}`);
+      }
+    }
+
     console.log('Checking for existing review session...');
     const existingReview = await reviewRepo.getLocalReview(repoPath, headSha);
 
@@ -627,6 +680,7 @@ async function computeLocalDiffDigest(localPath) {
 module.exports = {
   handleLocalReview,
   findGitRoot,
+  findMainGitRoot,
   getHeadSha,
   getRepositoryName,
   getCurrentBranch,

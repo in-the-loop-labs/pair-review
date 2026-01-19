@@ -4,7 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 
-const { computeLocalDiffDigest, generateLocalDiff } = require('../../src/local-review');
+const { computeLocalDiffDigest, generateLocalDiff, findMainGitRoot, findGitRoot } = require('../../src/local-review');
 
 describe('computeLocalDiffDigest', () => {
   let testDir;
@@ -216,5 +216,150 @@ describe('generateLocalDiff', () => {
       // No absolute paths
       expect(result.diff).not.toContain(testDir);
     });
+  });
+});
+
+describe('findMainGitRoot', () => {
+  let mainRepoDir;
+  let worktreeDir;
+
+  beforeEach(async () => {
+    // Create a main git repository
+    // Use realpath to resolve symlinks (e.g., /var -> /private/var on macOS)
+    const tmpDir = await fs.realpath(os.tmpdir());
+    mainRepoDir = await fs.mkdtemp(path.join(tmpDir, 'pair-review-main-repo-'));
+
+    // Initialize git repo
+    execSync('git init', { cwd: mainRepoDir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: mainRepoDir, stdio: 'pipe' });
+    execSync('git config user.name "Test User"', { cwd: mainRepoDir, stdio: 'pipe' });
+
+    // Create initial commit
+    await fs.writeFile(path.join(mainRepoDir, 'file.txt'), 'initial content\n');
+    execSync('git add file.txt', { cwd: mainRepoDir, stdio: 'pipe' });
+    execSync('git commit -m "Initial commit"', { cwd: mainRepoDir, stdio: 'pipe' });
+  });
+
+  afterEach(async () => {
+    // Clean up worktree first (must be removed before the main repo)
+    if (worktreeDir) {
+      try {
+        execSync(`git worktree remove --force "${worktreeDir}"`, { cwd: mainRepoDir, stdio: 'pipe' });
+      } catch {
+        // Worktree might already be removed or never created
+      }
+      worktreeDir = null;
+    }
+
+    // Clean up main repo
+    if (mainRepoDir) {
+      await fs.rm(mainRepoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should return the same path for a regular git repository', async () => {
+    const result = await findMainGitRoot(mainRepoDir);
+    expect(result).toBe(mainRepoDir);
+  });
+
+  it('should return the main repo root when called from a worktree', async () => {
+    // Create a worktree
+    const tmpDir = await fs.realpath(os.tmpdir());
+    worktreeDir = path.join(tmpDir, `pair-review-worktree-${Date.now()}`);
+
+    // Create a branch for the worktree
+    execSync('git branch test-branch', { cwd: mainRepoDir, stdio: 'pipe' });
+    execSync(`git worktree add "${worktreeDir}" test-branch`, { cwd: mainRepoDir, stdio: 'pipe' });
+
+    // findMainGitRoot should return the main repo, not the worktree
+    const result = await findMainGitRoot(worktreeDir);
+    expect(result).toBe(mainRepoDir);
+  });
+
+  it('should work when called from a subdirectory of a worktree', async () => {
+    // Create a worktree
+    const tmpDir = await fs.realpath(os.tmpdir());
+    worktreeDir = path.join(tmpDir, `pair-review-worktree-${Date.now()}`);
+    execSync('git branch test-branch-2', { cwd: mainRepoDir, stdio: 'pipe' });
+    execSync(`git worktree add "${worktreeDir}" test-branch-2`, { cwd: mainRepoDir, stdio: 'pipe' });
+
+    // Create a subdirectory in the worktree
+    const subDir = path.join(worktreeDir, 'src', 'components');
+    await fs.mkdir(subDir, { recursive: true });
+
+    // findMainGitRoot should still return the main repo
+    const result = await findMainGitRoot(subDir);
+    expect(result).toBe(mainRepoDir);
+  });
+
+  it('should throw an error for non-git directory', async () => {
+    const nonGitDir = await fs.mkdtemp(path.join(os.tmpdir(), 'non-git-'));
+    try {
+      await expect(findMainGitRoot(nonGitDir)).rejects.toThrow('Failed to find main git root');
+    } finally {
+      await fs.rm(nonGitDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('findGitRoot vs findMainGitRoot comparison', () => {
+  let mainRepoDir;
+  let worktreeDir;
+
+  beforeEach(async () => {
+    // Create a main git repository
+    // Use realpath to resolve symlinks (e.g., /var -> /private/var on macOS)
+    const tmpDir = await fs.realpath(os.tmpdir());
+    mainRepoDir = await fs.mkdtemp(path.join(tmpDir, 'pair-review-compare-'));
+
+    // Initialize git repo
+    execSync('git init', { cwd: mainRepoDir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: mainRepoDir, stdio: 'pipe' });
+    execSync('git config user.name "Test User"', { cwd: mainRepoDir, stdio: 'pipe' });
+
+    // Create initial commit
+    await fs.writeFile(path.join(mainRepoDir, 'file.txt'), 'initial content\n');
+    execSync('git add file.txt', { cwd: mainRepoDir, stdio: 'pipe' });
+    execSync('git commit -m "Initial commit"', { cwd: mainRepoDir, stdio: 'pipe' });
+
+    // Create a worktree
+    worktreeDir = path.join(tmpDir, `pair-review-wt-${Date.now()}`);
+    execSync('git branch compare-branch', { cwd: mainRepoDir, stdio: 'pipe' });
+    execSync(`git worktree add "${worktreeDir}" compare-branch`, { cwd: mainRepoDir, stdio: 'pipe' });
+  });
+
+  afterEach(async () => {
+    if (worktreeDir) {
+      try {
+        execSync(`git worktree remove --force "${worktreeDir}"`, { cwd: mainRepoDir, stdio: 'pipe' });
+      } catch {
+        // Worktree might already be removed
+      }
+    }
+    if (mainRepoDir) {
+      await fs.rm(mainRepoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should demonstrate the difference: findGitRoot returns worktree, findMainGitRoot returns main repo', async () => {
+    // findGitRoot returns the worktree path (where .git file is)
+    const gitRoot = await findGitRoot(worktreeDir);
+    expect(gitRoot).toBe(worktreeDir);
+
+    // findMainGitRoot returns the main repo path
+    const mainRoot = await findMainGitRoot(worktreeDir);
+    expect(mainRoot).toBe(mainRepoDir);
+
+    // They should be different for worktrees
+    expect(gitRoot).not.toBe(mainRoot);
+  });
+
+  it('should return the same path for regular repos', async () => {
+    const gitRoot = await findGitRoot(mainRepoDir);
+    const mainRoot = await findMainGitRoot(mainRepoDir);
+
+    // For regular repos, both should return the same path
+    expect(gitRoot).toBe(mainRoot);
+    expect(gitRoot).toBe(mainRepoDir);
   });
 });
