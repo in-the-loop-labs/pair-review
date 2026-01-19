@@ -1,0 +1,116 @@
+{
+  "meta": {
+    "baseline": "orchestration/fast",
+    "baselineHash": "c34fd063",
+    "targetModel": "gemini-3-flash-preview",
+    "optimizerModel": "gemini-3-pro-preview",
+    "timestamp": "2026-01-18T16:35:39.020Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "task-header",
+      "critical-output",
+      "output-schema",
+      "line-number-guidance",
+      "role-description",
+      "intelligent-merging",
+      "priority-curation",
+      "balanced-output",
+      "human-centric-framing",
+      "diff-instructions",
+      "guidelines",
+      "custom-instructions",
+      "input-suggestions",
+      "file-line-counts"
+    ],
+    "overrides": {
+      "role-description": "## Objective\nMerge Level 1, 2, and 3 analysis results. Remove duplicates. Retain only high-value insights.",
+      "intelligent-merging": "## Merging Rules\n- Combine related suggestions.\n- Merge overlaps.\n- NEVER mention analysis levels or orchestration in the output.",
+      "priority-curation": "## Priority\nSecurity > Bugs > Architecture > Performance > Style",
+      "balanced-output": "## Constraints\n- Max 2-3 praise items.\n- Prefer line-level over file-level.\n- Suggestions MUST be actionable.",
+      "human-centric-framing": "## Tone\nUse guidance phrasing (\"Consider...\", \"Worth noting...\"). Avoid mandates.",
+      "diff-instructions": "## Field: old_or_new\n- \"NEW\": Added [+] or context lines.\n- \"OLD\": Deleted [-] lines only.\n- Preserve exactly from input.",
+      "guidelines": "## Filters\n- Modified files only.\n- High confidence only.\n- Omit uncertain items."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Kept as variable injection point."
+    },
+    {
+      "section": "task-header",
+      "type": "unchanged",
+      "rationale": "Clear and concise header."
+    },
+    {
+      "section": "critical-output",
+      "type": "reordered",
+      "rationale": "Moved to top. Flash models adhere best when strict format constraints are front-loaded before data processing."
+    },
+    {
+      "section": "output-schema",
+      "type": "reordered",
+      "rationale": "Moved before input data. Allows the Flash model to understand the target structure while processing the large input block."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Critical variable injection for accuracy."
+    },
+    {
+      "section": "role-description",
+      "type": "modified",
+      "rationale": "Simplified to imperative actions (\"Merge\", \"Remove\") for faster processing."
+    },
+    {
+      "section": "intelligent-merging",
+      "type": "modified",
+      "rationale": "Converted to bullet points and capitalized negative constraints (\"NEVER\") for better instruction following."
+    },
+    {
+      "section": "priority-curation",
+      "type": "modified",
+      "rationale": "Simplified to a direct hierarchy string to reduce token count."
+    },
+    {
+      "section": "balanced-output",
+      "type": "modified",
+      "rationale": "Converted to bulleted constraints for clarity."
+    },
+    {
+      "section": "human-centric-framing",
+      "type": "modified",
+      "rationale": "Direct instruction on tone using examples."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Formatted as a clear definition list for the technical field `old_or_new`."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Reduced to key filters (Modified only, High confidence) to reduce noise."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "reordered",
+      "rationale": "Moved closer to input data to apply user overrides immediately before processing."
+    },
+    {
+      "section": "input-suggestions",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "file-line-counts",
+      "type": "unchanged",
+      "rationale": "Retained to prevent hallucinations regarding file size/context."
+    }
+  ]
+}

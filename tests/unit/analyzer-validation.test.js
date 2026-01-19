@@ -1342,6 +1342,120 @@ describe('Analyzer.buildLineNumberGuidance', () => {
       expect(result).toContain(expectedCommand);
     });
   });
+
+  describe('tier-aware output', () => {
+    it('should produce condensed output for fast tier (~10-15 lines)', () => {
+      const result = analyzer.buildLineNumberGuidance(null, 'fast');
+      const lines = result.trim().split('\n');
+
+      // Fast tier should be condensed: ~10-15 lines
+      expect(lines.length).toBeGreaterThanOrEqual(8);
+      expect(lines.length).toBeLessThanOrEqual(18);
+    });
+
+    it('should produce full output for balanced tier (~35 lines)', () => {
+      const result = analyzer.buildLineNumberGuidance(null, 'balanced');
+      const lines = result.trim().split('\n');
+
+      // Balanced tier should be full: ~35 lines
+      expect(lines.length).toBeGreaterThanOrEqual(25);
+      expect(lines.length).toBeLessThanOrEqual(45);
+    });
+
+    it('should produce full output for thorough tier (~35 lines)', () => {
+      const result = analyzer.buildLineNumberGuidance(null, 'thorough');
+      const lines = result.trim().split('\n');
+
+      // Thorough tier should be same as balanced: ~35 lines
+      expect(lines.length).toBeGreaterThanOrEqual(25);
+      expect(lines.length).toBeLessThanOrEqual(45);
+    });
+
+    it('should contain critical keywords in fast tier output', () => {
+      const result = analyzer.buildLineNumberGuidance(null, 'fast');
+
+      expect(result).toContain('git-diff-lines');
+      expect(result).toMatch(/NEW/);
+      expect(result).toMatch(/OLD/);
+    });
+
+    it('should contain critical keywords in balanced tier output', () => {
+      const result = analyzer.buildLineNumberGuidance(null, 'balanced');
+
+      expect(result).toContain('git-diff-lines');
+      expect(result).toMatch(/NEW/);
+      expect(result).toMatch(/OLD/);
+    });
+
+    it('should contain critical keywords in thorough tier output', () => {
+      const result = analyzer.buildLineNumberGuidance(null, 'thorough');
+
+      expect(result).toContain('git-diff-lines');
+      expect(result).toMatch(/NEW/);
+      expect(result).toMatch(/OLD/);
+    });
+
+    it('should default to balanced tier when not specified', () => {
+      const defaultResult = analyzer.buildLineNumberGuidance(null);
+      const balancedResult = analyzer.buildLineNumberGuidance(null, 'balanced');
+
+      expect(defaultResult).toBe(balancedResult);
+    });
+  });
+
+  describe('provider-specific script path', () => {
+    it('should use absolute path for Claude provider', () => {
+      const claudeAnalyzer = new Analyzer({}, 'sonnet', 'claude');
+      const result = claudeAnalyzer.buildLineNumberGuidance();
+      const scriptPath = claudeAnalyzer.getAnnotatedDiffScriptPath();
+
+      // Should contain the absolute path ending with bin/git-diff-lines
+      expect(result).toContain(scriptPath);
+      expect(scriptPath).toContain('bin/git-diff-lines');
+    });
+
+    it('should use bare command name for Gemini provider', () => {
+      const geminiAnalyzer = new Analyzer({}, 'gemini-2.5-pro', 'gemini');
+      const result = geminiAnalyzer.buildLineNumberGuidance();
+      const absolutePath = geminiAnalyzer.getAnnotatedDiffScriptPath();
+
+      // Should NOT contain the absolute path (which has slashes)
+      expect(result).not.toContain(absolutePath);
+      // Should contain the bare command name
+      expect(result).toContain('git-diff-lines');
+      // Should NOT contain bin/ prefix (which would indicate a path)
+      expect(result).not.toMatch(/bin\/git-diff-lines/);
+    });
+
+    it('should include --cwd option with bare command for Gemini', () => {
+      const geminiAnalyzer = new Analyzer({}, 'gemini-2.5-pro', 'gemini');
+      const worktreePath = '/path/to/worktree';
+      const result = geminiAnalyzer.buildLineNumberGuidance(worktreePath);
+
+      // Should have: git-diff-lines --cwd "/path/to/worktree"
+      // NOT: /full/path/to/bin/git-diff-lines --cwd "/path/to/worktree"
+      expect(result).toContain('git-diff-lines --cwd "/path/to/worktree"');
+      expect(result).not.toMatch(/\/[^"]+\/bin\/git-diff-lines --cwd/);
+    });
+
+    it('should use absolute path for Copilot provider', () => {
+      const copilotAnalyzer = new Analyzer({}, 'gpt-4o', 'copilot');
+      const result = copilotAnalyzer.buildLineNumberGuidance();
+      const scriptPath = copilotAnalyzer.getAnnotatedDiffScriptPath();
+
+      // Copilot (non-Gemini) should use absolute path
+      expect(result).toContain(scriptPath);
+    });
+
+    it('should use absolute path for Codex provider', () => {
+      const codexAnalyzer = new Analyzer({}, 'codex', 'codex');
+      const result = codexAnalyzer.buildLineNumberGuidance();
+      const scriptPath = codexAnalyzer.getAnnotatedDiffScriptPath();
+
+      // Codex (non-Gemini) should use absolute path
+      expect(result).toContain(scriptPath);
+    });
+  });
 });
 
 describe('Analyzer.buildFileLineCountsSection', () => {

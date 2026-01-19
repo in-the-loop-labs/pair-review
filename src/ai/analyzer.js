@@ -367,19 +367,43 @@ class Analyzer {
   /**
    * Build the line number guidance section for prompts
    * @param {string} worktreePath - Path to the git worktree (used to ensure git runs in correct directory)
+   * @param {string} tier - Tier level: 'fast', 'balanced', or 'thorough' (default: 'balanced')
    * @returns {string} Markdown guidance for line numbers
    */
-  buildLineNumberGuidance(worktreePath = null) {
-    const scriptPath = this.getAnnotatedDiffScriptPath();
+  buildLineNumberGuidance(worktreePath = null, tier = 'balanced') {
+    // For Gemini, use bare command name instead of absolute path.
+    // Gemini CLI's --allowed-tools uses prefix matching (e.g., run_shell_command(git-diff-lines))
+    // which won't match absolute paths like /Users/.../bin/git-diff-lines.
+    // The bare command works because npm installs git-diff-lines as a bin script in PATH.
+    const scriptPath = this.provider === 'gemini'
+      ? 'git-diff-lines'
+      : this.getAnnotatedDiffScriptPath();
     // Include --cwd option to ensure git runs in the correct directory
     // This is critical when the script is invoked from an environment where
     // the working directory may not match the target repository
     const cwdOption = worktreePath ? ` --cwd "${worktreePath}"` : '';
     const fullCommand = `${scriptPath}${cwdOption}`;
+
+    // Fast tier: ultra-condensed guidance (~10-15 lines)
+    if (tier === 'fast') {
+      return `
+## Viewing Code Changes
+
+Use \`git-diff-lines\` instead of \`git diff\`:
+\`\`\`
+${fullCommand}
+\`\`\`
+
+Output shows OLD and NEW line columns. Use NEW for added [+] and context lines, OLD for deleted [-] lines only.
+Reference EXACT line numbers from the tool output. Default to NEW when unsure.
+`;
+    }
+
+    // Balanced/Thorough tier: full guidance (~35 lines)
     return `
 ## Viewing Code Changes
 
-IMPORTANT: Use the annotated diff tool instead of \`git diff\` directly:
+IMPORTANT: Use \`git-diff-lines\` instead of \`git diff\` directly:
 \`\`\`
 ${fullCommand}
 \`\`\`
@@ -402,13 +426,13 @@ Your suggestions MUST reference the EXACT line where the issue exists:
    - BAD: Commenting on function definition (line 10) when the bug is inside the function body (line 25)
    - GOOD: Commenting on line 25 where the actual problematic code is
 
-2. **Use correct line numbers from the annotated diff**
+2. **Use correct line numbers from git-diff-lines output**
    - For ADDED lines [+]: use the NEW column number
    - For CONTEXT lines: use the NEW column number
    - For DELETED lines [-]: use the OLD column number
 
 3. **Verify before suggesting**
-   - Run the annotated diff tool to see exact line numbers
+   - Run git-diff-lines to see exact line numbers
    - Double-check line numbers match the output before submitting suggestions
 `;
   }
@@ -813,10 +837,11 @@ ${prMetadata.description || '(No description provided)'}
    * @param {Array<string>} generatedPatterns - Patterns for generated files to skip
    * @param {string} customInstructions - Optional custom instructions to include in prompt
    * @param {Array<string>} changedFiles - List of changed file paths for grounding
+   * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
    */
-  buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = []) {
+  buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = [], tier = 'balanced') {
     // Try new prompt architecture first
-    const promptBuilder = getPromptBuilder('level2', 'balanced');
+    const promptBuilder = getPromptBuilder('level2', tier);
 
     if (promptBuilder) {
       // Build context for the new tagged prompt system
@@ -829,7 +854,7 @@ ${prMetadata.description || '(No description provided)'}
         reviewIntro: this.buildReviewIntroduction(prId, prMetadata),
         prContext: this.buildPRContextSection(prMetadata, criticalNote),
         customInstructions: this.buildCustomInstructionsSection(customInstructions),
-        lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
+        lineNumberGuidance: this.buildLineNumberGuidance(worktreePath, tier),
         generatedFiles: this.buildGeneratedFilesExclusionSection(generatedPatterns),
         validFiles: formatValidFiles(changedFiles)
       };
@@ -840,14 +865,14 @@ ${prMetadata.description || '(No description provided)'}
 
     // Fallback to legacy implementation if prompt not migrated
     logger.debug('[Level 2] Using legacy prompt implementation');
-    return this._buildLevel2PromptLegacy(prId, worktreePath, prMetadata, generatedPatterns, customInstructions, changedFiles);
+    return this._buildLevel2PromptLegacy(prId, worktreePath, prMetadata, generatedPatterns, customInstructions, changedFiles, tier);
   }
 
   /**
    * Legacy Level 2 prompt builder (fallback)
    * @private
    */
-  _buildLevel2PromptLegacy(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = []) {
+  _buildLevel2PromptLegacy(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = [], tier = 'balanced') {
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. As you analyze file-level consistency, verify if the actual changes align with this description. Be alert for:
 - Significant functionality changes not mentioned in the description
@@ -857,7 +882,7 @@ ${prMetadata.description || '(No description provided)'}
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
-    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
+    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath, tier);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 2 Review - Analyze File Context
@@ -866,7 +891,7 @@ ${generatedFilesSection}${changedFilesSection}
 ## Analysis Process
 For each file with changes:
    - Read the full file content to understand context
-   - Run the annotated diff tool (shown above) with the file path to see what changed with line numbers
+   - Run git-diff-lines (shown above) with the file path to see what changed with line numbers
    - Analyze how changes fit within the file's overall structure
    - Focus on file-level patterns and consistency
    - Skip files where no file-level issues are found (efficiency focus)
@@ -887,7 +912,7 @@ Look for:
 
 ## Available Commands (READ-ONLY)
 You have READ-ONLY access to the codebase. You may run commands like:
-- The annotated diff tool shown above with file path (preferred for viewing changes with line numbers)
+- git-diff-lines shown above with file path (preferred for viewing changes with line numbers)
 - \`cat -n <file>\` to view files with line numbers
 - grep, find, ls commands as needed
 
@@ -965,7 +990,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Array<string>} generatedPatterns - Patterns for generated files to skip
    * @param {string} customInstructions - Optional custom instructions to include in prompt
    */
-  buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null) {
+  buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, tier = 'balanced') {
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. Your job is to independently verify if the actual code changes align with this description. As you analyze, be alert for:
 - Discrepancies between the description and actual implementation
@@ -974,7 +999,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
-    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
+    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath, tier);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 1 Review - Analyze Changes in Isolation
@@ -983,7 +1008,7 @@ ${lineNumberGuidance}
 **This level should be fast** - focusing only on the diff itself without exploring file context or surrounding unchanged code. That analysis is reserved for Level 2.
 ${generatedFilesSection}
 ## Initial Setup
-1. Run the annotated diff tool (shown above) to see the changes with line numbers
+1. Run git-diff-lines (shown above) to see the changes with line numbers
 2. Focus ONLY on the changed lines in the diff
 3. Do not analyze file context or surrounding unchanged code - that's for Level 2
 
@@ -1001,7 +1026,7 @@ Identify the following in changed code:
 
 ## Available Commands (READ-ONLY)
 You have READ-ONLY access to the codebase. You may run commands like:
-- The annotated diff tool shown above (preferred for viewing changes with line numbers)
+- git-diff-lines shown above (preferred for viewing changes with line numbers)
 - \`cat -n <file>\` to view files with line numbers
 - ls, find, grep commands as needed
 
@@ -2246,7 +2271,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     }
   }
 
-  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null, generatedPatterns = [], customInstructions = null, changedFiles = []) {
+  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null, generatedPatterns = [], customInstructions = null, changedFiles = [], tier = 'balanced') {
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. At this architectural level, it's especially important to verify alignment between stated intent and actual implementation. Flag any:
 - **Architectural discrepancies:** Does the implementation match the architectural approach described?
@@ -2257,7 +2282,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     const generatedFilesSection = this.buildGeneratedFilesExclusionSection(generatedPatterns);
     const customInstructionsSection = this.buildCustomInstructionsSection(customInstructions);
     const changedFilesSection = this.buildChangedFilesSection(changedFiles);
-    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
+    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath, tier);
 
     return `${this.buildReviewIntroduction(prId, prMetadata)}
 ${prContext}${customInstructionsSection}# Level 3 Review - Analyze Change Impact on Codebase
@@ -2491,9 +2516,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} prMetadata - PR metadata for context
    * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
    * @param {Map<string, number>} fileLineCountMap - Optional map of file paths to line counts for validation
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
    * @returns {string} Orchestration prompt
    */
-  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null) {
+  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null, tier = 'balanced') {
     const level1Count = allSuggestions.level1?.length || 0;
     const level2Count = allSuggestions.level2?.length || 0;
     const level3Count = allSuggestions.level3?.length || 0;
@@ -2512,7 +2539,7 @@ When curating suggestions, give higher priority to findings that align with thes
 
     // Build file line counts section for validation
     const fileLineCountsSection = this.buildFileLineCountsSection(fileLineCountMap);
-    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
+    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath, tier);
 
     const isLocal = prMetadata.reviewType === 'local';
     const reviewDescription = isLocal

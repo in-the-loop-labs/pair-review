@@ -73,7 +73,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
 
 <section name="initial-setup" required="true">
 ## Initial Setup
-1. Run the annotated diff tool (shown above) to see changes with line numbers
+1. Run git-diff-lines (shown above) to see changes with line numbers
 2. Focus on changed lines only - do not analyze surrounding context
 </section>
 
@@ -92,7 +92,7 @@ Identify the following in changed code:
 
 <section name="available-commands" required="true">
 ## Available Commands (READ-ONLY)
-- The annotated diff tool shown above (required)
+- git-diff-lines shown above (required)
 - \`cat -n <file>\` to view files with line numbers
 - ls, find, grep as needed
 

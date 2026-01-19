@@ -67,7 +67,7 @@ Do NOT create suggestions for files not in this list. If no issues are found, re
 <section name="analysis-process" required="true">
 ## Analysis Process
 For each file with changes:
-1. Run the annotated diff tool to see changes with line numbers
+1. Run git-diff-lines to see changes with line numbers
 2. Read the full file content when context is needed
 3. Analyze how changes fit within the file's structure
 4. Focus on file-level patterns and consistency
@@ -88,7 +88,7 @@ Look for:
 
 <section name="available-commands" required="true">
 ## Available Commands (READ-ONLY)
-- Annotated diff tool (preferred for viewing changes with line numbers)
+- git-diff-lines (preferred for viewing changes with line numbers)
 - \`cat -n <file>\` to view files with line numbers
 - grep, find, ls commands as needed
 

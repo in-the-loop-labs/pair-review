@@ -1,0 +1,103 @@
+{
+  "meta": {
+    "baseline": "level2/fast",
+    "baselineHash": "44cc4385",
+    "targetModel": "gemini-3-flash-preview",
+    "optimizerModel": "gemini-3-pro-preview",
+    "timestamp": "2026-01-18T16:30:08.153Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "output-schema",
+      "level-header",
+      "pr-context",
+      "valid-files",
+      "generated-files",
+      "custom-instructions",
+      "line-number-guidance",
+      "analysis-process",
+      "focus-areas",
+      "available-commands",
+      "diff-instructions",
+      "guidelines"
+    ],
+    "overrides": {
+      "level-header": "# Level 2: File Context Analysis",
+      "analysis-process": "## Steps\n1. Use 'git-diff-lines' to view changes.\n2. Read full files for necessary context.\n3. Anchor comments to precise lines.",
+      "focus-areas": "## Objectives\n- Bugs & Inconsistencies\n- Security & Performance\n- Code Style & Best Practices\n- Missing Changes",
+      "available-commands": "## Tools (Read-Only)\ngit-diff-lines (preferred), cat -n, ls, find, grep.",
+      "diff-instructions": "## Line Referencing\n\"NEW\": Added lines [+] and context.\n\"OLD\": Deleted lines [-] only.",
+      "guidelines": "## Reporting Rules\n- High confidence suggestions only.\n- Omit 'suggestion' field for praise.\n- Skip files with no findings."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Variable content is dynamic; kept minimal to avoid overhead."
+    },
+    {
+      "section": "output-schema",
+      "type": "reordered",
+      "rationale": "Moved to the top. Flash models benefit from seeing the target structure early to frame their processing."
+    },
+    {
+      "section": "level-header",
+      "type": "modified",
+      "rationale": "Shortened to a direct task label."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "valid-files",
+      "type": "reordered",
+      "rationale": "Grouped with PR context and generated files for better context locality."
+    },
+    {
+      "section": "generated-files",
+      "type": "reordered",
+      "rationale": "Moved to group with other file constraints."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Preserved to allow user overrides."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Variable content containing critical line mapping logic."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Condensed to concise imperative steps."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Simplified to a punchy list of objectives."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Reduced to a single line listing tools."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Clarified referencing logic for deleted vs. added lines."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Converted to 'Reporting Rules' for stricter adherence."
+    }
+  ]
+}

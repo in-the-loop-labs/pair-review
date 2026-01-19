@@ -1,0 +1,171 @@
+{
+  "meta": {
+    "baseline": "orchestration/thorough",
+    "baselineHash": "35dce05d",
+    "targetModel": "gemini-3-pro-preview",
+    "optimizerModel": "gemini-3-pro-preview",
+    "timestamp": "2026-01-18T17:05:46.820Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "task-header",
+      "critical-output",
+      "role-description",
+      "input-suggestions",
+      "custom-instructions",
+      "line-number-guidance",
+      "file-line-counts",
+      "orchestration-logic",
+      "human-centric-framing",
+      "technical-handling",
+      "summary-synthesis",
+      "output-schema"
+    ],
+    "overrides": {
+      "task-header": "# Deep Code Review Orchestration",
+      "role-description": "## Role: Senior Review Orchestrator\nYou are the final decision-maker for an automated code review system. Your goal is to synthesize raw analysis from three distinct levels into a single, high-value set of review comments for a human developer.\n\n**The Analysis Levels:**\n- **Level 1 (Diff):** Localized issues in changed lines.\n- **Level 2 (File):** Issues requiring full file context.\n- **Level 3 (Codebase):** System-wide patterns and architectural concerns.\n\nYour output must be a curated \"Golden Set\" of suggestions that are accurate, actionable, and non-redundant.",
+      "human-centric-framing": "## Tone & Framing\n- **Persona:** Experienced Pair Programmer. Helpful, observant, never harsh.\n- **Phrasing:** Use \"Consider...\", \"It appears...\", \"Did you intend...\". Avoid \"You must\", \"Wrong\", \"Fix this\".\n- **Why:** Always explain the *impact* of the change (e.g., \"This might race under load\" vs \"Fix lock\").\n- **Autonomy:** Present trade-offs. The human reviewer makes the final call.",
+      "summary-synthesis": "## Summary Generation\nWrite a 2-3 sentence narrative summary for the `summary` field.\n- **Do:** Focus on the \"health\" of the PR. Highlight the most critical risk or the best design decision.\n- **Do Not:** List counts (\"Found 5 bugs\"). Do not mention \"levels\" or \"orchestration\". Write as a human summarizing their review."
+    },
+    "removedSections": [
+      "reasoning-encouragement",
+      "intelligent-merging",
+      "priority-curation",
+      "balanced-output",
+      "confidence-guidance",
+      "diff-instructions",
+      "file-level-guidance",
+      "guidelines"
+    ],
+    "addedSections": [
+      {
+        "name": "orchestration-logic",
+        "content": "## Orchestration Logic\n\n### 1. Synthesis & Merging\nAnalyze the input streams to create unified insights. \n- **Merge duplicates:** If multiple levels flag the same issue (e.g., specific logic error), combine them into one high-confidence suggestion. Use the most specific/actionable description available.\n- **Resolve conflicts:** \n  - **Concrete vs. Heuristic:** If Level 1 proves a syntax error, it overrides Level 3's architectural preference. \n  - **Context vs. Local:** If Level 3 explains a pattern is intentional (system convention), suppress Level 1/2 complaints about it.\n- **Confidence Calculation:** \n  - Base confidence on the strongest evidence.\n  - **Boost (+0.15)** if multiple levels independently identify the issue.\n  - **Penalize** if levels disagree or evidence is vague.\n\n### 2. Prioritization Framework\nSelect suggestions based on strict hierarchy:\n1.  **Critical (Must Fix):** Security vulnerabilities, crashes, data corruption.\n2.  **High (Important):** Architecture violations, API breaks, logic bugs.\n3.  **Medium (Valuable):** Performance, testing gaps, maintainability.\n4.  **Low (Optional):** Nitpick style, minor documentation.\n\n**Contextual Modifiers:** Elevate issues in \"hot paths\" or public APIs. Suppress style nits in massive refactors.\n\n### 3. Curation & Balance\n- **Target Volume:** 8-15 high-value suggestions total. \n- **Discard:** Low-confidence guesses (<0.5) unless critical context suggests otherwise.\n- **Praise:** Limit to top 2-3 examples of excellent engineering. Do not flood with trivial praise.\n- **File-Level:** Preserve insights that apply to the whole file (e.g., \"Class has too many responsibilities\") in the `fileLevelSuggestions` array.",
+        "locked": false,
+        "required": true,
+        "optional": false,
+        "tier": [
+          "thorough"
+        ]
+      },
+      {
+        "name": "technical-handling",
+        "content": "## Technical Handling Rules\n\n### Line Numbers (`old_or_new`)\n- **\"NEW\"**: Default. Use for ADDED lines (`[+]`) and CONTEXT lines (unchanged).\n- **\"OLD\"**: Use ONLY for DELETED lines (`[-]`).\n\n### File-Level Items\n- Place strictly in `fileLevelSuggestions`.\n- Do NOT assign line numbers to these items.\n- Use for: Missing tests, architectural drift, inconsistent naming across file.",
+        "locked": false,
+        "required": true,
+        "optional": false,
+        "tier": [
+          "thorough"
+        ]
+      }
+    ]
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Placeholder section, kept as is."
+    },
+    {
+      "section": "task-header",
+      "type": "modified",
+      "rationale": "Simplified title for clarity."
+    },
+    {
+      "section": "critical-output",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "role-description",
+      "type": "modified",
+      "rationale": "Defined the 'Editor-in-Chief' persona more clearly for the Pro model to establish authority over the sub-levels."
+    },
+    {
+      "section": "input-suggestions",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Preserved for user flexibility."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Preserved placeholders."
+    },
+    {
+      "section": "file-line-counts",
+      "type": "unchanged",
+      "rationale": "Useful context for the model."
+    },
+    {
+      "section": "orchestration-logic",
+      "type": "modified",
+      "rationale": "Consolidated 'intelligent-merging', 'priority-curation', and 'balanced-output' into a single cohesive logic block. This reduces token count and presents the decision-making process as a unified flow, which works better for high-reasoning models."
+    },
+    {
+      "section": "intelligent-merging",
+      "type": "removed",
+      "rationale": "Merged into 'orchestration-logic' for better flow."
+    },
+    {
+      "section": "priority-curation",
+      "type": "removed",
+      "rationale": "Merged into 'orchestration-logic'."
+    },
+    {
+      "section": "balanced-output",
+      "type": "removed",
+      "rationale": "Merged into 'orchestration-logic'."
+    },
+    {
+      "section": "human-centric-framing",
+      "type": "modified",
+      "rationale": "Tightened instructions to focus on the 'Pair Programmer' persona and tone/style constraints."
+    },
+    {
+      "section": "technical-handling",
+      "type": "modified",
+      "rationale": "Consolidated 'diff-instructions' and 'file-level-guidance' into a single technical rules section to separate 'mechanics' from 'logic'."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "removed",
+      "rationale": "Merged into 'technical-handling'."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "removed",
+      "rationale": "Merged into 'technical-handling'."
+    },
+    {
+      "section": "guidelines",
+      "type": "removed",
+      "rationale": "Redundant. Key points (Quality over Quantity, Cross-validation) were integrated into 'orchestration-logic' and 'technical-handling'."
+    },
+    {
+      "section": "reasoning-encouragement",
+      "type": "removed",
+      "rationale": "Implicitly baked into the structure of 'orchestration-logic'. The Pro model doesn't need explicit 'take your time' padding when the instructions are structured logically."
+    },
+    {
+      "section": "confidence-guidance",
+      "type": "removed",
+      "rationale": "Merged into 'orchestration-logic' (Synthesis & Merging subsection) to keep scoring rules next to merging rules."
+    },
+    {
+      "section": "summary-synthesis",
+      "type": "modified",
+      "rationale": "Sharpened to focus on narrative and anti-patterns."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    }
+  ]
+}

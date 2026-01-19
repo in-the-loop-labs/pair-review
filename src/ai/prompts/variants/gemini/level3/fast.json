@@ -1,0 +1,110 @@
+{
+  "meta": {
+    "baseline": "level3/fast",
+    "baselineHash": "4206b838",
+    "targetModel": "gemini-3-flash-preview",
+    "optimizerModel": "gemini-3-pro-preview",
+    "timestamp": "2026-01-18T16:33:44.727Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "generated-files",
+      "changed-files",
+      "purpose",
+      "analysis-process",
+      "focus-areas",
+      "available-commands",
+      "diff-instructions",
+      "guidelines",
+      "output-schema"
+    ],
+    "overrides": {
+      "level-header": "# Level 3: Codebase Impact Analysis",
+      "purpose": "## Goal\nAnalyze how changes affect the broader codebase. Focus on architectural consistency, cross-file dependencies, and integration logic.",
+      "analysis-process": "## Execution Steps\n1. Trace outward from changed files to check connections.\n2. Verify changes match existing architectural patterns.\n3. Identify cross-cutting concerns (security, state management).",
+      "focus-areas": "## Target Issues\n- Architectural inconsistencies\n- Cross-file dependency errors\n- {{testingGuidance}}\n- Breaking changes/API violations\n- Security gaps in connected systems\n- Notable architectural decisions (praise)",
+      "available-commands": "## Tools (Read-Only)\nUse `grep`, `cat -n`, `ls`, `tree` to explore context. Do NOT modify files.",
+      "diff-instructions": "## Line Mapping Rules\n- **\"NEW\"** (Default): For added lines [+] and context lines.\n- **\"OLD\"**: ONLY for deleted lines [-].",
+      "guidelines": "## Rules\n- **High Confidence Only:** Skip uncertain items.\n- **Scope:** Focus on issues requiring codebase context.\n- **Precision:** Prefer line-level suggestions over file-level.\n- **Praise:** Omit 'suggestion' field."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Maintains the variable injection for the reviewer persona."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Kept as optional to allow user overrides without impacting core structure."
+    },
+    {
+      "section": "level-header",
+      "type": "modified",
+      "rationale": "Shortened for brevity and immediate clarity."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Critical variable injection for system mechanics."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Kept as optional context."
+    },
+    {
+      "section": "changed-files",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "purpose",
+      "type": "modified",
+      "rationale": "Condensed to imperative goal statement for faster processing."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Converted to a concise numbered list of direct actions."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Simplified to a tight list of keywords and kept the testing variable."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Reduced verbosity; listed tools directly."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Strict mapping rules defined clearly (NEW vs OLD) to reduce hallucination."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Converted to bolded key-value pairs for quick logical parsing."
+    },
+    {
+      "section": "output-schema",
+      "type": "reordered",
+      "rationale": "Moved to the very end to ensure the JSON format is the last instruction in context, maximizing adherence."
+    }
+  ]
+}

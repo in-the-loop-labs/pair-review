@@ -61,7 +61,7 @@ ONLY suggest for files in this list:
 
 <section name="analysis-process" required="true" tier="fast">
 ## Steps
-1. Run annotated diff tool for changes with line numbers
+1. Run git-diff-lines for changes with line numbers
 2. Read full file when context needed
 3. Anchor comments to specific lines
 </section>
@@ -77,7 +77,7 @@ ONLY suggest for files in this list:
 
 <section name="available-commands" required="true" tier="fast">
 ## Commands (READ-ONLY)
-Annotated diff tool (preferred), \`cat -n <file>\`, ls, find, grep. Do NOT modify files.
+git-diff-lines (preferred), \`cat -n <file>\`, ls, find, grep. Do NOT modify files.
 </section>
 
 <section name="output-schema" locked="true">

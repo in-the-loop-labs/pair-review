@@ -10,7 +10,11 @@
  *   const prompt = builder.build(context);
  */
 
+const fs = require('fs');
+const path = require('path');
 const { TIERS, PROMPT_TYPES, resolveTier } = require('./config');
+const { applyDelta } = require('./section-parser');
+const logger = require('../../utils/logger');
 
 // Import baseline prompts (lazy-loaded to avoid circular dependencies)
 let level1Fast = null;
@@ -25,6 +29,52 @@ let level3Thorough = null;
 let orchestrationBalanced = null;
 let orchestrationFast = null;
 let orchestrationThorough = null;
+
+// Variant cache: Map<"provider/promptType/tier", variant>
+const variantCache = new Map();
+
+/**
+ * Load a variant file if it exists
+ *
+ * Variants are organized by provider, prompt type, and tier.
+ * Directory structure: variants/{provider}/{promptType}/{tier}.json
+ *   e.g., variants/gemini/level1/fast.json
+ *
+ * @param {string} provider - Provider ID (gemini, openai, codex, claude)
+ * @param {string} promptType - Prompt type (level1, level2, level3, orchestration)
+ * @param {string} tier - Capability tier (fast, balanced, thorough)
+ * @returns {Object|null} Variant object or null if not found
+ */
+function loadVariant(provider, promptType, tier) {
+  // Claude uses baselines directly
+  if (provider === 'claude') {
+    return null;
+  }
+
+  // Check cache first (keyed by provider/promptType/tier)
+  const cacheKey = `${provider}/${promptType}/${tier}`;
+  if (variantCache.has(cacheKey)) {
+    return variantCache.get(cacheKey);
+  }
+
+  // Construct variant file path directly: variants/{provider}/{promptType}/{tier}.json
+  const variantPath = path.join(__dirname, 'variants', provider, promptType, `${tier}.json`);
+
+  try {
+    if (fs.existsSync(variantPath)) {
+      const content = fs.readFileSync(variantPath, 'utf-8');
+      const variant = JSON.parse(content);
+      variantCache.set(cacheKey, variant);
+      return variant;
+    }
+  } catch (error) {
+    // Log but don't throw - fall back to baseline
+    logger.warn(`Failed to load variant ${variantPath}: ${error.message}`);
+  }
+
+  variantCache.set(cacheKey, null);
+  return null;
+}
 
 /**
  * Load a baseline prompt module
@@ -170,10 +220,21 @@ function stripSectionTags(taggedPrompt) {
  *
  * @param {string} promptType - Prompt type (level1, level2, level3, orchestration)
  * @param {string} tier - Capability tier (fast, balanced, thorough) or alias
- * @param {string} provider - Provider ID (default: 'claude')
+ * @param {Object} options - Optional configuration
+ * @param {string} options.provider - Provider ID (default: 'claude')
+ * @param {string} options.model - Model ID for variant selection (e.g., 'gemini-3-flash-preview')
  * @returns {Object|null} Prompt builder object or null if not available
  */
-function getPromptBuilder(promptType, tier, provider = 'claude') {
+function getPromptBuilder(promptType, tier, options = {}) {
+  // Handle legacy call signature: getPromptBuilder(type, tier, provider)
+  const opts = typeof options === 'string'
+    ? { provider: options }
+    : options;
+
+  // Resolve provider and model with explicit defaults
+  // Note: model parameter reserved for future per-model variant selection
+  const resolvedProvider = opts.provider ?? 'claude';
+  const resolvedModel = opts.model ?? null;
   const resolvedTier = resolveTier(tier);
 
   // Validate inputs
@@ -191,16 +252,20 @@ function getPromptBuilder(promptType, tier, provider = 'claude') {
     return null;
   }
 
-  // TODO: Load variant if it exists for non-Claude providers
-  // const variant = loadVariant(provider, promptType, resolvedTier);
+  // Load variant if available for non-Claude providers
+  // Variants are tier-based, so we don't need the specific model ID
+  const variant = resolvedProvider !== 'claude' ? loadVariant(resolvedProvider, promptType, resolvedTier) : null;
 
   return {
     promptType,
     tier: resolvedTier,
-    provider,
+    provider: resolvedProvider,
+    model: resolvedModel,
+    hasVariant: variant !== null,
 
     /**
      * Get the tagged prompt template (with XML section markers)
+     * Returns baseline template (variants are applied during build)
      * @returns {string} Tagged prompt template
      */
     getTaggedTemplate() {
@@ -225,6 +290,7 @@ function getPromptBuilder(promptType, tier, provider = 'claude') {
 
     /**
      * Build the final prompt by interpolating context values
+     * If a variant exists, applies delta transformations
      *
      * @param {Object} context - Context values for placeholders
      * @param {string} context.reviewIntro - Review introduction line
@@ -236,11 +302,17 @@ function getPromptBuilder(promptType, tier, provider = 'claude') {
      * @returns {string} Final assembled prompt (plain text, no XML tags)
      */
     build(context) {
-      // Interpolate placeholders
+      // Interpolate placeholders in baseline
       const interpolated = interpolate(baseline.taggedPrompt, context);
 
-      // Strip XML section tags for final output
-      const plainPrompt = stripSectionTags(interpolated);
+      let plainPrompt;
+      if (variant && variant.delta) {
+        // Apply variant delta to produce optimized prompt
+        plainPrompt = applyDelta(interpolated, variant.delta);
+      } else {
+        // No variant - strip XML section tags for final output
+        plainPrompt = stripSectionTags(interpolated);
+      }
 
       // Clean up extra blank lines from optional sections
       return plainPrompt
@@ -255,6 +327,14 @@ function getPromptBuilder(promptType, tier, provider = 'claude') {
      */
     buildTagged(context) {
       return interpolate(baseline.taggedPrompt, context);
+    },
+
+    /**
+     * Get variant metadata if one is loaded
+     * @returns {Object|null} Variant metadata or null
+     */
+    getVariantMeta() {
+      return variant ? variant.meta : null;
     }
   };
 }

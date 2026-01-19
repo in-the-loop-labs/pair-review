@@ -2244,3 +2244,303 @@ describe('Baseline Orchestration Thorough', () => {
     expect(baseline.taggedPrompt).toContain('synthesizing insights');
   });
 });
+
+describe('Variant Application', () => {
+  // Import the section parser for validation
+  const { parseSections, applyDelta } = require('../../src/ai/prompts/section-parser.js');
+  const fs = require('fs');
+  const path = require('path');
+
+  // Cache for discovered variants - populated once in beforeAll
+  let cachedVariants = null;
+
+  /**
+   * Discover all variant files in the variants directory
+   * New structure: variants/{provider}/{promptType}/{tier}.json
+   * @returns {Array<{provider: string, promptType: string, tier: string, filePath: string, fileName: string}>}
+   */
+  function discoverVariants() {
+    // Return cached result if available
+    if (cachedVariants !== null) {
+      return cachedVariants;
+    }
+
+    const variantsDir = path.join(__dirname, '../../src/ai/prompts/variants');
+    const variants = [];
+
+    if (!fs.existsSync(variantsDir)) {
+      cachedVariants = variants;
+      return variants;
+    }
+
+    // Walk through provider directories
+    const providers = fs.readdirSync(variantsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name);
+
+    for (const provider of providers) {
+      const providerDir = path.join(variantsDir, provider);
+      const promptTypeDirs = fs.readdirSync(providerDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name);
+
+      for (const promptType of promptTypeDirs) {
+        const promptTypePath = path.join(providerDir, promptType);
+        const files = fs.readdirSync(promptTypePath)
+          .filter(f => f.endsWith('.json'));
+
+        for (const file of files) {
+          // Parse filename: {tier}.json (e.g., fast.json, balanced.json)
+          const match = file.match(/^(\w+)\.json$/);
+          if (match) {
+            variants.push({
+              provider,
+              promptType,
+              tier: match[1],
+              filePath: path.join(promptTypePath, file),
+              fileName: file
+            });
+          }
+        }
+      }
+    }
+
+    cachedVariants = variants;
+    return variants;
+  }
+
+  // Pre-populate cache in beforeAll for test setup.
+  // This ensures discoverVariants() is called during Jest's lifecycle
+  // before any describe blocks execute their synchronous code.
+  beforeAll(() => {
+    discoverVariants();
+  });
+
+  describe('variant file discovery', () => {
+    it('should find at least one variant file', () => {
+      const variants = discoverVariants();
+      expect(variants.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('variant structure validation', () => {
+    // NOTE: This call happens at describe-block scope (during test file loading),
+    // which normally executes before beforeAll hooks. However, this works because:
+    // 1. The beforeAll above pre-populates the cache during Jest's setup phase
+    // 2. Jest evaluates describe blocks synchronously during collection, and the
+    //    cache from any prior test runs persists in the module scope
+    // 3. Even if cache is cold, discoverVariants() is idempotent and will populate it
+    // This pattern enables dynamic test generation via the for-loop below.
+    const variants = discoverVariants();
+
+    for (const variant of variants) {
+      describe(`${variant.provider}/${variant.promptType}/${variant.fileName}`, () => {
+        let variantData;
+
+        beforeAll(() => {
+          const content = fs.readFileSync(variant.filePath, 'utf-8');
+          variantData = JSON.parse(content);
+        });
+
+        it('should have valid JSON structure', () => {
+          expect(variantData).toBeDefined();
+          expect(typeof variantData).toBe('object');
+        });
+
+        it('should have meta section with required fields', () => {
+          expect(variantData.meta).toBeDefined();
+          expect(variantData.meta.baseline).toBeDefined();
+          expect(typeof variantData.meta.baseline).toBe('string');
+        });
+
+        it('should have delta section', () => {
+          expect(variantData.delta).toBeDefined();
+          expect(typeof variantData.delta).toBe('object');
+        });
+
+        it('should have valid delta structure', () => {
+          const { delta } = variantData;
+
+          // sectionOrder should be an array if present
+          if (delta.sectionOrder !== undefined) {
+            expect(Array.isArray(delta.sectionOrder)).toBe(true);
+            delta.sectionOrder.forEach(name => {
+              expect(typeof name).toBe('string');
+            });
+          }
+
+          // overrides should be an object if present
+          if (delta.overrides !== undefined) {
+            expect(typeof delta.overrides).toBe('object');
+            Object.entries(delta.overrides).forEach(([key, value]) => {
+              expect(typeof key).toBe('string');
+              expect(typeof value).toBe('string');
+            });
+          }
+
+          // removedSections should be an array if present
+          if (delta.removedSections !== undefined) {
+            expect(Array.isArray(delta.removedSections)).toBe(true);
+          }
+
+          // addedSections should be an array if present
+          if (delta.addedSections !== undefined) {
+            expect(Array.isArray(delta.addedSections)).toBe(true);
+          }
+        });
+      });
+    }
+  });
+
+  describe('variant application to baselines', () => {
+    const variants = discoverVariants();
+
+    for (const variant of variants) {
+      describe(`${variant.provider}/${variant.promptType}/${variant.fileName}`, () => {
+        let variantData;
+        let baselineModule;
+        let baselinePath;
+
+        beforeAll(async () => {
+          const content = fs.readFileSync(variant.filePath, 'utf-8');
+          variantData = JSON.parse(content);
+
+          // Resolve baseline path from variant meta
+          baselinePath = `../../src/ai/prompts/baseline/${variantData.meta.baseline}.js`;
+          baselineModule = require(baselinePath);
+        });
+
+        it('should have corresponding baseline file', () => {
+          expect(baselineModule).toBeDefined();
+          expect(baselineModule.taggedPrompt).toBeDefined();
+        });
+
+        it('should apply delta without throwing errors', () => {
+          const { taggedPrompt } = baselineModule;
+          const { delta } = variantData;
+
+          expect(() => {
+            applyDelta(taggedPrompt, delta);
+          }).not.toThrow();
+        });
+
+        it('should produce non-empty output', () => {
+          const { taggedPrompt } = baselineModule;
+          const { delta } = variantData;
+
+          const result = applyDelta(taggedPrompt, delta);
+          expect(result).toBeDefined();
+          expect(result.length).toBeGreaterThan(100);
+        });
+
+        it('should reference all sections in sectionOrder that exist in baseline', () => {
+          const { taggedPrompt } = baselineModule;
+          const { delta } = variantData;
+          const baselineSections = parseSections(taggedPrompt);
+          const baselineNames = new Set(baselineSections.map(s => s.name));
+
+          // Every section in sectionOrder should either:
+          // 1. Exist in baseline
+          // 2. Be in addedSections
+          const addedNames = new Set((delta.addedSections || []).map(s => s.name));
+
+          for (const sectionName of delta.sectionOrder || []) {
+            const inBaseline = baselineNames.has(sectionName);
+            const inAdded = addedNames.has(sectionName);
+            expect(inBaseline || inAdded).toBe(true);
+          }
+        });
+
+        it('should only override non-locked sections', () => {
+          const { taggedPrompt } = baselineModule;
+          const { delta } = variantData;
+          const baselineSections = parseSections(taggedPrompt);
+
+          for (const section of baselineSections) {
+            if (section.locked) {
+              // Locked sections should not have overrides - verify intent
+              expect(delta.overrides?.[section.name]).toBeFalsy();
+            }
+          }
+        });
+
+        it('should preserve all locked sections in output', () => {
+          const { taggedPrompt } = baselineModule;
+          const { delta } = variantData;
+          const baselineSections = parseSections(taggedPrompt);
+          const result = applyDelta(taggedPrompt, delta);
+
+          // Find locked sections in baseline
+          const lockedSections = baselineSections.filter(s => s.locked);
+
+          // Each locked section's content should appear in the result
+          for (const section of lockedSections) {
+            // Skip sections with placeholders (they won't match exactly)
+            if (section.content.includes('{{')) {
+              continue;
+            }
+            expect(result).toContain(section.content);
+          }
+        });
+
+        it('should not lose critical line number guidance keywords', () => {
+          const { taggedPrompt } = baselineModule;
+          const { delta } = variantData;
+          const result = applyDelta(taggedPrompt, delta);
+
+          // These concepts should be preserved in the final prompt
+          // (either from locked sections or from variant overrides)
+          expect(result).toMatch(/NEW|OLD|line/i);
+        });
+      });
+    }
+  });
+
+  describe('level1-fast Gemini variant specific checks', () => {
+    it('should reference git-diff-lines somewhere in variant overrides', async () => {
+      const variantPath = path.join(
+        __dirname,
+        '../../src/ai/prompts/variants/gemini/level1/fast.json'
+      );
+
+      if (!fs.existsSync(variantPath)) {
+        // Skip if variant doesn't exist yet
+        return;
+      }
+
+      const content = fs.readFileSync(variantPath, 'utf-8');
+      const variant = JSON.parse(content);
+
+      // The git-diff-lines command should be mentioned somewhere in the overrides
+      // (could be in initial-setup, available-commands, or other sections)
+      if (variant.delta.overrides) {
+        const allOverrideContent = Object.values(variant.delta.overrides).join('\n');
+        expect(allOverrideContent).toMatch(/git-diff-lines/i);
+      }
+    });
+
+    it('should have clear context line guidance in diff-instructions', async () => {
+      const variantPath = path.join(
+        __dirname,
+        '../../src/ai/prompts/variants/gemini/level1/fast.json'
+      );
+
+      if (!fs.existsSync(variantPath)) {
+        return;
+      }
+
+      const content = fs.readFileSync(variantPath, 'utf-8');
+      const variant = JSON.parse(content);
+
+      // The diff-instructions should clearly distinguish context lines
+      if (variant.delta.overrides && variant.delta.overrides['diff-instructions']) {
+        const diffInstructions = variant.delta.overrides['diff-instructions'];
+        // Should mention that context lines are unmarked (no [+])
+        expect(diffInstructions).not.toMatch(/\[\+\]\s*context/i);
+        // Should have clear NEW/OLD guidance
+        expect(diffInstructions).toMatch(/NEW.*default/i);
+        expect(diffInstructions).toMatch(/OLD.*deleted/i);
+      }
+    });
+  });
+});
