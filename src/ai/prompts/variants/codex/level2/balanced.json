@@ -1,0 +1,110 @@
+{
+  "meta": {
+    "baseline": "level2/balanced",
+    "baselineHash": "2e6a135c",
+    "targetModel": "gpt-5.1-codex-max",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:54:29.789Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "generated-files",
+      "valid-files",
+      "analysis-process",
+      "focus-areas",
+      "available-commands",
+      "output-schema",
+      "diff-instructions",
+      "file-level-guidance",
+      "guidelines"
+    ],
+    "overrides": {
+      "level-header": "## Level 2 Review — File Context",
+      "analysis-process": "## Analysis Process\nFor each changed file:\n1. Use git-diff-lines to capture changes with line numbers\n2. Read the full file only when needed for context\n3. Evaluate changes against the file’s existing structure and patterns\n4. Check for consistency, missing related changes, and file-wide impact\n5. Skip the file if no file-level issues are found",
+      "focus-areas": "## Focus Areas\nLook for:\n- In-file inconsistencies (naming, patterns, error handling)\n- Missing companion changes within the same file\n- File-context security risks\n- Style or pattern deviations\n- Design pattern alignment within the file\n- Documentation gaps for file-level changes\n- Noteworthy positives worth praising",
+      "available-commands": "## Available Commands (READ-ONLY)\n- git-diff-lines (preferred for line-numbered changes)\n- `cat -n <file>` to view files with line numbers\n- rg, grep, find, ls as needed\n\nDo NOT modify files. Analysis and reporting only.\nParallel read-only tasks are allowed.",
+      "diff-instructions": "## Line Number Reference (old_or_new field)\n- Use **\"NEW\"** for ADDED [+] lines and CONTEXT lines (default)\n- Use **\"OLD\"** ONLY for DELETED [-] lines\n\nContext lines exist in both files; always label them \"NEW\".\nWhen unsure, use \"NEW\".",
+      "file-level-guidance": "## Line-Level vs File-Level Suggestions\nPrefer line-level comments when you can anchor to specific lines. Use file-level suggestions only for true file-wide observations.\n\nAppropriate file-level topics:\n- File architecture or organization\n- Module naming conventions\n- Missing tests for the file\n- File structure improvements\n- Module-level design patterns\n\nFile-level suggestions must NOT include a line number.",
+      "guidelines": "## Guidelines\n\n**Priority:**\n1. Skip files with no file-level issues\n2. Anchor suggestions to specific lines when possible\n3. Use fileLevelSuggestions only for file-wide concerns\n4. Focus on issues that require full file context\n\n**Output rules:**\n- For \"praise\": omit the suggestion field\n- For other types: include specific, actionable suggestions\n\n**Confidence:**\n- 0.8–1.0: clear, confident issues\n- 0.5–0.79: likely but some uncertainty\n- <0.5: omit unless critical"
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Placeholder already minimal and model-agnostic; no change needed."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section must remain exact."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional placeholder kept to preserve user-specific overrides."
+    },
+    {
+      "section": "level-header",
+      "type": "modified",
+      "rationale": "Simplified and clarified heading for quicker model parsing."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder kept intact to avoid conflicting guidance."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Optional placeholder retained for generated file exclusions."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked section must remain exact."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Tightened steps and emphasized context usage and skipping to reduce verbosity."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Condensed and clarified focus list for precision."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Streamlined read-only command list and constraints."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked schema must remain exact."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Made old_or_new rule more direct and consistent."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "modified",
+      "rationale": "Clarified when to use file-level suggestions and line number rule."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Reduced redundancy and improved confidence calibration clarity."
+    }
+  ]
+}

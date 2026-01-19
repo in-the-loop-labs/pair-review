@@ -1,0 +1,109 @@
+{
+  "meta": {
+    "baseline": "level3/fast",
+    "baselineHash": "4206b838",
+    "targetModel": "gpt-5.1-codex-mini",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:55:36.450Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "generated-files",
+      "changed-files",
+      "purpose",
+      "analysis-process",
+      "focus-areas",
+      "available-commands",
+      "output-schema",
+      "diff-instructions",
+      "guidelines"
+    ],
+    "overrides": {
+      "purpose": "## Purpose\nAssess how the change connects to and affects the broader codebase and existing patterns.",
+      "analysis-process": "## Steps\n1. Trace outward from changed files to their callers/callees\n2. Check interactions with referenced and referencing files\n3. Confirm alignment with established patterns; ignore unrelated areas",
+      "focus-areas": "## What to Find\n- Cross-file dependency breaks or mismatches\n- Architectural inconsistencies with existing patterns\n- {{testingGuidance}}\n- API/contract breaks or behavioral regressions\n- Security issues in connected systems\n- Notable architectural decisions worth praising",
+      "available-commands": "## Commands (READ-ONLY)\n- find, grep for search\n- `cat -n <file>` for file content\n- ls, tree for structure\n\nDo NOT modify files.",
+      "diff-instructions": "## Line Numbers (old_or_new)\n- Use \"NEW\" for added and context lines (default)\n- Use \"OLD\" only for deleted lines\n\nWhen unsure, use \"NEW\".",
+      "guidelines": "## Guidelines\n- Focus on codebase-level issues that require broader context\n- Only include confident suggestions; skip uncertain items\n- Prefer line-level comments when tied to specific lines\n- For \"praise\": omit suggestion field\n- For other types: include specific, actionable suggestions"
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Placeholder content is already minimal and model-agnostic."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section must remain verbatim."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional placeholder retained for user-provided overrides without adding overhead."
+    },
+    {
+      "section": "level-header",
+      "type": "unchanged",
+      "rationale": "Clear label for review level; no change needed."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder guidance left intact to preserve existing injection."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Optional placeholder retained for generated files context if present."
+    },
+    {
+      "section": "changed-files",
+      "type": "unchanged",
+      "rationale": "Locked section must remain verbatim."
+    },
+    {
+      "section": "purpose",
+      "type": "modified",
+      "rationale": "Shortened to a single direct sentence to reduce token load for a fast model."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Condensed steps with clearer imperative phrasing for quick execution."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Tightened bullets to emphasize cross-file risks while keeping all required signals."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Simplified command list and phrasing for faster parsing."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section must remain verbatim."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "More direct wording to reduce ambiguity and prompt length."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Concise bullets to emphasize confidence gating and required fields."
+    }
+  ]
+}

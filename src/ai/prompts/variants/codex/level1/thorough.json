@@ -1,0 +1,120 @@
+{
+  "meta": {
+    "baseline": "level1/thorough",
+    "baselineHash": "b0990073",
+    "targetModel": "gpt-5.2-codex",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:55:34.519Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "reasoning-encouragement",
+      "generated-files",
+      "valid-files",
+      "initial-setup",
+      "focus-areas",
+      "available-commands",
+      "output-schema",
+      "diff-instructions",
+      "confidence-guidance",
+      "category-definitions",
+      "guidelines"
+    ],
+    "overrides": {
+      "reasoning-encouragement": "## Reasoning Approach\nAnalyze the diff carefully and surface high-confidence issues. For each potential issue:\n1. Confirm the intent and context in the diff\n2. Consider edge cases and failure modes\n3. Assess severity and likelihood\n4. Separate real issues from stylistic preferences\n5. Provide a clear, actionable fix when appropriate\n\nPrefer fewer, higher-confidence findings over many low-confidence ones.",
+      "initial-setup": "## Initial Setup\n1. Use git-diff-lines (shown above) to view changes with line numbers\n2. Read the full diff to understand intent and scope\n3. Focus on changed lines and the context lines shown in the diff\n4. Do not open files or analyze code outside the diff\n5. Consider what could go wrong with each change",
+      "focus-areas": "## Analysis Focus Areas\nCarefully identify and analyze the following in changed code:\n\n### Correctness\n- Incorrect behavior, logic errors, or edge case failures\n- Boundary conditions, off-by-one, null/undefined handling\n- Type mismatches or incorrect type assumptions\n\n### Security\n- Input validation and sanitization issues\n- Injection risks (SQL, XSS, command injection)\n- Authentication/authorization flaws\n- Sensitive data exposure or insecure defaults\n\n### Performance\n- Inefficient algorithms or redundant work visible in the diff\n- Resource leaks or unnecessary allocations\n- N+1 queries or obvious database inefficiencies\n\n### Code Quality\n- Readability and maintainability issues\n- Naming/consistency problems, excessive complexity\n- Magic numbers or duplicated logic\n\n### Documentation\n- Missing or incorrect comments for changed complex logic\n- Missing or outdated docs for changed public APIs\n\n### Good Practices\n- Praise clean, readable implementations\n- Highlight thoughtful error handling or good abstractions",
+      "available-commands": "## Available Commands (READ-ONLY)\nYou have READ-ONLY access to the codebase. You may run commands like:\n- git-diff-lines shown above (preferred for viewing changes with line numbers)\n- `cat -n <file>` to view files with line numbers\n- ls, find, rg, grep commands as needed\n\nIMPORTANT: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.).\nYour role is strictly to analyze and report findings.\n\nNote: You may optionally use parallel read-only Tasks to analyze different parts of the changes if that would be helpful for a thorough analysis.",
+      "guidelines": "## Important Guidelines\n\n### What to Review\n- Comment only on lines present in the diff (added, deleted, or context lines)\n- Prioritize changed lines; reference context lines shown in the diff as needed\n- Do not analyze beyond the diff or open file context\n- Do not review missing tests or unrelated unchanged code\n- Prefer line-level comments over file-level comments\n\n### Output Quality\n- For \"praise\" type suggestions: Omit the suggestion field entirely (no action needed)\n- For other types always include specific, actionable suggestions that the developer can implement\n- Provide enough context in the description that a developer can understand the issue without seeing the code\n- Avoid vague suggestions like \"consider improving this\" - be specific about what and how\n- If there are no issues, return an empty suggestions array and a brief summary\n\n### Review Philosophy\n- Be constructive, not critical - the goal is to help, not to find fault\n- Consider the developer's intent and try to understand why they made certain choices\n- Distinguish between \"must fix\" issues and \"nice to have\" improvements\n- When in doubt, ask a question rather than making an assumption\n- Praise good code to reinforce positive patterns"
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Retained the placeholder-driven role content without changes."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional passthrough preserved for user-provided instructions."
+    },
+    {
+      "section": "level-header",
+      "type": "unchanged",
+      "rationale": "Clear level header already effective for the target model."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder guidance kept intact to avoid breaking upstream content."
+    },
+    {
+      "section": "reasoning-encouragement",
+      "type": "modified",
+      "rationale": "Condensed and sharpened the review workflow to reduce verbosity while keeping intent."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Optional placeholder retained to allow generated-file exclusions."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "initial-setup",
+      "type": "modified",
+      "rationale": "Clarified scope limits and diff-only focus to reduce ambiguity."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Streamlined lists while preserving coverage for the key review categories."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Clarified read-only tooling and added rg to align with repo guidance."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked schema preserved exactly as required."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Already precise for old/new line usage; no changes needed."
+    },
+    {
+      "section": "confidence-guidance",
+      "type": "unchanged",
+      "rationale": "Calibration scale is clear and model-appropriate as-is."
+    },
+    {
+      "section": "category-definitions",
+      "type": "unchanged",
+      "rationale": "Definitions are comprehensive and consistent with output schema."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Resolved internal contradictions and added explicit no-issue output guidance for clarity."
+    }
+  ]
+}

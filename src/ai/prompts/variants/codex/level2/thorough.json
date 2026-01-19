@@ -1,0 +1,130 @@
+{
+  "meta": {
+    "baseline": "level2/thorough",
+    "baselineHash": "e3e0013f",
+    "targetModel": "gpt-5.2-codex",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:57:33.457Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "reasoning-encouragement",
+      "generated-files",
+      "valid-files",
+      "analysis-process",
+      "focus-areas",
+      "available-commands",
+      "output-schema",
+      "diff-instructions",
+      "confidence-guidance",
+      "category-definitions",
+      "file-level-guidance",
+      "guidelines"
+    ],
+    "overrides": {
+      "level-header": "# Level 2 Review - File Context Analysis",
+      "reasoning-encouragement": "## Reasoning Framework\n\nFor each changed file, establish file context before judging issues:\n\n**1) File Contract**\n- Identify invariants, conventions, and lifecycle patterns the file relies on\n- Note extension points and how new code is expected to integrate\n\n**2) Integration Check**\n- Verify changes follow the file's patterns and boundaries\n- Watch for implicit dependencies or coupled sections that should change together\n\n**3) Impact Trace**\n- Trace in-file effects and edge cases (null/empty inputs, ordering, concurrency)\n- Consider maintainability: will a future reader understand the change?\n\n**Output Calibration**\nOnly report findings that require full-file context. If a finding is visible from the diff alone, skip it here. Prefer fewer high-confidence file-context issues over padded output.",
+      "analysis-process": "## Analysis Process\n\nFor each file with changes:\n\n1. **Build Context**\n   - Read the full file to understand intent and structure\n   - Run git-diff-lines with the file path for precise line numbers\n   - Capture the file's implicit rules (errors, naming, ordering, patterns)\n\n2. **Assess Integration**\n   - Do changes align with established patterns and abstraction boundaries?\n   - Are there related areas that should change together but didn't?\n\n3. **Emit Findings**\n   - Report only issues that require full-file context\n   - Attach suggestions to the line where the issue manifests\n   - Skip files with no genuine file-level concerns",
+      "focus-areas": "## Analysis Focus Areas\nEvaluate within file context:\n\n### Consistency\n- Naming, errors, logging, comments, imports, and ordering match file conventions\n\n### Integration Quality\n- Changes fit existing patterns and keep abstraction levels coherent\n- Related sections are updated together when needed\n\n### Security (File Scope)\n- Validation, sensitive data handling, and access control match file patterns\n\n### Performance (File Scope)\n- Resource management and caching follow file conventions\n- Algorithm choices align with similar in-file functions\n\n### Code Quality\n- Design patterns and complexity match file style\n- Avoid in-file duplication and magic values inconsistent with constants\n\n### Documentation\n- Docstrings and comments follow the file's style and remain accurate\n\n### Good Practices\n- Call out clean integration and thoughtful adherence to file conventions",
+      "available-commands": "## Available Commands (READ-ONLY)\nYou have READ-ONLY access. Use commands like:\n- git-diff-lines with file path (preferred for line numbers)\n- `cat -n <file>` for full-file context with line numbers\n- grep/find/ls as needed\n\nIMPORTANT: Do NOT modify files or run write commands (rm, mv, git commit, etc.).\nYou must only analyze and report findings.\n\nYou may use parallel read-only Tasks if helpful.",
+      "confidence-guidance": "## Confidence Calibration\nConfidence reflects certainty that the issue is real:\n- High (0.8-1.0): certain problem\n- Medium (0.5-0.79): likely issue, context might justify\n- Low (0.3-0.49): possible issue, needs human judgment\n- Very low (<0.3): observation only\n\nConfidence is about certainty, not severity.",
+      "category-definitions": "## Category Definitions\n\n### Issue Types\n- **bug**: Behavior breaks in file context (e.g., violates error-handling pattern)\n- **improvement**: Works but inconsistent with file conventions\n- **praise**: Strong alignment with file patterns\n- **suggestion**: General file-context recommendation\n- **design**: File-level architecture or responsibility concerns\n- **performance**: Deviations from file performance patterns\n- **security**: File-context security inconsistencies\n- **code-style**: Formatting/naming inconsistencies with file style",
+      "file-level-guidance": "## File-Level vs Line-Level Suggestions\n\nUse `suggestions` for issues tied to a specific line, even if file context was required.\n\nUse `fileLevelSuggestions` when the concern is about overall file organization, architecture, or a holistic praise that cannot be tied to one line.\n\nFile-level suggestions do not include line numbers.",
+      "guidelines": "## Guidelines\n\n### Scope\n- You may attach suggestions to any line within modified files, including context lines\n- Focus on issues that require full file context; avoid Level 1 diff-only findings\n\n### Output Quality\n- Omit `suggestion` for praise\n- Provide specific, actionable suggestions grounded in file conventions\n- Explain why full-file context was necessary\n\n### Philosophy\n- Treat file conventions as authoritative\n- Distinguish \"must-fix\" consistency issues from \"nice-to-have\"\n- Lower confidence when unsure about conventions\n- Praise strong integration to reinforce good practice\n\n### Priority Order\n1. Convention breaks that risk bugs or security issues\n2. Consistency issues affecting maintainability\n3. Style/coherence suggestions\n4. Praise for excellent integration"
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Preserves the role placeholder exactly while staying concise."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section must remain identical."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Keeps optional runtime instructions available without alteration."
+    },
+    {
+      "section": "level-header",
+      "type": "modified",
+      "rationale": "Shortened to a clearer title while preserving meaning."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Retains existing line-number guidance placeholder."
+    },
+    {
+      "section": "reasoning-encouragement",
+      "type": "modified",
+      "rationale": "Condensed into a tighter, action-oriented framework for file-context reasoning."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Keeps optional generated-files context available."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked section must remain identical."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Streamlined steps to reduce verbosity and emphasize file-context checks."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Compressed focus areas to reduce redundancy while keeping coverage."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Tightened read-only command guidance and constraints."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section must remain identical."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Clear and sufficient as-is."
+    },
+    {
+      "section": "confidence-guidance",
+      "type": "modified",
+      "rationale": "Simplified calibration to be faster to apply."
+    },
+    {
+      "section": "category-definitions",
+      "type": "modified",
+      "rationale": "Condensed definitions to essential distinctions for faster labeling."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "modified",
+      "rationale": "Clarified line vs file guidance with minimal wording."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Removed redundancy and emphasized actionable, context-driven output."
+    }
+  ]
+}

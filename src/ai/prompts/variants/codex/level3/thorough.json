@@ -1,0 +1,137 @@
+{
+  "meta": {
+    "baseline": "level3/thorough",
+    "baselineHash": "bfa0992d",
+    "targetModel": "gpt-5.2-codex",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T04:01:42.134Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "reasoning-encouragement",
+      "generated-files",
+      "changed-files",
+      "purpose",
+      "analysis-process",
+      "focus-areas",
+      "available-commands",
+      "output-schema",
+      "diff-instructions",
+      "confidence-guidance",
+      "category-definitions",
+      "file-level-guidance",
+      "guidelines"
+    ],
+    "overrides": {
+      "reasoning-encouragement": "## Reasoning Approach\nBuild from the concrete diff to the broader system impact.\n\n- Dependency tracing: identify callers and dependencies; note contract changes.\n- Pattern recognition: find 2-3 similar implementations before judging; distinguish local convention vs ideal.\n- Architectural thinking: trace data flow, trust boundaries, failure modes, and layering.\n- Calibrate: prefer fewer, high-confidence findings that require codebase context.",
+      "purpose": "## Purpose\nLevel 3 focuses on how these specific changes interact with the broader codebase (not a full audit).\n\nAnswer:\n- How do changes fit current architecture and patterns?\n- What other components are impacted, directly or indirectly?\n- Are there missing companion updates (tests, docs, config, migrations)?",
+      "analysis-process": "## Analysis Process\n1. Map the change scope: list modified interfaces and behavior deltas.\n2. Trace dependencies: find callers and transitive dependents; spot contract shifts.\n3. Identify patterns: locate 2-3 similar implementations and their conventions.\n4. Evaluate conformance: justify deviations or align with patterns.\n5. Assess ripple effects: integration points, edge paths, failure modes.\n6. Check completeness: tests, docs, config, migrations as appropriate.\n7. Consider evolution: impact on future changeability and debt.",
+      "focus-areas": "## Analysis Focus Areas\n\n### Architectural Consistency\n- Fit with architecture and layering boundaries.\n- Separation of concerns and module organization.\n\n### Established Patterns\n- Consistency with error handling, logging, validation, and naming.\n- If deviating, is it justified or a clear improvement?\n\n### Cross-File Dependencies\n- Callers impacted, implicit contracts, circular dependencies.\n\n### Testing Coverage\n- {{testingGuidance}}\n- Follow existing test patterns; add integration tests where needed.\n\n### Documentation Completeness\n- Update public APIs, READMEs, guides, or ADRs when required.\n\n### API Contracts\n- Breaking changes, versioning, error shapes, compatibility.\n\n### Configuration & Environment\n- Config, flags, deployment, or env-specific considerations.\n\n### Breaking Changes & Compatibility\n- Deprecations, migrations, blast radius planning.\n\n### Performance Impact\n- Query patterns, caching, scaling, resource contention.\n\n### Security Considerations\n- Auth/authz consistency, trust boundaries, data exposure.\n\n### Good Practices\n- Praise strong integration and maintainability gains.",
+      "available-commands": "## Available Commands (READ-ONLY)\nYou have READ-ONLY access. Use read-only commands to explore the codebase:\n- rg/grep/find, ls/tree, cat -n, etc.\n\nDo NOT modify files or run write commands.\nParallel read-only exploration is allowed if helpful.",
+      "diff-instructions": "## Line Number Reference (old_or_new field)\n- Use \"NEW\" for ADDED lines [+] and CONTEXT lines.\n- Use \"OLD\" only for DELETED lines [-].\nIf unsure, use \"NEW\".",
+      "confidence-guidance": "## Confidence Calibration\nConfidence is epistemic certainty, not severity.\n\n- High (0.8-1.0): verified via call graph and pattern checks.\n- Medium (0.5-0.79): strong evidence, incomplete verification.\n- Low (0.3-0.49): heuristic concern, limited evidence.\n- Very low (<0.3): flag for human review.\n\nLower confidence when patterns are unclear or runtime behavior is unknown.",
+      "category-definitions": "## Category Definitions\n\n### Issue Types\n- bug: incorrect behavior due to codebase interactions.\n- improvement: works but diverges from established conventions.\n- praise: strong alignment with codebase conventions.\n- suggestion: optional recommendation based on context.\n- design: structural or architectural concern.\n- performance: efficiency or scaling impact.\n- security: auth/data/trust boundary risk.\n- code-style: stylistic inconsistency with project norms.",
+      "file-level-guidance": "## File-Level Suggestions\nUse fileLevelSuggestions for observations about the whole file that require codebase context and are not line-specific (role in architecture, missing tests, integration gaps, location/organization).\n\nOmit line numbers. Praise is allowed and should omit suggestion.\n\nExamples:\n- \"Missing integration tests compared to similar modules\"\n- \"File belongs under services/ to match project structure\"\n- \"Duplicates utilities in src/utils/helpers.js\"",
+      "guidelines": "## Guidelines\n- Scope: Level 3 requires codebase context; omit issues visible from a file alone.\n- Actionable: cite concrete patterns or files you actually found.\n- Evidence-based: verify with searches; avoid speculation.\n- Calibration: prefer fewer high-confidence findings; separate severity from certainty.\n- Workflow: start with changed files, then callers, then tests and docs."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Preserve the injected role intro exactly."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section must remain unchanged."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Keep optional injection point intact."
+    },
+    {
+      "section": "level-header",
+      "type": "unchanged",
+      "rationale": "Header already clear and specific."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Preserve placeholder content verbatim."
+    },
+    {
+      "section": "reasoning-encouragement",
+      "type": "modified",
+      "rationale": "Condensed guidance into a tighter, model-friendly checklist while retaining intent."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Keep optional generated-files placeholder available."
+    },
+    {
+      "section": "changed-files",
+      "type": "unchanged",
+      "rationale": "Locked section must remain unchanged."
+    },
+    {
+      "section": "purpose",
+      "type": "modified",
+      "rationale": "Made the scope and key questions more concise and direct."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Streamlined steps to reduce redundancy and improve scanability."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Reduced verbosity while preserving all coverage areas."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Shortened to essential read-only constraints and examples."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section must remain unchanged."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Simplified wording for faster, unambiguous execution."
+    },
+    {
+      "section": "confidence-guidance",
+      "type": "modified",
+      "rationale": "Condensed calibration with clearer emphasis on epistemic certainty."
+    },
+    {
+      "section": "category-definitions",
+      "type": "modified",
+      "rationale": "Shortened definitions without losing category distinctions."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "modified",
+      "rationale": "Clarified when to use file-level suggestions with brief examples."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Removed repetition and focused on enforceable rules."
+    }
+  ]
+}

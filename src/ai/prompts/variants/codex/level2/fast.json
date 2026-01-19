@@ -1,0 +1,103 @@
+{
+  "meta": {
+    "baseline": "level2/fast",
+    "baselineHash": "44cc4385",
+    "targetModel": "gpt-5.1-codex-mini",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:54:39.378Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "custom-instructions",
+      "pr-context",
+      "valid-files",
+      "generated-files",
+      "output-schema",
+      "level-header",
+      "line-number-guidance",
+      "diff-instructions",
+      "analysis-process",
+      "focus-areas",
+      "guidelines",
+      "available-commands"
+    ],
+    "overrides": {
+      "level-header": "# Level 2 Review: File Context",
+      "diff-instructions": "## Line Numbers\nUse \"NEW\" for added [+] and context lines; use \"OLD\" only for deleted [-] lines.",
+      "analysis-process": "## Steps\n1. Run git-diff-lines to get changed lines with numbers\n2. Read full file only when needed for context\n3. Anchor each suggestion to the exact line when possible",
+      "focus-areas": "## Find\n- Correctness bugs and missing related changes\n- File-level inconsistencies (naming, patterns, error handling)\n- Security issues\n- Performance or reliability risks\n- Style violations\n- Good practices (praise)",
+      "guidelines": "## Guidelines\n- If a line anchor is not possible, use fileLevelSuggestions\n- Omit suggestion for praise; include it for all other types\n- Only include high-confidence suggestions\n- Skip files with no issues",
+      "available-commands": "## Commands (READ-ONLY)\nUse git-diff-lines first; otherwise `cat -n <file>`, ls, find, grep. Do NOT modify files."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Keeps the dynamic review intro intact and minimal for a fast model."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "reordered",
+      "rationale": "Moved earlier so any overrides are read before context and constraints."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "generated-files",
+      "type": "reordered",
+      "rationale": "Placed near file constraints to keep file-selection guidance together."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly; surfaced earlier to front-load output requirements."
+    },
+    {
+      "section": "level-header",
+      "type": "modified",
+      "rationale": "Shortened header to reduce tokens while preserving intent."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder preserved to retain external guidance content."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Clarified NEW vs OLD usage in a single direct sentence."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Tightened steps with imperative phrasing for a fast model."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Prioritized critical issues and condensed wording for scanability."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Added explicit fallback to fileLevelSuggestions and simplified rules."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Made command order and read-only constraint explicit in fewer words."
+    }
+  ]
+}

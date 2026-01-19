@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "baseline": "level1/balanced",
+    "baselineHash": "a5e91d66",
+    "targetModel": "gpt-5.1-codex-max",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:53:38.932Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "speed-expectations",
+      "generated-files",
+      "valid-files",
+      "initial-setup",
+      "focus-areas",
+      "available-commands",
+      "output-schema",
+      "diff-instructions",
+      "category-definitions",
+      "guidelines"
+    ],
+    "overrides": {
+      "role": "{{reviewIntro}}\nFollow all instructions and output format below exactly.",
+      "speed-expectations": "## Speed and Scope Expectations\nFast, diff-only review. Analyze changed lines only; avoid surrounding file context.",
+      "initial-setup": "## Initial Setup\n1. Use git-diff-lines output (shown above) for line numbers.\n2. Review changed lines only; do not inspect unchanged context unless essential to explain an issue.",
+      "focus-areas": "## Analysis Focus Areas\nOn changed lines, flag:\n- Bugs/errors, logic issues, security risks, or performance regressions\n- Code style/naming or design-pattern violations visible in isolation\n- Documentation issues introduced by the change\n- Good practices worth praising (optional)",
+      "available-commands": "## Available Commands (READ-ONLY)\n- git-diff-lines shown above (required)\n- `cat -n <file>` only if a line number is unclear\n- ls, find, grep as needed\n\nDo NOT modify files or run write commands. Analyze and report only.",
+      "guidelines": "## Guidelines\n- Prioritize changed lines; use unchanged lines only to clarify an issue\n- Prefer line-level suggestions over file-level\n- **Praise:** omit the suggestion field (no action needed)\n- **Other types:** include specific, actionable suggestions\n\nConfidence calibration:\n- High (0.8+): clear issue\n- Medium (0.5-0.79): likely issue with some uncertainty\n- Low (<0.5): omit rather than guess"
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "modified",
+      "rationale": "Adds a short directive to enforce strict adherence to instructions and output format."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional placeholder kept to allow downstream customization."
+    },
+    {
+      "section": "level-header",
+      "type": "unchanged",
+      "rationale": "Already concise and clear for Level 1 scope."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder guidance retained without alteration."
+    },
+    {
+      "section": "speed-expectations",
+      "type": "modified",
+      "rationale": "Condensed to a direct, diff-only instruction suitable for fast compliance."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Optional placeholder kept in case generated-file guidance is provided."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "initial-setup",
+      "type": "modified",
+      "rationale": "Clarifies reliance on git-diff-lines and tightens context limitation."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Streamlined list to emphasize key defect categories and optional praise."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Tightened to discourage unnecessary file access while preserving allowed tools."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked schema preserved exactly as required."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Already precise and unambiguous; no changes needed."
+    },
+    {
+      "section": "category-definitions",
+      "type": "unchanged",
+      "rationale": "Clear taxonomy; retained as-is."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Simplified guidance and confidence calibration for clearer execution."
+    }
+  ]
+}
