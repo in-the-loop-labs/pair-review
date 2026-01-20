@@ -96,7 +96,8 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
         repository,
         default_instructions: null,
         default_provider: null,
-        default_model: null
+        default_model: null,
+        local_path: null
       });
     }
 
@@ -105,6 +106,7 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
       default_instructions: settings.default_instructions,
       default_provider: settings.default_provider,
       default_model: settings.default_model,
+      local_path: settings.local_path,
       created_at: settings.created_at,
       updated_at: settings.updated_at
     });
@@ -124,14 +126,14 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
 router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
     const { owner, repo } = req.params;
-    const { default_instructions, default_provider, default_model } = req.body;
+    const { default_instructions, default_provider, default_model, local_path } = req.body;
     const repository = `${owner}/${repo}`;
     const db = req.app.get('db');
 
     // Validate that at least one setting is provided
-    if (default_instructions === undefined && default_provider === undefined && default_model === undefined) {
+    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined) {
       return res.status(400).json({
-        error: 'At least one setting (default_instructions, default_provider, or default_model) must be provided'
+        error: 'At least one setting (default_instructions, default_provider, default_model, or local_path) must be provided'
       });
     }
 
@@ -139,7 +141,8 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
     const settings = await repoSettingsRepo.saveRepoSettings(repository, {
       default_instructions,
       default_provider,
-      default_model
+      default_model,
+      local_path
     });
 
     logger.info(`Saved repo settings for ${repository}`);
@@ -151,6 +154,7 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
         default_instructions: settings.default_instructions,
         default_provider: settings.default_provider,
         default_model: settings.default_model,
+        local_path: settings.local_path,
         updated_at: settings.updated_at
       }
     });

@@ -164,6 +164,12 @@ class RepoSettingsPage {
       resetBtn.addEventListener('click', () => this.handleReset());
     }
 
+    // Clear local path button
+    const clearLocalPathBtn = document.getElementById('clear-local-path');
+    if (clearLocalPathBtn) {
+      clearLocalPathBtn.addEventListener('click', () => this.handleClearLocalPath());
+    }
+
     // Warn before leaving with unsaved changes
     window.addEventListener('beforeunload', (e) => {
       if (this.hasUnsavedChanges) {
@@ -357,7 +363,8 @@ class RepoSettingsPage {
       this.originalSettings = {
         default_provider: settings.default_provider || null,
         default_model: settings.default_model || null,
-        default_instructions: settings.default_instructions || ''
+        default_instructions: settings.default_instructions || '',
+        local_path: settings.local_path || null
       };
 
       // Set current settings
@@ -372,7 +379,8 @@ class RepoSettingsPage {
       this.originalSettings = {
         default_provider: null,
         default_model: null,
-        default_instructions: ''
+        default_instructions: '',
+        local_path: null
       };
       this.currentSettings = { ...this.originalSettings };
       this.updateUI();
@@ -404,6 +412,34 @@ class RepoSettingsPage {
     if (textarea) {
       textarea.value = this.currentSettings.default_instructions || '';
       this.updateCharCount(textarea.value.length);
+    }
+
+    // Update local path display
+    this.updateLocalPathDisplay();
+  }
+
+  /**
+   * Update the local path display section
+   */
+  updateLocalPathDisplay() {
+    const localPathValue = document.getElementById('local-path-value');
+    const clearLocalPathBtn = document.getElementById('clear-local-path');
+    const localPathHint = document.getElementById('local-path-hint');
+
+    if (!localPathValue) return;
+
+    const localPath = this.currentSettings.local_path;
+
+    if (localPath) {
+      localPathValue.textContent = localPath;
+      localPathValue.classList.add('has-value');
+      if (clearLocalPathBtn) clearLocalPathBtn.style.display = 'inline-flex';
+      if (localPathHint) localPathHint.style.display = 'none';
+    } else {
+      localPathValue.textContent = 'Not set';
+      localPathValue.classList.remove('has-value');
+      if (clearLocalPathBtn) clearLocalPathBtn.style.display = 'none';
+      if (localPathHint) localPathHint.style.display = 'flex';
     }
   }
 
@@ -536,7 +572,8 @@ class RepoSettingsPage {
         body: JSON.stringify({
           default_provider: null,
           default_model: null,
-          default_instructions: ''
+          default_instructions: '',
+          local_path: null
         })
       });
 
@@ -548,7 +585,8 @@ class RepoSettingsPage {
       this.originalSettings = {
         default_provider: null,
         default_model: null,
-        default_instructions: ''
+        default_instructions: '',
+        local_path: null
       };
       this.currentSettings = { ...this.originalSettings };
       this.hasUnsavedChanges = false;
@@ -567,6 +605,46 @@ class RepoSettingsPage {
     } catch (error) {
       console.error('Error resetting settings:', error);
       this.showToast('error', 'Failed to reset settings. Please try again.');
+    }
+  }
+
+  /**
+   * Handle clearing the local repository path
+   */
+  async handleClearLocalPath() {
+    const confirmed = confirm(
+      'This will clear the registered repository location. The next web UI review will need to clone the repository unless you run pair-review from the CLI again. Continue?'
+    );
+
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`/api/repos/${this.owner}/${this.repo}/settings`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          local_path: null
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to clear local path');
+      }
+
+      // Update settings
+      this.originalSettings.local_path = null;
+      this.currentSettings.local_path = null;
+
+      // Update local path display
+      this.updateLocalPathDisplay();
+
+      this.showToast('success', 'Repository location cleared');
+
+    } catch (error) {
+      console.error('Error clearing local path:', error);
+      this.showToast('error', 'Failed to clear repository location. Please try again.');
     }
   }
 

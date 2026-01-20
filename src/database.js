@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 9;
+const CURRENT_SCHEMA_VERSION = 10;
 
 /**
  * Database schema SQL statements
@@ -120,6 +120,7 @@ const SCHEMA_SQL = {
       default_instructions TEXT,
       default_provider TEXT,
       default_model TEXT,
+      local_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
@@ -531,6 +532,36 @@ const MIGRATIONS = {
     console.log('  Updated indexes to use review_id');
 
     console.log('Migration to schema version 9 complete');
+  },
+
+  // Migration to version 10: adds local_path column to repo_settings for known repository location tracking
+  10: (db) => {
+    console.log('Running migration to schema version 10...');
+
+    // Helper to check if column exists
+    const columnExists = (table, column) => {
+      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+      return rows ? rows.some(row => row.name === column) : false;
+    };
+
+    // Add local_path column to repo_settings if it doesn't exist
+    const hasLocalPath = columnExists('repo_settings', 'local_path');
+    if (!hasLocalPath) {
+      try {
+        db.prepare(`ALTER TABLE repo_settings ADD COLUMN local_path TEXT`).run();
+        console.log('  Added local_path column to repo_settings');
+      } catch (error) {
+        // Ignore duplicate column errors (race condition protection)
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column local_path already exists (race condition)');
+      }
+    } else {
+      console.log('  Column local_path already exists');
+    }
+
+    console.log('Migration to schema version 10 complete');
   }
 };
 
@@ -1027,7 +1058,7 @@ class RepoSettingsRepository {
    */
   async getRepoSettings(repository) {
     const row = await queryOne(this.db, `
-      SELECT id, repository, default_instructions, default_provider, default_model, created_at, updated_at
+      SELECT id, repository, default_instructions, default_provider, default_model, local_path, created_at, updated_at
       FROM repo_settings
       WHERE repository = ?
     `, [repository]);
@@ -1036,13 +1067,55 @@ class RepoSettingsRepository {
   }
 
   /**
+   * Get the known local path for a repository
+   * @param {string} repository - Repository in owner/repo format
+   * @returns {Promise<string|null>} Local path or null if not set
+   */
+  async getLocalPath(repository) {
+    const row = await queryOne(this.db, `
+      SELECT local_path FROM repo_settings WHERE repository = ?
+    `, [repository]);
+
+    return row ? row.local_path : null;
+  }
+
+  /**
+   * Set or update the known local path for a repository
+   * Creates a new repo_settings record if one doesn't exist
+   * @param {string} repository - Repository in owner/repo format
+   * @param {string|null} localPath - The git root directory path (or null to clear)
+   * @returns {Promise<void>}
+   */
+  async setLocalPath(repository, localPath) {
+    const now = new Date().toISOString();
+
+    // Check if settings already exist
+    const existing = await this.getRepoSettings(repository);
+
+    if (existing) {
+      // Update existing settings
+      await run(this.db, `
+        UPDATE repo_settings
+        SET local_path = ?, updated_at = ?
+        WHERE repository = ?
+      `, [localPath, now, repository]);
+    } else {
+      // Insert new settings with just local_path
+      await run(this.db, `
+        INSERT INTO repo_settings (repository, local_path, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+      `, [repository, localPath, now, now]);
+    }
+  }
+
+  /**
    * Save settings for a repository (upsert)
    * @param {string} repository - Repository in owner/repo format
-   * @param {Object} settings - Settings object { default_instructions?, default_provider?, default_model? }
+   * @param {Object} settings - Settings object { default_instructions?, default_provider?, default_model?, local_path? }
    * @returns {Promise<Object>} Saved settings object
    */
   async saveRepoSettings(repository, settings) {
-    const { default_instructions, default_provider, default_model } = settings;
+    const { default_instructions, default_provider, default_model, local_path } = settings;
     const now = new Date().toISOString();
 
     // Check if settings already exist
@@ -1055,12 +1128,14 @@ class RepoSettingsRepository {
         SET default_instructions = ?,
             default_provider = ?,
             default_model = ?,
+            local_path = ?,
             updated_at = ?
         WHERE repository = ?
       `, [
         default_instructions !== undefined ? default_instructions : existing.default_instructions,
         default_provider !== undefined ? default_provider : existing.default_provider,
         default_model !== undefined ? default_model : existing.default_model,
+        local_path !== undefined ? local_path : existing.local_path,
         now,
         repository
       ]);
@@ -1070,14 +1145,15 @@ class RepoSettingsRepository {
         default_instructions: default_instructions !== undefined ? default_instructions : existing.default_instructions,
         default_provider: default_provider !== undefined ? default_provider : existing.default_provider,
         default_model: default_model !== undefined ? default_model : existing.default_model,
+        local_path: local_path !== undefined ? local_path : existing.local_path,
         updated_at: now
       };
     } else {
       // Insert new settings
       const result = await run(this.db, `
-        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `, [repository, default_instructions || null, default_provider || null, default_model || null, now, now]);
+        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, local_path, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [repository, default_instructions || null, default_provider || null, default_model || null, local_path || null, now, now]);
 
       return {
         id: result.lastID,
@@ -1085,6 +1161,7 @@ class RepoSettingsRepository {
         default_instructions: default_instructions || null,
         default_provider: default_provider || null,
         default_model: default_model || null,
+        local_path: local_path || null,
         created_at: now,
         updated_at: now
       };

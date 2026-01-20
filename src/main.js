@@ -1,15 +1,40 @@
 const { loadConfig, getConfigDir, getGitHubToken } = require('./config');
-const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository } = require('./database');
+const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
-const { handleLocalReview } = require('./local-review');
+const { handleLocalReview, findMainGitRoot } = require('./local-review');
 const logger = require('./utils/logger');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
+
+/**
+ * Register the known location of a GitHub repository in the database.
+ * This allows the web UI to find the repo without cloning when reviewing PRs.
+ *
+ * @param {Object} db - Database instance
+ * @param {string} currentDir - Current working directory (or any directory in the repo)
+ * @param {string} owner - Repository owner
+ * @param {string} repo - Repository name
+ * @returns {Promise<void>}
+ */
+async function registerRepositoryLocation(db, currentDir, owner, repo) {
+  const repository = `${owner}/${repo}`;
+  try {
+    // Use findMainGitRoot to resolve worktrees to their parent repo
+    // This ensures we always store the actual git root, not a worktree path
+    const gitRoot = await findMainGitRoot(currentDir);
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    await repoSettingsRepo.setLocalPath(repository, gitRoot);
+    console.log(`Registered repository location: ${gitRoot}`);
+  } catch (error) {
+    // Non-fatal: registration failure shouldn't block the review
+    console.warn(`Could not register repository location: ${error.message}`);
+  }
+}
 
 /**
  * Get the version from package.json
@@ -354,6 +379,9 @@ async function handlePullRequest(args, config, db, flags = {}) {
     // Get current repository path
     const currentDir = parser.getCurrentDirectory();
 
+    // Register the known repository location for future web UI usage
+    await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+
     // Setup git worktree
     console.log('Setting up git worktree...');
     const worktreeManager = new GitWorktreeManager(db);
@@ -694,6 +722,10 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
 
     // Get current repository path
     const currentDir = parser.getCurrentDirectory();
+    const repository = `${prInfo.owner}/${prInfo.repo}`;
+
+    // Register the known repository location for future web UI usage
+    await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
 
     // Setup git worktree
     console.log('Setting up git worktree...');
@@ -710,7 +742,6 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
 
     // Get PR metadata ID for AI analysis
-    const repository = `${prInfo.owner}/${prInfo.repo}`;
     const prMetadata = await queryOne(db, `
       SELECT id, pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?

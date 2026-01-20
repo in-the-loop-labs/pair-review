@@ -8,12 +8,13 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, WorktreeRepository } = require('../database');
+const { query, queryOne, run, WorktreeRepository, RepoSettingsRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
+const simpleGit = require('simple-git');
 
 const router = express.Router();
 
@@ -96,25 +97,45 @@ router.post('/api/worktrees/create', async (req, res) => {
     const worktreeManager = new GitWorktreeManager(db);
 
     // We need a source repository to create worktrees from
-    // First check if we have an existing worktree for this repo
-    const worktreeRepo = new WorktreeRepository(db);
-    const existingWorktree = await worktreeRepo.findByPR(parsedPrNumber, repository);
-
+    // Tier 0: Check known local path from repo_settings (registered by CLI usage)
     let repositoryPath;
-    if (existingWorktree && await worktreeManager.pathExists(existingWorktree.path)) {
-      // Use the existing worktree path to find the parent git repository
-      const simpleGit = require('simple-git');
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const worktreeRepo = new WorktreeRepository(db);
+    const knownPath = await repoSettingsRepo.getLocalPath(repository);
+
+    if (knownPath && await worktreeManager.pathExists(knownPath)) {
+      // Validate it's still a valid git repo
       try {
-        const git = simpleGit(existingWorktree.path);
-        repositoryPath = await git.revparse(['--show-toplevel']);
-        repositoryPath = repositoryPath.trim();
+        const git = simpleGit(knownPath);
+        await git.revparse(['--is-inside-work-tree']);
+        repositoryPath = knownPath;
+        logger.info(`Using known repository location at ${repositoryPath}`);
       } catch {
-        // If we can't get the git root, we'll need to clone
-        repositoryPath = null;
+        // Path exists but isn't a valid git repo anymore, clear it
+        logger.warn(`Known path ${knownPath} is no longer a valid git repo, clearing`);
+        await repoSettingsRepo.setLocalPath(repository, null);
       }
     }
 
-    // If we don't have a repository path, we need to clone the repo first
+    // Tier 1: Check if we have an existing worktree for this repo
+    if (!repositoryPath) {
+      const existingWorktree = await worktreeRepo.findByPR(parsedPrNumber, repository);
+
+      if (existingWorktree && await worktreeManager.pathExists(existingWorktree.path)) {
+        // Use the existing worktree path to find the parent git repository
+        try {
+          const git = simpleGit(existingWorktree.path);
+          repositoryPath = await git.revparse(['--show-toplevel']);
+          repositoryPath = repositoryPath.trim();
+          logger.info(`Using repository from existing worktree at ${repositoryPath}`);
+        } catch {
+          // If we can't get the git root, we'll need to clone
+          repositoryPath = null;
+        }
+      }
+    }
+
+    // Tier 2 & 3: Check cached clone or clone fresh
     if (!repositoryPath) {
       // Check if there's a cached clone for this repository
       const { getConfigDir } = require('../config');
@@ -128,7 +149,6 @@ router.post('/api/worktrees/create', async (req, res) => {
         logger.info(`Cloning repository ${repository}...`);
         await fs.mkdir(path.dirname(cachedRepoPath), { recursive: true });
 
-        const simpleGit = require('simple-git');
         const git = simpleGit();
 
         // Clone with minimal depth for efficiency
@@ -254,6 +274,20 @@ router.post('/api/worktrees/create', async (req, res) => {
 
       await run(db, 'COMMIT');
       logger.success(`Stored PR data for ${repository} #${parsedPrNumber}`);
+
+      // Register the repository path for future use if it wasn't already known
+      // This ensures web UI discoveries also benefit future sessions
+      // Skip registration if: (1) knownPath was used (path === knownPath), or
+      // (2) we have a knownPath but it failed validation (already cleared above)
+      // Only register when we discovered a genuinely new path
+      if (repositoryPath && knownPath === null) {
+        // Only register if this path isn't already stored (avoid redundant writes)
+        const currentPath = await repoSettingsRepo.getLocalPath(repository);
+        if (path.resolve(currentPath || '') !== path.resolve(repositoryPath)) {
+          await repoSettingsRepo.setLocalPath(repository, repositoryPath);
+          logger.info(`Registered repository location: ${repositoryPath}`);
+        }
+      }
 
     } catch (dbError) {
       await run(db, 'ROLLBACK');

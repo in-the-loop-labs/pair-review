@@ -159,6 +159,35 @@ Examples:
                         </div>
                     </section>
 
+                    <!-- Repository Location Section -->
+                    <section class="settings-section" id="local-path-section">
+                        <div class="section-header">
+                            <h2>
+                                Repository Location
+                            </h2>
+                            <p class="section-description">
+                                Local path used for creating review worktrees. Detected automatically when you use the CLI.
+                            </p>
+                        </div>
+                        <div class="local-path-display">
+                            <div class="local-path-content" id="local-path-content">
+                                <code id="local-path-value">Not set</code>
+                                <button type="button" class="btn btn-secondary btn-small" id="clear-local-path" style="display: none;">
+                                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                                        <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                                    </svg>
+                                    Clear
+                                </button>
+                            </div>
+                            <p class="local-path-hint" id="local-path-hint">
+                                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                                    <path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 100-2 1 1 0 000 2z"/>
+                                </svg>
+                                Run <code>npx pair-review</code> from your local clone to register its location.
+                            </p>
+                        </div>
+                    </section>
+
                     <!-- Danger Zone -->
                     <section class="settings-section danger-zone">
                         <div class="section-header">
