@@ -1496,6 +1496,55 @@ class LocalManager {
       }
     }
   }
+
+  /**
+   * Get the progress dots container element
+   * @returns {HTMLElement|null}
+   */
+  getProgressDotsContainer() {
+    return document.getElementById('analysis-progress-dots');
+  }
+
+  /**
+   * Update a specific progress dot during analysis
+   * Maps level numbers to phase names:
+   * - Level 4 -> orchestration (finalization)
+   * - Level 1 -> level1
+   * - Level 2 -> level2
+   * - Level 3 -> level3
+   * @param {number} level - The level number (1, 2, 3, or 4)
+   * @param {string} status - The status ('running', 'completed', 'failed')
+   */
+  updateProgressDot(level, status) {
+    const container = this.getProgressDotsContainer();
+    if (!container) return;
+
+    // Map levels to dot phases
+    const phaseMap = {
+      4: 'orchestration', // Orchestration/finalization is level 4 in ProgressModal
+      1: 'level1',
+      2: 'level2',
+      3: 'level3'
+    };
+
+    const phase = phaseMap[level];
+    if (!phase) return;
+
+    const dot = container.querySelector(`[data-phase="${phase}"]`);
+    if (!dot) return;
+
+    // Remove existing states
+    dot.classList.remove('active', 'completed', 'error');
+
+    // Apply new state
+    if (status === 'running') {
+      dot.classList.add('active');
+    } else if (status === 'completed') {
+      dot.classList.add('completed');
+    } else if (status === 'failed') {
+      dot.classList.add('error');
+    }
+  }
 }
 
 // Initialize LocalManager when in local mode

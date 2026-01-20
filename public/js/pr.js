@@ -2858,6 +2858,9 @@ class PRManager {
     } else {
       btn.innerHTML = '<span class="analyzing-icon">✨</span> Analyzing...';
     }
+
+    // Show progress dots
+    this.showProgressDots();
   }
 
   /**
@@ -2877,6 +2880,9 @@ class PRManager {
       btn.innerHTML = '✓ Analysis Complete';
     }
     btn.disabled = true;
+
+    // Complete all progress dots (they'll be hidden when button resets)
+    this.completeAllProgressDots();
 
     // Revert to normal after 2 seconds
     setTimeout(() => this.resetButton(), 2000);
@@ -2901,6 +2907,114 @@ class PRManager {
     } else {
       btn.innerHTML = 'Analyze with AI';
     }
+
+    // Hide progress dots when resetting
+    this.hideProgressDots();
+  }
+
+  // ============================================
+  // Progress Dots Controller
+  // ============================================
+
+  /**
+   * Get the progress dots container
+   * @returns {HTMLElement|null}
+   */
+  getProgressDotsContainer() {
+    return document.getElementById('analysis-progress-dots');
+  }
+
+  /**
+   * Show progress dots (called when analysis starts)
+   */
+  showProgressDots() {
+    const container = this.getProgressDotsContainer();
+    if (!container) return;
+
+    container.style.display = 'flex';
+
+    // Reset all dots to initial state
+    const dots = container.querySelectorAll('.progress-dot');
+    dots.forEach(dot => {
+      dot.classList.remove('active', 'completed', 'error');
+    });
+
+    // Set first dot (orchestration) as active
+    const firstDot = container.querySelector('[data-phase="orchestration"]');
+    if (firstDot) {
+      firstDot.classList.add('active');
+    }
+  }
+
+  /**
+   * Hide progress dots (called when analysis completes or is cancelled)
+   */
+  hideProgressDots() {
+    const container = this.getProgressDotsContainer();
+    if (!container) return;
+
+    container.style.display = 'none';
+
+    // Reset all dots
+    const dots = container.querySelectorAll('.progress-dot');
+    dots.forEach(dot => {
+      dot.classList.remove('active', 'completed', 'error');
+    });
+  }
+
+  /**
+   * Update progress dots based on level status
+   * Maps level numbers to phases:
+   * - Level 4 (orchestration/finalization) -> orchestration
+   * - Level 1 -> level1
+   * - Level 2 -> level2
+   * - Level 3 -> level3
+   * @param {number} level - The level number (1, 2, 3, or 4)
+   * @param {string} status - The status ('running', 'completed', 'failed')
+   */
+  updateProgressDot(level, status) {
+    const container = this.getProgressDotsContainer();
+    if (!container) return;
+
+    // Map levels to dot phases
+    const phaseMap = {
+      4: 'orchestration', // Orchestration/finalization is level 4 in ProgressModal
+      1: 'level1',
+      2: 'level2',
+      3: 'level3'
+    };
+
+    const phase = phaseMap[level];
+    if (!phase) return;
+
+    const dot = container.querySelector(`[data-phase="${phase}"]`);
+    if (!dot) return;
+
+    // Remove existing states
+    dot.classList.remove('active', 'completed', 'error');
+
+    // Apply new state
+    if (status === 'running') {
+      dot.classList.add('active');
+    } else if (status === 'completed') {
+      dot.classList.add('completed');
+    } else if (status === 'failed') {
+      dot.classList.add('error');
+    }
+  }
+
+  /**
+   * Complete all progress dots (called briefly before hiding)
+   */
+  completeAllProgressDots() {
+    const container = this.getProgressDotsContainer();
+    if (!container) return;
+
+    const dots = container.querySelectorAll('.progress-dot');
+    dots.forEach(dot => {
+      dot.classList.remove('active', 'error');
+      dot.classList.add('completed');
+    });
   }
 
   /**

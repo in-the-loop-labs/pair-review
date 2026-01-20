@@ -487,6 +487,12 @@ class ProgressModal {
         progressContainer.style.display = 'none';
       }
     }
+
+    // Update toolbar progress dots (check both PR and local managers)
+    const manager = window.prManager || window.localManager;
+    if (manager?.updateProgressDot) {
+      manager.updateProgressDot(level, levelStatus.status);
+    }
   }
 
   /**

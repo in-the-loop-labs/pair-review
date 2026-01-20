@@ -759,6 +759,11 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     const reviewRepo = new ReviewRepository(db);
     const review = await reviewRepo.getOrCreate({ prNumber: prInfo.number, repository });
 
+    // Fetch repo settings to get default instructions
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+    const repoInstructions = repoSettings?.default_instructions || null;
+
     // Run AI analysis
     console.log('Running AI analysis (all 3 levels)...');
     const model = flags.model || process.env.PAIR_REVIEW_MODEL || 'sonnet';
@@ -766,7 +771,8 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
 
     let analysisSummary = null;
     try {
-      const analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData);
+      // Pass repo instructions to ensure they're captured in the analysis run
+      const analysisResult = await analyzer.analyzeAllLevels(review.id, worktreePath, storedPRData, null, { repoInstructions });
       analysisSummary = analysisResult.summary;
       console.log('AI analysis completed successfully');
     } catch (analysisError) {

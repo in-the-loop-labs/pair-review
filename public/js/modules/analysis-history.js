@@ -18,11 +18,13 @@ class AnalysisHistoryManager {
    * @param {number} options.reviewId - The database review ID
    * @param {string} options.mode - 'pr' or 'local'
    * @param {Function} options.onSelectionChange - Callback when a run is selected, receives (runId, run)
+   * @param {string} options.containerPrefix - Prefix for DOM element IDs (default: 'analysis-context')
    */
-  constructor({ reviewId, mode, onSelectionChange }) {
+  constructor({ reviewId, mode, onSelectionChange, containerPrefix = 'analysis-context' }) {
     this.reviewId = reviewId;
     this.mode = mode;
     this.onSelectionChange = onSelectionChange;
+    this.containerPrefix = containerPrefix;
 
     // State
     this.runs = [];
@@ -33,6 +35,8 @@ class AnalysisHistoryManager {
 
     // DOM elements (cached after init)
     this.container = null;
+    this.emptyState = null;
+    this.selector = null;
     this.historyBtn = null;
     this.historyLabel = null;
     this.dropdown = null;
@@ -46,18 +50,22 @@ class AnalysisHistoryManager {
    * Initialize the manager - set up event listeners and cache DOM elements
    */
   init() {
-    // Cache DOM elements
-    this.container = document.getElementById('analysis-history-container');
-    this.historyBtn = document.getElementById('analysis-history-btn');
-    this.historyLabel = document.getElementById('analysis-history-label');
-    this.dropdown = document.getElementById('analysis-history-dropdown');
-    this.listElement = document.getElementById('analysis-history-list');
-    this.infoBtn = document.getElementById('analysis-info-btn');
-    this.infoPopover = document.getElementById('analysis-info-popover');
-    this.infoContent = document.getElementById('analysis-info-content');
+    const prefix = this.containerPrefix;
+
+    // Cache DOM elements using configurable prefix
+    this.container = document.getElementById(prefix);
+    this.emptyState = document.getElementById(`${prefix}-empty`);
+    this.selector = document.getElementById(`${prefix}-selector`);
+    this.historyBtn = document.getElementById(`${prefix}-btn`);
+    this.historyLabel = document.getElementById(`${prefix}-label`);
+    this.dropdown = document.getElementById(`${prefix}-dropdown`);
+    this.listElement = document.getElementById(`${prefix}-list`);
+    this.infoBtn = document.getElementById(`${prefix}-info-btn`);
+    this.infoPopover = document.getElementById(`${prefix}-popover`);
+    this.infoContent = document.getElementById(`${prefix}-info-content`);
 
     if (!this.container || !this.historyBtn) {
-      console.warn('Analysis history elements not found in DOM');
+      console.warn(`Analysis history elements not found in DOM with prefix: ${prefix}`);
       return;
     }
 
@@ -77,6 +85,15 @@ class AnalysisHistoryManager {
     // Event delegation for info popover actions
     if (this.infoPopover) {
       this.infoPopover.addEventListener('click', (e) => {
+        // Handle copy button first - it takes priority and stops propagation
+        const copyBtn = e.target.closest('[data-action="copy-instructions"]');
+        if (copyBtn) {
+          e.stopPropagation();
+          this.handleCopyInstructions(copyBtn, e);
+          return; // Don't process other actions
+        }
+
+        // Handle toggle button for repo instructions
         const toggleBtn = e.target.closest('[data-action="toggle-repo-instructions"]');
         if (toggleBtn) {
           this.handleRepoInstructionsToggle(toggleBtn);
@@ -263,25 +280,46 @@ class AnalysisHistoryManager {
     const hasLegacyInstructions = run.custom_instructions && run.custom_instructions.trim();
 
     if (hasRequestInstructions) {
-      // Show request instructions prominently as "Custom Instructions"
+      // Show request instructions prominently as "Custom Instructions" with copy button
+      // Use base64 encoding for data-content to preserve special characters when copying
       html += `
         <div class="analysis-info-instructions">
-          <div class="analysis-info-instructions-label">Custom Instructions</div>
+          <div class="analysis-info-instructions-header">
+            <span class="analysis-info-instructions-label">Custom Instructions</span>
+            <button class="analysis-info-copy-btn" data-action="copy-instructions" data-content="${btoa(String.fromCharCode(...new TextEncoder().encode(run.request_instructions)))}" title="Copy to clipboard">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+                <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+              </svg>
+              <span class="copy-btn-text">Copy</span>
+            </button>
+          </div>
           <div class="analysis-info-instructions-text">${this.escapeHtml(run.request_instructions)}</div>
         </div>
       `;
     }
 
     if (hasRepoInstructions) {
-      // Show repo instructions in a collapsible section
+      // Show repo instructions in a collapsible section with copy button
+      // Use a wrapper div instead of nested buttons (invalid HTML)
+      // Use base64 encoding for data-content to preserve special characters when copying
       html += `
         <div class="analysis-info-repo-section">
-          <button class="analysis-info-repo-toggle" data-action="toggle-repo-instructions">
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-              <path d="M4.5 2L8.5 6L4.5 10" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            Repository Instructions
-          </button>
+          <div class="analysis-info-repo-header">
+            <button class="analysis-info-repo-toggle" data-action="toggle-repo-instructions">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                <path d="M4.5 2L8.5 6L4.5 10" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              Repository Instructions
+            </button>
+            <button class="analysis-info-copy-btn" data-action="copy-instructions" data-content="${btoa(String.fromCharCode(...new TextEncoder().encode(run.repo_instructions)))}" title="Copy to clipboard">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+                <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+              </svg>
+              <span class="copy-btn-text">Copy</span>
+            </button>
+          </div>
           <div class="analysis-info-repo-content">
             <div class="analysis-info-instructions-text">${this.escapeHtml(run.repo_instructions)}</div>
           </div>
@@ -289,9 +327,19 @@ class AnalysisHistoryManager {
       `;
     } else if (hasLegacyInstructions && !hasRequestInstructions) {
       // Backward compatibility: show legacy custom_instructions if no new fields exist
+      // Use base64 encoding for data-content to preserve special characters when copying
       html += `
         <div class="analysis-info-instructions">
-          <div class="analysis-info-instructions-label">Custom Instructions (Combined)</div>
+          <div class="analysis-info-instructions-header">
+            <span class="analysis-info-instructions-label">Custom Instructions (Combined)</span>
+            <button class="analysis-info-copy-btn" data-action="copy-instructions" data-content="${btoa(String.fromCharCode(...new TextEncoder().encode(run.custom_instructions)))}" title="Copy to clipboard">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+                <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+              </svg>
+              <span class="copy-btn-text">Copy</span>
+            </button>
+          </div>
           <div class="analysis-info-instructions-text">${this.escapeHtml(run.custom_instructions)}</div>
         </div>
       `;
@@ -371,24 +419,73 @@ class AnalysisHistoryManager {
    * @param {HTMLElement} button - The toggle button element
    */
   handleRepoInstructionsToggle(button) {
-    button.classList.toggle('expanded');
-  }
-
-  /**
-   * Show the container
-   */
-  show() {
-    if (this.container) {
-      this.container.style.display = '';
+    // Toggle expanded class on the parent section element
+    const section = button.closest('.analysis-info-repo-section');
+    if (section) {
+      section.classList.toggle('expanded');
     }
   }
 
   /**
-   * Hide the container
+   * Handle copy instructions button click
+   * @param {HTMLElement} button - The copy button element
+   * @param {Event} e - The click event (optional, for stopPropagation)
+   */
+  async handleCopyInstructions(button, e) {
+    // Stop propagation to prevent the toggle from being triggered
+    if (e) {
+      e.stopPropagation();
+    }
+
+    const encodedContent = button.dataset.content;
+    if (!encodedContent) return;
+
+    try {
+      // Decode from base64 (handles UTF-8 characters properly)
+      const content = new TextDecoder().decode(Uint8Array.from(atob(encodedContent), c => c.charCodeAt(0)));
+      await navigator.clipboard.writeText(content);
+
+      // Show "Copied!" feedback
+      button.classList.add('copied');
+      const textSpan = button.querySelector('.copy-btn-text');
+      const originalText = textSpan?.textContent;
+      if (textSpan) {
+        textSpan.textContent = 'Copied!';
+      }
+
+      // Reset after a brief delay
+      setTimeout(() => {
+        button.classList.remove('copied');
+        if (textSpan && originalText) {
+          textSpan.textContent = originalText;
+        }
+      }, 1500);
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+    }
+  }
+
+  /**
+   * Show the analysis selector (hides empty state, shows selector)
+   */
+  show() {
+    if (this.emptyState) {
+      this.emptyState.style.display = 'none';
+    }
+    if (this.selector) {
+      this.selector.style.display = '';
+    }
+  }
+
+  /**
+   * Hide the analysis selector (shows empty state, hides selector)
    */
   hide() {
-    if (this.container) {
-      this.container.style.display = 'none';
+    if (this.emptyState) {
+      this.emptyState.style.display = '';
+    }
+    if (this.selector) {
+      this.selector.style.display = 'none';
     }
   }
 
