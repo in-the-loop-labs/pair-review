@@ -53,8 +53,8 @@ class Analyzer {
     let requestInstructions = null;
     let mergedInstructions = null;
 
-    if (typeof instructions === 'string') {
-      // Legacy format: single merged instructions string
+    if (typeof instructions === 'string' && instructions.trim()) {
+      // Legacy format: single merged instructions string (non-empty)
       mergedInstructions = instructions;
     } else if (instructions && typeof instructions === 'object') {
       // New format: object with separate instruction fields

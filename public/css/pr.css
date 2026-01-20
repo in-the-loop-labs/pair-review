@@ -5010,6 +5010,8 @@ tr.line-range-start .d2h-code-line-ctn {
     font-size: 13px;
     font-weight: 500;
     flex-wrap: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .analysis-history-item-model {

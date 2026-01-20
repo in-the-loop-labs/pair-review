@@ -74,6 +74,16 @@ class AnalysisHistoryManager {
       });
     }
 
+    // Event delegation for info popover actions
+    if (this.infoPopover) {
+      this.infoPopover.addEventListener('click', (e) => {
+        const toggleBtn = e.target.closest('[data-action="toggle-repo-instructions"]');
+        if (toggleBtn) {
+          this.handleRepoInstructionsToggle(toggleBtn);
+        }
+      });
+    }
+
     // Click outside to close - store handler for cleanup
     this.handleDocumentClick = (e) => {
       if (!this.container.contains(e.target)) {
@@ -150,11 +160,15 @@ class AnalysisHistoryManager {
       const timeAgo = this.formatRelativeTime(run.completed_at || run.started_at);
       const suggestionCount = run.total_suggestions || 0;
 
+      const modelName = this.escapeHtml(run.model || 'Unknown');
+      const providerName = this.escapeHtml(this.formatProviderName(run.provider));
+      const fullTitle = `${run.model || 'Unknown'} - ${this.formatProviderName(run.provider)}`;
+
       return `
         <button class="analysis-history-item ${isSelected ? 'selected' : ''}" data-run-id="${run.id}">
-          <div class="analysis-history-item-main">
-            <span class="analysis-history-item-model">${this.escapeHtml(run.model || 'Unknown')}</span>
-            <span class="analysis-history-item-provider">&bull; ${this.escapeHtml(this.formatProviderName(run.provider))}</span>
+          <div class="analysis-history-item-main" title="${this.escapeHtml(fullTitle)}">
+            <span class="analysis-history-item-model">${modelName}</span>
+            <span class="analysis-history-item-provider">&bull; ${providerName}</span>
             ${isLatest ? '<span class="analysis-latest-badge">LATEST</span>' : ''}
           </div>
           <div class="analysis-history-item-meta">
@@ -262,7 +276,7 @@ class AnalysisHistoryManager {
       // Show repo instructions in a collapsible section
       html += `
         <div class="analysis-info-repo-section">
-          <button class="analysis-info-repo-toggle" onclick="this.classList.toggle('expanded')">
+          <button class="analysis-info-repo-toggle" data-action="toggle-repo-instructions">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
               <path d="M4.5 2L8.5 6L4.5 10" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
@@ -277,7 +291,7 @@ class AnalysisHistoryManager {
       // Backward compatibility: show legacy custom_instructions if no new fields exist
       html += `
         <div class="analysis-info-instructions">
-          <div class="analysis-info-instructions-label">Instructions</div>
+          <div class="analysis-info-instructions-label">Custom Instructions (Combined)</div>
           <div class="analysis-info-instructions-text">${this.escapeHtml(run.custom_instructions)}</div>
         </div>
       `;
@@ -350,6 +364,14 @@ class AnalysisHistoryManager {
       this.container.classList.remove('popover-open');
       this.isPopoverOpen = false;
     }
+  }
+
+  /**
+   * Handle repo instructions toggle button click
+   * @param {HTMLElement} button - The toggle button element
+   */
+  handleRepoInstructionsToggle(button) {
+    button.classList.toggle('expanded');
   }
 
   /**
