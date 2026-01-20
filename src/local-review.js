@@ -49,8 +49,9 @@ async function findMainGitRoot(repoPath) {
     }).trim();
 
     // If commonDir is just ".git", this is a regular repo - return the repoPath
+    // Normalize through path.resolve() for consistency with worktree case
     if (commonDir === '.git') {
-      return repoPath;
+      return path.resolve(repoPath);
     }
 
     // For worktrees, commonDir is an absolute path like "/path/to/main/.git"

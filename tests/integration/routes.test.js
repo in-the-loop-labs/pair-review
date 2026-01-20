@@ -106,6 +106,7 @@ vi.mock('../../src/git/gitattributes', () => ({
   })
 }));
 
+
 // Note: vi.mock for config doesn't work with CommonJS require() - using vi.spyOn above instead
 
 // Import the database utilities
@@ -3901,6 +3902,12 @@ describe('Worktree Tiered Discovery', () => {
       settings = await repoSettingsRepo.getRepoSettings('owner/repo');
       expect(settings.local_path).toBeNull();
     });
+
+    // Note: A complete "happy path" test that verifies Tier 0 succeeds when
+    // pathExists returns true AND simpleGit().revparse() succeeds would require
+    // mocking simple-git at module level, which is complex due to how the routes
+    // are loaded at test setup time. The above tests verify the lookup order
+    // and clearing behavior; full e2e coverage is better achieved via e2e tests.
   });
 
   describe('POST /api/worktrees/create - Tier 1 (existing worktree fallback)', () => {

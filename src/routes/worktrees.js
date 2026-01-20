@@ -277,9 +277,16 @@ router.post('/api/worktrees/create', async (req, res) => {
 
       // Register the repository path for future use if it wasn't already known
       // This ensures web UI discoveries also benefit future sessions
-      if (repositoryPath && repositoryPath !== knownPath) {
-        await repoSettingsRepo.setLocalPath(repository, repositoryPath);
-        logger.info(`Registered repository location: ${repositoryPath}`);
+      // Skip registration if: (1) knownPath was used (path === knownPath), or
+      // (2) we have a knownPath but it failed validation (already cleared above)
+      // Only register when we discovered a genuinely new path
+      if (repositoryPath && knownPath === null) {
+        // Only register if this path isn't already stored (avoid redundant writes)
+        const currentPath = await repoSettingsRepo.getLocalPath(repository);
+        if (path.resolve(currentPath || '') !== path.resolve(repositoryPath)) {
+          await repoSettingsRepo.setLocalPath(repository, repositoryPath);
+          logger.info(`Registered repository location: ${repositoryPath}`);
+        }
       }
 
     } catch (dbError) {
