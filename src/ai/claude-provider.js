@@ -100,6 +100,9 @@ class ClaudeProvider extends AIProvider {
       'Bash(rg *)',
     ].join(',');
 
+    // Check for budget limit environment variable
+    const maxBudget = process.env.PAIR_REVIEW_MAX_BUDGET_USD;
+
     // Build args: base args + provider extra_args + model extra_args
     // Use --output-format stream-json for JSONL streaming output (better debugging visibility)
     //
@@ -107,6 +110,9 @@ class ClaudeProvider extends AIProvider {
     // Without --verbose, the stream-json output is incomplete or malformed in print mode.
     // This is a known requirement of the Claude CLI - do not remove --verbose from these args.
     const baseArgs = ['-p', '--verbose', '--model', model, '--output-format', 'stream-json', '--allowedTools', allowedTools];
+    if (maxBudget) {
+      baseArgs.push('--max-budget-usd', maxBudget);
+    }
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];

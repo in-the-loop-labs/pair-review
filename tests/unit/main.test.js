@@ -204,6 +204,34 @@ describe('main.js parseArgs', () => {
       logger.setDebugEnabled(false);
       logger.setStreamDebugEnabled(false);
     });
+
+    // Tests for GitHub Action review mode flags
+    it('should parse --ai-review flag', () => {
+      const result = parseArgs(['123', '--ai-review']);
+      expect(result.flags.aiReview).toBe(true);
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should parse --use-checkout flag', () => {
+      const result = parseArgs(['123', '--use-checkout']);
+      expect(result.flags.useCheckout).toBe(true);
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should parse --fail-on-issues flag', () => {
+      const result = parseArgs(['123', '--fail-on-issues']);
+      expect(result.flags.failOnIssues).toBe(true);
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should parse all action mode flags together', () => {
+      const result = parseArgs(['123', '--ai-review', '--use-checkout', '--fail-on-issues', '--model', 'haiku']);
+      expect(result.flags.aiReview).toBe(true);
+      expect(result.flags.useCheckout).toBe(true);
+      expect(result.flags.failOnIssues).toBe(true);
+      expect(result.flags.model).toBe('haiku');
+      expect(result.prArgs).toEqual(['123']);
+    });
   });
 });
 
