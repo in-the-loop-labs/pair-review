@@ -4962,8 +4962,8 @@ tr.line-range-start .d2h-code-line-ctn {
     position: absolute;
     top: calc(100% + 4px);
     left: 0;
-    min-width: 300px;
-    max-width: 400px;
+    min-width: 340px;
+    max-width: 420px;
     max-height: 320px;
     overflow-y: auto;
     background: var(--color-bg-primary, #ffffff);
@@ -5009,6 +5009,7 @@ tr.line-range-start .d2h-code-line-ctn {
     gap: 8px;
     font-size: 13px;
     font-weight: 500;
+    flex-wrap: nowrap;
 }
 
 .analysis-history-item-model {
@@ -5038,6 +5039,8 @@ tr.line-range-start .d2h-code-line-ctn {
     color: var(--color-accent-fg);
     border-radius: 10px;
     margin-left: auto;
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .analysis-history-empty {
