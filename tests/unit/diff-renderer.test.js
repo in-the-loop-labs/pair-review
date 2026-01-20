@@ -305,4 +305,90 @@ describe('DiffRenderer', () => {
       expect(header2.remove).not.toHaveBeenCalled();
     });
   });
+
+  describe('fixRubyHighlighting', () => {
+    // Workaround for highlight.js Ruby grammar limitation:
+    // Variables at end-of-line truncate at last underscore due to lookahead constraints
+    // e.g., @foo_bar_baz becomes <span class="hljs-variable">@foo_bar</span>_baz
+
+    describe('instance variables', () => {
+      it('should fix single trailing segment', () => {
+        const input = '<span class="hljs-variable">@foo_bar</span>_baz';
+        const expected = '<span class="hljs-variable">@foo_bar_baz</span>';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(expected);
+      });
+
+      it('should fix variable with multiple segments', () => {
+        const input = '<span class="hljs-variable">@previous_deployed_release_cycle_start</span>_commit';
+        const expected = '<span class="hljs-variable">@previous_deployed_release_cycle_start_commit</span>';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(expected);
+      });
+
+      it('should fix variable with simple name', () => {
+        const input = '<span class="hljs-variable">@simple</span>_var';
+        const expected = '<span class="hljs-variable">@simple_var</span>';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(expected);
+      });
+
+      it('should handle multiple variables on same line', () => {
+        const input = '<span class="hljs-variable">@first</span>_var = <span class="hljs-variable">@second</span>_var';
+        const expected = '<span class="hljs-variable">@first_var</span> = <span class="hljs-variable">@second_var</span>';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(expected);
+      });
+    });
+
+    describe('class variables', () => {
+      it('should fix class variables with @@', () => {
+        const input = '<span class="hljs-variable">@@class_variable</span>_commit';
+        const expected = '<span class="hljs-variable">@@class_variable_commit</span>';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(expected);
+      });
+    });
+
+    describe('global variables', () => {
+      it('should fix global variables with $', () => {
+        const input = '<span class="hljs-variable">$LOAD</span>_PATH';
+        const expected = '<span class="hljs-variable">$LOAD_PATH</span>';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(expected);
+      });
+
+      it('should fix global variables with multiple segments', () => {
+        const input = '<span class="hljs-variable">$foo_bar</span>_baz';
+        const expected = '<span class="hljs-variable">$foo_bar_baz</span>';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(expected);
+      });
+    });
+
+    describe('edge cases', () => {
+      it('should not modify correctly highlighted variables', () => {
+        const input = '<span class="hljs-variable">@correct_var</span> = 1';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(input);
+      });
+
+      it('should not modify non-variable spans followed by underscores', () => {
+        const input = '<span class="hljs-keyword">def</span>_something';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(input);
+      });
+
+      it('should handle empty input', () => {
+        expect(DiffRenderer.fixRubyHighlighting('')).toBe('');
+      });
+
+      it('should handle input with no variables', () => {
+        const input = 'plain text without variables';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(input);
+      });
+
+      it('should handle variable at end of line without trailing segment', () => {
+        const input = '<span class="hljs-variable">@valid_var</span>';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(input);
+      });
+
+      it('should not merge if followed by space then underscore', () => {
+        // Space breaks the variable - should not merge
+        const input = '<span class="hljs-variable">@foo</span> _bar';
+        expect(DiffRenderer.fixRubyHighlighting(input)).toBe(input);
+      });
+    });
+  });
 });

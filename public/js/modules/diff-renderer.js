@@ -125,6 +125,31 @@ class DiffRenderer {
   }
 
   /**
+   * Workaround for highlight.js Ruby grammar limitation with variables.
+   *
+   * The Ruby grammar uses lookaheads to avoid false positives, but this causes
+   * variables at end-of-line to truncate at the last underscore:
+   *   @foo_bar_baz -> <span class="hljs-variable">@foo_bar</span>_baz
+   *
+   * This happens because the positive lookahead (?=[^@$?]) requires a character
+   * after the match, and the negative lookahead (?![A-Za-z]) rejects letters.
+   * The regex backtracks until it finds an underscore, which satisfies both.
+   *
+   * This method merges orphaned underscore-segments back into the variable span.
+   * Affects instance (@), class (@@), and global ($) variables.
+   * @param {string} html - HTML output from highlight.js
+   * @returns {string} Corrected HTML
+   */
+  static fixRubyHighlighting(html) {
+    // Matches: variable span end followed immediately by _wordchars
+    // Covers instance (@var), class (@@var), and global ($var) variables
+    return html.replace(
+      /(<span class="hljs-variable">(?:\$|@@?)[\w]+)(<\/span>)(_\w+)/g,
+      '$1$3$2'
+    );
+  }
+
+  /**
    * Escape HTML characters
    * @param {string} text - Text to escape
    * @returns {string} Escaped text
@@ -271,7 +296,14 @@ class DiffRenderer {
       try {
         const language = DiffRenderer.detectLanguage(fileName);
         const highlighted = window.hljs.highlight(content, { language, ignoreIllegals: true });
-        contentCell.innerHTML = highlighted.value;
+        let html = highlighted.value;
+
+        // Workaround: highlight.js Ruby grammar truncates variables at end-of-line
+        if (language === 'ruby' || language === 'erb') {
+          html = DiffRenderer.fixRubyHighlighting(html);
+        }
+
+        contentCell.innerHTML = html;
       } catch (e) {
         // If highlighting fails, fall back to plain text
         console.warn('Syntax highlighting failed:', e);
