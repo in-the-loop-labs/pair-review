@@ -1139,7 +1139,7 @@ router.get('/api/pr/:id/ai-suggestions/status', (req, res) => {
 router.get('/api/analysis-runs/:reviewId', async (req, res) => {
   try {
     const { reviewId } = req.params;
-    const db = req.app.locals.db;
+    const db = req.app.get('db');
 
     const analysisRunRepo = new AnalysisRunRepository(db);
     const runs = await analysisRunRepo.getByReviewId(parseInt(reviewId, 10));
@@ -1157,7 +1157,7 @@ router.get('/api/analysis-runs/:reviewId', async (req, res) => {
 router.get('/api/analysis-runs/:reviewId/latest', async (req, res) => {
   try {
     const { reviewId } = req.params;
-    const db = req.app.locals.db;
+    const db = req.app.get('db');
 
     const analysisRunRepo = new AnalysisRunRepository(db);
     const run = await analysisRunRepo.getLatestByReviewId(parseInt(reviewId, 10));
@@ -1179,7 +1179,7 @@ router.get('/api/analysis-runs/:reviewId/latest', async (req, res) => {
 router.get('/api/analysis-run/:runId', async (req, res) => {
   try {
     const { runId } = req.params;
-    const db = req.app.locals.db;
+    const db = req.app.get('db');
 
     const analysisRunRepo = new AnalysisRunRepository(db);
     const run = await analysisRunRepo.getById(runId);
