@@ -4961,11 +4961,11 @@ tr.line-range-start .d2h-code-line-ctn {
     text-overflow: ellipsis;
 }
 
-.analysis-history-item-model {
+.analysis-history-item-provider {
     color: var(--color-text-primary);
 }
 
-.analysis-history-item-provider {
+.analysis-history-item-model {
     color: var(--color-text-muted);
     font-weight: 400;
 }
@@ -6029,6 +6029,7 @@ body.resizing * {
 
 .analysis-context-btn .dropdown-caret {
   flex-shrink: 0;
+  margin-left: auto;
   transition: transform 0.2s ease;
 }
 
@@ -6037,22 +6038,27 @@ body.resizing * {
 }
 
 .analysis-context-info-btn {
-  padding: 4px 6px;
+  padding: 4px;
   background: transparent;
-  border: 1px solid transparent;
+  border: none;
   border-radius: 4px;
   color: var(--color-text-muted);
   cursor: pointer;
   transition: all var(--transition-fast);
+  opacity: 0.75;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .analysis-context-info-btn:hover {
   background: var(--color-bg-tertiary);
   color: var(--color-text-primary);
+  opacity: 1;
 }
 
 .analysis-context-info-btn:hover svg {
-  transform: scale(1.1);
+  transform: scale(1.05);
   transition: transform var(--transition-fast);
 }
 
@@ -6133,6 +6139,56 @@ body.resizing * {
 
 .analysis-info-content {
   padding: 12px;
+}
+
+/* Analysis Tier Badge - base styles */
+.analysis-tier-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  border-radius: 12px;
+  text-transform: uppercase;
+}
+
+/* Tier badge inline with model name in info popover */
+.analysis-info-value .analysis-tier-badge {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+/* Tier-specific colors */
+.analysis-tier-fast {
+  background: rgba(56, 189, 248, 0.15);
+  color: #0891b2;
+}
+
+.analysis-tier-balanced {
+  background: rgba(245, 158, 11, 0.15);
+  color: #b45309;
+}
+
+.analysis-tier-thorough {
+  background: rgba(34, 197, 94, 0.15);
+  color: #15803d;
+}
+
+/* Dark theme adjustments for tier badges */
+[data-theme="dark"] .analysis-tier-fast {
+  background: rgba(56, 189, 248, 0.2);
+  color: #67e8f9;
+}
+
+[data-theme="dark"] .analysis-tier-balanced {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fcd34d;
+}
+
+[data-theme="dark"] .analysis-tier-thorough {
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
 }
 
 .analysis-info-row {

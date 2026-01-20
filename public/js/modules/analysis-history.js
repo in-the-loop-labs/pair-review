@@ -179,13 +179,13 @@ class AnalysisHistoryManager {
 
       const modelName = this.escapeHtml(run.model || 'Unknown');
       const providerName = this.escapeHtml(this.formatProviderName(run.provider));
-      const fullTitle = `${run.model || 'Unknown'} - ${this.formatProviderName(run.provider)}`;
+      const fullTitle = `${this.formatProviderName(run.provider)} - ${run.model || 'Unknown'}`;
 
       return `
         <button class="analysis-history-item ${isSelected ? 'selected' : ''}" data-run-id="${run.id}">
           <div class="analysis-history-item-main" title="${this.escapeHtml(fullTitle)}">
-            <span class="analysis-history-item-model">${modelName}</span>
-            <span class="analysis-history-item-provider">&bull; ${providerName}</span>
+            <span class="analysis-history-item-provider">${providerName}</span>
+            <span class="analysis-history-item-model">&middot; ${modelName}</span>
             ${isLatest ? '<span class="analysis-latest-badge">LATEST</span>' : ''}
           </div>
           <div class="analysis-history-item-meta">
@@ -219,9 +219,7 @@ class AnalysisHistoryManager {
     this.selectedRun = this.runs.find(r => String(r.id) === String(runId)) || null;
 
     // Update button label
-    if (this.historyLabel && this.selectedRun) {
-      this.historyLabel.textContent = `${this.selectedRun.model || 'Unknown'} \u2022 ${this.formatProviderName(this.selectedRun.provider)}`;
-    }
+    this.updateSelectedLabel();
 
     // Update selected state in dropdown
     if (this.listElement) {
@@ -240,6 +238,21 @@ class AnalysisHistoryManager {
   }
 
   /**
+   * Update the selected label in the dropdown button
+   * Shows: <timestamp> · <provider> · <model>
+   */
+  updateSelectedLabel() {
+    if (!this.historyLabel || !this.selectedRun) return;
+
+    const run = this.selectedRun;
+    const timeAgo = this.formatRelativeTime(run.completed_at || run.started_at);
+    const provider = this.formatProviderName(run.provider);
+    const model = run.model || 'Unknown';
+
+    this.historyLabel.textContent = `${timeAgo} \u00B7 ${provider} \u00B7 ${model}`;
+  }
+
+  /**
    * Update the info popover content with the selected run's details
    */
   updateInfoPopover() {
@@ -251,14 +264,20 @@ class AnalysisHistoryManager {
     const duration = this.formatDuration(run.started_at, run.completed_at);
     const suggestionCount = run.total_suggestions || 0;
 
+    // Get the tier for this analysis run's model
+    const tier = this.getTierForModel(run.model);
+    const tierBadgeHtml = tier
+      ? `<span class="analysis-tier-badge analysis-tier-${tier}">${this.formatTierName(tier)}</span>`
+      : '';
+
     let html = `
-      <div class="analysis-info-row">
-        <span class="analysis-info-label">Model</span>
-        <span class="analysis-info-value">${this.escapeHtml(run.model || 'Unknown')}</span>
-      </div>
       <div class="analysis-info-row">
         <span class="analysis-info-label">Provider</span>
         <span class="analysis-info-value">${this.escapeHtml(this.formatProviderName(run.provider))}</span>
+      </div>
+      <div class="analysis-info-row">
+        <span class="analysis-info-label">Model</span>
+        <span class="analysis-info-value">${this.escapeHtml(run.model || 'Unknown')}${tierBadgeHtml ? ` ${tierBadgeHtml}` : ''}</span>
       </div>
       <div class="analysis-info-row">
         <span class="analysis-info-label">Run at</span>
@@ -364,6 +383,13 @@ class AnalysisHistoryManager {
    */
   showDropdown() {
     if (this.container) {
+      // Re-render dropdown to get fresh timestamps
+      if (this.runs.length > 0) {
+        this.renderDropdown(this.runs);
+      }
+      // Also update the selected label for fresh timestamp
+      this.updateSelectedLabel();
+
       this.container.classList.add('open');
       this.isDropdownOpen = true;
       // Close popover when opening dropdown
@@ -490,25 +516,47 @@ class AnalysisHistoryManager {
   }
 
   /**
+   * Parse a timestamp string, ensuring UTC interpretation for SQLite timestamps.
+   * SQLite's CURRENT_TIMESTAMP produces strings like "2024-01-20 15:30:00" without
+   * timezone indicator. JavaScript's Date() would interpret these as local time,
+   * but they're actually UTC. This helper ensures correct UTC parsing.
+   * @param {string} timestamp - Timestamp string (ISO 8601 or SQLite format)
+   * @returns {Date} Parsed Date object
+   */
+  parseTimestamp(timestamp) {
+    if (!timestamp) return new Date(NaN);
+
+    // If the timestamp already has timezone info (ends with Z or +/-offset), parse as-is
+    if (/Z$|[+-]\d{2}:\d{2}$/.test(timestamp)) {
+      return new Date(timestamp);
+    }
+
+    // SQLite CURRENT_TIMESTAMP format: "YYYY-MM-DD HH:MM:SS" (no timezone, but is UTC)
+    // Append 'Z' to interpret as UTC
+    return new Date(timestamp + 'Z');
+  }
+
+  /**
    * Format a timestamp to relative time (e.g., "2 hours ago")
-   * @param {string} timestamp - ISO timestamp
+   * For timestamps less than 1 hour old, shows actual time (e.g., "3:45 PM")
+   * For 1-24 hours, shows "X hours ago"
+   * For 1-7 days, shows "X days ago"
+   * For older, shows the date (e.g., "Jan 15")
+   * @param {string} timestamp - ISO timestamp or SQLite timestamp
    * @returns {string} Relative time string
    */
   formatRelativeTime(timestamp) {
     if (!timestamp) return 'Unknown';
 
     const now = new Date();
-    const date = new Date(timestamp);
+    const date = this.parseTimestamp(timestamp);
     const diffMs = now - date;
-    const diffSeconds = Math.floor(diffMs / 1000);
-    const diffMinutes = Math.floor(diffSeconds / 60);
-    const diffHours = Math.floor(diffMinutes / 60);
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
     const diffDays = Math.floor(diffHours / 24);
 
-    if (diffSeconds < 60) {
-      return 'just now';
-    } else if (diffMinutes < 60) {
-      return `${diffMinutes} minute${diffMinutes !== 1 ? 's' : ''} ago`;
+    if (diffHours < 1) {
+      // Less than 1 hour: show actual time (e.g., "3:45 PM")
+      return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
     } else if (diffHours < 24) {
       return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
     } else if (diffDays < 7) {
@@ -521,13 +569,13 @@ class AnalysisHistoryManager {
 
   /**
    * Format a timestamp to a readable date string
-   * @param {string} timestamp - ISO timestamp
+   * @param {string} timestamp - ISO timestamp or SQLite timestamp
    * @returns {string} Formatted date string
    */
   formatDate(timestamp) {
     if (!timestamp) return 'Unknown';
 
-    const date = new Date(timestamp);
+    const date = this.parseTimestamp(timestamp);
     return date.toLocaleString(undefined, {
       month: 'short',
       day: 'numeric',
@@ -546,8 +594,8 @@ class AnalysisHistoryManager {
   formatDuration(startedAt, completedAt) {
     if (!startedAt || !completedAt) return 'Unknown';
 
-    const start = new Date(startedAt);
-    const end = new Date(completedAt);
+    const start = this.parseTimestamp(startedAt);
+    const end = this.parseTimestamp(completedAt);
     const durationMs = end - start;
 
     if (durationMs < 0) return 'Unknown';
@@ -576,6 +624,47 @@ class AnalysisHistoryManager {
       'openai': 'OpenAI'
     };
     return providerNames[provider] || provider || 'Unknown';
+  }
+
+  /**
+   * Get the tier for a given model ID
+   * Maps model IDs to their corresponding tiers (fast, balanced, thorough)
+   * @param {string} modelId - The model identifier (e.g., 'haiku', 'sonnet', 'opus', 'flash', 'pro')
+   * @returns {string|null} The tier name or null if unknown
+   */
+  getTierForModel(modelId) {
+    if (!modelId) return null;
+
+    // Model to tier mapping (matches backend provider definitions)
+    const modelTiers = {
+      // Claude models
+      'haiku': 'fast',
+      'sonnet': 'balanced',
+      'opus': 'thorough',
+      // Gemini models
+      'flash': 'fast',
+      'pro': 'balanced',
+      'ultra': 'thorough',
+      // Codex/OpenAI models
+      'gpt-4o-mini': 'fast',
+      'gpt-4o': 'balanced',
+      'o1': 'thorough',
+      'o1-mini': 'balanced',
+      // Copilot models
+      'gpt-4': 'balanced'
+    };
+
+    return modelTiers[modelId] || null;
+  }
+
+  /**
+   * Format a tier name for display
+   * @param {string} tier - The tier identifier (e.g., 'fast', 'balanced', 'thorough')
+   * @returns {string} Display name in uppercase
+   */
+  formatTierName(tier) {
+    if (!tier) return '';
+    return tier.toUpperCase();
   }
 
   /**

@@ -3202,38 +3202,6 @@ class PRManager {
         }
       }
 
-      // Check if there are existing AI suggestions first
-      let hasSuggestions = false;
-      try {
-        const checkResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`);
-        if (checkResponse.ok) {
-          const data = await checkResponse.json();
-          hasSuggestions = data.hasSuggestions;
-        }
-      } catch (checkError) {
-        console.warn('Error checking for existing AI suggestions:', checkError);
-      }
-
-      // If there are existing suggestions, confirm replacement before showing modal
-      if (hasSuggestions) {
-        if (!window.confirmDialog) {
-          console.error('ConfirmDialog not loaded');
-          this.showError('Confirmation dialog unavailable. Please refresh the page.');
-          return;
-        }
-
-        const replaceResult = await window.confirmDialog.show({
-          title: 'Replace Existing Analysis?',
-          message: 'This will replace all existing AI suggestions for this PR. Continue?',
-          confirmText: 'Continue',
-          confirmClass: 'btn-danger'
-        });
-
-        if (replaceResult !== 'confirm') {
-          return;
-        }
-      }
-
       // Show analysis config modal
       if (!this.analysisConfigModal) {
         console.warn('AnalysisConfigModal not initialized, proceeding without config');

@@ -206,10 +206,78 @@ describe('AnalysisHistoryManager', () => {
 
       showDropdown() {
         if (this.container) {
+          // Re-render dropdown to get fresh timestamps
+          if (this.runs.length > 0) {
+            this.renderDropdown(this.runs);
+          }
+          // Also update the selected label for fresh timestamp
+          this.updateSelectedLabel();
+
           this.container.classList.add('open');
           this.isDropdownOpen = true;
           this.hideInfoPopover();
         }
+      }
+
+      renderDropdown(runs) {
+        if (!this.listElement) return;
+        // Simplified rendering for tests - just sets innerHTML
+        this.listElement.innerHTML = runs.map(run => `<button data-run-id="${run.id}">${run.model}</button>`).join('');
+      }
+
+      updateSelectedLabel() {
+        if (!this.historyLabel) return;
+        if (!this.selectedRun) return;
+
+        const run = this.selectedRun;
+        const timeAgo = this.formatRelativeTime(run.completed_at || run.started_at);
+        const provider = this.formatProviderName(run.provider);
+        const model = run.model || 'Unknown';
+
+        this.historyLabel.textContent = `${timeAgo} \u00B7 ${provider} \u00B7 ${model}`;
+      }
+
+      parseTimestamp(timestamp) {
+        if (!timestamp) return new Date(NaN);
+
+        // If the timestamp already has timezone info (ends with Z or +/-offset), parse as-is
+        if (/Z$|[+-]\d{2}:\d{2}$/.test(timestamp)) {
+          return new Date(timestamp);
+        }
+
+        // SQLite CURRENT_TIMESTAMP format: "YYYY-MM-DD HH:MM:SS" (no timezone, but is UTC)
+        // Append 'Z' to interpret as UTC
+        return new Date(timestamp + 'Z');
+      }
+
+      formatRelativeTime(timestamp) {
+        if (!timestamp) return 'Unknown';
+
+        const now = new Date();
+        const date = this.parseTimestamp(timestamp);
+        const diffMs = now - date;
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffHours / 24);
+
+        if (diffHours < 1) {
+          return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+        } else if (diffHours < 24) {
+          return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+        } else if (diffDays < 7) {
+          return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+        } else {
+          return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        }
+      }
+
+      formatProviderName(provider) {
+        const providerNames = {
+          'claude': 'Claude',
+          'gemini': 'Gemini',
+          'codex': 'Codex',
+          'openai': 'OpenAI'
+        };
+        return providerNames[provider] || provider || 'Unknown';
       }
 
       hideDropdown() {
@@ -266,6 +334,107 @@ describe('AnalysisHistoryManager', () => {
         } catch (error) {
           console.error('Failed to copy to clipboard:', error);
         }
+      }
+
+      getTierForModel(modelId) {
+        if (!modelId) return null;
+
+        const modelTiers = {
+          'haiku': 'fast',
+          'sonnet': 'balanced',
+          'opus': 'thorough',
+          'flash': 'fast',
+          'pro': 'balanced',
+          'ultra': 'thorough',
+          'gpt-4o-mini': 'fast',
+          'gpt-4o': 'balanced',
+          'o1': 'thorough',
+          'o1-mini': 'balanced',
+          'gpt-4': 'balanced'
+        };
+
+        return modelTiers[modelId] || null;
+      }
+
+      formatTierName(tier) {
+        if (!tier) return '';
+        return tier.toUpperCase();
+      }
+
+      escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+      }
+
+      formatDate(timestamp) {
+        if (!timestamp) return 'Unknown';
+        const date = this.parseTimestamp(timestamp);
+        return date.toLocaleString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit'
+        });
+      }
+
+      formatDuration(startedAt, completedAt) {
+        if (!startedAt || !completedAt) return 'Unknown';
+        const start = this.parseTimestamp(startedAt);
+        const end = this.parseTimestamp(completedAt);
+        const durationMs = end - start;
+        if (durationMs < 0) return 'Unknown';
+        const seconds = durationMs / 1000;
+        if (seconds < 60) {
+          return `${seconds.toFixed(1)}s`;
+        } else {
+          const minutes = Math.floor(seconds / 60);
+          const remainingSeconds = Math.floor(seconds % 60);
+          return `${minutes}m ${remainingSeconds}s`;
+        }
+      }
+
+      updateInfoPopover() {
+        if (!this.infoContent || !this.selectedRun) return;
+
+        const run = this.selectedRun;
+        const runDate = run.completed_at || run.started_at;
+        const formattedDate = runDate ? this.formatDate(runDate) : 'Unknown';
+        const duration = this.formatDuration(run.started_at, run.completed_at);
+        const suggestionCount = run.total_suggestions || 0;
+
+        const tier = this.getTierForModel(run.model);
+        const tierBadgeHtml = tier
+          ? `<span class="analysis-tier-badge analysis-tier-${tier}">${this.formatTierName(tier)}</span>`
+          : '';
+
+        let html = `
+          ${tierBadgeHtml ? `<div class="analysis-info-tier-row">${tierBadgeHtml}</div>` : ''}
+          <div class="analysis-info-row">
+            <span class="analysis-info-label">Provider</span>
+            <span class="analysis-info-value">${this.escapeHtml(this.formatProviderName(run.provider))}</span>
+          </div>
+          <div class="analysis-info-row">
+            <span class="analysis-info-label">Model</span>
+            <span class="analysis-info-value">${this.escapeHtml(run.model || 'Unknown')}</span>
+          </div>
+          <div class="analysis-info-row">
+            <span class="analysis-info-label">Run at</span>
+            <span class="analysis-info-value">${formattedDate}</span>
+          </div>
+          <div class="analysis-info-row">
+            <span class="analysis-info-label">Duration</span>
+            <span class="analysis-info-value">${duration}</span>
+          </div>
+          <div class="analysis-info-row">
+            <span class="analysis-info-label">Suggestions</span>
+            <span class="analysis-info-value">${suggestionCount}</span>
+          </div>
+        `;
+
+        this.infoContent.innerHTML = html;
       }
 
       destroy() {
@@ -690,6 +859,532 @@ describe('AnalysisHistoryManager', () => {
       expect(manager.handleDocumentClick).toBeNull();
       expect(manager.handleKeydown).toBeNull();
       expect(mockDocument.removeEventListener).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('updateSelectedLabel()', () => {
+    it('should update the label with timestamp, provider, and model', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set a selected run with completed_at 2 hours ago
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      manager.selectedRun = {
+        id: 1,
+        provider: 'claude',
+        model: 'claude-opus-4',
+        completed_at: twoHoursAgo
+      };
+
+      manager.updateSelectedLabel();
+
+      // Check that the label was updated with the expected format
+      // Format: <timestamp> · <provider> · <model>
+      expect(manager.historyLabel.textContent).toMatch(/2 hours ago · Claude · claude-opus-4/);
+    });
+
+    it('should return early when historyLabel is null', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+      manager.historyLabel = null;
+
+      // Set a selected run
+      manager.selectedRun = {
+        id: 1,
+        provider: 'claude',
+        model: 'test-model',
+        completed_at: new Date().toISOString()
+      };
+
+      // Should not throw
+      expect(() => manager.updateSelectedLabel()).not.toThrow();
+    });
+
+    it('should return early when selectedRun is null', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Ensure historyLabel exists but selectedRun is null
+      manager.selectedRun = null;
+
+      // Store original textContent to verify it's not modified
+      const originalText = manager.historyLabel.textContent;
+
+      manager.updateSelectedLabel();
+
+      // Label should remain unchanged
+      expect(manager.historyLabel.textContent).toBe(originalText);
+    });
+
+    it('should use started_at when completed_at is not available', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set a selected run with only started_at
+      const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+      manager.selectedRun = {
+        id: 1,
+        provider: 'gemini',
+        model: 'gemini-pro',
+        started_at: threeHoursAgo
+      };
+
+      manager.updateSelectedLabel();
+
+      expect(manager.historyLabel.textContent).toMatch(/3 hours ago · Gemini · gemini-pro/);
+    });
+
+    it('should handle unknown provider and model', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      const oneHourAgo = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
+      manager.selectedRun = {
+        id: 1,
+        completed_at: oneHourAgo
+        // No provider or model
+      };
+
+      manager.updateSelectedLabel();
+
+      expect(manager.historyLabel.textContent).toMatch(/1 hour ago · Unknown · Unknown/);
+    });
+  });
+
+  describe('showDropdown()', () => {
+    it('should call renderDropdown when runs exist', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up runs and a selected run
+      manager.runs = [
+        { id: 1, provider: 'claude', model: 'opus', completed_at: new Date().toISOString() },
+        { id: 2, provider: 'gemini', model: 'pro', completed_at: new Date().toISOString() }
+      ];
+      manager.selectedRun = manager.runs[0];
+
+      // Spy on renderDropdown
+      const renderSpy = vi.spyOn(manager, 'renderDropdown');
+
+      manager.showDropdown();
+
+      expect(renderSpy).toHaveBeenCalledWith(manager.runs);
+    });
+
+    it('should call updateSelectedLabel', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up a selected run
+      manager.selectedRun = {
+        id: 1,
+        provider: 'claude',
+        model: 'opus',
+        completed_at: new Date().toISOString()
+      };
+
+      // Spy on updateSelectedLabel
+      const updateSpy = vi.spyOn(manager, 'updateSelectedLabel');
+
+      manager.showDropdown();
+
+      expect(updateSpy).toHaveBeenCalled();
+    });
+
+    it('should not call renderDropdown when runs is empty', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Runs is empty by default
+      expect(manager.runs).toEqual([]);
+
+      // Spy on renderDropdown
+      const renderSpy = vi.spyOn(manager, 'renderDropdown');
+
+      manager.showDropdown();
+
+      expect(renderSpy).not.toHaveBeenCalled();
+    });
+
+    it('should add open class and set isDropdownOpen true', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      expect(manager.isDropdownOpen).toBe(false);
+
+      manager.showDropdown();
+
+      expect(manager.container.classList.add).toHaveBeenCalledWith('open');
+      expect(manager.isDropdownOpen).toBe(true);
+    });
+
+    it('should close info popover when opening dropdown', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Open the popover first
+      manager.isPopoverOpen = true;
+
+      // Spy on hideInfoPopover
+      const hideSpy = vi.spyOn(manager, 'hideInfoPopover');
+
+      manager.showDropdown();
+
+      expect(hideSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('getTierForModel()', () => {
+    it('should return fast tier for fast models', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      expect(manager.getTierForModel('haiku')).toBe('fast');
+      expect(manager.getTierForModel('flash')).toBe('fast');
+      expect(manager.getTierForModel('gpt-4o-mini')).toBe('fast');
+    });
+
+    it('should return balanced tier for balanced models', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      expect(manager.getTierForModel('sonnet')).toBe('balanced');
+      expect(manager.getTierForModel('pro')).toBe('balanced');
+      expect(manager.getTierForModel('gpt-4o')).toBe('balanced');
+      expect(manager.getTierForModel('gpt-4')).toBe('balanced');
+      expect(manager.getTierForModel('o1-mini')).toBe('balanced');
+    });
+
+    it('should return thorough tier for thorough models', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      expect(manager.getTierForModel('opus')).toBe('thorough');
+      expect(manager.getTierForModel('ultra')).toBe('thorough');
+      expect(manager.getTierForModel('o1')).toBe('thorough');
+    });
+
+    it('should return null for unknown models', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      expect(manager.getTierForModel('unknown-model')).toBe(null);
+      expect(manager.getTierForModel('custom-model')).toBe(null);
+    });
+
+    it('should return null for null or undefined input', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      expect(manager.getTierForModel(null)).toBe(null);
+      expect(manager.getTierForModel(undefined)).toBe(null);
+      expect(manager.getTierForModel('')).toBe(null);
+    });
+  });
+
+  describe('formatTierName()', () => {
+    it('should return uppercase tier name', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      expect(manager.formatTierName('fast')).toBe('FAST');
+      expect(manager.formatTierName('balanced')).toBe('BALANCED');
+      expect(manager.formatTierName('thorough')).toBe('THOROUGH');
+    });
+
+    it('should return empty string for null or undefined', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      expect(manager.formatTierName(null)).toBe('');
+      expect(manager.formatTierName(undefined)).toBe('');
+      expect(manager.formatTierName('')).toBe('');
+    });
+  });
+
+  describe('updateInfoPopover() tier badge', () => {
+    it('should include tier badge when model has a known tier', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set a selected run with a known model
+      manager.selectedRun = {
+        id: 'run-123',
+        model: 'sonnet',
+        provider: 'claude',
+        started_at: '2024-01-15T10:00:00Z',
+        completed_at: '2024-01-15T10:01:00Z',
+        total_suggestions: 5
+      };
+
+      manager.updateInfoPopover();
+
+      // Check that the HTML includes the tier badge
+      const infoContent = mockDocument._elements['analysis-context-info-content'];
+      expect(infoContent.innerHTML).toContain('analysis-tier-badge');
+      expect(infoContent.innerHTML).toContain('analysis-tier-balanced');
+      expect(infoContent.innerHTML).toContain('BALANCED');
+    });
+
+    it('should include fast tier badge for fast models', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      manager.selectedRun = {
+        id: 'run-123',
+        model: 'haiku',
+        provider: 'claude',
+        started_at: '2024-01-15T10:00:00Z',
+        completed_at: '2024-01-15T10:01:00Z',
+        total_suggestions: 3
+      };
+
+      manager.updateInfoPopover();
+
+      const infoContent = mockDocument._elements['analysis-context-info-content'];
+      expect(infoContent.innerHTML).toContain('analysis-tier-fast');
+      expect(infoContent.innerHTML).toContain('FAST');
+    });
+
+    it('should include thorough tier badge for thorough models', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      manager.selectedRun = {
+        id: 'run-123',
+        model: 'opus',
+        provider: 'claude',
+        started_at: '2024-01-15T10:00:00Z',
+        completed_at: '2024-01-15T10:01:00Z',
+        total_suggestions: 8
+      };
+
+      manager.updateInfoPopover();
+
+      const infoContent = mockDocument._elements['analysis-context-info-content'];
+      expect(infoContent.innerHTML).toContain('analysis-tier-thorough');
+      expect(infoContent.innerHTML).toContain('THOROUGH');
+    });
+
+    it('should not include tier badge for unknown models', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      manager.selectedRun = {
+        id: 'run-123',
+        model: 'unknown-model',
+        provider: 'custom',
+        started_at: '2024-01-15T10:00:00Z',
+        completed_at: '2024-01-15T10:01:00Z',
+        total_suggestions: 2
+      };
+
+      manager.updateInfoPopover();
+
+      const infoContent = mockDocument._elements['analysis-context-info-content'];
+      expect(infoContent.innerHTML).not.toContain('analysis-tier-badge');
+      expect(infoContent.innerHTML).not.toContain('analysis-info-tier-row');
+    });
+  });
+
+  describe('parseTimestamp() UTC handling', () => {
+    it('should parse ISO 8601 timestamps with Z suffix as UTC', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      const result = manager.parseTimestamp('2024-01-15T10:00:00Z');
+
+      // The parsed date should represent 10:00 UTC
+      expect(result.getUTCHours()).toBe(10);
+      expect(result.getUTCMinutes()).toBe(0);
+    });
+
+    it('should parse ISO 8601 timestamps with timezone offset', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      // 10:00 in +05:00 timezone = 05:00 UTC
+      const result = manager.parseTimestamp('2024-01-15T10:00:00+05:00');
+
+      expect(result.getUTCHours()).toBe(5);
+      expect(result.getUTCMinutes()).toBe(0);
+    });
+
+    it('should parse SQLite CURRENT_TIMESTAMP format as UTC', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      // SQLite format without timezone - should be treated as UTC
+      const result = manager.parseTimestamp('2024-01-15 10:00:00');
+
+      // The parsed date should represent 10:00 UTC
+      expect(result.getUTCHours()).toBe(10);
+      expect(result.getUTCMinutes()).toBe(0);
+    });
+
+    it('should return invalid date for null/undefined input', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      expect(manager.parseTimestamp(null).toString()).toBe('Invalid Date');
+      expect(manager.parseTimestamp(undefined).toString()).toBe('Invalid Date');
+    });
+
+    it('should correctly handle SQLite timestamps for relative time calculation', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      // Create a timestamp that's 2 hours ago in UTC using SQLite format
+      const nowUtc = new Date();
+      const twoHoursAgoUtc = new Date(nowUtc.getTime() - 2 * 60 * 60 * 1000);
+      const sqliteFormat = twoHoursAgoUtc.toISOString().replace('T', ' ').replace('Z', '').slice(0, 19);
+
+      const result = manager.formatRelativeTime(sqliteFormat);
+
+      // Should show "2 hours ago" regardless of local timezone
+      expect(result).toBe('2 hours ago');
+    });
+
+    it('should correctly handle ISO timestamps for relative time calculation', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      // Create a timestamp that's 3 hours ago in UTC using ISO format
+      const nowUtc = new Date();
+      const threeHoursAgoUtc = new Date(nowUtc.getTime() - 3 * 60 * 60 * 1000);
+      const isoFormat = threeHoursAgoUtc.toISOString();
+
+      const result = manager.formatRelativeTime(isoFormat);
+
+      // Should show "3 hours ago"
+      expect(result).toBe('3 hours ago');
+    });
+
+    it('should handle duration calculation with SQLite timestamps', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      // 30 seconds duration using SQLite format
+      const result = manager.formatDuration(
+        '2024-01-15 10:00:00',
+        '2024-01-15 10:00:30'
+      );
+
+      expect(result).toBe('30.0s');
+    });
+
+    it('should handle duration calculation with mixed timestamp formats', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      // 1 minute 30 seconds duration with mixed formats
+      const result = manager.formatDuration(
+        '2024-01-15 10:00:00',
+        '2024-01-15T10:01:30Z'
+      );
+
+      expect(result).toBe('1m 30s');
     });
   });
 });
