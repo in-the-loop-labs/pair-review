@@ -196,11 +196,18 @@ function annotateDiff(rawDiff) {
   let fileStarted = false;
   let fileHeaderOutput = false;
 
+  let isFirstFile = true;
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
     // Check for new file header
     if (line.startsWith('diff --git')) {
+      // Add blank line before new file (except for the first file)
+      if (!isFirstFile && output.length > 0) {
+        output.push('');
+      }
+      isFirstFile = false;
       currentFile = {};
       inHunk = false;
       fileStarted = true;
