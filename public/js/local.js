@@ -220,7 +220,7 @@ class LocalManager {
     };
 
     // Override loadAISuggestions
-    manager.loadAISuggestions = async function(level = null) {
+    manager.loadAISuggestions = async function(level = null, runId = null) {
       if (!manager.currentPR) return;
 
       try {
@@ -248,7 +248,13 @@ class LocalManager {
         }
 
         const filterLevel = level || manager.selectedLevel || 'final';
-        const url = `/api/local/${reviewId}/suggestions?levels=${filterLevel}`;
+        // Use provided runId, or fall back to selectedRunId (which may be null for latest)
+        const filterRunId = runId !== undefined ? runId : manager.selectedRunId;
+
+        let url = `/api/local/${reviewId}/suggestions?levels=${filterLevel}`;
+        if (filterRunId) {
+          url += `&runId=${filterRunId}`;
+        }
 
         const response = await fetch(url);
         if (!response.ok) return;
@@ -1241,8 +1247,26 @@ class LocalManager {
         window.aiPanel.setPR('local', reviewData.repository, this.reviewId);
       }
 
+      // Initialize analysis history manager for local mode
+      if (window.AnalysisHistoryManager) {
+        manager.analysisHistoryManager = new window.AnalysisHistoryManager({
+          reviewId: this.reviewId,
+          mode: 'local',
+          onSelectionChange: (runId, _run) => {
+            manager.selectedRunId = runId;
+            manager.loadAISuggestions(null, runId);
+          }
+        });
+        manager.analysisHistoryManager.init();
+        await manager.analysisHistoryManager.loadAnalysisRuns();
+      }
+
       // Load saved AI suggestions
-      await manager.loadAISuggestions();
+      // Note: If analysisHistoryManager is initialized, it will trigger loadAISuggestions
+      // via onSelectionChange when selecting the latest run. Only call directly if no manager.
+      if (!manager.analysisHistoryManager) {
+        await manager.loadAISuggestions();
+      }
 
       // Check for running analysis
       await manager.checkRunningAnalysis();

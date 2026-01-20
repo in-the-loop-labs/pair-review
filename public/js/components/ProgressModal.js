@@ -528,7 +528,16 @@ class ProgressModal {
     // CRITICAL FIX: Automatically reload AI suggestions when analysis completes
     console.log('Analysis completed, reloading AI suggestions...');
     if (window.prManager && typeof window.prManager.loadAISuggestions === 'function') {
-      window.prManager.loadAISuggestions()
+      // First, refresh the analysis history manager to include the new run
+      const refreshHistory = async () => {
+        if (window.prManager.analysisHistoryManager) {
+          console.log('Refreshing analysis history...');
+          await window.prManager.analysisHistoryManager.refresh();
+        }
+      };
+
+      refreshHistory()
+        .then(() => window.prManager.loadAISuggestions())
         .then(() => {
           console.log('AI suggestions reloaded successfully');
           // Only auto-close after suggestions have loaded successfully

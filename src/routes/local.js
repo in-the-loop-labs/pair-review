@@ -851,6 +851,10 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
     const levelsParam = req.query.levels || 'final';
     const requestedLevels = levelsParam.split(',').map(l => l.trim());
 
+    // Parse optional runId query parameter to fetch suggestions from a specific analysis run
+    // If not provided, defaults to the latest run
+    const runIdParam = req.query.runId;
+
     // Build level filter clause
     const levelConditions = [];
     requestedLevels.forEach(level => {
@@ -866,18 +870,35 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
       ? `(${levelConditions.join(' OR ')})`
       : 'ai_level IS NULL';
 
-    // Get AI suggestions from the comments table
-    // For local reviews, review_id stores the review ID
-    // Only return suggestions from the latest analysis run (ai_run_id)
-    // This preserves history while showing only the most recent results
-    //
-    // Note: If no AI suggestions exist (subquery returns NULL), the ai_run_id = NULL
-    // comparison returns no rows. This is intentional - we only show suggestions
-    // when there's a matching analysis run.
-    //
-    // Note: reviewId is passed twice because SQLite requires separate parameters
-    // for the outer WHERE clause and the subquery. A CTE could consolidate this but
-    // adds complexity without meaningful benefit here.
+    // Build the run ID filter clause
+    // If a specific runId is provided, use it directly; otherwise use subquery for latest
+    let runIdFilter;
+    let queryParams;
+    if (runIdParam) {
+      runIdFilter = 'ai_run_id = ?';
+      queryParams = [reviewId, runIdParam];
+    } else {
+      // Get AI suggestions from the comments table
+      // For local reviews, review_id stores the review ID
+      // Only return suggestions from the latest analysis run (ai_run_id)
+      // This preserves history while showing only the most recent results
+      //
+      // Note: If no AI suggestions exist (subquery returns NULL), the ai_run_id = NULL
+      // comparison returns no rows. This is intentional - we only show suggestions
+      // when there's a matching analysis run.
+      //
+      // Note: reviewId is passed twice because SQLite requires separate parameters
+      // for the outer WHERE clause and the subquery. A CTE could consolidate this but
+      // adds complexity without meaningful benefit here.
+      runIdFilter = `ai_run_id = (
+          SELECT ai_run_id FROM comments
+          WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+          ORDER BY created_at DESC
+          LIMIT 1
+        )`;
+      queryParams = [reviewId, reviewId];
+    }
+
     const suggestions = await query(db, `
       SELECT
         id,
@@ -902,12 +923,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
         AND source = 'ai'
         AND ${levelFilter}
         AND status IN ('active', 'dismissed', 'adopted')
-        AND ai_run_id = (
-          SELECT ai_run_id FROM comments
-          WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
-          ORDER BY created_at DESC
-          LIMIT 1
-        )
+        AND ${runIdFilter}
       ORDER BY
         CASE
           WHEN ai_level IS NULL THEN 0
@@ -919,7 +935,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
         is_file_level DESC,
         file,
         line_start
-    `, [reviewId, reviewId]);
+    `, queryParams);
 
     res.json({ suggestions });
 

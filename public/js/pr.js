@@ -130,6 +130,10 @@ class PRManager {
     this.viewedFiles = new Set();
     // Canonical file order - sorted file paths for consistent ordering across components
     this.canonicalFileOrder = new Map();
+    // Analysis history manager - for switching between analysis runs
+    this.analysisHistoryManager = null;
+    // Currently selected analysis run ID (null = latest)
+    this.selectedRunId = null;
 
     // Initialize modules
     this.lineTracker = new window.LineTracker();
@@ -333,8 +337,27 @@ class PRManager {
         window.aiPanel.setPR(owner, repo, number);
       }
 
+      // Initialize analysis history manager if review ID is available
+      // The review ID is needed to fetch analysis runs from the database
+      if (this.currentPR.id && window.AnalysisHistoryManager) {
+        this.analysisHistoryManager = new window.AnalysisHistoryManager({
+          reviewId: this.currentPR.id,
+          mode: 'pr',
+          onSelectionChange: (runId, _run) => {
+            this.selectedRunId = runId;
+            this.loadAISuggestions(null, runId);
+          }
+        });
+        this.analysisHistoryManager.init();
+        await this.analysisHistoryManager.loadAnalysisRuns();
+      }
+
       // Load saved AI suggestions if they exist
-      await this.loadAISuggestions();
+      // Note: If analysisHistoryManager is initialized, it will trigger loadAISuggestions
+      // via onSelectionChange when selecting the latest run. Only call directly if no manager.
+      if (!this.analysisHistoryManager) {
+        await this.loadAISuggestions();
+      }
 
       // Check if AI analysis is currently running
       await this.checkRunningAnalysis();
@@ -1981,8 +2004,9 @@ class PRManager {
   /**
    * Load AI suggestions from API
    * @param {string} level - Optional level filter ('final', '1', '2', '3')
+   * @param {string} runId - Optional analysis run ID (defaults to latest)
    */
-  async loadAISuggestions(level = null) {
+  async loadAISuggestions(level = null, runId = null) {
     if (!this.currentPR) return;
 
     try {
@@ -2015,7 +2039,13 @@ class PRManager {
 
       // Use provided level, or fall back to current selectedLevel
       const filterLevel = level || this.selectedLevel || 'final';
-      const url = `/api/pr/${owner}/${repo}/${number}/ai-suggestions?levels=${filterLevel}`;
+      // Use provided runId, or fall back to selectedRunId (which may be null for latest)
+      const filterRunId = runId !== undefined ? runId : this.selectedRunId;
+
+      let url = `/api/pr/${owner}/${repo}/${number}/ai-suggestions?levels=${filterLevel}`;
+      if (filterRunId) {
+        url += `&runId=${filterRunId}`;
+      }
 
       const response = await fetch(url);
       if (!response.ok) return;

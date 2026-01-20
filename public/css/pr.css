@@ -4921,6 +4921,214 @@ tr.line-range-start .d2h-code-line-ctn {
 }
 
 /* ============================================
+   Analysis History Selector
+   ============================================ */
+
+.analysis-history-container {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.analysis-history-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 280px;
+}
+
+.analysis-history-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dropdown-caret {
+    flex-shrink: 0;
+    transition: transform 0.15s ease;
+}
+
+.analysis-history-container.open .dropdown-caret {
+    transform: rotate(180deg);
+}
+
+.analysis-info-btn {
+    padding: 4px 6px;
+}
+
+/* Analysis History Dropdown */
+.analysis-history-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 300px;
+    max-width: 400px;
+    max-height: 320px;
+    overflow-y: auto;
+    background: var(--color-canvas-overlay);
+    border: 1px solid var(--color-border-default);
+    border-radius: 6px;
+    box-shadow: var(--shadow-lg);
+    z-index: 100;
+    display: none;
+}
+
+.analysis-history-container.open .analysis-history-dropdown {
+    display: block;
+}
+
+.analysis-history-list {
+    padding: 4px 0;
+}
+
+.analysis-history-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px;
+    cursor: pointer;
+    border: none;
+    background: none;
+    width: 100%;
+    text-align: left;
+    color: var(--color-text-primary);
+}
+
+.analysis-history-item:hover {
+    background: var(--color-action-list-item-hover);
+}
+
+.analysis-history-item.selected {
+    background: var(--color-action-list-item-selected);
+}
+
+.analysis-history-item-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.analysis-history-item-model {
+    color: var(--color-text-primary);
+}
+
+.analysis-history-item-provider {
+    color: var(--color-text-muted);
+    font-weight: 400;
+}
+
+.analysis-history-item-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+.analysis-latest-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--color-accent-subtle);
+    color: var(--color-accent-fg);
+    border-radius: 10px;
+    margin-left: auto;
+}
+
+.analysis-history-empty {
+    padding: 16px 12px;
+    text-align: center;
+    color: var(--color-text-muted);
+    font-size: 13px;
+}
+
+/* Analysis Info Popover */
+.analysis-info-popover {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    width: 320px;
+    background: var(--color-canvas-overlay);
+    border: 1px solid var(--color-border-default);
+    border-radius: 6px;
+    box-shadow: var(--shadow-lg);
+    z-index: 100;
+    display: none;
+}
+
+.analysis-history-container.popover-open .analysis-info-popover {
+    display: block;
+}
+
+.analysis-info-header {
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text-primary);
+    border-bottom: 1px solid var(--color-border-muted);
+}
+
+.analysis-info-content {
+    padding: 12px;
+}
+
+.analysis-info-row {
+    display: flex;
+    margin-bottom: 10px;
+}
+
+.analysis-info-row:last-child {
+    margin-bottom: 0;
+}
+
+.analysis-info-label {
+    width: 110px;
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+.analysis-info-value {
+    font-size: 12px;
+    color: var(--color-text-primary);
+    word-break: break-word;
+}
+
+.analysis-info-instructions {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--color-border-muted);
+}
+
+.analysis-info-instructions-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    margin-bottom: 6px;
+}
+
+.analysis-info-instructions-text {
+    font-size: 12px;
+    color: var(--color-text-primary);
+    white-space: pre-wrap;
+    max-height: 150px;
+    overflow-y: auto;
+    background: var(--color-canvas-subtle);
+    padding: 8px;
+    border-radius: 4px;
+}
+
+.analysis-info-none {
+    color: var(--color-text-muted);
+    font-style: italic;
+}
+
+/* ============================================
    Generated Files Styles
    ============================================ */
 
@@ -7299,11 +7507,8 @@ body.resizing * {
   --file-comment-header-bg: #21262d;
 }
 
-/* File Comments Zone Container - always visible (no collapse) */
-/* Zone is invisible when empty - styling only applied when has content via :has() */
-.file-comments-zone {
-  /* No default styling - completely invisible when empty */
-}
+/* File Comments Zone Container - always visible (no collapse)
+   Zone is invisible when empty - styling only applied when has content via :has() */
 
 /* Conditional styling - only show background/border when zone has actual content */
 .file-comments-zone:has(.file-comment-card),

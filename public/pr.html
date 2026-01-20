@@ -167,6 +167,33 @@
                     </div>
                     <div class="diff-stats" id="diff-stats"></div>
                     <div class="toolbar-actions">
+                        <!-- Analysis History Selector -->
+                        <div class="analysis-history-container" id="analysis-history-container" style="display: none;">
+                            <button class="btn btn-sm btn-secondary analysis-history-btn" id="analysis-history-btn">
+                                <span class="analysis-history-label" id="analysis-history-label">No analysis</span>
+                                <svg class="dropdown-caret" width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                                    <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                            <button class="btn btn-sm btn-icon analysis-info-btn" id="analysis-info-btn" title="Analysis details">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 100-2 1 1 0 000 2z"/>
+                                </svg>
+                            </button>
+                            <!-- Dropdown menu (hidden by default) -->
+                            <div class="analysis-history-dropdown" id="analysis-history-dropdown">
+                                <div class="analysis-history-list" id="analysis-history-list">
+                                    <!-- Populated by JavaScript -->
+                                </div>
+                            </div>
+                            <!-- Info popover (hidden by default) -->
+                            <div class="analysis-info-popover" id="analysis-info-popover">
+                                <div class="analysis-info-header">Analysis Details</div>
+                                <div class="analysis-info-content" id="analysis-info-content">
+                                    <!-- Populated by JavaScript -->
+                                </div>
+                            </div>
+                        </div>
                         <button class="btn btn-sm btn-secondary" id="analyze-btn" title="Analyze with AI">
                             <svg class="analyze-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                                 <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
@@ -282,6 +309,7 @@
     <script src="/js/modules/suggestion-manager.js"></script>
     <script src="/js/modules/file-comment-manager.js"></script>
     <script src="/js/modules/panel-resizer.js"></script>
+    <script src="/js/modules/analysis-history.js"></script>
 
     <!-- PR JavaScript -->
     <script src="/js/pr.js"></script>
