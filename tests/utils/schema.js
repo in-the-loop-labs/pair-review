@@ -115,6 +115,8 @@ const SCHEMA_SQL = {
       provider TEXT,
       model TEXT,
       custom_instructions TEXT,
+      repo_instructions TEXT,
+      request_instructions TEXT,
       summary TEXT,
       status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
       total_suggestions INTEGER DEFAULT 0,

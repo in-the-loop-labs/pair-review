@@ -243,11 +243,41 @@ class AnalysisHistoryManager {
       </div>
     `;
 
-    // Add custom instructions if present
-    if (run.custom_instructions) {
+    // Handle instructions display - check for new separate fields first, fall back to legacy custom_instructions
+    const hasRequestInstructions = run.request_instructions && run.request_instructions.trim();
+    const hasRepoInstructions = run.repo_instructions && run.repo_instructions.trim();
+    const hasLegacyInstructions = run.custom_instructions && run.custom_instructions.trim();
+
+    if (hasRequestInstructions) {
+      // Show request instructions prominently as "Custom Instructions"
       html += `
         <div class="analysis-info-instructions">
           <div class="analysis-info-instructions-label">Custom Instructions</div>
+          <div class="analysis-info-instructions-text">${this.escapeHtml(run.request_instructions)}</div>
+        </div>
+      `;
+    }
+
+    if (hasRepoInstructions) {
+      // Show repo instructions in a collapsible section
+      html += `
+        <div class="analysis-info-repo-section">
+          <button class="analysis-info-repo-toggle" onclick="this.classList.toggle('expanded')">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+              <path d="M4.5 2L8.5 6L4.5 10" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Repository Instructions
+          </button>
+          <div class="analysis-info-repo-content">
+            <div class="analysis-info-instructions-text">${this.escapeHtml(run.repo_instructions)}</div>
+          </div>
+        </div>
+      `;
+    } else if (hasLegacyInstructions && !hasRequestInstructions) {
+      // Backward compatibility: show legacy custom_instructions if no new fields exist
+      html += `
+        <div class="analysis-info-instructions">
+          <div class="analysis-info-instructions-label">Instructions</div>
           <div class="analysis-info-instructions-text">${this.escapeHtml(run.custom_instructions)}</div>
         </div>
       `;

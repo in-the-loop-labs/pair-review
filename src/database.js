@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 10;
+const CURRENT_SCHEMA_VERSION = 11;
 
 /**
  * Database schema SQL statements
@@ -133,6 +133,8 @@ const SCHEMA_SQL = {
       provider TEXT,
       model TEXT,
       custom_instructions TEXT,
+      repo_instructions TEXT,
+      request_instructions TEXT,
       summary TEXT,
       status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
       total_suggestions INTEGER DEFAULT 0,
@@ -562,6 +564,42 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 10 complete');
+  },
+
+  // Migration to version 11: adds separate instruction columns to analysis_runs
+  11: (db) => {
+    console.log('Running migration to schema version 11...');
+
+    // Helper to check if column exists
+    const columnExists = (table, column) => {
+      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+      return rows ? rows.some(row => row.name === column) : false;
+    };
+
+    // Helper to add column if not exists (idempotent)
+    const addColumnIfNotExists = (table, column, definition) => {
+      const exists = columnExists(table, column);
+      if (!exists) {
+        console.log(`  Adding ${column} column to ${table} table...`);
+        try {
+          db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+          console.log(`  Successfully added ${column} column`);
+        } catch (error) {
+          // Ignore duplicate column errors (race condition protection)
+          if (!error.message.includes('duplicate column name')) {
+            throw error;
+          }
+        }
+      }
+    };
+
+    // Add repo_instructions column to analysis_runs if it doesn't exist
+    addColumnIfNotExists('analysis_runs', 'repo_instructions', 'TEXT');
+
+    // Add request_instructions column to analysis_runs if it doesn't exist
+    addColumnIfNotExists('analysis_runs', 'request_instructions', 'TEXT');
+
+    console.log('Migration to schema version 11 complete');
   }
 };
 
@@ -1950,14 +1988,16 @@ class AnalysisRunRepository {
    * @param {number} runInfo.reviewId - Review ID (references reviews.id, works for both PR and local modes)
    * @param {string} [runInfo.provider] - AI provider (claude, gemini, etc.)
    * @param {string} [runInfo.model] - AI model name
-   * @param {string} [runInfo.customInstructions] - Custom instructions used
+   * @param {string} [runInfo.customInstructions] - Merged custom instructions (kept for backward compatibility)
+   * @param {string} [runInfo.repoInstructions] - Repository-level instructions from repo_settings
+   * @param {string} [runInfo.requestInstructions] - Request-level instructions from the analyze request
    * @returns {Promise<Object>} Created analysis run record
    */
-  async create({ id, reviewId, provider = null, model = null, customInstructions = null }) {
+  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null }) {
     await run(this.db, `
-      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, status)
-      VALUES (?, ?, ?, ?, ?, 'running')
-    `, [id, reviewId, provider, model, customInstructions]);
+      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'running')
+    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions]);
 
     // Query back the inserted row to return actual database values (including timestamps)
     return await this.getById(id);
@@ -2024,8 +2064,8 @@ class AnalysisRunRepository {
    */
   async getById(id) {
     const row = await queryOne(this.db, `
-      SELECT id, review_id, provider, model, custom_instructions, summary,
-             status, total_suggestions, files_analyzed, started_at, completed_at
+      SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+             summary, status, total_suggestions, files_analyzed, started_at, completed_at
       FROM analysis_runs
       WHERE id = ?
     `, [id]);
@@ -2041,8 +2081,8 @@ class AnalysisRunRepository {
    */
   async getByReviewId(reviewId) {
     return query(this.db, `
-      SELECT id, review_id, provider, model, custom_instructions, summary,
-             status, total_suggestions, files_analyzed, started_at, completed_at
+      SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+             summary, status, total_suggestions, files_analyzed, started_at, completed_at
       FROM analysis_runs
       WHERE review_id = ?
       ORDER BY started_at DESC, id DESC
@@ -2056,8 +2096,8 @@ class AnalysisRunRepository {
    */
   async getLatestByReviewId(reviewId) {
     const row = await queryOne(this.db, `
-      SELECT id, review_id, provider, model, custom_instructions, summary,
-             status, total_suggestions, files_analyzed, started_at, completed_at
+      SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+             summary, status, total_suggestions, files_analyzed, started_at, completed_at
       FROM analysis_runs
       WHERE review_id = ?
       ORDER BY started_at DESC, id DESC

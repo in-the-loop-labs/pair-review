@@ -100,7 +100,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Fetch repo settings and save custom instructions in a transaction
     // This ensures consistency between reading settings and updating the review record
-    const { provider, model, combinedInstructions } = await withTransaction(db, async () => {
+    const { provider, model, repoInstructions, combinedInstructions } = await withTransaction(db, async () => {
       // Fetch repo settings for default instructions, provider, and model
       const repoSettingsRepo = new RepoSettingsRepository(db);
       const fetchedRepoSettings = await repoSettingsRepo.getRepoSettings(repository);
@@ -126,9 +126,10 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         selectedModel = getModel(req);
       }
 
-      // Merge custom instructions using shared utility
-      const repoInstructions = fetchedRepoSettings?.default_instructions;
-      const mergedInstructions = mergeInstructions(repoInstructions, requestInstructions);
+      // Get repo instructions from settings
+      const fetchedRepoInstructions = fetchedRepoSettings?.default_instructions || null;
+      // Merge for logging purposes (analyzer will also merge internally)
+      const mergedInstructions = mergeInstructions(fetchedRepoInstructions, requestInstructions);
 
       // Save custom instructions to the review record using upsert
       // Uses reviewRepo created at the start of the handler
@@ -139,6 +140,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       return {
         provider: selectedProvider,
         model: selectedModel,
+        repoInstructions: fetchedRepoInstructions,
         combinedInstructions: mergedInstructions
       };
     });
@@ -228,7 +230,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Start analysis asynchronously with progress callback and custom instructions
     // Use review.id (not prMetadata.id) to avoid ID collision with local mode
     // Pass analysisId for process tracking/cancellation
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, combinedInstructions, null, { analysisId })
+    // Pass separate instructions for storage, analyzer will merge them for prompts
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId })
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);

@@ -5131,6 +5131,49 @@ tr.line-range-start .d2h-code-line-ctn {
     font-style: italic;
 }
 
+/* Collapsible repo instructions section */
+.analysis-info-repo-section {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--color-border-muted);
+}
+
+.analysis-info-repo-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 6px 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    text-align: left;
+}
+
+.analysis-info-repo-toggle:hover {
+    color: var(--color-text-primary);
+}
+
+.analysis-info-repo-toggle svg {
+    transition: transform 0.15s ease;
+}
+
+.analysis-info-repo-toggle.expanded svg {
+    transform: rotate(90deg);
+}
+
+.analysis-info-repo-content {
+    display: none;
+    margin-top: 6px;
+}
+
+.analysis-info-repo-toggle.expanded + .analysis-info-repo-content {
+    display: block;
+}
+
 /* Dark theme adjustments for analysis dropdown and popover */
 [data-theme="dark"] .analysis-history-dropdown,
 [data-theme="dark"] .analysis-info-popover {

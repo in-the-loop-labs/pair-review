@@ -295,8 +295,9 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       selectedModel = getModel(req);
     }
 
-    // Merge custom instructions using shared utility
-    const repoInstructions = repoSettings?.default_instructions;
+    // Get repo instructions from settings
+    const repoInstructions = repoSettings?.default_instructions || null;
+    // Merge for logging purposes (analyzer will also merge internally)
     const combinedInstructions = mergeInstructions(repoInstructions, requestInstructions);
 
     // Save custom instructions to the review record
@@ -403,7 +404,8 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
 
     // Start analysis asynchronously (pass changedFiles for local mode path validation)
     // Pass analysisId for process tracking/cancellation
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, combinedInstructions, changedFiles, { analysisId })
+    // Pass separate instructions for storage, analyzer will merge them for prompts
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId })
       .then(async result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);
