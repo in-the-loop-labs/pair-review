@@ -9,6 +9,8 @@ coverage/
 .idea/
 
 test-*.js
+test_*.js
 debug*
+analyze_*.js
 .playwright-mcp/*
 test-results/
