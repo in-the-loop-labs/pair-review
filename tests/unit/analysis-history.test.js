@@ -1186,8 +1186,129 @@ describe('AnalysisHistoryManager', () => {
 
       const result = await manager.refresh({ switchToNew: true });
 
-      // Should return the previous runs
-      expect(result).toEqual(oldRuns);
+      // Should return the previous runs and didSwitch=false
+      expect(result).toEqual({ runs: oldRuns, didSwitch: false });
+    });
+
+    it('should return didSwitch=true when switching to a new run', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up existing state with an old run selected
+      manager.runs = [{ id: 'old-run', model: 'sonnet', provider: 'claude' }];
+      manager.selectedRunId = 'old-run';
+      manager.selectedRun = manager.runs[0];
+
+      // Mock fetch to return both old and new runs
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          runs: [
+            { id: 'new-run', model: 'opus', provider: 'claude' },
+            { id: 'old-run', model: 'sonnet', provider: 'claude' }
+          ]
+        })
+      });
+
+      const result = await manager.refresh({ switchToNew: true });
+
+      // Should return didSwitch=true
+      expect(result.didSwitch).toBe(true);
+      expect(result.runs).toHaveLength(2);
+    });
+
+    it('should return didSwitch=false when preserving user selection', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up existing state with an old run selected
+      manager.runs = [{ id: 'old-run', model: 'sonnet', provider: 'claude' }];
+      manager.selectedRunId = 'old-run';
+      manager.selectedRun = manager.runs[0];
+
+      // Mock fetch to return both old and new runs
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          runs: [
+            { id: 'new-run', model: 'opus', provider: 'claude' },
+            { id: 'old-run', model: 'sonnet', provider: 'claude' }
+          ]
+        })
+      });
+
+      const result = await manager.refresh({ switchToNew: false });
+
+      // Should return didSwitch=false since user selection was preserved
+      expect(result.didSwitch).toBe(false);
+      expect(result.runs).toHaveLength(2);
+    });
+
+    it('should return didSwitch=true for first-ever run even with switchToNew=false', async () => {
+      // This is the key bug fix test: first-ever analysis run should switch
+      // and return didSwitch=true regardless of the switchToNew parameter
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // No previous selection (first-ever run scenario)
+      manager.runs = [];
+      manager.selectedRunId = null;
+      manager.selectedRun = null;
+
+      // Mock fetch to return a new run
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          runs: [
+            { id: 'first-run', model: 'opus', provider: 'claude' }
+          ]
+        })
+      });
+
+      const result = await manager.refresh({ switchToNew: false });
+
+      // Even though switchToNew=false, should switch because there's no previous selection
+      // This ensures the ProgressModal will call loadAISuggestions() for first-ever runs
+      expect(result.didSwitch).toBe(true);
+      expect(manager.selectedRunId).toBe('first-run');
+      expect(manager.selectedRun.model).toBe('opus');
+    });
+
+    it('should return didSwitch=false when runs list is empty after fetch', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up existing state
+      manager.runs = [{ id: 'old-run', model: 'sonnet', provider: 'claude' }];
+      manager.selectedRunId = 'old-run';
+
+      // Mock fetch to return empty runs
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ runs: [] })
+      });
+
+      const result = await manager.refresh({ switchToNew: true });
+
+      // Should return didSwitch=false since there's nothing to switch to
+      expect(result.didSwitch).toBe(false);
+      expect(result.runs).toEqual([]);
     });
   });
 

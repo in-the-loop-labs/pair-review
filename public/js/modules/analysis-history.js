@@ -737,11 +737,12 @@ class AnalysisHistoryManager {
    * Refresh the analysis runs list (e.g., after a new analysis completes)
    * @param {Object} options - Refresh options
    * @param {boolean} options.switchToNew - Whether to switch to the new run (default: true)
-   * @returns {Promise<Array>} The refreshed runs
+   * @returns {Promise<{runs: Array, didSwitch: boolean}>} The refreshed runs and whether we switched to a new run
    */
   async refresh({ switchToNew = true } = {}) {
     const previousSelectedId = this.selectedRunId;
     const previousRuns = [...this.runs];
+    let didSwitch = false;
 
     // Fetch the updated runs list
     const { runs, error } = await this.fetchRuns();
@@ -749,14 +750,14 @@ class AnalysisHistoryManager {
     if (error) {
       console.warn('Failed to fetch analysis runs:', error);
       // Restore previous state on failure
-      return previousRuns;
+      return { runs: previousRuns, didSwitch: false };
     }
 
     this.runs = runs;
 
     if (this.runs.length === 0) {
       this.hide();
-      return [];
+      return { runs: [], didSwitch: false };
     }
 
     // Find the new run (newest run that wasn't in the previous list)
@@ -777,6 +778,7 @@ class AnalysisHistoryManager {
         this.selectedRunId = latestRun.id;
         this.selectedRun = latestRun;
         this.clearNewRunIndicator();
+        didSwitch = true;
       } else {
         // User was viewing older results - don't switch, but mark new run
         this.newRunId = latestRun.id;
@@ -807,7 +809,7 @@ class AnalysisHistoryManager {
     this.renderDropdown(this.runs);
     this.show();
 
-    return this.runs;
+    return { runs: this.runs, didSwitch };
   }
 
   /**

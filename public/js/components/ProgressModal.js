@@ -547,14 +547,22 @@ class ProgressModal {
       const refreshHistory = async () => {
         if (manager.analysisHistoryManager) {
           console.log('Refreshing analysis history, switchToNew:', shouldSwitchToNew);
-          await manager.analysisHistoryManager.refresh({ switchToNew: shouldSwitchToNew });
+          const result = await manager.analysisHistoryManager.refresh({ switchToNew: shouldSwitchToNew });
+          // Return whether the manager actually switched to the new run
+          // This can differ from shouldSwitchToNew when it's the first-ever run
+          // (first run always switches regardless of shouldSwitchToNew)
+          return result.didSwitch;
         }
+        // No history manager, so we'll load suggestions directly
+        return true;
       };
 
       refreshHistory()
-        .then(() => {
-          // Only load suggestions if we're switching to the new run
-          if (shouldSwitchToNew) {
+        .then((didSwitch) => {
+          // Load suggestions if we switched to the new run
+          // Note: didSwitch may be true even if shouldSwitchToNew was false
+          // (e.g., first-ever analysis run always switches because there's no previous selection)
+          if (didSwitch) {
             return manager.loadAISuggestions();
           }
           // Otherwise, just return - the user will load when they select the new run
