@@ -6535,7 +6535,8 @@ body.resizing * {
 /* Segment Control */
 .segment-control {
   display: flex;
-  gap: 2px;
+  align-items: center;
+  gap: 8px;
   padding: 12px 16px;
   background: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-border-primary);
@@ -6549,7 +6550,7 @@ body.resizing * {
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-primary);
   border-radius: var(--radius-md);
-  width: 100%;
+  flex: 1;
 }
 
 .segment-btn {
@@ -6613,6 +6614,44 @@ body.resizing * {
 /* Hide level filter when Comments segment is selected */
 .level-filter.hidden {
   display: none;
+}
+
+/* Filter Toggle Button - shows dismissed user comments */
+.filter-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--color-border-primary);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.filter-toggle-btn:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-secondary);
+}
+
+.filter-toggle-btn.active {
+  color: var(--comment-primary);
+  background: var(--comment-subtle);
+  border-color: var(--comment-border);
+}
+
+.filter-toggle-btn.hidden {
+  display: none;
+}
+
+.filter-toggle-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* Level Filter Pills */
@@ -6822,30 +6861,7 @@ body.resizing * {
   padding-right: 28px;
 }
 
-.finding-delete-btn {
-  position: absolute;
-  right: 1px;
-  top: 1px;
-  bottom: 1px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  color: var(--color-text-quaternary, #8b949e);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.finding-delete-btn:hover {
-  background: var(--category-bug-subtle, #ffebe9);
-  color: var(--category-bug, #cf222e);
-}
-
-/* Quick-action buttons for AI suggestions */
+/* Quick-action buttons for AI suggestions and user comments */
 .finding-quick-actions {
   position: absolute;
   right: 4px;
@@ -6906,6 +6922,26 @@ body.resizing * {
 }
 
 .quick-action-restore:hover {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--color-success, #3fb950);
+}
+
+/* Dismiss button for user comments - same styling as AI suggestion dismiss */
+.quick-action-dismiss-comment {
+  color: var(--color-text-secondary, #8b949e);
+}
+
+.quick-action-dismiss-comment:hover {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--color-danger, #f85149);
+}
+
+/* Restore button for dismissed user comments - same styling as AI suggestion restore */
+.quick-action-restore-comment {
+  color: var(--color-text-secondary, #8b949e);
+}
+
+.quick-action-restore-comment:hover {
   background: rgba(63, 185, 80, 0.15);
   color: var(--color-success, #3fb950);
 }
@@ -7020,6 +7056,51 @@ body.resizing * {
 .finding-item-wrapper:has(.finding-dismissed):focus-within .finding-quick-actions {
   opacity: 1;
 }
+
+/* Dismissed user comments - parallel styling to dismissed AI suggestions */
+.finding-item.comment-item-dismissed {
+  opacity: 0.6;
+  border-left: 3px dashed var(--color-border-secondary, #444c56);
+  padding-left: 9px; /* Compensate for border width */
+  position: relative;
+}
+
+.finding-item.comment-item-dismissed .finding-title {
+  text-decoration: line-through;
+  color: var(--color-text-tertiary);
+}
+
+.finding-item.comment-item-dismissed .comment-icon {
+  opacity: 0.5;
+}
+
+/* Hide dismissed status icon when restore button is present */
+.finding-item-wrapper:has(.quick-action-restore-comment) .finding-item.comment-item-dismissed::after {
+  display: none;
+}
+
+/* Status indicator icon in lower right corner for dismissed comments */
+.finding-item.comment-item-dismissed::after {
+  content: '';
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  width: 14px;
+  height: 14px;
+  /* Use mask-image + background-color for theme support - no-entry symbol */
+  background-color: var(--color-text-tertiary, #6e7681);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'%3E%3Ccircle cx='8' cy='8' r='6.5' stroke='white' stroke-width='1.5' fill='none'/%3E%3Cline x1='3.4' y1='12.6' x2='12.6' y2='3.4' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'%3E%3Ccircle cx='8' cy='8' r='6.5' stroke='white' stroke-width='1.5' fill='none'/%3E%3Cline x1='3.4' y1='12.6' x2='12.6' y2='3.4' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E");
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  opacity: 0.8;
+}
+
+/* Restore comment button - now wrapped in .finding-quick-actions for consistent hover behavior.
+   The parent wrapper handles opacity transitions, so no special styles needed here.
+   This selector remains for specificity in case of future customization needs. */
 
 /* Adopted findings - brighter green success state with solid left border */
 .finding-item.finding-adopted {

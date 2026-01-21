@@ -211,6 +211,12 @@ class PRManager {
         this.loadAISuggestions(level);
       }
     });
+
+    // Listen for filter dismissed changes from AI panel
+    document.addEventListener('filterDismissedChanged', (e) => {
+      const showDismissed = e.detail?.showDismissed;
+      this.loadUserComments(showDismissed);
+    });
   }
 
   /**
@@ -320,22 +326,25 @@ class PRManager {
       // Fetch diff and file list from diff endpoint
       await this.loadAndDisplayFiles(owner, repo, number);
 
-      // Load saved comments
-      await this.loadUserComments();
-
       // Initialize split button for comment actions
       this.initSplitButton();
 
-      // Initialize AI Panel before loading suggestions so it can receive them
+      // Initialize AI Panel before loading comments so we can read the restored filter state
       // Only initialize if not already created (avoid duplicates on refresh)
       if (window.AIPanel && !window.aiPanel) {
         window.aiPanel = new window.AIPanel();
       }
 
       // Set PR context for AI Panel (for PR-specific localStorage keys)
+      // This restores the filter state from localStorage
       if (window.aiPanel?.setPR) {
         window.aiPanel.setPR(owner, repo, number);
       }
+
+      // Load saved comments using the restored filter state from AI Panel
+      // If AI Panel has showDismissedComments=true (restored from localStorage), use that
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await this.loadUserComments(includeDismissed);
 
       // Initialize analysis history manager if review ID is available
       // The review ID is needed to fetch analysis runs from the database
@@ -1798,24 +1807,10 @@ class PRManager {
   }
 
   /**
-   * Delete user comment
+   * Delete user comment (soft-delete - no confirmation needed)
    * If the comment was adopted from an AI suggestion, the suggestion is transitioned to dismissed state.
    */
   async deleteUserComment(commentId) {
-    if (!window.confirmDialog) {
-      alert('Confirmation dialog unavailable. Please refresh the page.');
-      return;
-    }
-
-    const result = await window.confirmDialog.show({
-      title: 'Delete Comment?',
-      message: 'Are you sure you want to delete this comment? This action cannot be undone.',
-      confirmText: 'Delete',
-      confirmClass: 'btn-danger'
-    });
-
-    if (result !== 'confirm') return;
-
     try {
       const response = await fetch(`/api/user-comment/${commentId}`, { method: 'DELETE' });
       if (!response.ok) throw new Error('Failed to delete comment');
@@ -1826,6 +1821,16 @@ class PRManager {
       if (commentRow) {
         commentRow.remove();
         this.updateCommentCount();
+      }
+
+      // Also remove file-level comment cards if applicable
+      const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+      if (fileCommentCard) {
+        const zone = fileCommentCard.closest('.file-comments-zone');
+        fileCommentCard.remove();
+        if (zone && this.fileCommentManager) {
+          this.fileCommentManager.updateCommentCount(zone);
+        }
       }
 
       // Notify AI Panel about the deleted comment
@@ -1839,9 +1844,42 @@ class PRManager {
       if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
         window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
       }
+
+      // Show success toast
+      if (window.toast) {
+        window.toast.showSuccess('Comment dismissed');
+      }
     } catch (error) {
       console.error('Error deleting comment:', error);
-      alert('Failed to delete comment');
+      if (window.toast) {
+        window.toast.showError('Failed to dismiss comment');
+      }
+    }
+  }
+
+  /**
+   * Restore a dismissed user comment
+   * @param {number} commentId - The comment ID to restore
+   */
+  async restoreUserComment(commentId) {
+    try {
+      const response = await fetch(`/api/user-comment/${commentId}/restore`, { method: 'PUT' });
+      if (!response.ok) throw new Error('Failed to restore comment');
+
+      // Reload comments to update both the diff view and AI panel
+      // Pass the current filter state from the AI panel
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await this.loadUserComments(includeDismissed);
+
+      // Show success toast
+      if (window.toast) {
+        window.toast.showSuccess('Comment restored');
+      }
+    } catch (error) {
+      console.error('Error restoring comment:', error);
+      if (window.toast) {
+        window.toast.showError('Failed to restore comment');
+      }
     }
   }
 
@@ -1857,7 +1895,7 @@ class PRManager {
   }
 
   /**
-   * Clear all user comments
+   * Clear all user comments (soft-delete - no confirmation needed)
    */
   async clearAllUserComments() {
     // Count both line-level and file-level user comments
@@ -1866,20 +1904,6 @@ class PRManager {
     const totalComments = lineCommentRows.length + fileCommentCards.length;
 
     if (totalComments === 0) return;
-
-    if (!window.confirmDialog) {
-      alert('Confirmation dialog unavailable. Please refresh the page.');
-      return;
-    }
-
-    const dialogResult = await window.confirmDialog.show({
-      title: 'Clear All Comments?',
-      message: `This will delete all ${totalComments} user comment${totalComments !== 1 ? 's' : ''} from this PR. This action cannot be undone.`,
-      confirmText: 'Delete All',
-      confirmClass: 'btn-danger'
-    });
-
-    if (dialogResult !== 'confirm') return;
 
     try {
       const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`, {
@@ -1939,28 +1963,36 @@ class PRManager {
 
   /**
    * Load user comments from API
+   * @param {boolean} [includeDismissed=false] - Whether to include dismissed (inactive) comments
    */
-  async loadUserComments() {
+  async loadUserComments(includeDismissed = false) {
     if (!this.currentPR) return;
 
     try {
-      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`);
+      const queryParam = includeDismissed ? '?includeDismissed=true' : '';
+      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments${queryParam}`);
       if (!response.ok) return;
 
       const data = await response.json();
       this.userComments = data.comments || [];
 
-      // Separate file-level and line-level comments
+      // Separate file-level and line-level comments, excluding dismissed for diff display
       const fileLevelComments = [];
       const lineLevelComments = [];
 
       this.userComments.forEach(comment => {
+        // Only display active comments in the diff view (dismissed comments only show in panel)
+        if (comment.status === 'inactive') return;
+
         if (comment.is_file_level === 1) {
           fileLevelComments.push(comment);
         } else {
           lineLevelComments.push(comment);
         }
       });
+
+      // Clear existing comment rows before re-rendering
+      document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
 
       // Display line-level comments inline with diff
       lineLevelComments.forEach(comment => {
@@ -1990,7 +2022,7 @@ class PRManager {
         this.fileCommentManager.loadFileComments(fileLevelComments, []);
       }
 
-      // Populate AI Panel with comments
+      // Populate AI Panel with all comments (including dismissed if requested)
       if (window.aiPanel?.setComments) {
         window.aiPanel.setComments(this.userComments);
       }

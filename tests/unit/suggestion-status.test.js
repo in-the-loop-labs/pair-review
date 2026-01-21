@@ -467,26 +467,32 @@ describe('PRManager Suggestion Status', () => {
 
     beforeEach(() => {
       // Setup window with standard mocks for delete tests
+      // Note: deleteUserComment no longer uses confirmDialog (soft-delete without confirmation)
       global.window = {
         aiPanel: {
           updateFindingStatus: vi.fn(),
           removeComment: vi.fn()
         },
-        confirmDialog: {
-          show: vi.fn().mockResolvedValue('confirm')
+        toast: {
+          showSuccess: vi.fn(),
+          showError: vi.fn()
         }
       };
 
       // Create PRManager instance with updateCommentCount mock
       prManager = createTestPRManager();
       prManager.updateCommentCount = vi.fn();
+      prManager.fileCommentManager = null;
 
-      // Setup mock comment row
+      // Setup mock comment row - return value for first querySelector (line-level),
+      // null for second (file-level)
       mockCommentRow = { remove: vi.fn() };
-      document.querySelector.mockReturnValue(mockCommentRow);
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)  // First call: line-level comment row
+        .mockReturnValueOnce(null);            // Second call: file-level comment card (not found)
     });
 
-    it('should update AIPanel with active status when deleting comment with parent_id', async () => {
+    it('should update AIPanel with dismissed status when deleting comment with parent_id', async () => {
       const commentId = 'test-comment-123';
       const parentSuggestionId = 'test-suggestion-456';
 
@@ -514,10 +520,18 @@ describe('PRManager Suggestion Status', () => {
       // When deleting a comment that adopted a suggestion, the suggestion card
       // is still collapsed/dismissed in the diff view. User can click "Show" to restore.
       expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledWith(parentSuggestionId, 'dismissed');
+
+      // Verify toast success message
+      expect(window.toast.showSuccess).toHaveBeenCalledWith('Comment dismissed');
     });
 
     it('should not update AIPanel findingStatus when no parent_id exists', async () => {
       const commentId = 'test-comment-no-parent';
+
+      // Reset querySelector mock for this test
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)  // First call: line-level comment row
+        .mockReturnValueOnce(null);            // Second call: file-level comment card (not found)
 
       // Mock successful DELETE response WITHOUT dismissedSuggestionId
       mockFetch.mockResolvedValueOnce({
@@ -535,10 +549,21 @@ describe('PRManager Suggestion Status', () => {
 
       // But updateFindingStatus should NOT be called since no parent suggestion
       expect(window.aiPanel.updateFindingStatus).not.toHaveBeenCalled();
+
+      // Toast success should still be shown
+      expect(window.toast.showSuccess).toHaveBeenCalledWith('Comment dismissed');
     });
 
     it('should handle missing AIPanel gracefully when deleting comment', async () => {
+      // Clear aiPanel but keep toast
+      const toastMock = window.toast;
       window.aiPanel = null;
+      window.toast = toastMock;
+
+      // Reset querySelector mock for this test
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)  // First call: line-level comment row
+        .mockReturnValueOnce(null);            // Second call: file-level comment card (not found)
 
       const commentId = 'test-comment-no-panel';
       const parentSuggestionId = 'test-suggestion-789';
@@ -553,15 +578,26 @@ describe('PRManager Suggestion Status', () => {
 
       // Should not throw even without aiPanel
       await expect(prManager.deleteUserComment(commentId)).resolves.not.toThrow();
+
+      // Toast should still work
+      expect(window.toast.showSuccess).toHaveBeenCalledWith('Comment dismissed');
     });
 
-    it('should not proceed with deletion when user cancels confirmation', async () => {
-      window.confirmDialog.show.mockResolvedValue('cancel'); // User cancels
+    it('should show error toast when API call fails', async () => {
+      // Reset querySelector mock for this test (not needed but for consistency)
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)
+        .mockReturnValueOnce(null);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        json: vi.fn().mockResolvedValue({ error: 'Failed to delete' })
+      });
 
       await prManager.deleteUserComment('test-comment');
 
-      // API should NOT be called
-      expect(mockFetch).not.toHaveBeenCalled();
+      // Error toast should be shown
+      expect(window.toast.showError).toHaveBeenCalledWith('Failed to dismiss comment');
     });
   });
 });

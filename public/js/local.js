@@ -158,27 +158,34 @@ class LocalManager {
     const originalLoadAISuggestions = manager.loadAISuggestions.bind(manager);
 
     // Override loadUserComments
-    manager.loadUserComments = async function() {
+    manager.loadUserComments = async function(includeDismissed = false) {
       if (!manager.currentPR) return;
 
       try {
-        const response = await fetch(`/api/local/${reviewId}/user-comments`);
+        const queryParam = includeDismissed ? '?includeDismissed=true' : '';
+        const response = await fetch(`/api/local/${reviewId}/user-comments${queryParam}`);
         if (!response.ok) return;
 
         const data = await response.json();
         manager.userComments = data.comments || [];
 
-        // Separate file-level and line-level comments
+        // Separate file-level and line-level comments, excluding dismissed for diff display
         const fileLevelComments = [];
         const lineLevelComments = [];
 
         manager.userComments.forEach(comment => {
+          // Only display active comments in the diff view (dismissed comments only show in panel)
+          if (comment.status === 'inactive') return;
+
           if (comment.is_file_level === 1) {
             fileLevelComments.push(comment);
           } else {
             lineLevelComments.push(comment);
           }
         });
+
+        // Clear existing comment rows before re-rendering
+        document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
 
         // Display line-level comments inline with diff
         lineLevelComments.forEach(comment => {
@@ -208,7 +215,7 @@ class LocalManager {
           manager.fileCommentManager.loadFileComments(fileLevelComments, []);
         }
 
-        // Populate AI Panel with comments
+        // Populate AI Panel with all comments (including dismissed if requested)
         if (window.aiPanel?.setComments) {
           window.aiPanel.setComments(manager.userComments);
         }
@@ -886,6 +893,34 @@ class LocalManager {
       }
     };
 
+    // Patch PRManager.restoreUserComment for local mode
+    // Uses the local API endpoint to restore dismissed comments
+    manager.restoreUserComment = async function(commentId) {
+      try {
+        const response = await fetch(`/api/local/${reviewId}/user-comments/${commentId}/restore`, {
+          method: 'PUT'
+        });
+        if (!response.ok) throw new Error('Failed to restore comment');
+
+        // Reload comments to update both the diff view and AI panel
+        // Pass the current filter state from the AI panel
+        const includeDismissed = window.aiPanel?.showDismissedComments || false;
+        await manager.loadUserComments(includeDismissed);
+
+        // Show success toast
+        if (window.toast) {
+          window.toast.showSuccess('Comment restored');
+        }
+      } catch (error) {
+        console.error('Error restoring comment:', error);
+        if (window.toast) {
+          window.toast.showError('Failed to restore comment');
+        } else {
+          alert('Failed to restore comment');
+        }
+      }
+    };
+
     console.log('PRManager patched for local mode');
   }
 
@@ -1199,21 +1234,22 @@ class LocalManager {
       // Fetch and display diff
       await this.loadLocalDiff();
 
-      // Load saved comments
-      await manager.loadUserComments();
-
       // Initialize split button (uses standard SplitButton which auto-detects local mode)
       manager.initSplitButton();
 
-      // Initialize AI Panel
+      // Initialize AI Panel before loading comments so we can read the restored filter state
       if (window.AIPanel && !window.aiPanel) {
         window.aiPanel = new window.AIPanel();
       }
 
-      // Set local context for AI Panel
+      // Set local context for AI Panel (restores filter state from localStorage)
       if (window.aiPanel?.setPR) {
         window.aiPanel.setPR('local', reviewData.repository, this.reviewId);
       }
+
+      // Load saved comments using the restored filter state from AI Panel
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await manager.loadUserComments(includeDismissed);
 
       // Initialize analysis history manager for local mode
       if (window.AnalysisHistoryManager) {

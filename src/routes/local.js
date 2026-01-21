@@ -951,6 +951,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
 
 /**
  * Get user comments for a local review
+ * Uses CommentRepository.getUserComments() for consistency with PR mode
  */
 router.get('/api/local/:reviewId/user-comments', async (req, res) => {
   try {
@@ -975,28 +976,13 @@ router.get('/api/local/:reviewId/user-comments', async (req, res) => {
       });
     }
 
-    const comments = await query(db, `
-      SELECT
-        id,
-        source,
-        author,
-        file,
-        line_start,
-        line_end,
-        diff_position,
-        side,
-        type,
-        title,
-        body,
-        status,
-        parent_id,
-        is_file_level,
-        created_at,
-        updated_at
-      FROM comments
-      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
-      ORDER BY file, line_start, created_at
-    `, [reviewId]);
+    // Use CommentRepository for consistency with PR mode
+    // This ensures both modes use the same query logic and include the same columns
+    const commentRepo = new CommentRepository(db);
+    const { includeDismissed } = req.query;
+    const comments = await commentRepo.getUserComments(reviewId, {
+      includeDismissed: includeDismissed === 'true'
+    });
 
     res.json({
       success: true,
@@ -1536,6 +1522,67 @@ router.delete('/api/local/:reviewId/user-comments/:commentId', async (req, res) 
     console.error('Error deleting local review user comment:', error);
     res.status(500).json({
       error: 'Failed to delete comment'
+    });
+  }
+});
+
+/**
+ * Restore a dismissed user comment in a local review
+ * Sets status from 'inactive' back to 'active'
+ */
+router.put('/api/local/:reviewId/user-comments/:commentId/restore', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const commentId = parseInt(req.params.commentId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    if (isNaN(commentId) || commentId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid comment ID'
+      });
+    }
+
+    const db = req.app.get('db');
+
+    // Verify the comment exists and belongs to this review
+    const comment = await queryOne(db, `
+      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user'
+    `, [commentId, reviewId]);
+
+    if (!comment) {
+      return res.status(404).json({
+        error: 'User comment not found'
+      });
+    }
+
+    if (comment.status !== 'inactive') {
+      return res.status(400).json({
+        error: 'Comment is not dismissed'
+      });
+    }
+
+    // Restore the comment using CommentRepository
+    const commentRepo = new CommentRepository(db);
+    await commentRepo.restoreComment(commentId);
+
+    // Get the restored comment to return
+    const restoredComment = await commentRepo.getComment(commentId, 'user');
+
+    res.json({
+      success: true,
+      message: 'Comment restored successfully',
+      comment: restoredComment
+    });
+
+  } catch (error) {
+    console.error('Error restoring local review user comment:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to restore comment'
     });
   }
 });

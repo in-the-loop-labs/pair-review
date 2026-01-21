@@ -388,23 +388,7 @@ test.describe('Comment Deletion', () => {
     await expect(deleteBtn.first()).toBeVisible();
   });
 
-  test('should show confirmation dialog when delete is clicked', async ({ page }) => {
-    // Click delete button
-    await page.locator('.btn-delete-comment').first().click();
-
-    // Confirmation dialog should appear
-    const confirmDialog = page.locator('.confirm-dialog, .confirm-dialog-overlay');
-    await expect(confirmDialog.first()).toBeVisible({ timeout: 5000 });
-
-    // Should have confirm and cancel buttons
-    const confirmBtn = page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")');
-    const cancelBtn = page.locator('.confirm-dialog button:has-text("Cancel"), .btn-secondary:has-text("Cancel")');
-
-    await expect(confirmBtn.first()).toBeVisible();
-    await expect(cancelBtn.first()).toBeVisible();
-  });
-
-  test('should delete comment when confirmed', async ({ page }) => {
+  test('should immediately dismiss (soft-delete) comment when delete is clicked', async ({ page }) => {
     // Get the comment id from the row's data attribute
     const commentRow = page.locator('.user-comment-row').first();
     await expect(commentRow).toBeVisible();
@@ -415,39 +399,19 @@ test.describe('Comment Deletion', () => {
       response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
     );
 
-    // Click delete button
+    // Click delete button - should immediately dismiss (no confirmation dialog)
     await page.locator('.btn-delete-comment').first().click();
-
-    // Wait for confirmation dialog
-    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
-
-    // Confirm deletion
-    const confirmBtn = page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")').first();
-    await confirmBtn.click();
 
     // Wait for delete API to complete
     await deleteResponsePromise;
 
-    // The specific comment row should be removed from DOM
+    // The specific comment row should be removed from DOM (soft-delete removes from view)
     const deletedRow = page.locator(`[data-comment-id="${commentId}"]`);
     await expect(deletedRow).not.toBeVisible({ timeout: 5000 });
-  });
 
-  test('should keep comment when deletion is cancelled', async ({ page }) => {
-    // Click delete button
-    await page.locator('.btn-delete-comment').first().click();
-
-    // Wait for confirmation dialog
-    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
-
-    // Cancel deletion
-    const cancelBtn = page.locator('.confirm-dialog button:has-text("Cancel"), .btn-secondary:has-text("Cancel")').first();
-    await cancelBtn.click();
-
-    // Comment should still be visible
-    const commentRow = page.locator('.user-comment-row');
-    await expect(commentRow.first()).toBeVisible();
-    await expect(page.locator('.user-comment-body').first()).toContainText('Comment to be deleted');
+    // Toast notification should appear
+    const toast = page.locator('.toast-success, .toast');
+    await expect(toast).toBeVisible({ timeout: 3000 });
   });
 });
 
@@ -654,10 +618,8 @@ test.describe('Comment API Integration', () => {
       response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
     );
 
-    // Delete the comment
+    // Delete the comment (now immediate, no confirmation dialog)
     await page.locator('.btn-delete-comment').first().click();
-    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
-    await page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")').first().click();
 
     // Verify delete API was called
     const response = await deleteResponsePromise;

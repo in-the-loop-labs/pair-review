@@ -5,6 +5,28 @@
  */
 
 class AIPanel {
+    // Icon SVG constants for reuse
+    static ICONS = {
+        adopt: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path>
+        </svg>`,
+        dismiss: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path>
+        </svg>`,
+        restore: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path d="M1.705 8.005a.75.75 0 01.834.656 5.5 5.5 0 009.592 2.97l-1.204-1.204a.25.25 0 01.177-.427h3.646a.25.25 0 01.25.25v3.646a.25.25 0 01-.427.177l-1.38-1.38A7.002 7.002 0 011.05 8.84a.75.75 0 01.656-.834zM8 2.5a5.487 5.487 0 00-4.131 1.869l1.204 1.204A.25.25 0 014.896 6H1.25a.25.25 0 01-.25-.25V2.104a.25.25 0 01.427-.177l1.38 1.38A7.002 7.002 0 0114.95 7.16a.75.75 0 11-1.49.178A5.5 5.5 0 008 2.5z"></path>
+        </svg>`,
+        filter: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path d="M.75 3h14.5a.75.75 0 010 1.5H.75a.75.75 0 010-1.5zM3 7.75A.75.75 0 013.75 7h8.5a.75.75 0 010 1.5h-8.5A.75.75 0 013 7.75zm3 4a.75.75 0 01.75-.75h2.5a.75.75 0 010 1.5h-2.5a.75.75 0 01-.75-.75z"></path>
+        </svg>`,
+        eye: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path d="M8 2c1.981 0 3.671.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.45.678-1.367 1.932-2.637 3.023C11.67 13.008 9.981 14 8 14c-1.981 0-3.671-.992-4.933-2.078C1.797 10.83.88 9.576.43 8.898a1.62 1.62 0 0 1 0-1.798c.45-.677 1.367-1.931 2.637-3.022C4.33 2.992 6.019 2 8 2ZM1.679 7.932a.12.12 0 0 0 0 .136c.411.622 1.241 1.75 2.366 2.717C5.176 11.758 6.527 12.5 8 12.5c1.473 0 2.825-.742 3.955-1.715 1.124-.967 1.954-2.096 2.366-2.717a.12.12 0 0 0 0-.136c-.412-.621-1.242-1.75-2.366-2.717C10.824 4.242 9.473 3.5 8 3.5c-1.473 0-2.825.742-3.955 1.715-1.124.967-1.954 2.096-2.366 2.717ZM8 10a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 10Z"></path>
+        </svg>`,
+        eyeClosed: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path d="M.143 2.31a.75.75 0 0 1 1.047-.167l14.5 10.5a.75.75 0 1 1-.88 1.214l-2.248-1.628C11.346 13.19 9.792 14 8 14c-1.981 0-3.67-.992-4.933-2.078C1.797 10.832.88 9.577.43 8.9a1.619 1.619 0 0 1 0-1.797c.353-.533.995-1.42 1.868-2.305L.31 3.357A.75.75 0 0 1 .143 2.31Zm1.536 5.622A.12.12 0 0 0 1.657 8c0 .021.006.045.022.068.412.621 1.242 1.75 2.366 2.717C5.175 11.758 6.527 12.5 8 12.5c1.195 0 2.31-.488 3.29-1.191L9.063 9.695A2 2 0 0 1 6.058 7.52L3.529 5.688a14.207 14.207 0 0 0-1.85 2.244ZM8 3.5c-.516 0-1.017.09-1.499.251a.75.75 0 1 1-.473-1.423A6.207 6.207 0 0 1 8 2c1.981 0 3.67.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.11.166-.248.365-.41.587a.75.75 0 1 1-1.21-.887c.148-.201.272-.382.371-.53a.119.119 0 0 0 0-.137c-.412-.621-1.242-1.75-2.366-2.717C10.825 4.242 9.473 3.5 8 3.5Z"></path>
+        </svg>`
+    };
+
     constructor() {
         this.panel = document.getElementById('ai-panel');
         // Check actual DOM state for collapsed status
@@ -23,6 +45,9 @@ class AIPanel {
         // Canonical file order for consistent sorting across components
         this.fileOrder = new Map(); // Map of file path -> index
 
+        // Filter toggle state for showing dismissed comments (default: hidden)
+        this.showDismissedComments = false;
+
         this.initElements();
         this.bindEvents();
         this.setupKeyboardNavigation();
@@ -39,6 +64,9 @@ class AIPanel {
         this.segmentControl = document.getElementById('segment-control');
         this.segmentBtns = this.segmentControl?.querySelectorAll('.segment-btn');
 
+        // Create filter toggle button (will be inserted after segment control)
+        this.filterToggleBtn = null; // Created dynamically in createFilterToggle()
+
         // Level filter
         this.levelFilter = document.getElementById('level-filter');
         this.levelPills = this.levelFilter?.querySelectorAll('.level-pill');
@@ -49,6 +77,44 @@ class AIPanel {
 
         // AI Summary data
         this.summaryData = null;
+
+        // Create filter toggle if segment control exists
+        if (this.segmentControl) {
+            this.createFilterToggle();
+        }
+    }
+
+    /**
+     * Create the filter toggle button for showing dismissed comments
+     */
+    createFilterToggle() {
+        // Create filter toggle button
+        this.filterToggleBtn = document.createElement('button');
+        this.filterToggleBtn.className = 'filter-toggle-btn';
+
+        // Apply restored state from constructor
+        // Use eye icon when dismissed comments are visible, eye-closed when hidden
+        if (this.showDismissedComments) {
+            this.filterToggleBtn.classList.add('active');
+            this.filterToggleBtn.title = 'Hide dismissed user comments';
+            this.filterToggleBtn.innerHTML = AIPanel.ICONS.eye;
+        } else {
+            this.filterToggleBtn.title = 'Show dismissed user comments';
+            this.filterToggleBtn.innerHTML = AIPanel.ICONS.eyeClosed;
+        }
+        this.filterToggleBtn.setAttribute('aria-label', this.filterToggleBtn.title);
+
+        // Insert inside segment-control container, after segment-control-inner
+        // This positions it on the same row as the segment buttons
+        const innerControl = this.segmentControl.querySelector('.segment-control-inner');
+        if (innerControl) {
+            this.segmentControl.insertBefore(this.filterToggleBtn, innerControl.nextSibling);
+        } else {
+            // Fallback: append to the segment control container
+            this.segmentControl.appendChild(this.filterToggleBtn);
+        }
+
+        // Button is always visible - no conditional hiding to prevent layout shift
     }
 
     bindEvents() {
@@ -79,6 +145,100 @@ class AIPanel {
                 pill.addEventListener('click', () => this.onLevelSelect(pill));
             });
         }
+
+        // Filter toggle button
+        if (this.filterToggleBtn) {
+            this.filterToggleBtn.addEventListener('click', () => this.onFilterToggle());
+        }
+    }
+
+    /**
+     * Handle filter toggle button click
+     */
+    onFilterToggle() {
+        this.showDismissedComments = !this.showDismissedComments;
+
+        // Update button visual state
+        this.updateFilterToggleVisual();
+
+        // Persist to localStorage (per-review)
+        this.saveFilterState();
+
+        // Dispatch event for prManager to reload comments with new filter
+        const event = new CustomEvent('filterDismissedChanged', {
+            detail: { showDismissed: this.showDismissedComments }
+        });
+        document.dispatchEvent(event);
+    }
+
+    /**
+     * Update the filter toggle button visual state
+     */
+    updateFilterToggleVisual() {
+        if (this.filterToggleBtn) {
+            this.filterToggleBtn.classList.toggle('active', this.showDismissedComments);
+            // Use eye icon when dismissed comments are visible, eye-closed when hidden
+            if (this.showDismissedComments) {
+                this.filterToggleBtn.title = 'Hide dismissed user comments';
+                this.filterToggleBtn.innerHTML = AIPanel.ICONS.eye;
+            } else {
+                this.filterToggleBtn.title = 'Show dismissed user comments';
+                this.filterToggleBtn.innerHTML = AIPanel.ICONS.eyeClosed;
+            }
+            this.filterToggleBtn.setAttribute('aria-label', this.filterToggleBtn.title);
+        }
+    }
+
+    /**
+     * Get the localStorage key for the filter state (per-review)
+     * @returns {string|null} Storage key or null if no PR context
+     */
+    getFilterStorageKey() {
+        if (!this.currentPRKey) return null;
+        return `pair-review-show-dismissed_${this.currentPRKey}`;
+    }
+
+    /**
+     * Save the filter state to localStorage (per-review)
+     */
+    saveFilterState() {
+        const key = this.getFilterStorageKey();
+        if (key) {
+            localStorage.setItem(key, this.showDismissedComments ? 'true' : 'false');
+        }
+    }
+
+    /**
+     * Restore the filter state from localStorage (per-review)
+     * Note: This method only updates internal state and button visual.
+     * It does NOT dispatch the filterDismissedChanged event because:
+     * 1. During initial setup (setPR), loadUserComments is called explicitly by the caller
+     *    (pr.js or local.js) with the appropriate filter state.
+     * 2. Dispatching here would cause a duplicate loadUserComments call that could
+     *    override the filter state with an incorrect value.
+     *
+     * The event is only dispatched from onFilterToggle() when the user clicks the button.
+     */
+    restoreFilterState() {
+        const key = this.getFilterStorageKey();
+        if (key) {
+            const stored = localStorage.getItem(key);
+            if (stored !== null) {
+                this.showDismissedComments = stored === 'true';
+            } else {
+                // Default to false (hidden) for new reviews
+                this.showDismissedComments = false;
+            }
+        } else {
+            this.showDismissedComments = false;
+        }
+
+        // Update button visual to match restored state
+        this.updateFilterToggleVisual();
+
+        // NOTE: We intentionally do NOT dispatch filterDismissedChanged here.
+        // The caller (pr.js or local.js) is responsible for calling loadUserComments
+        // with the restored filter state after setPR() completes.
     }
 
     toggle() {
@@ -105,14 +265,15 @@ class AIPanel {
 
     /**
      * Set the current PR for PR-specific storage
-     * Call this when a PR loads to restore segment selection for that specific PR
+     * Call this when a PR loads to restore segment selection and filter state for that specific PR
      * @param {string} owner - Repository owner
      * @param {string} repo - Repository name
-     * @param {number} number - PR number
+     * @param {number} number - PR number (or reviewId for local mode)
      */
     setPR(owner, repo, number) {
         this.currentPRKey = `${owner}/${repo}#${number}`;
         this.restoreSegmentSelection();
+        this.restoreFilterState();
     }
 
     /**
@@ -202,6 +363,8 @@ class AIPanel {
         this.currentIndex = -1;
 
         // Level filter remains hidden (hidden by default now)
+
+        // Filter toggle is always visible - no visibility update needed
 
         // Re-render findings to filter by segment
         this.renderFindings();
@@ -505,8 +668,8 @@ class AIPanel {
             item.addEventListener('click', () => this.onFindingClick(item));
         });
 
-        // Bind delete button events for comments
-        this.findingsList.querySelectorAll('.finding-delete-btn').forEach(btn => {
+        // Bind dismiss button events for user comments
+        this.findingsList.querySelectorAll('.quick-action-dismiss-comment').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation(); // Prevent triggering item click
                 const commentId = parseInt(btn.dataset.commentId, 10);
@@ -540,6 +703,15 @@ class AIPanel {
             });
         });
 
+        // Bind restore button events for dismissed user comments
+        this.findingsList.querySelectorAll('.quick-action-restore-comment').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent triggering item click
+                const commentId = parseInt(btn.dataset.commentId, 10);
+                this.onRestoreComment(commentId);
+            });
+        });
+
         // Restore active state if we have a current index
         this.highlightCurrentItem();
     }
@@ -552,6 +724,17 @@ class AIPanel {
         // Use prManager's delete method which handles both UI and API
         if (window.prManager?.deleteUserComment) {
             window.prManager.deleteUserComment(commentId);
+        }
+    }
+
+    /**
+     * Handle restore comment button click
+     * @param {number} commentId - The comment ID to restore
+     */
+    onRestoreComment(commentId) {
+        // Use prManager's restore method which handles both UI and API
+        if (window.prManager?.restoreUserComment) {
+            window.prManager.restoreUserComment(commentId);
         }
     }
 
@@ -917,6 +1100,7 @@ class AIPanel {
         const fileName = comment.file ? comment.file.split('/').pop() : null;
         const lineNum = comment.line_start;
         const isFileLevel = comment.is_file_level === 1 || comment.is_file_level === true;
+        const isDismissed = comment.status === 'inactive';
         // Full location for tooltip, filename only for display
         const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : (isFileLevel ? ' (file)' : '')}` : '';
 
@@ -925,20 +1109,41 @@ class AIPanel {
             ? this.getCommentAIIcon()
             : this.getPersonIcon();
 
+        // Build status class
+        const dismissedClass = isDismissed ? ' comment-item-dismissed' : '';
+
+        // Action button: restore for dismissed, delete for active
+        // Dismissed comments use .finding-quick-actions wrapper for consistent hover-to-show behavior
+        let actionButton;
+        if (isDismissed) {
+            actionButton = `
+                <div class="finding-quick-actions">
+                    <button class="quick-action-btn quick-action-restore-comment" data-comment-id="${comment.id}" title="Restore comment" aria-label="Restore comment">
+                        ${AIPanel.ICONS.restore}
+                    </button>
+                </div>
+            `;
+        } else {
+            // Active comments use same hover-to-show pattern with X icon like AI suggestions
+            actionButton = `
+                <div class="finding-quick-actions">
+                    <button class="quick-action-btn quick-action-dismiss-comment" data-comment-id="${comment.id}" title="Dismiss comment" aria-label="Dismiss comment">
+                        ${AIPanel.ICONS.dismiss}
+                    </button>
+                </div>
+            `;
+        }
+
         return `
             <div class="finding-item-wrapper">
-                <button class="finding-item finding-comment ${comment.parent_id ? 'comment-ai-origin' : 'comment-user-origin'}${isFileLevel ? ' file-level' : ''}" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-is-file-level="${isFileLevel ? '1' : '0'}" data-item-type="comment" title="${fullLocation}">
+                <button class="finding-item finding-comment ${comment.parent_id ? 'comment-ai-origin' : 'comment-user-origin'}${isFileLevel ? ' file-level' : ''}${dismissedClass}" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-is-file-level="${isFileLevel ? '1' : '0'}" data-item-type="comment" title="${fullLocation}">
                     <span class="comment-icon">${icon}</span>
                     <div class="finding-content">
                         <span class="finding-title">${this.escapeHtml(title)}</span>
                         ${fileName ? `<span class="finding-location">${this.escapeHtml(fileName)}${isFileLevel ? ' <span class="file-level-indicator">(file)</span>' : ''}</span>` : ''}
                     </div>
                 </button>
-                <button class="finding-delete-btn" data-comment-id="${comment.id}" title="Delete comment">
-                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                        <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19c.9 0 1.652-.681 1.741-1.576l.66-6.6a.75.75 0 00-1.492-.149l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"/>
-                    </svg>
-                </button>
+                ${actionButton}
             </div>
         `;
     }
@@ -968,9 +1173,7 @@ class AIPanel {
      * @returns {string} SVG HTML string
      */
     getAdoptIcon() {
-        return `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path>
-        </svg>`;
+        return AIPanel.ICONS.adopt;
     }
 
     /**
@@ -978,9 +1181,7 @@ class AIPanel {
      * @returns {string} SVG HTML string
      */
     getDismissIcon() {
-        return `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path>
-        </svg>`;
+        return AIPanel.ICONS.dismiss;
     }
 
     /**
@@ -988,9 +1189,7 @@ class AIPanel {
      * @returns {string} SVG HTML string
      */
     getRestoreIcon() {
-        return `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path d="M1.705 8.005a.75.75 0 01.834.656 5.5 5.5 0 009.592 2.97l-1.204-1.204a.25.25 0 01.177-.427h3.646a.25.25 0 01.25.25v3.646a.25.25 0 01-.427.177l-1.38-1.38A7.002 7.002 0 011.05 8.84a.75.75 0 01.656-.834zM8 2.5a5.487 5.487 0 00-4.131 1.869l1.204 1.204A.25.25 0 014.896 6H1.25a.25.25 0 01-.25-.25V2.104a.25.25 0 01.427-.177l1.38 1.38A7.002 7.002 0 0114.95 7.16a.75.75 0 11-1.49.178A5.5 5.5 0 008 2.5z"></path>
-        </svg>`;
+        return AIPanel.ICONS.restore;
     }
 
     /**
