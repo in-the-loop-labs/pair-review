@@ -3,6 +3,9 @@
  * A button with a main action area and a dropdown menu for additional actions
  */
 class SplitButton {
+  // localStorage key for persisting default action preference
+  static STORAGE_KEY = 'pair-review-split-button-default-action';
+
   constructor(options = {}) {
     this.container = null;
     this.dropdown = null;
@@ -10,8 +13,16 @@ class SplitButton {
     this.commentCount = 0;
     // In local mode, default to preview since submit is hidden
     const isLocalMode = window.PAIR_REVIEW_LOCAL_MODE === true;
-    this.defaultAction = isLocalMode ? 'preview' : (options.defaultAction || 'submit'); // 'submit' or 'preview'
     this.hideSubmit = isLocalMode || options.hideSubmit === true;
+
+    // Determine default action: local mode always uses preview,
+    // otherwise check localStorage for saved preference
+    if (isLocalMode) {
+      this.defaultAction = 'preview';
+    } else {
+      const savedAction = this.loadSavedAction();
+      this.defaultAction = savedAction || options.defaultAction || 'submit';
+    }
     this.onSubmit = options.onSubmit || (() => {});
     this.onPreview = options.onPreview || (() => {});
     this.onClear = options.onClear || (() => {});
@@ -252,6 +263,39 @@ class SplitButton {
     this.updateDropdownMenu();
     this.updateButtonText();
     this.onSetDefault(action);
+
+    // Persist to localStorage (only in PR mode where submit is available)
+    if (!this.hideSubmit) {
+      this.saveAction(action);
+    }
+  }
+
+  /**
+   * Load saved action preference from localStorage
+   * @returns {string|null} Saved action or null if not found
+   */
+  loadSavedAction() {
+    try {
+      const saved = localStorage.getItem(SplitButton.STORAGE_KEY);
+      if (saved === 'submit' || saved === 'preview') {
+        return saved;
+      }
+    } catch {
+      // localStorage may be unavailable (private browsing, etc.)
+    }
+    return null;
+  }
+
+  /**
+   * Save action preference to localStorage
+   * @param {string} action - 'submit' or 'preview'
+   */
+  saveAction(action) {
+    try {
+      localStorage.setItem(SplitButton.STORAGE_KEY, action);
+    } catch {
+      // localStorage may be unavailable (private browsing, etc.)
+    }
   }
 
   /**
