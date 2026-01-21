@@ -158,21 +158,31 @@ class LocalManager {
     const originalLoadAISuggestions = manager.loadAISuggestions.bind(manager);
 
     // Override loadUserComments
-    manager.loadUserComments = async function() {
+    // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+    // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
+    // This provides cleaner UX - the diff view shows only active comments, while
+    // the AI Panel serves as the "inbox" where you can optionally see and restore dismissed items.
+    manager.loadUserComments = async function(includeDismissed = false) {
       if (!manager.currentPR) return;
 
       try {
-        const response = await fetch(`/api/local/${reviewId}/user-comments`);
+        const queryParam = includeDismissed ? '?includeDismissed=true' : '';
+        const response = await fetch(`/api/local/${reviewId}/user-comments${queryParam}`);
         if (!response.ok) return;
 
         const data = await response.json();
         manager.userComments = data.comments || [];
 
-        // Separate file-level and line-level comments
+        // Separate file-level and line-level comments for diff view rendering
+        // Skip inactive (dismissed) comments - they should not appear in the diff view
         const fileLevelComments = [];
         const lineLevelComments = [];
 
         manager.userComments.forEach(comment => {
+          // Skip inactive (dismissed) comments - they should not appear in the diff view
+          if (comment.status === 'inactive') {
+            return;
+          }
           if (comment.is_file_level === 1) {
             fileLevelComments.push(comment);
           } else {
@@ -180,7 +190,10 @@ class LocalManager {
           }
         });
 
-        // Display line-level comments inline with diff
+        // Clear existing comment rows before re-rendering
+        document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
+
+        // Display line-level comments inline with diff (only active comments reach here)
         lineLevelComments.forEach(comment => {
           const fileElement = manager.findFileElement(comment.file);
           if (!fileElement) return;
@@ -203,12 +216,12 @@ class LocalManager {
           }
         });
 
-        // Load file-level comments into their zones
+        // Load file-level comments into their zones (only active comments reach here)
         if (manager.fileCommentManager && fileLevelComments.length > 0) {
           manager.fileCommentManager.loadFileComments(fileLevelComments, []);
         }
 
-        // Populate AI Panel with comments
+        // Populate AI Panel with all comments (including dismissed if requested)
         if (window.aiPanel?.setComments) {
           window.aiPanel.setComments(manager.userComments);
         }
@@ -489,6 +502,8 @@ class LocalManager {
     }
 
     // Patch PRManager.deleteUserComment for local mode
+    // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+    // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
     const originalDeleteUserComment = manager.deleteUserComment?.bind(manager);
     if (originalDeleteUserComment) {
       manager.deleteUserComment = async function(commentId) {
@@ -518,14 +533,32 @@ class LocalManager {
 
           const apiResult = await response.json();
 
+          // Check if dismissed comments filter is enabled for AI Panel updates
+          const showDismissed = window.aiPanel?.showDismissedComments || false;
+
+          // Always remove the comment from the diff view (design decision: dismissed comments never shown in diff)
           const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
           if (commentRow) {
             commentRow.remove();
             manager.updateCommentCount();
           }
 
-          // Notify AI Panel about the deleted comment
-          if (window.aiPanel?.removeComment) {
+          // Also handle file-level comment cards
+          const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+          if (fileCommentCard) {
+            const zone = fileCommentCard.closest('.file-comments-zone');
+            fileCommentCard.remove();
+            if (zone && manager.fileCommentManager) {
+              manager.fileCommentManager.updateCommentCount(zone);
+            }
+            manager.updateCommentCount();
+          }
+
+          // Update AI Panel - transition to dismissed state or remove based on filter
+          if (showDismissed && window.aiPanel?.updateComment) {
+            // Update comment status to 'inactive' so it renders with dismissed styling in AI Panel
+            window.aiPanel.updateComment(commentId, { status: 'inactive' });
+          } else if (window.aiPanel?.removeComment) {
             window.aiPanel.removeComment(commentId);
           }
 
@@ -535,9 +568,16 @@ class LocalManager {
           if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
             window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
           }
+
+          // Show success toast
+          if (window.toast) {
+            window.toast.showSuccess('Comment dismissed');
+          }
         } catch (error) {
           console.error('Error deleting comment:', error);
-          alert('Failed to delete comment');
+          if (window.toast) {
+            window.toast.showError('Failed to dismiss comment');
+          }
         }
       };
     }
@@ -886,6 +926,34 @@ class LocalManager {
       }
     };
 
+    // Patch PRManager.restoreUserComment for local mode
+    // Uses the local API endpoint to restore dismissed comments
+    manager.restoreUserComment = async function(commentId) {
+      try {
+        const response = await fetch(`/api/local/${reviewId}/user-comments/${commentId}/restore`, {
+          method: 'PUT'
+        });
+        if (!response.ok) throw new Error('Failed to restore comment');
+
+        // Reload comments to update both the diff view and AI panel
+        // Pass the current filter state from the AI panel
+        const includeDismissed = window.aiPanel?.showDismissedComments || false;
+        await manager.loadUserComments(includeDismissed);
+
+        // Show success toast
+        if (window.toast) {
+          window.toast.showSuccess('Comment restored');
+        }
+      } catch (error) {
+        console.error('Error restoring comment:', error);
+        if (window.toast) {
+          window.toast.showError('Failed to restore comment');
+        } else {
+          alert('Failed to restore comment');
+        }
+      }
+    };
+
     console.log('PRManager patched for local mode');
   }
 
@@ -1199,21 +1267,22 @@ class LocalManager {
       // Fetch and display diff
       await this.loadLocalDiff();
 
-      // Load saved comments
-      await manager.loadUserComments();
-
       // Initialize split button (uses standard SplitButton which auto-detects local mode)
       manager.initSplitButton();
 
-      // Initialize AI Panel
+      // Initialize AI Panel before loading comments so we can read the restored filter state
       if (window.AIPanel && !window.aiPanel) {
         window.aiPanel = new window.AIPanel();
       }
 
-      // Set local context for AI Panel
+      // Set local context for AI Panel (restores filter state from localStorage)
       if (window.aiPanel?.setPR) {
         window.aiPanel.setPR('local', reviewData.repository, this.reviewId);
       }
+
+      // Load saved comments using the restored filter state from AI Panel
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await manager.loadUserComments(includeDismissed);
 
       // Initialize analysis history manager for local mode
       if (window.AnalysisHistoryManager) {

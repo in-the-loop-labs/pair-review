@@ -8,7 +8,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, CommentRepository, ReviewRepository } = require('../database');
+const { queryOne, run, CommentRepository, ReviewRepository } = require('../database');
 
 const router = express.Router();
 
@@ -259,10 +259,13 @@ router.post('/api/user-comment', async (req, res) => {
 
 /**
  * Get user comments for a PR (by owner/repo/number format for consistency)
+ * Query params:
+ * - includeDismissed: if 'true', includes dismissed (inactive) comments
  */
 router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
   try {
     const { owner, repo, number } = req.params;
+    const { includeDismissed } = req.query;
     const prNumber = parseInt(number);
 
     if (isNaN(prNumber) || prNumber <= 0) {
@@ -286,77 +289,11 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
       });
     }
 
-    const comments = await query(db, `
-      SELECT
-        id,
-        source,
-        author,
-        file,
-        line_start,
-        line_end,
-        diff_position,
-        side,
-        type,
-        title,
-        body,
-        status,
-        parent_id,
-        is_file_level,
-        created_at,
-        updated_at
-      FROM comments
-      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
-      ORDER BY file, line_start, created_at
-    `, [review.id]);
-
-    res.json({
-      success: true,
-      comments: comments || []
+    // Use CommentRepository to fetch comments with options
+    const commentRepo = new CommentRepository(db);
+    const comments = await commentRepo.getUserComments(review.id, {
+      includeDismissed: includeDismissed === 'true'
     });
-
-  } catch (error) {
-    console.error('Error fetching user comments:', error);
-    res.status(500).json({
-      error: 'Failed to fetch user comments'
-    });
-  }
-});
-
-/**
- * Get user comments for a PR (legacy endpoint by ID)
- */
-router.get('/api/pr/:id/user-comments', async (req, res) => {
-  try {
-    const prId = parseInt(req.params.id);
-
-    if (isNaN(prId) || prId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid PR ID'
-      });
-    }
-
-    const comments = await query(req.app.get('db'), `
-      SELECT
-        id,
-        source,
-        author,
-        file,
-        line_start,
-        line_end,
-        diff_position,
-        side,
-        type,
-        title,
-        body,
-        status,
-        parent_id,
-        is_file_level,
-        created_at,
-        updated_at
-      FROM comments
-      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
-      ORDER BY file, line_start, created_at
-    `, [prId]);
 
     res.json({
       success: true,
@@ -472,6 +409,57 @@ router.delete('/api/user-comment/:id', async (req, res) => {
 
     res.status(500).json({
       error: error.message || 'Failed to delete comment'
+    });
+  }
+});
+
+/**
+ * Restore a dismissed user comment
+ * Sets status from 'inactive' back to 'active'
+ */
+router.put('/api/user-comment/:id/restore', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const commentId = parseInt(id, 10);
+
+    if (isNaN(commentId)) {
+      return res.status(400).json({ error: 'Invalid comment ID' });
+    }
+
+    const db = req.app.get('db');
+    const commentRepo = new CommentRepository(db);
+
+    // Restore the comment
+    await commentRepo.restoreComment(commentId);
+
+    // Get the restored comment to return
+    const comment = await commentRepo.getComment(commentId, 'user');
+
+    res.json({
+      success: true,
+      message: 'Comment restored successfully',
+      comment
+    });
+
+  } catch (error) {
+    console.error('Error restoring user comment:', error);
+
+    // Return 404 if comment not found
+    if (error.message && error.message.includes('not found')) {
+      return res.status(404).json({
+        error: error.message
+      });
+    }
+
+    // Return 400 if comment is not dismissed
+    if (error.message && error.message.includes('not dismissed')) {
+      return res.status(400).json({
+        error: error.message
+      });
+    }
+
+    res.status(500).json({
+      error: error.message || 'Failed to restore comment'
     });
   }
 });

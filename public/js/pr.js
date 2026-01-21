@@ -211,6 +211,12 @@ class PRManager {
         this.loadAISuggestions(level);
       }
     });
+
+    // Listen for filter dismissed changes from AI panel
+    document.addEventListener('filterDismissedChanged', (e) => {
+      const showDismissed = e.detail?.showDismissed;
+      this.loadUserComments(showDismissed);
+    });
   }
 
   /**
@@ -320,22 +326,25 @@ class PRManager {
       // Fetch diff and file list from diff endpoint
       await this.loadAndDisplayFiles(owner, repo, number);
 
-      // Load saved comments
-      await this.loadUserComments();
-
       // Initialize split button for comment actions
       this.initSplitButton();
 
-      // Initialize AI Panel before loading suggestions so it can receive them
+      // Initialize AI Panel before loading comments so we can read the restored filter state
       // Only initialize if not already created (avoid duplicates on refresh)
       if (window.AIPanel && !window.aiPanel) {
         window.aiPanel = new window.AIPanel();
       }
 
       // Set PR context for AI Panel (for PR-specific localStorage keys)
+      // This restores the filter state from localStorage
       if (window.aiPanel?.setPR) {
         window.aiPanel.setPR(owner, repo, number);
       }
+
+      // Load saved comments using the restored filter state from AI Panel
+      // If AI Panel has showDismissedComments=true (restored from localStorage), use that
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await this.loadUserComments(includeDismissed);
 
       // Initialize analysis history manager if review ID is available
       // The review ID is needed to fetch analysis runs from the database
@@ -1798,38 +1807,46 @@ class PRManager {
   }
 
   /**
-   * Delete user comment
+   * Delete user comment (soft-delete - no confirmation needed)
    * If the comment was adopted from an AI suggestion, the suggestion is transitioned to dismissed state.
+   *
+   * DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+   * They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
+   * So we always remove the comment from the DOM here.
    */
   async deleteUserComment(commentId) {
-    if (!window.confirmDialog) {
-      alert('Confirmation dialog unavailable. Please refresh the page.');
-      return;
-    }
-
-    const result = await window.confirmDialog.show({
-      title: 'Delete Comment?',
-      message: 'Are you sure you want to delete this comment? This action cannot be undone.',
-      confirmText: 'Delete',
-      confirmClass: 'btn-danger'
-    });
-
-    if (result !== 'confirm') return;
-
     try {
       const response = await fetch(`/api/user-comment/${commentId}`, { method: 'DELETE' });
       if (!response.ok) throw new Error('Failed to delete comment');
 
       const apiResult = await response.json();
 
+      // Check if dismissed comments filter is enabled for AI Panel updates
+      const showDismissed = window.aiPanel?.showDismissedComments || false;
+
+      // Always remove the comment from the diff view (design decision: dismissed comments never shown in diff)
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       if (commentRow) {
         commentRow.remove();
         this.updateCommentCount();
       }
 
-      // Notify AI Panel about the deleted comment
-      if (window.aiPanel?.removeComment) {
+      // Also handle file-level comment cards
+      const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+      if (fileCommentCard) {
+        const zone = fileCommentCard.closest('.file-comments-zone');
+        fileCommentCard.remove();
+        if (zone && this.fileCommentManager) {
+          this.fileCommentManager.updateCommentCount(zone);
+        }
+        this.updateCommentCount();
+      }
+
+      // Update AI Panel - transition to dismissed state or remove based on filter
+      if (showDismissed && window.aiPanel?.updateComment) {
+        // Update comment status to 'inactive' so it renders with dismissed styling in AI Panel
+        window.aiPanel.updateComment(commentId, { status: 'inactive' });
+      } else if (window.aiPanel?.removeComment) {
         window.aiPanel.removeComment(commentId);
       }
 
@@ -1839,9 +1856,42 @@ class PRManager {
       if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
         window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
       }
+
+      // Show success toast
+      if (window.toast) {
+        window.toast.showSuccess('Comment dismissed');
+      }
     } catch (error) {
       console.error('Error deleting comment:', error);
-      alert('Failed to delete comment');
+      if (window.toast) {
+        window.toast.showError('Failed to dismiss comment');
+      }
+    }
+  }
+
+  /**
+   * Restore a dismissed user comment
+   * @param {number} commentId - The comment ID to restore
+   */
+  async restoreUserComment(commentId) {
+    try {
+      const response = await fetch(`/api/user-comment/${commentId}/restore`, { method: 'PUT' });
+      if (!response.ok) throw new Error('Failed to restore comment');
+
+      // Reload comments to update both the diff view and AI panel
+      // Pass the current filter state from the AI panel
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await this.loadUserComments(includeDismissed);
+
+      // Show success toast
+      if (window.toast) {
+        window.toast.showSuccess('Comment restored');
+      }
+    } catch (error) {
+      console.error('Error restoring comment:', error);
+      if (window.toast) {
+        window.toast.showError('Failed to restore comment');
+      }
     }
   }
 
@@ -1857,7 +1907,7 @@ class PRManager {
   }
 
   /**
-   * Clear all user comments
+   * Clear all user comments (soft-delete - no confirmation needed)
    */
   async clearAllUserComments() {
     // Count both line-level and file-level user comments
@@ -1866,20 +1916,6 @@ class PRManager {
     const totalComments = lineCommentRows.length + fileCommentCards.length;
 
     if (totalComments === 0) return;
-
-    if (!window.confirmDialog) {
-      alert('Confirmation dialog unavailable. Please refresh the page.');
-      return;
-    }
-
-    const dialogResult = await window.confirmDialog.show({
-      title: 'Clear All Comments?',
-      message: `This will delete all ${totalComments} user comment${totalComments !== 1 ? 's' : ''} from this PR. This action cannot be undone.`,
-      confirmText: 'Delete All',
-      confirmClass: 'btn-danger'
-    });
-
-    if (dialogResult !== 'confirm') return;
 
     try {
       const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`, {
@@ -1939,22 +1975,34 @@ class PRManager {
 
   /**
    * Load user comments from API
+   * @param {boolean} [includeDismissed=false] - Whether to include dismissed (inactive) comments
+   *   When true, dismissed comments are returned by the API so they can be shown in the AI Panel.
+   *   Note: Dismissed comments are NEVER shown in the diff panel per design decision.
    */
-  async loadUserComments() {
+  async loadUserComments(includeDismissed = false) {
     if (!this.currentPR) return;
 
     try {
-      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`);
+      const queryParam = includeDismissed ? '?includeDismissed=true' : '';
+      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments${queryParam}`);
       if (!response.ok) return;
 
       const data = await response.json();
       this.userComments = data.comments || [];
 
-      // Separate file-level and line-level comments
+      // Separate file-level and line-level comments for diff view rendering
+      // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+      // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
+      // This provides cleaner UX - the diff view shows only active comments, while
+      // the AI Panel serves as the "inbox" where you can optionally see and restore dismissed items.
       const fileLevelComments = [];
       const lineLevelComments = [];
 
       this.userComments.forEach(comment => {
+        // Skip inactive (dismissed) comments - they should not appear in the diff view
+        if (comment.status === 'inactive') {
+          return;
+        }
         if (comment.is_file_level === 1) {
           fileLevelComments.push(comment);
         } else {
@@ -1962,7 +2010,10 @@ class PRManager {
         }
       });
 
-      // Display line-level comments inline with diff
+      // Clear existing comment rows before re-rendering
+      document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
+
+      // Display line-level comments inline with diff (only active comments reach here)
       lineLevelComments.forEach(comment => {
         const fileElement = this.findFileElement(comment.file);
         if (!fileElement) return;
@@ -1985,12 +2036,12 @@ class PRManager {
         }
       });
 
-      // Load file-level comments into their zones
+      // Load file-level comments into their zones (only active comments reach here)
       if (this.fileCommentManager && fileLevelComments.length > 0) {
         this.fileCommentManager.loadFileComments(fileLevelComments, []);
       }
 
-      // Populate AI Panel with comments
+      // Populate AI Panel with all comments (including dismissed if requested)
       if (window.aiPanel?.setComments) {
         window.aiPanel.setComments(this.userComments);
       }
@@ -2412,6 +2463,7 @@ class PRManager {
 
   /**
    * Update comment count display
+   * Note: Dismissed comments are never in the diff DOM (design decision), so we simply count all visible elements.
    */
   updateCommentCount() {
     // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)

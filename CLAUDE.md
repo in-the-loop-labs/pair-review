@@ -134,6 +134,18 @@ Test structure:
 
 ## Learnings
 
+### Local Mode and PR Mode Parity
+- Features must work in BOTH Local mode (`/local/:reviewId`) and PR mode (`/pr/:owner/:repo/:number`)
+- These modes have parallel but separate implementations:
+  - **Backend**: `src/routes/local.js` vs `src/routes/comments.js` (PR mode)
+  - **Frontend**: `public/js/local.js` patches methods on `PRManager` from `public/js/pr.js`
+- When adding features that involve comments, API endpoints, or UI interactions, you MUST update both code paths
+- Common places that need parallel updates:
+  - API endpoints for fetching/modifying comments
+  - Event listeners in frontend JavaScript
+  - Query parameters and their handling
+- Test both modes manually or with E2E tests before considering a feature complete
+
 ### Testing Practices
 - NEVER duplicate production code in tests. Always import and test the actual implementation.
 - If production code is structured in a way that makes it hard to test (e.g., browser-only IIFEs), refactor the production code to be testable rather than duplicating it.

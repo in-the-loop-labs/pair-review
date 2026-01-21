@@ -1016,6 +1016,118 @@ describe('User Comment Endpoints', () => {
     });
   });
 
+  describe('PUT /api/user-comment/:id/restore', () => {
+    it('should return 404 for non-existent comment', async () => {
+      const response = await request(app)
+        .put('/api/user-comment/9999/restore');
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should return 400 when trying to restore a non-dismissed comment', async () => {
+      // Create an active user comment
+      const { lastID } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 10, 'Active comment', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .put(`/api/user-comment/${lastID}/restore`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('not dismissed');
+    });
+
+    it('should restore an inactive (dismissed) comment to active status', async () => {
+      // Create an inactive user comment
+      const { lastID } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 10, 'Dismissed comment', 'inactive')
+      `, [prId]);
+
+      const response = await request(app)
+        .put(`/api/user-comment/${lastID}/restore`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.comment).toBeDefined();
+      expect(response.body.comment.status).toBe('active');
+
+      // Verify in database
+      const comment = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [lastID]);
+      expect(comment.status).toBe('active');
+    });
+  });
+
+  describe('GET /api/pr/:owner/:repo/:number/user-comments with includeDismissed', () => {
+    it('should not include dismissed comments by default', async () => {
+      // Create an active comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 10, 'Active comment', 'active')
+      `, [prId]);
+
+      // Create an inactive (dismissed) comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
+      `, [prId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/user-comments');
+
+      expect(response.status).toBe(200);
+      expect(response.body.comments).toHaveLength(1);
+      expect(response.body.comments[0].body).toBe('Active comment');
+    });
+
+    it('should include dismissed comments when includeDismissed=true', async () => {
+      // Create an active comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 10, 'Active comment', 'active')
+      `, [prId]);
+
+      // Create an inactive (dismissed) comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
+      `, [prId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/user-comments?includeDismissed=true');
+
+      expect(response.status).toBe(200);
+      expect(response.body.comments).toHaveLength(2);
+
+      const dismissedComment = response.body.comments.find(c => c.status === 'inactive');
+      expect(dismissedComment).toBeDefined();
+      expect(dismissedComment.body).toBe('Dismissed comment');
+    });
+
+    it('should not include dismissed comments when includeDismissed=false', async () => {
+      // Create an active comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 10, 'Active comment', 'active')
+      `, [prId]);
+
+      // Create an inactive (dismissed) comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
+      `, [prId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/user-comments?includeDismissed=false');
+
+      expect(response.status).toBe(200);
+      expect(response.body.comments).toHaveLength(1);
+      expect(response.body.comments[0].body).toBe('Active comment');
+    });
+  });
+
   describe('DELETE /api/pr/:owner/:repo/:number/user-comments', () => {
     it('should return 200 with 0 deletions for non-existent PR', async () => {
       // If no review exists for this PR, there are no comments to delete
@@ -3309,6 +3421,72 @@ describe('Local Review File-Level Comments', () => {
       expect(fileLevelComment).toBeDefined();
       expect(lineLevelComment).toBeDefined();
     });
+
+    it('should not include dismissed comments by default', async () => {
+      // Create an active comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 10, 'Active comment', 'active')
+      `, [reviewId]);
+
+      // Create an inactive (dismissed) comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/user-comments`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.comments).toHaveLength(1);
+      expect(response.body.comments[0].body).toBe('Active comment');
+    });
+
+    it('should include dismissed comments when includeDismissed=true', async () => {
+      // Create an active comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 10, 'Active comment', 'active')
+      `, [reviewId]);
+
+      // Create an inactive (dismissed) comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/user-comments?includeDismissed=true`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.comments).toHaveLength(2);
+
+      const dismissedComment = response.body.comments.find(c => c.status === 'inactive');
+      expect(dismissedComment).toBeDefined();
+      expect(dismissedComment.body).toBe('Dismissed comment');
+    });
+
+    it('should not include dismissed comments when includeDismissed=false', async () => {
+      // Create an active comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 10, 'Active comment', 'active')
+      `, [reviewId]);
+
+      // Create an inactive (dismissed) comment
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'file.js', 20, 'Dismissed comment', 'inactive')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/user-comments?includeDismissed=false`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.comments).toHaveLength(1);
+      expect(response.body.comments[0].body).toBe('Active comment');
+    });
   });
 
   describe('GET /api/local/:reviewId/suggestions', () => {
@@ -3680,6 +3858,66 @@ describe('Local Routes Dismissal Response Structure', () => {
         .delete('/api/local/invalid/user-comments');
 
       expect(response.status).toBe(400);
+    });
+  });
+
+  describe('PUT /api/local/:reviewId/user-comments/:commentId/restore', () => {
+    it('should return 404 for non-existent comment', async () => {
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/user-comments/9999/restore`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should return 400 when trying to restore a non-dismissed comment', async () => {
+      // Create an active user comment
+      const commentResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 10, 'Active comment', 'active')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/user-comments/${commentResult.lastID}/restore`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('not dismissed');
+    });
+
+    it('should restore an inactive (dismissed) comment to active status', async () => {
+      // Create an inactive user comment
+      const commentResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 10, 'Dismissed comment', 'inactive')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/user-comments/${commentResult.lastID}/restore`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.comment).toBeDefined();
+      expect(response.body.comment.status).toBe('active');
+
+      // Verify in database
+      const comment = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [commentResult.lastID]);
+      expect(comment.status).toBe('active');
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .put('/api/local/invalid/user-comments/1/restore');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return 400 for invalid comment ID', async () => {
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/user-comments/invalid/restore`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid comment ID');
     });
   });
 });

@@ -388,23 +388,7 @@ test.describe('Comment Deletion', () => {
     await expect(deleteBtn.first()).toBeVisible();
   });
 
-  test('should show confirmation dialog when delete is clicked', async ({ page }) => {
-    // Click delete button
-    await page.locator('.btn-delete-comment').first().click();
-
-    // Confirmation dialog should appear
-    const confirmDialog = page.locator('.confirm-dialog, .confirm-dialog-overlay');
-    await expect(confirmDialog.first()).toBeVisible({ timeout: 5000 });
-
-    // Should have confirm and cancel buttons
-    const confirmBtn = page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")');
-    const cancelBtn = page.locator('.confirm-dialog button:has-text("Cancel"), .btn-secondary:has-text("Cancel")');
-
-    await expect(confirmBtn.first()).toBeVisible();
-    await expect(cancelBtn.first()).toBeVisible();
-  });
-
-  test('should delete comment when confirmed', async ({ page }) => {
+  test('should immediately dismiss (soft-delete) comment when delete is clicked', async ({ page }) => {
     // Get the comment id from the row's data attribute
     const commentRow = page.locator('.user-comment-row').first();
     await expect(commentRow).toBeVisible();
@@ -415,39 +399,19 @@ test.describe('Comment Deletion', () => {
       response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
     );
 
-    // Click delete button
+    // Click delete button - should immediately dismiss (no confirmation dialog)
     await page.locator('.btn-delete-comment').first().click();
-
-    // Wait for confirmation dialog
-    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
-
-    // Confirm deletion
-    const confirmBtn = page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")').first();
-    await confirmBtn.click();
 
     // Wait for delete API to complete
     await deleteResponsePromise;
 
-    // The specific comment row should be removed from DOM
+    // The specific comment row should be removed from DOM (soft-delete removes from view)
     const deletedRow = page.locator(`[data-comment-id="${commentId}"]`);
     await expect(deletedRow).not.toBeVisible({ timeout: 5000 });
-  });
 
-  test('should keep comment when deletion is cancelled', async ({ page }) => {
-    // Click delete button
-    await page.locator('.btn-delete-comment').first().click();
-
-    // Wait for confirmation dialog
-    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
-
-    // Cancel deletion
-    const cancelBtn = page.locator('.confirm-dialog button:has-text("Cancel"), .btn-secondary:has-text("Cancel")').first();
-    await cancelBtn.click();
-
-    // Comment should still be visible
-    const commentRow = page.locator('.user-comment-row');
-    await expect(commentRow.first()).toBeVisible();
-    await expect(page.locator('.user-comment-body').first()).toContainText('Comment to be deleted');
+    // Toast notification should appear
+    const toast = page.locator('.toast-success, .toast');
+    await expect(toast).toBeVisible({ timeout: 3000 });
   });
 });
 
@@ -654,10 +618,8 @@ test.describe('Comment API Integration', () => {
       response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
     );
 
-    // Delete the comment
+    // Delete the comment (now immediate, no confirmation dialog)
     await page.locator('.btn-delete-comment').first().click();
-    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
-    await page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")').first().click();
 
     // Verify delete API was called
     const response = await deleteResponsePromise;
@@ -747,5 +709,207 @@ test.describe('Comment Display', () => {
     // Should have user origin class (not AI)
     const userComment = page.locator('.user-comment.comment-user-origin');
     await expect(userComment.first()).toBeVisible();
+  });
+});
+
+test.describe('Dismissed Comment Persistence', () => {
+  test.beforeEach(async ({ page }) => {
+    // Clean up any existing comments for test isolation
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await cleanupAllComments(page);
+
+    // Create a fresh comment for this test
+    await openCommentFormOnLine(page, 0);
+
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Comment to test dismissed persistence');
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for comment to appear
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+  });
+
+  test.afterEach(async ({ page }) => {
+    // Clean up comments created during the test
+    await cleanupAllComments(page);
+  });
+
+  test('should persist dismissed comment state after page reload', async ({ page }) => {
+    // Get the comment id from the row's data attribute
+    const commentRow = page.locator('.user-comment-row').first();
+    await expect(commentRow).toBeVisible();
+    const commentId = await commentRow.getAttribute('data-comment-id');
+
+    // Set up API listener for delete (which dismisses the comment)
+    const deleteResponsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
+    );
+
+    // Click delete button to dismiss the comment
+    await page.locator('.btn-delete-comment').first().click();
+
+    // Wait for delete API to complete
+    await deleteResponsePromise;
+
+    // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+    // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
+    // Comment row should be removed from diff view immediately
+    const deletedRow = page.locator(`[data-comment-id="${commentId}"]`);
+    await expect(deletedRow).not.toBeVisible({ timeout: 5000 });
+
+    // Switch to the "User" segment in the AI Panel to see comments
+    const userSegmentBtn = page.locator('.segment-btn').filter({ hasText: 'User' });
+    await expect(userSegmentBtn).toBeVisible({ timeout: 5000 });
+    await userSegmentBtn.click();
+
+    // Enable the 'show dismissed' filter by clicking the filter toggle button
+    const filterToggleBtn = page.locator('.filter-toggle-btn');
+    await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
+    await filterToggleBtn.click();
+
+    // Wait for comments to reload with dismissed included
+    await page.waitForTimeout(500);
+
+    // The dismissed comment should appear in the AI Panel with dismissed styling
+    const aiPanelCommentItem = page.locator(`.finding-item.finding-comment[data-id="${commentId}"]`);
+    await expect(aiPanelCommentItem).toBeVisible({ timeout: 5000 });
+    await expect(aiPanelCommentItem).toHaveClass(/comment-item-dismissed/);
+
+    // Verify dismissed comment does NOT appear in diff view (design decision)
+    const dismissedDiffRow = page.locator(`.user-comment-row[data-comment-id="${commentId}"]`);
+    await expect(dismissedDiffRow).not.toBeVisible({ timeout: 2000 });
+
+    // Reload the page to test persistence
+    await page.reload();
+    await waitForDiffToRender(page);
+
+    // Note: Filter toggle state persists via localStorage, so it should still be enabled
+    // The AIPanel restores the filter state from localStorage on page load
+
+    // Switch to the "User" segment again (segment selection doesn't persist)
+    const userSegmentBtnAfterReload = page.locator('.segment-btn').filter({ hasText: 'User' });
+    await expect(userSegmentBtnAfterReload).toBeVisible({ timeout: 5000 });
+    await userSegmentBtnAfterReload.click();
+
+    // Wait for comments to load
+    await page.waitForTimeout(1000);
+
+    // Verify the filter toggle is still active (persisted via localStorage)
+    const filterToggleBtnAfterReload = page.locator('.filter-toggle-btn');
+    await expect(filterToggleBtnAfterReload).toBeVisible({ timeout: 5000 });
+    await expect(filterToggleBtnAfterReload).toHaveClass(/active/);
+
+    // The dismissed comment should still appear in the AI Panel with dismissed styling
+    const aiPanelCommentItemAfterReload = page.locator(`.finding-item.finding-comment[data-id="${commentId}"]`);
+    await expect(aiPanelCommentItemAfterReload).toBeVisible({ timeout: 5000 });
+    await expect(aiPanelCommentItemAfterReload).toHaveClass(/comment-item-dismissed/);
+
+    // Verify dismissed comment still does NOT appear in diff view after reload (design decision)
+    const dismissedDiffRowAfterReload = page.locator(`.user-comment-row[data-comment-id="${commentId}"]`);
+    await expect(dismissedDiffRowAfterReload).not.toBeVisible({ timeout: 2000 });
+  });
+});
+
+test.describe('Comment Restore', () => {
+  test.beforeEach(async ({ page }) => {
+    // Clean up any existing comments for test isolation
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await cleanupAllComments(page);
+
+    // Create a fresh comment for this test
+    await openCommentFormOnLine(page, 0);
+
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Comment to be dismissed and restored');
+    await page.locator('.save-comment-btn').click();
+
+    // Wait for comment to appear
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+  });
+
+  test.afterEach(async ({ page }) => {
+    // Clean up comments created during the test
+    await cleanupAllComments(page);
+  });
+
+  test('should dismiss and restore a comment via AI Panel', async ({ page }) => {
+    // Get the comment id from the row's data attribute
+    const commentRow = page.locator('.user-comment-row').first();
+    await expect(commentRow).toBeVisible();
+    const commentId = await commentRow.getAttribute('data-comment-id');
+
+    // Set up API listener for delete
+    const deleteResponsePromise = page.waitForResponse(
+      response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
+    );
+
+    // Click delete button to dismiss the comment
+    await page.locator('.btn-delete-comment').first().click();
+
+    // Wait for delete API to complete
+    await deleteResponsePromise;
+
+    // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+    // Comment row should be removed from diff view immediately
+    const deletedRow = page.locator(`[data-comment-id="${commentId}"]`);
+    await expect(deletedRow).not.toBeVisible({ timeout: 5000 });
+
+    // First, switch to the "User" segment in the AI Panel to see comments
+    // The segment button contains text like "User (1)"
+    const userSegmentBtn = page.locator('.segment-btn').filter({ hasText: 'User' });
+    await expect(userSegmentBtn).toBeVisible({ timeout: 5000 });
+    await userSegmentBtn.click();
+
+    // Enable the 'show dismissed' filter by clicking the filter toggle button
+    const filterToggleBtn = page.locator('.filter-toggle-btn');
+    await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
+    await filterToggleBtn.click();
+
+    // Wait for comments to reload with dismissed included
+    await page.waitForTimeout(500);
+
+    // The dismissed comment should now appear in the AI Panel with dismissed styling
+    // Comment items in the AI Panel have class 'finding-item finding-comment' with data-id attribute
+    const aiPanelCommentItem = page.locator(`.finding-item.finding-comment[data-id="${commentId}"]`);
+    await expect(aiPanelCommentItem).toBeVisible({ timeout: 5000 });
+
+    // Verify it has the dismissed visual state (comment-item-dismissed class)
+    await expect(aiPanelCommentItem).toHaveClass(/comment-item-dismissed/);
+
+    // Verify dismissed comment does NOT appear in diff view (design decision)
+    const dismissedDiffRow = page.locator(`.user-comment-row[data-comment-id="${commentId}"]`);
+    await expect(dismissedDiffRow).not.toBeVisible({ timeout: 2000 });
+
+    // Hover over the comment item to reveal the restore button
+    await aiPanelCommentItem.hover();
+
+    // Click the restore button in the AI Panel (inside finding-item-wrapper)
+    const itemWrapper = aiPanelCommentItem.locator('..');
+    const restoreBtn = itemWrapper.locator('.quick-action-restore-comment');
+    await expect(restoreBtn).toBeVisible({ timeout: 3000 });
+
+    // Set up API listener for restore
+    const restoreResponsePromise = page.waitForResponse(
+      response => response.url().includes('/restore') && response.request().method() === 'PUT'
+    );
+
+    await restoreBtn.click();
+
+    // Wait for restore API to complete
+    await restoreResponsePromise;
+
+    // The comment should be restored to active state
+    // After restore, the comment should no longer have dismissed styling in AI Panel
+    await expect(aiPanelCommentItem).not.toHaveClass(/comment-item-dismissed/, { timeout: 5000 });
+
+    // The comment should now be visible again in the diff view (restored = active)
+    const restoredRow = page.locator(`.user-comment-row[data-comment-id="${commentId}"]`);
+    await expect(restoredRow).toBeVisible({ timeout: 5000 });
+
+    // Toast notification should appear with "Comment restored" message
+    const toast = page.locator('.toast-success').filter({ hasText: 'Comment restored' });
+    await expect(toast).toBeVisible({ timeout: 3000 });
   });
 });

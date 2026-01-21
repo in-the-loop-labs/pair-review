@@ -1561,9 +1561,16 @@ class CommentRepository {
   /**
    * Get all user comments for a review
    * @param {number} reviewId - Review ID (from reviews table)
+   * @param {Object} [options] - Query options
+   * @param {boolean} [options.includeDismissed=false] - Include dismissed (inactive) comments
    * @returns {Promise<Array<Object>>} Array of comment records
    */
-  async getUserComments(reviewId) {
+  async getUserComments(reviewId, options = {}) {
+    const { includeDismissed = false } = options;
+    const statusFilter = includeDismissed
+      ? "status IN ('active', 'submitted', 'draft', 'inactive')"
+      : "status IN ('active', 'submitted', 'draft')";
+
     return await query(this.db, `
       SELECT
         id,
@@ -1572,6 +1579,7 @@ class CommentRepository {
         file,
         line_start,
         line_end,
+        side,
         diff_position,
         type,
         title,
@@ -1582,9 +1590,37 @@ class CommentRepository {
         created_at,
         updated_at
       FROM comments
-      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
+      WHERE review_id = ? AND source = 'user' AND ${statusFilter}
       ORDER BY file, line_start, created_at
     `, [reviewId]);
+  }
+
+  /**
+   * Restore a soft-deleted user comment (set status from 'inactive' back to 'active')
+   * @param {number} id - Comment ID
+   * @returns {Promise<boolean>} True if restored successfully
+   */
+  async restoreComment(id) {
+    // Verify it's a user comment with inactive status
+    const comment = await queryOne(this.db, `
+      SELECT id, status FROM comments WHERE id = ? AND source = 'user'
+    `, [id]);
+
+    if (!comment) {
+      throw new Error('User comment not found');
+    }
+
+    if (comment.status !== 'inactive') {
+      throw new Error('Comment is not dismissed');
+    }
+
+    const result = await run(this.db, `
+      UPDATE comments
+      SET status = 'active', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
   }
 }
 

@@ -467,26 +467,32 @@ describe('PRManager Suggestion Status', () => {
 
     beforeEach(() => {
       // Setup window with standard mocks for delete tests
+      // Note: deleteUserComment no longer uses confirmDialog (soft-delete without confirmation)
       global.window = {
         aiPanel: {
           updateFindingStatus: vi.fn(),
           removeComment: vi.fn()
         },
-        confirmDialog: {
-          show: vi.fn().mockResolvedValue('confirm')
+        toast: {
+          showSuccess: vi.fn(),
+          showError: vi.fn()
         }
       };
 
       // Create PRManager instance with updateCommentCount mock
       prManager = createTestPRManager();
       prManager.updateCommentCount = vi.fn();
+      prManager.fileCommentManager = null;
 
-      // Setup mock comment row
+      // Setup mock comment row - return value for first querySelector (line-level),
+      // null for second (file-level)
       mockCommentRow = { remove: vi.fn() };
-      document.querySelector.mockReturnValue(mockCommentRow);
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)  // First call: line-level comment row
+        .mockReturnValueOnce(null);            // Second call: file-level comment card (not found)
     });
 
-    it('should update AIPanel with active status when deleting comment with parent_id', async () => {
+    it('should update AIPanel with dismissed status when deleting comment with parent_id', async () => {
       const commentId = 'test-comment-123';
       const parentSuggestionId = 'test-suggestion-456';
 
@@ -514,10 +520,18 @@ describe('PRManager Suggestion Status', () => {
       // When deleting a comment that adopted a suggestion, the suggestion card
       // is still collapsed/dismissed in the diff view. User can click "Show" to restore.
       expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledWith(parentSuggestionId, 'dismissed');
+
+      // Verify toast success message
+      expect(window.toast.showSuccess).toHaveBeenCalledWith('Comment dismissed');
     });
 
     it('should not update AIPanel findingStatus when no parent_id exists', async () => {
       const commentId = 'test-comment-no-parent';
+
+      // Reset querySelector mock for this test
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)  // First call: line-level comment row
+        .mockReturnValueOnce(null);            // Second call: file-level comment card (not found)
 
       // Mock successful DELETE response WITHOUT dismissedSuggestionId
       mockFetch.mockResolvedValueOnce({
@@ -535,10 +549,21 @@ describe('PRManager Suggestion Status', () => {
 
       // But updateFindingStatus should NOT be called since no parent suggestion
       expect(window.aiPanel.updateFindingStatus).not.toHaveBeenCalled();
+
+      // Toast success should still be shown
+      expect(window.toast.showSuccess).toHaveBeenCalledWith('Comment dismissed');
     });
 
     it('should handle missing AIPanel gracefully when deleting comment', async () => {
+      // Clear aiPanel but keep toast
+      const toastMock = window.toast;
       window.aiPanel = null;
+      window.toast = toastMock;
+
+      // Reset querySelector mock for this test
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)  // First call: line-level comment row
+        .mockReturnValueOnce(null);            // Second call: file-level comment card (not found)
 
       const commentId = 'test-comment-no-panel';
       const parentSuggestionId = 'test-suggestion-789';
@@ -553,15 +578,334 @@ describe('PRManager Suggestion Status', () => {
 
       // Should not throw even without aiPanel
       await expect(prManager.deleteUserComment(commentId)).resolves.not.toThrow();
+
+      // Toast should still work
+      expect(window.toast.showSuccess).toHaveBeenCalledWith('Comment dismissed');
     });
 
-    it('should not proceed with deletion when user cancels confirmation', async () => {
-      window.confirmDialog.show.mockResolvedValue('cancel'); // User cancels
+    it('should show error toast when API call fails', async () => {
+      // Reset querySelector mock for this test (not needed but for consistency)
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)
+        .mockReturnValueOnce(null);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        json: vi.fn().mockResolvedValue({ error: 'Failed to delete' })
+      });
 
       await prManager.deleteUserComment('test-comment');
 
-      // API should NOT be called
-      expect(mockFetch).not.toHaveBeenCalled();
+      // Error toast should be shown
+      expect(window.toast.showError).toHaveBeenCalledWith('Failed to dismiss comment');
+    });
+
+    it('should always remove comment from diff view but update AI Panel when showDismissedComments is true', async () => {
+      // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+      // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
+      const commentId = 'test-comment-show-dismissed';
+
+      // Setup aiPanel with showDismissedComments enabled and necessary methods
+      window.aiPanel = {
+        showDismissedComments: true,
+        updateComment: vi.fn(),
+        removeComment: vi.fn(),
+        updateFindingStatus: vi.fn()
+      };
+
+      // Setup mock comment row
+      const mockRowWithChild = {
+        remove: vi.fn()
+      };
+
+      // Reset document.querySelector mock and set up return values
+      document.querySelector.mockReset();
+      document.querySelector
+        .mockReturnValueOnce(mockRowWithChild)  // line-level comment row
+        .mockReturnValueOnce(null);              // file-level comment card (not found)
+
+      // Mock successful DELETE response
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ success: true })
+      });
+
+      await prManager.deleteUserComment(commentId);
+
+      // Verify document.querySelector was called to find the row
+      expect(document.querySelector).toHaveBeenCalledWith(`[data-comment-id="${commentId}"]`);
+
+      // Comment row should ALWAYS be removed from diff view (design decision)
+      expect(mockRowWithChild.remove).toHaveBeenCalled();
+
+      // AIPanel should update comment status to 'inactive' (not removed from AI Panel)
+      expect(window.aiPanel.updateComment).toHaveBeenCalledWith(commentId, { status: 'inactive' });
+      expect(window.aiPanel.removeComment).not.toHaveBeenCalled();
+
+      // Comment count should still be updated
+      expect(prManager.updateCommentCount).toHaveBeenCalled();
+    });
+
+    it('should remove comment when showDismissedComments is false', async () => {
+      const commentId = 'test-comment-hide-dismissed';
+
+      // Setup aiPanel with showDismissedComments disabled (default)
+      window.aiPanel = {
+        showDismissedComments: false,
+        updateComment: vi.fn(),
+        removeComment: vi.fn(),
+        updateFindingStatus: vi.fn()
+      };
+
+      // Setup mock comment row
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)  // line-level comment row
+        .mockReturnValueOnce(null);            // file-level comment card (not found)
+
+      // Mock successful DELETE response
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ success: true })
+      });
+
+      await prManager.deleteUserComment(commentId);
+
+      // Comment row should be removed when showDismissedComments is false
+      expect(mockCommentRow.remove).toHaveBeenCalled();
+
+      // AIPanel should remove comment, not update it
+      expect(window.aiPanel.removeComment).toHaveBeenCalledWith(commentId);
+      expect(window.aiPanel.updateComment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateCommentCount', () => {
+    let prManager;
+    let mockSplitButton;
+
+    beforeEach(() => {
+      prManager = createTestPRManager();
+
+      // Mock splitButton
+      mockSplitButton = {
+        updateCommentCount: vi.fn()
+      };
+      prManager.splitButton = mockSplitButton;
+
+      // Reset document mock for querySelectorAll
+      document.querySelectorAll = vi.fn();
+
+      // Mock document.getElementById for reviewButton and clearButton
+      document.getElementById = vi.fn().mockReturnValue(null);
+    });
+
+    it('should count line-level comments', () => {
+      // DESIGN DECISION: Dismissed comments are never in the diff DOM, so we simply count all visible elements.
+      // Mock DOM with 2 comment rows (all active, dismissed comments are never in DOM)
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row') {
+          return { length: 2 }; // 2 comments
+        }
+        if (selector === '.file-comment-card.user-comment') {
+          return { length: 0 }; // No file-level comments
+        }
+        return { length: 0 };
+      });
+
+      prManager.updateCommentCount();
+
+      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(2);
+    });
+
+    it('should count file-level comments', () => {
+      // Mock DOM with file-level comments (dismissed comments are never in DOM)
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row') {
+          return { length: 0 }; // No line-level comments
+        }
+        if (selector === '.file-comment-card.user-comment') {
+          return { length: 1 }; // 1 file-level comment
+        }
+        return { length: 0 };
+      });
+
+      prManager.updateCommentCount();
+
+      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(1);
+    });
+
+    it('should combine line-level and file-level comment counts', () => {
+      // Mock DOM with both types: 3 line-level, 2 file-level
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row') {
+          return { length: 3 }; // 3 line-level comments
+        }
+        if (selector === '.file-comment-card.user-comment') {
+          return { length: 2 }; // 2 file-level comments
+        }
+        return { length: 0 };
+      });
+
+      prManager.updateCommentCount();
+
+      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(5);
+    });
+
+    it('should return 0 when no comments exist', () => {
+      // Mock DOM with no comments (dismissed comments are never in DOM anyway)
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row') {
+          return { length: 0 }; // No line-level
+        }
+        if (selector === '.file-comment-card.user-comment') {
+          return { length: 0 }; // No file-level
+        }
+        return { length: 0 };
+      });
+
+      prManager.updateCommentCount();
+
+      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(0);
+    });
+
+    it('should handle missing splitButton gracefully', () => {
+      prManager.splitButton = null;
+
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row') {
+          return { length: 2 };
+        }
+        if (selector === '.file-comment-card.user-comment') {
+          return { length: 1 };
+        }
+        return { length: 0 };
+      });
+
+      // Should not throw
+      expect(() => prManager.updateCommentCount()).not.toThrow();
+    });
+  });
+
+  describe('restoreUserComment', () => {
+    let prManager;
+
+    beforeEach(() => {
+      // Setup window with standard mocks for restore tests
+      global.window = {
+        aiPanel: {
+          showDismissedComments: true
+        },
+        toast: {
+          showSuccess: vi.fn(),
+          showError: vi.fn()
+        }
+      };
+
+      // Create PRManager instance with loadUserComments mock
+      prManager = createTestPRManager();
+      prManager.loadUserComments = vi.fn().mockResolvedValue(undefined);
+    });
+
+    it('should call correct API endpoint when restoring comment', async () => {
+      const commentId = 'test-comment-restore-1';
+
+      // Mock successful PUT response
+      mockFetch.mockResolvedValueOnce({
+        ok: true
+      });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify API was called with correct endpoint and method
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/user-comment/${commentId}/restore`,
+        { method: 'PUT' }
+      );
+    });
+
+    it('should show success toast on successful restore', async () => {
+      const commentId = 'test-comment-restore-2';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify toast.showSuccess was called
+      expect(window.toast.showSuccess).toHaveBeenCalledWith('Comment restored');
+    });
+
+    it('should show error toast when API call fails', async () => {
+      const commentId = 'test-comment-restore-3';
+
+      // Mock failed PUT response
+      mockFetch.mockResolvedValueOnce({ ok: false });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify toast.showError was called
+      expect(window.toast.showError).toHaveBeenCalledWith('Failed to restore comment');
+      // Verify toast.showSuccess was NOT called
+      expect(window.toast.showSuccess).not.toHaveBeenCalled();
+    });
+
+    it('should reload comments after successful restore', async () => {
+      const commentId = 'test-comment-restore-4';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify loadUserComments was called with current filter state
+      expect(prManager.loadUserComments).toHaveBeenCalledWith(true); // showDismissedComments is true
+    });
+
+    it('should pass correct includeDismissed flag when reloading comments', async () => {
+      // Test with showDismissedComments = false
+      window.aiPanel.showDismissedComments = false;
+      const commentId = 'test-comment-restore-5';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify loadUserComments was called with false
+      expect(prManager.loadUserComments).toHaveBeenCalledWith(false);
+    });
+
+    it('should not reload comments when API call fails', async () => {
+      const commentId = 'test-comment-restore-6';
+
+      mockFetch.mockResolvedValueOnce({ ok: false });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify loadUserComments was NOT called on failure
+      expect(prManager.loadUserComments).not.toHaveBeenCalled();
+    });
+
+    it('should handle missing toast gracefully', async () => {
+      window.toast = null;
+      const commentId = 'test-comment-restore-7';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      // Should not throw even without toast
+      await expect(prManager.restoreUserComment(commentId)).resolves.not.toThrow();
+
+      // loadUserComments should still be called
+      expect(prManager.loadUserComments).toHaveBeenCalled();
+    });
+
+    it('should handle missing aiPanel gracefully for filter state', async () => {
+      window.aiPanel = null;
+      const commentId = 'test-comment-restore-8';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Should default to false when aiPanel is missing
+      expect(prManager.loadUserComments).toHaveBeenCalledWith(false);
     });
   });
 });
