@@ -11,6 +11,7 @@ const express = require('express');
 const { query, queryOne, run, WorktreeRepository, RepoSettingsRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
+const { normalizeRepository } = require('../utils/paths');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
@@ -53,7 +54,7 @@ router.post('/api/worktrees/create', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     logger.section(`Web UI Start Review - PR #${parsedPrNumber}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
 

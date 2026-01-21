@@ -5,6 +5,7 @@ const os = require('os');
 const { getConfigDir } = require('../config');
 const { WorktreeRepository, generateWorktreeId } = require('../database');
 const { getGeneratedFilePatterns } = require('./gitattributes');
+const { normalizeRepository } = require('../utils/paths');
 
 /**
  * Git worktree manager for handling PR branch checkouts and diffs
@@ -29,7 +30,7 @@ class GitWorktreeManager {
    */
   async createWorktreeForPR(prInfo, prData, repositoryPath) {
     // Check if worktree already exists in DB
-    const repository = `${prInfo.owner}/${prInfo.repo}`;
+    const repository = normalizeRepository(prInfo.owner, prInfo.repo);
     let worktreePath;
     let worktreeRecord = null;
 
@@ -316,7 +317,7 @@ class GitWorktreeManager {
   async getWorktreePath(prInfo) {
     // Try to look up from database first
     if (this.worktreeRepo) {
-      const repository = `${prInfo.owner}/${prInfo.repo}`;
+      const repository = normalizeRepository(prInfo.owner, prInfo.repo);
       const record = await this.worktreeRepo.findByPR(prInfo.number, repository);
       if (record) {
         return record.path;

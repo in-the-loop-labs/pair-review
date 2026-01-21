@@ -17,6 +17,7 @@ const { query, queryOne, run, WorktreeRepository, ReviewRepository } = require('
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
+const { normalizeRepository } = require('../utils/paths');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
@@ -38,7 +39,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
 
     // Get PR metadata from database
     const prMetadata = await queryOne(req.app.get('db'), `
@@ -133,7 +134,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
     const config = req.app.get('config');
 
@@ -280,7 +281,7 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
     const config = req.app.get('config');
 
@@ -409,7 +410,7 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
 
     // Get PR data including diff
     const prMetadata = await queryOne(req.app.get('db'), `
@@ -486,7 +487,7 @@ router.get('/api/pr/:owner/:repo/:number/comments', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
 
     // Get review ID first
     const review = await queryOne(req.app.get('db'), `
@@ -650,7 +651,7 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
 
     // Get base_sha from the stored PR data
     // Context expansion needs content from the BASE version (old lines), not HEAD
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const prRecord = await queryOne(db, `
       SELECT pr_data FROM pr_metadata
       WHERE pr_number = ? AND repository = ?
@@ -755,7 +756,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Get GitHub token from app context (set during app initialization)
@@ -1009,7 +1010,7 @@ router.get('/api/pr/:owner/:repo/:number/files/viewed', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Get PR metadata from database
@@ -1067,7 +1068,7 @@ router.post('/api/pr/:owner/:repo/:number/files/viewed', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Get existing PR metadata

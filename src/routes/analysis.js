@@ -17,6 +17,7 @@ const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { mergeInstructions } = require('../utils/instructions');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
+const { normalizeRepository } = require('../utils/paths');
 const {
   activeAnalyses,
   prToAnalysisId,
@@ -58,7 +59,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
 
     // Check if PR exists in database
     const db = req.app.get('db');
@@ -385,7 +386,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
 
     // Check if PR exists in database
     const db = req.app.get('db');
@@ -536,7 +537,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
 
     // Check if PR exists in database
     const db = req.app.get('db');
@@ -848,7 +849,7 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Get PR metadata to verify PR exists and get last_ai_run_id
@@ -955,7 +956,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Get PR metadata to verify PR exists

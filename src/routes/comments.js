@@ -9,6 +9,7 @@
 
 const express = require('express');
 const { queryOne, run, CommentRepository, ReviewRepository } = require('../database');
+const { normalizeRepository } = require('../utils/paths');
 
 const router = express.Router();
 
@@ -274,7 +275,7 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Get or create a review record for this PR
@@ -480,7 +481,7 @@ router.delete('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => 
     }
 
     const db = req.app.get('db');
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
 
     // Get the review record to find associated comments
     // Comments are associated with review.id to avoid ID collision with local mode

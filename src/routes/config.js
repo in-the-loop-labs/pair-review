@@ -11,6 +11,7 @@
 const express = require('express');
 const { RepoSettingsRepository, ReviewRepository } = require('../database');
 const { getAllProvidersInfo, testProviderAvailability } = require('../ai');
+const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -84,7 +85,7 @@ router.patch('/api/config', async (req, res) => {
 router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
     const { owner, repo } = req.params;
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     const repoSettingsRepo = new RepoSettingsRepository(db);
@@ -127,7 +128,7 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
     const { owner, repo } = req.params;
     const { default_instructions, default_provider, default_model, local_path } = req.body;
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Validate that at least one setting is provided
@@ -182,7 +183,7 @@ router.get('/api/pr/:owner/:repo/:number/review-settings', async (req, res) => {
       });
     }
 
-    const repository = `${owner}/${repo}`;
+    const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     const reviewRepo = new ReviewRepository(db);

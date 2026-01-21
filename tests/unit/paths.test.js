@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizePath } from '../../src/utils/paths.js';
+import { normalizePath, normalizeRepository } from '../../src/utils/paths.js';
 
 describe('normalizePath', () => {
   describe('leading ./ removal', () => {
@@ -150,6 +150,112 @@ describe('normalizePath', () => {
 
     it('should preserve hidden directories', () => {
       expect(normalizePath('.github/workflows/ci.yml')).toBe('.github/workflows/ci.yml');
+    });
+  });
+});
+
+describe('normalizeRepository', () => {
+  describe('case normalization', () => {
+    it('should lowercase owner and repo', () => {
+      expect(normalizeRepository('Owner', 'Repo')).toBe('owner/repo');
+    });
+
+    it('should handle all uppercase', () => {
+      expect(normalizeRepository('OWNER', 'REPO')).toBe('owner/repo');
+    });
+
+    it('should handle mixed case', () => {
+      expect(normalizeRepository('OwNeR', 'RePo')).toBe('owner/repo');
+    });
+
+    it('should preserve already lowercase', () => {
+      expect(normalizeRepository('owner', 'repo')).toBe('owner/repo');
+    });
+  });
+
+  describe('format', () => {
+    it('should return owner/repo format', () => {
+      expect(normalizeRepository('myorg', 'myrepo')).toBe('myorg/myrepo');
+    });
+
+    it('should handle hyphenated names', () => {
+      expect(normalizeRepository('my-org', 'my-repo')).toBe('my-org/my-repo');
+    });
+
+    it('should handle underscored names', () => {
+      expect(normalizeRepository('my_org', 'my_repo')).toBe('my_org/my_repo');
+    });
+
+    it('should handle numeric characters', () => {
+      expect(normalizeRepository('org123', 'repo456')).toBe('org123/repo456');
+    });
+  });
+
+  describe('error handling', () => {
+    it('should throw for null owner', () => {
+      expect(() => normalizeRepository(null, 'repo')).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should throw for undefined owner', () => {
+      expect(() => normalizeRepository(undefined, 'repo')).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should throw for empty owner', () => {
+      expect(() => normalizeRepository('', 'repo')).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should throw for null repo', () => {
+      expect(() => normalizeRepository('owner', null)).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should throw for undefined repo', () => {
+      expect(() => normalizeRepository('owner', undefined)).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should throw for empty repo', () => {
+      expect(() => normalizeRepository('owner', '')).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should throw for non-string owner', () => {
+      expect(() => normalizeRepository(123, 'repo')).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should throw for non-string repo', () => {
+      expect(() => normalizeRepository('owner', 123)).toThrow('owner and repo must be non-empty strings');
+    });
+  });
+
+  describe('whitespace handling', () => {
+    it('should trim leading and trailing whitespace from owner', () => {
+      expect(normalizeRepository('  owner  ', 'repo')).toBe('owner/repo');
+    });
+
+    it('should trim leading and trailing whitespace from repo', () => {
+      expect(normalizeRepository('owner', '  repo  ')).toBe('owner/repo');
+    });
+
+    it('should trim whitespace from both owner and repo', () => {
+      expect(normalizeRepository('  owner  ', '  repo  ')).toBe('owner/repo');
+    });
+
+    it('should throw for whitespace-only owner', () => {
+      expect(() => normalizeRepository('   ', 'repo')).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should throw for whitespace-only repo', () => {
+      expect(() => normalizeRepository('owner', '   ')).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should throw for whitespace-only owner and repo', () => {
+      expect(() => normalizeRepository('   ', '   ')).toThrow('owner and repo must be non-empty strings');
+    });
+
+    it('should handle tabs and newlines in owner', () => {
+      expect(normalizeRepository('\t\nowner\t\n', 'repo')).toBe('owner/repo');
+    });
+
+    it('should handle tabs and newlines in repo', () => {
+      expect(normalizeRepository('owner', '\t\nrepo\t\n')).toBe('owner/repo');
     });
   });
 });

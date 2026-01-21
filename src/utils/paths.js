@@ -119,9 +119,42 @@ function pathExistsInSet(needle, normalizedPathsSet) {
   return normalizedPathsSet.has(normalizedNeedle);
 }
 
+/**
+ * Normalize a GitHub repository identifier for case-insensitive matching.
+ *
+ * GitHub repository names and owner names are case-insensitive. URLs like
+ * github.com/Owner/Repo and github.com/owner/repo refer to the same repository.
+ * This function normalizes repository identifiers to lowercase to ensure
+ * consistent database lookups regardless of URL casing.
+ *
+ * @param {string} owner - Repository owner (GitHub username or org)
+ * @param {string} repo - Repository name
+ * @returns {string} Normalized repository identifier in "owner/repo" format (lowercase)
+ *
+ * @example
+ * normalizeRepository('Owner', 'Repo')     // => 'owner/repo'
+ * normalizeRepository('OWNER', 'REPO')     // => 'owner/repo'
+ * normalizeRepository('owner', 'repo')     // => 'owner/repo'
+ */
+function normalizeRepository(owner, repo) {
+  if (!owner || typeof owner !== 'string' || !repo || typeof repo !== 'string') {
+    throw new Error('owner and repo must be non-empty strings');
+  }
+
+  const trimmedOwner = owner.trim();
+  const trimmedRepo = repo.trim();
+
+  if (!trimmedOwner || !trimmedRepo) {
+    throw new Error('owner and repo must be non-empty strings');
+  }
+
+  return `${trimmedOwner.toLowerCase()}/${trimmedRepo.toLowerCase()}`;
+}
+
 module.exports = {
   normalizePath,
   pathsEqual,
   pathExistsInList,
-  pathExistsInSet
+  pathExistsInSet,
+  normalizeRepository
 };

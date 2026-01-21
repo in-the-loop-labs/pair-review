@@ -6,6 +6,7 @@ const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
+const { normalizeRepository } = require('./utils/paths');
 const logger = require('./utils/logger');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
@@ -22,7 +23,7 @@ let db = null;
  * @returns {Promise<void>}
  */
 async function registerRepositoryLocation(db, currentDir, owner, repo) {
-  const repository = `${owner}/${repo}`;
+  const repository = normalizeRepository(owner, repo);
   try {
     // Use findMainGitRoot to resolve worktrees to their parent repo
     // This ensures we always store the actual git root, not a worktree path
@@ -529,7 +530,7 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
  * @param {string} worktreePath - Worktree path
  */
 async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath) {
-  const repository = `${prInfo.owner}/${prInfo.repo}`;
+  const repository = normalizeRepository(prInfo.owner, prInfo.repo);
 
   // Begin transaction for atomic database operations
   await run(db, 'BEGIN TRANSACTION');
@@ -722,7 +723,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
 
     // Get current repository path
     const currentDir = parser.getCurrentDirectory();
-    const repository = `${prInfo.owner}/${prInfo.repo}`;
+    const repository = normalizeRepository(prInfo.owner, prInfo.repo);
 
     // Register the known repository location for future web UI usage
     await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
