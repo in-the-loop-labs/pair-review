@@ -572,9 +572,16 @@ class LocalManager {
           if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
             window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
           }
+
+          // Show success toast
+          if (window.toast) {
+            window.toast.showSuccess('Comment dismissed');
+          }
         } catch (error) {
           console.error('Error deleting comment:', error);
-          alert('Failed to delete comment');
+          if (window.toast) {
+            window.toast.showError('Failed to dismiss comment');
+          }
         }
       };
     }

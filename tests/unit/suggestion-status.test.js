@@ -795,4 +795,127 @@ describe('PRManager Suggestion Status', () => {
       expect(() => prManager.updateCommentCount()).not.toThrow();
     });
   });
+
+  describe('restoreUserComment', () => {
+    let prManager;
+
+    beforeEach(() => {
+      // Setup window with standard mocks for restore tests
+      global.window = {
+        aiPanel: {
+          showDismissedComments: true
+        },
+        toast: {
+          showSuccess: vi.fn(),
+          showError: vi.fn()
+        }
+      };
+
+      // Create PRManager instance with loadUserComments mock
+      prManager = createTestPRManager();
+      prManager.loadUserComments = vi.fn().mockResolvedValue(undefined);
+    });
+
+    it('should call correct API endpoint when restoring comment', async () => {
+      const commentId = 'test-comment-restore-1';
+
+      // Mock successful PUT response
+      mockFetch.mockResolvedValueOnce({
+        ok: true
+      });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify API was called with correct endpoint and method
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/user-comment/${commentId}/restore`,
+        { method: 'PUT' }
+      );
+    });
+
+    it('should show success toast on successful restore', async () => {
+      const commentId = 'test-comment-restore-2';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify toast.showSuccess was called
+      expect(window.toast.showSuccess).toHaveBeenCalledWith('Comment restored');
+    });
+
+    it('should show error toast when API call fails', async () => {
+      const commentId = 'test-comment-restore-3';
+
+      // Mock failed PUT response
+      mockFetch.mockResolvedValueOnce({ ok: false });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify toast.showError was called
+      expect(window.toast.showError).toHaveBeenCalledWith('Failed to restore comment');
+      // Verify toast.showSuccess was NOT called
+      expect(window.toast.showSuccess).not.toHaveBeenCalled();
+    });
+
+    it('should reload comments after successful restore', async () => {
+      const commentId = 'test-comment-restore-4';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify loadUserComments was called with current filter state
+      expect(prManager.loadUserComments).toHaveBeenCalledWith(true); // showDismissedComments is true
+    });
+
+    it('should pass correct includeDismissed flag when reloading comments', async () => {
+      // Test with showDismissedComments = false
+      window.aiPanel.showDismissedComments = false;
+      const commentId = 'test-comment-restore-5';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify loadUserComments was called with false
+      expect(prManager.loadUserComments).toHaveBeenCalledWith(false);
+    });
+
+    it('should not reload comments when API call fails', async () => {
+      const commentId = 'test-comment-restore-6';
+
+      mockFetch.mockResolvedValueOnce({ ok: false });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Verify loadUserComments was NOT called on failure
+      expect(prManager.loadUserComments).not.toHaveBeenCalled();
+    });
+
+    it('should handle missing toast gracefully', async () => {
+      window.toast = null;
+      const commentId = 'test-comment-restore-7';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      // Should not throw even without toast
+      await expect(prManager.restoreUserComment(commentId)).resolves.not.toThrow();
+
+      // loadUserComments should still be called
+      expect(prManager.loadUserComments).toHaveBeenCalled();
+    });
+
+    it('should handle missing aiPanel gracefully for filter state', async () => {
+      window.aiPanel = null;
+      const commentId = 'test-comment-restore-8';
+
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      await prManager.restoreUserComment(commentId);
+
+      // Should default to false when aiPanel is missing
+      expect(prManager.loadUserComments).toHaveBeenCalledWith(false);
+    });
+  });
 });
