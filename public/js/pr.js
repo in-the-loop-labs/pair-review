@@ -1907,7 +1907,7 @@ class PRManager {
   }
 
   /**
-   * Clear all user comments (soft-delete - no confirmation needed)
+   * Clear all user comments (soft-delete with confirmation for bulk operations)
    */
   async clearAllUserComments() {
     // Count both line-level and file-level user comments
@@ -1915,7 +1915,26 @@ class PRManager {
     const fileCommentCards = document.querySelectorAll('.file-comment-card.user-comment');
     const totalComments = lineCommentRows.length + fileCommentCards.length;
 
-    if (totalComments === 0) return;
+    if (totalComments === 0) {
+      if (window.toast?.showInfo) {
+        window.toast.showInfo('No comments to clear');
+      }
+      return;
+    }
+
+    if (!window.confirmDialog) {
+      alert('Confirmation dialog unavailable. Please refresh the page.');
+      return;
+    }
+
+    const dialogResult = await window.confirmDialog.show({
+      title: 'Clear All Comments?',
+      message: `This will dismiss all ${totalComments} comment${totalComments !== 1 ? 's' : ''}. You can restore them later.`,
+      confirmText: 'Clear All',
+      confirmClass: 'btn-danger'
+    });
+
+    if (dialogResult !== 'confirm') return;
 
     try {
       const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`, {

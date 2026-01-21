@@ -754,8 +754,8 @@ class LocalManager {
 
         const dialogResult = await window.confirmDialog.show({
           title: 'Clear All Comments?',
-          message: `This will delete all ${totalComments} user comment${totalComments !== 1 ? 's' : ''} from this review. This action cannot be undone.`,
-          confirmText: 'Delete All',
+          message: `This will dismiss all ${totalComments} comment${totalComments !== 1 ? 's' : ''}. You can restore them later.`,
+          confirmText: 'Clear All',
           confirmClass: 'btn-danger'
         });
 

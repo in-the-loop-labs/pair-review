@@ -474,8 +474,8 @@ test.describe('Multi-line Drag Selection', () => {
         await page.mouse.move(endBox.x + endBox.width / 2, endBox.y + endBox.height / 2);
         await page.mouse.up();
 
-        // Wait a moment for selection to complete
-        await page.waitForTimeout(200);
+        // Wait for selection state to be reflected in DOM (button becomes visible)
+        await page.waitForSelector('.add-comment-btn:visible', { timeout: 3000 }).catch(() => {});
 
         // Add comment button should be visible after selection
         const addCommentBtn = page.locator('.add-comment-btn');
@@ -538,8 +538,8 @@ test.describe('Comment Persistence', () => {
     await page.reload();
     await waitForDiffToRender(page);
 
-    // Wait for comments to load
-    await page.waitForTimeout(1000);
+    // Wait for comment rows to be rendered in the DOM (comments load async after page load)
+    await page.waitForSelector('.user-comment-row', { timeout: 10000 });
 
     // Comment should still be visible after refresh
     const commentBody = page.locator('.user-comment-body');
@@ -568,8 +568,8 @@ test.describe('Comment Persistence', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
-    // Wait for comments to load from API
-    await page.waitForTimeout(1000);
+    // Wait for comment rows to be rendered in the DOM (comments load async after page load)
+    await page.waitForSelector('.user-comment-row', { timeout: 10000 });
 
     // The comment should be loaded from the database
     const commentBody = page.locator('.user-comment-body');
@@ -766,10 +766,16 @@ test.describe('Dismissed Comment Persistence', () => {
     // Enable the 'show dismissed' filter by clicking the filter toggle button
     const filterToggleBtn = page.locator('.filter-toggle-btn');
     await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
+
+    // Set up listener for the user-comments API call before clicking
+    const filterResponsePromise = page.waitForResponse(
+      response => response.url().includes('/user-comments') && response.url().includes('includeDismissed') && response.status() === 200,
+      { timeout: 10000 }
+    );
     await filterToggleBtn.click();
 
-    // Wait for comments to reload with dismissed included
-    await page.waitForTimeout(500);
+    // Wait for the API response that includes dismissed comments
+    await filterResponsePromise;
 
     // The dismissed comment should appear in the AI Panel with dismissed styling
     const aiPanelCommentItem = page.locator(`.finding-item.finding-comment[data-id="${commentId}"]`);
@@ -791,9 +797,6 @@ test.describe('Dismissed Comment Persistence', () => {
     const userSegmentBtnAfterReload = page.locator('.segment-btn').filter({ hasText: 'User' });
     await expect(userSegmentBtnAfterReload).toBeVisible({ timeout: 5000 });
     await userSegmentBtnAfterReload.click();
-
-    // Wait for comments to load
-    await page.waitForTimeout(1000);
 
     // Verify the filter toggle is still active (persisted via localStorage)
     const filterToggleBtnAfterReload = page.locator('.filter-toggle-btn');
@@ -865,10 +868,16 @@ test.describe('Comment Restore', () => {
     // Enable the 'show dismissed' filter by clicking the filter toggle button
     const filterToggleBtn = page.locator('.filter-toggle-btn');
     await expect(filterToggleBtn).toBeVisible({ timeout: 5000 });
+
+    // Set up listener for the user-comments API call before clicking
+    const restoreFilterResponsePromise = page.waitForResponse(
+      response => response.url().includes('/user-comments') && response.url().includes('includeDismissed') && response.status() === 200,
+      { timeout: 10000 }
+    );
     await filterToggleBtn.click();
 
-    // Wait for comments to reload with dismissed included
-    await page.waitForTimeout(500);
+    // Wait for the API response that includes dismissed comments
+    await restoreFilterResponsePromise;
 
     // The dismissed comment should now appear in the AI Panel with dismissed styling
     // Comment items in the AI Panel have class 'finding-item finding-comment' with data-id attribute
