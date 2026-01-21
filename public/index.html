@@ -515,6 +515,22 @@
             white-space: nowrap;
         }
 
+        .recent-reviews-table .col-author {
+            white-space: nowrap;
+            color: var(--color-text-secondary);
+            font-size: 13px;
+        }
+
+        .recent-reviews-table .col-author a {
+            color: var(--color-text-secondary);
+            text-decoration: none;
+        }
+
+        .recent-reviews-table .col-author a:hover {
+            color: var(--ai-primary);
+            text-decoration: underline;
+        }
+
         .recent-reviews-table .col-actions {
             text-align: center;
             white-space: nowrap;
@@ -763,11 +779,16 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
             const settingsLink = `/repo-settings.html?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
             const relativeTime = formatRelativeTime(worktree.last_accessed_at);
 
+            const authorDisplay = worktree.author
+                ? `<a href="https://github.com/${encodeURIComponent(worktree.author)}" target="_blank" rel="noopener">${escapeHtml(worktree.author)}</a>`
+                : '';
+
             return `
                 <tr>
                     <td class="col-repo">${worktree.repository}</td>
                     <td class="col-pr"><a href="${link}">#${worktree.pr_number}</a></td>
                     <td class="col-title" title="${escapeHtml(worktree.pr_title)}">${escapeHtml(worktree.pr_title)}</td>
+                    <td class="col-author">${authorDisplay}</td>
                     <td class="col-time">${relativeTime}</td>
                     <td class="col-actions">
                         <a
@@ -889,6 +910,7 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
                                 <th>Repository</th>
                                 <th>PR</th>
                                 <th>Title</th>
+                                <th>Author</th>
                                 <th>Last Opened</th>
                                 <th>Actions</th>
                             </tr>
