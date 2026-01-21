@@ -87,6 +87,7 @@ class ClaudeProvider extends AIProvider {
       'Bash(grep *)',
       'Bash(find *)',
       'Bash(rg *)',
+      'Bash(gh *)',                // GitHub CLI for PR/issue metadata
     ].join(',');
 
     if (this.useShell) {
