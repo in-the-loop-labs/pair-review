@@ -204,7 +204,9 @@ describe('CopilotProvider', () => {
       expect(args).not.toContain('--available-tools');
     });
 
-    it('should not include -p in base args (added in execute)', () => {
+    it('should not include -p flag (reads from stdin, not inline arg)', () => {
+      // Note: Copilot's -p flag expects inline prompt, but we use stdin
+      // to avoid ARG_MAX limits with large prompts
       const provider = new CopilotProvider();
       expect(provider.baseArgs).not.toContain('-p');
     });

@@ -3,7 +3,8 @@
  * GitHub Copilot AI Provider
  *
  * Implements the AI provider interface for GitHub's Copilot CLI.
- * Uses the `copilot -p` command for non-interactive execution.
+ * Prompts are piped via stdin (not using -p flag, which expects inline args
+ * and would hit ARG_MAX limits with large prompts). Uses -s for silent output.
  */
 
 const path = require('path');
@@ -134,6 +135,8 @@ class CopilotProvider extends AIProvider {
     // (shell mode only affects how command is built in execute())
     this.command = copilotCmd;
     // Base args for Copilot CLI - prompt will be sent via stdin in execute()
+    // -s: silent mode (output only agent response, no stats)
+    // Note: Do NOT use -p flag - it expects inline argument, not stdin input
     this.baseArgs = ['--model', model, ...readOnlyArgs, '-s'];
   }
 
