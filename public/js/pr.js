@@ -1809,6 +1809,10 @@ class PRManager {
   /**
    * Delete user comment (soft-delete - no confirmation needed)
    * If the comment was adopted from an AI suggestion, the suggestion is transitioned to dismissed state.
+   *
+   * DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+   * They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
+   * So we always remove the comment from the DOM here.
    */
   async deleteUserComment(commentId) {
     try {
@@ -1817,20 +1821,13 @@ class PRManager {
 
       const apiResult = await response.json();
 
-      // Check if dismissed comments should remain visible
+      // Check if dismissed comments filter is enabled for AI Panel updates
       const showDismissed = window.aiPanel?.showDismissedComments || false;
 
+      // Always remove the comment from the diff view (design decision: dismissed comments never shown in diff)
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       if (commentRow) {
-        if (showDismissed) {
-          // Transition to dismissed visual state instead of removing
-          const userComment = commentRow.querySelector('.user-comment');
-          if (userComment) {
-            userComment.classList.add('dismissed');
-          }
-        } else {
-          commentRow.remove();
-        }
+        commentRow.remove();
         this.updateCommentCount();
       }
 
@@ -1838,20 +1835,16 @@ class PRManager {
       const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
       if (fileCommentCard) {
         const zone = fileCommentCard.closest('.file-comments-zone');
-        if (showDismissed) {
-          // Transition to dismissed visual state instead of removing
-          fileCommentCard.classList.add('dismissed');
-        } else {
-          fileCommentCard.remove();
-        }
+        fileCommentCard.remove();
         if (zone && this.fileCommentManager) {
           this.fileCommentManager.updateCommentCount(zone);
         }
+        this.updateCommentCount();
       }
 
       // Update AI Panel - transition to dismissed state or remove based on filter
       if (showDismissed && window.aiPanel?.updateComment) {
-        // Update comment status to 'inactive' so it renders with dismissed styling
+        // Update comment status to 'inactive' so it renders with dismissed styling in AI Panel
         window.aiPanel.updateComment(commentId, { status: 'inactive' });
       } else if (window.aiPanel?.removeComment) {
         window.aiPanel.removeComment(commentId);
@@ -1983,6 +1976,8 @@ class PRManager {
   /**
    * Load user comments from API
    * @param {boolean} [includeDismissed=false] - Whether to include dismissed (inactive) comments
+   *   When true, dismissed comments are returned by the API so they can be shown in the AI Panel.
+   *   Note: Dismissed comments are NEVER shown in the diff panel per design decision.
    */
   async loadUserComments(includeDismissed = false) {
     if (!this.currentPR) return;
@@ -1995,14 +1990,19 @@ class PRManager {
       const data = await response.json();
       this.userComments = data.comments || [];
 
-      // Separate file-level and line-level comments, excluding dismissed for diff display
+      // Separate file-level and line-level comments for diff view rendering
+      // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+      // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
+      // This provides cleaner UX - the diff view shows only active comments, while
+      // the AI Panel serves as the "inbox" where you can optionally see and restore dismissed items.
       const fileLevelComments = [];
       const lineLevelComments = [];
 
       this.userComments.forEach(comment => {
-        // Only display active comments in the diff view (dismissed comments only show in panel)
-        if (comment.status === 'inactive') return;
-
+        // Skip inactive (dismissed) comments - they should not appear in the diff view
+        if (comment.status === 'inactive') {
+          return;
+        }
         if (comment.is_file_level === 1) {
           fileLevelComments.push(comment);
         } else {
@@ -2013,7 +2013,7 @@ class PRManager {
       // Clear existing comment rows before re-rendering
       document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
 
-      // Display line-level comments inline with diff
+      // Display line-level comments inline with diff (only active comments reach here)
       lineLevelComments.forEach(comment => {
         const fileElement = this.findFileElement(comment.file);
         if (!fileElement) return;
@@ -2036,7 +2036,7 @@ class PRManager {
         }
       });
 
-      // Load file-level comments into their zones
+      // Load file-level comments into their zones (only active comments reach here)
       if (this.fileCommentManager && fileLevelComments.length > 0) {
         this.fileCommentManager.loadFileComments(fileLevelComments, []);
       }
@@ -2463,14 +2463,12 @@ class PRManager {
 
   /**
    * Update comment count display
+   * Note: Dismissed comments are never in the diff DOM (design decision), so we simply count all visible elements.
    */
   updateCommentCount() {
     // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
-    // Exclude dismissed comments from the count - they remain in DOM when showDismissed filter is on
-    // For line-level: the .dismissed class is on the inner .user-comment element
-    // For file-level: the .dismissed class is directly on the .file-comment-card element
-    const lineComments = document.querySelectorAll('.user-comment-row:not(:has(.user-comment.dismissed))').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment:not(.dismissed)').length;
+    const lineComments = document.querySelectorAll('.user-comment-row').length;
+    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
     const userComments = lineComments + fileComments;
 
     if (this.splitButton) {

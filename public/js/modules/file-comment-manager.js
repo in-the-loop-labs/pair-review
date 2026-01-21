@@ -296,6 +296,8 @@ class FileCommentManager {
 
   /**
    * Display a user file-level comment
+   * Note: Dismissed comments are never rendered in the diff view per design decision.
+   * They only appear in the AI/Review Panel. This method only receives active comments.
    * @param {HTMLElement} zone - The file comments zone
    * @param {Object} comment - The comment data
    */

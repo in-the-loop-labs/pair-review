@@ -600,7 +600,9 @@ describe('PRManager Suggestion Status', () => {
       expect(window.toast.showError).toHaveBeenCalledWith('Failed to dismiss comment');
     });
 
-    it('should transition comment to dismissed state when showDismissedComments is true', async () => {
+    it('should always remove comment from diff view but update AI Panel when showDismissedComments is true', async () => {
+      // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+      // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
       const commentId = 'test-comment-show-dismissed';
 
       // Setup aiPanel with showDismissedComments enabled and necessary methods
@@ -611,18 +613,12 @@ describe('PRManager Suggestion Status', () => {
         updateFindingStatus: vi.fn()
       };
 
-      // Setup mock comment row with user-comment child that has classList.add
-      const mockClassList = { add: vi.fn() };
-      const mockUserComment = { classList: mockClassList };
+      // Setup mock comment row
       const mockRowWithChild = {
-        remove: vi.fn(),
-        querySelector: vi.fn().mockReturnValue(mockUserComment)
+        remove: vi.fn()
       };
 
       // Reset document.querySelector mock and set up return values
-      // document.querySelector is called twice:
-      // 1. First for line-level comment row: `[data-comment-id="..."]`
-      // 2. Second for file-level comment card: `.file-comment-card[data-comment-id="..."]`
       document.querySelector.mockReset();
       document.querySelector
         .mockReturnValueOnce(mockRowWithChild)  // line-level comment row
@@ -639,16 +635,10 @@ describe('PRManager Suggestion Status', () => {
       // Verify document.querySelector was called to find the row
       expect(document.querySelector).toHaveBeenCalledWith(`[data-comment-id="${commentId}"]`);
 
-      // Comment row should NOT be removed when showDismissedComments is true
-      expect(mockRowWithChild.remove).not.toHaveBeenCalled();
+      // Comment row should ALWAYS be removed from diff view (design decision)
+      expect(mockRowWithChild.remove).toHaveBeenCalled();
 
-      // Verify querySelector was called on the row to find user-comment element
-      expect(mockRowWithChild.querySelector).toHaveBeenCalledWith('.user-comment');
-
-      // 'dismissed' class should be added to user-comment element
-      expect(mockClassList.add).toHaveBeenCalledWith('dismissed');
-
-      // AIPanel should update comment status to 'inactive' instead of removing
+      // AIPanel should update comment status to 'inactive' (not removed from AI Panel)
       expect(window.aiPanel.updateComment).toHaveBeenCalledWith(commentId, { status: 'inactive' });
       expect(window.aiPanel.removeComment).not.toHaveBeenCalled();
 
@@ -709,14 +699,14 @@ describe('PRManager Suggestion Status', () => {
       document.getElementById = vi.fn().mockReturnValue(null);
     });
 
-    it('should count line-level comments excluding dismissed ones', () => {
-      // Mock DOM with 3 comment rows: 2 active, 1 dismissed
-      // The :not(:has(.user-comment.dismissed)) selector should exclude dismissed
+    it('should count line-level comments', () => {
+      // DESIGN DECISION: Dismissed comments are never in the diff DOM, so we simply count all visible elements.
+      // Mock DOM with 2 comment rows (all active, dismissed comments are never in DOM)
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
-          return { length: 2 }; // 2 active comments
+        if (selector === '.user-comment-row') {
+          return { length: 2 }; // 2 comments
         }
-        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
+        if (selector === '.file-comment-card.user-comment') {
           return { length: 0 }; // No file-level comments
         }
         return { length: 0 };
@@ -727,14 +717,14 @@ describe('PRManager Suggestion Status', () => {
       expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(2);
     });
 
-    it('should count file-level comments excluding dismissed ones', () => {
-      // Mock DOM with file-level comments: 1 active, 1 dismissed
+    it('should count file-level comments', () => {
+      // Mock DOM with file-level comments (dismissed comments are never in DOM)
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
+        if (selector === '.user-comment-row') {
           return { length: 0 }; // No line-level comments
         }
-        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
-          return { length: 1 }; // 1 active file-level comment
+        if (selector === '.file-comment-card.user-comment') {
+          return { length: 1 }; // 1 file-level comment
         }
         return { length: 0 };
       });
@@ -745,13 +735,13 @@ describe('PRManager Suggestion Status', () => {
     });
 
     it('should combine line-level and file-level comment counts', () => {
-      // Mock DOM with both types: 3 active line-level, 2 active file-level
+      // Mock DOM with both types: 3 line-level, 2 file-level
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
-          return { length: 3 }; // 3 active line-level comments
+        if (selector === '.user-comment-row') {
+          return { length: 3 }; // 3 line-level comments
         }
-        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
-          return { length: 2 }; // 2 active file-level comments
+        if (selector === '.file-comment-card.user-comment') {
+          return { length: 2 }; // 2 file-level comments
         }
         return { length: 0 };
       });
@@ -761,14 +751,14 @@ describe('PRManager Suggestion Status', () => {
       expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(5);
     });
 
-    it('should return 0 when all comments are dismissed', () => {
-      // Mock DOM with all comments dismissed
+    it('should return 0 when no comments exist', () => {
+      // Mock DOM with no comments (dismissed comments are never in DOM anyway)
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
-          return { length: 0 }; // All line-level dismissed
+        if (selector === '.user-comment-row') {
+          return { length: 0 }; // No line-level
         }
-        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
-          return { length: 0 }; // All file-level dismissed
+        if (selector === '.file-comment-card.user-comment') {
+          return { length: 0 }; // No file-level
         }
         return { length: 0 };
       });
@@ -782,10 +772,10 @@ describe('PRManager Suggestion Status', () => {
       prManager.splitButton = null;
 
       document.querySelectorAll.mockImplementation((selector) => {
-        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
+        if (selector === '.user-comment-row') {
           return { length: 2 };
         }
-        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
+        if (selector === '.file-comment-card.user-comment') {
           return { length: 1 };
         }
         return { length: 0 };

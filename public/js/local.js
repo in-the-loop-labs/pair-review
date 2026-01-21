@@ -158,6 +158,10 @@ class LocalManager {
     const originalLoadAISuggestions = manager.loadAISuggestions.bind(manager);
 
     // Override loadUserComments
+    // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+    // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
+    // This provides cleaner UX - the diff view shows only active comments, while
+    // the AI Panel serves as the "inbox" where you can optionally see and restore dismissed items.
     manager.loadUserComments = async function(includeDismissed = false) {
       if (!manager.currentPR) return;
 
@@ -169,14 +173,16 @@ class LocalManager {
         const data = await response.json();
         manager.userComments = data.comments || [];
 
-        // Separate file-level and line-level comments, excluding dismissed for diff display
+        // Separate file-level and line-level comments for diff view rendering
+        // Skip inactive (dismissed) comments - they should not appear in the diff view
         const fileLevelComments = [];
         const lineLevelComments = [];
 
         manager.userComments.forEach(comment => {
-          // Only display active comments in the diff view (dismissed comments only show in panel)
-          if (comment.status === 'inactive') return;
-
+          // Skip inactive (dismissed) comments - they should not appear in the diff view
+          if (comment.status === 'inactive') {
+            return;
+          }
           if (comment.is_file_level === 1) {
             fileLevelComments.push(comment);
           } else {
@@ -187,7 +193,7 @@ class LocalManager {
         // Clear existing comment rows before re-rendering
         document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
 
-        // Display line-level comments inline with diff
+        // Display line-level comments inline with diff (only active comments reach here)
         lineLevelComments.forEach(comment => {
           const fileElement = manager.findFileElement(comment.file);
           if (!fileElement) return;
@@ -210,7 +216,7 @@ class LocalManager {
           }
         });
 
-        // Load file-level comments into their zones
+        // Load file-level comments into their zones (only active comments reach here)
         if (manager.fileCommentManager && fileLevelComments.length > 0) {
           manager.fileCommentManager.loadFileComments(fileLevelComments, []);
         }
@@ -496,6 +502,8 @@ class LocalManager {
     }
 
     // Patch PRManager.deleteUserComment for local mode
+    // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
+    // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
     const originalDeleteUserComment = manager.deleteUserComment?.bind(manager);
     if (originalDeleteUserComment) {
       manager.deleteUserComment = async function(commentId) {
@@ -525,20 +533,13 @@ class LocalManager {
 
           const apiResult = await response.json();
 
-          // Check if dismissed comments should remain visible
+          // Check if dismissed comments filter is enabled for AI Panel updates
           const showDismissed = window.aiPanel?.showDismissedComments || false;
 
+          // Always remove the comment from the diff view (design decision: dismissed comments never shown in diff)
           const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
           if (commentRow) {
-            if (showDismissed) {
-              // Transition to dismissed visual state instead of removing
-              const userComment = commentRow.querySelector('.user-comment');
-              if (userComment) {
-                userComment.classList.add('dismissed');
-              }
-            } else {
-              commentRow.remove();
-            }
+            commentRow.remove();
             manager.updateCommentCount();
           }
 
@@ -546,12 +547,7 @@ class LocalManager {
           const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
           if (fileCommentCard) {
             const zone = fileCommentCard.closest('.file-comments-zone');
-            if (showDismissed) {
-              // Transition to dismissed visual state instead of removing
-              fileCommentCard.classList.add('dismissed');
-            } else {
-              fileCommentCard.remove();
-            }
+            fileCommentCard.remove();
             if (zone && manager.fileCommentManager) {
               manager.fileCommentManager.updateCommentCount(zone);
             }
@@ -560,7 +556,7 @@ class LocalManager {
 
           // Update AI Panel - transition to dismissed state or remove based on filter
           if (showDismissed && window.aiPanel?.updateComment) {
-            // Update comment status to 'inactive' so it renders with dismissed styling
+            // Update comment status to 'inactive' so it renders with dismissed styling in AI Panel
             window.aiPanel.updateComment(commentId, { status: 'inactive' });
           } else if (window.aiPanel?.removeComment) {
             window.aiPanel.removeComment(commentId);
