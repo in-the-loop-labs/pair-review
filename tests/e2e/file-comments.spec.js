@@ -557,24 +557,7 @@ test.describe('Deleting File Comments', () => {
     await expect(deleteBtn).toBeVisible();
   });
 
-  test('should show confirmation dialog when clicking delete', async ({ page }) => {
-    const card = page.locator(`[data-comment-id="${commentId}"]`);
-    const deleteBtn = card.locator('.btn-delete-comment');
-    await deleteBtn.click();
-
-    // Confirmation dialog should appear
-    const confirmDialog = page.locator('.confirm-dialog, .confirm-dialog-overlay');
-    await expect(confirmDialog.first()).toBeVisible({ timeout: 5000 });
-
-    // Should have confirm and cancel buttons
-    const confirmBtn = page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")');
-    const cancelBtn = page.locator('.confirm-dialog button:has-text("Cancel"), .btn-secondary:has-text("Cancel")');
-
-    await expect(confirmBtn.first()).toBeVisible();
-    await expect(cancelBtn.first()).toBeVisible();
-  });
-
-  test('should delete comment when confirmed', async ({ page }) => {
+  test('should delete comment immediately when clicking delete', async ({ page }) => {
     const card = page.locator(`[data-comment-id="${commentId}"]`);
 
     // Set up API listener
@@ -582,45 +565,15 @@ test.describe('Deleting File Comments', () => {
       response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
     );
 
-    // Click delete
+    // Click delete - deletion happens immediately without confirmation dialog
     const deleteBtn = card.locator('.btn-delete-comment');
     await deleteBtn.click();
-
-    // Wait for confirmation dialog
-    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
-
-    // Confirm deletion
-    const confirmBtn = page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")').first();
-    await confirmBtn.click();
 
     // Wait for delete API
     await deleteResponsePromise;
 
     // Card should be removed
     await expect(card).not.toBeVisible({ timeout: 5000 });
-  });
-
-  test('should keep comment when deletion is cancelled', async ({ page }) => {
-    const card = page.locator(`[data-comment-id="${commentId}"]`);
-
-    // Click delete
-    const deleteBtn = card.locator('.btn-delete-comment');
-    await deleteBtn.click();
-
-    // Wait for confirmation dialog
-    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
-
-    // Cancel deletion
-    const cancelBtn = page.locator('.confirm-dialog button:has-text("Cancel"), .btn-secondary:has-text("Cancel")').first();
-    await cancelBtn.click();
-
-    // Wait for dialog to close
-    await expect(page.locator('.confirm-dialog, .confirm-dialog-overlay').first()).not.toBeVisible({ timeout: 5000 });
-
-    // Card should still be visible with original text
-    await expect(card).toBeVisible();
-    const cardBody = card.locator('.user-comment-body');
-    await expect(cardBody).toContainText('Comment to be deleted');
   });
 });
 
@@ -644,13 +597,9 @@ test.describe('Empty State After Deletion', () => {
     // Verify count increased by 1
     await expect(zone.locator('.file-comment-card.user-comment')).toHaveCount(initialCount + 1, { timeout: 5000 });
 
-    // Delete the comment
+    // Delete the comment - deletion happens immediately without confirmation dialog
     const deleteBtn = card.locator('.btn-delete-comment');
     await deleteBtn.click();
-
-    await page.waitForSelector('.confirm-dialog, .confirm-dialog-overlay', { timeout: 5000 });
-    const confirmBtn = page.locator('.confirm-dialog button:has-text("Delete"), .btn-danger:has-text("Delete")').first();
-    await confirmBtn.click();
 
     // Wait for card to be removed
     await expect(card).not.toBeVisible({ timeout: 5000 });

@@ -507,20 +507,6 @@ class LocalManager {
     const originalDeleteUserComment = manager.deleteUserComment?.bind(manager);
     if (originalDeleteUserComment) {
       manager.deleteUserComment = async function(commentId) {
-        if (!window.confirmDialog) {
-          alert('Confirmation dialog unavailable. Please refresh the page.');
-          return;
-        }
-
-        const result = await window.confirmDialog.show({
-          title: 'Delete Comment?',
-          message: 'Are you sure you want to delete this comment? This action cannot be undone.',
-          confirmText: 'Delete',
-          confirmClass: 'btn-danger'
-        });
-
-        if (result !== 'confirm') return;
-
         try {
           const response = await fetch(`/api/local/${reviewId}/user-comments/${commentId}`, {
             method: 'DELETE'

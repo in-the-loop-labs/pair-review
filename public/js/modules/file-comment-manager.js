@@ -929,22 +929,6 @@ class FileCommentManager {
    * @param {number} commentId - The comment ID
    */
   async deleteFileComment(zone, commentId) {
-    if (!window.confirmDialog) {
-      if (window.toast) {
-        window.toast.showError('Confirmation dialog unavailable. Please refresh the page.');
-      }
-      return;
-    }
-
-    const result = await window.confirmDialog.show({
-      title: 'Delete Comment?',
-      message: 'Are you sure you want to delete this comment? This action cannot be undone.',
-      confirmText: 'Delete',
-      confirmClass: 'btn-danger'
-    });
-
-    if (result !== 'confirm') return;
-
     try {
       const { endpoint } = this._getFileCommentEndpoint('delete', {
         commentId: commentId

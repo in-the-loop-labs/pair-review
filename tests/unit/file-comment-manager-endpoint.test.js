@@ -504,16 +504,11 @@ describe('FileCommentManager.restoreAISuggestion', () => {
  */
 describe('FileCommentManager.deleteFileComment', () => {
   let mockFetch;
-  let mockConfirmDialog;
 
   beforeEach(() => {
     vi.resetAllMocks();
     mockFetch = vi.fn();
     global.fetch = mockFetch;
-
-    mockConfirmDialog = {
-      show: vi.fn().mockResolvedValue('confirm')
-    };
 
     // Setup window with mocks
     global.window = {
@@ -521,7 +516,6 @@ describe('FileCommentManager.deleteFileComment', () => {
         updateFindingStatus: vi.fn(),
         removeComment: vi.fn()
       },
-      confirmDialog: mockConfirmDialog,
       toast: {
         showError: vi.fn()
       }
@@ -634,17 +628,6 @@ describe('FileCommentManager.deleteFileComment', () => {
     await expect(
       fileCommentManager.deleteFileComment(mockZone, commentId)
     ).resolves.not.toThrow();
-  });
-
-  it('should not proceed when user cancels confirmation dialog', async () => {
-    mockConfirmDialog.show.mockResolvedValue('cancel');
-
-    const fileCommentManager = createTestFileCommentManager();
-
-    await fileCommentManager.deleteFileComment({}, 123);
-
-    // API should NOT be called
-    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('should show error toast when API call fails', async () => {
