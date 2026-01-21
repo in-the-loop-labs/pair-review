@@ -4,19 +4,35 @@
  *
  * Tests the show/hide functionality, configurable containerPrefix,
  * and base64 encoding/decoding for clipboard content.
+ *
+ * This file imports and tests the ACTUAL production AnalysisHistoryManager class,
+ * mocking only external dependencies (DOM, fetch, clipboard).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Helper to create mock DOM elements
+// Helper to create mock DOM elements with realistic behavior
 function createMockElement(overrides = {}) {
+  const classSet = new Set();
   return {
     style: { display: '' },
     classList: {
-      add: vi.fn(),
-      remove: vi.fn(),
-      toggle: vi.fn(),
-      contains: vi.fn(() => false)
+      add: vi.fn((cls) => classSet.add(cls)),
+      remove: vi.fn((cls) => classSet.delete(cls)),
+      toggle: vi.fn((cls, force) => {
+        if (force === undefined) {
+          if (classSet.has(cls)) {
+            classSet.delete(cls);
+          } else {
+            classSet.add(cls);
+          }
+        } else if (force) {
+          classSet.add(cls);
+        } else {
+          classSet.delete(cls);
+        }
+      }),
+      contains: vi.fn((cls) => classSet.has(cls))
     },
     addEventListener: vi.fn(),
     querySelectorAll: vi.fn(() => []),
@@ -41,15 +57,40 @@ function createMockDocument(prefix = 'analysis-context') {
   elements[`${prefix}-label`] = createMockElement(); // historyLabel
   elements[`${prefix}-dropdown`] = createMockElement(); // dropdown
   elements[`${prefix}-list`] = createMockElement(); // listElement
-  elements[`${prefix}-info-btn`] = createMockElement(); // infoBtn
-  elements[`${prefix}-popover`] = createMockElement(); // infoPopover
-  elements[`${prefix}-info-content`] = createMockElement(); // infoContent
+  elements[`${prefix}-preview`] = createMockElement(); // previewPanel
+
+  // Mock createElement to return an element that works for escapeHtml
+  const mockCreateElement = vi.fn(() => {
+    const el = {
+      textContent: '',
+      innerHTML: ''
+    };
+    // Make innerHTML reflect textContent (escaped) for escapeHtml
+    Object.defineProperty(el, 'innerHTML', {
+      get() { return this._innerHTML || ''; },
+      set(v) { this._innerHTML = v; }
+    });
+    Object.defineProperty(el, 'textContent', {
+      get() { return this._textContent || ''; },
+      set(v) {
+        this._textContent = v;
+        // Simulate browser's HTML escaping
+        this._innerHTML = v
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+    });
+    return el;
+  });
 
   return {
     getElementById: vi.fn((id) => elements[id] || null),
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
-    createElement: vi.fn(() => createMockElement()),
+    createElement: mockCreateElement,
     _elements: elements,
     _setElement: (id, el) => { elements[id] = el; }
   };
@@ -69,17 +110,17 @@ describe('AnalysisHistoryManager', () => {
   let mockWindow;
   let originalGlobals;
   let AnalysisHistoryManager;
-
-  // Mock clipboard for tests
   let mockClipboard;
+  let mockFetch;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // Save original globals
     originalGlobals = {
       document: global.document,
       window: global.window,
       btoa: global.btoa,
-      atob: global.atob
+      atob: global.atob,
+      fetch: global.fetch
     };
 
     // Set up mock document
@@ -96,366 +137,25 @@ describe('AnalysisHistoryManager', () => {
     global.btoa = mockBtoa;
     global.atob = mockAtob;
 
+    // Mock fetch
+    mockFetch = vi.fn();
+    global.fetch = mockFetch;
+
     // Mock clipboard - use vi.stubGlobal for Node.js 20+ where navigator is read-only
     mockClipboard = {
       writeText: vi.fn().mockResolvedValue(undefined)
     };
     vi.stubGlobal('navigator', { clipboard: mockClipboard });
 
-    // Load the module fresh for each test
-    // Since the module attaches to window, we need to re-evaluate it
+    // Reset modules so we get a fresh import
     vi.resetModules();
 
-    // Define a simplified version of the class for testing
-    // This mirrors the key functionality we want to test
-    class TestableAnalysisHistoryManager {
-      constructor({ reviewId, mode, onSelectionChange, containerPrefix = 'analysis-context' }) {
-        this.reviewId = reviewId;
-        this.mode = mode;
-        this.onSelectionChange = onSelectionChange;
-        this.containerPrefix = containerPrefix;
-        this.runs = [];
-        this.selectedRunId = null;
-        this.selectedRun = null;
-        this.isDropdownOpen = false;
-        this.isPopoverOpen = false;
-        this.container = null;
-        this.emptyState = null;
-        this.selector = null;
-        this.historyBtn = null;
-        this.historyLabel = null;
-        this.dropdown = null;
-        this.listElement = null;
-        this.infoBtn = null;
-        this.infoPopover = null;
-        this.infoContent = null;
-      }
+    // Now import the actual production module
+    // The module assigns to window.AnalysisHistoryManager
+    await import('../../public/js/modules/analysis-history.js');
 
-      init() {
-        const prefix = this.containerPrefix;
-        this.container = document.getElementById(prefix);
-        this.emptyState = document.getElementById(`${prefix}-empty`);
-        this.selector = document.getElementById(`${prefix}-selector`);
-        this.historyBtn = document.getElementById(`${prefix}-btn`);
-        this.historyLabel = document.getElementById(`${prefix}-label`);
-        this.dropdown = document.getElementById(`${prefix}-dropdown`);
-        this.listElement = document.getElementById(`${prefix}-list`);
-        this.infoBtn = document.getElementById(`${prefix}-info-btn`);
-        this.infoPopover = document.getElementById(`${prefix}-popover`);
-        this.infoContent = document.getElementById(`${prefix}-info-content`);
-
-        if (!this.container || !this.historyBtn) {
-          console.warn(`Analysis history elements not found in DOM with prefix: ${prefix}`);
-          return;
-        }
-
-        this.historyBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.toggleDropdown();
-        });
-
-        if (this.infoBtn) {
-          this.infoBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.toggleInfoPopover();
-          });
-        }
-
-        this.handleDocumentClick = (e) => {
-          if (!this.container.contains(e.target)) {
-            this.hideDropdown();
-            this.hideInfoPopover();
-          }
-        };
-        document.addEventListener('click', this.handleDocumentClick);
-
-        this.handleKeydown = (e) => {
-          if (e.key === 'Escape') {
-            this.hideDropdown();
-            this.hideInfoPopover();
-          }
-        };
-        document.addEventListener('keydown', this.handleKeydown);
-      }
-
-      show() {
-        if (this.emptyState) {
-          this.emptyState.style.display = 'none';
-        }
-        if (this.selector) {
-          this.selector.style.display = '';
-        }
-      }
-
-      hide() {
-        if (this.emptyState) {
-          this.emptyState.style.display = '';
-        }
-        if (this.selector) {
-          this.selector.style.display = 'none';
-        }
-      }
-
-      toggleDropdown() {
-        if (this.isDropdownOpen) {
-          this.hideDropdown();
-        } else {
-          this.showDropdown();
-        }
-      }
-
-      showDropdown() {
-        if (this.container) {
-          // Re-render dropdown to get fresh timestamps
-          if (this.runs.length > 0) {
-            this.renderDropdown(this.runs);
-          }
-          // Also update the selected label for fresh timestamp
-          this.updateSelectedLabel();
-
-          this.container.classList.add('open');
-          this.isDropdownOpen = true;
-          this.hideInfoPopover();
-        }
-      }
-
-      renderDropdown(runs) {
-        if (!this.listElement) return;
-        // Simplified rendering for tests - just sets innerHTML
-        this.listElement.innerHTML = runs.map(run => `<button data-run-id="${run.id}">${run.model}</button>`).join('');
-      }
-
-      updateSelectedLabel() {
-        if (!this.historyLabel) return;
-        if (!this.selectedRun) return;
-
-        const run = this.selectedRun;
-        const timeAgo = this.formatRelativeTime(run.completed_at || run.started_at);
-        const provider = this.formatProviderName(run.provider);
-        const model = run.model || 'Unknown';
-
-        this.historyLabel.textContent = `${timeAgo} \u00B7 ${provider} \u00B7 ${model}`;
-      }
-
-      parseTimestamp(timestamp) {
-        if (!timestamp) return new Date(NaN);
-
-        // If the timestamp already has timezone info (ends with Z or +/-offset), parse as-is
-        if (/Z$|[+-]\d{2}:\d{2}$/.test(timestamp)) {
-          return new Date(timestamp);
-        }
-
-        // SQLite CURRENT_TIMESTAMP format: "YYYY-MM-DD HH:MM:SS" (no timezone, but is UTC)
-        // Append 'Z' to interpret as UTC
-        return new Date(timestamp + 'Z');
-      }
-
-      formatRelativeTime(timestamp) {
-        if (!timestamp) return 'Unknown';
-
-        const now = new Date();
-        const date = this.parseTimestamp(timestamp);
-        const diffMs = now - date;
-        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-        const diffDays = Math.floor(diffHours / 24);
-
-        if (diffHours < 1) {
-          return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-        } else if (diffHours < 24) {
-          return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
-        } else if (diffDays < 7) {
-          return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
-        } else {
-          return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-        }
-      }
-
-      formatProviderName(provider) {
-        const providerNames = {
-          'claude': 'Claude',
-          'gemini': 'Gemini',
-          'codex': 'Codex',
-          'openai': 'OpenAI'
-        };
-        return providerNames[provider] || provider || 'Unknown';
-      }
-
-      hideDropdown() {
-        if (this.container) {
-          this.container.classList.remove('open');
-          this.isDropdownOpen = false;
-        }
-      }
-
-      toggleInfoPopover() {
-        if (this.isPopoverOpen) {
-          this.hideInfoPopover();
-        } else {
-          this.showInfoPopover();
-        }
-      }
-
-      showInfoPopover() {
-        if (this.container) {
-          this.container.classList.add('popover-open');
-          this.isPopoverOpen = true;
-          this.hideDropdown();
-        }
-      }
-
-      hideInfoPopover() {
-        if (this.container) {
-          this.container.classList.remove('popover-open');
-          this.isPopoverOpen = false;
-        }
-      }
-
-      async handleCopyInstructions(button) {
-        const encodedContent = button.dataset.content;
-        if (!encodedContent) return;
-
-        try {
-          const content = new TextDecoder().decode(Uint8Array.from(atob(encodedContent), c => c.charCodeAt(0)));
-          await navigator.clipboard.writeText(content);
-
-          button.classList.add('copied');
-          const textSpan = button.querySelector('.copy-btn-text');
-          const originalText = textSpan?.textContent;
-          if (textSpan) {
-            textSpan.textContent = 'Copied!';
-          }
-
-          setTimeout(() => {
-            button.classList.remove('copied');
-            if (textSpan && originalText) {
-              textSpan.textContent = originalText;
-            }
-          }, 1500);
-        } catch (error) {
-          console.error('Failed to copy to clipboard:', error);
-        }
-      }
-
-      getTierForModel(modelId) {
-        if (!modelId) return null;
-
-        const modelTiers = {
-          'haiku': 'fast',
-          'sonnet': 'balanced',
-          'opus': 'thorough',
-          'flash': 'fast',
-          'pro': 'balanced',
-          'ultra': 'thorough',
-          'gpt-4o-mini': 'fast',
-          'gpt-4o': 'balanced',
-          'o1': 'thorough',
-          'o1-mini': 'balanced',
-          'gpt-4': 'balanced'
-        };
-
-        return modelTiers[modelId] || null;
-      }
-
-      formatTierName(tier) {
-        if (!tier) return '';
-        return tier.toUpperCase();
-      }
-
-      escapeHtml(text) {
-        if (!text) return '';
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-      }
-
-      formatDate(timestamp) {
-        if (!timestamp) return 'Unknown';
-        const date = this.parseTimestamp(timestamp);
-        return date.toLocaleString(undefined, {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-          hour: 'numeric',
-          minute: '2-digit'
-        });
-      }
-
-      formatDuration(startedAt, completedAt) {
-        if (!startedAt || !completedAt) return 'Unknown';
-        const start = this.parseTimestamp(startedAt);
-        const end = this.parseTimestamp(completedAt);
-        const durationMs = end - start;
-        if (durationMs < 0) return 'Unknown';
-        const seconds = durationMs / 1000;
-        if (seconds < 60) {
-          return `${seconds.toFixed(1)}s`;
-        } else {
-          const minutes = Math.floor(seconds / 60);
-          const remainingSeconds = Math.floor(seconds % 60);
-          return `${minutes}m ${remainingSeconds}s`;
-        }
-      }
-
-      updateInfoPopover() {
-        if (!this.infoContent || !this.selectedRun) return;
-
-        const run = this.selectedRun;
-        const runDate = run.completed_at || run.started_at;
-        const formattedDate = runDate ? this.formatDate(runDate) : 'Unknown';
-        const duration = this.formatDuration(run.started_at, run.completed_at);
-        const suggestionCount = run.total_suggestions || 0;
-
-        const tier = this.getTierForModel(run.model);
-        const tierBadgeHtml = tier
-          ? `<span class="analysis-tier-badge analysis-tier-${tier}">${this.formatTierName(tier)}</span>`
-          : '';
-
-        let html = `
-          ${tierBadgeHtml ? `<div class="analysis-info-tier-row">${tierBadgeHtml}</div>` : ''}
-          <div class="analysis-info-row">
-            <span class="analysis-info-label">Provider</span>
-            <span class="analysis-info-value">${this.escapeHtml(this.formatProviderName(run.provider))}</span>
-          </div>
-          <div class="analysis-info-row">
-            <span class="analysis-info-label">Model</span>
-            <span class="analysis-info-value">${this.escapeHtml(run.model || 'Unknown')}</span>
-          </div>
-          <div class="analysis-info-row">
-            <span class="analysis-info-label">Run at</span>
-            <span class="analysis-info-value">${formattedDate}</span>
-          </div>
-          <div class="analysis-info-row">
-            <span class="analysis-info-label">Duration</span>
-            <span class="analysis-info-value">${duration}</span>
-          </div>
-          <div class="analysis-info-row">
-            <span class="analysis-info-label">Suggestions</span>
-            <span class="analysis-info-value">${suggestionCount}</span>
-          </div>
-        `;
-
-        this.infoContent.innerHTML = html;
-      }
-
-      destroy() {
-        if (this.handleDocumentClick) {
-          document.removeEventListener('click', this.handleDocumentClick);
-          this.handleDocumentClick = null;
-        }
-        if (this.handleKeydown) {
-          document.removeEventListener('keydown', this.handleKeydown);
-          this.handleKeydown = null;
-        }
-        this.runs = [];
-        this.selectedRunId = null;
-        this.selectedRun = null;
-        this.isDropdownOpen = false;
-        this.isPopoverOpen = false;
-      }
-    }
-
-    AnalysisHistoryManager = TestableAnalysisHistoryManager;
-    global.window.AnalysisHistoryManager = AnalysisHistoryManager;
+    // Get the class from the window object where the module attaches it
+    AnalysisHistoryManager = global.window.AnalysisHistoryManager;
   });
 
   afterEach(() => {
@@ -464,6 +164,7 @@ describe('AnalysisHistoryManager', () => {
     global.window = originalGlobals.window;
     global.btoa = originalGlobals.btoa;
     global.atob = originalGlobals.atob;
+    global.fetch = originalGlobals.fetch;
     vi.clearAllMocks();
     vi.unstubAllGlobals();
   });
@@ -606,9 +307,7 @@ describe('AnalysisHistoryManager', () => {
       expect(mockDocument.getElementById).toHaveBeenCalledWith(`${customPrefix}-label`);
       expect(mockDocument.getElementById).toHaveBeenCalledWith(`${customPrefix}-dropdown`);
       expect(mockDocument.getElementById).toHaveBeenCalledWith(`${customPrefix}-list`);
-      expect(mockDocument.getElementById).toHaveBeenCalledWith(`${customPrefix}-info-btn`);
-      expect(mockDocument.getElementById).toHaveBeenCalledWith(`${customPrefix}-popover`);
-      expect(mockDocument.getElementById).toHaveBeenCalledWith(`${customPrefix}-info-content`);
+      expect(mockDocument.getElementById).toHaveBeenCalledWith(`${customPrefix}-preview`);
     });
 
     it('should work with different DOM structures using different prefixes', () => {
@@ -658,7 +357,7 @@ describe('AnalysisHistoryManager', () => {
   });
 
   describe('Base64 encoding/decoding for clipboard content', () => {
-    // Test the encoding function used in updateInfoPopover
+    // Test the encoding function used in updatePreviewPanel
     function encodeForClipboard(text) {
       return btoa(String.fromCharCode(...new TextEncoder().encode(text)));
     }
@@ -847,7 +546,6 @@ describe('AnalysisHistoryManager', () => {
       manager.selectedRunId = '1';
       manager.selectedRun = { id: 1 };
       manager.isDropdownOpen = true;
-      manager.isPopoverOpen = true;
 
       manager.destroy();
 
@@ -855,7 +553,6 @@ describe('AnalysisHistoryManager', () => {
       expect(manager.selectedRunId).toBeNull();
       expect(manager.selectedRun).toBeNull();
       expect(manager.isDropdownOpen).toBe(false);
-      expect(manager.isPopoverOpen).toBe(false);
       expect(manager.handleDocumentClick).toBeNull();
       expect(manager.handleKeydown).toBeNull();
       expect(mockDocument.removeEventListener).toHaveBeenCalledTimes(2);
@@ -986,6 +683,7 @@ describe('AnalysisHistoryManager', () => {
         { id: 2, provider: 'gemini', model: 'pro', completed_at: new Date().toISOString() }
       ];
       manager.selectedRun = manager.runs[0];
+      manager.selectedRunId = 1;
 
       // Spy on renderDropdown
       const renderSpy = vi.spyOn(manager, 'renderDropdown');
@@ -1052,25 +750,6 @@ describe('AnalysisHistoryManager', () => {
 
       expect(manager.container.classList.add).toHaveBeenCalledWith('open');
       expect(manager.isDropdownOpen).toBe(true);
-    });
-
-    it('should close info popover when opening dropdown', () => {
-      const manager = new AnalysisHistoryManager({
-        reviewId: 1,
-        mode: 'pr',
-        onSelectionChange: vi.fn()
-      });
-      manager.init();
-
-      // Open the popover first
-      manager.isPopoverOpen = true;
-
-      // Spy on hideInfoPopover
-      const hideSpy = vi.spyOn(manager, 'hideInfoPopover');
-
-      manager.showDropdown();
-
-      expect(hideSpy).toHaveBeenCalled();
     });
   });
 
@@ -1163,8 +842,8 @@ describe('AnalysisHistoryManager', () => {
     });
   });
 
-  describe('updateInfoPopover() tier badge', () => {
-    it('should include tier badge when model has a known tier', () => {
+  describe('updatePreviewPanel() tier display', () => {
+    it('should include tier when model has a known tier', () => {
       const manager = new AnalysisHistoryManager({
         reviewId: 1,
         mode: 'pr',
@@ -1172,26 +851,24 @@ describe('AnalysisHistoryManager', () => {
       });
       manager.init();
 
-      // Set a selected run with a known model
-      manager.selectedRun = {
+      // Set up runs with a known model
+      manager.runs = [{
         id: 'run-123',
         model: 'sonnet',
         provider: 'claude',
         started_at: '2024-01-15T10:00:00Z',
         completed_at: '2024-01-15T10:01:00Z',
         total_suggestions: 5
-      };
+      }];
 
-      manager.updateInfoPopover();
+      manager.updatePreviewPanel('run-123');
 
-      // Check that the HTML includes the tier badge
-      const infoContent = mockDocument._elements['analysis-context-info-content'];
-      expect(infoContent.innerHTML).toContain('analysis-tier-badge');
-      expect(infoContent.innerHTML).toContain('analysis-tier-balanced');
-      expect(infoContent.innerHTML).toContain('BALANCED');
+      // Check that the HTML includes the tier
+      const previewPanel = mockDocument._elements['analysis-context-preview'];
+      expect(previewPanel.innerHTML).toContain('Balanced');
     });
 
-    it('should include fast tier badge for fast models', () => {
+    it('should include fast tier for fast models', () => {
       const manager = new AnalysisHistoryManager({
         reviewId: 1,
         mode: 'pr',
@@ -1199,23 +876,22 @@ describe('AnalysisHistoryManager', () => {
       });
       manager.init();
 
-      manager.selectedRun = {
+      manager.runs = [{
         id: 'run-123',
         model: 'haiku',
         provider: 'claude',
         started_at: '2024-01-15T10:00:00Z',
         completed_at: '2024-01-15T10:01:00Z',
         total_suggestions: 3
-      };
+      }];
 
-      manager.updateInfoPopover();
+      manager.updatePreviewPanel('run-123');
 
-      const infoContent = mockDocument._elements['analysis-context-info-content'];
-      expect(infoContent.innerHTML).toContain('analysis-tier-fast');
-      expect(infoContent.innerHTML).toContain('FAST');
+      const previewPanel = mockDocument._elements['analysis-context-preview'];
+      expect(previewPanel.innerHTML).toContain('Fast');
     });
 
-    it('should include thorough tier badge for thorough models', () => {
+    it('should include thorough tier for thorough models', () => {
       const manager = new AnalysisHistoryManager({
         reviewId: 1,
         mode: 'pr',
@@ -1223,23 +899,22 @@ describe('AnalysisHistoryManager', () => {
       });
       manager.init();
 
-      manager.selectedRun = {
+      manager.runs = [{
         id: 'run-123',
         model: 'opus',
         provider: 'claude',
         started_at: '2024-01-15T10:00:00Z',
         completed_at: '2024-01-15T10:01:00Z',
         total_suggestions: 8
-      };
+      }];
 
-      manager.updateInfoPopover();
+      manager.updatePreviewPanel('run-123');
 
-      const infoContent = mockDocument._elements['analysis-context-info-content'];
-      expect(infoContent.innerHTML).toContain('analysis-tier-thorough');
-      expect(infoContent.innerHTML).toContain('THOROUGH');
+      const previewPanel = mockDocument._elements['analysis-context-preview'];
+      expect(previewPanel.innerHTML).toContain('Thorough');
     });
 
-    it('should not include tier badge for unknown models', () => {
+    it('should show Unknown tier for unknown models', () => {
       const manager = new AnalysisHistoryManager({
         reviewId: 1,
         mode: 'pr',
@@ -1247,20 +922,20 @@ describe('AnalysisHistoryManager', () => {
       });
       manager.init();
 
-      manager.selectedRun = {
+      manager.runs = [{
         id: 'run-123',
         model: 'unknown-model',
         provider: 'custom',
         started_at: '2024-01-15T10:00:00Z',
         completed_at: '2024-01-15T10:01:00Z',
         total_suggestions: 2
-      };
+      }];
 
-      manager.updateInfoPopover();
+      manager.updatePreviewPanel('run-123');
 
-      const infoContent = mockDocument._elements['analysis-context-info-content'];
-      expect(infoContent.innerHTML).not.toContain('analysis-tier-badge');
-      expect(infoContent.innerHTML).not.toContain('analysis-info-tier-row');
+      const previewPanel = mockDocument._elements['analysis-context-preview'];
+      // Should show Unknown for the tier
+      expect(previewPanel.innerHTML).toContain('Unknown');
     });
   });
 
@@ -1385,6 +1060,301 @@ describe('AnalysisHistoryManager', () => {
       );
 
       expect(result).toBe('1m 30s');
+    });
+  });
+
+  describe('refresh()', () => {
+    it('should switch to the new run when switchToNew=true', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up existing state with an old run selected
+      manager.runs = [{ id: 'old-run', model: 'sonnet', provider: 'claude' }];
+      manager.selectedRunId = 'old-run';
+      manager.selectedRun = manager.runs[0];
+
+      // Mock fetch to return both old and new runs
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          runs: [
+            { id: 'new-run', model: 'opus', provider: 'claude' },
+            { id: 'old-run', model: 'sonnet', provider: 'claude' }
+          ]
+        })
+      });
+
+      await manager.refresh({ switchToNew: true });
+
+      // Should switch to the new run
+      expect(manager.selectedRunId).toBe('new-run');
+      expect(manager.selectedRun.model).toBe('opus');
+      expect(manager.newRunId).toBeNull();
+    });
+
+    it('should preserve user selection and show indicator when switchToNew=false', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up existing state with an old run selected
+      manager.runs = [{ id: 'old-run', model: 'sonnet', provider: 'claude' }];
+      manager.selectedRunId = 'old-run';
+      manager.selectedRun = manager.runs[0];
+
+      // Mock fetch to return both old and new runs
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          runs: [
+            { id: 'new-run', model: 'opus', provider: 'claude' },
+            { id: 'old-run', model: 'sonnet', provider: 'claude' }
+          ]
+        })
+      });
+
+      await manager.refresh({ switchToNew: false });
+
+      // Should preserve the old selection
+      expect(manager.selectedRunId).toBe('old-run');
+      expect(manager.selectedRun.model).toBe('sonnet');
+      // Should mark the new run
+      expect(manager.newRunId).toBe('new-run');
+      // Should show the indicator
+      expect(manager.historyBtn.classList.add).toHaveBeenCalledWith('has-new-run');
+    });
+
+    it('should switch to new run even with switchToNew=false if no previous selection', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // No previous selection
+      manager.runs = [];
+      manager.selectedRunId = null;
+      manager.selectedRun = null;
+
+      // Mock fetch to return a new run
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          runs: [
+            { id: 'new-run', model: 'opus', provider: 'claude' }
+          ]
+        })
+      });
+
+      await manager.refresh({ switchToNew: false });
+
+      // Should switch to the new run since there was no previous selection
+      expect(manager.selectedRunId).toBe('new-run');
+      expect(manager.selectedRun.model).toBe('opus');
+      expect(manager.newRunId).toBeNull();
+    });
+
+    it('should return previous runs on fetch error', async () => {
+      // Suppress expected console warning
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up existing state
+      const oldRuns = [{ id: 'old-run', model: 'sonnet', provider: 'claude' }];
+      manager.runs = oldRuns;
+      manager.selectedRunId = 'old-run';
+
+      // Mock fetch to return an error
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500
+      });
+
+      const result = await manager.refresh({ switchToNew: true });
+
+      // Should return the previous runs
+      expect(result).toEqual(oldRuns);
+    });
+  });
+
+  describe('clearNewRunIndicator()', () => {
+    it('should be called when user selects the new run', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up state with a new run indicator
+      manager.runs = [
+        { id: 'new-run', model: 'opus', provider: 'claude' },
+        { id: 'old-run', model: 'sonnet', provider: 'claude' }
+      ];
+      manager.newRunId = 'new-run';
+      manager.selectedRunId = 'old-run';
+      manager.selectedRun = manager.runs[1];
+
+      // Select the new run
+      await manager.selectRun('new-run', false);
+
+      // Should clear the indicator
+      expect(manager.newRunId).toBeNull();
+      expect(manager.historyBtn.classList.remove).toHaveBeenCalledWith('has-new-run');
+    });
+
+    it('should not clear indicator when selecting a different run', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+      manager.init();
+
+      // Set up state with a new run indicator
+      manager.runs = [
+        { id: 'new-run', model: 'opus', provider: 'claude' },
+        { id: 'middle-run', model: 'haiku', provider: 'claude' },
+        { id: 'old-run', model: 'sonnet', provider: 'claude' }
+      ];
+      manager.newRunId = 'new-run';
+      manager.selectedRunId = 'old-run';
+      manager.selectedRun = manager.runs[2];
+
+      // Select the middle run (not the new one)
+      await manager.selectRun('middle-run', false);
+
+      // Should NOT clear the indicator
+      expect(manager.newRunId).toBe('new-run');
+    });
+  });
+
+  describe('hasNewRun() and getNewRunId()', () => {
+    it('hasNewRun() should return true when newRunId is set', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      manager.newRunId = 'some-run-id';
+
+      expect(manager.hasNewRun()).toBe(true);
+    });
+
+    it('hasNewRun() should return false when newRunId is null', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      manager.newRunId = null;
+
+      expect(manager.hasNewRun()).toBe(false);
+    });
+
+    it('getNewRunId() should return the newRunId value', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      manager.newRunId = 'test-run-123';
+
+      expect(manager.getNewRunId()).toBe('test-run-123');
+    });
+
+    it('getNewRunId() should return null when no new run', () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      manager.newRunId = null;
+
+      expect(manager.getNewRunId()).toBeNull();
+    });
+  });
+
+  describe('fetchRuns()', () => {
+    it('should return empty runs when reviewId is not set', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: null,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      const result = await manager.fetchRuns();
+
+      expect(result).toEqual({ runs: [], error: null });
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should fetch runs from the API', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 123,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      const mockRuns = [{ id: 1, model: 'opus' }, { id: 2, model: 'sonnet' }];
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ runs: mockRuns })
+      });
+
+      const result = await manager.fetchRuns();
+
+      expect(mockFetch).toHaveBeenCalledWith('/api/analysis-runs/123');
+      expect(result).toEqual({ runs: mockRuns, error: null });
+    });
+
+    it('should handle HTTP errors', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 123,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404
+      });
+
+      const result = await manager.fetchRuns();
+
+      expect(result).toEqual({ runs: [], error: 'HTTP 404' });
+    });
+
+    it('should handle network errors', async () => {
+      const manager = new AnalysisHistoryManager({
+        reviewId: 123,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+
+      mockFetch.mockRejectedValueOnce(new Error('Network failure'));
+
+      const result = await manager.fetchRuns();
+
+      expect(result).toEqual({ runs: [], error: 'Network failure' });
     });
   });
 });

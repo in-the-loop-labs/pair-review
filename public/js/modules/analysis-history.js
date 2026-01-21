@@ -32,6 +32,7 @@ class AnalysisHistoryManager {
     this.selectedRun = null;
     this.isDropdownOpen = false;
     this.previewingRunId = null; // Track which run ID is currently being previewed to prevent flicker
+    this.newRunId = null; // Track a new run that user hasn't viewed yet
 
     // DOM elements (cached after init)
     this.container = null;
@@ -120,47 +121,64 @@ class AnalysisHistoryManager {
   }
 
   /**
-   * Load analysis runs from the API
-   * @returns {Promise<Array>} The loaded runs
+   * Fetch analysis runs from the API
+   * @returns {Promise<{runs: Array, error: string|null}>} The fetched runs or error
+   * @private
    */
-  async loadAnalysisRuns() {
+  async fetchRuns() {
     if (!this.reviewId) {
-      this.hide();
-      return [];
+      return { runs: [], error: null };
     }
 
     try {
       const response = await fetch(`/api/analysis-runs/${this.reviewId}`);
       if (!response.ok) {
-        console.warn('Failed to fetch analysis runs:', response.status);
-        this.hide();
-        return [];
+        return { runs: [], error: `HTTP ${response.status}` };
       }
 
       const data = await response.json();
-      this.runs = data.runs || [];
-
-      if (this.runs.length === 0) {
-        this.hide();
-        return [];
-      }
-
-      // Render the dropdown
-      this.renderDropdown(this.runs);
-
-      // Select the latest run by default (first in the list since they're ordered by date DESC)
-      if (this.runs.length > 0 && !this.selectedRunId) {
-        const latestRun = this.runs[0];
-        await this.selectRun(latestRun.id, true); // Trigger callback to load suggestions on initial load
-      }
-
-      this.show();
-      return this.runs;
+      return { runs: data.runs || [], error: null };
     } catch (error) {
-      console.error('Error loading analysis runs:', error);
+      return { runs: [], error: error.message };
+    }
+  }
+
+  /**
+   * Load analysis runs from the API (initial load only)
+   *
+   * This method is intended for initial page load and always selects the latest run.
+   * For refreshing after a new analysis completes, use refresh() instead, which has
+   * logic to optionally preserve the user's current selection.
+   *
+   * @returns {Promise<Array>} The loaded runs
+   */
+  async loadAnalysisRuns() {
+    const { runs, error } = await this.fetchRuns();
+
+    if (error) {
+      console.warn('Failed to fetch analysis runs:', error);
       this.hide();
       return [];
     }
+
+    this.runs = runs;
+
+    if (this.runs.length === 0) {
+      this.hide();
+      return [];
+    }
+
+    // Always select the latest run (first in the list since they're ordered by date DESC)
+    // This ensures that after a new analysis completes, its results are displayed
+    const latestRun = this.runs[0];
+    const shouldTriggerCallback = !this.selectedRunId || String(this.selectedRunId) !== String(latestRun.id);
+    await this.selectRun(latestRun.id, shouldTriggerCallback);
+
+    // Render the dropdown (after selecting so the selected state is correct)
+    this.renderDropdown(this.runs);
+
+    this.show();
+    return this.runs;
   }
 
   /**
@@ -172,17 +190,21 @@ class AnalysisHistoryManager {
 
     this.listElement.innerHTML = runs.map((run) => {
       const isSelected = String(run.id) === String(this.selectedRunId);
+      const isNewRun = String(run.id) === String(this.newRunId);
       const timeAgo = this.formatRelativeTime(run.completed_at || run.started_at);
 
       const modelName = this.escapeHtml(run.model || 'Unknown');
       const providerName = this.escapeHtml(this.formatProviderName(run.provider));
       const fullTitle = `${this.formatProviderName(run.provider)} - ${run.model || 'Unknown'}`;
 
+      const newBadge = isNewRun ? '<span class="analysis-history-new-badge">LATEST</span>' : '';
+
       return `
-        <button class="analysis-history-item ${isSelected ? 'selected' : ''}" data-run-id="${run.id}">
+        <button class="analysis-history-item ${isSelected ? 'selected' : ''} ${isNewRun ? 'is-new' : ''}" data-run-id="${run.id}">
           <div class="analysis-history-item-main" title="${this.escapeHtml(fullTitle)}">
             <span class="analysis-history-item-provider">${providerName}</span>
             <span class="analysis-history-item-model">&middot; ${modelName}</span>
+            ${newBadge}
           </div>
           <div class="analysis-history-item-meta">
             <span>${timeAgo}</span>
@@ -233,6 +255,13 @@ class AnalysisHistoryManager {
 
     // Find the run in our cached list (handle both string and number IDs)
     this.selectedRun = this.runs.find(r => String(r.id) === String(runId)) || null;
+
+    // If selecting the new run, clear the new run indicator
+    if (String(runId) === String(this.newRunId)) {
+      this.clearNewRunIndicator();
+      // Re-render dropdown to remove the NEW badge
+      this.renderDropdown(this.runs);
+    }
 
     // Update button label
     this.updateSelectedLabel();
@@ -706,23 +735,114 @@ class AnalysisHistoryManager {
 
   /**
    * Refresh the analysis runs list (e.g., after a new analysis completes)
+   * @param {Object} options - Refresh options
+   * @param {boolean} options.switchToNew - Whether to switch to the new run (default: true)
    * @returns {Promise<Array>} The refreshed runs
    */
-  async refresh() {
+  async refresh({ switchToNew = true } = {}) {
     const previousSelectedId = this.selectedRunId;
-    this.runs = [];
-    this.selectedRunId = null;
-    this.selectedRun = null;
+    const previousRuns = [...this.runs];
 
-    const runs = await this.loadAnalysisRuns();
+    // Fetch the updated runs list
+    const { runs, error } = await this.fetchRuns();
 
-    // If the previously selected run still exists, keep it selected
-    // Otherwise, the latest run will be selected by default
-    if (previousSelectedId && runs.find(r => String(r.id) === String(previousSelectedId))) {
-      await this.selectRun(previousSelectedId, false);
+    if (error) {
+      console.warn('Failed to fetch analysis runs:', error);
+      // Restore previous state on failure
+      return previousRuns;
     }
 
-    return runs;
+    this.runs = runs;
+
+    if (this.runs.length === 0) {
+      this.hide();
+      return [];
+    }
+
+    // Find the new run (newest run that wasn't in the previous list)
+    const latestRun = this.runs[0];
+    const isNewRun = latestRun && !previousRuns.find(r => String(r.id) === String(latestRun.id));
+
+    if (isNewRun) {
+      // Determine whether to switch to new run:
+      // - Always switch if explicitly requested (switchToNew = true)
+      // - Always switch if there was no previous selection (user wasn't viewing anything)
+      // - Don't switch if user was viewing older results and switchToNew = false
+      const hadPreviousSelection = previousSelectedId && previousRuns.length > 0;
+      const shouldSwitch = switchToNew || !hadPreviousSelection;
+
+      if (shouldSwitch) {
+        // Switch to new run immediately
+        this.newRunId = null;
+        this.selectedRunId = latestRun.id;
+        this.selectedRun = latestRun;
+        this.clearNewRunIndicator();
+      } else {
+        // User was viewing older results - don't switch, but mark new run
+        this.newRunId = latestRun.id;
+        // Keep previous selection
+        const previousRun = this.runs.find(r => String(r.id) === String(previousSelectedId));
+        if (previousSelectedId && previousRun) {
+          this.selectedRunId = previousSelectedId;
+          this.selectedRun = previousRun;
+        }
+        // Show amber glow indicator on the dropdown button
+        this.showNewRunIndicator();
+      }
+    } else {
+      // No new run, keep previous selection if it still exists
+      const previousRun = this.runs.find(r => String(r.id) === String(previousSelectedId));
+      if (previousSelectedId && previousRun) {
+        this.selectedRunId = previousSelectedId;
+        this.selectedRun = previousRun;
+      } else {
+        // Previous selection no longer exists, select latest
+        this.selectedRunId = latestRun?.id || null;
+        this.selectedRun = latestRun || null;
+      }
+    }
+
+    // Update the label and render dropdown
+    this.updateSelectedLabel();
+    this.renderDropdown(this.runs);
+    this.show();
+
+    return this.runs;
+  }
+
+  /**
+   * Show the amber glow indicator on the dropdown button to indicate new results are available
+   */
+  showNewRunIndicator() {
+    if (this.historyBtn) {
+      this.historyBtn.classList.add('has-new-run');
+    }
+  }
+
+  /**
+   * Clear the amber glow indicator from the dropdown button
+   */
+  clearNewRunIndicator() {
+    if (this.historyBtn) {
+      this.historyBtn.classList.remove('has-new-run');
+    }
+    this.newRunId = null;
+  }
+
+  /**
+   * Check if there's a new run that the user hasn't viewed yet
+   * @returns {boolean} True if there's a new run available
+   */
+  hasNewRun() {
+    return this.newRunId !== null;
+  }
+
+  /**
+   * Get the ID of the new run (if any)
+   * @returns {string|null} The new run ID, or null if none
+   */
+  getNewRunId() {
+    return this.newRunId;
   }
 
   /**

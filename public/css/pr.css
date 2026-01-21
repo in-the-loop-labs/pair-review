@@ -597,6 +597,7 @@
   --color-text-tertiary: #656d76;
   --color-text-muted: #8c959f;
   --color-text-link: #0969da;
+  --color-text-on-emphasis: #ffffff;
 
   --color-border-primary: #d1d9e0;
   --color-border-secondary: #e1e4e8;
@@ -682,6 +683,7 @@
   --color-text-tertiary: #6e7681;
   --color-text-muted: #484f58;
   --color-text-link: #58a6ff;
+  --color-text-on-emphasis: #ffffff;
 
   --color-border-primary: #30363d;
   --color-border-secondary: #21262d;
@@ -6012,6 +6014,31 @@ body.resizing * {
   background: var(--color-bg-tertiary);
 }
 
+/* Amber glow animation for new run indicator */
+@keyframes amber-pulse {
+  0%, 100% {
+    box-shadow: 0 0 4px 1px rgba(245, 158, 11, 0.4),
+                0 0 8px 2px rgba(245, 158, 11, 0.2);
+    border-color: rgba(245, 158, 11, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 8px 2px rgba(245, 158, 11, 0.6),
+                0 0 16px 4px rgba(245, 158, 11, 0.3);
+    border-color: rgba(245, 158, 11, 0.8);
+  }
+}
+
+.analysis-context-btn.has-new-run {
+  animation: amber-pulse 2s ease-in-out infinite;
+  border-color: rgba(245, 158, 11, 0.6);
+}
+
+.analysis-context-btn.has-new-run:hover {
+  animation: none;
+  border-color: rgba(245, 158, 11, 0.8);
+  box-shadow: 0 0 8px 2px rgba(245, 158, 11, 0.5);
+}
+
 .analysis-context-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6125,6 +6152,41 @@ body.resizing * {
   gap: 8px;
   font-size: 11px;
   color: var(--color-text-muted);
+}
+
+/* NEW badge for new analysis runs */
+.analysis-history-new-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-text-on-emphasis);
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  border-radius: 3px;
+  margin-left: auto;
+  flex-shrink: 0;
+  animation: badge-glow 2s ease-in-out infinite;
+}
+
+@keyframes badge-glow {
+  0%, 100% {
+    box-shadow: 0 0 2px rgba(245, 158, 11, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+  }
+}
+
+/* Highlight new run item in list */
+.analysis-run-list .analysis-history-item.is-new {
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.analysis-run-list .analysis-history-item.is-new:hover {
+  background: rgba(245, 158, 11, 0.12);
 }
 
 /* Right panel: Preview */
@@ -6355,6 +6417,45 @@ body.resizing * {
 
 [data-theme="dark"] .analysis-preview-instructions-text {
   background: var(--color-bg-tertiary);
+}
+
+/* Dark theme: amber glow for new run indicator */
+[data-theme="dark"] .analysis-context-btn.has-new-run {
+  animation: amber-pulse-dark 2s ease-in-out infinite;
+}
+
+@keyframes amber-pulse-dark {
+  0%, 100% {
+    box-shadow: 0 0 6px 1px rgba(251, 191, 36, 0.5),
+                0 0 12px 3px rgba(251, 191, 36, 0.25);
+    border-color: rgba(251, 191, 36, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 10px 3px rgba(251, 191, 36, 0.7),
+                0 0 20px 6px rgba(251, 191, 36, 0.35);
+    border-color: rgba(251, 191, 36, 0.9);
+  }
+}
+
+[data-theme="dark"] .analysis-context-btn.has-new-run:hover {
+  animation: none;
+  border-color: rgba(251, 191, 36, 0.9);
+  box-shadow: 0 0 10px 3px rgba(251, 191, 36, 0.6);
+}
+
+/* Dark theme: NEW badge */
+[data-theme="dark"] .analysis-history-new-badge {
+  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+  color: #1f2937;
+}
+
+/* Dark theme: highlight new run item */
+[data-theme="dark"] .analysis-run-list .analysis-history-item.is-new {
+  background: rgba(251, 191, 36, 0.12);
+}
+
+[data-theme="dark"] .analysis-run-list .analysis-history-item.is-new:hover {
+  background: rgba(251, 191, 36, 0.18);
 }
 
 /* Tier-specific colors */
