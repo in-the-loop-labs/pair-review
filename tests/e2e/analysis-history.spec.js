@@ -5,9 +5,9 @@
  * Tests the analysis history UI including:
  * - Empty state display when no analysis exists
  * - Selector display after analysis runs
- * - Info popover opening and details
- * - Copy button feedback
- * - Repository instructions toggle behavior
+ * - Split-panel dropdown with hover-to-preview functionality
+ * - Copy button feedback in preview panel
+ * - Dropdown behavior and selection
  */
 
 import { test, expect } from '@playwright/test';
@@ -170,8 +170,8 @@ test.describe('Analysis History - Selector Display', () => {
   });
 });
 
-test.describe('Analysis History - Info Popover', () => {
-  test('should open info popover when clicking info button', async ({ page }) => {
+test.describe('Analysis History - Preview Panel', () => {
+  test('should show preview panel in split-panel dropdown', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
@@ -183,17 +183,20 @@ test.describe('Analysis History - Info Popover', () => {
     const selector = page.locator('#analysis-context-selector');
     await expect(selector).toBeVisible({ timeout: 5000 });
 
-    // Click the info button
-    const infoBtn = page.locator('#analysis-context-info-btn');
-    await expect(infoBtn).toBeVisible();
-    await infoBtn.click();
+    // Click the selector button to open dropdown
+    await page.locator('#analysis-context-btn').click();
 
-    // Popover should be visible
-    const popover = page.locator('#analysis-context-popover');
-    await expect(popover).toBeVisible({ timeout: 2000 });
+    // Dropdown should have two panels: run list and preview
+    const dropdown = page.locator('#analysis-context-dropdown');
+    await expect(dropdown).toBeVisible({ timeout: 2000 });
+
+    const runList = page.locator('#analysis-context-list');
+    const previewPanel = page.locator('#analysis-context-preview');
+    await expect(runList).toBeVisible();
+    await expect(previewPanel).toBeVisible();
   });
 
-  test('should show analysis details in popover', async ({ page }) => {
+  test('should show analysis details in preview panel', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
@@ -204,19 +207,66 @@ test.describe('Analysis History - Info Popover', () => {
     // Wait for selector to be visible
     await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
 
-    // Open popover
-    await page.locator('#analysis-context-info-btn').click();
+    // Open dropdown
+    await page.locator('#analysis-context-btn').click();
 
-    // Check for expected labels in the popover
-    const popoverContent = page.locator('#analysis-context-info-content');
-    await expect(popoverContent).toBeVisible({ timeout: 2000 });
+    // Check for expected content in the preview panel
+    const previewPanel = page.locator('#analysis-context-preview');
+    await expect(previewPanel).toBeVisible({ timeout: 2000 });
 
-    // Should show Model, Provider, and other details
-    await expect(popoverContent).toContainText('Model');
-    await expect(popoverContent).toContainText('Provider');
+    // Should show run details (Run at, Duration, Suggestions)
+    await expect(previewPanel).toContainText('Run at');
+    await expect(previewPanel).toContainText('Duration');
+    await expect(previewPanel).toContainText('Suggestions');
   });
 
-  test('should close popover when clicking outside', async ({ page }) => {
+  test('should update preview when hovering over different run items', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Run multiple analyses to have more than one item
+    await seedAnalysis(page);
+    await seedAnalysis(page);
+    await reloadAnalysisHistory(page);
+
+    // Open dropdown
+    await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
+    await page.locator('#analysis-context-btn').click();
+
+    // Get the run items and wait for at least 2 items to be ready
+    const runItems = page.locator('#analysis-context-list .analysis-history-item');
+    await expect(async () => {
+      const count = await runItems.count();
+      expect(count).toBeGreaterThanOrEqual(2);
+    }).toPass({ timeout: 3000 });
+
+    // Hover over the second item
+    await runItems.nth(1).hover();
+
+    // The second item should have the 'previewing' class
+    await expect(runItems.nth(1)).toHaveClass(/previewing/);
+
+    // Verify the preview panel displays the correct content for the hovered item
+    const previewPanel = page.locator('#analysis-context-preview');
+    await expect(previewPanel).toBeVisible();
+
+    // Should show Provider row
+    const providerRow = previewPanel.locator('.analysis-preview-row:has(.analysis-preview-label:text("Provider"))');
+    await expect(providerRow).toBeVisible();
+    await expect(providerRow.locator('.analysis-preview-value')).toHaveText(/\w+/); // Non-empty provider
+
+    // Should show Model row
+    const modelRow = previewPanel.locator('.analysis-preview-row:has(.analysis-preview-label:text("Model"))');
+    await expect(modelRow).toBeVisible();
+    await expect(modelRow.locator('.analysis-preview-value')).toHaveText(/\w+/); // Non-empty model
+
+    // Should show Tier row
+    const tierRow = previewPanel.locator('.analysis-preview-row:has(.analysis-preview-label:text("Tier"))');
+    await expect(tierRow).toBeVisible();
+    await expect(tierRow.locator('.analysis-preview-value')).toHaveText(/\w+/); // Non-empty tier (Fast, Balanced, Thorough, or Unknown)
+  });
+
+  test('should close dropdown when pressing Escape', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
@@ -224,45 +274,23 @@ test.describe('Analysis History - Info Popover', () => {
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
 
-    // Open popover
+    // Open dropdown
     await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
-    await page.locator('#analysis-context-info-btn').click();
+    await page.locator('#analysis-context-btn').click();
 
-    const popover = page.locator('#analysis-context-popover');
-    await expect(popover).toBeVisible({ timeout: 2000 });
-
-    // Click outside the analysis context area
-    await page.locator('#diff-container').click();
-
-    // Popover should close
-    await expect(popover).toBeHidden({ timeout: 2000 });
-  });
-
-  test('should close popover when pressing Escape', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-
-    // Run analysis
-    await seedAnalysis(page);
-    await reloadAnalysisHistory(page);
-
-    // Open popover
-    await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
-    await page.locator('#analysis-context-info-btn').click();
-
-    const popover = page.locator('#analysis-context-popover');
-    await expect(popover).toBeVisible({ timeout: 2000 });
+    const container = page.locator('#analysis-context');
+    await expect(container).toHaveClass(/open/, { timeout: 2000 });
 
     // Press Escape
     await page.keyboard.press('Escape');
 
-    // Popover should close
-    await expect(popover).toBeHidden({ timeout: 2000 });
+    // Dropdown should close
+    await expect(container).not.toHaveClass(/open/, { timeout: 2000 });
   });
 });
 
 test.describe('Analysis History - Copy Button', () => {
-  test('should show "Copied!" feedback when clicking copy button', async ({ page, context }) => {
+  test('should show "Copied!" feedback when clicking copy button in preview', async ({ page, context }) => {
     // Grant clipboard permissions to allow the copy operation
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
 
@@ -273,13 +301,13 @@ test.describe('Analysis History - Copy Button', () => {
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
 
-    // Open popover
+    // Open dropdown
     await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
-    await page.locator('#analysis-context-info-btn').click();
-    await page.locator('#analysis-context-popover').waitFor({ state: 'visible', timeout: 2000 });
+    await page.locator('#analysis-context-btn').click();
+    await page.locator('#analysis-context-dropdown').waitFor({ state: 'visible', timeout: 2000 });
 
-    // Find a copy button in the popover
-    const copyBtn = page.locator('#analysis-context-popover [data-action="copy-instructions"]').first();
+    // Find a copy button in the preview panel
+    const copyBtn = page.locator('#analysis-context-preview [data-action="copy-instructions"]').first();
 
     // Check if copy button exists (may not exist if no custom instructions)
     const copyBtnExists = await copyBtn.count() > 0;
@@ -315,13 +343,13 @@ test.describe('Analysis History - Copy Button', () => {
     await seedAnalysis(page);
     await reloadAnalysisHistory(page);
 
-    // Open popover
+    // Open dropdown
     await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
-    await page.locator('#analysis-context-info-btn').click();
-    await page.locator('#analysis-context-popover').waitFor({ state: 'visible', timeout: 2000 });
+    await page.locator('#analysis-context-btn').click();
+    await page.locator('#analysis-context-dropdown').waitFor({ state: 'visible', timeout: 2000 });
 
-    // Find a copy button
-    const copyBtn = page.locator('#analysis-context-popover [data-action="copy-instructions"]').first();
+    // Find a copy button in preview panel
+    const copyBtn = page.locator('#analysis-context-preview [data-action="copy-instructions"]').first();
 
     // Check if copy button exists
     const copyBtnExists = await copyBtn.count() > 0;
@@ -338,121 +366,6 @@ test.describe('Analysis History - Copy Button', () => {
 
     // Class should be removed after timeout
     await expect(copyBtn).not.toHaveClass(/copied/, { timeout: 3000 });
-  });
-});
-
-test.describe('Analysis History - Repository Instructions Toggle', () => {
-  test('should toggle expanded class on repo section when clicking toggle', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-
-    // Run analysis - we need to ensure repo instructions are present
-    // First, let's check if we can set repo instructions
-    await page.evaluate(async () => {
-      // Set repo settings with default instructions via API
-      await fetch('/api/repo-settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repository: 'test-owner/test-repo',
-          default_instructions: 'Repository instructions for testing'
-        })
-      });
-    });
-
-    // Now run analysis
-    await seedAnalysis(page);
-    await reloadAnalysisHistory(page);
-
-    // Open popover
-    await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
-    await page.locator('#analysis-context-info-btn').click();
-    await page.locator('#analysis-context-popover').waitFor({ state: 'visible', timeout: 2000 });
-
-    // Find the repo instructions toggle button
-    const toggleBtn = page.locator('#analysis-context-popover [data-action="toggle-repo-instructions"]').first();
-
-    // Check if toggle button exists (may not exist if no repo instructions)
-    const toggleExists = await toggleBtn.count() > 0;
-    if (!toggleExists) {
-      // Skip this test if no repo instructions toggle present
-      test.skip();
-      return;
-    }
-
-    // Find the parent section
-    const repoSection = page.locator('#analysis-context-popover .analysis-info-repo-section').first();
-
-    // Initially should not have expanded class
-    await expect(repoSection).not.toHaveClass(/expanded/);
-
-    // Click toggle to expand
-    await toggleBtn.click();
-
-    // Should now have expanded class
-    await expect(repoSection).toHaveClass(/expanded/, { timeout: 1000 });
-
-    // Click again to collapse
-    await toggleBtn.click();
-
-    // Should no longer have expanded class
-    await expect(repoSection).not.toHaveClass(/expanded/, { timeout: 1000 });
-  });
-
-  test('should expand repo section to show content', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-
-    // Set repo instructions
-    await page.evaluate(async () => {
-      await fetch('/api/repo-settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          repository: 'test-owner/test-repo',
-          default_instructions: 'Repository instructions for testing the expand feature'
-        })
-      });
-    });
-
-    // Run analysis
-    await seedAnalysis(page);
-    await reloadAnalysisHistory(page);
-
-    // Open popover
-    await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
-    await page.locator('#analysis-context-info-btn').click();
-    await page.locator('#analysis-context-popover').waitFor({ state: 'visible', timeout: 2000 });
-
-    // Find the toggle
-    const toggleBtn = page.locator('#analysis-context-popover [data-action="toggle-repo-instructions"]').first();
-
-    // Check if toggle exists
-    const toggleExists = await toggleBtn.count() > 0;
-    if (!toggleExists) {
-      test.skip();
-      return;
-    }
-
-    // The content section
-    const contentSection = page.locator('#analysis-context-popover .analysis-info-repo-content').first();
-
-    // Content should be hidden initially (collapsed)
-    // The CSS uses display: none when not expanded
-    const initialDisplay = await contentSection.evaluate(el => {
-      return window.getComputedStyle(el).display;
-    });
-    expect(initialDisplay).toBe('none');
-
-    // Click to expand
-    await toggleBtn.click();
-
-    // Content should now be visible (expanded)
-    // The CSS uses display: block when expanded
-    const expandedDisplay = await contentSection.evaluate(el => {
-      return window.getComputedStyle(el).display;
-    });
-    expect(expandedDisplay).toBe('block');
   });
 });
 
@@ -521,7 +434,7 @@ test.describe('Analysis History - Dropdown', () => {
     expect(count).toBeGreaterThan(0);
   });
 
-  test('should show LATEST badge on most recent analysis', async ({ page }) => {
+  test('should show first item as selected (most recent)', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
@@ -533,9 +446,8 @@ test.describe('Analysis History - Dropdown', () => {
     await page.locator('#analysis-context-selector').waitFor({ state: 'visible', timeout: 5000 });
     await page.locator('#analysis-context-btn').click();
 
-    // First item should have LATEST badge
-    const latestBadge = page.locator('#analysis-context-list .analysis-history-item:first-child .analysis-latest-badge');
-    await expect(latestBadge).toBeVisible();
-    await expect(latestBadge).toContainText('LATEST');
+    // First item should be selected (most recent is selected by default)
+    const firstItem = page.locator('#analysis-context-list .analysis-history-item:first-child');
+    await expect(firstItem).toHaveClass(/selected/);
   });
 });

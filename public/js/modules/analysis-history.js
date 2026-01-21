@@ -2,14 +2,14 @@
 /**
  * Analysis History Manager
  *
- * Manages the analysis history dropdown and info popover for selecting
+ * Manages the analysis history split-panel dropdown for selecting
  * between different AI analysis runs. Works in both PR mode and Local mode.
  *
  * Features:
- * - Displays list of analysis runs with model, provider, and timestamp
- * - Allows selecting a specific run to view its suggestions
- * - Shows detailed info popover with duration, suggestion count, and custom instructions
- * - Click outside to close dropdown/popover
+ * - Split-panel dropdown: left panel shows compact run list, right panel shows preview
+ * - Click to select a run and load its suggestions
+ * - Preview panel shows details of the currently selected run
+ * - Click outside to close dropdown
  */
 class AnalysisHistoryManager {
   /**
@@ -31,7 +31,7 @@ class AnalysisHistoryManager {
     this.selectedRunId = null;
     this.selectedRun = null;
     this.isDropdownOpen = false;
-    this.isPopoverOpen = false;
+    this.previewingRunId = null; // Track which run ID is currently being previewed to prevent flicker
 
     // DOM elements (cached after init)
     this.container = null;
@@ -41,9 +41,7 @@ class AnalysisHistoryManager {
     this.historyLabel = null;
     this.dropdown = null;
     this.listElement = null;
-    this.infoBtn = null;
-    this.infoPopover = null;
-    this.infoContent = null;
+    this.previewPanel = null;
   }
 
   /**
@@ -60,9 +58,7 @@ class AnalysisHistoryManager {
     this.historyLabel = document.getElementById(`${prefix}-label`);
     this.dropdown = document.getElementById(`${prefix}-dropdown`);
     this.listElement = document.getElementById(`${prefix}-list`);
-    this.infoBtn = document.getElementById(`${prefix}-info-btn`);
-    this.infoPopover = document.getElementById(`${prefix}-popover`);
-    this.infoContent = document.getElementById(`${prefix}-info-content`);
+    this.previewPanel = document.getElementById(`${prefix}-preview`);
 
     if (!this.container || !this.historyBtn) {
       console.warn(`Analysis history elements not found in DOM with prefix: ${prefix}`);
@@ -75,28 +71,33 @@ class AnalysisHistoryManager {
       this.toggleDropdown();
     });
 
-    if (this.infoBtn) {
-      this.infoBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.toggleInfoPopover();
-      });
-    }
-
-    // Event delegation for info popover actions
-    if (this.infoPopover) {
-      this.infoPopover.addEventListener('click', (e) => {
-        // Handle copy button first - it takes priority and stops propagation
+    // Event delegation for preview panel actions (copy button, repo instructions toggle)
+    if (this.previewPanel) {
+      this.previewPanel.addEventListener('click', (e) => {
         const copyBtn = e.target.closest('[data-action="copy-instructions"]');
         if (copyBtn) {
           e.stopPropagation();
           this.handleCopyInstructions(copyBtn, e);
-          return; // Don't process other actions
+          return;
         }
 
-        // Handle toggle button for repo instructions
-        const toggleBtn = e.target.closest('[data-action="toggle-repo-instructions"]');
-        if (toggleBtn) {
-          this.handleRepoInstructionsToggle(toggleBtn);
+        const repoToggle = e.target.closest('[data-action="toggle-repo-instructions"]');
+        if (repoToggle) {
+          e.stopPropagation();
+          const container = repoToggle.closest('.analysis-preview-repo-instructions');
+          if (container) {
+            container.classList.toggle('collapsed');
+          }
+          return;
+        }
+
+        const customToggle = e.target.closest('[data-action="toggle-custom-instructions"]');
+        if (customToggle) {
+          e.stopPropagation();
+          const container = customToggle.closest('.analysis-preview-custom-instructions');
+          if (container) {
+            container.classList.toggle('collapsed');
+          }
         }
       });
     }
@@ -105,7 +106,6 @@ class AnalysisHistoryManager {
     this.handleDocumentClick = (e) => {
       if (!this.container.contains(e.target)) {
         this.hideDropdown();
-        this.hideInfoPopover();
       }
     };
     document.addEventListener('click', this.handleDocumentClick);
@@ -114,7 +114,6 @@ class AnalysisHistoryManager {
     this.handleKeydown = (e) => {
       if (e.key === 'Escape') {
         this.hideDropdown();
-        this.hideInfoPopover();
       }
     };
     document.addEventListener('keydown', this.handleKeydown);
@@ -171,11 +170,9 @@ class AnalysisHistoryManager {
   renderDropdown(runs) {
     if (!this.listElement) return;
 
-    this.listElement.innerHTML = runs.map((run, index) => {
-      const isLatest = index === 0;
-      const isSelected = run.id === this.selectedRunId;
+    this.listElement.innerHTML = runs.map((run) => {
+      const isSelected = String(run.id) === String(this.selectedRunId);
       const timeAgo = this.formatRelativeTime(run.completed_at || run.started_at);
-      const suggestionCount = run.total_suggestions || 0;
 
       const modelName = this.escapeHtml(run.model || 'Unknown');
       const providerName = this.escapeHtml(this.formatProviderName(run.provider));
@@ -186,23 +183,42 @@ class AnalysisHistoryManager {
           <div class="analysis-history-item-main" title="${this.escapeHtml(fullTitle)}">
             <span class="analysis-history-item-provider">${providerName}</span>
             <span class="analysis-history-item-model">&middot; ${modelName}</span>
-            ${isLatest ? '<span class="analysis-latest-badge">LATEST</span>' : ''}
           </div>
           <div class="analysis-history-item-meta">
             <span>${timeAgo}</span>
-            <span>${suggestionCount} suggestion${suggestionCount !== 1 ? 's' : ''}</span>
           </div>
         </button>
       `;
     }).join('');
 
-    // Add click handlers to items
+    // Add click and hover handlers to items
     this.listElement.querySelectorAll('.analysis-history-item').forEach(item => {
+      // Click to select
       item.addEventListener('click', (e) => {
         e.stopPropagation();
         const runId = item.dataset.runId;
         this.selectRun(runId, true);
         this.hideDropdown();
+      });
+
+      // Hover to preview
+      item.addEventListener('mouseenter', () => {
+        const runId = item.dataset.runId;
+        // Add previewing class for visual highlighting
+        this.listElement.querySelectorAll('.analysis-history-item').forEach(i => {
+          i.classList.remove('previewing');
+        });
+        item.classList.add('previewing');
+
+        // Only update preview if different from currently previewed run (prevents flicker)
+        if (String(runId) !== String(this.previewingRunId)) {
+          this.previewingRunId = runId;
+          this.updatePreviewPanel(runId);
+        }
+      });
+
+      item.addEventListener('mouseleave', () => {
+        item.classList.remove('previewing');
       });
     });
   }
@@ -224,12 +240,9 @@ class AnalysisHistoryManager {
     // Update selected state in dropdown
     if (this.listElement) {
       this.listElement.querySelectorAll('.analysis-history-item').forEach(item => {
-        item.classList.toggle('selected', item.dataset.runId === runId);
+        item.classList.toggle('selected', String(item.dataset.runId) === String(runId));
       });
     }
-
-    // Update info popover content
-    this.updateInfoPopover();
 
     // Trigger callback to load suggestions for this run
     if (triggerCallback && this.onSelectionChange) {
@@ -253,12 +266,26 @@ class AnalysisHistoryManager {
   }
 
   /**
-   * Update the info popover content with the selected run's details
+   * Update the preview panel content for a specific run
+   * @param {string} runId - The run ID to preview
    */
-  updateInfoPopover() {
-    if (!this.infoContent || !this.selectedRun) return;
+  updatePreviewPanel(runId) {
+    if (!this.previewPanel) return;
 
-    const run = this.selectedRun;
+    // Find the run in our cached list
+    const run = this.runs.find(r => String(r.id) === String(runId));
+    if (!run) {
+      this.previewPanel.innerHTML = `
+        <div class="analysis-preview-empty">
+          <svg class="analysis-preview-empty-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+          </svg>
+          <span>Select a run to view details</span>
+        </div>
+      `;
+      return;
+    }
+
     const runDate = run.completed_at || run.started_at;
     const formattedDate = runDate ? this.formatDate(runDate) : 'Unknown';
     const duration = this.formatDuration(run.started_at, run.completed_at);
@@ -266,45 +293,52 @@ class AnalysisHistoryManager {
 
     // Get the tier for this analysis run's model
     const tier = this.getTierForModel(run.model);
-    const tierBadgeHtml = tier
-      ? `<span class="analysis-tier-badge analysis-tier-${tier}">${this.formatTierName(tier)}</span>`
-      : '';
+    const tierDisplayText = tier ? this.formatTierDisplayName(tier) : 'Unknown';
 
     let html = `
-      <div class="analysis-info-row">
-        <span class="analysis-info-label">Provider</span>
-        <span class="analysis-info-value">${this.escapeHtml(this.formatProviderName(run.provider))}</span>
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Provider</span>
+        <span class="analysis-preview-value">${this.escapeHtml(this.formatProviderName(run.provider))}</span>
       </div>
-      <div class="analysis-info-row">
-        <span class="analysis-info-label">Model</span>
-        <span class="analysis-info-value">${this.escapeHtml(run.model || 'Unknown')}${tierBadgeHtml ? ` ${tierBadgeHtml}` : ''}</span>
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Model</span>
+        <span class="analysis-preview-value">${this.escapeHtml(run.model || 'Unknown')}</span>
       </div>
-      <div class="analysis-info-row">
-        <span class="analysis-info-label">Run at</span>
-        <span class="analysis-info-value">${formattedDate}</span>
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Tier</span>
+        <span class="analysis-preview-value">${tierDisplayText}</span>
       </div>
-      <div class="analysis-info-row">
-        <span class="analysis-info-label">Duration</span>
-        <span class="analysis-info-value">${duration}</span>
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Run at</span>
+        <span class="analysis-preview-value">${formattedDate}</span>
       </div>
-      <div class="analysis-info-row">
-        <span class="analysis-info-label">Suggestions</span>
-        <span class="analysis-info-value">${suggestionCount}</span>
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Duration</span>
+        <span class="analysis-preview-value">${duration}</span>
+      </div>
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Suggestions</span>
+        <span class="analysis-preview-value">${suggestionCount}</span>
       </div>
     `;
 
     // Handle instructions display - check for new separate fields first, fall back to legacy custom_instructions
     const hasRequestInstructions = run.request_instructions && run.request_instructions.trim();
-    const hasRepoInstructions = run.repo_instructions && run.repo_instructions.trim();
     const hasLegacyInstructions = run.custom_instructions && run.custom_instructions.trim();
+    const hasRepoInstructions = run.repo_instructions && run.repo_instructions.trim();
 
+    // Add collapsible custom instructions section if present (expanded by default)
     if (hasRequestInstructions) {
-      // Show request instructions prominently as "Custom Instructions" with copy button
-      // Use base64 encoding for data-content to preserve special characters when copying
+      // Show request instructions as collapsible with copy button (expanded by default)
       html += `
-        <div class="analysis-info-instructions">
-          <div class="analysis-info-instructions-header">
-            <span class="analysis-info-instructions-label">Custom Instructions</span>
+        <div class="analysis-preview-custom-instructions">
+          <div class="analysis-preview-custom-header">
+            <button class="analysis-preview-custom-toggle" data-action="toggle-custom-instructions">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"></path>
+              </svg>
+              Custom Instructions
+            </button>
             <button class="analysis-info-copy-btn" data-action="copy-instructions" data-content="${btoa(String.fromCharCode(...new TextEncoder().encode(run.request_instructions)))}" title="Copy to clipboard">
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
@@ -313,21 +347,45 @@ class AnalysisHistoryManager {
               <span class="copy-btn-text">Copy</span>
             </button>
           </div>
-          <div class="analysis-info-instructions-text">${this.escapeHtml(run.request_instructions)}</div>
+          <div class="analysis-preview-custom-content">
+            <div class="analysis-preview-instructions-text">${this.escapeHtml(run.request_instructions)}</div>
+          </div>
+        </div>
+      `;
+    } else if (hasLegacyInstructions) {
+      // Backward compatibility: show legacy custom_instructions as collapsible with copy button (expanded by default)
+      html += `
+        <div class="analysis-preview-custom-instructions">
+          <div class="analysis-preview-custom-header">
+            <button class="analysis-preview-custom-toggle" data-action="toggle-custom-instructions">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"></path>
+              </svg>
+              Custom Instructions
+            </button>
+            <button class="analysis-info-copy-btn" data-action="copy-instructions" data-content="${btoa(String.fromCharCode(...new TextEncoder().encode(run.custom_instructions)))}" title="Copy to clipboard">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+                <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+              </svg>
+              <span class="copy-btn-text">Copy</span>
+            </button>
+          </div>
+          <div class="analysis-preview-custom-content">
+            <div class="analysis-preview-instructions-text">${this.escapeHtml(run.custom_instructions)}</div>
+          </div>
         </div>
       `;
     }
 
+    // Add collapsible repo instructions section if present
     if (hasRepoInstructions) {
-      // Show repo instructions in a collapsible section with copy button
-      // Use a wrapper div instead of nested buttons (invalid HTML)
-      // Use base64 encoding for data-content to preserve special characters when copying
       html += `
-        <div class="analysis-info-repo-section">
-          <div class="analysis-info-repo-header">
-            <button class="analysis-info-repo-toggle" data-action="toggle-repo-instructions">
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-                <path d="M4.5 2L8.5 6L4.5 10" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <div class="analysis-preview-repo-instructions collapsed">
+          <div class="analysis-preview-repo-header">
+            <button class="analysis-preview-repo-toggle" data-action="toggle-repo-instructions">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"></path>
               </svg>
               Repository Instructions
             </button>
@@ -339,32 +397,14 @@ class AnalysisHistoryManager {
               <span class="copy-btn-text">Copy</span>
             </button>
           </div>
-          <div class="analysis-info-repo-content">
-            <div class="analysis-info-instructions-text">${this.escapeHtml(run.repo_instructions)}</div>
+          <div class="analysis-preview-repo-content">
+            <div class="analysis-preview-instructions-text">${this.escapeHtml(run.repo_instructions)}</div>
           </div>
-        </div>
-      `;
-    } else if (hasLegacyInstructions && !hasRequestInstructions) {
-      // Backward compatibility: show legacy custom_instructions if no new fields exist
-      // Use base64 encoding for data-content to preserve special characters when copying
-      html += `
-        <div class="analysis-info-instructions">
-          <div class="analysis-info-instructions-header">
-            <span class="analysis-info-instructions-label">Custom Instructions (Combined)</span>
-            <button class="analysis-info-copy-btn" data-action="copy-instructions" data-content="${btoa(String.fromCharCode(...new TextEncoder().encode(run.custom_instructions)))}" title="Copy to clipboard">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
-                <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
-              </svg>
-              <span class="copy-btn-text">Copy</span>
-            </button>
-          </div>
-          <div class="analysis-info-instructions-text">${this.escapeHtml(run.custom_instructions)}</div>
         </div>
       `;
     }
 
-    this.infoContent.innerHTML = html;
+    this.previewPanel.innerHTML = html;
   }
 
   /**
@@ -390,10 +430,14 @@ class AnalysisHistoryManager {
       // Also update the selected label for fresh timestamp
       this.updateSelectedLabel();
 
+      // Initialize preview panel with currently selected run and track it
+      if (this.selectedRunId) {
+        this.previewingRunId = this.selectedRunId;
+        this.updatePreviewPanel(this.selectedRunId);
+      }
+
       this.container.classList.add('open');
       this.isDropdownOpen = true;
-      // Close popover when opening dropdown
-      this.hideInfoPopover();
     }
   }
 
@@ -404,51 +448,6 @@ class AnalysisHistoryManager {
     if (this.container) {
       this.container.classList.remove('open');
       this.isDropdownOpen = false;
-    }
-  }
-
-  /**
-   * Toggle the info popover visibility
-   */
-  toggleInfoPopover() {
-    if (this.isPopoverOpen) {
-      this.hideInfoPopover();
-    } else {
-      this.showInfoPopover();
-    }
-  }
-
-  /**
-   * Show the info popover
-   */
-  showInfoPopover() {
-    if (this.container) {
-      this.container.classList.add('popover-open');
-      this.isPopoverOpen = true;
-      // Close dropdown when opening popover
-      this.hideDropdown();
-    }
-  }
-
-  /**
-   * Hide the info popover
-   */
-  hideInfoPopover() {
-    if (this.container) {
-      this.container.classList.remove('popover-open');
-      this.isPopoverOpen = false;
-    }
-  }
-
-  /**
-   * Handle repo instructions toggle button click
-   * @param {HTMLElement} button - The toggle button element
-   */
-  handleRepoInstructionsToggle(button) {
-    // Toggle expanded class on the parent section element
-    const section = button.closest('.analysis-info-repo-section');
-    if (section) {
-      section.classList.toggle('expanded');
     }
   }
 
@@ -658,13 +657,23 @@ class AnalysisHistoryManager {
   }
 
   /**
-   * Format a tier name for display
+   * Format a tier name for display (uppercase, used for badges)
    * @param {string} tier - The tier identifier (e.g., 'fast', 'balanced', 'thorough')
    * @returns {string} Display name in uppercase
    */
   formatTierName(tier) {
     if (!tier) return '';
     return tier.toUpperCase();
+  }
+
+  /**
+   * Format a tier name for display as plain text (capitalized)
+   * @param {string} tier - The tier identifier (e.g., 'fast', 'balanced', 'thorough')
+   * @returns {string} Display name with first letter capitalized (e.g., 'Thorough')
+   */
+  formatTierDisplayName(tier) {
+    if (!tier) return '';
+    return tier.charAt(0).toUpperCase() + tier.slice(1).toLowerCase();
   }
 
   /**
@@ -737,7 +746,6 @@ class AnalysisHistoryManager {
     this.selectedRunId = null;
     this.selectedRun = null;
     this.isDropdownOpen = false;
-    this.isPopoverOpen = false;
   }
 }
 
