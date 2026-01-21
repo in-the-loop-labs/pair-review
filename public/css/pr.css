@@ -4035,6 +4035,47 @@ tr.line-range-start .d2h-code-line-ctn {
   color: #8b949e;
 }
 
+/* ========================================
+   Dismissed User Comment Styling
+   Visual state for soft-deleted comments when "show dismissed" is enabled
+   ======================================== */
+.user-comment.dismissed {
+  opacity: 0.6;
+  border-left-style: dashed;
+}
+
+.user-comment.dismissed .user-comment-body {
+  text-decoration: line-through;
+  color: var(--color-text-tertiary, #656d76);
+}
+
+.user-comment.dismissed .user-comment-header {
+  opacity: 0.7;
+}
+
+[data-theme="dark"] .user-comment.dismissed .user-comment-body {
+  color: var(--color-text-tertiary, #8b949e);
+}
+
+/* File-level comment card dismissed styling */
+.file-comment-card.dismissed {
+  opacity: 0.6;
+  border-left-style: dashed;
+}
+
+.file-comment-card.dismissed .user-comment-body {
+  text-decoration: line-through;
+  color: var(--color-text-tertiary, #656d76);
+}
+
+.file-comment-card.dismissed .user-comment-header {
+  opacity: 0.7;
+}
+
+[data-theme="dark"] .file-comment-card.dismissed .user-comment-body {
+  color: var(--color-text-tertiary, #8b949e);
+}
+
 [data-theme="dark"] .review-panel {
   background: #161b22;
   border-color: #30363d;

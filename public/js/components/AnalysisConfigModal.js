@@ -217,7 +217,7 @@ class AnalysisConfigModal {
 
         <div class="modal-footer analysis-config-footer">
           <button class="btn btn-secondary" data-action="cancel">Cancel</button>
-          <button class="btn btn-primary btn-analyze" data-action="submit">
+          <button class="btn btn-primary btn-analyze" data-action="submit" title="Start Analysis (Cmd/Ctrl+Enter)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <polygon points="5 3 19 12 5 21 5 3"/>
             </svg>
@@ -464,7 +464,7 @@ class AnalysisConfigModal {
       if (isOverLimit) {
         submitBtn.title = 'Custom instructions exceed 5,000 character limit';
       } else {
-        submitBtn.title = '';
+        submitBtn.title = 'Start Analysis (Cmd/Ctrl+Enter)';
       }
     }
   }

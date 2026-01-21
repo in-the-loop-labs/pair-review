@@ -3860,6 +3860,66 @@ describe('Local Routes Dismissal Response Structure', () => {
       expect(response.status).toBe(400);
     });
   });
+
+  describe('PUT /api/local/:reviewId/user-comments/:commentId/restore', () => {
+    it('should return 404 for non-existent comment', async () => {
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/user-comments/9999/restore`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should return 400 when trying to restore a non-dismissed comment', async () => {
+      // Create an active user comment
+      const commentResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 10, 'Active comment', 'active')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/user-comments/${commentResult.lastID}/restore`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('not dismissed');
+    });
+
+    it('should restore an inactive (dismissed) comment to active status', async () => {
+      // Create an inactive user comment
+      const commentResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'user', 'test.js', 10, 'Dismissed comment', 'inactive')
+      `, [reviewId]);
+
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/user-comments/${commentResult.lastID}/restore`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.comment).toBeDefined();
+      expect(response.body.comment.status).toBe('active');
+
+      // Verify in database
+      const comment = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [commentResult.lastID]);
+      expect(comment.status).toBe('active');
+    });
+
+    it('should return 400 for invalid review ID', async () => {
+      const response = await request(app)
+        .put('/api/local/invalid/user-comments/1/restore');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return 400 for invalid comment ID', async () => {
+      const response = await request(app)
+        .put(`/api/local/${reviewId}/user-comments/invalid/restore`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid comment ID');
+    });
+  });
 });
 
 // ============================================================================

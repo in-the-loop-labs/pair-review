@@ -599,5 +599,93 @@ describe('PRManager Suggestion Status', () => {
       // Error toast should be shown
       expect(window.toast.showError).toHaveBeenCalledWith('Failed to dismiss comment');
     });
+
+    it('should transition comment to dismissed state when showDismissedComments is true', async () => {
+      const commentId = 'test-comment-show-dismissed';
+
+      // Setup aiPanel with showDismissedComments enabled and necessary methods
+      window.aiPanel = {
+        showDismissedComments: true,
+        updateComment: vi.fn(),
+        removeComment: vi.fn(),
+        updateFindingStatus: vi.fn()
+      };
+
+      // Setup mock comment row with user-comment child that has classList.add
+      const mockClassList = { add: vi.fn() };
+      const mockUserComment = { classList: mockClassList };
+      const mockRowWithChild = {
+        remove: vi.fn(),
+        querySelector: vi.fn().mockReturnValue(mockUserComment)
+      };
+
+      // Reset document.querySelector mock and set up return values
+      // document.querySelector is called twice:
+      // 1. First for line-level comment row: `[data-comment-id="..."]`
+      // 2. Second for file-level comment card: `.file-comment-card[data-comment-id="..."]`
+      document.querySelector.mockReset();
+      document.querySelector
+        .mockReturnValueOnce(mockRowWithChild)  // line-level comment row
+        .mockReturnValueOnce(null);              // file-level comment card (not found)
+
+      // Mock successful DELETE response
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ success: true })
+      });
+
+      await prManager.deleteUserComment(commentId);
+
+      // Verify document.querySelector was called to find the row
+      expect(document.querySelector).toHaveBeenCalledWith(`[data-comment-id="${commentId}"]`);
+
+      // Comment row should NOT be removed when showDismissedComments is true
+      expect(mockRowWithChild.remove).not.toHaveBeenCalled();
+
+      // Verify querySelector was called on the row to find user-comment element
+      expect(mockRowWithChild.querySelector).toHaveBeenCalledWith('.user-comment');
+
+      // 'dismissed' class should be added to user-comment element
+      expect(mockClassList.add).toHaveBeenCalledWith('dismissed');
+
+      // AIPanel should update comment status to 'inactive' instead of removing
+      expect(window.aiPanel.updateComment).toHaveBeenCalledWith(commentId, { status: 'inactive' });
+      expect(window.aiPanel.removeComment).not.toHaveBeenCalled();
+
+      // Comment count should still be updated
+      expect(prManager.updateCommentCount).toHaveBeenCalled();
+    });
+
+    it('should remove comment when showDismissedComments is false', async () => {
+      const commentId = 'test-comment-hide-dismissed';
+
+      // Setup aiPanel with showDismissedComments disabled (default)
+      window.aiPanel = {
+        showDismissedComments: false,
+        updateComment: vi.fn(),
+        removeComment: vi.fn(),
+        updateFindingStatus: vi.fn()
+      };
+
+      // Setup mock comment row
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)  // line-level comment row
+        .mockReturnValueOnce(null);            // file-level comment card (not found)
+
+      // Mock successful DELETE response
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ success: true })
+      });
+
+      await prManager.deleteUserComment(commentId);
+
+      // Comment row should be removed when showDismissedComments is false
+      expect(mockCommentRow.remove).toHaveBeenCalled();
+
+      // AIPanel should remove comment, not update it
+      expect(window.aiPanel.removeComment).toHaveBeenCalledWith(commentId);
+      expect(window.aiPanel.updateComment).not.toHaveBeenCalled();
+    });
   });
 });

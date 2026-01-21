@@ -1817,24 +1817,43 @@ class PRManager {
 
       const apiResult = await response.json();
 
+      // Check if dismissed comments should remain visible
+      const showDismissed = window.aiPanel?.showDismissedComments || false;
+
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       if (commentRow) {
-        commentRow.remove();
+        if (showDismissed) {
+          // Transition to dismissed visual state instead of removing
+          const userComment = commentRow.querySelector('.user-comment');
+          if (userComment) {
+            userComment.classList.add('dismissed');
+          }
+        } else {
+          commentRow.remove();
+        }
         this.updateCommentCount();
       }
 
-      // Also remove file-level comment cards if applicable
+      // Also handle file-level comment cards
       const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
       if (fileCommentCard) {
         const zone = fileCommentCard.closest('.file-comments-zone');
-        fileCommentCard.remove();
+        if (showDismissed) {
+          // Transition to dismissed visual state instead of removing
+          fileCommentCard.classList.add('dismissed');
+        } else {
+          fileCommentCard.remove();
+        }
         if (zone && this.fileCommentManager) {
           this.fileCommentManager.updateCommentCount(zone);
         }
       }
 
-      // Notify AI Panel about the deleted comment
-      if (window.aiPanel?.removeComment) {
+      // Update AI Panel - transition to dismissed state or remove based on filter
+      if (showDismissed && window.aiPanel?.updateComment) {
+        // Update comment status to 'inactive' so it renders with dismissed styling
+        window.aiPanel.updateComment(commentId, { status: 'inactive' });
+      } else if (window.aiPanel?.removeComment) {
         window.aiPanel.removeComment(commentId);
       }
 

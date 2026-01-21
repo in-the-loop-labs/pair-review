@@ -8,7 +8,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, CommentRepository, ReviewRepository } = require('../database');
+const { queryOne, run, CommentRepository, ReviewRepository } = require('../database');
 
 const router = express.Router();
 
@@ -294,55 +294,6 @@ router.get('/api/pr/:owner/:repo/:number/user-comments', async (req, res) => {
     const comments = await commentRepo.getUserComments(review.id, {
       includeDismissed: includeDismissed === 'true'
     });
-
-    res.json({
-      success: true,
-      comments: comments || []
-    });
-
-  } catch (error) {
-    console.error('Error fetching user comments:', error);
-    res.status(500).json({
-      error: 'Failed to fetch user comments'
-    });
-  }
-});
-
-/**
- * Get user comments for a PR (legacy endpoint by ID)
- */
-router.get('/api/pr/:id/user-comments', async (req, res) => {
-  try {
-    const prId = parseInt(req.params.id);
-
-    if (isNaN(prId) || prId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid PR ID'
-      });
-    }
-
-    const comments = await query(req.app.get('db'), `
-      SELECT
-        id,
-        source,
-        author,
-        file,
-        line_start,
-        line_end,
-        diff_position,
-        side,
-        type,
-        title,
-        body,
-        status,
-        parent_id,
-        is_file_level,
-        created_at,
-        updated_at
-      FROM comments
-      WHERE review_id = ? AND source = 'user' AND status IN ('active', 'submitted', 'draft')
-      ORDER BY file, line_start, created_at
-    `, [prId]);
 
     res.json({
       success: true,
