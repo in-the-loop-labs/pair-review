@@ -220,7 +220,7 @@ class LocalManager {
     };
 
     // Override loadAISuggestions
-    manager.loadAISuggestions = async function(level = null) {
+    manager.loadAISuggestions = async function(level = null, runId = null) {
       if (!manager.currentPR) return;
 
       try {
@@ -248,7 +248,13 @@ class LocalManager {
         }
 
         const filterLevel = level || manager.selectedLevel || 'final';
-        const url = `/api/local/${reviewId}/suggestions?levels=${filterLevel}`;
+        // Use provided runId, or fall back to selectedRunId (which may be null for latest)
+        const filterRunId = runId !== undefined ? runId : manager.selectedRunId;
+
+        let url = `/api/local/${reviewId}/suggestions?levels=${filterLevel}`;
+        if (filterRunId) {
+          url += `&runId=${filterRunId}`;
+        }
 
         const response = await fetch(url);
         if (!response.ok) return;
@@ -324,38 +330,6 @@ class LocalManager {
       }
 
       try {
-        // Check if there are existing AI suggestions first
-        let hasSuggestions = false;
-        try {
-          const checkResponse = await fetch(`/api/local/${reviewId}/has-ai-suggestions`);
-          if (checkResponse.ok) {
-            const data = await checkResponse.json();
-            hasSuggestions = data.hasSuggestions;
-          }
-        } catch (checkError) {
-          console.warn('Error checking for existing AI suggestions:', checkError);
-        }
-
-        // If there are existing suggestions, confirm replacement
-        if (hasSuggestions) {
-          if (!window.confirmDialog) {
-            console.error('ConfirmDialog not loaded');
-            manager.showError('Confirmation dialog unavailable. Please refresh the page.');
-            return;
-          }
-
-          const replaceResult = await window.confirmDialog.show({
-            title: 'Replace Existing Analysis?',
-            message: 'This will replace all existing AI suggestions for this review. Continue?',
-            confirmText: 'Continue',
-            confirmClass: 'btn-danger'
-          });
-
-          if (replaceResult !== 'confirm') {
-            return;
-          }
-        }
-
         // Show analysis config modal
         if (!manager.analysisConfigModal) {
           console.warn('AnalysisConfigModal not initialized, proceeding without config');
@@ -1241,8 +1215,26 @@ class LocalManager {
         window.aiPanel.setPR('local', reviewData.repository, this.reviewId);
       }
 
+      // Initialize analysis history manager for local mode
+      if (window.AnalysisHistoryManager) {
+        manager.analysisHistoryManager = new window.AnalysisHistoryManager({
+          reviewId: this.reviewId,
+          mode: 'local',
+          onSelectionChange: (runId, _run) => {
+            manager.selectedRunId = runId;
+            manager.loadAISuggestions(null, runId);
+          }
+        });
+        manager.analysisHistoryManager.init();
+        await manager.analysisHistoryManager.loadAnalysisRuns();
+      }
+
       // Load saved AI suggestions
-      await manager.loadAISuggestions();
+      // Note: If analysisHistoryManager is initialized, it will trigger loadAISuggestions
+      // via onSelectionChange when selecting the latest run. Only call directly if no manager.
+      if (!manager.analysisHistoryManager) {
+        await manager.loadAISuggestions();
+      }
 
       // Check for running analysis
       await manager.checkRunningAnalysis();
@@ -1470,6 +1462,55 @@ class LocalManager {
       if (diffContainer) {
         diffContainer.innerHTML = '<div class="no-diff">Error loading changes</div>';
       }
+    }
+  }
+
+  /**
+   * Get the progress dots container element
+   * @returns {HTMLElement|null}
+   */
+  getProgressDotsContainer() {
+    return document.getElementById('analysis-progress-dots');
+  }
+
+  /**
+   * Update a specific progress dot during analysis
+   * Maps level numbers to phase names:
+   * - Level 4 -> orchestration (finalization)
+   * - Level 1 -> level1
+   * - Level 2 -> level2
+   * - Level 3 -> level3
+   * @param {number} level - The level number (1, 2, 3, or 4)
+   * @param {string} status - The status ('running', 'completed', 'failed')
+   */
+  updateProgressDot(level, status) {
+    const container = this.getProgressDotsContainer();
+    if (!container) return;
+
+    // Map levels to dot phases
+    const phaseMap = {
+      4: 'orchestration', // Orchestration/finalization is level 4 in ProgressModal
+      1: 'level1',
+      2: 'level2',
+      3: 'level3'
+    };
+
+    const phase = phaseMap[level];
+    if (!phase) return;
+
+    const dot = container.querySelector(`[data-phase="${phase}"]`);
+    if (!dot) return;
+
+    // Remove existing states
+    dot.classList.remove('active', 'completed', 'error');
+
+    // Apply new state
+    if (status === 'running') {
+      dot.classList.add('active');
+    } else if (status === 'completed') {
+      dot.classList.add('completed');
+    } else if (status === 'failed') {
+      dot.classList.add('error');
     }
   }
 }

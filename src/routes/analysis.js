@@ -100,7 +100,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Fetch repo settings and save custom instructions in a transaction
     // This ensures consistency between reading settings and updating the review record
-    const { provider, model, combinedInstructions } = await withTransaction(db, async () => {
+    const { provider, model, repoInstructions, combinedInstructions } = await withTransaction(db, async () => {
       // Fetch repo settings for default instructions, provider, and model
       const repoSettingsRepo = new RepoSettingsRepository(db);
       const fetchedRepoSettings = await repoSettingsRepo.getRepoSettings(repository);
@@ -126,9 +126,10 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         selectedModel = getModel(req);
       }
 
-      // Merge custom instructions using shared utility
-      const repoInstructions = fetchedRepoSettings?.default_instructions;
-      const mergedInstructions = mergeInstructions(repoInstructions, requestInstructions);
+      // Get repo instructions from settings
+      const fetchedRepoInstructions = fetchedRepoSettings?.default_instructions || null;
+      // Merge for logging purposes (analyzer will also merge internally)
+      const mergedInstructions = mergeInstructions(fetchedRepoInstructions, requestInstructions);
 
       // Save custom instructions to the review record using upsert
       // Uses reviewRepo created at the start of the handler
@@ -139,6 +140,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       return {
         provider: selectedProvider,
         model: selectedModel,
+        repoInstructions: fetchedRepoInstructions,
         combinedInstructions: mergedInstructions
       };
     });
@@ -228,7 +230,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Start analysis asynchronously with progress callback and custom instructions
     // Use review.id (not prMetadata.id) to avoid ID collision with local mode
     // Pass analysisId for process tracking/cancellation
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, combinedInstructions, null, { analysisId })
+    // Pass separate instructions for storage, analyzer will merge them for prompts
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId })
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -982,6 +985,10 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
     const levelsParam = req.query.levels || 'final';
     const requestedLevels = levelsParam.split(',').map(l => l.trim());
 
+    // Parse optional runId query parameter to fetch suggestions from a specific analysis run
+    // If not provided, defaults to the latest run
+    const runIdParam = req.query.runId;
+
     // Build level filter clause
     const levelConditions = [];
     requestedLevels.forEach(level => {
@@ -997,17 +1004,34 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
       ? `(${levelConditions.join(' OR ')})`
       : 'ai_level IS NULL';
 
-    // Get AI suggestions from the comments table
-    // Only return suggestions from the latest analysis run (ai_run_id)
-    // This preserves history while showing only the most recent results
-    //
-    // Note: If no AI suggestions exist (subquery returns NULL), the ai_run_id = NULL
-    // comparison returns no rows. This is intentional - we only show suggestions
-    // when there's a matching analysis run.
-    //
-    // Note: review.id is passed twice because SQLite requires separate parameters
-    // for the outer WHERE clause and the subquery. A CTE could consolidate this but
-    // adds complexity without meaningful benefit here.
+    // Build the run ID filter clause
+    // If a specific runId is provided, use it directly; otherwise use subquery for latest
+    let runIdFilter;
+    let queryParams;
+    if (runIdParam) {
+      runIdFilter = 'ai_run_id = ?';
+      queryParams = [review.id, runIdParam];
+    } else {
+      // Get AI suggestions from the comments table
+      // Only return suggestions from the latest analysis run (ai_run_id)
+      // This preserves history while showing only the most recent results
+      //
+      // Note: If no AI suggestions exist (subquery returns NULL), the ai_run_id = NULL
+      // comparison returns no rows. This is intentional - we only show suggestions
+      // when there's a matching analysis run.
+      //
+      // Note: review.id is passed twice because SQLite requires separate parameters
+      // for the outer WHERE clause and the subquery. A CTE could consolidate this but
+      // adds complexity without meaningful benefit here.
+      runIdFilter = `ai_run_id = (
+          SELECT ai_run_id FROM comments
+          WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+          ORDER BY created_at DESC
+          LIMIT 1
+        )`;
+      queryParams = [review.id, review.id];
+    }
+
     const suggestions = await query(db, `
       SELECT
         id,
@@ -1032,12 +1056,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         AND source = 'ai'
         AND ${levelFilter}
         AND status IN ('active', 'dismissed', 'adopted')
-        AND ai_run_id = (
-          SELECT ai_run_id FROM comments
-          WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
-          ORDER BY created_at DESC
-          LIMIT 1
-        )
+        AND ${runIdFilter}
       ORDER BY
         CASE
           WHEN ai_level IS NULL THEN 0
@@ -1049,7 +1068,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         is_file_level DESC,
         file,
         line_start
-    `, [review.id, review.id]);
+    `, queryParams);
 
     res.json({ suggestions });
 
@@ -1123,7 +1142,7 @@ router.get('/api/pr/:id/ai-suggestions/status', (req, res) => {
 router.get('/api/analysis-runs/:reviewId', async (req, res) => {
   try {
     const { reviewId } = req.params;
-    const db = req.app.locals.db;
+    const db = req.app.get('db');
 
     const analysisRunRepo = new AnalysisRunRepository(db);
     const runs = await analysisRunRepo.getByReviewId(parseInt(reviewId, 10));
@@ -1141,7 +1160,7 @@ router.get('/api/analysis-runs/:reviewId', async (req, res) => {
 router.get('/api/analysis-runs/:reviewId/latest', async (req, res) => {
   try {
     const { reviewId } = req.params;
-    const db = req.app.locals.db;
+    const db = req.app.get('db');
 
     const analysisRunRepo = new AnalysisRunRepository(db);
     const run = await analysisRunRepo.getLatestByReviewId(parseInt(reviewId, 10));
@@ -1163,7 +1182,7 @@ router.get('/api/analysis-runs/:reviewId/latest', async (req, res) => {
 router.get('/api/analysis-run/:runId', async (req, res) => {
   try {
     const { runId } = req.params;
-    const db = req.app.locals.db;
+    const db = req.app.get('db');
 
     const analysisRunRepo = new AnalysisRunRepository(db);
     const run = await analysisRunRepo.getById(runId);

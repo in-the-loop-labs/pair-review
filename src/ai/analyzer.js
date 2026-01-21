@@ -14,6 +14,7 @@ const { getPromptBuilder } = require('./prompts');
 const { formatValidFiles } = require('./prompts/shared/valid-files');
 const { registerProcess, isAnalysisCancelled, CancellationError } = require('../routes/shared');
 const { AnalysisRunRepository } = require('../database');
+const { mergeInstructions } = require('../utils/instructions');
 
 class Analyzer {
   /**
@@ -35,15 +36,32 @@ class Analyzer {
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Function} progressCallback - Callback for progress updates
-   * @param {string} customInstructions - Optional custom instructions to include in prompts
+   * @param {Object|string} instructions - Instructions object or legacy string for backward compatibility
+   * @param {string} [instructions.repoInstructions] - Repository-level instructions from repo_settings
+   * @param {string} [instructions.requestInstructions] - Request-level instructions from the analyze request
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @param {Object} options - Additional options
    * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
+  async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
     const runId = uuidv4();
     const { analysisId } = options;
+
+    // Handle both new object format and legacy string format for backward compatibility
+    let repoInstructions = null;
+    let requestInstructions = null;
+    let mergedInstructions = null;
+
+    if (typeof instructions === 'string' && instructions.trim()) {
+      // Legacy format: single merged instructions string (non-empty)
+      mergedInstructions = instructions;
+    } else if (instructions && typeof instructions === 'object') {
+      // New format: object with separate instruction fields
+      repoInstructions = instructions.repoInstructions || null;
+      requestInstructions = instructions.requestInstructions || null;
+      mergedInstructions = mergeInstructions(repoInstructions, requestInstructions);
+    }
 
     logger.section('Multi-Level AI Analysis Starting (Parallel Execution)');
     logger.info(`PR ID: ${prId}`);
@@ -61,7 +79,9 @@ class Analyzer {
         reviewId: prId,  // prId is actually review.id (works for both PR and local modes)
         provider: this.provider,
         model: this.model,
-        customInstructions
+        customInstructions: mergedInstructions,  // Keep for backward compat
+        repoInstructions,
+        requestInstructions
       });
       logger.info(`Created analysis_run record: ${runId}`);
     } catch (createError) {
@@ -89,13 +109,13 @@ class Analyzer {
 
       // Run all 3 levels in parallel
       logger.info('Starting all 3 analysis levels in parallel...');
-      if (customInstructions) {
-        logger.info(`Custom instructions provided: ${customInstructions.length} chars`);
+      if (mergedInstructions) {
+        logger.info(`Custom instructions provided: ${mergedInstructions.length} chars`);
       }
       const results = await Promise.allSettled([
-        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles, { analysisId }),
-        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles, { analysisId }),
-        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, customInstructions, validFiles, { analysisId })
+        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId }),
+        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId }),
+        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId })
       ]);
 
       // Step 3: Collect successful results
@@ -154,7 +174,7 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, customInstructions, fileLineCountMap, worktreePath, { analysisId });
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, fileLineCountMap, worktreePath, { analysisId });
 
         // Validate and finalize suggestions
         const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -581,15 +601,17 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Function} progressCallback - Callback for progress updates
-   * @param {string} customInstructions - Optional custom instructions to include in prompts
+   * @param {Object|string} instructions - Instructions object or legacy string for backward compatibility
+   * @param {string} [instructions.repoInstructions] - Repository-level instructions from repo_settings
+   * @param {string} [instructions.requestInstructions] - Request-level instructions from the analyze request
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @param {Object} options - Additional options
    * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeLevel1(prId, worktreePath, prMetadata, progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
+  async analyzeLevel1(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
     // This is now a wrapper that calls the parallel implementation
-    return this.analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback, customInstructions, changedFiles, options);
+    return this.analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback, instructions, changedFiles, options);
   }
 
   /**
@@ -1958,7 +1980,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @param {string} worktreePath - Path to worktree
    * @returns {string|null} Test framework name
    */
-  determineTestFramework(language, foundFiles, worktreePath) {
+  determineTestFramework(language, foundFiles, _worktreePath) {
     // Framework detection based on common patterns
     const frameworkIndicators = {
       javascript: {

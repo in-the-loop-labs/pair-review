@@ -267,16 +267,50 @@ async function globalSetup() {
     analysisRunning = true;
     analysisHasRun = true;
 
-    // Get PR metadata ID from database
-    const prMetadata = db.prepare('SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?')
-      .get(parseInt(pr), `${owner}/${repo}`);
+    const repository = `${owner}/${repo}`;
+    const prNumber = parseInt(pr);
 
-    if (prMetadata) {
+    // Get review record (which is what AnalysisHistoryManager uses)
+    let review = db.prepare('SELECT id FROM reviews WHERE pr_number = ? AND repository = ?')
+      .get(prNumber, repository);
+
+    // Get PR metadata for updating last_ai_run_id
+    const prMetadata = db.prepare('SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?')
+      .get(prNumber, repository);
+
+    if (review && prMetadata) {
+      const aiRunId = `test-run-${Date.now()}`;
+      const now = new Date().toISOString();
+
+      // Extract custom instructions from request body
+      const { customInstructions: requestInstructions } = req.body || {};
+
       // Update last_ai_run_id to mark that analysis has been run
       db.prepare('UPDATE pr_metadata SET last_ai_run_id = ? WHERE id = ?')
-        .run('test-run-001', prMetadata.id);
+        .run(aiRunId, prMetadata.id);
 
-      // Insert mock AI suggestions into the database
+      // Insert into analysis_runs table (required for AnalysisHistoryManager)
+      db.prepare(`
+        INSERT INTO analysis_runs (
+          id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+          status, total_suggestions, files_analyzed, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        aiRunId,
+        review.id,
+        'claude',
+        'sonnet',
+        requestInstructions || null, // custom_instructions (combined/legacy)
+        'Repository default instructions for testing', // repo_instructions
+        requestInstructions || 'Test custom instructions', // request_instructions
+        'completed',
+        mockAISuggestions.length,
+        2,
+        now,
+        now
+      );
+
+      // Insert mock AI suggestions into the database using review.id
       const insertStmt = db.prepare(`
         INSERT INTO comments (
           review_id, source, ai_run_id, ai_level, file, line_start, line_end,
@@ -285,9 +319,9 @@ async function globalSetup() {
       `);
       for (const suggestion of mockAISuggestions) {
         insertStmt.run(
-          prMetadata.id,
+          review.id,
           'ai',
-          suggestion.ai_run_id,
+          aiRunId,
           suggestion.ai_level,
           suggestion.file,
           suggestion.line_start,
@@ -296,8 +330,8 @@ async function globalSetup() {
           suggestion.title,
           suggestion.body,
           suggestion.status,
-          suggestion.created_at,
-          suggestion.updated_at
+          now,
+          now
         );
       }
     }

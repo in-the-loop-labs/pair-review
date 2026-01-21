@@ -487,6 +487,12 @@ class ProgressModal {
         progressContainer.style.display = 'none';
       }
     }
+
+    // Update toolbar progress dots (check both PR and local managers)
+    const manager = window.prManager || window.localManager;
+    if (manager?.updateProgressDot) {
+      manager.updateProgressDot(level, levelStatus.status);
+    }
   }
 
   /**
@@ -527,8 +533,34 @@ class ProgressModal {
 
     // CRITICAL FIX: Automatically reload AI suggestions when analysis completes
     console.log('Analysis completed, reloading AI suggestions...');
-    if (window.prManager && typeof window.prManager.loadAISuggestions === 'function') {
-      window.prManager.loadAISuggestions()
+
+    // Support both PR mode (prManager) and Local mode (localManager)
+    const manager = window.prManager || window.localManager;
+
+    if (manager && typeof manager.loadAISuggestions === 'function') {
+      // Determine whether to switch to the new run:
+      // - If modal is visible, user was waiting for results -> switch immediately
+      // - If modal is hidden (running in background), user was viewing older results -> don't switch
+      const shouldSwitchToNew = this.isVisible;
+
+      // First, refresh the analysis history manager to include the new run
+      const refreshHistory = async () => {
+        if (manager.analysisHistoryManager) {
+          console.log('Refreshing analysis history, switchToNew:', shouldSwitchToNew);
+          await manager.analysisHistoryManager.refresh({ switchToNew: shouldSwitchToNew });
+        }
+      };
+
+      refreshHistory()
+        .then(() => {
+          // Only load suggestions if we're switching to the new run
+          if (shouldSwitchToNew) {
+            return manager.loadAISuggestions();
+          }
+          // Otherwise, just return - the user will load when they select the new run
+          console.log('New analysis available - user will see indicator on dropdown');
+          return Promise.resolve();
+        })
         .then(() => {
           console.log('AI suggestions reloaded successfully');
           // Only auto-close after suggestions have loaded successfully
@@ -548,8 +580,8 @@ class ProgressModal {
           }
         });
     } else {
-      console.warn('PRManager not available for automatic suggestion reload');
-      // Auto-close after 3 seconds if no PR manager available
+      console.warn('Manager not available for automatic suggestion reload');
+      // Auto-close after 3 seconds if no manager available
       if (this.isVisible) {
         setTimeout(() => {
           this.hide();
