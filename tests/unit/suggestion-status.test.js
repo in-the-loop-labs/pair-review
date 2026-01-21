@@ -688,4 +688,111 @@ describe('PRManager Suggestion Status', () => {
       expect(window.aiPanel.updateComment).not.toHaveBeenCalled();
     });
   });
+
+  describe('updateCommentCount', () => {
+    let prManager;
+    let mockSplitButton;
+
+    beforeEach(() => {
+      prManager = createTestPRManager();
+
+      // Mock splitButton
+      mockSplitButton = {
+        updateCommentCount: vi.fn()
+      };
+      prManager.splitButton = mockSplitButton;
+
+      // Reset document mock for querySelectorAll
+      document.querySelectorAll = vi.fn();
+
+      // Mock document.getElementById for reviewButton and clearButton
+      document.getElementById = vi.fn().mockReturnValue(null);
+    });
+
+    it('should count line-level comments excluding dismissed ones', () => {
+      // Mock DOM with 3 comment rows: 2 active, 1 dismissed
+      // The :not(:has(.user-comment.dismissed)) selector should exclude dismissed
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
+          return { length: 2 }; // 2 active comments
+        }
+        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
+          return { length: 0 }; // No file-level comments
+        }
+        return { length: 0 };
+      });
+
+      prManager.updateCommentCount();
+
+      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(2);
+    });
+
+    it('should count file-level comments excluding dismissed ones', () => {
+      // Mock DOM with file-level comments: 1 active, 1 dismissed
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
+          return { length: 0 }; // No line-level comments
+        }
+        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
+          return { length: 1 }; // 1 active file-level comment
+        }
+        return { length: 0 };
+      });
+
+      prManager.updateCommentCount();
+
+      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(1);
+    });
+
+    it('should combine line-level and file-level comment counts', () => {
+      // Mock DOM with both types: 3 active line-level, 2 active file-level
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
+          return { length: 3 }; // 3 active line-level comments
+        }
+        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
+          return { length: 2 }; // 2 active file-level comments
+        }
+        return { length: 0 };
+      });
+
+      prManager.updateCommentCount();
+
+      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(5);
+    });
+
+    it('should return 0 when all comments are dismissed', () => {
+      // Mock DOM with all comments dismissed
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
+          return { length: 0 }; // All line-level dismissed
+        }
+        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
+          return { length: 0 }; // All file-level dismissed
+        }
+        return { length: 0 };
+      });
+
+      prManager.updateCommentCount();
+
+      expect(mockSplitButton.updateCommentCount).toHaveBeenCalledWith(0);
+    });
+
+    it('should handle missing splitButton gracefully', () => {
+      prManager.splitButton = null;
+
+      document.querySelectorAll.mockImplementation((selector) => {
+        if (selector === '.user-comment-row:not(:has(.user-comment.dismissed))') {
+          return { length: 2 };
+        }
+        if (selector === '.file-comment-card.user-comment:not(.dismissed)') {
+          return { length: 1 };
+        }
+        return { length: 0 };
+      });
+
+      // Should not throw
+      expect(() => prManager.updateCommentCount()).not.toThrow();
+    });
+  });
 });

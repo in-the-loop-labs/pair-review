@@ -2466,8 +2466,11 @@ class PRManager {
    */
   updateCommentCount() {
     // Count both line-level comments (.user-comment-row) and file-level comments (.file-comment-card.user-comment)
-    const lineComments = document.querySelectorAll('.user-comment-row').length;
-    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
+    // Exclude dismissed comments from the count - they remain in DOM when showDismissed filter is on
+    // For line-level: the .dismissed class is on the inner .user-comment element
+    // For file-level: the .dismissed class is directly on the .file-comment-card element
+    const lineComments = document.querySelectorAll('.user-comment-row:not(:has(.user-comment.dismissed))').length;
+    const fileComments = document.querySelectorAll('.file-comment-card.user-comment:not(.dismissed)').length;
     const userComments = lineComments + fileComments;
 
     if (this.splitButton) {

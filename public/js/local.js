@@ -542,6 +542,22 @@ class LocalManager {
             manager.updateCommentCount();
           }
 
+          // Also handle file-level comment cards
+          const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
+          if (fileCommentCard) {
+            const zone = fileCommentCard.closest('.file-comments-zone');
+            if (showDismissed) {
+              // Transition to dismissed visual state instead of removing
+              fileCommentCard.classList.add('dismissed');
+            } else {
+              fileCommentCard.remove();
+            }
+            if (zone && manager.fileCommentManager) {
+              manager.fileCommentManager.updateCommentCount(zone);
+            }
+            manager.updateCommentCount();
+          }
+
           // Update AI Panel - transition to dismissed state or remove based on filter
           if (showDismissed && window.aiPanel?.updateComment) {
             // Update comment status to 'inactive' so it renders with dismissed styling
