@@ -6305,6 +6305,14 @@ body.resizing * {
   word-break: break-word;
 }
 
+.analysis-preview-sha {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  background: var(--color-canvas-subtle);
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: help;
+}
+
 /* Preview instructions text (shared between custom and repo instructions) */
 .analysis-preview-instructions-text {
   font-size: 12px;

@@ -71,6 +71,14 @@ class Analyzer {
     }
     logger.info(`Worktree path: ${worktreePath}`);
 
+    // Extract head_sha from prMetadata for traceability
+    // PR mode: prMetadata.head_sha is the PR head commit
+    // Local mode: prMetadata.head_sha is the local HEAD commit
+    const headSha = prMetadata?.head_sha || null;
+    if (headSha) {
+      logger.info(`HEAD SHA: ${headSha}`);
+    }
+
     // Create analysis run record in database
     const analysisRunRepo = new AnalysisRunRepository(this.db);
     try {
@@ -81,7 +89,8 @@ class Analyzer {
         model: this.model,
         customInstructions: mergedInstructions,  // Keep for backward compat
         repoInstructions,
-        requestInstructions
+        requestInstructions,
+        headSha
       });
       logger.info(`Created analysis_run record: ${runId}`);
     } catch (createError) {

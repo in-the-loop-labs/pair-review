@@ -293,8 +293,8 @@ async function globalSetup() {
       db.prepare(`
         INSERT INTO analysis_runs (
           id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-          status, total_suggestions, files_analyzed, started_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          head_sha, status, total_suggestions, files_analyzed, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         aiRunId,
         review.id,
@@ -303,6 +303,7 @@ async function globalSetup() {
         requestInstructions || null, // custom_instructions (combined/legacy)
         'Repository default instructions for testing', // repo_instructions
         requestInstructions || 'Test custom instructions', // request_instructions
+        'def456head', // head_sha - matches mockGitHubResponses.fetchPullRequest.head_sha
         'completed',
         mockAISuggestions.length,
         2,

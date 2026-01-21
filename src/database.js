@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 11;
+const CURRENT_SCHEMA_VERSION = 12;
 
 /**
  * Database schema SQL statements
@@ -135,6 +135,7 @@ const SCHEMA_SQL = {
       custom_instructions TEXT,
       repo_instructions TEXT,
       request_instructions TEXT,
+      head_sha TEXT,
       summary TEXT,
       status TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
       total_suggestions INTEGER DEFAULT 0,
@@ -179,20 +180,28 @@ const INDEX_SQL = [
  * - Adds custom_instructions column to reviews table
  * - Creates repo_settings table if not exists
  */
+
+/**
+ * Helper to check if a column exists in a table
+ * Used by migrations to safely add columns idempotently
+ * @param {Database} db - Database instance
+ * @param {string} table - Table name
+ * @param {string} column - Column name
+ * @returns {boolean} True if column exists
+ */
+function columnExists(db, table, column) {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+  return rows ? rows.some(row => row.name === column) : false;
+}
+
 const MIGRATIONS = {
   // Migration to version 1: handles all legacy column additions
   1: (db) => {
     console.log('Running migration to schema version 1...');
 
-    // Helper to check if column exists
-    const columnExists = (table, column) => {
-      const columns = db.prepare(`PRAGMA table_info(${table})`).all();
-      return columns && columns.some(col => col.name === column);
-    };
-
     // Helper to add column if not exists (idempotent)
     const addColumnIfNotExists = (table, column, definition) => {
-      const exists = columnExists(table, column);
+      const exists = columnExists(db, table, column);
       if (!exists) {
         console.log(`  Adding ${column} column to ${table} table...`);
         try {
@@ -239,14 +248,8 @@ const MIGRATIONS = {
   2: (db) => {
     console.log('Running migration to schema version 2...');
 
-    // Helper to check if column exists
-    const columnExists = (table, column) => {
-      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
-      return rows ? rows.some(row => row.name === column) : false;
-    };
-
     // Add default_provider column to repo_settings if it doesn't exist
-    const hasDefaultProvider = columnExists('repo_settings', 'default_provider');
+    const hasDefaultProvider = columnExists(db, 'repo_settings', 'default_provider');
     if (!hasDefaultProvider) {
       db.prepare(`ALTER TABLE repo_settings ADD COLUMN default_provider TEXT`).run();
       console.log('  Added default_provider column to repo_settings');
@@ -267,12 +270,6 @@ const MIGRATIONS = {
       return !!row;
     };
 
-    // Helper to check if column exists
-    const columnExists = (table, column) => {
-      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
-      return rows ? rows.some(row => row.name === column) : false;
-    };
-
     // First ensure pr_metadata table exists
     const hasPrMetadata = tableExists('pr_metadata');
     if (!hasPrMetadata) {
@@ -282,7 +279,7 @@ const MIGRATIONS = {
     }
 
     // Add last_ai_run_id column to pr_metadata if it doesn't exist
-    const hasLastAiRunId = columnExists('pr_metadata', 'last_ai_run_id');
+    const hasLastAiRunId = columnExists(db, 'pr_metadata', 'last_ai_run_id');
     if (!hasLastAiRunId) {
       try {
         db.prepare(`ALTER TABLE pr_metadata ADD COLUMN last_ai_run_id TEXT`).run();
@@ -305,15 +302,9 @@ const MIGRATIONS = {
   4: (db) => {
     console.log('Running migration to schema version 4...');
 
-    // Helper to check if column exists
-    const columnExists = (table, column) => {
-      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
-      return rows ? rows.some(row => row.name === column) : false;
-    };
-
     // Helper to add column if not exists (idempotent)
     const addColumnIfNotExists = (table, column, definition) => {
-      const exists = columnExists(table, column);
+      const exists = columnExists(db, table, column);
       if (!exists) {
         console.log(`  Adding ${column} column to ${table} table...`);
         try {
@@ -394,14 +385,8 @@ const MIGRATIONS = {
   6: (db) => {
     console.log('Running migration to schema version 6...');
 
-    // Helper to check if column exists
-    const columnExists = (table, column) => {
-      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
-      return rows ? rows.some(row => row.name === column) : false;
-    };
-
     // Add is_file_level column to comments if it doesn't exist
-    const hasIsFileLevel = columnExists('comments', 'is_file_level');
+    const hasIsFileLevel = columnExists(db, 'comments', 'is_file_level');
     if (!hasIsFileLevel) {
       try {
         db.prepare(`ALTER TABLE comments ADD COLUMN is_file_level INTEGER DEFAULT 0`).run();
@@ -424,14 +409,8 @@ const MIGRATIONS = {
   7: (db) => {
     console.log('Running migration to schema version 7...');
 
-    // Helper to check if column exists
-    const columnExists = (table, column) => {
-      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
-      return rows ? rows.some(row => row.name === column) : false;
-    };
-
     // Add summary column to reviews if it doesn't exist
-    const hasSummary = columnExists('reviews', 'summary');
+    const hasSummary = columnExists(db, 'reviews', 'summary');
     if (!hasSummary) {
       try {
         db.prepare(`ALTER TABLE reviews ADD COLUMN summary TEXT`).run();
@@ -497,16 +476,10 @@ const MIGRATIONS = {
   9: (db) => {
     console.log('Running migration to schema version 9...');
 
-    // Helper to check if column exists
-    const columnExists = (table, column) => {
-      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
-      return rows ? rows.some(row => row.name === column) : false;
-    };
-
     // Check if already migrated (review_id exists)
-    if (columnExists('comments', 'review_id')) {
+    if (columnExists(db, 'comments', 'review_id')) {
       console.log('  Column review_id already exists, skipping rename');
-    } else if (columnExists('comments', 'pr_id')) {
+    } else if (columnExists(db, 'comments', 'pr_id')) {
       // Rename pr_id to review_id
       db.prepare('ALTER TABLE comments RENAME COLUMN pr_id TO review_id').run();
       console.log('  Renamed pr_id column to review_id in comments table');
@@ -540,14 +513,8 @@ const MIGRATIONS = {
   10: (db) => {
     console.log('Running migration to schema version 10...');
 
-    // Helper to check if column exists
-    const columnExists = (table, column) => {
-      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
-      return rows ? rows.some(row => row.name === column) : false;
-    };
-
     // Add local_path column to repo_settings if it doesn't exist
-    const hasLocalPath = columnExists('repo_settings', 'local_path');
+    const hasLocalPath = columnExists(db, 'repo_settings', 'local_path');
     if (!hasLocalPath) {
       try {
         db.prepare(`ALTER TABLE repo_settings ADD COLUMN local_path TEXT`).run();
@@ -570,15 +537,9 @@ const MIGRATIONS = {
   11: (db) => {
     console.log('Running migration to schema version 11...');
 
-    // Helper to check if column exists
-    const columnExists = (table, column) => {
-      const rows = db.prepare(`PRAGMA table_info(${table})`).all();
-      return rows ? rows.some(row => row.name === column) : false;
-    };
-
     // Helper to add column if not exists (idempotent)
     const addColumnIfNotExists = (table, column, definition) => {
-      const exists = columnExists(table, column);
+      const exists = columnExists(db, table, column);
       if (!exists) {
         console.log(`  Adding ${column} column to ${table} table...`);
         try {
@@ -600,6 +561,30 @@ const MIGRATIONS = {
     addColumnIfNotExists('analysis_runs', 'request_instructions', 'TEXT');
 
     console.log('Migration to schema version 11 complete');
+  },
+
+  // Migration to version 12: adds head_sha column to analysis_runs for traceability
+  12: (db) => {
+    console.log('Running migration to schema version 12...');
+
+    // Add head_sha column to analysis_runs if it doesn't exist
+    const hasHeadSha = columnExists(db, 'analysis_runs', 'head_sha');
+    if (!hasHeadSha) {
+      try {
+        db.prepare(`ALTER TABLE analysis_runs ADD COLUMN head_sha TEXT`).run();
+        console.log('  Added head_sha column to analysis_runs');
+      } catch (error) {
+        // Ignore duplicate column errors (race condition protection)
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column head_sha already exists (race condition)');
+      }
+    } else {
+      console.log('  Column head_sha already exists');
+    }
+
+    console.log('Migration to schema version 12 complete');
   }
 };
 
@@ -2027,13 +2012,14 @@ class AnalysisRunRepository {
    * @param {string} [runInfo.customInstructions] - Merged custom instructions (kept for backward compatibility)
    * @param {string} [runInfo.repoInstructions] - Repository-level instructions from repo_settings
    * @param {string} [runInfo.requestInstructions] - Request-level instructions from the analyze request
+   * @param {string} [runInfo.headSha] - Git HEAD SHA at the time of analysis (PR head commit or local HEAD)
    * @returns {Promise<Object>} Created analysis run record
    */
-  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null }) {
+  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null }) {
     await run(this.db, `
-      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'running')
-    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions]);
+      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, head_sha, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running')
+    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions, headSha]);
 
     // Query back the inserted row to return actual database values (including timestamps)
     return await this.getById(id);
@@ -2101,7 +2087,7 @@ class AnalysisRunRepository {
   async getById(id) {
     const row = await queryOne(this.db, `
       SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-             summary, status, total_suggestions, files_analyzed, started_at, completed_at
+             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at
       FROM analysis_runs
       WHERE id = ?
     `, [id]);
@@ -2118,7 +2104,7 @@ class AnalysisRunRepository {
   async getByReviewId(reviewId) {
     return query(this.db, `
       SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-             summary, status, total_suggestions, files_analyzed, started_at, completed_at
+             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at
       FROM analysis_runs
       WHERE review_id = ?
       ORDER BY started_at DESC, id DESC
@@ -2133,7 +2119,7 @@ class AnalysisRunRepository {
   async getLatestByReviewId(reviewId) {
     const row = await queryOne(this.db, `
       SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-             summary, status, total_suggestions, files_analyzed, started_at, completed_at
+             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at
       FROM analysis_runs
       WHERE review_id = ?
       ORDER BY started_at DESC, id DESC

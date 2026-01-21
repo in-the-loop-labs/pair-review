@@ -324,6 +324,10 @@ class AnalysisHistoryManager {
     const tier = this.getTierForModel(run.model);
     const tierDisplayText = tier ? this.formatTierDisplayName(tier) : 'Unknown';
 
+    // Format HEAD SHA - show abbreviated version with full SHA in title
+    const headSha = run.head_sha;
+    const headShaDisplay = headSha ? headSha.substring(0, 7) : null;
+
     let html = `
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Provider</span>
@@ -349,6 +353,12 @@ class AnalysisHistoryManager {
         <span class="analysis-preview-label">Suggestions</span>
         <span class="analysis-preview-value">${suggestionCount}</span>
       </div>
+      ${headShaDisplay ? `
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">HEAD SHA</span>
+        <span class="analysis-preview-value analysis-preview-sha" title="${this.escapeHtml(headSha)}">${headShaDisplay}</span>
+      </div>
+      ` : ''}
     `;
 
     // Handle instructions display - check for new separate fields first, fall back to legacy custom_instructions

@@ -1720,6 +1720,32 @@ describe('AnalysisRunRepository', () => {
       expect(result.model).toBe('sonnet');
       expect(result.custom_instructions).toBe('Focus on security issues');
     });
+
+    it('should create an analysis run with head_sha for traceability', async () => {
+      const runId = 'test-run-with-sha';
+      const testSha = 'abc123def456789012345678901234567890abcd';
+      const result = await analysisRunRepo.create({
+        id: runId,
+        reviewId: testReview.id,
+        provider: 'claude',
+        model: 'sonnet',
+        headSha: testSha
+      });
+
+      expect(result.id).toBe(runId);
+      expect(result.head_sha).toBe(testSha);
+    });
+
+    it('should create an analysis run without head_sha (nullable)', async () => {
+      const runId = 'test-run-no-sha';
+      const result = await analysisRunRepo.create({
+        id: runId,
+        reviewId: testReview.id
+      });
+
+      expect(result.id).toBe(runId);
+      expect(result.head_sha).toBeNull();
+    });
   });
 
   describe('update()', () => {
@@ -1796,6 +1822,20 @@ describe('AnalysisRunRepository', () => {
       const retrieved = await analysisRunRepo.getById('non-existent');
       expect(retrieved).toBeNull();
     });
+
+    it('should include head_sha in retrieved record', async () => {
+      const runId = 'test-run-id-sha-get';
+      const testSha = 'def456abc789012345678901234567890abcdef12';
+      await analysisRunRepo.create({
+        id: runId,
+        reviewId: testReview.id,
+        headSha: testSha
+      });
+
+      const retrieved = await analysisRunRepo.getById(runId);
+      expect(retrieved).not.toBeNull();
+      expect(retrieved.head_sha).toBe(testSha);
+    });
   });
 
   describe('getByReviewId()', () => {
@@ -1817,6 +1857,21 @@ describe('AnalysisRunRepository', () => {
       const runs = await analysisRunRepo.getByReviewId(9999);
       expect(runs).toEqual([]);
     });
+
+    it('should include head_sha in all retrieved records', async () => {
+      const sha1 = 'sha1111111111111111111111111111111111111';
+      const sha2 = 'sha2222222222222222222222222222222222222';
+      // Use IDs that sort correctly when timestamps are identical
+      // (id DESC is used as tiebreaker, so 'run-sha-2' > 'run-sha-1')
+      await analysisRunRepo.create({ id: 'run-sha-1', reviewId: testReview.id, headSha: sha1 });
+      await analysisRunRepo.create({ id: 'run-sha-2', reviewId: testReview.id, headSha: sha2 });
+
+      const runs = await analysisRunRepo.getByReviewId(testReview.id);
+      expect(runs).toHaveLength(2);
+      // Most recent first (id DESC tiebreaker makes 'run-sha-2' come first)
+      expect(runs[0].head_sha).toBe(sha2);
+      expect(runs[1].head_sha).toBe(sha1);
+    });
   });
 
   describe('getLatestByReviewId()', () => {
@@ -1834,6 +1889,19 @@ describe('AnalysisRunRepository', () => {
     it('should return null for review with no analysis runs', async () => {
       const latest = await analysisRunRepo.getLatestByReviewId(9999);
       expect(latest).toBeNull();
+    });
+
+    it('should include head_sha in the latest retrieved record', async () => {
+      const latestSha = 'latestsha123456789012345678901234567890';
+      // Use IDs that sort correctly when timestamps are identical
+      // (id DESC is used as tiebreaker, so 'sha-run-2' > 'sha-run-1')
+      await analysisRunRepo.create({ id: 'sha-run-1', reviewId: testReview.id, headSha: 'oldsha' });
+      await analysisRunRepo.create({ id: 'sha-run-2', reviewId: testReview.id, headSha: latestSha });
+
+      const latest = await analysisRunRepo.getLatestByReviewId(testReview.id);
+      expect(latest).not.toBeNull();
+      expect(latest.id).toBe('sha-run-2');
+      expect(latest.head_sha).toBe(latestSha);
     });
   });
 
