@@ -205,11 +205,19 @@ describe('Analyzer.validateSuggestionFilePaths', () => {
  *
  * Usage:
  *   const { mockDb, runCalls, getCalls } = createBetterSqliteMock();
- *   // Configure get results:
+ *   // Configure get results (simple - same result for all queries):
  *   mockDb.setGetResult({ pr_data: '...' });
+ *   // Configure get results (advanced - different results based on SQL pattern):
+ *   mockDb.setGetResultFn((sql, params) => {
+ *     if (sql.includes('reviews')) return { pr_number: 123, repository: 'owner/repo' };
+ *     if (sql.includes('pr_metadata')) return { pr_data: '...' };
+ *     return null;
+ *   });
  *   // After test:
  *   expect(runCalls).toHaveLength(2);
  *   expect(runCalls[0].params[6]).toBe('src/foo.js');
+ *
+ * Note: setGetResult and setGetResultFn are mutually exclusive - calling one clears the other.
  */
 function createBetterSqliteMock() {
   const runCalls = [];
@@ -217,6 +225,7 @@ function createBetterSqliteMock() {
   const allCalls = [];
 
   let getResult = null;
+  let getResultFn = null;
   let allResult = [];
 
   const mockDb = {
@@ -227,6 +236,10 @@ function createBetterSqliteMock() {
       }),
       get: vi.fn((...params) => {
         getCalls.push({ sql, params });
+        // If a custom function is set, use it to determine the result
+        if (getResultFn) {
+          return getResultFn(sql, params);
+        }
         return getResult;
       }),
       all: vi.fn((...params) => {
@@ -234,7 +247,8 @@ function createBetterSqliteMock() {
         return allResult;
       })
     })),
-    setGetResult: (result) => { getResult = result; },
+    setGetResult: (result) => { getResult = result; getResultFn = null; },
+    setGetResultFn: (fn) => { getResultFn = fn; getResult = null; },
     setAllResult: (result) => { allResult = result; }
   };
 
@@ -260,11 +274,20 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
 
   describe('filtering suggestions with invalid paths', () => {
     it('should filter out suggestions with paths not in PR diff', async () => {
-      // Mock the PR metadata with valid file paths
-      mockDb.setGetResult({
-        pr_data: JSON.stringify({
-          changed_files: ['src/valid.js', 'src/also-valid.js']
-        })
+      // Mock the database to return different results for review vs pr_metadata queries
+      // getValidFilePaths now queries reviews first, then pr_metadata
+      mockDb.setGetResultFn((sql) => {
+        if (sql.includes('FROM reviews')) {
+          return { pr_number: 123, repository: 'owner/repo', review_type: 'pr' };
+        }
+        if (sql.includes('pr_metadata')) {
+          return {
+            pr_data: JSON.stringify({
+              changed_files: ['src/valid.js', 'src/also-valid.js']
+            })
+          };
+        }
+        return null;
       });
 
       const suggestions = [
@@ -291,10 +314,18 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
     });
 
     it('should filter all suggestions when none match valid paths', async () => {
-      mockDb.setGetResult({
-        pr_data: JSON.stringify({
-          changed_files: ['src/real-file.js']
-        })
+      mockDb.setGetResultFn((sql) => {
+        if (sql.includes('FROM reviews')) {
+          return { pr_number: 123, repository: 'owner/repo', review_type: 'pr' };
+        }
+        if (sql.includes('pr_metadata')) {
+          return {
+            pr_data: JSON.stringify({
+              changed_files: ['src/real-file.js']
+            })
+          };
+        }
+        return null;
       });
 
       const suggestions = [
@@ -314,10 +345,18 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
     });
 
     it('should handle path normalization in failsafe filter', async () => {
-      mockDb.setGetResult({
-        pr_data: JSON.stringify({
-          changed_files: ['src/foo.js']
-        })
+      mockDb.setGetResultFn((sql) => {
+        if (sql.includes('FROM reviews')) {
+          return { pr_number: 123, repository: 'owner/repo', review_type: 'pr' };
+        }
+        if (sql.includes('pr_metadata')) {
+          return {
+            pr_data: JSON.stringify({
+              changed_files: ['src/foo.js']
+            })
+          };
+        }
+        return null;
       });
 
       const suggestions = [
@@ -332,8 +371,8 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
       expect(runCalls).toHaveLength(3);
     });
 
-    it('should allow all suggestions when PR metadata is missing (fail-open)', async () => {
-      // Mock missing PR metadata - leave default null
+    it('should allow all suggestions when review is not found (fail-open)', async () => {
+      // Mock review not found - return null for review query
       mockDb.setGetResult(null);
 
       const suggestions = [
@@ -351,11 +390,44 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
       );
     });
 
+    it('should allow all suggestions when PR metadata is missing (fail-open)', async () => {
+      // Mock review found but pr_metadata missing
+      mockDb.setGetResultFn((sql) => {
+        if (sql.includes('FROM reviews')) {
+          return { pr_number: 123, repository: 'owner/repo', review_type: 'pr' };
+        }
+        // Return null for pr_metadata query
+        return null;
+      });
+
+      const suggestions = [
+        { file: 'any/file.js', title: 'Test', type: 'bug', description: 'Test', line_start: 1, line_end: 1, confidence: 0.8 }
+      ];
+
+      await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
+
+      // Should store the suggestion (fail-open behavior)
+      expect(runCalls).toHaveLength(1);
+
+      // Should log a warning about PR metadata not found
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[FAILSAFE] PR metadata not found')
+      );
+    });
+
     it('should allow all suggestions when changed_files is empty (fail-open)', async () => {
-      mockDb.setGetResult({
-        pr_data: JSON.stringify({
-          changed_files: []
-        })
+      mockDb.setGetResultFn((sql) => {
+        if (sql.includes('FROM reviews')) {
+          return { pr_number: 123, repository: 'owner/repo', review_type: 'pr' };
+        }
+        if (sql.includes('pr_metadata')) {
+          return {
+            pr_data: JSON.stringify({
+              changed_files: []
+            })
+          };
+        }
+        return null;
       });
 
       const suggestions = [
@@ -374,13 +446,21 @@ describe('Analyzer.storeSuggestions database failsafe filter', () => {
     });
 
     it('should handle changed_files as objects with file property', async () => {
-      mockDb.setGetResult({
-        pr_data: JSON.stringify({
-          changed_files: [
-            { file: 'src/valid.js', additions: 10, deletions: 5 },
-            { file: 'src/also-valid.js', additions: 3, deletions: 0 }
-          ]
-        })
+      mockDb.setGetResultFn((sql) => {
+        if (sql.includes('FROM reviews')) {
+          return { pr_number: 123, repository: 'owner/repo', review_type: 'pr' };
+        }
+        if (sql.includes('pr_metadata')) {
+          return {
+            pr_data: JSON.stringify({
+              changed_files: [
+                { file: 'src/valid.js', additions: 10, deletions: 5 },
+                { file: 'src/also-valid.js', additions: 3, deletions: 0 }
+              ]
+            })
+          };
+        }
+        return null;
       });
 
       const suggestions = [
@@ -721,11 +801,19 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
     const mock = createBetterSqliteMock();
     mockDb = mock.mockDb;
     runCalls = mock.runCalls;
-    // Configure default PR metadata with valid file path
-    mockDb.setGetResult({
-      pr_data: JSON.stringify({
-        changed_files: ['src/foo.js']
-      })
+    // Configure default database responses: reviews first, then pr_metadata
+    mockDb.setGetResultFn((sql) => {
+      if (sql.includes('FROM reviews')) {
+        return { pr_number: 123, repository: 'owner/repo', review_type: 'pr' };
+      }
+      if (sql.includes('pr_metadata')) {
+        return {
+          pr_data: JSON.stringify({
+            changed_files: ['src/foo.js']
+          })
+        };
+      }
+      return null;
     });
     analyzer = new Analyzer(mockDb, 'sonnet', 'claude');
   });
@@ -872,6 +960,274 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
     expect(runCalls).toHaveLength(1);
     const params = runCalls[0].params;
     expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT
+  });
+});
+
+describe('Analyzer.storeSuggestions changedFiles parameter priority', () => {
+  let analyzer;
+  let mockDb;
+  let runCalls;
+  let getCalls;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const mock = createBetterSqliteMock();
+    mockDb = mock.mockDb;
+    runCalls = mock.runCalls;
+    getCalls = mock.getCalls;
+    analyzer = new Analyzer(mockDb, 'sonnet', 'claude');
+  });
+
+  /**
+   * Regression test for bug where storeSuggestions used review.id to query pr_metadata.
+   *
+   * Bug details:
+   * - storeSuggestions was called with prId that is actually review.id (from reviews table)
+   * - The code queried: SELECT pr_data FROM pr_metadata WHERE id = ?
+   * - This found the WRONG pr_metadata record (or none at all)
+   * - Result: suggestions were validated against wrong changed_files, causing valid suggestions
+   *   to be filtered out or invalid ones to be allowed through
+   *
+   * Fix: Prefer changedFiles parameter over pr_metadata lookup when available.
+   */
+  it('should use changedFiles parameter for validation, bypassing pr_metadata lookup (regression)', async () => {
+    // Set up pr_metadata with DIFFERENT files than what we pass via changedFiles parameter
+    // This simulates the bug where the wrong pr_metadata row would be found
+    mockDb.setGetResult({
+      pr_data: JSON.stringify({
+        changed_files: ['wrong/file-from-metadata.js', 'another/wrong-file.js']
+      })
+    });
+
+    // Suggestions that should be valid against the changedFiles parameter we'll pass
+    const suggestions = [
+      {
+        file: 'src/correct-file.js',
+        title: 'Valid suggestion for correct file',
+        type: 'bug',
+        description: 'This should be stored',
+        line_start: 10,
+        line_end: 10,
+        confidence: 0.8
+      },
+      {
+        file: 'wrong/file-from-metadata.js',
+        title: 'Invalid - only valid against wrong pr_metadata',
+        type: 'bug',
+        description: 'This should NOT be stored',
+        line_start: 5,
+        line_end: 5,
+        confidence: 0.8
+      }
+    ];
+
+    // Pass changedFiles parameter with the CORRECT files
+    // The fix ensures this bypasses the pr_metadata lookup entirely
+    const correctChangedFiles = ['src/correct-file.js', 'src/other-correct-file.js'];
+
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 1, correctChangedFiles);
+
+    // Should only store the suggestion that matches changedFiles parameter
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0].params[6]).toBe('src/correct-file.js');
+
+    // Should NOT have stored the suggestion that only matches pr_metadata
+    const storedFiles = runCalls.map(call => call.params[6]);
+    expect(storedFiles).not.toContain('wrong/file-from-metadata.js');
+
+    // Verify pr_metadata was NOT queried because changedFiles was provided
+    // (optimization: skip database query when changedFiles is available)
+    const prMetadataQueries = getCalls.filter(call =>
+      call.sql.includes('pr_metadata')
+    );
+    expect(prMetadataQueries).toHaveLength(0);
+  });
+
+  it('should fall back to pr_metadata lookup when changedFiles is not provided', async () => {
+    // Set up database responses: reviews first, then pr_metadata
+    // This SHOULD be used when changedFiles is null/empty
+    mockDb.setGetResultFn((sql) => {
+      if (sql.includes('FROM reviews')) {
+        return { pr_number: 123, repository: 'owner/repo', review_type: 'pr' };
+      }
+      if (sql.includes('pr_metadata')) {
+        return {
+          pr_data: JSON.stringify({
+            changed_files: ['src/from-metadata.js']
+          })
+        };
+      }
+      return null;
+    });
+
+    const suggestions = [
+      {
+        file: 'src/from-metadata.js',
+        title: 'Valid from metadata lookup',
+        type: 'bug',
+        description: 'Test',
+        line_start: 1,
+        line_end: 1,
+        confidence: 0.8
+      }
+    ];
+
+    // Don't pass changedFiles - should fall back to pr_metadata
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
+
+    // Should store the suggestion using pr_metadata files
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0].params[6]).toBe('src/from-metadata.js');
+
+    // Should have queried pr_metadata since changedFiles was not provided
+    const prMetadataQueries = getCalls.filter(call =>
+      call.sql.includes('pr_metadata')
+    );
+    expect(prMetadataQueries).toHaveLength(1);
+  });
+
+  it('should fall back to pr_metadata lookup when changedFiles is empty array', async () => {
+    // Set up database responses: reviews first, then pr_metadata
+    mockDb.setGetResultFn((sql) => {
+      if (sql.includes('FROM reviews')) {
+        return { pr_number: 123, repository: 'owner/repo', review_type: 'pr' };
+      }
+      if (sql.includes('pr_metadata')) {
+        return {
+          pr_data: JSON.stringify({
+            changed_files: ['src/from-metadata.js']
+          })
+        };
+      }
+      return null;
+    });
+
+    const suggestions = [
+      {
+        file: 'src/from-metadata.js',
+        title: 'Valid from metadata lookup',
+        type: 'bug',
+        description: 'Test',
+        line_start: 1,
+        line_end: 1,
+        confidence: 0.8
+      }
+    ];
+
+    // Pass empty changedFiles - should fall back to pr_metadata
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 1, []);
+
+    // Should store the suggestion using pr_metadata files
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0].params[6]).toBe('src/from-metadata.js');
+
+    // Should have queried pr_metadata since changedFiles was empty
+    const prMetadataQueries = getCalls.filter(call =>
+      call.sql.includes('pr_metadata')
+    );
+    expect(prMetadataQueries).toHaveLength(1);
+  });
+
+  /**
+   * Regression test: Verify getValidFilePaths now correctly looks up pr_metadata
+   * via review.pr_number and review.repository (the natural key), not via
+   * the erroneous pr_metadata.id = review.id lookup.
+   *
+   * This test verifies:
+   * 1. The reviews table is queried first to get pr_number and repository
+   * 2. The pr_metadata table is then queried using pr_number + repository
+   * 3. The correct changed_files are returned based on this proper lookup
+   */
+  it('should properly join reviews to pr_metadata via pr_number and repository (regression)', async () => {
+    // Set up different data to distinguish the lookup path
+    // If the old buggy lookup (pr_metadata.id = review_id) was used, it would find wrong data
+    mockDb.setGetResultFn((sql, params) => {
+      if (sql.includes('FROM reviews')) {
+        // review.id = 1 has pr_number = 99, repository = 'correct/repo'
+        expect(params[0]).toBe(1); // reviewId passed
+        return { pr_number: 99, repository: 'correct/repo', review_type: 'pr' };
+      }
+      if (sql.includes('pr_metadata')) {
+        // Should query with pr_number=99 and repository='correct/repo'
+        expect(params[0]).toBe(99);
+        expect(params[1]).toBe('correct/repo');
+        return {
+          pr_data: JSON.stringify({
+            changed_files: ['src/correct-lookup.js']
+          })
+        };
+      }
+      return null;
+    });
+
+    const suggestions = [
+      {
+        file: 'src/correct-lookup.js',
+        title: 'Valid from correct lookup',
+        type: 'bug',
+        description: 'Test',
+        line_start: 1,
+        line_end: 1,
+        confidence: 0.8
+      },
+      {
+        file: 'src/wrong-lookup.js',
+        title: 'Invalid - would only pass with wrong lookup',
+        type: 'bug',
+        description: 'Test',
+        line_start: 2,
+        line_end: 2,
+        confidence: 0.8
+      }
+    ];
+
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
+
+    // Should only store the suggestion that matches the correct lookup
+    expect(runCalls).toHaveLength(1);
+    expect(runCalls[0].params[6]).toBe('src/correct-lookup.js');
+
+    // Verify reviews was queried first, then pr_metadata
+    expect(getCalls).toHaveLength(2);
+    expect(getCalls[0].sql).toContain('FROM reviews');
+    expect(getCalls[1].sql).toContain('pr_metadata');
+  });
+
+  it('should return empty for local mode reviews (no pr_metadata lookup needed)', async () => {
+    // Local mode reviews have no pr_number
+    mockDb.setGetResultFn((sql) => {
+      if (sql.includes('FROM reviews')) {
+        return { pr_number: null, repository: 'local/repo', review_type: 'local' };
+      }
+      // Should never reach pr_metadata query for local mode
+      if (sql.includes('pr_metadata')) {
+        throw new Error('Should not query pr_metadata for local mode');
+      }
+      return null;
+    });
+
+    const suggestions = [
+      {
+        file: 'any/file.js',
+        title: 'Local mode suggestion',
+        type: 'bug',
+        description: 'Test',
+        line_start: 1,
+        line_end: 1,
+        confidence: 0.8
+      }
+    ];
+
+    // With no changedFiles and local mode, getValidFilePaths returns []
+    // which means fail-open behavior (all suggestions pass through)
+    await analyzer.storeSuggestions(1, 'run-123', suggestions, 1);
+
+    // Should store (fail-open) since no valid paths available for local mode
+    expect(runCalls).toHaveLength(1);
+
+    // Should have only queried reviews, not pr_metadata
+    expect(getCalls).toHaveLength(1);
+    expect(getCalls[0].sql).toContain('FROM reviews');
   });
 });
 

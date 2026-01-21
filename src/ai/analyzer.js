@@ -1349,21 +1349,24 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
   /**
    * Store suggestions in the database
    * Includes failsafe filter to reject suggestions with invalid file paths
-   * @param {number} prId - Pull request or local review ID
+   * @param {number} reviewId - Review ID (from reviews table, works for both PR and local modes)
    * @param {string} runId - Analysis run ID
    * @param {Array} suggestions - Suggestions to store
    * @param {number|string} level - Analysis level
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode fallback
    */
-  async storeSuggestions(prId, runId, suggestions, level, changedFiles = null) {
+  async storeSuggestions(reviewId, runId, suggestions, level, changedFiles = null) {
     const { run } = require('../database');
 
-    // FAILSAFE: Get valid file paths from PR metadata
-    let validFilePaths = await this.getValidFilePaths(prId);
-
-    // For local mode, PR metadata won't exist - use provided changedFiles as fallback
-    if (validFilePaths.length === 0 && changedFiles && changedFiles.length > 0) {
+    // FAILSAFE: Get valid file paths to filter suggestions against
+    // Prefer changedFiles parameter when available for performance (avoids DB lookup)
+    // Fallback to getValidFilePaths() which properly looks up pr_metadata via review.id
+    let validFilePaths;
+    if (changedFiles && changedFiles.length > 0) {
       validFilePaths = changedFiles.map(f => normalizePath(f));
+    } else {
+      // Fallback to pr_metadata lookup via review -> pr_metadata join
+      validFilePaths = await this.getValidFilePaths(reviewId);
     }
 
     // Create a Set of normalized valid paths for O(1) lookup
@@ -1419,7 +1422,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
           file, line_start, line_end, side, type, title, body, status, is_file_level
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
-        prId,
+        reviewId,
         'ai',
         'AI Assistant',
         runId,
@@ -1442,19 +1445,37 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
   /**
    * Get valid file paths from PR metadata
-   * @param {number} prId - Pull request ID
+   * @param {number} reviewId - Review ID (from reviews table, NOT pr_metadata.id)
    * @returns {Promise<Array<string>>} Array of valid file paths from the PR diff
    */
-  async getValidFilePaths(prId) {
+  async getValidFilePaths(reviewId) {
     const { queryOne } = require('../database');
 
     try {
+      // First, look up the review to get pr_number and repository
+      // reviewId is from the reviews table, not pr_metadata.id
+      const review = await queryOne(this.db, `
+        SELECT pr_number, repository, review_type FROM reviews WHERE id = ?
+      `, [reviewId]);
+
+      if (!review) {
+        logger.warn(`[FAILSAFE] Review not found for reviewId=${reviewId}`);
+        return [];
+      }
+
+      // For local mode reviews, there is no pr_metadata - return empty
+      if (review.review_type === 'local' || !review.pr_number) {
+        // This is expected for local mode - not a warning condition
+        return [];
+      }
+
+      // Now look up pr_metadata using the natural key (pr_number + repository)
       const prMetadata = await queryOne(this.db, `
-        SELECT pr_data FROM pr_metadata WHERE id = ?
-      `, [prId]);
+        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ?
+      `, [review.pr_number, review.repository]);
 
       if (!prMetadata || !prMetadata.pr_data) {
-        // This is expected for local mode - not a warning condition
+        logger.warn(`[FAILSAFE] PR metadata not found for PR #${review.pr_number} in ${review.repository}`);
         return [];
       }
 
