@@ -348,7 +348,6 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     // For local review, we use HEAD as both since we're diffing working directory
     const localMetadata = {
       id: reviewId,
-      repository: review.repository,  // Include repository for context display
       title: `Local changes in ${repository}`,
       description: `Reviewing uncommitted changes in ${localPath}`,
       base_sha: review.local_head_sha,  // HEAD commit
