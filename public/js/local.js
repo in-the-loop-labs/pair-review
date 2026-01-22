@@ -775,18 +775,17 @@ class LocalManager {
             }
           });
 
-          // Clear internal userComments array
-          manager.userComments = [];
+          // Remove line-level and file-level comment elements from diff view
+          // (They have been soft-deleted, so should not appear in the diff panel per design decision)
+          // The comments array will be reloaded below with proper dismissed state.
 
-          // Clear comments from AI Panel
-          if (window.aiPanel?.setComments) {
-            window.aiPanel.setComments([]);
-          }
+          // Reload comments to update both internal state and AI Panel
+          // This shows dismissed comments in AI Panel if filter is enabled, matching individual deletion behavior
+          const includeDismissed = window.aiPanel?.showDismissedComments || false;
+          await manager.loadUserComments(includeDismissed);
 
-          // Update comment count display
-          manager.updateCommentCount();
-
-          // Update dismissed suggestions in the UI
+          // Update dismissed suggestions in the diff view UI
+          // (AI Panel is already updated by loadUserComments via setComments)
           if (result.dismissedSuggestionIds && result.dismissedSuggestionIds.length > 0 && manager.updateDismissedSuggestionUI) {
             for (const suggestionId of result.dismissedSuggestionIds) {
               manager.updateDismissedSuggestionUI(suggestionId);
