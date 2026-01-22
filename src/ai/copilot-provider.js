@@ -90,6 +90,13 @@ class CopilotProvider extends AIProvider {
     // E.g., shell(git) allows "git status", "git diff", etc.
     // ============================================================================
     const readOnlyArgs = [
+      // Disable path verification - --add-dir alone doesn't grant sufficient access
+      // for the AI to explore worktrees. Safe because we still block dangerous tools.
+      '--allow-all-paths',
+      // Allow native file system read tools (required for worktree access)
+      '--allow-tool', 'read',              // Native file reading tool
+      '--allow-tool', 'glob',              // File pattern matching
+      '--allow-tool', 'list',              // Directory listing tool
       // Allow specific read-only git commands (not blanket 'git' to block git commit, push, etc.)
       '--allow-tool', 'shell(git diff)',
       '--allow-tool', 'shell(git log)',
@@ -127,8 +134,6 @@ class CopilotProvider extends AIProvider {
       '--deny-tool', 'write',
       // Auto-approve remaining tools to avoid interactive prompts
       '--allow-all-tools',
-      // Allow access to all paths (needed for analyzing files outside cwd)
-      '--allow-all-paths',
     ];
 
     // Command and base args are the same regardless of shell mode
