@@ -527,6 +527,7 @@ router.get('/api/pr/:owner/:repo/:number/analysis-status', async (req, res) => {
 router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) => {
   try {
     const { owner, repo, number } = req.params;
+    const { runId } = req.query;
     const prNumber = parseInt(number);
 
     if (isNaN(prNumber) || prNumber <= 0) {
@@ -578,11 +579,17 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
     // Check if any analysis has been run by looking for analysis_runs records
     // Falls back to checking pr_metadata.last_ai_run_id for backwards compatibility
     let analysisHasRun = hasSuggestions;
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    let selectedRun = null;
     try {
-      const analysisRunRepo = new AnalysisRunRepository(db);
-      const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
+      // If runId is provided, fetch that specific run; otherwise get the latest
+      if (runId) {
+        selectedRun = await analysisRunRepo.getById(runId);
+      } else {
+        selectedRun = await analysisRunRepo.getLatestByReviewId(review.id);
+      }
       // Analysis has been run if there's an analysis_run record OR if there are any AI suggestions
-      analysisHasRun = !!(latestRun || hasSuggestions);
+      analysisHasRun = !!(selectedRun || hasSuggestions);
     } catch (e) {
       // Log the error at debug level before attempting fallback
       logger.debug('analysis_runs query failed, falling back to pr_metadata:', e.message);
@@ -600,14 +607,16 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       }
     }
 
-    // Get AI summary from the review record (already fetched above)
-    const summary = review?.summary || null;
+    // Get AI summary from the selected analysis run if available, otherwise fall back to review summary
+    const summary = selectedRun?.summary || review?.summary || null;
 
     // Get stats for AI suggestions (issues/suggestions/praise for final level only)
+    // Filter by runId if provided, otherwise use the latest analysis run
     let stats = { issues: 0, suggestions: 0, praise: 0 };
     if (hasSuggestions) {
       try {
-        const statsResult = await query(db, getStatsQuery(), [review.id, review.id]);
+        const statsQuery = getStatsQuery(runId);
+        const statsResult = await query(db, statsQuery.query, statsQuery.params(review.id));
         stats = calculateStats(statsResult);
       } catch (e) {
         console.warn('Error fetching AI suggestion stats:', e);

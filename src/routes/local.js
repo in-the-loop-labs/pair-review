@@ -1347,6 +1347,7 @@ router.get('/api/local/:reviewId/analysis-status', async (req, res) => {
 router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
   try {
     const reviewId = parseInt(req.params.reviewId);
+    const { runId } = req.query;
 
     if (isNaN(reviewId) || reviewId <= 0) {
       return res.status(400).json({
@@ -1378,10 +1379,16 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
 
     // Check if any analysis has been run using analysis_runs table
     let analysisHasRun = hasSuggestions;
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    let selectedRun = null;
     try {
-      const analysisRunRepo = new AnalysisRunRepository(db);
-      const latestRun = await analysisRunRepo.getLatestByReviewId(reviewId);
-      analysisHasRun = !!(latestRun || hasSuggestions);
+      // If runId is provided, fetch that specific run; otherwise get the latest
+      if (runId) {
+        selectedRun = await analysisRunRepo.getById(runId);
+      } else {
+        selectedRun = await analysisRunRepo.getLatestByReviewId(reviewId);
+      }
+      analysisHasRun = !!(selectedRun || hasSuggestions);
     } catch (e) {
       // Log the error at debug level before falling back
       logger.debug('analysis_runs query failed in local mode, falling back to hasSuggestions:', e.message);
@@ -1389,14 +1396,16 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
       analysisHasRun = hasSuggestions;
     }
 
-    // Get AI summary from the review record
-    const summary = review?.summary || null;
+    // Get AI summary from the selected analysis run if available, otherwise fall back to review summary
+    const summary = selectedRun?.summary || review?.summary || null;
 
     // Get stats for AI suggestions (issues/suggestions/praise for final level only)
+    // Filter by runId if provided, otherwise use the latest analysis run
     let stats = { issues: 0, suggestions: 0, praise: 0 };
     if (hasSuggestions) {
       try {
-        const statsResult = await query(db, getStatsQuery(), [reviewId, reviewId]);
+        const statsQuery = getStatsQuery(runId);
+        const statsResult = await query(db, statsQuery.query, statsQuery.params(reviewId));
         stats = calculateStats(statsResult);
       } catch (e) {
         console.warn('Error fetching AI suggestion stats:', e);

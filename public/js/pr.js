@@ -2080,11 +2080,21 @@ class PRManager {
     if (!this.currentPR) return;
 
     try {
-      // First, check if analysis has been run for this PR
       const { owner, repo, number } = this.currentPR;
+
+      // Use provided level, or fall back to current selectedLevel
+      const filterLevel = level || this.selectedLevel || 'final';
+      // Use provided runId, or fall back to selectedRunId (which may be null for latest)
+      const filterRunId = runId !== undefined ? runId : this.selectedRunId;
+
+      // First, check if analysis has been run for this PR and get summary for the selected run
       let analysisHasRun = false;
       try {
-        const checkResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`);
+        let checkUrl = `/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`;
+        if (filterRunId) {
+          checkUrl += `?runId=${filterRunId}`;
+        }
+        const checkResponse = await fetch(checkUrl);
         if (checkResponse.ok) {
           const checkData = await checkResponse.json();
           analysisHasRun = checkData.analysisHasRun;
@@ -2106,11 +2116,6 @@ class PRManager {
       if (window.aiPanel?.setAnalysisState) {
         window.aiPanel.setAnalysisState(analysisHasRun ? 'complete' : 'unknown');
       }
-
-      // Use provided level, or fall back to current selectedLevel
-      const filterLevel = level || this.selectedLevel || 'final';
-      // Use provided runId, or fall back to selectedRunId (which may be null for latest)
-      const filterRunId = runId !== undefined ? runId : this.selectedRunId;
 
       let url = `/api/pr/${owner}/${repo}/${number}/ai-suggestions?levels=${filterLevel}`;
       if (filterRunId) {

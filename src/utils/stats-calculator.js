@@ -40,27 +40,44 @@ function calculateStats(rows) {
 
 /**
  * Build the SQL query for getting stats.
- * Only counts final/overall level suggestions from the latest analysis run,
- * ignoring status (adopted/dismissed).
+ * Only counts final/overall level suggestions, ignoring status (adopted/dismissed).
  * Final suggestions have ai_level IS NULL (orchestrated/curated results).
  *
- * Note: The review_id parameter must be passed twice (once for the outer WHERE,
- * once for the subquery that finds the latest ai_run_id).
+ * When a specific runId is provided, stats are filtered to that run only.
+ * Otherwise, stats come from the latest analysis run.
  *
- * @returns {string} SQL query string
+ * @param {string|null} runId - Optional specific run ID to filter by
+ * @returns {{query: string, params: function(reviewId: number): Array}} Query object with SQL and param builder
  */
-function getStatsQuery() {
-  return `
-    SELECT type, COUNT(*) as count FROM comments
-    WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL
-      AND ai_run_id = (
-        SELECT ai_run_id FROM comments
-        WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
-        ORDER BY created_at DESC
-        LIMIT 1
-      )
-    GROUP BY type
-  `;
+function getStatsQuery(runId = null) {
+  if (runId) {
+    // Filter by specific run ID
+    return {
+      query: `
+        SELECT type, COUNT(*) as count FROM comments
+        WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL
+          AND ai_run_id = ?
+        GROUP BY type
+      `,
+      params: (reviewId) => [reviewId, runId]
+    };
+  } else {
+    // Default: use the latest analysis run
+    return {
+      query: `
+        SELECT type, COUNT(*) as count FROM comments
+        WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL
+          AND ai_run_id = (
+            SELECT ai_run_id FROM comments
+            WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+          )
+        GROUP BY type
+      `,
+      params: (reviewId) => [reviewId, reviewId]
+    };
+  }
 }
 
 module.exports = {

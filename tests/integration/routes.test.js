@@ -1672,6 +1672,56 @@ describe('AI Suggestion Endpoints', () => {
         praise: 1       // Only the new praise, not old praise
       });
     });
+
+    it('should return summary from selected analysis run when runId is provided', async () => {
+      // Insert two analysis runs with different summaries
+      const oldTime = '2024-01-01 10:00:00';
+      const newTime = '2024-01-01 11:00:00';
+
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, status, summary, started_at)
+        VALUES ('run-1', ?, 'completed', 'Summary from first run', ?)
+      `, [prId, oldTime]);
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, status, summary, started_at)
+        VALUES ('run-2', ?, 'completed', 'Summary from second run', ?)
+      `, [prId, newTime]);
+
+      // Without runId, should return latest (run-2) summary
+      const responseLatest = await request(app)
+        .get('/api/pr/owner/repo/1/has-ai-suggestions');
+
+      expect(responseLatest.status).toBe(200);
+      expect(responseLatest.body.summary).toBe('Summary from second run');
+
+      // With runId=run-1, should return first run summary
+      const responseRun1 = await request(app)
+        .get('/api/pr/owner/repo/1/has-ai-suggestions?runId=run-1');
+
+      expect(responseRun1.status).toBe(200);
+      expect(responseRun1.body.summary).toBe('Summary from first run');
+
+      // With runId=run-2, should return second run summary
+      const responseRun2 = await request(app)
+        .get('/api/pr/owner/repo/1/has-ai-suggestions?runId=run-2');
+
+      expect(responseRun2.status).toBe(200);
+      expect(responseRun2.body.summary).toBe('Summary from second run');
+    });
+
+    it('should fall back to review summary when runId not found', async () => {
+      // Update review with a summary
+      await run(db, `
+        UPDATE reviews SET summary = 'Review fallback summary' WHERE id = ?
+      `, [prId]);
+
+      // Request with non-existent runId should fall back to review summary
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/has-ai-suggestions?runId=non-existent-run');
+
+      expect(response.status).toBe(200);
+      expect(response.body.summary).toBe('Review fallback summary');
+    });
   });
 });
 
@@ -3640,6 +3690,56 @@ describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
       .get('/api/local/99999/has-ai-suggestions');
 
     expect(response.status).toBe(404);
+  });
+
+  it('should return summary from selected analysis run when runId is provided', async () => {
+    // Insert two analysis runs with different summaries
+    const oldTime = '2024-01-01 10:00:00';
+    const newTime = '2024-01-01 11:00:00';
+
+    await run(db, `
+      INSERT INTO analysis_runs (id, review_id, status, summary, started_at)
+      VALUES ('run-1', ?, 'completed', 'Summary from first run', ?)
+    `, [reviewId, oldTime]);
+    await run(db, `
+      INSERT INTO analysis_runs (id, review_id, status, summary, started_at)
+      VALUES ('run-2', ?, 'completed', 'Summary from second run', ?)
+    `, [reviewId, newTime]);
+
+    // Without runId, should return latest (run-2) summary
+    const responseLatest = await request(app)
+      .get(`/api/local/${reviewId}/has-ai-suggestions`);
+
+    expect(responseLatest.status).toBe(200);
+    expect(responseLatest.body.summary).toBe('Summary from second run');
+
+    // With runId=run-1, should return first run summary
+    const responseRun1 = await request(app)
+      .get(`/api/local/${reviewId}/has-ai-suggestions?runId=run-1`);
+
+    expect(responseRun1.status).toBe(200);
+    expect(responseRun1.body.summary).toBe('Summary from first run');
+
+    // With runId=run-2, should return second run summary
+    const responseRun2 = await request(app)
+      .get(`/api/local/${reviewId}/has-ai-suggestions?runId=run-2`);
+
+    expect(responseRun2.status).toBe(200);
+    expect(responseRun2.body.summary).toBe('Summary from second run');
+  });
+
+  it('should fall back to review summary when runId not found', async () => {
+    // Update review with a summary
+    await run(db, `
+      UPDATE reviews SET summary = 'Review fallback summary' WHERE id = ?
+    `, [reviewId]);
+
+    // Request with non-existent runId should fall back to review summary
+    const response = await request(app)
+      .get(`/api/local/${reviewId}/has-ai-suggestions?runId=non-existent-run`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.summary).toBe('Review fallback summary');
   });
 });
 

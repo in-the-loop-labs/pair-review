@@ -237,9 +237,17 @@ class LocalManager {
       if (!manager.currentPR) return;
 
       try {
-        // First, check if analysis has been run and get summary data
+        const filterLevel = level || manager.selectedLevel || 'final';
+        // Use provided runId, or fall back to selectedRunId (which may be null for latest)
+        const filterRunId = runId !== undefined ? runId : manager.selectedRunId;
+
+        // First, check if analysis has been run and get summary data for the selected run
         try {
-          const checkResponse = await fetch(`/api/local/${reviewId}/has-ai-suggestions`);
+          let checkUrl = `/api/local/${reviewId}/has-ai-suggestions`;
+          if (filterRunId) {
+            checkUrl += `?runId=${filterRunId}`;
+          }
+          const checkResponse = await fetch(checkUrl);
           if (checkResponse.ok) {
             const checkData = await checkResponse.json();
 
@@ -251,18 +259,14 @@ class LocalManager {
               });
             }
 
-            // Set analysis state based on whether we have suggestions
+            // Set analysis state based on whether analysis has run (not just whether we have suggestions)
             if (window.aiPanel?.setAnalysisState) {
-              window.aiPanel.setAnalysisState(checkData.hasSuggestions ? 'complete' : 'unknown');
+              window.aiPanel.setAnalysisState(checkData.analysisHasRun ? 'complete' : 'unknown');
             }
           }
         } catch (checkError) {
           console.warn('Error checking analysis status:', checkError);
         }
-
-        const filterLevel = level || manager.selectedLevel || 'final';
-        // Use provided runId, or fall back to selectedRunId (which may be null for latest)
-        const filterRunId = runId !== undefined ? runId : manager.selectedRunId;
 
         let url = `/api/local/${reviewId}/suggestions?levels=${filterLevel}`;
         if (filterRunId) {

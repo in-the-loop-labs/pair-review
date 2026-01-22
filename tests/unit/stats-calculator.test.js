@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { calculateStats } from '../../src/utils/stats-calculator.js';
+import { calculateStats, getStatsQuery } from '../../src/utils/stats-calculator.js';
 
 describe('Stats Calculator', () => {
   describe('calculateStats', () => {
@@ -85,6 +85,55 @@ describe('Stats Calculator', () => {
       expect(stats.suggestions).toBe(3);
       expect(stats.issues).toBe(0);
       expect(stats.praise).toBe(0);
+    });
+  });
+
+  describe('getStatsQuery', () => {
+    it('should return query filtering by specific runId when provided', () => {
+      const specificRunId = 'run-123';
+      const result = getStatsQuery(specificRunId);
+
+      expect(result.query).toContain('ai_run_id = ?');
+      expect(result.query).not.toContain('SELECT ai_run_id FROM comments');
+
+      const params = result.params(42);
+      expect(params).toEqual([42, 'run-123']);
+    });
+
+    it('should return query using latest run subquery when runId is null', () => {
+      const result = getStatsQuery(null);
+
+      expect(result.query).toContain('SELECT ai_run_id FROM comments');
+      expect(result.query).toContain('ORDER BY created_at DESC');
+      expect(result.query).toContain('LIMIT 1');
+
+      const params = result.params(42);
+      expect(params).toEqual([42, 42]);
+    });
+
+    it('should return query using latest run subquery when runId is undefined', () => {
+      const result = getStatsQuery();
+
+      expect(result.query).toContain('SELECT ai_run_id FROM comments');
+
+      const params = result.params(99);
+      expect(params).toEqual([99, 99]);
+    });
+
+    it('should return queries that filter for final level suggestions only', () => {
+      const withRunId = getStatsQuery('run-abc');
+      const withoutRunId = getStatsQuery();
+
+      expect(withRunId.query).toContain('ai_level IS NULL');
+      expect(withoutRunId.query).toContain('ai_level IS NULL');
+    });
+
+    it('should return queries that filter for AI source only', () => {
+      const withRunId = getStatsQuery('run-abc');
+      const withoutRunId = getStatsQuery();
+
+      expect(withRunId.query).toContain("source = 'ai'");
+      expect(withoutRunId.query).toContain("source = 'ai'");
     });
   });
 });
