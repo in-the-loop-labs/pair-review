@@ -100,8 +100,7 @@ Note: You may use parallel read-only Tasks to examine multiple files simultaneou
 <section name="output-schema" locked="true">
 ## Output Format
 
-**>>> CRITICAL: Output ONLY valid JSON <<<**
-No markdown blocks, no explanations, no extra text. Response must start with { and end with }.
+**>>> CRITICAL: Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }. <<<**
 
 {
   "level": 2,

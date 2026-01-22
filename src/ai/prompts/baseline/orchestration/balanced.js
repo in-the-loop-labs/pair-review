@@ -42,8 +42,7 @@ const taggedPrompt = `<section name="role" required="true">
 </section>
 
 <section name="critical-output" locked="true">
-## CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
+**>>> CRITICAL: Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }. <<<**
 </section>
 
 <section name="role-description" required="true">
@@ -112,8 +111,7 @@ Prioritize suggestions in this order:
 <section name="output-schema" locked="true">
 ## Output Format
 
-### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
+**>>> CRITICAL: Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }. <<<**
 
 Output JSON with this structure:
 {

@@ -245,8 +245,8 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       });
     }
 
-    // Extract optional provider, model and customInstructions from request body
-    const { provider: requestProvider, model: requestModel, customInstructions: rawInstructions } = req.body || {};
+    // Extract optional provider, model, tier and customInstructions from request body
+    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions } = req.body || {};
 
     // Trim and validate custom instructions
     const MAX_INSTRUCTIONS_LENGTH = 5000;
@@ -366,6 +366,9 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
     logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
     logger.log('API', `Model: ${selectedModel}`, 'cyan');
+    // Determine tier: request body > default ('balanced')
+    const tier = requestTier || 'balanced';
+    logger.log('API', `Tier: ${tier}`, 'cyan');
     logger.log('API', `Changed files: ${changedFiles.length}`, 'cyan');
     if (combinedInstructions) {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
@@ -406,7 +409,8 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     // Start analysis asynchronously (pass changedFiles for local mode path validation)
     // Pass analysisId for process tracking/cancellation
     // Pass separate instructions for storage, analyzer will merge them for prompts
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId })
+    // Pass tier for prompt selection
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, tier })
       .then(async result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);

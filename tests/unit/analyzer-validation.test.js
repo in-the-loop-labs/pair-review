@@ -1262,10 +1262,12 @@ describe('Analyzer.buildLineNumberGuidance', () => {
     expect(result).toContain('## Line Number Precision');
   });
 
-  it('should include the script path in the output', () => {
+  it('should include the bare git-diff-lines command in the output', () => {
     const result = analyzer.buildLineNumberGuidance();
-    const scriptPath = analyzer.getAnnotatedDiffScriptPath();
-    expect(result).toContain(scriptPath);
+    // Should use bare command name (not absolute path) since BIN_DIR is added to PATH
+    expect(result).toContain('git-diff-lines');
+    // Should NOT contain an absolute path
+    expect(result).not.toMatch(/\/.*\/git-diff-lines/);
   });
 
   it('should include line number column explanations', () => {
@@ -1293,9 +1295,8 @@ describe('Analyzer.buildLineNumberGuidance', () => {
     it('should omit --cwd when worktreePath is null', () => {
       const result = analyzer.buildLineNumberGuidance(null);
 
-      // Should contain the script path but not --cwd
-      const scriptPath = analyzer.getAnnotatedDiffScriptPath();
-      expect(result).toContain(scriptPath);
+      // Should contain the bare command but not --cwd
+      expect(result).toContain('git-diff-lines');
       expect(result).not.toContain('--cwd');
     });
 
@@ -1322,10 +1323,9 @@ describe('Analyzer.buildLineNumberGuidance', () => {
     it('should include --cwd in both the command block and example usage', () => {
       const worktreePath = '/my/worktree';
       const result = analyzer.buildLineNumberGuidance(worktreePath);
-      const scriptPath = analyzer.getAnnotatedDiffScriptPath();
 
-      // The command with --cwd should appear in the code block
-      const fullCommand = `${scriptPath} --cwd "/my/worktree"`;
+      // The command with --cwd should appear in the code block (using bare command name)
+      const fullCommand = `git-diff-lines --cwd "/my/worktree"`;
       expect(result).toContain(fullCommand);
 
       // It should also appear in the example usage lines
@@ -1336,9 +1336,9 @@ describe('Analyzer.buildLineNumberGuidance', () => {
     it('should format command correctly with typical worktree path', () => {
       const worktreePath = '/Users/dev/.pair-review/worktrees/pr-123';
       const result = analyzer.buildLineNumberGuidance(worktreePath);
-      const scriptPath = analyzer.getAnnotatedDiffScriptPath();
 
-      const expectedCommand = `${scriptPath} --cwd "/Users/dev/.pair-review/worktrees/pr-123"`;
+      // Uses bare command name since BIN_DIR is added to PATH in providers
+      const expectedCommand = `git-diff-lines --cwd "/Users/dev/.pair-review/worktrees/pr-123"`;
       expect(result).toContain(expectedCommand);
     });
   });

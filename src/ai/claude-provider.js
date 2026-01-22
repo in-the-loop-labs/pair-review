@@ -4,11 +4,15 @@
  * Wraps the Claude CLI for use with the AI provider abstraction.
  */
 
+const path = require('path');
 const { spawn } = require('child_process');
 const { AIProvider, registerProvider } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
+
+// Directory containing bin scripts (git-diff-lines, etc.)
+const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
 /**
  * Claude model definitions with tier mappings
@@ -77,6 +81,7 @@ class ClaudeProvider extends AIProvider {
       'Bash(tail *)',
       'Bash(grep *)',
       'Bash(find *)',
+      'Bash(rg *)',
     ].join(',');
 
     if (this.useShell) {
@@ -106,7 +111,7 @@ class ClaudeProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
-          PATH: process.env.PATH
+          PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell
       });

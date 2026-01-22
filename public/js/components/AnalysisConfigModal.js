@@ -496,9 +496,14 @@ class AnalysisConfigModal {
    * Handle form submission
    */
   handleSubmit() {
+    // Extract tier from the selected model's data-tier attribute
+    const selectedModelCard = this.modal.querySelector('.model-card.selected');
+    const tier = selectedModelCard?.dataset?.tier || 'balanced';
+
     const config = {
       provider: this.selectedProvider,
       model: this.selectedModel,
+      tier: tier,
       instructions: this.buildInstructions(),
       customInstructions: this.modal.querySelector('#custom-instructions')?.value?.trim() || '',
       presets: Array.from(this.selectedPresets),

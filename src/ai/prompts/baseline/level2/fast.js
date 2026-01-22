@@ -82,7 +82,8 @@ Annotated diff tool (preferred), \`cat -n <file>\`, ls, find, grep. Do NOT modif
 
 <section name="output-schema" locked="true">
 ## Output Format
-Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Must start with { and end with }.
+
+**>>> CRITICAL: Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }. <<<**
 
 {
   "level": 2,

@@ -4,11 +4,15 @@
  * Implements the AI provider interface for Google's Gemini CLI.
  */
 
+const path = require('path');
 const { spawn } = require('child_process');
 const { AIProvider, registerProvider } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
+
+// Directory containing bin scripts (git-diff-lines, etc.)
+const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
 /**
  * Gemini model definitions with tier mappings
@@ -101,8 +105,6 @@ class GeminiProvider extends AIProvider {
       'run_shell_command(git status)',
       'run_shell_command(git branch)',
       'run_shell_command(git rev-parse)',
-      // Custom tool for annotated diff line mapping
-      'run_shell_command(git-diff-lines)',
       // Read-only shell commands
       'run_shell_command(ls)',           // Directory listing
       'run_shell_command(cat)',          // File content viewing
@@ -112,6 +114,9 @@ class GeminiProvider extends AIProvider {
       'run_shell_command(wc)',           // Word/line count
       'run_shell_command(find)',         // File finding
       'run_shell_command(grep)',         // Pattern searching
+      'run_shell_command(rg)',           // Ripgrep (fast pattern searching)
+      // git-diff-lines is added to PATH via BIN_DIR so bare command works
+      'run_shell_command(git-diff-lines)', // Custom annotated diff tool
     ].join(',');
     if (this.useShell) {
       // In shell mode, build full command string with args
@@ -141,7 +146,7 @@ class GeminiProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
-          PATH: process.env.PATH
+          PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell
       });
@@ -308,7 +313,7 @@ class GeminiProvider extends AIProvider {
       const gemini = spawn(command, args, {
         env: {
           ...process.env,
-          PATH: process.env.PATH
+          PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: useShell
       });

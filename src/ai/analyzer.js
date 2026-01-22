@@ -121,10 +121,11 @@ class Analyzer {
       if (mergedInstructions) {
         logger.info(`Custom instructions provided: ${mergedInstructions.length} chars`);
       }
+      const tier = options.tier || 'balanced';
       const results = await Promise.allSettled([
-        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId }),
-        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId }),
-        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId })
+        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier }),
+        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier }),
+        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier })
       ]);
 
       // Step 3: Collect successful results
@@ -183,7 +184,7 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, fileLineCountMap, worktreePath, { analysisId });
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, fileLineCountMap, worktreePath, { analysisId, tier });
 
         // Validate and finalize suggestions
         const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -370,12 +371,15 @@ class Analyzer {
    * @returns {string} Markdown guidance for line numbers
    */
   buildLineNumberGuidance(worktreePath = null) {
-    const scriptPath = this.getAnnotatedDiffScriptPath();
+    // Use bare command name since BIN_DIR is added to PATH in all providers.
+    // Using the absolute path causes issues with AI providers that pattern-match
+    // allowed tools (e.g., Gemini only matches 'git-diff-lines', not the full path).
+    const scriptCommand = 'git-diff-lines';
     // Include --cwd option to ensure git runs in the correct directory
     // This is critical when the script is invoked from an environment where
     // the working directory may not match the target repository
     const cwdOption = worktreePath ? ` --cwd "${worktreePath}"` : '';
-    const fullCommand = `${scriptPath}${cwdOption}`;
+    const fullCommand = `${scriptCommand}${cwdOption}`;
     return `
 ## Viewing Code Changes
 
@@ -638,7 +642,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId } = options;
+    const { analysisId, tier = 'balanced' } = options;
     logger.info('[Level 1] Analysis Starting');
 
     try {
@@ -665,7 +669,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
 
       // Build the Level 1 prompt
       updateProgress('Building prompt for AI to analyze changes');
-      const prompt = this.buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions);
+      const prompt = this.buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions, changedFiles || [], tier);
 
       // Execute Claude CLI in the worktree directory
       updateProgress('Running AI to analyze changes in isolation');
@@ -813,10 +817,12 @@ ${prMetadata.description || '(No description provided)'}
    * @param {Array<string>} generatedPatterns - Patterns for generated files to skip
    * @param {string} customInstructions - Optional custom instructions to include in prompt
    * @param {Array<string>} changedFiles - List of changed file paths for grounding
+   * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
    */
-  buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = []) {
+  buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = [], tier = 'balanced') {
+    logger.debug(`[Level 2] Building prompt with tier: ${tier}`);
     // Try new prompt architecture first
-    const promptBuilder = getPromptBuilder('level2', 'balanced');
+    const promptBuilder = getPromptBuilder('level2', tier, this.provider);
 
     if (promptBuilder) {
       // Build context for the new tagged prompt system
@@ -964,8 +970,40 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} prMetadata - PR metadata with base branch info
    * @param {Array<string>} generatedPatterns - Patterns for generated files to skip
    * @param {string} customInstructions - Optional custom instructions to include in prompt
+   * @param {Array<string>} changedFiles - List of changed file paths for grounding
+   * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
    */
-  buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null) {
+  buildLevel1Prompt(prId, worktreePath, prMetadata, generatedPatterns = [], customInstructions = null, changedFiles = [], tier = 'balanced') {
+    logger.debug(`[Level 1] Building prompt with tier: ${tier}`);
+    // Try new prompt architecture first
+    const promptBuilder = getPromptBuilder('level1', tier, this.provider);
+
+    if (promptBuilder) {
+      // Build context for the new tagged prompt system
+      const criticalNote = `Treat this description as the author's CLAIM about what they changed and why. Your job is to independently verify if the actual code changes align with this description. As you analyze, be alert for:
+- Discrepancies between the description and actual implementation
+- Undocumented changes or side effects not mentioned in the description
+- Overstated or understated scope`;
+
+      // Note: Level 1 uses "validFiles" key to match the {{validFiles}} placeholder in Level 1 prompts.
+      // Level 3 uses "changedFiles" key for its {{changedFiles}} placeholder. Same underlying data,
+      // different naming to reflect semantic intent: L1/L2 emphasize "valid files for suggestions"
+      // (constraint perspective), while L3 emphasizes "changed files in this PR" (context perspective).
+      const context = {
+        reviewIntro: this.buildReviewIntroduction(prId, prMetadata),
+        prContext: this.buildPRContextSection(prMetadata, criticalNote),
+        customInstructions: this.buildCustomInstructionsSection(customInstructions),
+        lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
+        generatedFiles: this.buildGeneratedFilesExclusionSection(generatedPatterns),
+        validFiles: formatValidFiles(changedFiles)
+      };
+
+      logger.debug('[Level 1] Using new prompt architecture');
+      return promptBuilder.build(context);
+    }
+
+    // Fallback to legacy implementation if prompt not migrated
+    logger.debug('[Level 1] Using legacy prompt implementation');
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. Your job is to independently verify if the actual code changes align with this description. As you analyze, be alert for:
 - Discrepancies between the description and actual implementation
@@ -1581,7 +1619,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId } = options;
+    const { analysisId, tier = 'balanced' } = options;
     logger.info('[Level 2] Analysis Starting');
 
     try {
@@ -1612,7 +1650,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Build the Level 2 prompt
       updateProgress('Building prompt for AI to analyze file context');
-      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions, validFiles);
+      const prompt = this.buildLevel2Prompt(prId, worktreePath, prMetadata, generatedPatterns, customInstructions, validFiles, tier);
 
       // Execute Claude CLI in the worktree directory
       updateProgress('Running AI to analyze files in context');
@@ -1686,7 +1724,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId } = options;
+    const { analysisId, tier = 'balanced' } = options;
     logger.info('[Level 3] Analysis Starting');
 
     try {
@@ -1721,7 +1759,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Build the Level 3 prompt with test context
       updateProgress('Building prompt for AI to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions, validFiles);
+      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions, validFiles, tier);
 
       // Execute Claude CLI for Level 3 analysis
       updateProgress('Running AI to analyze codebase-wide implications');
@@ -2246,7 +2284,40 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     }
   }
 
-  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null, generatedPatterns = [], customInstructions = null, changedFiles = []) {
+  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null, generatedPatterns = [], customInstructions = null, changedFiles = [], tier = 'balanced') {
+    logger.debug(`[Level 3] Building prompt with tier: ${tier}`);
+    // Try new prompt architecture first
+    const promptBuilder = getPromptBuilder('level3', tier, this.provider);
+
+    if (promptBuilder) {
+      // Build context for the new tagged prompt system
+      const criticalNote = `Treat this description as the author's CLAIM about what they changed and why. At this architectural level, it's especially important to verify alignment between stated intent and actual implementation. Flag any:
+- **Architectural discrepancies:** Does the implementation match the architectural approach described?
+- **Scope misalignment:** Are there changes beyond what's described, or is described functionality missing?
+- **Impact inconsistencies:** Does the actual codebase impact match what the author claimed?
+- **Undocumented side effects:** Are there broader impacts not mentioned in the description?`;
+
+      // Note: Level 3 uses "changedFiles" key to match the {{changedFiles}} placeholder in Level 3 prompts.
+      // Level 1/2 use "validFiles" key for their {{validFiles}} placeholder. Same underlying data,
+      // different naming to reflect semantic intent: L3 emphasizes "changed files in this PR" (context
+      // perspective for architectural analysis), while L1/L2 emphasize "valid files for suggestions"
+      // (constraint perspective for focused analysis).
+      const context = {
+        reviewIntro: this.buildReviewIntroduction(prId, prMetadata),
+        prContext: this.buildPRContextSection(prMetadata, criticalNote),
+        customInstructions: this.buildCustomInstructionsSection(customInstructions),
+        lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
+        generatedFiles: this.buildGeneratedFilesExclusionSection(generatedPatterns),
+        changedFiles: formatValidFiles(changedFiles),
+        testingGuidance: this.buildTestAnalysisSection(testingContext)
+      };
+
+      logger.debug('[Level 3] Using new prompt architecture');
+      return promptBuilder.build(context);
+    }
+
+    // Fallback to legacy implementation if prompt not migrated
+    logger.debug('[Level 3] Using legacy prompt implementation');
     const prContext = this.buildPRContextSection(prMetadata,
       `Treat this description as the author's CLAIM about what they changed and why. At this architectural level, it's especially important to verify alignment between stated intent and actual implementation. Flag any:
 - **Architectural discrepancies:** Does the implementation match the architectural approach described?
@@ -2380,7 +2451,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @returns {Promise<Array>} Curated suggestions array
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null, options = {}) {
-    const { analysisId } = options;
+    const { analysisId, tier = 'balanced' } = options;
     logger.section('[Orchestration] AI Orchestration Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
@@ -2399,7 +2470,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       const aiProvider = createProvider(this.provider, this.model);
 
       // Build the orchestration prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, fileLineCountMap, worktreePath);
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, fileLineCountMap, worktreePath, tier);
 
       // Execute Claude CLI for orchestration
       logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
@@ -2486,14 +2557,64 @@ File-level suggestions should NOT have a line number. They apply to the entire f
   }
 
   /**
+   * Format suggestions for display in orchestration prompt
+   * @param {Array} suggestions - Array of suggestion objects
+   * @returns {string} Formatted string for prompt
+   */
+  _formatSuggestionsForOrchestration(suggestions) {
+    if (!suggestions || suggestions.length === 0) {
+      return 'No suggestions from this level';
+    }
+    return suggestions.map(s => {
+      const desc = s.description || '';
+      const truncatedDesc = desc.length > 100 ? desc.substring(0, 100) + '...' : desc;
+      return s.is_file_level
+        ? `- [FILE-LEVEL] ${s.type}: ${s.title} (${s.file}) - ${truncatedDesc}`
+        : `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${truncatedDesc}`;
+    }).join('\n');
+  }
+
+  /**
    * Build orchestration prompt for intelligent suggestion curation
    * @param {Object} allSuggestions - Suggestions from all levels
    * @param {Object} prMetadata - PR metadata for context
    * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
    * @param {Map<string, number>} fileLineCountMap - Optional map of file paths to line counts for validation
+   * @param {string} worktreePath - Path to the git worktree
+   * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
    * @returns {string} Orchestration prompt
    */
-  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null) {
+  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null, tier = 'balanced') {
+    logger.debug(`[Orchestration] Building prompt with tier: ${tier}`);
+    // Try new prompt architecture first
+    const promptBuilder = getPromptBuilder('orchestration', tier, this.provider);
+
+    if (promptBuilder) {
+      // Build context for the new tagged prompt system
+      const isLocal = prMetadata.reviewType === 'local';
+      const reviewDescription = isLocal
+        ? `local changes (review #${prMetadata.number || 'local'})`
+        : `pull request #${prMetadata.number}`;
+
+      const context = {
+        reviewIntro: `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.`,
+        customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
+        lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
+        level1Count: allSuggestions.level1?.length || 0,
+        level2Count: allSuggestions.level2?.length || 0,
+        level3Count: allSuggestions.level3?.length || 0,
+        level1Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level1),
+        level2Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level2),
+        level3Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level3),
+        fileLineCounts: this.buildFileLineCountsSection(fileLineCountMap)
+      };
+
+      logger.debug('[Orchestration] Using new prompt architecture');
+      return promptBuilder.build(context);
+    }
+
+    // Fallback to legacy implementation if prompt not migrated
+    logger.debug('[Orchestration] Using legacy prompt implementation');
     const level1Count = allSuggestions.level1?.length || 0;
     const level2Count = allSuggestions.level2?.length || 0;
     const level3Count = allSuggestions.level3?.length || 0;
@@ -2531,25 +2652,13 @@ You are helping a human reviewer by intelligently curating and merging suggestio
 ${orchestrationCustomInstructions}
 ## Input: Multi-Level Analysis Results
 **Level 1 - Diff Analysis (${level1Count} suggestions):**
-${allSuggestions.level1 ? allSuggestions.level1.map(s =>
-  s.is_file_level
-    ? `- [FILE-LEVEL] ${s.type}: ${s.title} (${s.file}) - ${s.description.substring(0, 100)}...`
-    : `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
-).join('\n') : 'No Level 1 suggestions'}
+${this._formatSuggestionsForOrchestration(allSuggestions.level1)}
 
 **Level 2 - File Context (${level2Count} suggestions):**
-${allSuggestions.level2 ? allSuggestions.level2.map(s =>
-  s.is_file_level
-    ? `- [FILE-LEVEL] ${s.type}: ${s.title} (${s.file}) - ${s.description.substring(0, 100)}...`
-    : `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
-).join('\n') : 'No Level 2 suggestions'}
+${this._formatSuggestionsForOrchestration(allSuggestions.level2)}
 
 **Level 3 - Codebase Context (${level3Count} suggestions):**
-${allSuggestions.level3 ? allSuggestions.level3.map(s =>
-  s.is_file_level
-    ? `- [FILE-LEVEL] ${s.type}: ${s.title} (${s.file}) - ${s.description.substring(0, 100)}...`
-    : `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${s.description.substring(0, 100)}...`
-).join('\n') : 'No Level 3 suggestions'}
+${this._formatSuggestionsForOrchestration(allSuggestions.level3)}
 ${fileLineCountsSection}
 ## Orchestration Guidelines
 

@@ -3361,7 +3361,7 @@ class PRManager {
       // Always do manual DOM cleanup as backup
       document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
 
-      // Start AI analysis with model and instructions
+      // Start AI analysis with model, tier, and instructions
       const response = await fetch(`/api/analyze/${owner}/${repo}/${number}`, {
         method: 'POST',
         headers: {
@@ -3370,6 +3370,7 @@ class PRManager {
         body: JSON.stringify({
           provider: config.provider || 'claude',
           model: config.model || 'sonnet',
+          tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null
         })
       });

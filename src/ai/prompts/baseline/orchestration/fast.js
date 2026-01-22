@@ -45,7 +45,7 @@ const taggedPrompt = `<section name="role" required="true" tier="fast">
 </section>
 
 <section name="critical-output" locked="true">
-Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }.
+**>>> CRITICAL: Output ONLY valid JSON. No markdown, no \`\`\`json blocks. Start with { end with }. <<<**
 </section>
 
 <section name="role-description" required="true" tier="fast">

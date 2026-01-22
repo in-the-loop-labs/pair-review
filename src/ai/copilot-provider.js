@@ -5,11 +5,15 @@
  * Uses the `copilot -p` command for non-interactive execution.
  */
 
+const path = require('path');
 const { spawn } = require('child_process');
 const { AIProvider, registerProvider } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
+
+// Directory containing bin scripts (git-diff-lines, etc.)
+const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
 /**
  * Copilot model definitions with tier mappings
@@ -103,6 +107,7 @@ class CopilotProvider extends AIProvider {
       '--allow-tool', 'shell(wc)',            // Word/line count
       '--allow-tool', 'shell(find)',          // File finding
       '--allow-tool', 'shell(grep)',          // Pattern searching
+      '--allow-tool', 'shell(rg)',            // Ripgrep (fast pattern searching)
       // Deny dangerous shell commands (takes precedence over allow)
       '--deny-tool', 'shell(rm)',
       '--deny-tool', 'shell(mv)',
@@ -119,6 +124,8 @@ class CopilotProvider extends AIProvider {
       '--deny-tool', 'write',
       // Auto-approve remaining tools to avoid interactive prompts
       '--allow-all-tools',
+      // Allow access to all paths (needed for analyzing files outside cwd)
+      '--allow-all-paths',
     ];
 
     // Command and base args are the same regardless of shell mode
@@ -162,7 +169,7 @@ class CopilotProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
-          PATH: process.env.PATH
+          PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell
       });
@@ -275,7 +282,7 @@ class CopilotProvider extends AIProvider {
       const copilot = spawn(command, args, {
         env: {
           ...process.env,
-          PATH: process.env.PATH
+          PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: useShell
       });

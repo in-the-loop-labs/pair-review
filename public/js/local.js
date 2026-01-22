@@ -1022,6 +1022,7 @@ class LocalManager {
         body: JSON.stringify({
           provider: config.provider || 'claude',
           model: config.model || 'sonnet',
+          tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null
         })
       });

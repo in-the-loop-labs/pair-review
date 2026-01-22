@@ -5,11 +5,15 @@
  * Uses the `codex exec` command for non-interactive execution.
  */
 
+const path = require('path');
 const { spawn } = require('child_process');
 const { AIProvider, registerProvider } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
+
+// Directory containing bin scripts (git-diff-lines, etc.)
+const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
 /**
  * Codex model definitions with tier mappings
@@ -105,7 +109,7 @@ class CodexProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
-          PATH: process.env.PATH
+          PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell
       });
@@ -295,7 +299,7 @@ class CodexProvider extends AIProvider {
       const codex = spawn(command, args, {
         env: {
           ...process.env,
-          PATH: process.env.PATH
+          PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: useShell
       });
