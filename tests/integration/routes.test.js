@@ -1944,6 +1944,85 @@ describe('Review Submission Endpoint', () => {
       expect(comments[0].body).toContain('(Ref Line 42)');
       expect(comments[0].body).toContain('Expanded context comment');
     });
+
+    it('should include start_line for multi-line comments', async () => {
+      // Insert a multi-line comment (line_start != line_end)
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, line_end, diff_position, side, body, status, is_file_level)
+        VALUES (?, 'user', 'file.js', 10, 15, 5, 'RIGHT', 'Multi-line comment spanning lines 10-15', 'active', 0)
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review with multi-line comment' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify the GraphQL function was called with start_line
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      const comments = callArgs[3];
+
+      expect(comments.length).toBe(1);
+      expect(comments[0].isFileLevel).toBe(false);
+      expect(comments[0].path).toBe('file.js');
+      expect(comments[0].line).toBe(15); // Should use line_end for multi-line
+      expect(comments[0].start_line).toBe(10); // Should include start_line
+      expect(comments[0].side).toBe('RIGHT');
+    });
+
+    it('should not include start_line for single-line comments', async () => {
+      // Insert a single-line comment (line_start only, no line_end)
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status, is_file_level)
+        VALUES (?, 'user', 'file.js', 25, 10, 'RIGHT', 'Single-line comment', 'active', 0)
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review with single-line comment' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify the GraphQL function was called without start_line
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      const comments = callArgs[3];
+
+      expect(comments.length).toBe(1);
+      expect(comments[0].isFileLevel).toBe(false);
+      expect(comments[0].path).toBe('file.js');
+      expect(comments[0].line).toBe(25); // Should use line_start for single-line
+      expect(comments[0].start_line).toBeUndefined(); // Should NOT include start_line
+      expect(comments[0].side).toBe('RIGHT');
+    });
+
+    it('should correctly handle single-line comment with same line_start and line_end', async () => {
+      // Insert a comment where line_start equals line_end (single line but with both values set)
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, line_end, diff_position, side, body, status, is_file_level)
+        VALUES (?, 'user', 'file.js', 30, 30, 15, 'RIGHT', 'Single-line comment with both values', 'active', 0)
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review with single-line comment' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify the GraphQL function was called without start_line (not a range)
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      const comments = callArgs[3];
+
+      expect(comments.length).toBe(1);
+      expect(comments[0].isFileLevel).toBe(false);
+      expect(comments[0].line).toBe(30); // Should use line_start since not a range
+      expect(comments[0].start_line).toBeUndefined(); // Should NOT include start_line (same line)
+    });
   });
 });
 

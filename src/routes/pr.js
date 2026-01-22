@@ -879,7 +879,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
 
       const commentObj = {
         path: comment.file,
-        line: comment.line_end || comment.line_start,
+        line: isRange ? comment.line_end : comment.line_start,
         body: comment.body,
         side: side,
         isFileLevel: false
