@@ -580,8 +580,8 @@ describe('AnalysisHistoryManager', () => {
       manager.updateSelectedLabel();
 
       // Check that the label was updated with the expected format
-      // Format: <timestamp> · <provider> · <model>
-      expect(manager.historyLabel.textContent).toMatch(/2 hours ago · Claude · claude-opus-4/);
+      // Format: <timestamp> · <provider> · <model> (provider is lowercase)
+      expect(manager.historyLabel.textContent).toMatch(/2 hours ago · claude · claude-opus-4/);
     });
 
     it('should return early when historyLabel is null', () => {
@@ -644,7 +644,8 @@ describe('AnalysisHistoryManager', () => {
 
       manager.updateSelectedLabel();
 
-      expect(manager.historyLabel.textContent).toMatch(/3 hours ago · Gemini · gemini-pro/);
+      // Provider is lowercase per formatProviderName()
+      expect(manager.historyLabel.textContent).toMatch(/3 hours ago · gemini · gemini-pro/);
     });
 
     it('should handle unknown provider and model', () => {
@@ -664,7 +665,8 @@ describe('AnalysisHistoryManager', () => {
 
       manager.updateSelectedLabel();
 
-      expect(manager.historyLabel.textContent).toMatch(/1 hour ago · Unknown · Unknown/);
+      // Provider defaults to 'unknown' (lowercase), model to 'Unknown' (capitalized)
+      expect(manager.historyLabel.textContent).toMatch(/1 hour ago · unknown · Unknown/);
     });
   });
 
@@ -863,9 +865,9 @@ describe('AnalysisHistoryManager', () => {
 
       manager.updatePreviewPanel('run-123');
 
-      // Check that the HTML includes the tier
+      // Check that the HTML includes the tier (lowercase per code review feedback)
       const previewPanel = mockDocument._elements['analysis-context-preview'];
-      expect(previewPanel.innerHTML).toContain('Balanced');
+      expect(previewPanel.innerHTML).toContain('balanced');
     });
 
     it('should include fast tier for fast models', () => {
@@ -888,7 +890,7 @@ describe('AnalysisHistoryManager', () => {
       manager.updatePreviewPanel('run-123');
 
       const previewPanel = mockDocument._elements['analysis-context-preview'];
-      expect(previewPanel.innerHTML).toContain('Fast');
+      expect(previewPanel.innerHTML).toContain('fast');
     });
 
     it('should include thorough tier for thorough models', () => {
@@ -911,10 +913,10 @@ describe('AnalysisHistoryManager', () => {
       manager.updatePreviewPanel('run-123');
 
       const previewPanel = mockDocument._elements['analysis-context-preview'];
-      expect(previewPanel.innerHTML).toContain('Thorough');
+      expect(previewPanel.innerHTML).toContain('thorough');
     });
 
-    it('should show Unknown tier for unknown models', () => {
+    it('should show unknown tier for unknown models', () => {
       const manager = new AnalysisHistoryManager({
         reviewId: 1,
         mode: 'pr',
@@ -934,8 +936,8 @@ describe('AnalysisHistoryManager', () => {
       manager.updatePreviewPanel('run-123');
 
       const previewPanel = mockDocument._elements['analysis-context-preview'];
-      // Should show Unknown for the tier
-      expect(previewPanel.innerHTML).toContain('Unknown');
+      // Should show unknown for the tier (lowercase per code review feedback)
+      expect(previewPanel.innerHTML).toContain('unknown');
     });
   });
 

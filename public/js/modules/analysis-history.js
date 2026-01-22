@@ -99,6 +99,20 @@ class AnalysisHistoryManager {
           if (container) {
             container.classList.toggle('collapsed');
           }
+          return;
+        }
+
+        const summaryToggle = e.target.closest('[data-action="toggle-summary"]');
+        if (summaryToggle) {
+          e.stopPropagation();
+          const container = summaryToggle.closest('.analysis-preview-summary');
+          if (container) {
+            container.classList.toggle('collapsed');
+            // Toggle aria-expanded attribute for accessibility
+            const isExpanded = !container.classList.contains('collapsed');
+            summaryToggle.setAttribute('aria-expanded', isExpanded);
+          }
+          return;
         }
       });
     }
@@ -322,11 +336,16 @@ class AnalysisHistoryManager {
 
     // Get the tier for this analysis run's model
     const tier = this.getTierForModel(run.model);
-    const tierDisplayText = tier ? this.formatTierDisplayName(tier) : 'Unknown';
 
     // Format HEAD SHA - show abbreviated version with full SHA in title
     const headSha = run.head_sha;
     const headShaDisplay = headSha ? headSha.substring(0, 7) : null;
+
+    // Format status
+    const statusInfo = this.formatStatus(run.status);
+
+    // Format model in lowercase
+    const modelDisplay = run.model ? run.model.toLowerCase() : 'unknown';
 
     let html = `
       <div class="analysis-preview-row">
@@ -335,11 +354,15 @@ class AnalysisHistoryManager {
       </div>
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Model</span>
-        <span class="analysis-preview-value">${this.escapeHtml(run.model || 'Unknown')}</span>
+        <span class="analysis-preview-value">${this.escapeHtml(modelDisplay)}</span>
       </div>
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Tier</span>
-        <span class="analysis-preview-value">${tierDisplayText}</span>
+        <span class="analysis-preview-value">${this.escapeHtml(tier || 'unknown')}</span>
+      </div>
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Status</span>
+        <span class="analysis-preview-value analysis-preview-status-badge ${statusInfo.cssClass}">${this.escapeHtml(statusInfo.text)}</span>
       </div>
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Run at</span>
@@ -360,6 +383,27 @@ class AnalysisHistoryManager {
       </div>
       ` : ''}
     `;
+
+    // Add collapsible summary section if present
+    const hasSummary = run.summary && run.summary.trim();
+    if (hasSummary) {
+      const summaryContentId = `analysis-summary-content-${run.id}`;
+      html += `
+        <div class="analysis-preview-summary collapsed">
+          <div class="analysis-preview-summary-header">
+            <button class="analysis-preview-summary-toggle" data-action="toggle-summary" aria-expanded="false" aria-controls="${summaryContentId}">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"></path>
+              </svg>
+              Result Summary
+            </button>
+          </div>
+          <div class="analysis-preview-summary-content" id="${summaryContentId}">
+            <div class="analysis-preview-summary-text">${this.escapeHtml(run.summary)}</div>
+          </div>
+        </div>
+      `;
+    }
 
     // Handle instructions display - check for new separate fields first, fall back to legacy custom_instructions
     const hasRequestInstructions = run.request_instructions && run.request_instructions.trim();
@@ -650,18 +694,29 @@ class AnalysisHistoryManager {
   }
 
   /**
-   * Format provider name for display
+   * Format provider name for display (lowercase)
    * @param {string} provider - Provider identifier
-   * @returns {string} Display name
+   * @returns {string} Display name in lowercase
    */
   formatProviderName(provider) {
-    const providerNames = {
-      'claude': 'Claude',
-      'gemini': 'Gemini',
-      'codex': 'Codex',
-      'openai': 'OpenAI'
+    // Return provider as-is in lowercase, or 'unknown' if not provided
+    return provider ? provider.toLowerCase() : 'unknown';
+  }
+
+  /**
+   * Format status for display
+   * @param {string} status - Status identifier (completed, failed, cancelled)
+   * @returns {Object} Object with text and cssClass properties
+   */
+  formatStatus(status) {
+    // Note: 'completed' is displayed as 'success' for better UX clarity -
+    // users understand "success" more intuitively than "completed"
+    const statusMap = {
+      'completed': { text: 'success', cssClass: 'analysis-preview-status-success' },
+      'failed': { text: 'failed', cssClass: 'analysis-preview-status-failed' },
+      'cancelled': { text: 'cancelled', cssClass: 'analysis-preview-status-cancelled' }
     };
-    return providerNames[provider] || provider || 'Unknown';
+    return statusMap[status] || { text: status || 'unknown', cssClass: 'analysis-preview-status-unknown' };
   }
 
   /**

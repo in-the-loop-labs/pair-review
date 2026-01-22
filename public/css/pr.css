@@ -6101,11 +6101,11 @@ body.resizing * {
   position: absolute;
   top: calc(100% + 4px);
   right: 0; /* Align right edge with container, extending left beyond panel */
-  width: 460px;
-  min-height: 200px;
-  max-height: 480px;
+  width: 560px;
+  min-height: 240px;
+  max-height: 560px;
   display: none;
-  grid-template-columns: 180px 280px;
+  grid-template-columns: 180px 380px;
   grid-template-rows: 1fr; /* Both panels fill available height */
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-default);
@@ -6276,6 +6276,8 @@ body.resizing * {
 .analysis-preview-row:nth-child(4) { animation-delay: 0.08s; }
 .analysis-preview-row:nth-child(5) { animation-delay: 0.1s; }
 .analysis-preview-row:nth-child(6) { animation-delay: 0.12s; }
+.analysis-preview-row:nth-child(7) { animation-delay: 0.14s; }
+.analysis-preview-row:nth-child(8) { animation-delay: 0.16s; }
 
 @keyframes previewRowFadeIn {
   from {
@@ -6311,6 +6313,52 @@ body.resizing * {
   padding: 1px 4px;
   border-radius: 3px;
   cursor: help;
+}
+
+/* Status badge styles */
+.analysis-preview-status-badge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 12px;
+  line-height: 1.4;
+}
+
+.analysis-preview-status-badge.analysis-preview-status-success {
+  color: #ffffff;
+  background: #1a7f37;
+}
+
+.analysis-preview-status-badge.analysis-preview-status-failed {
+  color: #ffffff;
+  background: #cf222e;
+}
+
+.analysis-preview-status-badge.analysis-preview-status-cancelled {
+  color: #ffffff;
+  background: #bf8700;
+}
+
+.analysis-preview-status-badge.analysis-preview-status-unknown {
+  color: var(--color-text-muted);
+  background: var(--color-bg-tertiary, #f6f8fa);
+}
+
+/* Dark theme overrides for status badges */
+[data-theme="dark"] .analysis-preview-status-badge.analysis-preview-status-success {
+  color: #ffffff;
+  background: #238636;
+}
+
+[data-theme="dark"] .analysis-preview-status-badge.analysis-preview-status-failed {
+  color: #ffffff;
+  background: #da3633;
+}
+
+[data-theme="dark"] .analysis-preview-status-badge.analysis-preview-status-cancelled {
+  color: #ffffff;
+  background: #d29922;
 }
 
 /* Preview instructions text (shared between custom and repo instructions) */
@@ -6455,6 +6503,71 @@ body.resizing * {
   opacity: 0.4;
 }
 
+/* Collapsible summary section */
+.analysis-preview-summary {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border-muted);
+}
+
+.analysis-preview-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.analysis-preview-summary-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-left: -8px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  text-align: left;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.analysis-preview-summary-toggle:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+}
+
+.analysis-preview-summary-toggle svg {
+  flex-shrink: 0;
+  transition: transform var(--transition-fast);
+}
+
+.analysis-preview-summary:not(.collapsed) .analysis-preview-summary-toggle svg {
+  transform: rotate(90deg);
+}
+
+.analysis-preview-summary-content {
+  display: none;
+  margin-top: 8px;
+}
+
+.analysis-preview-summary:not(.collapsed) .analysis-preview-summary-content {
+  display: block;
+}
+
+.analysis-preview-summary-text {
+  font-size: 12px;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--color-canvas-subtle);
+  padding: 8px;
+  border-radius: 4px;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+}
+
 /* Dark theme adjustments for split-panel dropdown */
 [data-theme="dark"] .analysis-context-dropdown {
   box-shadow: 0 4px 12px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.05);
@@ -6465,6 +6578,10 @@ body.resizing * {
 }
 
 [data-theme="dark"] .analysis-preview-instructions-text {
+  background: var(--color-bg-tertiary);
+}
+
+[data-theme="dark"] .analysis-preview-summary-text {
   background: var(--color-bg-tertiary);
 }
 
