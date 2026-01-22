@@ -757,9 +757,24 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       const sectionTitle = isLocal ? 'Review Context' : 'Pull Request Context';
       const descriptionLabel = isLocal ? 'Description:' : "Author's Description:";
 
+      // Build metadata lines (repository for both modes, PR-specific fields only for PR mode)
+      const lines = [];
+      if (prMetadata.repository) {
+        lines.push(`**Repository:** ${prMetadata.repository}`);
+      }
+      if (!isLocal) {
+        if (prMetadata.pr_number) {
+          lines.push(`**PR #:** ${prMetadata.pr_number}`);
+        }
+        if (prMetadata.author) {
+          lines.push(`**Author:** @${prMetadata.author}`);
+        }
+      }
+      const metadataLines = lines.length > 0 ? lines.join('\n') + '\n' : '';
+
       return `
 ## ${sectionTitle}
-**Title:** ${prMetadata.title || '(No title provided)'}
+${metadataLines}**Title:** ${prMetadata.title || '(No title provided)'}
 
 **${descriptionLabel}**
 ${prMetadata.description || '(No description provided)'}

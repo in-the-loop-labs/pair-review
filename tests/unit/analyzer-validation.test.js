@@ -1514,3 +1514,185 @@ describe('Analyzer.validateAndFinalizeSuggestions', () => {
     expect(result).toEqual([]);
   });
 });
+
+describe('Analyzer.buildPRContextSection', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  const criticalNote = 'Test critical note';
+
+  describe('PR mode (non-local)', () => {
+    it('should include repository, PR number, and author for PR mode', () => {
+      const prMetadata = {
+        title: 'Test PR Title',
+        description: 'Test description',
+        repository: 'owner/repo',
+        pr_number: 123,
+        author: 'testuser'
+      };
+
+      const result = analyzer.buildPRContextSection(prMetadata, criticalNote);
+
+      expect(result).toContain('## Pull Request Context');
+      expect(result).toContain('**Repository:** owner/repo');
+      expect(result).toContain('**PR #:** 123');
+      expect(result).toContain('**Author:** @testuser');
+      expect(result).toContain('**Title:** Test PR Title');
+      expect(result).toContain("**Author's Description:**");
+      expect(result).toContain('Test description');
+      expect(result).toContain(criticalNote);
+    });
+
+    it('should handle missing author gracefully', () => {
+      const prMetadata = {
+        title: 'Test PR Title',
+        description: 'Test description',
+        repository: 'owner/repo',
+        pr_number: 123
+      };
+
+      const result = analyzer.buildPRContextSection(prMetadata, criticalNote);
+
+      expect(result).toContain('**Repository:** owner/repo');
+      expect(result).toContain('**PR #:** 123');
+      expect(result).not.toContain('**Author:**');
+    });
+
+    it('should handle missing repository gracefully', () => {
+      const prMetadata = {
+        title: 'Test PR Title',
+        description: 'Test description',
+        pr_number: 123,
+        author: 'testuser'
+      };
+
+      const result = analyzer.buildPRContextSection(prMetadata, criticalNote);
+
+      expect(result).not.toContain('**Repository:**');
+      expect(result).toContain('**PR #:** 123');
+      expect(result).toContain('**Author:** @testuser');
+    });
+
+    it('should handle missing PR number gracefully', () => {
+      const prMetadata = {
+        title: 'Test PR Title',
+        description: 'Test description',
+        repository: 'owner/repo',
+        author: 'testuser'
+      };
+
+      const result = analyzer.buildPRContextSection(prMetadata, criticalNote);
+
+      expect(result).toContain('**Repository:** owner/repo');
+      expect(result).not.toContain('**PR #:**');
+      expect(result).toContain('**Author:** @testuser');
+    });
+
+    it('should handle all metadata fields missing', () => {
+      const prMetadata = {
+        title: 'Test PR Title',
+        description: 'Test description'
+      };
+
+      const result = analyzer.buildPRContextSection(prMetadata, criticalNote);
+
+      expect(result).toContain('## Pull Request Context');
+      expect(result).not.toContain('**Repository:**');
+      expect(result).not.toContain('**PR #:**');
+      expect(result).not.toContain('**Author:**');
+      expect(result).toContain('**Title:** Test PR Title');
+    });
+  });
+
+  describe('Local mode', () => {
+    it('should include repository but NOT PR number or author for local mode', () => {
+      const localMetadata = {
+        title: 'Local changes',
+        description: 'Reviewing uncommitted changes',
+        repository: 'owner/repo',  // Should be shown for local mode
+        pr_number: 123,            // Should not be shown for local mode
+        author: 'testuser',        // Should not be shown for local mode
+        reviewType: 'local'
+      };
+
+      const result = analyzer.buildPRContextSection(localMetadata, criticalNote);
+
+      expect(result).toContain('## Review Context');  // Different title for local
+      expect(result).toContain('**Repository:** owner/repo');  // Repository IS shown for local mode
+      expect(result).not.toContain('**PR #:**');
+      expect(result).not.toContain('**Author:**');
+      expect(result).toContain('**Title:** Local changes');
+      expect(result).toContain('**Description:**');  // Different label for local
+      expect(result).not.toContain("**Author's Description:**");
+    });
+
+    it('should not include repository line when repository is missing in local mode', () => {
+      const localMetadata = {
+        title: 'Local changes',
+        description: 'Reviewing uncommitted changes',
+        reviewType: 'local'
+      };
+
+      const result = analyzer.buildPRContextSection(localMetadata, criticalNote);
+
+      expect(result).toContain('## Review Context');
+      expect(result).not.toContain('**Repository:**');
+      expect(result).toContain('**Title:** Local changes');
+    });
+
+    it('should use "Review Context" as section title for local mode', () => {
+      const localMetadata = {
+        title: 'Local review',
+        description: 'Test',
+        reviewType: 'local'
+      };
+
+      const result = analyzer.buildPRContextSection(localMetadata, criticalNote);
+
+      expect(result).toContain('## Review Context');
+      expect(result).not.toContain('## Pull Request Context');
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should return empty string when title and description are both null', () => {
+      const prMetadata = {
+        repository: 'owner/repo',
+        pr_number: 123
+      };
+
+      const result = analyzer.buildPRContextSection(prMetadata, criticalNote);
+
+      expect(result).toBe('');
+    });
+
+    it('should include section when title is present but description is null', () => {
+      const prMetadata = {
+        title: 'Test Title',
+        repository: 'owner/repo',
+        pr_number: 123
+      };
+
+      const result = analyzer.buildPRContextSection(prMetadata, criticalNote);
+
+      expect(result).toContain('**Title:** Test Title');
+      expect(result).toContain('(No description provided)');
+    });
+
+    it('should include section when description is present but title is null', () => {
+      const prMetadata = {
+        description: 'Test description',
+        repository: 'owner/repo',
+        pr_number: 123
+      };
+
+      const result = analyzer.buildPRContextSection(prMetadata, criticalNote);
+
+      expect(result).toContain('(No title provided)');
+      expect(result).toContain('Test description');
+    });
+  });
+});

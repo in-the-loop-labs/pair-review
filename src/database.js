@@ -1991,6 +1991,67 @@ async function migrateExistingWorktrees(db, worktreeBaseDir) {
 }
 
 /**
+ * PRMetadataRepository class for managing PR metadata database records
+ */
+class PRMetadataRepository {
+  /**
+   * Create a new PRMetadataRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Get PR metadata by PR number and repository
+   * Returns the full pr_metadata record with parsed pr_data JSON
+   * @param {number} prNumber - Pull request number
+   * @param {string} repository - Repository in owner/repo format
+   * @returns {Promise<Object|null>} PR metadata record or null if not found
+   */
+  async getByPR(prNumber, repository) {
+    const row = await queryOne(this.db, `
+      SELECT id, pr_number, repository, author, base_branch, head_branch,
+             title, description, pr_data, last_ai_run_id, created_at, updated_at
+      FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, repository]);
+
+    if (!row) return null;
+
+    // Parse pr_data JSON and merge base_sha/head_sha into the record
+    let prData = {};
+    try {
+      prData = row.pr_data ? JSON.parse(row.pr_data) : {};
+    } catch (error) {
+      console.warn('Error parsing PR data JSON:', error);
+    }
+
+    return {
+      ...row,
+      base_sha: prData.base_sha,
+      head_sha: prData.head_sha,
+      pr_data_parsed: prData
+    };
+  }
+
+  /**
+   * Update the last_ai_run_id for a PR metadata record
+   * @param {number} id - PR metadata record ID
+   * @param {string} runId - Analysis run ID
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async updateLastAiRunId(id, runId) {
+    const result = await run(this.db, `
+      UPDATE pr_metadata SET last_ai_run_id = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [runId, id]);
+
+    return result.changes > 0;
+  }
+}
+
+/**
  * AnalysisRunRepository class for managing AI analysis run records
  */
 class AnalysisRunRepository {
@@ -2175,6 +2236,7 @@ module.exports = {
   RepoSettingsRepository,
   ReviewRepository,
   CommentRepository,
+  PRMetadataRepository,
   AnalysisRunRepository,
   generateWorktreeId,
   migrateExistingWorktrees
