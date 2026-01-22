@@ -2023,6 +2023,107 @@ describe('Review Submission Endpoint', () => {
       expect(comments[0].line).toBe(30); // Should use line_start since not a range
       expect(comments[0].start_line).toBeUndefined(); // Should NOT include start_line (same line)
     });
+
+    it('should NOT delete comments or analysis_runs when submitting review (regression test for cascade deletion bug)', async () => {
+      // This test verifies the fix for a critical bug where INSERT OR REPLACE
+      // on the reviews table caused cascade deletion of all related comments
+      // and analysis_runs due to foreign key ON DELETE CASCADE constraints.
+
+      // Insert user comments
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
+        VALUES (?, 'user', 'file1.js', 10, 5, 'User comment 1', 'active')
+      `, [prId]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
+        VALUES (?, 'user', 'file2.js', 20, 10, 'User comment 2', 'active')
+      `, [prId]);
+
+      // Insert AI comments
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, ai_run_id, status)
+        VALUES (?, 'ai', 'file1.js', 15, 'AI suggestion', 'suggestion', 'test-run-1', 'active')
+      `, [prId]);
+
+      // Insert an analysis run
+      const analysisRunTime = new Date().toISOString();
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, status, summary, started_at)
+        VALUES ('test-run-1', ?, 'completed', 'Test analysis summary', ?)
+      `, [prId, analysisRunTime]);
+
+      // Verify comments and analysis run exist before submission
+      const commentsBefore = await query(db, 'SELECT * FROM comments WHERE review_id = ?', [prId]);
+      const analysisRunsBefore = await query(db, 'SELECT * FROM analysis_runs WHERE review_id = ?', [prId]);
+      expect(commentsBefore.length).toBe(3);
+      expect(analysisRunsBefore.length).toBe(1);
+
+      // Submit the review
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Test review submission' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // CRITICAL: Verify comments still exist (with 'submitted' status for user comments)
+      const commentsAfter = await query(db, 'SELECT * FROM comments WHERE review_id = ?', [prId]);
+      expect(commentsAfter.length).toBe(3); // All 3 comments should still exist
+
+      // User comments should have 'submitted' status
+      const userCommentsAfter = commentsAfter.filter(c => c.source === 'user');
+      expect(userCommentsAfter.length).toBe(2);
+      expect(userCommentsAfter.every(c => c.status === 'submitted')).toBe(true);
+
+      // AI comments should remain unchanged
+      const aiCommentsAfter = commentsAfter.filter(c => c.source === 'ai');
+      expect(aiCommentsAfter.length).toBe(1);
+      expect(aiCommentsAfter[0].status).toBe('active');
+
+      // CRITICAL: Verify analysis runs still exist
+      const analysisRunsAfter = await query(db, 'SELECT * FROM analysis_runs WHERE review_id = ?', [prId]);
+      expect(analysisRunsAfter.length).toBe(1);
+      expect(analysisRunsAfter[0].id).toBe('test-run-1');
+      expect(analysisRunsAfter[0].summary).toBe('Test analysis summary');
+    });
+
+    it('should NOT delete comments or analysis_runs when creating draft review (regression test for cascade deletion bug)', async () => {
+      // Same test but for draft reviews which use a different code path
+
+      // Insert comments and analysis run
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
+        VALUES (?, 'user', 'file.js', 10, 5, 'Draft comment', 'active')
+      `, [prId]);
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, status, summary, started_at)
+        VALUES ('draft-test-run', ?, 'completed', 'Draft test summary', datetime('now'))
+      `, [prId]);
+
+      // Verify data exists before submission
+      const commentsBefore = await query(db, 'SELECT * FROM comments WHERE review_id = ?', [prId]);
+      const analysisRunsBefore = await query(db, 'SELECT * FROM analysis_runs WHERE review_id = ?', [prId]);
+      expect(commentsBefore.length).toBe(1);
+      expect(analysisRunsBefore.length).toBe(1);
+
+      // Create draft review
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'DRAFT', body: 'Draft review' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify comments and analysis runs were NOT deleted
+      const commentsAfter = await query(db, 'SELECT * FROM comments WHERE review_id = ?', [prId]);
+      const analysisRunsAfter = await query(db, 'SELECT * FROM analysis_runs WHERE review_id = ?', [prId]);
+
+      expect(commentsAfter.length).toBe(1);
+      expect(commentsAfter[0].status).toBe('draft'); // User comments get 'draft' status
+
+      expect(analysisRunsAfter.length).toBe(1);
+      expect(analysisRunsAfter[0].id).toBe('draft-test-run');
+    });
   });
 });
 

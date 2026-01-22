@@ -927,17 +927,21 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         reviewData.submitted_at = githubReview.submitted_at;
       }
 
-      // Insert or replace review record
+      // Update existing review record (getOrCreate ensures review exists at line 791)
+      // NOTE: Do NOT use INSERT OR REPLACE here - it triggers DELETE+INSERT which
+      // cascade-deletes all comments and analysis_runs due to foreign key constraints
       if (event === 'DRAFT') {
         await run(db, `
-          INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, review_data)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `, [prNumber, repository, reviewStatus, githubReview.id, now, JSON.stringify(reviewData)]);
+          UPDATE reviews
+          SET status = ?, review_id = ?, updated_at = ?, review_data = ?
+          WHERE id = ?
+        `, [reviewStatus, githubReview.id, now, JSON.stringify(reviewData), review.id]);
       } else {
         await run(db, `
-          INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, submitted_at, review_data)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `, [prNumber, repository, reviewStatus, githubReview.id, now, now, JSON.stringify(reviewData)]);
+          UPDATE reviews
+          SET status = ?, review_id = ?, updated_at = ?, submitted_at = ?, review_data = ?
+          WHERE id = ?
+        `, [reviewStatus, githubReview.id, now, now, JSON.stringify(reviewData), review.id]);
       }
 
       console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
