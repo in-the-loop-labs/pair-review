@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const { loadConfig, getConfigDir, getGitHubToken } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');

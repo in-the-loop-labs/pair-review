@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const simpleGit = require('simple-git');
 const path = require('path');
 

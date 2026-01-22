@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const express = require('express');
 const path = require('path');
 const { loadConfig, getGitHubToken } = require('./config');

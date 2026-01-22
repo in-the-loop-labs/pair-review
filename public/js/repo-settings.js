@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Repository Settings Page JavaScript
  * Handles loading, saving, and managing repository AI settings

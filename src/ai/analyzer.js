@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const { createProvider } = require('./index');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');

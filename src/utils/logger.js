@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Logger utility for AI analysis
  * Provides formatted console output that stands out

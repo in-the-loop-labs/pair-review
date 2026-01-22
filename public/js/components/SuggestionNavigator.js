@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * AI Suggestion Navigation Sidebar Component
  * Shows navigation controls and list of all AI suggestions

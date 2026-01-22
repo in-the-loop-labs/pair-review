@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * SuggestionManager - AI suggestion handling
  * Handles display, adopt, dismiss, and restore of AI suggestions.

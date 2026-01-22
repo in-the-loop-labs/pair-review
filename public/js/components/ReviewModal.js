@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Review Submission Modal Component
  * Allows users to submit their review with comments to GitHub

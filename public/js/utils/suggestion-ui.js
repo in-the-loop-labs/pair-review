@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Shared UI utilities for AI suggestion management
  * Used by both PR mode (pr.js) and Local mode (local.js)

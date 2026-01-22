@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * HunkParser - Hunk header parsing and gap context expansion
  * Handles parsing of unified diff hunk headers and expansion of collapsed sections

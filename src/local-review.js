@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const { execSync, exec } = require('child_process');
 const { promisify } = require('util');
 const crypto = require('crypto');

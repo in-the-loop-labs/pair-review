@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 const path = require('path');
 const { spawn } = require('child_process');

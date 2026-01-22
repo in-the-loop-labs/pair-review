@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock the dependencies before importing the Analyzer

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * AI Analysis Configuration Modal Component
  * Displays model selection, custom instructions, and presets before analysis

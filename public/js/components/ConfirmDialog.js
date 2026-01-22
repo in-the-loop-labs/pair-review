@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Generic Confirmation Dialog Component
  * Displays a confirmation dialog with customizable message and actions

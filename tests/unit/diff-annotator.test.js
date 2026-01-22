@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect } from 'vitest';
 import { execSync } from 'child_process';
 import * as path from 'path';

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * LineTracker - Line number mapping, range selection, and highlighting
  * Handles line number extraction, range selection for multi-line comments,

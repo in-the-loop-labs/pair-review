@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const { spawn } = require('child_process');
 const path = require('path');
 const logger = require('../utils/logger');

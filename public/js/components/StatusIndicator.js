@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Status Indicator Component
  * Shows AI analysis status in the toolbar when running in background

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Preview Comments Modal Component
  * Shows a text preview of user comments for copying to AI agents

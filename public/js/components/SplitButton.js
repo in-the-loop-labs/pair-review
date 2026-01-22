@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Split Button Component
  * A button with a main action area and a dropdown menu for additional actions

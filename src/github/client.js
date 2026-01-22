@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 const { Octokit } = require('@octokit/rest');
 const logger = require('../utils/logger');
 

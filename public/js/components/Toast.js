@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Toast Notification Component
  * Shows temporary success/error messages at the top of the page

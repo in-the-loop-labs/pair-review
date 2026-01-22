@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * AIPanel.js - AI Analysis Panel Component
  * Manages the right sidebar panel that displays AI analysis findings

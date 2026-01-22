@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * AI Analysis Progress Modal Component
  * Displays three-level progress structure and handles background execution

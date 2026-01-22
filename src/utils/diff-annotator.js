@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Diff annotation utility for adding explicit line numbers to unified diffs
  * Provides two-column format showing both OLD (base) and NEW (head) line numbers

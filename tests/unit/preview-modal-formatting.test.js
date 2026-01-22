@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect } from 'vitest';
 
 // Import the actual PreviewModal class from production code

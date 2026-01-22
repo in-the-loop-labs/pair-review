@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Tier icon utility for model selection UI
  * Returns emoji icons for different model tiers that work well in both light and dark themes

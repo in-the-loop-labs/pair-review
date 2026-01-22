@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Storage Cleanup Module
  * Cleans up legacy localStorage keys from older versions of the app.

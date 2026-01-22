@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * FileCommentManager - File-level comment UI handling
  * Handles file-level comments zone rendering, forms, and interactions.

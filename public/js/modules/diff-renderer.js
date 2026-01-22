@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * DiffRenderer - Diff parsing and line rendering
  * Handles rendering of diff content, syntax highlighting,
