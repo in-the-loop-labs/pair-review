@@ -160,6 +160,19 @@ describe('generateLocalDiff', () => {
     }
   });
 
+  describe('empty working directory', () => {
+    it('should return empty diff and stats when no changes exist', async () => {
+      // Working directory is clean - no modifications, no untracked files
+      const result = await generateLocalDiff(testDir);
+
+      // Should return empty/falsy diff
+      expect(result.diff).toBeFalsy();
+      expect(result.untrackedFiles).toEqual([]);
+      expect(result.stats.unstagedChanges).toBe(0);
+      expect(result.stats.untrackedFiles).toBe(0);
+    });
+  });
+
   describe('untracked file path normalization', () => {
     it('should normalize untracked file paths in diff to relative paths', async () => {
       // Create an untracked file

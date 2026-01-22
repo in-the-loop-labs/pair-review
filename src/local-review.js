@@ -549,12 +549,9 @@ async function handleLocalReview(targetPath, flags = {}) {
     const { diff, untrackedFiles, stats } = await generateLocalDiff(repoPath);
 
     if (!diff && untrackedFiles.length === 0) {
-      console.log('\nNo local changes detected.');
-      console.log('Make some changes to your files and run pair-review --local again.\n');
-      return;
-    }
-
-    console.log(`Found changes:`);
+      console.log('\nNo local changes detected. The UI will open anyway - you can make changes and refresh.');
+    } else {
+      console.log(`Found changes:`);
     if (stats.unstagedChanges > 0) {
       console.log(`  - ${stats.unstagedChanges} unstaged file(s)`);
     }
@@ -565,6 +562,7 @@ async function handleLocalReview(targetPath, flags = {}) {
     }
     if (stats.stagedChanges > 0) {
       console.log(`  - ${stats.stagedChanges} staged file(s) (excluded from review)`);
+    }
     }
 
     // Set environment variables for local mode (metadata only, not large data)

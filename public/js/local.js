@@ -1438,7 +1438,7 @@ class LocalManager {
         // Clear the diff container
         const diffContainer = document.getElementById('diff-container');
         if (diffContainer) {
-          diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review</div>';
+          diffContainer.innerHTML = '<div class="no-diff">No unstaged changes to review. Make some changes to your files and click the <strong>Refresh</strong> button to reload.</div>';
         }
 
         // Clear the file navigation sidebar
