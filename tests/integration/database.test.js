@@ -648,6 +648,174 @@ describe('ReviewRepository', () => {
     });
   });
 
+  describe('updateAfterSubmission()', () => {
+    it('should update review for DRAFT event', async () => {
+      const created = await reviewRepo.createReview({
+        prNumber: 123,
+        repository: 'owner/repo'
+      });
+
+      const reviewData = {
+        github_review_id: 999,
+        github_url: 'https://github.com/owner/repo/pull/123#pullrequestreview-999',
+        event: 'DRAFT',
+        comments_count: 5
+      };
+
+      const result = await reviewRepo.updateAfterSubmission(created.id, {
+        githubReviewId: 999,
+        event: 'DRAFT',
+        reviewData
+      });
+
+      expect(result).toBe(true);
+
+      const retrieved = await reviewRepo.getReview(created.id);
+      expect(retrieved.status).toBe('draft');
+      expect(retrieved.review_id).toBe(999);
+      expect(retrieved.review_data.github_review_id).toBe(999);
+      expect(retrieved.submitted_at).toBeNull(); // Should NOT be set for drafts
+    });
+
+    it('should update review for APPROVE event with submitted_at', async () => {
+      const created = await reviewRepo.createReview({
+        prNumber: 123,
+        repository: 'owner/repo'
+      });
+
+      const reviewData = {
+        github_review_id: 1000,
+        github_url: 'https://github.com/owner/repo/pull/123#pullrequestreview-1000',
+        event: 'APPROVE',
+        comments_count: 3
+      };
+
+      const result = await reviewRepo.updateAfterSubmission(created.id, {
+        githubReviewId: 1000,
+        event: 'APPROVE',
+        reviewData
+      });
+
+      expect(result).toBe(true);
+
+      const retrieved = await reviewRepo.getReview(created.id);
+      expect(retrieved.status).toBe('submitted');
+      expect(retrieved.review_id).toBe(1000);
+      expect(retrieved.submitted_at).not.toBeNull(); // Should be set for submissions
+    });
+
+    it('should update review for REQUEST_CHANGES event', async () => {
+      const created = await reviewRepo.createReview({
+        prNumber: 123,
+        repository: 'owner/repo'
+      });
+
+      const result = await reviewRepo.updateAfterSubmission(created.id, {
+        githubReviewId: 2000,
+        event: 'REQUEST_CHANGES',
+        reviewData: { event: 'REQUEST_CHANGES' }
+      });
+
+      expect(result).toBe(true);
+
+      const retrieved = await reviewRepo.getReview(created.id);
+      expect(retrieved.status).toBe('submitted');
+      expect(retrieved.submitted_at).not.toBeNull();
+    });
+
+    it('should update review for COMMENT event', async () => {
+      const created = await reviewRepo.createReview({
+        prNumber: 123,
+        repository: 'owner/repo'
+      });
+
+      const result = await reviewRepo.updateAfterSubmission(created.id, {
+        githubReviewId: 3000,
+        event: 'COMMENT',
+        reviewData: { event: 'COMMENT' }
+      });
+
+      expect(result).toBe(true);
+
+      const retrieved = await reviewRepo.getReview(created.id);
+      expect(retrieved.status).toBe('submitted');
+      expect(retrieved.submitted_at).not.toBeNull();
+    });
+
+    it('should return false for non-existent review ID', async () => {
+      const result = await reviewRepo.updateAfterSubmission(99999, {
+        githubReviewId: 1,
+        event: 'DRAFT',
+        reviewData: {}
+      });
+
+      expect(result).toBe(false);
+    });
+
+    it('should NOT delete associated comments (unlike INSERT OR REPLACE)', async () => {
+      // Create review
+      const review = await reviewRepo.createReview({
+        prNumber: 123,
+        repository: 'owner/repo'
+      });
+
+      // Add a comment to the review
+      await run(db, `
+        INSERT INTO comments (review_id, source, author, file, body, status)
+        VALUES (?, 'user', 'test', 'test.js', 'Test comment', 'active')
+      `, [review.id]);
+
+      // Verify comment exists
+      let comments = await query(db, 'SELECT * FROM comments WHERE review_id = ?', [review.id]);
+      expect(comments).toHaveLength(1);
+
+      // Update the review after submission
+      await reviewRepo.updateAfterSubmission(review.id, {
+        githubReviewId: 999,
+        event: 'DRAFT',
+        reviewData: { event: 'DRAFT' }
+      });
+
+      // Verify comment still exists (not cascade-deleted)
+      comments = await query(db, 'SELECT * FROM comments WHERE review_id = ?', [review.id]);
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toBe('Test comment');
+    });
+
+    it('should NOT delete associated analysis_runs (unlike INSERT OR REPLACE)', async () => {
+      // Create review
+      const review = await reviewRepo.createReview({
+        prNumber: 123,
+        repository: 'owner/repo'
+      });
+
+      // Add an analysis run to the review
+      const analysisRunRepo = new AnalysisRunRepository(db);
+      await analysisRunRepo.create({
+        id: 'test-run-preserve',
+        reviewId: review.id,
+        provider: 'claude',
+        model: 'sonnet'
+      });
+
+      // Verify analysis run exists
+      let runs = await analysisRunRepo.getByReviewId(review.id);
+      expect(runs).toHaveLength(1);
+
+      // Update the review after submission
+      await reviewRepo.updateAfterSubmission(review.id, {
+        githubReviewId: 999,
+        event: 'APPROVE',
+        reviewData: { event: 'APPROVE' }
+      });
+
+      // Verify analysis run still exists (not cascade-deleted)
+      runs = await analysisRunRepo.getByReviewId(review.id);
+      expect(runs).toHaveLength(1);
+      expect(runs[0].id).toBe('test-run-preserve');
+    });
+  });
+
   describe('listByRepository()', () => {
     it('should return empty array for repository with no reviews', async () => {
       const reviews = await reviewRepo.listByRepository('owner/repo');

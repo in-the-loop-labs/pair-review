@@ -20,21 +20,14 @@ import { waitForDiffToRender } from './helpers.js';
 async function cleanupAllComments(page) {
   // Delete all user comments via API to ensure test isolation
   await page.evaluate(async () => {
-    // Get all comments for this PR
-    const response = await fetch('/api/pr/test-owner/test-repo/1');
-    const data = await response.json();
-    const prId = data.metadata?.id;
-    if (!prId) return;
+    // Fetch all user comments (including dismissed ones) using the correct API
+    const commentsResponse = await fetch('/api/pr/test-owner/test-repo/1/user-comments?includeDismissed=true');
+    const data = await commentsResponse.json();
+    const comments = data.comments || [];
 
-    // Fetch comments
-    const commentsResponse = await fetch(`/api/pr/${prId}/comments`);
-    const comments = await commentsResponse.json();
-
-    // Delete each user comment
+    // Delete each user comment (this performs a hard delete for inactive/dismissed comments)
     for (const comment of comments) {
-      if (comment.source === 'user') {
-        await fetch(`/api/user-comment/${comment.id}`, { method: 'DELETE' });
-      }
+      await fetch(`/api/user-comment/${comment.id}`, { method: 'DELETE' });
     }
   });
 }

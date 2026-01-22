@@ -225,6 +225,87 @@ describe('GitHubClient', () => {
 
       expect(mutationString).toContain('side: RIGHT');
     });
+
+    it('should include startLine for multi-line comments', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        .mockResolvedValueOnce({
+          addPullRequestReview: {
+            pullRequestReview: { id: 'review-123' }
+          }
+        })
+        .mockResolvedValueOnce({
+          comment0: { thread: { id: 'thread-0' } }
+        })
+        .mockResolvedValueOnce({
+          submitPullRequestReview: {
+            pullRequestReview: {
+              id: 'review-123',
+              url: 'https://github.com/owner/repo/pull/1#pullrequestreview-123',
+              state: 'COMMENTED'
+            }
+          }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [{
+        path: 'src/file.js',
+        start_line: 10,
+        line: 15,
+        side: 'RIGHT',
+        body: 'Multi-line comment spanning lines 10-15',
+        isFileLevel: false
+      }];
+
+      await client.createReviewGraphQL('PR_node123', 'COMMENT', 'Review body', comments);
+
+      const commentMutationCall = mockGraphql.mock.calls[1];
+      const mutationString = commentMutationCall[0];
+
+      expect(mutationString).toContain('startLine: 10');
+      expect(mutationString).toContain('line: 15');
+      expect(mutationString).toContain('side: RIGHT');
+    });
+
+    it('should not include startLine for single-line comments', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        .mockResolvedValueOnce({
+          addPullRequestReview: {
+            pullRequestReview: { id: 'review-123' }
+          }
+        })
+        .mockResolvedValueOnce({
+          comment0: { thread: { id: 'thread-0' } }
+        })
+        .mockResolvedValueOnce({
+          submitPullRequestReview: {
+            pullRequestReview: {
+              id: 'review-123',
+              url: 'https://github.com/owner/repo/pull/1#pullrequestreview-123',
+              state: 'COMMENTED'
+            }
+          }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [{
+        path: 'src/file.js',
+        line: 42,
+        side: 'RIGHT',
+        body: 'Single line comment',
+        isFileLevel: false
+        // Note: no start_line property
+      }];
+
+      await client.createReviewGraphQL('PR_node123', 'COMMENT', 'Review body', comments);
+
+      const commentMutationCall = mockGraphql.mock.calls[1];
+      const mutationString = commentMutationCall[0];
+
+      expect(mutationString).not.toContain('startLine');
+      expect(mutationString).toContain('line: 42');
+    });
   });
 
   describe('createDraftReviewGraphQL', () => {
@@ -316,6 +397,67 @@ describe('GitHubClient', () => {
 
       // Should only have 2 calls (create review + add comments), NOT a third call (no submitPullRequestReview)
       expect(mockGraphql).toHaveBeenCalledTimes(2);
+    });
+
+    it('should include startLine for multi-line draft comments', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        .mockResolvedValueOnce({
+          addPullRequestReview: {
+            pullRequestReview: { id: 'review-456', url: 'https://github.com/owner/repo/pull/1#pullrequestreview-456' }
+          }
+        })
+        .mockResolvedValueOnce({
+          comment0: { thread: { id: 'thread-0' } }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [{
+        path: 'src/file.js',
+        start_line: 20,
+        line: 30,
+        side: 'RIGHT',
+        body: 'Draft multi-line comment',
+        isFileLevel: false
+      }];
+
+      await client.createDraftReviewGraphQL('PR_node123', 'Draft body', comments);
+
+      const commentMutationCall = mockGraphql.mock.calls[1];
+      const mutationString = commentMutationCall[0];
+
+      expect(mutationString).toContain('startLine: 20');
+      expect(mutationString).toContain('line: 30');
+    });
+
+    it('should not include startLine for single-line draft comments', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        .mockResolvedValueOnce({
+          addPullRequestReview: {
+            pullRequestReview: { id: 'review-456', url: 'https://github.com/owner/repo/pull/1#pullrequestreview-456' }
+          }
+        })
+        .mockResolvedValueOnce({
+          comment0: { thread: { id: 'thread-0' } }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [{
+        path: 'src/file.js',
+        line: 50,
+        side: 'RIGHT',
+        body: 'Single line draft comment',
+        isFileLevel: false
+      }];
+
+      await client.createDraftReviewGraphQL('PR_node123', 'Draft body', comments);
+
+      const commentMutationCall = mockGraphql.mock.calls[1];
+      const mutationString = commentMutationCall[0];
+
+      expect(mutationString).not.toContain('startLine');
+      expect(mutationString).toContain('line: 50');
     });
   });
 

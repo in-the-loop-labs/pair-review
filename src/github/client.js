@@ -360,12 +360,13 @@ class GitHubClient {
           } else {
             // Line-level comment
             const side = comment.side || 'RIGHT';
+            const startLineField = comment.start_line ? `startLine: ${comment.start_line}\n                ` : '';
             return `
               comment${index}: addPullRequestReviewThread(input: {
                 pullRequestId: $prId
                 pullRequestReviewId: $reviewId
                 path: "${comment.path}"
-                line: ${comment.line}
+                ${startLineField}line: ${comment.line}
                 side: ${side}
                 body: ${JSON.stringify(comment.body)}
               }) {
@@ -565,12 +566,13 @@ class GitHubClient {
             `;
           } else {
             const side = comment.side || 'RIGHT';
+            const startLineField = comment.start_line ? `startLine: ${comment.start_line}\n                ` : '';
             return `
               comment${index}: addPullRequestReviewThread(input: {
                 pullRequestId: $prId
                 pullRequestReviewId: $reviewId
                 path: "${comment.path}"
-                line: ${comment.line}
+                ${startLineField}line: ${comment.line}
                 side: ${side}
                 body: ${JSON.stringify(comment.body)}
               }) {

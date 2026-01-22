@@ -875,15 +875,21 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         };
       }
 
-      console.log(`Formatting line comment: ${comment.file}:${comment.line_start} side=${side}`);
+      console.log(`Formatting line comment: ${comment.file}:${comment.line_start}${isRange ? `-${comment.line_end}` : ''} side=${side}`);
 
-      return {
+      const commentObj = {
         path: comment.file,
         line: isRange ? comment.line_end : comment.line_start,
         body: comment.body,
         side: side,
         isFileLevel: false
       };
+
+      if (isRange) {
+        commentObj.start_line = comment.line_start;
+      }
+
+      return commentObj;
     });
 
     // Begin database transaction for submission tracking
@@ -902,10 +908,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments);
       }
 
-      // Update reviews table with appropriate status
-      const reviewStatus = event === 'DRAFT' ? 'draft' : 'submitted';
-      const now = new Date().toISOString();
-
+      // Build review metadata for database storage
       const reviewData = {
         github_review_id: githubReview.id,
         github_url: githubReview.html_url,
@@ -921,18 +924,13 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         reviewData.submitted_at = githubReview.submitted_at;
       }
 
-      // Insert or replace review record
-      if (event === 'DRAFT') {
-        await run(db, `
-          INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, review_data)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `, [prNumber, repository, reviewStatus, githubReview.id, now, JSON.stringify(reviewData)]);
-      } else {
-        await run(db, `
-          INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, submitted_at, review_data)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `, [prNumber, repository, reviewStatus, githubReview.id, now, now, JSON.stringify(reviewData)]);
-      }
+      // Update review record via repository method
+      // Uses UPDATE (not INSERT OR REPLACE) to avoid cascade deletion of comments/analysis_runs
+      await reviewRepo.updateAfterSubmission(review.id, {
+        githubReviewId: githubReview.id,
+        event: event,
+        reviewData: reviewData
+      });
 
       console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
 
