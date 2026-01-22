@@ -556,7 +556,7 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
 
     // First check if PR metadata exists
     const existingPR = await queryOne(db, `
-      SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?
+      SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prInfo.number, repository]);
 
     if (existingPR) {
@@ -601,7 +601,7 @@ async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath)
     // transaction and to update only review_data without overwriting custom_instructions
     // or summary fields that may have been set by previous analysis runs.
     const existingReview = await queryOne(db, `
-      SELECT id FROM reviews WHERE pr_number = ? AND repository = ?
+      SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prInfo.number, repository]);
 
     if (existingReview) {
@@ -745,7 +745,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     // Get PR metadata ID for AI analysis
     const prMetadata = await queryOne(db, `
       SELECT id, pr_data FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prInfo.number, repository]);
 
     if (!prMetadata) {

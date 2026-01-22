@@ -917,7 +917,7 @@ class WorktreeRepository {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, branch, path, created_at, last_accessed_at
       FROM worktrees
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     return row || null;
@@ -1083,7 +1083,7 @@ class RepoSettingsRepository {
     const row = await queryOne(this.db, `
       SELECT id, repository, default_instructions, default_provider, default_model, local_path, created_at, updated_at
       FROM repo_settings
-      WHERE repository = ?
+      WHERE repository = ? COLLATE NOCASE
     `, [repository]);
 
     return row || null;
@@ -1096,7 +1096,7 @@ class RepoSettingsRepository {
    */
   async getLocalPath(repository) {
     const row = await queryOne(this.db, `
-      SELECT local_path FROM repo_settings WHERE repository = ?
+      SELECT local_path FROM repo_settings WHERE repository = ? COLLATE NOCASE
     `, [repository]);
 
     return row ? row.local_path : null;
@@ -1120,7 +1120,7 @@ class RepoSettingsRepository {
       await run(this.db, `
         UPDATE repo_settings
         SET local_path = ?, updated_at = ?
-        WHERE repository = ?
+        WHERE repository = ? COLLATE NOCASE
       `, [localPath, now, repository]);
     } else {
       // Insert new settings with just local_path
@@ -1153,7 +1153,7 @@ class RepoSettingsRepository {
             default_model = ?,
             local_path = ?,
             updated_at = ?
-        WHERE repository = ?
+        WHERE repository = ? COLLATE NOCASE
       `, [
         default_instructions !== undefined ? default_instructions : existing.default_instructions,
         default_provider !== undefined ? default_provider : existing.default_provider,
@@ -1198,7 +1198,7 @@ class RepoSettingsRepository {
    */
   async deleteRepoSettings(repository) {
     const result = await run(this.db, `
-      DELETE FROM repo_settings WHERE repository = ?
+      DELETE FROM repo_settings WHERE repository = ? COLLATE NOCASE
     `, [repository]);
 
     return result.changes > 0;
@@ -1757,7 +1757,7 @@ class ReviewRepository {
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions, summary
       FROM reviews
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!row) return null;
@@ -1834,7 +1834,7 @@ class ReviewRepository {
              created_at, updated_at, submitted_at, review_data, custom_instructions,
              review_type, local_path, local_head_sha, summary
       FROM reviews
-      WHERE repository = ?
+      WHERE repository = ? COLLATE NOCASE
       ORDER BY updated_at DESC
       LIMIT ?
     `, [repository, limit]);

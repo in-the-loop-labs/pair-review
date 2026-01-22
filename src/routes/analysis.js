@@ -67,7 +67,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     const reviewRepo = new ReviewRepository(db);
     const prMetadata = await queryOne(db, `
       SELECT id, base_branch, title, description, pr_data FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata) {
@@ -392,7 +392,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level2', async (req, res) => {
     const db = req.app.get('db');
     const prMetadata = await queryOne(db, `
       SELECT id, base_branch, title, description, pr_data FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata) {
@@ -543,7 +543,7 @@ router.post('/api/analyze/:owner/:repo/:pr/level3', async (req, res) => {
     const db = req.app.get('db');
     const prMetadata = await queryOne(db, `
       SELECT id, base_branch, title, description, pr_data FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata) {
@@ -855,7 +855,7 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
     // Get PR metadata to verify PR exists and get last_ai_run_id
     const prMetadata = await queryOne(db, `
       SELECT id FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata) {
@@ -962,7 +962,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
     // Get PR metadata to verify PR exists
     const prMetadata = await queryOne(db, `
       SELECT id FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata) {

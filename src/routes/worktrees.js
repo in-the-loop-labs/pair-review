@@ -201,7 +201,7 @@ router.post('/api/worktrees/create', async (req, res) => {
 
       // Check if PR metadata exists
       const existingPR = await queryOne(db, `
-        SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ?
+        SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
       `, [parsedPrNumber, repository]);
 
       if (existingPR) {
@@ -243,7 +243,7 @@ router.post('/api/worktrees/create', async (req, res) => {
 
       // Create or update review record
       const existingReview = await queryOne(db, `
-        SELECT id FROM reviews WHERE pr_number = ? AND repository = ?
+        SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
       `, [parsedPrNumber, repository]);
 
       if (existingReview) {
@@ -360,7 +360,7 @@ router.get('/api/worktrees/recent', async (req, res) => {
         pm.author,
         pm.head_branch
       FROM worktrees w
-      LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository
+      LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository COLLATE NOCASE
       ORDER BY w.last_accessed_at DESC
       LIMIT ?
     `, [limit * 2]); // Fetch extra to account for stale entries

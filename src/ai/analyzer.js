@@ -1471,7 +1471,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Now look up pr_metadata using the natural key (pr_number + repository)
       const prMetadata = await queryOne(this.db, `
-        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ?
+        SELECT pr_data FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
       `, [review.pr_number, review.repository]);
 
       if (!prMetadata || !prMetadata.pr_data) {

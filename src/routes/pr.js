@@ -56,7 +56,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         updated_at,
         pr_data
       FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata) {
@@ -143,7 +143,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
     // Check if PR exists in database
     const existingPR = await queryOne(db, `
       SELECT id FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!existingPR) {
@@ -191,7 +191,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
         head_branch = ?,
         updated_at = CURRENT_TIMESTAMP,
         pr_data = ?
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [
       prData.title,
       prData.body || '',
@@ -224,7 +224,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
         updated_at,
         pr_data
       FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     const parsedData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
@@ -289,7 +289,7 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     const prMetadata = await queryOne(db, `
       SELECT pr_data
       FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata || !prMetadata.pr_data) {
@@ -416,7 +416,7 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
     const prMetadata = await queryOne(req.app.get('db'), `
       SELECT pr_data
       FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata || !prMetadata.pr_data) {
@@ -492,7 +492,7 @@ router.get('/api/pr/:owner/:repo/:number/comments', async (req, res) => {
     // Get review ID first
     const review = await queryOne(req.app.get('db'), `
       SELECT id FROM reviews
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!review) {
@@ -654,7 +654,7 @@ router.get('/api/file-content-original/:fileName(*)', async (req, res) => {
     const repository = normalizeRepository(owner, repo);
     const prRecord = await queryOne(db, `
       SELECT pr_data FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     let baseSha = null;
@@ -773,7 +773,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     // Get PR metadata and worktree path
     const prMetadata = await queryOne(db, `
       SELECT id, pr_data FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata) {
@@ -1017,7 +1017,7 @@ router.get('/api/pr/:owner/:repo/:number/files/viewed', async (req, res) => {
     const prMetadata = await queryOne(db, `
       SELECT pr_data
       FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata) {
@@ -1075,7 +1075,7 @@ router.post('/api/pr/:owner/:repo/:number/files/viewed', async (req, res) => {
     const prMetadata = await queryOne(db, `
       SELECT pr_data
       FROM pr_metadata
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [prNumber, repository]);
 
     if (!prMetadata) {
@@ -1101,7 +1101,7 @@ router.post('/api/pr/:owner/:repo/:number/files/viewed', async (req, res) => {
     await run(db, `
       UPDATE pr_metadata
       SET pr_data = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE pr_number = ? AND repository = ?
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
     `, [JSON.stringify(prData), prNumber, repository]);
 
     res.json({
