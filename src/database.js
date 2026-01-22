@@ -1810,6 +1810,47 @@ class ReviewRepository {
   }
 
   /**
+   * Update a review record after submission to GitHub
+   *
+   * This method is used after submitting a review (draft or final) to GitHub.
+   * It updates the review record with the GitHub review ID, status, and metadata.
+   *
+   * IMPORTANT: This method uses UPDATE, not INSERT OR REPLACE. Using INSERT OR REPLACE
+   * would trigger a DELETE+INSERT sequence, which cascade-deletes all associated
+   * comments and analysis_runs due to foreign key constraints.
+   *
+   * @param {number} id - Review ID (from reviews table)
+   * @param {Object} submissionData - Submission result data
+   * @param {number} submissionData.githubReviewId - GitHub's review ID
+   * @param {string} submissionData.event - Review event type ('DRAFT', 'APPROVE', 'REQUEST_CHANGES', 'COMMENT')
+   * @param {Object} submissionData.reviewData - Additional review metadata (github_url, comments_count, etc.)
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async updateAfterSubmission(id, { githubReviewId, event, reviewData }) {
+    const now = new Date().toISOString();
+    const status = event === 'DRAFT' ? 'draft' : 'submitted';
+
+    // For non-draft submissions, set submitted_at timestamp
+    if (event === 'DRAFT') {
+      const result = await run(this.db, `
+        UPDATE reviews
+        SET status = ?, review_id = ?, updated_at = ?, review_data = ?
+        WHERE id = ?
+      `, [status, githubReviewId, now, JSON.stringify(reviewData), id]);
+
+      return result.changes > 0;
+    } else {
+      const result = await run(this.db, `
+        UPDATE reviews
+        SET status = ?, review_id = ?, updated_at = ?, submitted_at = ?, review_data = ?
+        WHERE id = ?
+      `, [status, githubReviewId, now, now, JSON.stringify(reviewData), id]);
+
+      return result.changes > 0;
+    }
+  }
+
+  /**
    * Delete a review record by ID
    * @param {number} id - Review ID
    * @returns {Promise<boolean>} True if record was deleted

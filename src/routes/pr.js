@@ -908,10 +908,7 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments);
       }
 
-      // Update reviews table with appropriate status
-      const reviewStatus = event === 'DRAFT' ? 'draft' : 'submitted';
-      const now = new Date().toISOString();
-
+      // Build review metadata for database storage
       const reviewData = {
         github_review_id: githubReview.id,
         github_url: githubReview.html_url,
@@ -927,22 +924,13 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         reviewData.submitted_at = githubReview.submitted_at;
       }
 
-      // Update existing review record (getOrCreate ensures review exists at line 791)
-      // NOTE: Do NOT use INSERT OR REPLACE here - it triggers DELETE+INSERT which
-      // cascade-deletes all comments and analysis_runs due to foreign key constraints
-      if (event === 'DRAFT') {
-        await run(db, `
-          UPDATE reviews
-          SET status = ?, review_id = ?, updated_at = ?, review_data = ?
-          WHERE id = ?
-        `, [reviewStatus, githubReview.id, now, JSON.stringify(reviewData), review.id]);
-      } else {
-        await run(db, `
-          UPDATE reviews
-          SET status = ?, review_id = ?, updated_at = ?, submitted_at = ?, review_data = ?
-          WHERE id = ?
-        `, [reviewStatus, githubReview.id, now, now, JSON.stringify(reviewData), review.id]);
-      }
+      // Update review record via repository method
+      // Uses UPDATE (not INSERT OR REPLACE) to avoid cascade deletion of comments/analysis_runs
+      await reviewRepo.updateAfterSubmission(review.id, {
+        githubReviewId: githubReview.id,
+        event: event,
+        reviewData: reviewData
+      });
 
       console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
 

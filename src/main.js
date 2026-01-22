@@ -890,10 +890,13 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
         created_at: now
       };
 
-      await run(db, `
-        INSERT OR REPLACE INTO reviews (pr_number, repository, status, review_id, updated_at, review_data)
-        VALUES (?, ?, 'draft', ?, ?, ?)
-      `, [prInfo.number, repository, githubReview.id, now, JSON.stringify(reviewData)]);
+      // Update review record via repository method
+      // Uses UPDATE (not INSERT OR REPLACE) to avoid cascade deletion of comments/analysis_runs
+      await reviewRepo.updateAfterSubmission(review.id, {
+        githubReviewId: githubReview.id,
+        event: 'DRAFT',
+        reviewData: reviewData
+      });
 
       // Update AI suggestions to 'draft' status (batch update for performance)
       if (aiSuggestions.length > 0) {
