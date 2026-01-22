@@ -875,15 +875,21 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         };
       }
 
-      console.log(`Formatting line comment: ${comment.file}:${comment.line_start} side=${side}`);
+      console.log(`Formatting line comment: ${comment.file}:${comment.line_start}${isRange ? `-${comment.line_end}` : ''} side=${side}`);
 
-      return {
+      const commentObj = {
         path: comment.file,
-        line: isRange ? comment.line_end : comment.line_start,
+        line: comment.line_end || comment.line_start,
         body: comment.body,
         side: side,
         isFileLevel: false
       };
+
+      if (isRange) {
+        commentObj.start_line = comment.line_start;
+      }
+
+      return commentObj;
     });
 
     // Begin database transaction for submission tracking
