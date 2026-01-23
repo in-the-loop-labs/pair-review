@@ -4,6 +4,11 @@ name: GitHub Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g., v1.0.1)'
+        required: true
 
 permissions:
   contents: write
@@ -14,19 +19,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Determine tag
+        id: tag
+        run: |
+          # Use input tag for workflow_dispatch, otherwise use GITHUB_REF_NAME
+          TAG="${{ inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
 
       - name: Extract release notes from CHANGELOG
         id: notes
         run: |
           # Extract the section for this version from CHANGELOG.md
           # Matches from "## X.Y.Z" until the next "## " or end of file
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ steps.tag.outputs.version }}"
 
           # Use awk to extract the section
           NOTES=$(awk -v ver="$VERSION" '
@@ -47,8 +58,8 @@ jobs:
 
       - name: Create GitHub Release
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            --title "${{ steps.tag.outputs.tag }}" \
             --notes-file release-notes.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

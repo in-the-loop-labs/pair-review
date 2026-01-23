@@ -28,7 +28,7 @@
     "test:e2e:debug": "playwright test --debug",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "npm run version && changeset tag && npm publish && git push --follow-tags"
+    "release": "npm run version && changeset tag && npm publish && git push && git push --tags"
   },
   "keywords": [
     "code-review",
