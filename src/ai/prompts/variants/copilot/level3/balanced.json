@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "baseline": "level3/balanced",
+    "baselineHash": "2ad77cb7",
+    "targetModel": "gemini-3-pro-preview",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:53:39.275Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "available-commands",
+      "output-schema",
+      "purpose",
+      "level-header",
+      "analysis-process",
+      "focus-areas",
+      "line-number-guidance",
+      "diff-instructions",
+      "file-level-guidance",
+      "generated-files",
+      "changed-files",
+      "guidelines"
+    ],
+    "overrides": {
+      "available-commands": "## Available Commands (READ-ONLY)\nYou may only read the codebase:\n- find . -name \"*.test.js\" to locate test files\n- grep -r \"pattern\" to search for patterns\n- cat -n <file> to view files with line numbers\n- ls, tree to explore structure\n- Other read-only commands as needed\n\n**>>> CRITICAL: Do NOT modify files or run write commands (rm, mv, git commit, etc.). <<<**\nYou may use parallel read-only tasks to explore.",
+      "purpose": "## Purpose\nDeliver a Level 3 review focused on how these specific changes connect to and impact the broader codebase.\nThis is not a general audit—stay anchored to relationships created or affected by these changes.",
+      "analysis-process": "## Analysis Process\nStart from the changed files and expand outward:\n1. Identify files that reference or are referenced by the changes\n2. Check connections to tests, configurations, and documentation\n3. Compare against established patterns and architecture\n4. Assess impacts on other system parts, focusing on dependencies and integrations\nExplore deeply only as needed; skip general codebase review beyond change-related context.",
+      "focus-areas": "## Focus Areas\n**Architecture & Patterns (high priority)**\n- Fit with existing architecture and patterns\n- Cross-file dependencies and ripple effects\n\n**Contracts & Compatibility (high priority)**\n- Breaking changes to functionality or contracts\n- API consistency and backward compatibility\n\n**Testing & Documentation**\n- {{testingGuidance}}\n- Needed documentation or config updates\n\n**Performance & Security**\n- Performance/scalability impacts on connected components\n- Security implications across data flows and integrations",
+      "file-level-guidance": "## Line-Level vs File-Level Suggestions\nAnchor issues to specific lines when possible. Use file-level suggestions only for concerns that truly span the entire file (architecture role, missing tests, integration or pattern mismatches, documentation gaps, module organization). File-level items have no line number.",
+      "guidelines": "## Important Guidelines\n- Focus on change-to-codebase interactions; omit marginal or speculative items\n- Prefer line-level suggestions; reserve fileLevelSuggestions for whole-file concerns (no line numbers)\n- You may attach suggestions to context lines when they expose codebase-level issues\n- Confidence: High 0.8+, Medium 0.5-0.79, Lower otherwise\n- For \"praise\", omit the suggestion field; otherwise provide specific, actionable fixes tied to codebase context"
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "reordered",
+      "rationale": "Placed at the very start to establish reviewer role before other instructions, aiding the pro model’s context setup."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked placeholder preserved exactly while keeping it early for core context."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "reordered",
+      "rationale": "Kept optional instructions near the top so model can integrate user-specific guidance early without changing content."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Condensed wording and emphasized read-only constraint to reduce cognitive load while preserving capabilities."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked schema kept intact and moved early to foreground critical JSON format requirements for the pro model."
+    },
+    {
+      "section": "purpose",
+      "type": "modified",
+      "rationale": "Tightened language to stress change-focused scope and avoid drift into general review."
+    },
+    {
+      "section": "level-header",
+      "type": "reordered",
+      "rationale": "Positioned after purpose to reinforce review level once scope is clear."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Streamlined steps with concise, action-focused wording suited to pro model while keeping sequence clear."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Removed redundancy, tightened bullets, and highlighted priorities for clearer guidance on what to inspect."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "reordered",
+      "rationale": "Placed before diff details to align numbering guidance adjacent to related instructions without altering locked content."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "reordered",
+      "rationale": "Positioned next to line-number guidance for cohesive handling of line references while preserving content."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "modified",
+      "rationale": "Condensed optional guidance to reduce overlap with guidelines while clarifying when to use file-level notes; retained for value."
+    },
+    {
+      "section": "generated-files",
+      "type": "reordered",
+      "rationale": "Kept optional generated-files context but moved later to follow core guidance, reducing early noise."
+    },
+    {
+      "section": "changed-files",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly; placement later keeps core instructions upfront while retaining necessary context."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Simplified to eliminate redundancy, emphasize prioritization, and clarify confidence and suggestion rules for the pro model."
+    }
+  ]
+}

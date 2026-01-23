@@ -17,20 +17,23 @@ function extractJSON(response, level = 'unknown') {
 
   const strategies = [
     // Strategy 1: Look for markdown code blocks with 'json' label
+    // Handle various formats: ```json\n...\n```, ```json...\n```, ```json...```
     () => {
-      // First, try to find ```json specifically (more precise)
-      let codeBlockMatch = response.match(/```json\s*\n([\s\S]*?)\n```/);
+      // Try multiple patterns for ```json blocks (most common AI output format)
+      const patterns = [
+        /```json\s*\n?([\s\S]*?)\n?```/,   // Standard: ```json\n...\n```
+        /```json\s*([\s\S]*?)```/,          // No newlines: ```json{...}```
+        /```\s*\n?([\s\S]*?)\n?```/         // Generic: ```\n...\n```
+      ];
 
-      // If not found, try generic ``` blocks
-      if (!codeBlockMatch) {
-        codeBlockMatch = response.match(/```\s*\n([\s\S]*?)\n```/);
-      }
-
-      if (codeBlockMatch && codeBlockMatch[1]) {
-        const content = codeBlockMatch[1].trim();
-        // Verify it looks like JSON before parsing
-        if (content.startsWith('{') && content.endsWith('}')) {
-          return JSON.parse(content);
+      for (const pattern of patterns) {
+        const match = response.match(pattern);
+        if (match && match[1]) {
+          const content = match[1].trim();
+          // Verify it looks like JSON before parsing
+          if (content.startsWith('{') && content.endsWith('}')) {
+            return JSON.parse(content);
+          }
         }
       }
       throw new Error('No JSON code block found');

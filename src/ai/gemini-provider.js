@@ -118,6 +118,7 @@ class GeminiProvider extends AIProvider {
       'run_shell_command(rg)',           // Ripgrep (fast pattern searching)
       // git-diff-lines is added to PATH via BIN_DIR so bare command works
       'run_shell_command(git-diff-lines)', // Custom annotated diff tool
+      'run_shell_command(gh)',           // GitHub CLI for PR/issue metadata
     ].join(',');
     if (this.useShell) {
       // In shell mode, build full command string with args

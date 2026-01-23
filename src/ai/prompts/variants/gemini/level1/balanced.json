@@ -1,0 +1,159 @@
+{
+  "meta": {
+    "baseline": "level1/balanced",
+    "baselineHash": "a5e91d66",
+    "targetModel": "gemini-2.5-pro",
+    "optimizerModel": "gemini-3-pro-preview",
+    "timestamp": "2026-01-18T16:13:31.442Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "valid-files",
+      "scope-constraints",
+      "generated-files",
+      "line-number-logic",
+      "analysis-guidelines",
+      "tool-usage",
+      "output-schema"
+    ],
+    "overrides": {
+      "level-header": "# Level 1 Review - Isolated Change Analysis"
+    },
+    "removedSections": [
+      "line-number-guidance",
+      "speed-expectations",
+      "initial-setup",
+      "focus-areas",
+      "available-commands",
+      "diff-instructions",
+      "category-definitions",
+      "guidelines"
+    ],
+    "addedSections": [
+      {
+        "name": "scope-constraints",
+        "content": "## Scope Constraints\n- **Isolation:** Analyze changes strictly within the provided diffs. Do not request full file contents or external context unless critical.\n- **Speed:** Focus on obvious issues visible in the diff logic.\n- **Generated Code:** Ignore generated files if listed below.",
+        "locked": false,
+        "required": true,
+        "optional": false
+      },
+      {
+        "name": "line-number-logic",
+        "content": "{{lineNumberGuidance}}\n\n## Line Number Selection Rules\n**CRITICAL:** You must correctly attribute line numbers to the \"NEW\" or \"OLD\" column based on the diff marker:\n1.  **\"NEW\"** (Default): Use for ADDED lines (`+`) and CONTEXT lines (unchanged).\n2.  **\"OLD\"**: Use ONLY for DELETED lines (`-`).\n\n*Note: Context lines exist in both versions. Always map them to \"NEW\".*",
+        "locked": false,
+        "required": true,
+        "optional": false
+      },
+      {
+        "name": "analysis-guidelines",
+        "content": "## Analysis Categories & Criteria\nEvaluate the changes against these specific categories:\n\n- **bug**: Errors, crashes, logical flaws.\n- **security**: Vulnerabilities, unsafe input handling.\n- **performance**: O(n^2) loops in critical paths, unneeded allocations.\n- **design**: Anti-patterns, poor separation of concerns (visible locally).\n- **code-style**: Naming, formatting (if clear violations).\n- **improvement**: Refactors for clarity or maintainability.\n- **praise**: Exceptional implementation details.\n\n**Confidence Thresholds:**\n- **High (0.8-1.0):** Certain bug/issue. Report these.\n- **Medium (0.5-0.79):** Probable issue. Report these.\n- **Low (<0.5):** SKIP. Do not report marginal suggestions.",
+        "locked": false,
+        "required": true,
+        "optional": false
+      },
+      {
+        "name": "tool-usage",
+        "content": "## Tool Usage\n- Primary Source: The `git-diff-lines` output provided above.\n- Auxiliary: `cat -n <file>` only if absolutely necessary to verify a line number.\n- **Read-Only:** Do not modify any files.",
+        "locked": false,
+        "required": true,
+        "optional": false
+      }
+    ]
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Placeholder content remains appropriate for setting the persona."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Useful for user overrides, kept optional."
+    },
+    {
+      "section": "level-header",
+      "type": "modified",
+      "rationale": "Renamed title to 'Isolated Change Analysis' to better frame the mental model for the AI."
+    },
+    {
+      "section": "valid-files",
+      "type": "reordered",
+      "rationale": "Moved up to establish hard constraints early in the context window."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "removed",
+      "rationale": "Merged into 'line-number-logic' to group all line-tracking logic together."
+    },
+    {
+      "section": "speed-expectations",
+      "type": "removed",
+      "rationale": "Replaced with 'scope-constraints' to emphasize isolation over just speed."
+    },
+    {
+      "section": "scope-constraints",
+      "type": "modified",
+      "rationale": "New section (replacing speed-expectations) that defines the boundaries of the analysis (isolation, generated code) clearly."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Kept as optional context."
+    },
+    {
+      "section": "initial-setup",
+      "type": "removed",
+      "rationale": "Redundant. The task is implied by the role and tool usage sections."
+    },
+    {
+      "section": "focus-areas",
+      "type": "removed",
+      "rationale": "Merged into 'analysis-guidelines' to avoid listing categories twice."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Renamed to 'tool-usage' and simplified to emphasize that `git-diff-lines` is the primary source."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "removed",
+      "rationale": "Merged into 'line-number-logic' to keep all diff parsing rules in one place."
+    },
+    {
+      "section": "line-number-logic",
+      "type": "modified",
+      "rationale": "Consolidated section containing the placeholder guidance and the specific 'NEW'/'OLD' attribution rules. placed closer to the output schema."
+    },
+    {
+      "section": "category-definitions",
+      "type": "removed",
+      "rationale": "Merged into 'analysis-guidelines'."
+    },
+    {
+      "section": "guidelines",
+      "type": "removed",
+      "rationale": "Merged into 'analysis-guidelines'."
+    },
+    {
+      "section": "analysis-guidelines",
+      "type": "modified",
+      "rationale": "Consolidated section merging categories, focus areas, and confidence calibration for a single authoritative reference on *what* to report."
+    }
+  ]
+}

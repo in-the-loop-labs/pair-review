@@ -1,0 +1,122 @@
+{
+  "meta": {
+    "baseline": "orchestration/balanced",
+    "baselineHash": "eaa55399",
+    "targetModel": "gemini-3-pro-preview",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:53:58.972Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "critical-output",
+      "output-schema",
+      "role",
+      "task-header",
+      "line-number-guidance",
+      "role-description",
+      "custom-instructions",
+      "input-suggestions",
+      "intelligent-merging",
+      "priority-curation",
+      "balanced-output",
+      "human-centric-framing",
+      "diff-instructions",
+      "file-level-guidance",
+      "guidelines"
+    ],
+    "overrides": {
+      "role-description": "## Your Role\nCurate and merge multi-level analysis into concise, high-value guidance. Keep insights non-redundant, actionable, and helpful for a human reviewer.",
+      "intelligent-merging": "## Orchestration Guidelines\n\n### 1. Intelligent Merging\n- Combine related suggestions into unified insights\n- Merge overlapping concerns; keep unique findings\n- Prefer precise line-level notes over broad file-level ones\n- Omit any reference to which level produced an item",
+      "priority-curation": "### 2. Priority-Based Curation\nRank by: 1) Security vulnerabilities, 2) Bugs/errors, 3) Architecture, 4) Performance, 5) Code style.",
+      "balanced-output": "### 3. Balanced Output\n- Include only 2-3 praise items at most\n- Emphasize actionable, high-value guidance over volume\n- Avoid overload; keep it concise\n- Add confidence scores reflecting cross-level alignment",
+      "human-centric-framing": "### 4. Human-Centric Framing\n- Phrase as considerations: \"Consider...\", \"You might review...\", \"Worth noting...\"\n- Preserve reviewer autonomy; you are a partner, not an enforcer\n- Give brief context on why each item matters",
+      "guidelines": "## Important Notes\n- Quality over quantity; favor 8 strong items over many weak ones\n- Raise confidence when multiple levels agree\n- Every suggestion needs clear next steps (omit suggestion text only for praise)\n- Keep essential context; do not lose details when merging\n- Only include modified files; drop suggestions for untouched files\n- Preserve valuable file-level insights\n\n**Confidence Calibration:**\n- High (0.8+): near-certain issues\n- Medium (0.5-0.79): likely valuable\n- Lower: omit if marginal"
+    },
+    "removedSections": [
+      "file-line-counts"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "critical-output",
+      "type": "unchanged",
+      "rationale": "Locked content preserved verbatim as required."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked schema kept intact for compliance."
+    },
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Placeholder retained to pull dynamic intro content."
+    },
+    {
+      "section": "task-header",
+      "type": "unchanged",
+      "rationale": "Header already concise and clear."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder maintained for injected guidance."
+    },
+    {
+      "section": "role-description",
+      "type": "modified",
+      "rationale": "Condensed language to emphasize core goal and actionability for a pro model."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional slot preserved to allow user-specific directives."
+    },
+    {
+      "section": "input-suggestions",
+      "type": "unchanged",
+      "rationale": "Locked multi-level input block kept exactly."
+    },
+    {
+      "section": "file-line-counts",
+      "type": "removed",
+      "rationale": "Optional and nonessential; removed to reduce prompt length for efficiency."
+    },
+    {
+      "section": "intelligent-merging",
+      "type": "modified",
+      "rationale": "Sharpened bullets for direct merging instructions and emphasis on line-level precision."
+    },
+    {
+      "section": "priority-curation",
+      "type": "modified",
+      "rationale": "Compressed priority list into a single ranked sentence for quicker parsing."
+    },
+    {
+      "section": "balanced-output",
+      "type": "modified",
+      "rationale": "Simplified to highlight limits, actionability, and confidence cues succinctly."
+    },
+    {
+      "section": "human-centric-framing",
+      "type": "modified",
+      "rationale": "Tightened phrasing to stress collaborative tone with brief context requirement."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Line mapping rules already precise; left intact."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "unchanged",
+      "rationale": "Kept to ensure correct handling of file-level items for pro model thoroughness."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Streamlined notes and confidence calibration for clarity and fast comprehension."
+    }
+  ]
+}

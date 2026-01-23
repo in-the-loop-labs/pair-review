@@ -1,0 +1,109 @@
+{
+  "meta": {
+    "baseline": "level2/balanced",
+    "baselineHash": "2e6a135c",
+    "targetModel": "gemini-2.5-pro",
+    "optimizerModel": "gemini-3-pro-preview",
+    "timestamp": "2026-01-18T16:11:05.248Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "valid-files",
+      "generated-files",
+      "line-number-guidance",
+      "diff-instructions",
+      "analysis-process",
+      "focus-areas",
+      "file-level-guidance",
+      "available-commands",
+      "output-schema",
+      "guidelines"
+    ],
+    "overrides": {
+      "diff-instructions": "## Line Number Reference (old_or_new field)\nCRITICAL for accurate commenting:\n- **\"OLD\"**: Use ONLY for lines beginning with `[-]` (deletions).\n- **\"NEW\"**: Use for ALL other lines (additions `[+]` and context lines).\n\nIf a line exists in the new file (even if unchanged), it is \"NEW\".",
+      "analysis-process": "## Analysis Workflow\n1. **Map Changes**: Use `git-diff-lines` to identify modified chunks and line numbers.\n2. **Gain Context**: Read the full file content (via `cat` or `read_file`) to understand the surrounding code structure.\n3. **Evaluate Integration**: Check how the changes interact with the rest of the file (scoping, variable usage, patterns).\n4. **Filter**: Skip files where the changes are trivial or strictly follow existing patterns.",
+      "focus-areas": "## Focus Areas\nAnalyze the file context for:\n- **Consistency**: Variable naming, error handling patterns, and coding style matching the existing file.\n- **Completeness**: Are related changes missing? (e.g., a new parameter added but not used in all internal calls).\n- **Safety**: Security vulnerabilities exposed by the interaction between new and old code.\n- **Design**: Pattern deviations or architectural misfits within the module.",
+      "file-level-guidance": "## Line-Level vs File-Level Suggestions\n- **Line-Level (Preferred)**: Anchor issues to specific lines whenever possible.\n- **File-Level**: Use ONLY for broad observations (architecture, missing tests, module organization) that cannot be pinned to a specific line.",
+      "available-commands": "## Available Tools (Read-Only)\n- `git-diff-lines`: View changes with line indices.\n- `cat -n <file>`: Read full file content with line numbers (Essential for Level 2 analysis).\n- `grep`/`find`: Search codebase.\n\nNote: You are in READ-ONLY mode. Do not attempt to edit files.",
+      "guidelines": "## Quality Control & Confidence\n- **High Confidence (0.8+)**: Clear bugs, security risks, or major style violations.\n- **Medium Confidence (0.5-0.7)**: Likely improvements or debatable design choices.\n- **Low Confidence (<0.5)**: **OMIT**. Do not report marginal issues.\n- **Praise**: Use sparingly for exceptional implementation.\n\n**Final Check**: Ensure every \"NEW\" line number actually exists in the current file version."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Variable content placeholder; structure is correct."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Useful context for Pro models to tailor the review."
+    },
+    {
+      "section": "level-header",
+      "type": "unchanged",
+      "rationale": "Clear and concise header."
+    },
+    {
+      "section": "valid-files",
+      "type": "reordered",
+      "rationale": "Moved up to establish constraints early. Locked content preserved exactly."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Variable content, standard filter."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Variable content."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "reordered",
+      "rationale": "Moved adjacent to line-number-guidance. Clarified instructions to emphasize 'NEW' as the default for safety."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Condensed into an imperative 'Workflow' to guide the model's reasoning process efficiently."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Grouped into semantic categories (Consistency, Completeness, Safety) for better model attention."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "unchanged",
+      "rationale": "Clear distinction necessary for the schema structure."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Simplified to list tools with a focus on 'Read-Only' nature."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Renamed to 'Quality Control'. Added explicit instruction to OMIT low confidence items to reduce noise."
+    }
+  ]
+}

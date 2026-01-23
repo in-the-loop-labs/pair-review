@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "baseline": "level2/fast",
+    "baselineHash": "44cc4385",
+    "targetModel": "gpt-5.1-codex-mini",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:53:12.176Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "valid-files",
+      "output-schema",
+      "level-header",
+      "line-number-guidance",
+      "diff-instructions",
+      "analysis-process",
+      "focus-areas",
+      "available-commands",
+      "guidelines"
+    ],
+    "overrides": {
+      "level-header": "# Level 2 Review – Quick Context",
+      "analysis-process": "## Steps\n1. Use git-diff-lines to capture numbered changes\n2. Open full file only when needed\n3. Anchor comments to exact lines",
+      "focus-areas": "## Find\n- Inconsistencies (naming, patterns, error handling)\n- Missing related changes\n- Security issues\n- Style violations\n- Good practices (praise)",
+      "guidelines": "## Guidelines\n- Anchor issues to lines when possible\n- Omit suggestion for praise; include for others\n- Only include confident suggestions\n- Skip files with no issues"
+    },
+    "removedSections": [
+      "custom-instructions",
+      "generated-files"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "modified",
+      "rationale": "Kept concise header position near top for fast model focus."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked placeholder preserved exactly."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "removed",
+      "rationale": "Optional section removed to reduce prompt length for fast model."
+    },
+    {
+      "section": "level-header",
+      "type": "modified",
+      "rationale": "Shortened title to front-load task succinctly."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Kept required placeholder intact for clarity."
+    },
+    {
+      "section": "generated-files",
+      "type": "removed",
+      "rationale": "Optional content dropped to minimize overhead."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked constraint retained verbatim and moved earlier for priority."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Simplified steps into terse imperatives for fast model."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Tightened bullets to reduce words while keeping scope."
+    },
+    {
+      "section": "available-commands",
+      "type": "unchanged",
+      "rationale": "Already concise and clear for command limits."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked schema preserved exactly and placed earlier for emphasis."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Line-number rule kept as-is for accuracy."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Condensed bullets for fast model while preserving constraints."
+    }
+  ]
+}

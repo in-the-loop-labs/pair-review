@@ -1343,6 +1343,86 @@ describe('Analyzer.buildLineNumberGuidance', () => {
       expect(result).toContain(expectedCommand);
     });
   });
+
+  describe('output format', () => {
+    it('should produce full output (~30-40 lines)', () => {
+      const result = analyzer.buildLineNumberGuidance(null);
+      const lines = result.trim().split('\n');
+
+      // Output should be comprehensive: ~30-40 lines
+      expect(lines.length).toBeGreaterThanOrEqual(25);
+      expect(lines.length).toBeLessThanOrEqual(45);
+    });
+
+    it('should contain critical keywords in output', () => {
+      const result = analyzer.buildLineNumberGuidance(null);
+
+      expect(result).toContain('git-diff-lines');
+      expect(result).toMatch(/NEW/);
+      expect(result).toMatch(/OLD/);
+    });
+
+    it('should produce consistent output across calls', () => {
+      const result1 = analyzer.buildLineNumberGuidance(null);
+      const result2 = analyzer.buildLineNumberGuidance(null);
+
+      expect(result1).toBe(result2);
+    });
+  });
+
+  describe('script path (all providers use bare command)', () => {
+    // All providers now use bare command name since BIN_DIR is added to PATH
+    it('should use bare command name for Claude provider', () => {
+      const claudeAnalyzer = new Analyzer({}, 'sonnet', 'claude');
+      const result = claudeAnalyzer.buildLineNumberGuidance();
+
+      // Should contain the bare command name
+      expect(result).toContain('git-diff-lines');
+      // Should NOT contain absolute path (no bin/ prefix)
+      expect(result).not.toMatch(/\/[^"]+\/bin\/git-diff-lines/);
+    });
+
+    it('should use bare command name for Gemini provider', () => {
+      const geminiAnalyzer = new Analyzer({}, 'gemini-2.5-pro', 'gemini');
+      const result = geminiAnalyzer.buildLineNumberGuidance();
+
+      // Should contain the bare command name
+      expect(result).toContain('git-diff-lines');
+      // Should NOT contain bin/ prefix (which would indicate a path)
+      expect(result).not.toMatch(/bin\/git-diff-lines/);
+    });
+
+    it('should include --cwd option with bare command', () => {
+      const analyzer = new Analyzer({}, 'sonnet', 'claude');
+      const worktreePath = '/path/to/worktree';
+      const result = analyzer.buildLineNumberGuidance(worktreePath);
+
+      // Should have: git-diff-lines --cwd "/path/to/worktree"
+      // NOT: /full/path/to/bin/git-diff-lines --cwd "/path/to/worktree"
+      expect(result).toContain('git-diff-lines --cwd "/path/to/worktree"');
+      expect(result).not.toMatch(/\/[^"]+\/bin\/git-diff-lines --cwd/);
+    });
+
+    it('should use bare command name for Copilot provider', () => {
+      const copilotAnalyzer = new Analyzer({}, 'gpt-4o', 'copilot');
+      const result = copilotAnalyzer.buildLineNumberGuidance();
+
+      // Should contain the bare command name
+      expect(result).toContain('git-diff-lines');
+      // Should NOT contain absolute path
+      expect(result).not.toMatch(/\/[^"]+\/bin\/git-diff-lines/);
+    });
+
+    it('should use bare command name for Codex provider', () => {
+      const codexAnalyzer = new Analyzer({}, 'codex', 'codex');
+      const result = codexAnalyzer.buildLineNumberGuidance();
+
+      // Should contain the bare command name
+      expect(result).toContain('git-diff-lines');
+      // Should NOT contain absolute path
+      expect(result).not.toMatch(/\/[^"]+\/bin\/git-diff-lines/);
+    });
+  });
 });
 
 describe('Analyzer.buildFileLineCountsSection', () => {

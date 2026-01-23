@@ -1,0 +1,111 @@
+{
+  "meta": {
+    "baseline": "level1/balanced",
+    "baselineHash": "a5e91d66",
+    "targetModel": "gemini-3-pro-preview",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:52:55.387Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "valid-files",
+      "output-schema",
+      "line-number-guidance",
+      "diff-instructions",
+      "category-definitions",
+      "guidelines",
+      "level-header",
+      "speed-expectations",
+      "initial-setup",
+      "focus-areas",
+      "available-commands",
+      "custom-instructions",
+      "generated-files"
+    ],
+    "overrides": {
+      "speed-expectations": "## Speed and Scope Expectations\nKeep it quick: analyze only the diff, avoid surrounding context.",
+      "focus-areas": "## Analysis Focus Areas\nIdentify in changed code:\n- Bugs or errors\n- Logic issues\n- Security vulnerabilities\n- Performance issues\n- Code style and naming convention violations\n- Design pattern violations visible in isolation\n- Documentation issues in changed lines\n- Good practices worth praising"
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "modified",
+      "rationale": "Kept content but positioned early to set role context immediately."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked constraints kept intact and moved earlier for priority."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked JSON schema preserved and surfaced early to enforce format."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder kept; already concise for line reference."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Essential mapping rules retained verbatim for accuracy."
+    },
+    {
+      "section": "category-definitions",
+      "type": "unchanged",
+      "rationale": "Definitions remain correct and clear."
+    },
+    {
+      "section": "guidelines",
+      "type": "unchanged",
+      "rationale": "Guidance already concise and model-suitable."
+    },
+    {
+      "section": "level-header",
+      "type": "modified",
+      "rationale": "Kept header but repositioned after core constraints for flow."
+    },
+    {
+      "section": "speed-expectations",
+      "type": "modified",
+      "rationale": "Condensed wording to highlight scope quickly."
+    },
+    {
+      "section": "initial-setup",
+      "type": "unchanged",
+      "rationale": "Steps are already succinct and necessary."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Tightened bullets for quicker parsing while preserving scope."
+    },
+    {
+      "section": "available-commands",
+      "type": "unchanged",
+      "rationale": "Command list is clear and retained."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional section kept to allow user-specific directives."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Optional context retained in case generated artifacts matter."
+    }
+  ]
+}

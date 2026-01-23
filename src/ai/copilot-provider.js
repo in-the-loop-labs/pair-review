@@ -3,7 +3,8 @@
  * GitHub Copilot AI Provider
  *
  * Implements the AI provider interface for GitHub's Copilot CLI.
- * Uses the `copilot -p` command for non-interactive execution.
+ * Prompts are piped via stdin (not using -p flag, which expects inline args
+ * and would hit ARG_MAX limits with large prompts). Uses -s for silent output.
  */
 
 const path = require('path');
@@ -89,6 +90,13 @@ class CopilotProvider extends AIProvider {
     // E.g., shell(git) allows "git status", "git diff", etc.
     // ============================================================================
     const readOnlyArgs = [
+      // Disable path verification - --add-dir alone doesn't grant sufficient access
+      // for the AI to explore worktrees. Safe because we still block dangerous tools.
+      '--allow-all-paths',
+      // Allow native file system read tools (required for worktree access)
+      '--allow-tool', 'read',              // Native file reading tool
+      '--allow-tool', 'glob',              // File pattern matching
+      '--allow-tool', 'list',              // Directory listing tool
       // Allow specific read-only git commands (not blanket 'git' to block git commit, push, etc.)
       '--allow-tool', 'shell(git diff)',
       '--allow-tool', 'shell(git log)',
@@ -109,6 +117,7 @@ class CopilotProvider extends AIProvider {
       '--allow-tool', 'shell(find)',          // File finding
       '--allow-tool', 'shell(grep)',          // Pattern searching
       '--allow-tool', 'shell(rg)',            // Ripgrep (fast pattern searching)
+      '--allow-tool', 'shell(gh)',            // GitHub CLI for PR/issue metadata
       // Deny dangerous shell commands (takes precedence over allow)
       '--deny-tool', 'shell(rm)',
       '--deny-tool', 'shell(mv)',
@@ -125,14 +134,14 @@ class CopilotProvider extends AIProvider {
       '--deny-tool', 'write',
       // Auto-approve remaining tools to avoid interactive prompts
       '--allow-all-tools',
-      // Allow access to all paths (needed for analyzing files outside cwd)
-      '--allow-all-paths',
     ];
 
     // Command and base args are the same regardless of shell mode
     // (shell mode only affects how command is built in execute())
     this.command = copilotCmd;
-    // Args without the prompt - prompt will be added as value to -p flag in execute()
+    // Base args for Copilot CLI - prompt will be sent via stdin in execute()
+    // -s: silent mode (output only agent response, no stats)
+    // Note: Do NOT use -p flag - it expects inline argument, not stdin input
     this.baseArgs = ['--model', model, ...readOnlyArgs, '-s'];
   }
 
@@ -150,20 +159,20 @@ class CopilotProvider extends AIProvider {
       logger.info(`${levelPrefix} Executing Copilot CLI...`);
       logger.info(`${levelPrefix} Writing prompt: ${prompt.length} bytes`);
 
-      // Build the command with other args first, then -p <prompt> at the end
-      // The -p flag expects the prompt value immediately after it
+      // Build the command args (prompt will be sent via stdin to avoid ARG_MAX limits)
+      // --add-dir grants file access to specific directories:
+      //   - cwd (worktree): where the PR files live
+      //   - BIN_DIR: where git-diff-lines script lives
       let fullCommand = this.command;
       let fullArgs;
 
       if (this.useShell) {
-        // Escape the prompt for shell
-        const escapedPrompt = prompt.replace(/'/g, "'\\''");
-        // Build: copilot --model X --deny-tool ... -s -p 'prompt'
-        fullCommand = `${this.command} ${this.baseArgs.join(' ')} -p '${escapedPrompt}'`;
+        // Build: copilot --add-dir <cwd> --add-dir <bin> --model X --deny-tool ... -s
+        fullCommand = `${this.command} --add-dir '${cwd}' --add-dir '${BIN_DIR}' ${this.baseArgs.join(' ')}`;
         fullArgs = [];
       } else {
-        // Build args array: --model X --deny-tool ... -s -p <prompt>
-        fullArgs = [...this.baseArgs, '-p', prompt];
+        // Build args array: --add-dir <cwd> --add-dir <bin> --model X --deny-tool ... -s
+        fullArgs = ['--add-dir', cwd, '--add-dir', BIN_DIR, ...this.baseArgs];
       }
 
       const copilot = spawn(fullCommand, fullArgs, {
@@ -265,6 +274,10 @@ class CopilotProvider extends AIProvider {
           settle(reject, error);
         }
       });
+
+      // Send prompt to stdin (avoids ARG_MAX limit with large prompts)
+      copilot.stdin.write(prompt);
+      copilot.stdin.end();
     });
   }
 

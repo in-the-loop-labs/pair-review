@@ -1,0 +1,143 @@
+{
+  "meta": {
+    "baseline": "orchestration/thorough",
+    "baselineHash": "35dce05d",
+    "targetModel": "gpt-5.1-codex-max",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:54:17.965Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "critical-output",
+      "output-schema",
+      "diff-instructions",
+      "file-level-guidance",
+      "intelligent-merging",
+      "priority-curation",
+      "balanced-output",
+      "guidelines",
+      "confidence-guidance",
+      "summary-synthesis",
+      "role",
+      "task-header",
+      "line-number-guidance",
+      "role-description",
+      "reasoning-encouragement",
+      "human-centric-framing",
+      "custom-instructions",
+      "input-suggestions"
+    ],
+    "overrides": {
+      "intelligent-merging": "## Orchestration Guidelines\n\n### 1. Intelligent Merging\nBlend insights from all levels without mentioning levels:\n\n**When to Merge:**\n- Same issue flagged across levels\n- Overlapping concerns that form a clearer unified insight\n- Complementary details that enrich understanding\n\n**When NOT to Merge:**\n- Distinct issues even if nearby\n- Level-specific context that would be lost\n- Separate action items are clearer than a bundle\n\n**Handling Contradictions:**\n- Prefer stronger evidence: concrete code > patterns > heuristics\n- Broader context can override narrow flags; intentional patterns should downgrade concern\n- If uncertain, include with reduced confidence and note tension\n\n**Combining Confidence:**\n- Agreement across levels: boost by 0.1-0.2\n- Disagreement: use lower confidence minus 0.1\n- Unique insight: keep original confidence\n- Strong evidence can justify an upward adjustment\n\n**Merging Best Practices:**\n- Keep the most specific, actionable details\n- Use the clearest framing\n- Avoid mentioning levels\n- If merging blurs nuance, keep items distinct",
+      "priority-curation": "### 2. Priority-Based Curation\nRank by impact and urgency:\n\n**Critical:** security vulnerabilities; bugs causing errors or corruption\n**High:** architecture/design violations; API contract breaks\n**Medium:** performance issues; missing critical tests\n**Low:** style and documentation\n\nWithin tiers, rank by certainty, blast radius, reversibility, and cross-level support. Adjust priorities for hot paths, public APIs, security-sensitive areas, refactors (deprioritize behavior changes), and new features (elevate design/architecture; slight deprioritization of style).",
+      "balanced-output": "### 3. Balanced Output\n- Limit praise to 2-3 standout items\n- Focus on actionable guidance; target ~8-15 total suggestions\n- Include confidence scores\n- Avoid redundancy; be specific and contextual\n- Balance critical vs. improvement items, categories, and files; be thorough yet concise",
+      "guidelines": "## Important Guidelines\n- Quality over quantity; ensure actionability and preserved context\n- Suggest only on modified files; context lines are valid targets\n- Keep valuable file-level insights; balance coverage across files\n- Be constructive, respect intent, acknowledge good work, think like a pair programmer\n- Synthesis flow: find themes, elevate cross-level issues, keep unique high-value insights, drop low-value/redundant items, tell a coherent story",
+      "confidence-guidance": "## Confidence Calibration\nConfidence reflects certainty the suggestion is valuable:\n- High (0.8-1.0): clearly valuable\n- Medium (0.5-0.79): likely helpful\n- Low (0.3-0.49): marginal, include only if contextually useful\n- Very low (<0.3): likely omit\n\nConfidence is about value certainty, not severity.",
+      "summary-synthesis": "## Summary Synthesis Guidance\nProvide a 2-3 sentence synthesis (not a list) that:\n- Leads with the most important insight\n- Connects findings into an overarching narrative and severity\n- Helps the reviewer decide where to focus\nAvoid listing counts, implementation details, vagueness, or length.",
+      "role-description": "## Your Role\nCurate and merge suggestions from three analysis levels to deliver the most valuable, non-redundant guidance that accelerates human review while upholding quality. You synthesize:\n- Diff-only analysis (changed lines)\n- File-context analysis (whole file understanding)\n- Codebase-context analysis (broader system)\n\nDeliver an intelligently merged, prioritized set of insights for the reviewer.",
+      "reasoning-encouragement": "## Reasoning Approach\nFor each potential issue:\n1. Check if levels overlap on the concern\n2. Pick the framing that best captures the issue\n3. Merge only when it adds clarity\n4. Weigh confidence by evidence and cross-level agreement\n5. Explain why the insight helps the reviewer\nAim for fewer, high-value synthesized insights over many overlaps.",
+      "human-centric-framing": "### 4. Human-Centric Framing\n- Use guidance language (\"Consider...\", \"You might review...\") and note uncertainty\n- Preserve reviewer autonomy; they hold final context\n- Explain why it matters and suggest actions when appropriate\n- Be constructive, acknowledge good work, concise but complete"
+    },
+    "removedSections": [
+      "file-line-counts"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "modified",
+      "rationale": "Moved later to prioritize constraints; tightened wording for clarity."
+    },
+    {
+      "section": "task-header",
+      "type": "unchanged",
+      "rationale": "Header already concise and clear."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Kept as-is to preserve provided guidance placeholder."
+    },
+    {
+      "section": "critical-output",
+      "type": "unchanged",
+      "rationale": "Locked section must remain exact."
+    },
+    {
+      "section": "role-description",
+      "type": "modified",
+      "rationale": "Condensed to front-load purpose and levels without redundancy."
+    },
+    {
+      "section": "reasoning-encouragement",
+      "type": "modified",
+      "rationale": "Made steps concise and action-focused for faster processing."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Kept optional placeholder to allow user-provided directives."
+    },
+    {
+      "section": "input-suggestions",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly."
+    },
+    {
+      "section": "file-line-counts",
+      "type": "removed",
+      "rationale": "Optional data omitted to reduce prompt length and overhead for model."
+    },
+    {
+      "section": "intelligent-merging",
+      "type": "modified",
+      "rationale": "Condensed rules, emphasized evidence and clarity to suit codex-max."
+    },
+    {
+      "section": "priority-curation",
+      "type": "modified",
+      "rationale": "Simplified priority list with contextual adjustments inline for quick parsing."
+    },
+    {
+      "section": "balanced-output",
+      "type": "modified",
+      "rationale": "Streamlined bullets to focus on actionable quantity/quality guidance."
+    },
+    {
+      "section": "human-centric-framing",
+      "type": "modified",
+      "rationale": "Condensed to essential tone and autonomy cues."
+    },
+    {
+      "section": "confidence-guidance",
+      "type": "modified",
+      "rationale": "Kept scale but tightened explanations for faster comprehension."
+    },
+    {
+      "section": "summary-synthesis",
+      "type": "modified",
+      "rationale": "Clarified desired summary style and brevity."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section must remain exact."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Critical guidance kept intact for accuracy."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "unchanged",
+      "rationale": "File-level handling remains fully detailed and necessary."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Condensed to the most actionable points and synthesis flow."
+    }
+  ]
+}

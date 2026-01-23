@@ -1,0 +1,103 @@
+{
+  "meta": {
+    "baseline": "level1/fast",
+    "baselineHash": "2ae57231",
+    "targetModel": "gemini-3-flash-preview",
+    "optimizerModel": "gemini-3-pro-preview",
+    "timestamp": "2026-01-18T15:43:07.043Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "generated-files",
+      "valid-files",
+      "initial-setup",
+      "focus-areas",
+      "available-commands",
+      "diff-instructions",
+      "guidelines",
+      "output-schema"
+    ],
+    "overrides": {
+      "level-header": "# Level 1 Review - Quick Analysis",
+      "initial-setup": "## Task\nAnalyze changed lines in the valid files list.",
+      "focus-areas": "## Priorities\n- Bugs / Logic Errors\n- Security Vulnerabilities\n- Performance Issues\n- Best Practices (Praise)",
+      "available-commands": "## Tools (READ-ONLY)\ngit-diff-lines, grep. Do NOT modify files.",
+      "diff-instructions": "## Line Logic\n- \"NEW\" (default): Added [+] or context lines.\n- \"OLD\": Deleted [-] lines.",
+      "guidelines": "## Guidelines\n1. **High Confidence Only**: Skip uncertain issues.\n2. **Actionable**: Include fix in 'suggestion' field (omit for praise).\n3. **Scope**: Prefer line-level comments on changed code."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Placeholder content, preserved as is."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Preserved to allow user overrides."
+    },
+    {
+      "section": "level-header",
+      "type": "modified",
+      "rationale": "Shortened title for brevity."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder content."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Preserved to filter noise."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "initial-setup",
+      "type": "modified",
+      "rationale": "Condensed to a direct imperative statement."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Converted to a concise list for faster scanning."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "Shortened to key constraints."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "reordered",
+      "rationale": "Moved before schema to ensure definitions are understood before formatting rules."
+    },
+    {
+      "section": "guidelines",
+      "type": "reordered",
+      "rationale": "Moved before schema to consolidate instructions."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    }
+  ]
+}

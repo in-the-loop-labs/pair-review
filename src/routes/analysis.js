@@ -11,14 +11,13 @@
  */
 
 const express = require('express');
-const { query, queryOne, withTransaction, RepoSettingsRepository, ReviewRepository, AnalysisRunRepository, PRMetadataRepository } = require('../database');
+const { query, queryOne, run, withTransaction, RepoSettingsRepository, ReviewRepository, AnalysisRunRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { mergeInstructions } = require('../utils/instructions');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
-const { normalizeRepository } = require('../utils/paths');
 const {
   activeAnalyses,
   prToAnalysisId,
@@ -60,20 +59,34 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       });
     }
 
-    const repository = normalizeRepository(owner, repo);
+    const repository = `${owner}/${repo}`;
 
     // Check if PR exists in database
     const db = req.app.get('db');
-    // Create repositories once for reuse throughout the handler
+    // Create ReviewRepository once for reuse throughout the handler
     const reviewRepo = new ReviewRepository(db);
-    const prMetadataRepo = new PRMetadataRepository(db);
-    const prMetadata = await prMetadataRepo.getByPR(prNumber, repository);
+    const prMetadata = await queryOne(db, `
+      SELECT id, base_branch, title, description, pr_data FROM pr_metadata
+      WHERE pr_number = ? AND repository = ?
+    `, [prNumber, repository]);
 
     if (!prMetadata) {
       return res.status(404).json({
         error: `Pull request #${prNumber} not found. Please load the PR first.`
       });
     }
+
+    // Parse pr_data to get base_sha and head_sha
+    let prData = {};
+    try {
+      prData = prMetadata.pr_data ? JSON.parse(prMetadata.pr_data) : {};
+    } catch (error) {
+      console.warn('Error parsing PR data JSON:', error);
+    }
+
+    // Merge parsed data into prMetadata for use in analysis
+    prMetadata.base_sha = prData.base_sha;
+    prMetadata.head_sha = prData.head_sha;
 
     // Get worktree path
     const worktreeManager = new GitWorktreeManager(db);
@@ -231,7 +244,10 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
         // Update pr_metadata with the last AI run ID (tracks that analysis was run)
         try {
-          await prMetadataRepo.updateLastAiRunId(prMetadata.id, result.runId);
+          await run(db, `
+            UPDATE pr_metadata SET last_ai_run_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `, [result.runId, prMetadata.id]);
           logger.info(`Updated pr_metadata with last_ai_run_id: ${result.runId}`);
         } catch (updateError) {
           logger.warn(`Failed to update pr_metadata with last_ai_run_id: ${updateError.message}`);
@@ -536,13 +552,13 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       });
     }
 
-    const repository = normalizeRepository(owner, repo);
+    const repository = `${owner}/${repo}`;
     const db = req.app.get('db');
 
     // Get PR metadata to verify PR exists and get last_ai_run_id
     const prMetadata = await queryOne(db, `
       SELECT id FROM pr_metadata
-      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+      WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
     if (!prMetadata) {
@@ -651,13 +667,13 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
       });
     }
 
-    const repository = normalizeRepository(owner, repo);
+    const repository = `${owner}/${repo}`;
     const db = req.app.get('db');
 
     // Get PR metadata to verify PR exists
     const prMetadata = await queryOne(db, `
       SELECT id FROM pr_metadata
-      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+      WHERE pr_number = ? AND repository = ?
     `, [prNumber, repository]);
 
     if (!prMetadata) {

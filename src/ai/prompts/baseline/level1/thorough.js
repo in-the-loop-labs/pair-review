@@ -74,7 +74,7 @@ ONLY create suggestions for files in this list. If you cannot find issues in the
 
 <section name="initial-setup" required="true" tier="thorough">
 ## Initial Setup
-1. Run the annotated diff tool (shown above) to see the changes with line numbers
+1. Run git-diff-lines (shown above) to see the changes with line numbers
 2. Carefully read through all changes to understand the overall intent
 3. Focus on the changed lines in the diff, but note patterns across multiple changes
 4. Do not analyze file context or surrounding unchanged code
@@ -130,7 +130,7 @@ Carefully identify and analyze the following in changed code:
 <section name="available-commands" required="true" tier="thorough">
 ## Available Commands (READ-ONLY)
 You have READ-ONLY access to the codebase. You may run commands like:
-- The annotated diff tool shown above (preferred for viewing changes with line numbers)
+- git-diff-lines shown above (preferred for viewing changes with line numbers)
 - \`cat -n <file>\` to view files with line numbers
 - ls, find, grep commands as needed
 

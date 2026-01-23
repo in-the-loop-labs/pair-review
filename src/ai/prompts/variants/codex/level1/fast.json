@@ -1,0 +1,102 @@
+{
+  "meta": {
+    "baseline": "level1/fast",
+    "baselineHash": "2ae57231",
+    "targetModel": "gpt-5.1-codex-mini",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:53:35.564Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "line-number-guidance",
+      "generated-files",
+      "valid-files",
+      "initial-setup",
+      "focus-areas",
+      "available-commands",
+      "output-schema",
+      "diff-instructions",
+      "guidelines"
+    ],
+    "overrides": {
+      "initial-setup": "## Steps\n1. Run git-diff-lines.\n2. Review ONLY changed lines.",
+      "focus-areas": "## What to Find\n- Bugs/errors\n- Logic issues\n- Security vulnerabilities\n- Performance problems\n- Praise for good practices",
+      "available-commands": "## Commands (read-only)\nUse: git-diff-lines, `cat -n`, ls, find, rg. Do NOT modify files.",
+      "diff-instructions": "## Line Numbers (old_or_new)\n- \"NEW\": added [+] lines and context\n- \"OLD\": deleted [-] lines only\nDefault to NEW if unclear.",
+      "guidelines": "## Guidelines\n- High confidence only; skip uncertain issues\n- Prefer line-level comments\n- Prioritize changed lines\n- Praise: omit suggestion field; Others: include actionable fix"
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Placeholder already minimal and direct for the target model."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional placeholder kept to allow user-supplied directives without extra overhead."
+    },
+    {
+      "section": "level-header",
+      "type": "unchanged",
+      "rationale": "Clear and concise; no change needed."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder left intact to avoid disrupting external guidance."
+    },
+    {
+      "section": "generated-files",
+      "type": "unchanged",
+      "rationale": "Optional placeholder kept to support filtering generated files if provided."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "initial-setup",
+      "type": "modified",
+      "rationale": "Tightened wording for fast model; clearer imperative steps."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Condensed bullets for faster scanning while preserving meaning."
+    },
+    {
+      "section": "available-commands",
+      "type": "modified",
+      "rationale": "More direct phrasing and prefers rg for faster search."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Simplified definitions to reduce latency and ambiguity."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Reduced verbosity and kept key constraints explicit for a fast model."
+    }
+  ]
+}

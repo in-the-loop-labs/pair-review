@@ -1,0 +1,122 @@
+{
+  "meta": {
+    "baseline": "orchestration/balanced",
+    "baselineHash": "eaa55399",
+    "targetModel": "gpt-5.1-codex-max",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:59:27.556Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "task-header",
+      "line-number-guidance",
+      "critical-output",
+      "role-description",
+      "custom-instructions",
+      "input-suggestions",
+      "file-line-counts",
+      "intelligent-merging",
+      "priority-curation",
+      "balanced-output",
+      "human-centric-framing",
+      "output-schema",
+      "diff-instructions",
+      "file-level-guidance",
+      "guidelines"
+    ],
+    "overrides": {
+      "task-header": "# AI Suggestion Orchestration",
+      "role-description": "## Your Role\nYou curate and merge multi-level review suggestions into a single, concise set of high-value insights for a human reviewer. Deduplicate, prioritize impact, and keep the reviewer in control.",
+      "intelligent-merging": "## Orchestration Guidelines\n\n### 1. Intelligent Merging\n- Combine overlapping points into one clear, complete suggestion\n- Prefer the most precise line-level detail when merging\n- Keep unique insights that appear only once\n- Do not mention levels or sources; present as one review",
+      "priority-curation": "### 2. Priority-Based Curation\nUse this order when deciding what to keep:\n1. **Security vulnerabilities** - Critical safety issues\n2. **Bugs and errors** - Functional correctness issues\n3. **Architecture concerns** - Design and structural issues\n4. **Performance optimizations** - Efficiency improvements\n5. **Code style** - Formatting and convention issues",
+      "balanced-output": "### 3. Balanced Output\n- Limit praise to the 2-3 most noteworthy items\n- Favor actionable, specific guidance over general observations\n- Avoid overload; include only the highest-value items\n- Include confidence scores; raise confidence when multiple inputs agree",
+      "human-centric-framing": "### 4. Human-Centric Framing\n- Phrase guidance as considerations, not mandates\n- Use language like \"Consider...\" or \"You might want to review...\"\n- Preserve reviewer autonomy; you're a collaborative partner\n- Explain why each item matters in the review context",
+      "guidelines": "## Important Notes\n- Quality over quantity; prefer fewer, stronger suggestions\n- Validate across inputs when possible; increase confidence for corroborated issues\n- Preserve actionability with clear next steps\n- Maintain critical context when merging\n- Suggestions may target any line in modified files; context lines can reveal issues\n- Only include modified files; drop suggestions for unchanged files\n- Preserve valuable file-level insights\n\n**Confidence Calibration:**\nCalibrate confidence honestly:\n- High (0.8+): Clear issues you are certain should be included\n- Medium (0.5-0.79): Likely valuable suggestions\n- Low (<0.5): Usually omit unless uniquely important\n\nWhen uncertain, prefer quality over quantity."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Placeholder content is already minimal and should remain intact."
+    },
+    {
+      "section": "task-header",
+      "type": "modified",
+      "rationale": "Shortened to a clearer, more direct title for faster parsing."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Placeholder content should remain verbatim for injection."
+    },
+    {
+      "section": "critical-output",
+      "type": "unchanged",
+      "rationale": "Locked requirements must remain exact."
+    },
+    {
+      "section": "role-description",
+      "type": "modified",
+      "rationale": "Tightened role definition to emphasize curation, deduping, and reviewer control."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Optional placeholder kept for downstream customization."
+    },
+    {
+      "section": "input-suggestions",
+      "type": "unchanged",
+      "rationale": "Locked input schema must remain exact."
+    },
+    {
+      "section": "file-line-counts",
+      "type": "unchanged",
+      "rationale": "Optional placeholder retained for contextual line counts."
+    },
+    {
+      "section": "intelligent-merging",
+      "type": "modified",
+      "rationale": "Simplified and clarified merging rules to reduce redundancy and ambiguity."
+    },
+    {
+      "section": "priority-curation",
+      "type": "modified",
+      "rationale": "Added explicit usage context while preserving the priority order."
+    },
+    {
+      "section": "balanced-output",
+      "type": "modified",
+      "rationale": "Condensed guidance to emphasize actionable, high-value items and confidence."
+    },
+    {
+      "section": "human-centric-framing",
+      "type": "modified",
+      "rationale": "Streamlined phrasing to reinforce non-mandatory, collaborative tone."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked output schema must remain exact."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Existing guidance is clear and should remain unchanged."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "unchanged",
+      "rationale": "Optional file-level handling remains accurate and useful."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Reduced redundancy and clarified confidence calibration thresholds."
+    }
+  ]
+}

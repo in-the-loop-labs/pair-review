@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "baseline": "level3/balanced",
+    "baselineHash": "2ad77cb7",
+    "targetModel": "gpt-5.1-codex-max",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:56:10.906Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "level-header",
+      "output-schema",
+      "line-number-guidance",
+      "diff-instructions",
+      "changed-files",
+      "generated-files",
+      "purpose",
+      "analysis-process",
+      "focus-areas",
+      "guidelines",
+      "available-commands"
+    ],
+    "overrides": {
+      "diff-instructions": "## Line Number Reference (old_or_new field)\nUse \"NEW\" for added and context lines. Use \"OLD\" only for deleted [-] lines.\nIf unsure, use \"NEW\".",
+      "purpose": "## Purpose\nLevel 3 reviews how the changes connect to and impact the broader codebase.\nThis is not a general codebase review or architectural audit; only evaluate relationships to these specific changes.",
+      "analysis-process": "## Analysis Process\nStart from the changed files and explore outward only as needed:\n1. Map references to and from changed files\n2. Check ties to tests, configuration, and documentation\n3. Compare with established architecture and patterns\n4. Assess impact on connected components\n\nStay focused on codebase relationships to the changes.",
+      "focus-areas": "## Focus Areas\nAnalyze how these changes affect or relate to:\n\n**Architecture & Patterns** (high priority)\n- Fit with existing architecture and patterns\n- Impact on cross-file dependencies\n\n**Contracts & Compatibility** (high priority)\n- Breaking changes or contract violations\n- Consistency with existing API patterns\n- Backward compatibility impact\n\n**Testing & Documentation**\n- {{testingGuidance}}\n- Doc updates or mismatches with documented APIs\n- Configuration updates required\n\n**Performance & Security**\n- Performance or scalability impact on connected components\n- Security risks across data flows or adjacent systems",
+      "guidelines": "## Important Guidelines\n\n**Line vs File-Level Suggestions**\n- Prefer line-level when you can anchor to specific lines\n- Use fileLevelSuggestions only for whole-file concerns\n- You may attach suggestions to context lines when they reveal codebase-level issues\n\n**Focus & Quality**\n- Prioritize missing tests, documentation, and integration issues\n- When uncertain, omit marginal suggestions\n\n**Confidence Calibration**\n- High (0.8+): clear, certain issues\n- Medium (0.5-0.79): likely with some uncertainty\n- Lower: tentative observations\n\n**Output Requirements**\n- For \"praise\": omit suggestion field\n- For other types: include specific, actionable suggestions"
+    },
+    "removedSections": [
+      "file-level-guidance"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Keeps the existing role placeholder intact for downstream injection."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Keeps optional custom instructions hook without adding noise."
+    },
+    {
+      "section": "level-header",
+      "type": "unchanged",
+      "rationale": "Maintains the established review level label."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "reordered",
+      "rationale": "Moved closer to output constraints to pair with numbering rules."
+    },
+    {
+      "section": "generated-files",
+      "type": "reordered",
+      "rationale": "Placed after changed files to keep artifacts grouped."
+    },
+    {
+      "section": "changed-files",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "purpose",
+      "type": "modified",
+      "rationale": "Tightened scope language to emphasize codebase-impact focus and avoid audit drift."
+    },
+    {
+      "section": "analysis-process",
+      "type": "modified",
+      "rationale": "Streamlined steps for clarity while keeping the same intent."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Reduced redundancy and clarified priorities for faster model targeting."
+    },
+    {
+      "section": "available-commands",
+      "type": "reordered",
+      "rationale": "Moved later so output requirements and analysis guidance are read first."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Simplified to a short, unambiguous rule set for line selection."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "removed",
+      "rationale": "Removed to reduce duplication with guidelines and shrink prompt size."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Condensed for clarity and to avoid overlap with other sections."
+    }
+  ]
+}

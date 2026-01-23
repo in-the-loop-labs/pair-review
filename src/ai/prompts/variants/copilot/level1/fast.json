@@ -1,0 +1,101 @@
+{
+  "meta": {
+    "baseline": "level1/fast",
+    "baselineHash": "2ae57231",
+    "targetModel": "gpt-5.1-codex-mini",
+    "optimizerModel": "gpt-5.1-codex-max",
+    "timestamp": "2026-01-19T03:52:51.799Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "pr-context",
+      "custom-instructions",
+      "valid-files",
+      "output-schema",
+      "line-number-guidance",
+      "diff-instructions",
+      "guidelines",
+      "initial-setup",
+      "focus-areas",
+      "available-commands",
+      "level-header"
+    ],
+    "overrides": {
+      "guidelines": "## Guidelines\n- Only report issues with high confidence\n- Prefer precise line-level notes on changed lines\n- Praise: omit suggestion field; Others: include a concrete fix",
+      "initial-setup": "## Steps\n1. Run git-diff-lines\n2. Review only changed lines",
+      "focus-areas": "## What to Find\n- Bugs/errors\n- Logic issues\n- Security vulnerabilities\n- Performance problems\n- Good practices (praise)"
+    },
+    "removedSections": [
+      "generated-files"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Kept concise role placeholder appropriate for fast model."
+    },
+    {
+      "section": "pr-context",
+      "type": "unchanged",
+      "rationale": "Locked section must remain exactly as provided."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Retained optional user directives to respect customization."
+    },
+    {
+      "section": "level-header",
+      "type": "reordered",
+      "rationale": "Moved to end to prioritize constraints and schema earlier for fast model parsing."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "unchanged",
+      "rationale": "Kept placement early near diff instructions for clarity."
+    },
+    {
+      "section": "generated-files",
+      "type": "removed",
+      "rationale": "Optional section removed to reduce prompt length for mini model."
+    },
+    {
+      "section": "valid-files",
+      "type": "unchanged",
+      "rationale": "Locked scope constraint preserved exactly."
+    },
+    {
+      "section": "initial-setup",
+      "type": "modified",
+      "rationale": "Shortened wording to direct actions for fast model."
+    },
+    {
+      "section": "focus-areas",
+      "type": "modified",
+      "rationale": "Condensed bullet phrasing for brevity while retaining targets."
+    },
+    {
+      "section": "available-commands",
+      "type": "unchanged",
+      "rationale": "Already concise command list; no change needed."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked JSON schema preserved verbatim as required."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "unchanged",
+      "rationale": "Clear and concise; kept aligned with fast model needs."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Tightened language to actionable, terse bullets for fast model."
+    }
+  ]
+}

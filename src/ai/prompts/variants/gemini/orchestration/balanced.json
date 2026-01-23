@@ -1,0 +1,123 @@
+{
+  "meta": {
+    "baseline": "orchestration/balanced",
+    "baselineHash": "eaa55399",
+    "targetModel": "gemini-2.5-pro",
+    "optimizerModel": "gemini-3-pro-preview",
+    "timestamp": "2026-01-18T16:19:34.869Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "task-header",
+      "critical-output",
+      "role-description",
+      "input-suggestions",
+      "line-number-guidance",
+      "file-line-counts",
+      "custom-instructions",
+      "intelligent-merging",
+      "priority-curation",
+      "balanced-output",
+      "human-centric-framing",
+      "diff-instructions",
+      "file-level-guidance",
+      "output-schema",
+      "guidelines"
+    ],
+    "overrides": {
+      "role-description": "## Objective\nAct as an expert code review orchestrator. Your goal is to synthesize multi-level analysis results into a single, high-value review for a human developer. Eliminate noise, merge duplicates, and prioritize critical issues over style nits.",
+      "intelligent-merging": "## 1. Synthesis Strategy\n- **Deduplicate & Merge:** Combine overlapping findings (e.g., if Level 1 and 3 find the same bug, merge them).\n- **Source Abstraction:** Do NOT mention \"Level 1\" or \"Diff Analysis\" in the output. Present findings as objective facts.\n- **Granularity:** Prefer line-specific comments over general file comments.\n- **Cross-Validation:** Increase confidence scores for issues found by multiple levels.",
+      "priority-curation": "## 2. Prioritization Hierarchy\nRank suggestions strictly in this order:\n1. **Security** (Vulnerabilities, secrets, safety)\n2. **Correctness** (Bugs, logic errors, regressions)\n3. **Architecture** (Design patterns, modularity)\n4. **Performance** (Complexity, resource usage)\n5. **Style** (Formatting, naming - *low priority*)",
+      "balanced-output": "## 3. Output Calibration\n- **Signal-to-Noise:** Discard trivial or low-confidence observations.\n- **Praise:** Limit to maximum 2 items, only for exceptional work.\n- **Confidence:** Assign scores (0.0-1.0) based on evidence strength. High confidence (0.8+) requires clear proof.",
+      "human-centric-framing": "## 4. Tone & Framing\n- **Collaborative:** Use phrases like \"Consider...\", \"Did you intend...\", or \"Check if...\".\n- **Contextual:** Briefly explain *why* the suggestion matters.\n- **Autonomy:** Respect the author's intent; offer guidance, not commands.",
+      "diff-instructions": "## 5. Line Number Integrity (\"old_or_new\")\n- **\"NEW\"** (Default): Use for ADDED lines (+) and CONTEXT lines (unchanged lines present in both versions).\n- **\"OLD\"**: Use *ONLY* for DELETED lines (-).\n- **Context Lines**: MUST use \"NEW\".",
+      "file-level-guidance": "## 6. File-Level Observations\n- Place broad observations (missing tests, architectural fit) in the `fileLevelSuggestions` array.\n- Do NOT assign line numbers to these items.",
+      "guidelines": "## Final Validation\n- **Scope:** strictly exclude suggestions for files NOT present in the input.\n- **Actionability:** Every suggestion must have clear next steps.\n- **Uncertainty:** If a suggestion is marginal or ambiguous, exclude it."
+    },
+    "removedSections": [],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "unchanged",
+      "rationale": "Kept as is; standard variable injection point."
+    },
+    {
+      "section": "task-header",
+      "type": "unchanged",
+      "rationale": "Clear and concise header."
+    },
+    {
+      "section": "critical-output",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "role-description",
+      "type": "modified",
+      "rationale": "Tightened language to be more professional and directive ('Act as an expert...'). Removed fluff."
+    },
+    {
+      "section": "input-suggestions",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "reordered",
+      "rationale": "Moved after input data for better flow (data -> rules)."
+    },
+    {
+      "section": "file-line-counts",
+      "type": "unchanged",
+      "rationale": "Kept as valuable context for the model."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "unchanged",
+      "rationale": "Kept for user flexibility."
+    },
+    {
+      "section": "intelligent-merging",
+      "type": "modified",
+      "rationale": "Renamed to 'Synthesis Strategy'. Added explicit instruction on Source Abstraction to prevent meta-commentary."
+    },
+    {
+      "section": "priority-curation",
+      "type": "modified",
+      "rationale": "Simplified to a strict ranked list for faster parsing."
+    },
+    {
+      "section": "balanced-output",
+      "type": "modified",
+      "rationale": "Renamed 'Output Calibration'. Focused on signal-to-noise ratio."
+    },
+    {
+      "section": "human-centric-framing",
+      "type": "modified",
+      "rationale": "Renamed 'Tone & Framing'. Condensed instructions to be more imperative."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "reordered",
+      "rationale": "Moved up to be part of the core rule set. Clarified the 'Context lines = NEW' rule."
+    },
+    {
+      "section": "file-level-guidance",
+      "type": "modified",
+      "rationale": "Clarified that these suggestions must not have line numbers."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Renamed to 'Final Validation'. Focused on exclusion criteria (scoping/uncertainty) to reduce hallucinations."
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "meta": {
+    "baseline": "orchestration/fast",
+    "baselineHash": "c34fd063",
+    "targetModel": "gpt-5.1-codex-mini",
+    "optimizerModel": "gpt-5.2-codex",
+    "timestamp": "2026-01-19T03:56:26.214Z"
+  },
+  "delta": {
+    "sectionOrder": [
+      "role",
+      "critical-output",
+      "output-schema",
+      "task-header",
+      "role-description",
+      "custom-instructions",
+      "intelligent-merging",
+      "priority-curation",
+      "balanced-output",
+      "human-centric-framing",
+      "diff-instructions",
+      "guidelines",
+      "line-number-guidance",
+      "input-suggestions"
+    ],
+    "overrides": {
+      "task-header": "# Orchestration",
+      "role-description": "## Task\nMerge 3-level suggestions into one list. Remove duplicates. Keep only high-value items.",
+      "intelligent-merging": "## Rules\nMerge related points. Keep unique insights. Never mention levels.",
+      "balanced-output": "### Output\nMax 2-3 praise items. Prefer line-level over file-level. Make suggestions actionable.",
+      "human-centric-framing": "### Framing\nUse guidance tone: start with \"Consider...\" or \"Worth noting...\" Avoid mandates.",
+      "diff-instructions": "## old_or_new\n\"NEW\": added [+] and context lines. \"OLD\": deleted [-] only. Preserve from input."
+    },
+    "removedSections": [
+      "file-line-counts"
+    ],
+    "addedSections": []
+  },
+  "changes": [
+    {
+      "section": "role",
+      "type": "reordered",
+      "rationale": "Moved earlier to keep the model’s role visible before constraints and schema."
+    },
+    {
+      "section": "task-header",
+      "type": "modified",
+      "rationale": "Shortened header to reduce overhead for a fast model and reordered closer to task framing."
+    },
+    {
+      "section": "line-number-guidance",
+      "type": "reordered",
+      "rationale": "Moved after core rules to keep instructions front-loaded while preserving the placeholder."
+    },
+    {
+      "section": "critical-output",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "role-description",
+      "type": "modified",
+      "rationale": "Tightened wording for clarity and speed while keeping the same task intent."
+    },
+    {
+      "section": "custom-instructions",
+      "type": "reordered",
+      "rationale": "Kept optional placeholder but placed near task definition for immediate application."
+    },
+    {
+      "section": "input-suggestions",
+      "type": "reordered",
+      "rationale": "Moved toward the end so the model reads rules before inputs."
+    },
+    {
+      "section": "file-line-counts",
+      "type": "removed",
+      "rationale": "Removed optional section to reduce prompt size and focus on higher-signal guidance."
+    },
+    {
+      "section": "intelligent-merging",
+      "type": "modified",
+      "rationale": "Made rules more concise and imperative for a mini/fast model."
+    },
+    {
+      "section": "priority-curation",
+      "type": "reordered",
+      "rationale": "Kept content, placed after merge rules for priority context."
+    },
+    {
+      "section": "balanced-output",
+      "type": "modified",
+      "rationale": "Condensed output constraints for clarity and speed."
+    },
+    {
+      "section": "human-centric-framing",
+      "type": "modified",
+      "rationale": "Simplified tone guidance into direct, actionable instruction."
+    },
+    {
+      "section": "output-schema",
+      "type": "unchanged",
+      "rationale": "Locked section preserved exactly as required."
+    },
+    {
+      "section": "diff-instructions",
+      "type": "modified",
+      "rationale": "Streamlined wording while keeping the same semantics."
+    },
+    {
+      "section": "guidelines",
+      "type": "modified",
+      "rationale": "Tightened notes and kept key constraints for quick compliance."
+    }
+  ]
+}
