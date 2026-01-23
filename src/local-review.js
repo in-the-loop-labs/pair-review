@@ -4,7 +4,7 @@ const { promisify } = require('util');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
-const { loadConfig } = require('./config');
+const { loadConfig, showWelcomeMessage } = require('./config');
 
 const execAsync = promisify(exec);
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
@@ -501,7 +501,12 @@ async function handleLocalReview(targetPath, flags = {}) {
     console.log(`Local review ID: ${reviewId}`);
 
     // Load configuration
-    const config = await loadConfig();
+    const { config, isFirstRun } = await loadConfig();
+
+    // Show welcome message on first run
+    if (isFirstRun) {
+      showWelcomeMessage();
+    }
 
     // Initialize database
     console.log('Initializing database...');
