@@ -8,7 +8,7 @@
 
 [GitHub Repository](https://github.com/in-the-loop-labs/pair-review)
 
-![pair-review screenshot](docs/screenshot.png)
+![pair-review screenshot](https://raw.githubusercontent.com/in-the-loop-labs/pair-review/main/docs/screenshot.png)
 
 ## What is pair-review?
 
