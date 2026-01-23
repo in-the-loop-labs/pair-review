@@ -542,6 +542,69 @@ test.describe('Suggestion Actions', () => {
     const userComment = page.locator('.user-comment-row, .user-comment');
     await expect(userComment.first()).toBeVisible({ timeout: 5000 });
   });
+
+  test('should correctly restore second dismissed suggestion on same line (regression: pair_review-nzu7)', async ({ page }) => {
+    // This test verifies the fix for bug pair_review-nzu7:
+    // When two AI suggestions target the same line, dismissing both and then
+    // restoring them should work correctly for BOTH suggestions.
+    // The bug was that only the first suggestion would restore - the second would
+    // appear to do nothing because the code incorrectly used
+    // suggestionRow.querySelector('.ai-suggestion') which always returned the first div.
+
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+
+    // Seed AI suggestions
+    await seedAISuggestions(page);
+
+    // Wait for suggestions
+    await page.waitForSelector('.ai-suggestion', { timeout: 5000 });
+
+    // Find an ai-suggestion-row that contains multiple suggestions
+    // (suggestions on the same line share the same <tr class="ai-suggestion-row">)
+    const rowsWithMultipleSuggestions = await page.evaluate(() => {
+      const rows = document.querySelectorAll('.ai-suggestion-row');
+      const result = [];
+      for (const row of rows) {
+        const suggestions = row.querySelectorAll('.ai-suggestion');
+        if (suggestions.length >= 2) {
+          result.push({
+            suggestionIds: Array.from(suggestions).map(s => s.dataset.suggestionId)
+          });
+        }
+      }
+      return result;
+    });
+
+    // Get the first and second suggestion IDs from the same row
+    const [firstId, secondId] = rowsWithMultipleSuggestions[0].suggestionIds;
+    const suggestion1 = page.locator(`.ai-suggestion[data-suggestion-id="${firstId}"]`);
+    const suggestion2 = page.locator(`.ai-suggestion[data-suggestion-id="${secondId}"]`);
+
+    // Scroll to the suggestions
+    await suggestion1.scrollIntoViewIfNeeded();
+
+    // Step 1: Dismiss both suggestions
+    await suggestion1.locator('.ai-action-dismiss').click();
+    await expect(suggestion1).toHaveClass(/collapsed/, { timeout: 3000 });
+
+    await suggestion2.locator('.ai-action-dismiss').click();
+    await expect(suggestion2).toHaveClass(/collapsed/, { timeout: 3000 });
+
+    // Step 2: Restore the FIRST suggestion
+    await suggestion1.locator('.btn-restore').click();
+    await expect(suggestion1).not.toHaveClass(/collapsed/, { timeout: 3000 });
+    // Second should still be collapsed
+    await expect(suggestion2).toHaveClass(/collapsed/);
+
+    // Step 3: This is the critical test - restore the SECOND suggestion
+    // Before the fix, this would fail because it would toggle suggestion1 again
+    await suggestion2.locator('.btn-restore').click();
+
+    // BOTH suggestions should now be uncollapsed
+    await expect(suggestion1).not.toHaveClass(/collapsed/, { timeout: 3000 });
+    await expect(suggestion2).not.toHaveClass(/collapsed/, { timeout: 3000 });
+  });
 });
 
 test.describe('Suggestion Navigation', () => {

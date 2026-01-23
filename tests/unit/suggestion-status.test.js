@@ -245,26 +245,24 @@ describe('PRManager Suggestion Status', () => {
       const suggestionId = 'test-suggestion-hidden';
 
       // Mock element that is hidden for adoption
-      const mockDiv = {
-        classList: {
-          toggle: vi.fn(),
-          contains: vi.fn().mockReturnValue(true)
-        }
-      };
+      // The fix uses suggestionDiv directly, not suggestionRow.querySelector('.ai-suggestion')
       const mockButton = {
         title: '',
         querySelector: vi.fn().mockReturnValue({ textContent: '' })
       };
       const mockRow = {
-        dataset: { hiddenForAdoption: 'true' },
+        dataset: { hiddenForAdoption: 'true' }
+      };
+      const mockElement = {
+        closest: vi.fn().mockReturnValue(mockRow),
+        classList: {
+          toggle: vi.fn(),
+          contains: vi.fn().mockReturnValue(true)
+        },
         querySelector: vi.fn((selector) => {
-          if (selector === '.ai-suggestion') return mockDiv;
           if (selector === '.btn-restore') return mockButton;
           return null;
         })
-      };
-      const mockElement = {
-        closest: vi.fn().mockReturnValue(mockRow)
       };
       document.querySelector.mockReturnValue(mockElement);
 
@@ -274,6 +272,77 @@ describe('PRManager Suggestion Status', () => {
       expect(mockFetch).not.toHaveBeenCalled();
       // aiPanel.updateFindingStatus should NOT be called either
       expect(window.aiPanel.updateFindingStatus).not.toHaveBeenCalled();
+      // The classList.toggle should be called on suggestionDiv (mockElement), not some other element
+      expect(mockElement.classList.toggle).toHaveBeenCalledWith('collapsed');
+    });
+
+    it('should correctly restore the second suggestion when two suggestions are on the same line (regression test for pair_review-nzu7)', async () => {
+      // This test verifies the fix for the bug where restoring the second dismissed
+      // suggestion on the same line would incorrectly toggle the first suggestion.
+      // The bug was caused by using suggestionRow.querySelector('.ai-suggestion') which
+      // always returned the first suggestion div, rather than using the suggestionDiv
+      // that was correctly found by ID.
+      const prManager = createTestPRManager();
+
+      // Create two mock suggestion divs that share the same parent row
+      const mockButton1 = {
+        title: '',
+        querySelector: vi.fn().mockReturnValue({ textContent: '' })
+      };
+      const mockButton2 = {
+        title: '',
+        querySelector: vi.fn().mockReturnValue({ textContent: '' })
+      };
+
+      const mockSuggestionDiv1 = {
+        classList: {
+          toggle: vi.fn(),
+          contains: vi.fn().mockReturnValue(true)
+        },
+        querySelector: vi.fn((selector) => {
+          if (selector === '.btn-restore') return mockButton1;
+          return null;
+        })
+      };
+
+      const mockSuggestionDiv2 = {
+        classList: {
+          toggle: vi.fn(),
+          contains: vi.fn().mockReturnValue(true)
+        },
+        querySelector: vi.fn((selector) => {
+          if (selector === '.btn-restore') return mockButton2;
+          return null;
+        })
+      };
+
+      // Both suggestions share the same row
+      const mockRow = {
+        dataset: { hiddenForAdoption: 'true' }
+      };
+
+      // Connect both divs to the same row
+      mockSuggestionDiv1.closest = vi.fn().mockReturnValue(mockRow);
+      mockSuggestionDiv2.closest = vi.fn().mockReturnValue(mockRow);
+
+      // Test restoring the SECOND suggestion (ID: 2)
+      // The document.querySelector should find the correct suggestion by ID
+      document.querySelector.mockImplementation((selector) => {
+        if (selector === '[data-suggestion-id="1"]') return mockSuggestionDiv1;
+        if (selector === '[data-suggestion-id="2"]') return mockSuggestionDiv2;
+        return null;
+      });
+
+      // Restore the second suggestion
+      await prManager.restoreSuggestion('2');
+
+      // The SECOND suggestion's classList.toggle should be called, NOT the first
+      expect(mockSuggestionDiv2.classList.toggle).toHaveBeenCalledWith('collapsed');
+      expect(mockSuggestionDiv1.classList.toggle).not.toHaveBeenCalled();
+
+      // The button within the SECOND suggestion should be updated, NOT the first
+      expect(mockSuggestionDiv2.querySelector).toHaveBeenCalledWith('.btn-restore');
+      expect(mockSuggestionDiv1.querySelector).not.toHaveBeenCalledWith('.btn-restore');
     });
 
     it('should handle missing aiPanel gracefully', async () => {

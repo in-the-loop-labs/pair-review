@@ -91,6 +91,39 @@ const mockAISuggestions = [
     status: 'active',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
+  },
+  // Two additional suggestions on the same line for regression test (pair_review-nzu7)
+  // Tests that restoring the second dismissed suggestion on the same line works correctly
+  // Note: This creates THREE total suggestions on line 3 (1001, 1005, and 1006)
+  {
+    id: 1005,
+    source: 'ai',
+    ai_run_id: 'test-run-001',
+    ai_level: null, // Final/orchestrated suggestion (must be null to be displayed by default)
+    file: 'src/utils.js',
+    line_start: 3, // Same line as suggestion 1001
+    line_end: 3,
+    type: 'security',
+    title: 'First suggestion on line 3 (for same-line test)',
+    body: 'This is the first of two suggestions targeting the same line, used for testing the restore functionality when multiple suggestions share a line.',
+    status: 'active',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  },
+  {
+    id: 1006,
+    source: 'ai',
+    ai_run_id: 'test-run-001',
+    ai_level: null, // Final/orchestrated suggestion (must be null to be displayed by default)
+    file: 'src/utils.js',
+    line_start: 3, // Same line as suggestion 1001 and 1005
+    line_end: 3,
+    type: 'performance',
+    title: 'Second suggestion on line 3 (for same-line test)',
+    body: 'This is the second of two suggestions targeting the same line, used for testing the restore functionality when multiple suggestions share a line.',
+    status: 'active',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
   }
 ];
 

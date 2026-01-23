@@ -2370,16 +2370,16 @@ class PRManager {
       const suggestionRow = suggestionDiv?.closest('tr');
 
       if (suggestionRow?.dataset.hiddenForAdoption === 'true') {
-        const div = suggestionRow.querySelector('.ai-suggestion');
-        if (div) {
-          div.classList.toggle('collapsed');
+        // Use suggestionDiv (found by ID) not suggestionRow.querySelector('.ai-suggestion')
+        // because multiple suggestions can share the same row when they target the same line
+        suggestionDiv.classList.toggle('collapsed');
 
-          const button = suggestionRow.querySelector('.btn-restore');
-          if (button) {
-            const isNowCollapsed = div.classList.contains('collapsed');
-            button.title = isNowCollapsed ? 'Show suggestion' : 'Hide suggestion';
-            button.querySelector('.btn-text').textContent = isNowCollapsed ? 'Show' : 'Hide';
-          }
+        // Find the button within this specific suggestion div, not the first one in the row
+        const button = suggestionDiv.querySelector('.btn-restore');
+        if (button) {
+          const isNowCollapsed = suggestionDiv.classList.contains('collapsed');
+          button.title = isNowCollapsed ? 'Show suggestion' : 'Hide suggestion';
+          button.querySelector('.btn-text').textContent = isNowCollapsed ? 'Show' : 'Hide';
         }
         return;
       }
