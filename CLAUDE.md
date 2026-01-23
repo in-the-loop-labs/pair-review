@@ -114,6 +114,7 @@ Test structure:
 
 ## Development workflow
 - **Git workflow**: Ask before committing to main or pushing to remote
+- **Releases**: Never run `npm run release` unless explicitly instructed—it publishes to npm and pushes tags
 - Add a 'SPDX-License-Identifier: GPL-3.0-or-later' notice at the start of all source code files.
 - Package name: `pair-review`
 - No specific Node version requirement (use modern/recent)
