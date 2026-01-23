@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-const { loadConfig, getConfigDir, getGitHubToken } = require('./config');
+const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -277,7 +277,12 @@ AI PROVIDERS:
     }
 
     // Load configuration
-    const config = await loadConfig();
+    const { config, isFirstRun } = await loadConfig();
+
+    // Show welcome message on first run (after early-exit flags are handled above)
+    if (isFirstRun) {
+      showWelcomeMessage();
+    }
     
     // Initialize database
     console.log('Initializing database...');

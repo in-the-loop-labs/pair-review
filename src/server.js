@@ -84,7 +84,7 @@ function findAvailablePort(app, startPort, maxAttempts = 5) {
 async function startServer(sharedDb = null) {
   try {
     // Load configuration
-    const config = await loadConfig();
+    const { config } = await loadConfig();
     
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
