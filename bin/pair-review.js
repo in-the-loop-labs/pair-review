@@ -3,6 +3,11 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
+const updateNotifier = require('update-notifier');
+const pkg = require('../package.json');
+
+// Check for updates and notify user
+updateNotifier({ pkg }).notify();
 
 async function main() {
   try {

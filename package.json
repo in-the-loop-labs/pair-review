@@ -58,6 +58,7 @@
     "markdown-it": "^13.0.2",
     "open": "^9.1.0",
     "simple-git": "^3.19.1",
+    "update-notifier": "^5.1.0",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
