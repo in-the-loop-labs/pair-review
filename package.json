@@ -25,7 +25,10 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
-    "test:e2e:debug": "playwright test --debug"
+    "test:e2e:debug": "playwright test --debug",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "npm run version && changeset tag && npm publish && git push --follow-tags"
   },
   "keywords": [
     "code-review",
@@ -62,6 +65,7 @@
     "uuid": "^11.1.0"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.29.8",
     "@playwright/test": "^1.57.0",
     "@vitest/coverage-v8": "^4.0.16",
     "highlight.js": "^11.11.1",
