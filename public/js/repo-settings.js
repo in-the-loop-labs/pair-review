@@ -193,9 +193,14 @@ class RepoSettingsPage {
       const data = await response.json();
 
       // Convert array to object keyed by provider id
+      // Filter out providers with no models configured (e.g., unconfigured OpenCode)
       this.providers = {};
       for (const provider of data.providers) {
-        this.providers[provider.id] = provider;
+        if (provider.models && provider.models.length > 0) {
+          this.providers[provider.id] = provider;
+        } else {
+          console.warn(`Provider "${provider.name}" has no models configured and will not be available`);
+        }
       }
 
       // Render provider buttons now that we have data
@@ -275,6 +280,11 @@ class RepoSettingsPage {
       // If old provider no longer exists (e.g., was removed from available providers),
       // fall back to the new provider's default model
       if (!oldProvider) {
+        // Guard against empty models array (shouldn't happen as we filter these out)
+        if (!newProvider.models || newProvider.models.length === 0) {
+          console.error(`Provider "${providerId}" has no models - this should not happen`);
+          return;
+        }
         const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
         this.selectModel(defaultModel.id, markAsChanged);
         this.checkForChanges();

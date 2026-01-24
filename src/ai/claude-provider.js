@@ -50,11 +50,21 @@ const CLAUDE_MODELS = [
 ];
 
 class ClaudeProvider extends AIProvider {
-  constructor(model = 'sonnet') {
+  /**
+   * @param {string} model - Model identifier
+   * @param {Object} configOverrides - Config overrides from providers config
+   * @param {string} configOverrides.command - Custom CLI command
+   * @param {string[]} configOverrides.extra_args - Additional CLI arguments
+   * @param {Object} configOverrides.env - Additional environment variables
+   * @param {Object[]} configOverrides.models - Custom model definitions
+   */
+  constructor(model = 'sonnet', configOverrides = {}) {
     super(model);
 
-    // Check for environment variable to override default command
-    const claudeCmd = process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
+    // Command precedence: ENV > config > default
+    const envCmd = process.env.PAIR_REVIEW_CLAUDE_CMD;
+    const configCmd = configOverrides.command;
+    const claudeCmd = envCmd || configCmd || 'claude';
 
     // For multi-word commands like "devx claude", use shell mode
     this.useShell = claudeCmd.includes(' ');
@@ -85,12 +95,33 @@ class ClaudeProvider extends AIProvider {
       'Bash(rg *)',
     ].join(',');
 
+    // Build args: base args + provider extra_args + model extra_args
+    const baseArgs = ['-p', '--model', model, '--allowedTools', allowedTools];
+    const providerArgs = configOverrides.extra_args || [];
+    const modelConfig = configOverrides.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    // Merge env: provider env + model env
+    this.extraEnv = {
+      ...(configOverrides.env || {}),
+      ...(modelConfig?.env || {})
+    };
+
     if (this.useShell) {
-      this.command = `${claudeCmd} -p --model ${model} --allowedTools "${allowedTools}"`;
+      // Quote the allowedTools value to prevent shell interpretation of special characters
+      // (commas, parentheses in patterns like "Bash(git diff*)")
+      const quotedBaseArgs = baseArgs.map((arg, i) => {
+        // The allowedTools value follows the --allowedTools flag
+        if (baseArgs[i - 1] === '--allowedTools') {
+          return `'${arg}'`;
+        }
+        return arg;
+      });
+      this.command = `${claudeCmd} ${[...quotedBaseArgs, ...providerArgs, ...modelArgs].join(' ')}`;
       this.args = [];
     } else {
       this.command = claudeCmd;
-      this.args = ['-p', '--model', model, '--allowedTools', allowedTools];
+      this.args = [...baseArgs, ...providerArgs, ...modelArgs];
     }
   }
 
@@ -112,6 +143,7 @@ class ClaudeProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
+          ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell

@@ -63,12 +63,21 @@ const COPILOT_MODELS = [
 ];
 
 class CopilotProvider extends AIProvider {
-  constructor(model = 'gemini-3-pro-preview') {
+  /**
+   * @param {string} model - Model identifier
+   * @param {Object} configOverrides - Config overrides from providers config
+   * @param {string} configOverrides.command - Custom CLI command
+   * @param {string[]} configOverrides.extra_args - Additional CLI arguments
+   * @param {Object} configOverrides.env - Additional environment variables
+   * @param {Object[]} configOverrides.models - Custom model definitions
+   */
+  constructor(model = 'gemini-3-pro-preview', configOverrides = {}) {
     super(model);
 
-    // Check for environment variable to override default command
-    // Supports multi-word commands like "gh copilot" or custom paths
-    const copilotCmd = process.env.PAIR_REVIEW_COPILOT_CMD || 'copilot';
+    // Command precedence: ENV > config > default
+    const envCmd = process.env.PAIR_REVIEW_COPILOT_CMD;
+    const configCmd = configOverrides.command;
+    const copilotCmd = envCmd || configCmd || 'copilot';
 
     // For multi-word commands, use shell mode (same pattern as other providers)
     this.useShell = copilotCmd.includes(' ');
@@ -129,11 +138,23 @@ class CopilotProvider extends AIProvider {
       '--allow-all-paths',
     ];
 
+    // Build args: base args + provider extra_args + model extra_args
+    const baseArgs = ['--model', model, ...readOnlyArgs, '-s'];
+    const providerArgs = configOverrides.extra_args || [];
+    const modelConfig = configOverrides.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    // Merge env: provider env + model env
+    this.extraEnv = {
+      ...(configOverrides.env || {}),
+      ...(modelConfig?.env || {})
+    };
+
     // Command and base args are the same regardless of shell mode
     // (shell mode only affects how command is built in execute())
     this.command = copilotCmd;
     // Args without the prompt - prompt will be added as value to -p flag in execute()
-    this.baseArgs = ['--model', model, ...readOnlyArgs, '-s'];
+    this.baseArgs = [...baseArgs, ...providerArgs, ...modelArgs];
   }
 
   /**
@@ -170,6 +191,7 @@ class CopilotProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
+          ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell

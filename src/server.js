@@ -3,6 +3,7 @@ const express = require('express');
 const path = require('path');
 const { loadConfig, getGitHubToken } = require('./config');
 const { initializeDatabase, getDatabaseStatus } = require('./database');
+const { applyConfigOverrides } = require('./ai');
 
 let db = null;
 let server = null;
@@ -85,7 +86,10 @@ async function startServer(sharedDb = null) {
   try {
     // Load configuration
     const { config } = await loadConfig();
-    
+
+    // Apply provider configuration overrides (custom models, commands, etc.)
+    applyConfigOverrides(config);
+
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
 
