@@ -102,25 +102,19 @@ class OpenCodeProvider extends AIProvider {
 
       const levelPrefix = `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing OpenCode CLI...`);
-      logger.info(`${levelPrefix} Writing prompt: ${prompt.length} bytes`);
+      logger.info(`${levelPrefix} Writing prompt via stdin: ${prompt.length} bytes`);
 
-      // Build the command with prompt as final argument
+      // Use stdin for prompt instead of CLI argument (avoids shell escaping issues)
+      // OpenCode reads from stdin when no positional message arguments are provided
       let fullCommand;
       let fullArgs;
 
       if (this.useShell) {
-        // Escape the prompt for shell using $'...' syntax which handles both
-        // single quotes and backslash sequences safely
-        // 1. Escape backslashes first (\ -> \\)
-        // 2. Escape single quotes (' -> \')
-        const escapedPrompt = prompt
-          .replace(/\\/g, '\\\\')
-          .replace(/'/g, "\\'");
-        fullCommand = `${this.opencodeCmd} ${this.baseArgs.join(' ')} $'${escapedPrompt}'`;
+        fullCommand = `${this.opencodeCmd} ${this.baseArgs.join(' ')}`;
         fullArgs = [];
       } else {
         fullCommand = this.opencodeCmd;
-        fullArgs = [...this.baseArgs, prompt];
+        fullArgs = [...this.baseArgs];
       }
 
       const opencode = spawn(fullCommand, fullArgs, {
@@ -146,6 +140,8 @@ class OpenCodeProvider extends AIProvider {
       let stderr = '';
       let timeoutId = null;
       let settled = false;  // Guard against multiple resolve/reject calls
+      let lineBuffer = '';  // Buffer for incomplete JSONL lines
+      let lineCount = 0;    // Count of JSONL lines received
 
       const settle = (fn, value) => {
         if (settled) return;
@@ -163,9 +159,22 @@ class OpenCodeProvider extends AIProvider {
         }, timeout);
       }
 
-      // Collect stdout
+      // Stream and log JSONL lines as they arrive for debugging visibility
       opencode.stdout.on('data', (data) => {
-        stdout += data.toString();
+        const chunk = data.toString();
+        stdout += chunk;
+        lineBuffer += chunk;
+
+        // Process complete lines (JSONL - each line is a complete JSON object)
+        const lines = lineBuffer.split('\n');
+        // Keep the last incomplete line in the buffer
+        lineBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          lineCount++;
+          this.logStreamLine(line, lineCount, levelPrefix);
+        }
       });
 
       // Collect stderr
@@ -200,10 +209,28 @@ class OpenCodeProvider extends AIProvider {
           return;
         }
 
+        // Process any remaining buffered line
+        if (lineBuffer.trim()) {
+          lineCount++;
+          this.logStreamLine(lineBuffer, lineCount, levelPrefix);
+        }
+
+        logger.info(`${levelPrefix} OpenCode CLI completed - received ${lineCount} JSONL events`);
+
         // Parse the OpenCode JSONL response
         const parsed = this.parseOpenCodeResponse(stdout, level);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
+
+          // Log a summary of the response
+          if (parsed.data?.suggestions) {
+            const count = Array.isArray(parsed.data.suggestions) ? parsed.data.suggestions.length : 0;
+            logger.info(`${levelPrefix} [response] ${count} suggestions extracted`);
+          } else if (parsed.data) {
+            const jsonStr = JSON.stringify(parsed.data);
+            logger.info(`${levelPrefix} [response] ${jsonStr.length} chars of JSON data`);
+          }
+
           settle(resolve, parsed.data);
         } else {
           logger.warn(`${levelPrefix} Failed to extract JSON: ${parsed.error}`);
@@ -223,7 +250,82 @@ class OpenCodeProvider extends AIProvider {
           settle(reject, error);
         }
       });
+
+      // Send the prompt to stdin (OpenCode reads from stdin when no positional args)
+      // Note on error handling: When stdin.write fails, we kill the process which
+      // triggers the 'close' event handler. The `settled` guard (line 142) prevents
+      // double-settlement, so the race between reject() here and the close handler
+      // is handled safely - whichever settles first wins, the other is ignored.
+      opencode.stdin.write(prompt, (err) => {
+        if (err) {
+          logger.error(`${levelPrefix} Failed to write prompt to stdin: ${err}`);
+          opencode.kill('SIGTERM');
+          settle(reject, new Error(`${levelPrefix} Failed to write prompt to stdin: ${err}`));
+        }
+      });
+      opencode.stdin.end();
     });
+  }
+
+  /**
+   * Log a streaming JSONL line for debugging visibility
+   * Extracts meaningful info from each event type without being too verbose
+   *
+   * @param {string} line - A single JSONL line
+   * @param {number} lineNum - Line number for reference
+   * @param {string} levelPrefix - Level prefix for log messages
+   */
+  logStreamLine(line, lineNum, levelPrefix) {
+    try {
+      const event = JSON.parse(line);
+      const type = event.type || 'unknown';
+
+      // Log different event types with appropriate detail
+      switch (type) {
+        case 'step_start':
+          logger.debug(`${levelPrefix} [Stream #${lineNum}] Step started`);
+          break;
+
+        case 'step_finish': {
+          const reason = event.part?.reason || 'unknown';
+          const tokens = event.part?.tokens;
+          if (tokens) {
+            logger.info(
+              `${levelPrefix} [Stream #${lineNum}] Step finished (${reason}) - ` +
+              `tokens: in=${tokens.input || 0}, out=${tokens.output || 0}, ` +
+              `cache_read=${tokens.cache?.read || 0}`
+            );
+          } else {
+            logger.info(`${levelPrefix} [Stream #${lineNum}] Step finished (${reason})`);
+          }
+          break;
+        }
+
+        case 'text': {
+          const text = event.part?.text || event.text || '';
+          const preview = text.length > 80 ? text.substring(0, 80) + '...' : text;
+          // Only log if there's actual text content
+          if (text.trim()) {
+            logger.debug(`${levelPrefix} [Stream #${lineNum}] Text: ${preview.replace(/\n/g, '\\n')}`);
+          }
+          break;
+        }
+
+        case 'tool_call':
+          logger.debug(`${levelPrefix} [Stream #${lineNum}] Tool call: ${event.part?.name || 'unknown'}`);
+          break;
+
+        case 'tool_result':
+          logger.debug(`${levelPrefix} [Stream #${lineNum}] Tool result received`);
+          break;
+
+        default:
+          logger.debug(`${levelPrefix} [Stream #${lineNum}] Event: ${type}`);
+      }
+    } catch {
+      // If we can't parse the line, just log a brief note
+      logger.debug(`${levelPrefix} [Stream #${lineNum}] Received data (${line.length} bytes)`);
+    }
   }
 
   /**
@@ -256,7 +358,13 @@ class OpenCodeProvider extends AIProvider {
             }
           }
 
-          // Also handle direct text content
+          // Handle type: "text" with part.text (OpenCode JSONL format)
+          // Format: {"type":"text","part":{"type":"text","text":"..."}}
+          if (event.type === 'text' && event.part?.text) {
+            textContent += event.part.text;
+          }
+
+          // Also handle direct text content (fallback)
           if (event.type === 'text' && event.text) {
             textContent += event.text;
           }

@@ -155,3 +155,9 @@ Test structure:
   - `tests/integration/routes.test.js` (Integration test database)
   - Ensure index names match the production schema exactly
 - **Test coverage is mandatory for new functionality**: When adding new methods, parameters, or behavioral changes to existing code, add corresponding unit tests in the same task. Do not defer test writing to a separate task or leave it for later. Tests should cover: (1) the happy path, (2) edge cases like missing/null inputs, (3) error conditions. For bug fixes, add a regression test that would have caught the bug.
+
+### Research Before Implementation
+- **Look for official documentation before guessing at technical specs**. When integrating with external tools or APIs (Claude CLI, Gemini CLI, etc.), search for and consult official documentation rather than inferring behavior from trial and error. This prevents bugs from incorrect assumptions about data formats, message types, or API contracts.
+- Key documentation sources for AI provider CLIs:
+  - Claude Code: https://code.claude.com/docs/en/cli-reference and https://platform.claude.com/docs/en/agent-sdk/typescript
+  - The Agent SDK TypeScript docs define all message types (`SDKAssistantMessage`, `SDKUserMessage`, `SDKResultMessage`, `SDKSystemMessage`, etc.) and their exact field structures
