@@ -271,11 +271,16 @@ class OpenCodeProvider extends AIProvider {
    * Log a streaming JSONL line for debugging visibility
    * Extracts meaningful info from each event type without being too verbose
    *
+   * Uses logger.streamDebug() which only logs when --debug-stream flag is enabled.
+   *
    * @param {string} line - A single JSONL line
    * @param {number} lineNum - Line number for reference
    * @param {string} levelPrefix - Level prefix for log messages
    */
   logStreamLine(line, lineNum, levelPrefix) {
+    // Early exit if stream debugging is disabled
+    if (!logger.isStreamDebugEnabled()) return;
+
     try {
       const event = JSON.parse(line);
       const type = event.type || 'unknown';
@@ -283,48 +288,103 @@ class OpenCodeProvider extends AIProvider {
       // Log different event types with appropriate detail
       switch (type) {
         case 'step_start':
-          logger.debug(`${levelPrefix} [Stream #${lineNum}] Step started`);
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] Step started`);
           break;
 
         case 'step_finish': {
           const reason = event.part?.reason || 'unknown';
           const tokens = event.part?.tokens;
           if (tokens) {
-            logger.info(
-              `${levelPrefix} [Stream #${lineNum}] Step finished (${reason}) - ` +
+            logger.streamDebug(
+              `${levelPrefix} [#${lineNum}] Step finished (${reason}) - ` +
               `tokens: in=${tokens.input || 0}, out=${tokens.output || 0}, ` +
               `cache_read=${tokens.cache?.read || 0}`
             );
           } else {
-            logger.info(`${levelPrefix} [Stream #${lineNum}] Step finished (${reason})`);
+            logger.streamDebug(`${levelPrefix} [#${lineNum}] Step finished (${reason})`);
           }
           break;
         }
 
         case 'text': {
           const text = event.part?.text || event.text || '';
-          const preview = text.length > 80 ? text.substring(0, 80) + '...' : text;
+          const preview = text.length > 60 ? text.substring(0, 60) + '...' : text;
           // Only log if there's actual text content
           if (text.trim()) {
-            logger.debug(`${levelPrefix} [Stream #${lineNum}] Text: ${preview.replace(/\n/g, '\\n')}`);
+            logger.streamDebug(`${levelPrefix} [#${lineNum}] text: ${preview.replace(/\n/g, '\\n')}`);
           }
           break;
         }
 
         case 'tool_call':
-          logger.debug(`${levelPrefix} [Stream #${lineNum}] Tool call: ${event.part?.name || 'unknown'}`);
-          break;
+        case 'tool_use': {
+          // Enhanced tool call/use logging with name and input preview
+          const part = event.part || {};
+          const toolName = part.name || part.tool_name || 'unknown';
+          const toolId = part.id || part.tool_use_id || '';
 
-        case 'tool_result':
-          logger.debug(`${levelPrefix} [Stream #${lineNum}] Tool result received`);
+          // Extract input/arguments - may be in different fields depending on format
+          const toolInput = part.input || part.arguments || part.args || null;
+          let inputPreview = '';
+
+          if (toolInput) {
+            if (typeof toolInput === 'string') {
+              // String input - show preview
+              inputPreview = toolInput.length > 60 ? toolInput.substring(0, 60) + '...' : toolInput;
+            } else if (typeof toolInput === 'object') {
+              // Object input - show key fields
+              const keys = Object.keys(toolInput);
+              if (keys.length === 1 && typeof toolInput[keys[0]] === 'string') {
+                // Single string field - show value preview
+                const val = toolInput[keys[0]];
+                inputPreview = `${keys[0]}="${val.length > 40 ? val.substring(0, 40) + '...' : val}"`;
+              } else if (toolInput.command) {
+                // Command execution - show command
+                inputPreview = `cmd="${toolInput.command.substring(0, 50)}${toolInput.command.length > 50 ? '...' : ''}"`;
+              } else if (toolInput.file_path || toolInput.path) {
+                // File operation - show path
+                inputPreview = `path="${toolInput.file_path || toolInput.path}"`;
+              } else {
+                // Multiple fields - show keys
+                inputPreview = `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`;
+              }
+            }
+          }
+
+          const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+          const inputPart = inputPreview ? ` ${inputPreview}` : '';
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] ${type}: ${toolName}${idPart}${inputPart}`);
           break;
+        }
+
+        case 'tool_result': {
+          // Enhanced tool result logging with status/preview
+          const part = event.part || {};
+          const toolId = part.tool_use_id || part.id || '';
+          const isError = part.is_error || part.error || false;
+          const output = part.output || part.content || part.result || '';
+
+          let resultPreview = '';
+          if (typeof output === 'string' && output.length > 0) {
+            resultPreview = output.length > 60 ? output.substring(0, 60) + '...' : output;
+            resultPreview = resultPreview.replace(/\n/g, '\\n');
+          } else if (Array.isArray(output) && output.length > 0) {
+            resultPreview = `[${output.length} items]`;
+          }
+
+          const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+          const statusPart = isError ? ' ERROR' : ' OK';
+          const previewPart = resultPreview ? ` ${resultPreview}` : '';
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] tool_result${idPart}${statusPart}${previewPart}`);
+          break;
+        }
 
         default:
-          logger.debug(`${levelPrefix} [Stream #${lineNum}] Event: ${type}`);
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] ${type}`);
       }
     } catch {
       // If we can't parse the line, just log a brief note
-      logger.debug(`${levelPrefix} [Stream #${lineNum}] Received data (${line.length} bytes)`);
+      logger.streamDebug(`${levelPrefix} [#${lineNum}] (${line.length} bytes)`);
     }
   }
 

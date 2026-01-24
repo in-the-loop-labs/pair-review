@@ -291,31 +291,99 @@ class ClaudeProvider extends AIProvider {
    * - assistant messages: tool calls and results
    * - result: final result with text content
    *
+   * Uses logger.streamDebug() which only logs when --debug-stream flag is enabled.
+   *
    * @param {string} line - A single JSONL line
    * @param {string} levelPrefix - Logging prefix
    */
   logStreamLine(line, levelPrefix) {
+    // Early exit if stream debugging is disabled (except for result which always logs to info)
+    const streamEnabled = logger.isStreamDebugEnabled();
+
     try {
       const event = JSON.parse(line);
       const eventType = event.type;
 
       if (eventType === 'stream_event') {
+        if (!streamEnabled) return;
         // Streaming text delta
         const delta = event.event?.delta;
         if (delta?.type === 'text_delta' && delta?.text) {
           // Log text fragments at debug level (can be very frequent)
-          const preview = delta.text.replace(/\n/g, '\\n').substring(0, 80);
-          logger.debug(`${levelPrefix} [text] ${preview}${delta.text.length > 80 ? '...' : ''}`);
+          const preview = delta.text.replace(/\n/g, '\\n').substring(0, 60);
+          logger.streamDebug(`${levelPrefix} text: ${preview}${delta.text.length > 60 ? '...' : ''}`);
         }
       } else if (eventType === 'assistant') {
-        // Assistant turn with tool use or message
-        // Dump full content for debugging
-        logger.debug(`${levelPrefix} [assistant] ${JSON.stringify(event.message?.content || event, null, 2).substring(0, 2000)}`);
+        if (!streamEnabled) return;
+        // Assistant turn with tool use or message - extract useful info
+        const content = event.message?.content || [];
+        for (const block of content) {
+          if (block.type === 'tool_use') {
+            // Tool use block - show name and input preview
+            const toolName = block.name || 'unknown';
+            const toolId = block.id || '';
+            const toolInput = block.input || {};
+
+            let inputPreview = '';
+            if (typeof toolInput === 'object') {
+              const keys = Object.keys(toolInput);
+              if (toolInput.command) {
+                // Command execution
+                inputPreview = `cmd="${toolInput.command.substring(0, 50)}${toolInput.command.length > 50 ? '...' : ''}"`;
+              } else if (toolInput.file_path || toolInput.path) {
+                // File operation
+                inputPreview = `path="${toolInput.file_path || toolInput.path}"`;
+              } else if (keys.length === 1 && typeof toolInput[keys[0]] === 'string') {
+                // Single string field
+                const val = toolInput[keys[0]];
+                inputPreview = `${keys[0]}="${val.length > 40 ? val.substring(0, 40) + '...' : val}"`;
+              } else if (keys.length > 0) {
+                inputPreview = `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`;
+              }
+            }
+
+            const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+            const inputPart = inputPreview ? ` ${inputPreview}` : '';
+            logger.streamDebug(`${levelPrefix} tool_use: ${toolName}${idPart}${inputPart}`);
+          } else if (block.type === 'text' && block.text) {
+            const preview = block.text.replace(/\n/g, '\\n').substring(0, 60);
+            logger.streamDebug(`${levelPrefix} assistant_text: ${preview}${block.text.length > 60 ? '...' : ''}`);
+          }
+        }
       } else if (eventType === 'user') {
-        // Tool result - dump full content for debugging
-        logger.debug(`${levelPrefix} [user] ${JSON.stringify(event.message?.content || event, null, 2).substring(0, 2000)}`);
+        if (!streamEnabled) return;
+        // Tool result - extract useful info
+        const content = event.message?.content || [];
+        for (const block of content) {
+          if (block.type === 'tool_result') {
+            const toolId = block.tool_use_id || '';
+            const isError = block.is_error || false;
+            const output = block.content || '';
+
+            let resultPreview = '';
+            if (typeof output === 'string' && output.length > 0) {
+              resultPreview = output.length > 60 ? output.substring(0, 60) + '...' : output;
+              resultPreview = resultPreview.replace(/\n/g, '\\n');
+            } else if (Array.isArray(output)) {
+              // Content array format
+              for (const item of output) {
+                if (item.type === 'text' && item.text) {
+                  const text = item.text;
+                  resultPreview = text.length > 60 ? text.substring(0, 60) + '...' : text;
+                  resultPreview = resultPreview.replace(/\n/g, '\\n');
+                  break;
+                }
+              }
+            }
+
+            const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+            const statusPart = isError ? ' ERROR' : ' OK';
+            const previewPart = resultPreview ? ` ${resultPreview}` : '';
+            logger.streamDebug(`${levelPrefix} tool_result${idPart}${statusPart}${previewPart}`);
+          }
+        }
       } else if (eventType === 'result') {
-        // Final result - extract text content and show a preview
+        // Final result - always log this at info level (not stream debug)
         const cost = event.cost_usd ? `$${event.cost_usd.toFixed(4)}` : 'unknown';
         const tokens = event.usage ? `${event.usage.input_tokens}in/${event.usage.output_tokens}out` : '';
 
@@ -340,14 +408,16 @@ class ClaudeProvider extends AIProvider {
         }
       } else if (eventType === 'system') {
         // System messages are not useful for debugging - silently ignore
-      } else if (eventType) {
-        // Unknown event type - only log if we have an actual type
-        logger.debug(`${levelPrefix} [${eventType}] event received`);
+      } else if (eventType && streamEnabled) {
+        // Unknown event type - only log if we have an actual type and stream debug is on
+        logger.streamDebug(`${levelPrefix} ${eventType}`);
       }
       // Silently ignore events with no type
     } catch (parseError) {
-      // Skip malformed lines
-      logger.debug(`${levelPrefix} Skipping malformed JSONL line: ${line.substring(0, 100)}`);
+      if (streamEnabled) {
+        // Skip malformed lines
+        logger.streamDebug(`${levelPrefix} (malformed: ${line.substring(0, 50)}...)`);
+      }
     }
   }
 

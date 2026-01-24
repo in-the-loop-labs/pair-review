@@ -29,6 +29,7 @@ class AILogger {
   constructor() {
     this.enabled = true;
     this.debugEnabled = false;
+    this.streamDebugEnabled = false;
   }
 
   /**
@@ -48,6 +49,22 @@ class AILogger {
   }
 
   /**
+   * Enable or disable stream debug logging (--debug-stream flag)
+   * @param {boolean} enabled - Whether stream debug logging should be enabled
+   */
+  setStreamDebugEnabled(enabled) {
+    this.streamDebugEnabled = enabled;
+  }
+
+  /**
+   * Check if stream debug logging is enabled
+   * @returns {boolean} Whether stream debug logging is enabled
+   */
+  isStreamDebugEnabled() {
+    return this.streamDebugEnabled;
+  }
+
+  /**
    * Log debug message (only shown when debug is enabled)
    */
   debug(message) {
@@ -56,6 +73,20 @@ class AILogger {
     process.stdout.write(
       `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
       `${COLORS.dim}[AI DBG]${COLORS.reset} ` +
+      `${COLORS.dim}${message}${COLORS.reset}\n`
+    );
+  }
+
+  /**
+   * Log stream debug message (only shown when --debug-stream is enabled)
+   * Used for streaming events from AI providers (tool calls, text chunks, etc.)
+   */
+  streamDebug(message) {
+    if (!this.enabled || !this.streamDebugEnabled) return;
+    const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+    process.stdout.write(
+      `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
+      `${COLORS.dim}[STREAM]${COLORS.reset} ` +
       `${COLORS.dim}${message}${COLORS.reset}\n`
     );
   }

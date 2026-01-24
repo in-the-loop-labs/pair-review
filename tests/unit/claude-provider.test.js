@@ -9,15 +9,22 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
  */
 
 // Mock logger to suppress output during tests
-vi.mock('../../src/utils/logger', () => ({
-  default: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    success: vi.fn(),
-    debug: vi.fn()
-  }
-}));
+// Use actual implementation for state tracking, but mock output methods
+vi.mock('../../src/utils/logger', () => {
+  let streamDebugEnabled = false;
+  return {
+    default: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      success: vi.fn(),
+      debug: vi.fn(),
+      streamDebug: vi.fn(),
+      isStreamDebugEnabled: () => streamDebugEnabled,
+      setStreamDebugEnabled: (enabled) => { streamDebugEnabled = enabled; }
+    }
+  };
+});
 
 // Import after mocks are set up
 const ClaudeProvider = require('../../src/ai/claude-provider');
@@ -514,14 +521,32 @@ describe('ClaudeProvider', () => {
 
   describe('logStreamLine', () => {
     let provider;
+    const logger = require('../../src/utils/logger');
 
     beforeEach(() => {
       provider = new ClaudeProvider('sonnet');
+      // Reset stream debug state before each test
+      logger.setStreamDebugEnabled(false);
+    });
+
+    afterEach(() => {
+      // Ensure stream debug is disabled after tests
+      logger.setStreamDebugEnabled(false);
     });
 
     // These tests verify logStreamLine doesn't throw and handles various event types
 
+    it('should not throw when stream debug is disabled', () => {
+      logger.setStreamDebugEnabled(false);
+      const line = JSON.stringify({
+        type: 'stream_event',
+        event: { delta: { type: 'text_delta', text: 'test' } }
+      });
+      expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
+    });
+
     it('should handle stream_event with text_delta without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'stream_event',
         event: {
@@ -532,6 +557,7 @@ describe('ClaudeProvider', () => {
     });
 
     it('should handle stream_event without delta without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'stream_event',
         event: {}
@@ -540,6 +566,7 @@ describe('ClaudeProvider', () => {
     });
 
     it('should handle assistant events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'assistant',
         message: {
@@ -549,11 +576,75 @@ describe('ClaudeProvider', () => {
       expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
     });
 
+    it('should handle assistant events with tool_use without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            name: 'read_file',
+            id: 'toolu_abc123',
+            input: { file_path: '/path/to/file.js' }
+          }]
+        }
+      });
+      expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle assistant events with command tool_use without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            name: 'bash',
+            id: 'toolu_xyz789',
+            input: { command: 'git status' }
+          }]
+        }
+      });
+      expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
+    });
+
     it('should handle user events (tool results) without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'user',
         message: {
           content: [{ type: 'tool_result', result: 'data' }]
+        }
+      });
+      expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle user events with tool_result including error without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_abc123',
+            is_error: true,
+            content: 'File not found'
+          }]
+        }
+      });
+      expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle user events with tool_result content array without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_abc123',
+            content: [{ type: 'text', text: 'File contents here' }]
+          }]
         }
       });
       expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
@@ -568,6 +659,7 @@ describe('ClaudeProvider', () => {
           content: [{ type: 'text', text: '{"data": true}' }]
         }
       });
+      // Result events always log to info (not affected by stream debug)
       expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
     });
 
@@ -582,6 +674,7 @@ describe('ClaudeProvider', () => {
     });
 
     it('should handle system events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'system',
         data: 'initialization complete'
@@ -590,6 +683,7 @@ describe('ClaudeProvider', () => {
     });
 
     it('should handle unknown event types without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'custom_type',
         data: 'something'
@@ -598,19 +692,23 @@ describe('ClaudeProvider', () => {
     });
 
     it('should handle malformed JSON gracefully without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       expect(() => provider.logStreamLine('not json', '[Level 1]')).not.toThrow();
     });
 
     it('should handle empty line without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       expect(() => provider.logStreamLine('', '[Level 1]')).not.toThrow();
     });
 
     it('should handle event with no type without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({ data: 'no type field' });
       expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
     });
 
     it('should handle long text in stream_event without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const longText = 'A'.repeat(200);
       const line = JSON.stringify({
         type: 'stream_event',
@@ -622,6 +720,7 @@ describe('ClaudeProvider', () => {
     });
 
     it('should handle text with newlines without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'stream_event',
         event: {
