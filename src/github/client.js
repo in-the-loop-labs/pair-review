@@ -305,6 +305,8 @@ class GitHubClient {
    * @param {number} batchSize - Number of comments per batch (default: 25)
    * @returns {Promise<Object>} Result with successCount and failed flag
    */
+  // Batch size of 25 is empirically chosen to stay well under GitHub's GraphQL
+  // mutation size limits while still being efficient for large reviews.
   async addCommentsInBatches(prNodeId, reviewId, comments, batchSize = 25) {
     if (comments.length === 0) {
       return { successCount: 0, failed: false };
@@ -386,7 +388,10 @@ class GitHubClient {
           if (retryAttempt < maxRetries) {
             console.warn(`Batch ${batchNumber} failed, retrying... (${error.message})`);
             retryAttempt++;
-            // Brief delay before retry
+            // Simple 1-second delay before retry. We use a fixed delay rather than
+            // exponential backoff because we only retry once before aborting for atomic
+            // behavior—either the batch succeeds quickly or we clean up the pending
+            // review. Backoff provides no benefit with a single retry attempt.
             await new Promise(resolve => setTimeout(resolve, 1000));
           } else {
             console.error(`Batch ${batchNumber} failed after retry: ${error.message}`);
@@ -413,6 +418,8 @@ class GitHubClient {
             console.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
             return { successCount: totalSuccessful + batchSuccessful, failed: true };
           }
+          // All comments succeeded despite the error being thrown (recovered from partial error)
+          console.log(`Batch ${batchNumber} complete (recovered from partial error): ${batchSuccessful} comments added`);
           totalSuccessful += batchSuccessful;
         } else {
           // Total failure of the batch
@@ -518,7 +525,10 @@ class GitHubClient {
           const failedCount = comments.length - successfulComments;
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
           // Clean up the pending review since it has incomplete comments
-          await this.deletePendingReview(reviewId);
+          const cleaned = await this.deletePendingReview(reviewId);
+          if (!cleaned) {
+            console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+          }
           throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub. Check server logs for details.`);
         }
       }
@@ -616,7 +626,10 @@ class GitHubClient {
           const failedCount = comments.length - successfulComments;
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
           // Clean up the pending review since it has incomplete comments
-          await this.deletePendingReview(reviewId);
+          const cleaned = await this.deletePendingReview(reviewId);
+          if (!cleaned) {
+            console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+          }
           throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to draft review. Check server logs for details.`);
         }
       }

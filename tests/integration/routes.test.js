@@ -1808,7 +1808,7 @@ describe('Review Submission Endpoint', () => {
       expect(comments.length).toBe(2);
     });
 
-    it('should accept reviews with many comments (batched submission)', async () => {
+    it('should accept reviews with more than 50 comments', async () => {
       // Insert more than 50 comments - now supported via batched submission
       for (let i = 0; i < 55; i++) {
         await run(db, `
