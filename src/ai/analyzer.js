@@ -2337,7 +2337,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       // Execute Claude CLI for orchestration
       logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
       const response = await aiProvider.execute(prompt, {
-        timeout: 300000, // 5 minutes for orchestration
+        timeout: 600000, // 10 minutes for orchestration
         level: 'orchestration',
         analysisId,
         registerProcess
