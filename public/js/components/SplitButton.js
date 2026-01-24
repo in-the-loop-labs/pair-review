@@ -84,6 +84,10 @@ class SplitButton {
     this.dropdown.setAttribute('role', 'menu');
     this.dropdown.style.display = 'none';
 
+    // Use event delegation for menu items - attach handler to dropdown container
+    // This prevents issues when updateDropdownMenu() replaces innerHTML while dropdown is open
+    this.dropdown.addEventListener('click', this.handleMenuItemClick);
+
     this.updateDropdownMenu();
 
     // Assemble the split button
@@ -127,11 +131,7 @@ class SplitButton {
     `;
 
     this.dropdown.innerHTML = menuItems;
-
-    // Add click handlers to menu items
-    this.dropdown.querySelectorAll('.split-button-menu-item').forEach(item => {
-      item.addEventListener('click', this.handleMenuItemClick);
-    });
+    // Event delegation is used - handler attached to dropdown container in render()
   }
 
   /**
@@ -155,12 +155,13 @@ class SplitButton {
   }
 
   /**
-   * Handle click on a menu item
+   * Handle click on a menu item (via event delegation from dropdown container)
    * @param {Event} event - Click event
    */
   handleMenuItemClick(event) {
-    const button = event.currentTarget;
-    if (button.disabled) return;
+    // Find the menu item button from the click target (event delegation)
+    const button = event.target.closest('.split-button-menu-item');
+    if (!button || button.disabled) return;
 
     const action = button.dataset.action;
 
@@ -366,6 +367,11 @@ class SplitButton {
    */
   destroy() {
     document.removeEventListener('click', this.handleOutsideClick);
+
+    // Remove delegated event listener from dropdown
+    if (this.dropdown) {
+      this.dropdown.removeEventListener('click', this.handleMenuItemClick);
+    }
 
     if (this.container) {
       this.container.remove();

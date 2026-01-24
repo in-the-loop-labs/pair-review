@@ -1195,3 +1195,118 @@ test.describe('Bulk Deletion via Clear All', () => {
     await expect(page.locator('.preview-modal-overlay')).not.toBeVisible({ timeout: 2000 });
   });
 });
+
+test.describe('SplitButton Dropdown Clear All', () => {
+  // This test suite specifically tests the Clear All option in the SplitButton dropdown menu.
+  // Regression test for pair_review-4oyn: The Clear All button was unreliable because
+  // updateDropdownMenu() replaced the DOM while the dropdown was open, orphaning event listeners.
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await waitForDiffToRender(page);
+    await cleanupAllComments(page);
+    await page.reload();
+    await waitForDiffToRender(page);
+    await expect(page.locator('.user-comment-row')).toHaveCount(0, { timeout: 5000 });
+  });
+
+  test.afterEach(async ({ page }) => {
+    await cleanupAllComments(page);
+  });
+
+  test('should clear all comments via SplitButton dropdown Clear All option', async ({ page }) => {
+    // Create a comment first
+    await openCommentFormOnLine(page, 0);
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Test comment for SplitButton Clear All');
+    await page.locator('.save-comment-btn').click();
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+
+    // Open the SplitButton dropdown
+    const dropdownToggle = page.locator('#split-button-dropdown-toggle');
+    await expect(dropdownToggle).toBeVisible({ timeout: 3000 });
+    await dropdownToggle.click();
+
+    // Wait for dropdown to be visible
+    const dropdown = page.locator('#split-button-dropdown');
+    await expect(dropdown).toBeVisible({ timeout: 2000 });
+
+    // Click the Clear All option
+    const clearAllOption = dropdown.locator('[data-action="clear"]');
+    await expect(clearAllOption).toBeVisible();
+    await expect(clearAllOption).toBeEnabled();
+    await clearAllOption.click();
+
+    // Wait for confirmation dialog
+    await expect(page.locator('.confirm-dialog-overlay')).toBeVisible({ timeout: 3000 });
+
+    // Confirm the deletion
+    const confirmBtn = page.locator('#confirm-dialog-btn');
+    await confirmBtn.click();
+
+    // Comment should be removed
+    await expect(page.locator('.user-comment-row')).toHaveCount(0, { timeout: 5000 });
+  });
+
+  test('should still work after dropdown is replaced during async operation', async ({ page }) => {
+    // This is the key regression test for pair_review-4oyn
+    // The bug was that updateDropdownMenu() replaced innerHTML while dropdown was open,
+    // causing event listeners to be attached to orphaned DOM elements
+
+    // Create a comment
+    await openCommentFormOnLine(page, 0);
+    const textarea = page.locator('.user-comment-form textarea');
+    await textarea.fill('Test comment for dropdown replacement test');
+    await page.locator('.save-comment-btn').click();
+    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
+
+    // Open the SplitButton dropdown
+    const dropdownToggle = page.locator('#split-button-dropdown-toggle');
+    await dropdownToggle.click();
+
+    const dropdown = page.locator('#split-button-dropdown');
+    await expect(dropdown).toBeVisible({ timeout: 2000 });
+
+    // Simulate the bug condition: trigger updateCommentCount while dropdown is open
+    // This calls updateDropdownMenu() which replaces all the menu items
+    await page.evaluate(() => {
+      if (window.prManager && window.prManager.splitButton) {
+        // Force dropdown menu update (simulating what happens during async operations)
+        window.prManager.splitButton.updateCommentCount(
+          window.prManager.splitButton.getCommentCount()
+        );
+      }
+    });
+
+    // The Clear All option should still work even after the DOM was replaced
+    const clearAllOption = dropdown.locator('[data-action="clear"]');
+    await expect(clearAllOption).toBeVisible();
+    await expect(clearAllOption).toBeEnabled();
+
+    // This click would fail without the event delegation fix
+    await clearAllOption.click();
+
+    // Wait for confirmation dialog - proves the click handler worked
+    await expect(page.locator('.confirm-dialog-overlay')).toBeVisible({ timeout: 3000 });
+
+    // Confirm and verify deletion completes
+    const confirmBtn = page.locator('#confirm-dialog-btn');
+    await confirmBtn.click();
+
+    await expect(page.locator('.user-comment-row')).toHaveCount(0, { timeout: 5000 });
+  });
+
+  test('should have Clear All disabled when no comments exist', async ({ page }) => {
+    // No comments, so Clear All should be disabled
+    const dropdownToggle = page.locator('#split-button-dropdown-toggle');
+    await expect(dropdownToggle).toBeVisible({ timeout: 3000 });
+    await dropdownToggle.click();
+
+    const dropdown = page.locator('#split-button-dropdown');
+    await expect(dropdown).toBeVisible({ timeout: 2000 });
+
+    const clearAllOption = dropdown.locator('[data-action="clear"]');
+    await expect(clearAllOption).toBeVisible();
+    await expect(clearAllOption).toBeDisabled();
+  });
+});
