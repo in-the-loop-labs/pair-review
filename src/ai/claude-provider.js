@@ -96,7 +96,12 @@ class ClaudeProvider extends AIProvider {
     ].join(',');
 
     // Build args: base args + provider extra_args + model extra_args
-    const baseArgs = ['-p', '--model', model, '--allowedTools', allowedTools];
+    // Use --output-format stream-json for JSONL streaming output (better debugging visibility)
+    //
+    // IMPORTANT: --verbose is MANDATORY when combining --output-format stream-json with -p (print mode).
+    // Without --verbose, the stream-json output is incomplete or malformed in print mode.
+    // This is a known requirement of the Claude CLI - do not remove --verbose from these args.
+    const baseArgs = ['-p', '--verbose', '--model', model, '--output-format', 'stream-json', '--allowedTools', allowedTools];
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];
@@ -162,6 +167,8 @@ class ClaudeProvider extends AIProvider {
       let stderr = '';
       let timeoutId = null;
       let settled = false;  // Guard against multiple resolve/reject calls
+      let lineBuffer = '';  // Buffer for incomplete JSONL lines
+      let lineCount = 0;    // Count of JSONL events for progress tracking
 
       const settle = (fn, value) => {
         if (settled) return;
@@ -179,9 +186,23 @@ class ClaudeProvider extends AIProvider {
         }, timeout);
       }
 
-      // Collect stdout
+      // Collect stdout with streaming JSONL parsing for debug visibility
       claude.stdout.on('data', (data) => {
-        stdout += data.toString();
+        const chunk = data.toString();
+        stdout += chunk;
+
+        // Parse JSONL lines as they arrive for streaming debug output
+        lineBuffer += chunk;
+        const lines = lineBuffer.split('\n');
+        // Keep the last incomplete line in buffer
+        lineBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.trim()) {
+            lineCount++;
+            this.logStreamLine(line, levelPrefix);
+          }
+        }
       });
 
       // Collect stderr
@@ -216,14 +237,25 @@ class ClaudeProvider extends AIProvider {
           return;
         }
 
-        // Extract JSON from the text response
-        const extracted = extractJSON(stdout, level);
-        if (extracted.success) {
+        // Log completion with event count
+        logger.info(`${levelPrefix} Claude CLI completed: ${lineCount} JSONL events received`);
+
+        // Parse the Claude JSONL stream response
+        const parsed = this.parseClaudeResponse(stdout, level);
+        if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
-          settle(resolve, extracted.data);
+          // Dump the parsed data for debugging
+          const dataPreview = JSON.stringify(parsed.data, null, 2);
+          logger.debug(`${levelPrefix} [parsed_data] ${dataPreview.substring(0, 3000)}${dataPreview.length > 3000 ? '...' : ''}`);
+          // Log suggestion count if present
+          if (parsed.data?.suggestions) {
+            const count = Array.isArray(parsed.data.suggestions) ? parsed.data.suggestions.length : 0;
+            logger.info(`${levelPrefix} [response] ${count} suggestions in parsed response`);
+          }
+          settle(resolve, parsed.data);
         } else {
           // Regex extraction failed, try LLM-based extraction as fallback
-          logger.warn(`${levelPrefix} Regex extraction failed: ${extracted.error}`);
+          logger.warn(`${levelPrefix} Regex extraction failed: ${parsed.error}`);
           logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
           logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
 
@@ -293,6 +325,163 @@ class ClaudeProvider extends AIProvider {
       useShell: false,
       promptViaStdin: true
     };
+  }
+
+  /**
+   * Log a streaming JSONL line for debugging visibility
+   * Claude stream-json format:
+   * - stream_event with content_block_delta: text fragments
+   * - assistant messages: tool calls and results
+   * - result: final result with text content
+   *
+   * @param {string} line - A single JSONL line
+   * @param {string} levelPrefix - Logging prefix
+   */
+  logStreamLine(line, levelPrefix) {
+    try {
+      const event = JSON.parse(line);
+      const eventType = event.type;
+
+      if (eventType === 'stream_event') {
+        // Streaming text delta
+        const delta = event.event?.delta;
+        if (delta?.type === 'text_delta' && delta?.text) {
+          // Log text fragments at debug level (can be very frequent)
+          const preview = delta.text.replace(/\n/g, '\\n').substring(0, 80);
+          logger.debug(`${levelPrefix} [text] ${preview}${delta.text.length > 80 ? '...' : ''}`);
+        }
+      } else if (eventType === 'assistant') {
+        // Assistant turn with tool use or message
+        // Dump full content for debugging
+        logger.debug(`${levelPrefix} [assistant] ${JSON.stringify(event.message?.content || event, null, 2).substring(0, 2000)}`);
+      } else if (eventType === 'user') {
+        // Tool result - dump full content for debugging
+        logger.debug(`${levelPrefix} [user] ${JSON.stringify(event.message?.content || event, null, 2).substring(0, 2000)}`);
+      } else if (eventType === 'result') {
+        // Final result - extract text content and show a preview
+        const cost = event.cost_usd ? `$${event.cost_usd.toFixed(4)}` : 'unknown';
+        const tokens = event.usage ? `${event.usage.input_tokens}in/${event.usage.output_tokens}out` : '';
+
+        // Extract text content from result for a preview
+        let textPreview = '';
+        if (event.result?.content) {
+          for (const block of event.result.content) {
+            if (block.type === 'text' && block.text) {
+              textPreview += block.text;
+            }
+          }
+        }
+
+        // Log the result summary
+        logger.info(`${levelPrefix} [result] cost=${cost} tokens=${tokens}`);
+
+        // Show a preview of the actual response content
+        if (textPreview) {
+          const charCount = textPreview.length;
+          const preview = textPreview.replace(/\s+/g, ' ').substring(0, 100);
+          logger.info(`${levelPrefix} [response] ${charCount} chars: ${preview}${charCount > 100 ? '...' : ''}`);
+        }
+      } else if (eventType === 'system') {
+        // System messages are not useful for debugging - silently ignore
+      } else if (eventType) {
+        // Unknown event type - only log if we have an actual type
+        logger.debug(`${levelPrefix} [${eventType}] event received`);
+      }
+      // Silently ignore events with no type
+    } catch (parseError) {
+      // Skip malformed lines
+      logger.debug(`${levelPrefix} Skipping malformed JSONL line: ${line.substring(0, 100)}`);
+    }
+  }
+
+  /**
+   * Parse Claude CLI JSONL stream response
+   * Claude with --output-format stream-json outputs JSONL with:
+   * - stream_event: text deltas during streaming
+   * - assistant: tool calls
+   * - user: tool results
+   * - result: final result with text content
+   *
+   * We need to extract the text from the result message.
+   *
+   * @param {string} stdout - Raw stdout from Claude CLI (JSONL format)
+   * @param {string|number} level - Analysis level for logging
+   * @returns {{success: boolean, data?: Object, error?: string}}
+   */
+  parseClaudeResponse(stdout, level) {
+    const levelPrefix = `[Level ${level}]`;
+
+    try {
+      // Split by newlines and parse each JSON line
+      const lines = stdout.trim().split('\n').filter(line => line.trim());
+      let textContent = '';
+      let resultEvent = null;
+
+      // First pass: find the result event (authoritative source)
+      for (const line of lines) {
+        try {
+          const event = JSON.parse(line);
+          if (event.type === 'result') {
+            resultEvent = event;
+            break; // Result is the final event, no need to continue
+          }
+        } catch (lineError) {
+          // Skip malformed lines
+          logger.debug(`${levelPrefix} Skipping malformed JSONL line: ${line.substring(0, 100)}`);
+        }
+      }
+
+      // Extract content from result event only (single authoritative source)
+      // The result event contains the complete response - assistant messages and
+      // stream_event deltas are intermediate views of the same content.
+      if (resultEvent) {
+        // Check for subresult first (structured output takes precedence)
+        // When subresult exists, it is the authoritative structured response and
+        // any text content from earlier events is intentionally ignored.
+        if (resultEvent.result?.subresult) {
+          const subresult = resultEvent.result.subresult;
+          if (typeof subresult === 'object') {
+            return { success: true, data: subresult };
+          }
+        }
+
+        // Extract text from result.content
+        if (resultEvent.result?.content) {
+          for (const block of resultEvent.result.content) {
+            if (block.type === 'text' && block.text) {
+              textContent += block.text;
+            }
+          }
+        }
+      }
+
+      if (textContent) {
+        logger.debug(`${levelPrefix} Extracted ${textContent.length} chars of text content from JSONL`);
+        // Try to extract JSON from the accumulated text content
+        const extracted = extractJSON(textContent, level);
+        if (extracted.success) {
+          return extracted;
+        }
+
+        // If no JSON found, return the raw text
+        logger.warn(`${levelPrefix} Text content is not JSON, treating as raw text`);
+        return { success: false, error: 'Text content is not valid JSON' };
+      }
+
+      // No text content found - don't fall back to raw stdout extraction
+      // as that would pick up system events instead of the actual response
+      logger.warn(`${levelPrefix} No text content found in JSONL stream`);
+      return { success: false, error: 'No text content found in response' };
+
+    } catch (parseError) {
+      // stdout might not be valid JSONL at all, try extracting JSON from it
+      const extracted = extractJSON(stdout, level);
+      if (extracted.success) {
+        return extracted;
+      }
+
+      return { success: false, error: `JSONL parse error: ${parseError.message}` };
+    }
   }
 
   /**
