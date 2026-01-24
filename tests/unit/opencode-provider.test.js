@@ -382,6 +382,61 @@ describe('OpenCodeProvider', () => {
       expect(() => provider.logStreamLine(line, 5, '[Level 1]')).not.toThrow();
     });
 
+    // OpenCode-specific format tests (part.tool, part.callID, part.state.input)
+    it('should handle OpenCode tool_use format with tool field', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'tool_use',
+        timestamp: 1234567890,
+        sessionID: 'sess_123',
+        part: {
+          type: 'tool',
+          tool: 'read',
+          callID: 'call_abc123',
+          state: {
+            status: 'completed',
+            input: { file_path: '/path/to/file.js' }
+          }
+        }
+      });
+      // Should not throw and should log with correct tool name
+      expect(() => provider.logStreamLine(line, 5, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle OpenCode tool_use format with bash command', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'tool_use',
+        timestamp: 1234567890,
+        sessionID: 'sess_123',
+        part: {
+          type: 'tool',
+          tool: 'bash',
+          callID: 'call_xyz789',
+          state: {
+            status: 'running',
+            input: { command: 'git diff HEAD~1' }
+          }
+        }
+      });
+      // Should not throw and should log with correct tool name and command preview
+      expect(() => provider.logStreamLine(line, 6, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle OpenCode tool_use format with part.tool precedence', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'tool_use',
+        part: {
+          tool: 'actual_tool',
+          name: 'wrong_name',
+          callID: 'call_123'
+        }
+      });
+      // Should not throw - part.tool takes precedence over part.name
+      expect(() => provider.logStreamLine(line, 7, '[Level 1]')).not.toThrow();
+    });
+
     it('should handle tool_result events without throwing', () => {
       logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({

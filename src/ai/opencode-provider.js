@@ -319,12 +319,14 @@ class OpenCodeProvider extends AIProvider {
         case 'tool_call':
         case 'tool_use': {
           // Enhanced tool call/use logging with name and input preview
+          // OpenCode tool_use format: { type: "tool_use", part: { type: "tool", tool: "name", callID: "...", state: { input: {...} } } }
           const part = event.part || {};
-          const toolName = part.name || part.tool_name || 'unknown';
-          const toolId = part.id || part.tool_use_id || '';
+          const toolName = part.tool || part.name || part.tool_name || 'unknown';
+          const toolId = part.callID || part.id || part.tool_use_id || '';
 
           // Extract input/arguments - may be in different fields depending on format
-          const toolInput = part.input || part.arguments || part.args || null;
+          // OpenCode uses part.state.input for tool arguments
+          const toolInput = part.state?.input || part.input || part.arguments || part.args || null;
           let inputPreview = '';
 
           if (toolInput) {
