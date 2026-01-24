@@ -15,7 +15,12 @@ const {
   getRegisteredProviderIds,
   getAllProvidersInfo,
   createProvider,
-  testProviderAvailability
+  testProviderAvailability,
+  applyConfigOverrides,
+  getProviderConfigOverrides,
+  inferModelDefaults,
+  resolveDefaultModel,
+  prettifyModelId
 } = require('./provider');
 
 // Load and register all providers
@@ -24,6 +29,7 @@ require('./claude-provider');
 require('./gemini-provider');
 require('./codex-provider');
 require('./copilot-provider');
+require('./opencode-provider');
 
 // Export the unified API
 module.exports = {
@@ -43,5 +49,12 @@ module.exports = {
   createProvider,
 
   // Utilities
-  testProviderAvailability
+  testProviderAvailability,
+
+  // Config override support
+  applyConfigOverrides,
+  getProviderConfigOverrides,
+  inferModelDefaults,
+  resolveDefaultModel,
+  prettifyModelId
 };

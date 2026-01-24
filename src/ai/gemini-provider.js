@@ -50,12 +50,21 @@ const GEMINI_MODELS = [
 ];
 
 class GeminiProvider extends AIProvider {
-  constructor(model = 'gemini-2.5-pro') {
+  /**
+   * @param {string} model - Model identifier
+   * @param {Object} configOverrides - Config overrides from providers config
+   * @param {string} configOverrides.command - Custom CLI command
+   * @param {string[]} configOverrides.extra_args - Additional CLI arguments
+   * @param {Object} configOverrides.env - Additional environment variables
+   * @param {Object[]} configOverrides.models - Custom model definitions
+   */
+  constructor(model = 'gemini-2.5-pro', configOverrides = {}) {
     super(model);
 
-    // Check for environment variable to override default command
-    // Supports multi-word commands like "npx gemini" or "/path/to/gemini --verbose"
-    const geminiCmd = process.env.PAIR_REVIEW_GEMINI_CMD || 'gemini';
+    // Command precedence: ENV > config > default
+    const envCmd = process.env.PAIR_REVIEW_GEMINI_CMD;
+    const configCmd = configOverrides.command;
+    const geminiCmd = envCmd || configCmd || 'gemini';
 
     // For multi-word commands, use shell mode (same pattern as Claude provider)
     this.useShell = geminiCmd.includes(' ');
@@ -119,13 +128,35 @@ class GeminiProvider extends AIProvider {
       // git-diff-lines is added to PATH via BIN_DIR so bare command works
       'run_shell_command(git-diff-lines)', // Custom annotated diff tool
     ].join(',');
+
+    // Build args: base args + provider extra_args + model extra_args
+    const baseArgs = ['-m', model, '-o', 'json', '--allowed-tools', readOnlyTools];
+    const providerArgs = configOverrides.extra_args || [];
+    const modelConfig = configOverrides.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    // Merge env: provider env + model env
+    this.extraEnv = {
+      ...(configOverrides.env || {}),
+      ...(modelConfig?.env || {})
+    };
+
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${geminiCmd} -m ${model} -o json --allowed-tools "${readOnlyTools}"`;
+      // Quote the allowed-tools value to prevent shell interpretation of special characters
+      // (commas, parentheses in patterns like "run_shell_command(git diff)")
+      const quotedBaseArgs = baseArgs.map((arg, i) => {
+        // The allowed-tools value follows the --allowed-tools flag
+        if (baseArgs[i - 1] === '--allowed-tools') {
+          return `'${arg}'`;
+        }
+        return arg;
+      });
+      this.command = `${geminiCmd} ${[...quotedBaseArgs, ...providerArgs, ...modelArgs].join(' ')}`;
       this.args = [];
     } else {
       this.command = geminiCmd;
-      this.args = ['-m', model, '-o', 'json', '--allowed-tools', readOnlyTools];
+      this.args = [...baseArgs, ...providerArgs, ...modelArgs];
     }
   }
 
@@ -147,6 +178,7 @@ class GeminiProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
+          ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell

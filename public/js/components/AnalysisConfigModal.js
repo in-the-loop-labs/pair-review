@@ -57,9 +57,14 @@ class AnalysisConfigModal {
       const data = await response.json();
 
       // Convert array to object keyed by provider id
+      // Filter out providers with no models configured (e.g., unconfigured OpenCode)
       this.providers = {};
       for (const provider of data.providers) {
-        this.providers[provider.id] = provider;
+        if (provider.models && provider.models.length > 0) {
+          this.providers[provider.id] = provider;
+        } else {
+          console.warn(`Provider "${provider.name}" has no models configured and will not be available`);
+        }
       }
 
       this.providersLoaded = true;

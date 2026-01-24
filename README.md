@@ -33,7 +33,7 @@ pair-review is a local web application that transforms how you review code, espe
 - **Local-First**: All data and processing happens on your machine - no cloud dependencies
 - **GitHub-Familiar UI**: Interface feels instantly familiar to GitHub users
 - **Human-in-the-Loop**: AI suggests, you decide
-- **Multiple AI Providers**: Support for Claude, Gemini, Codex, and Copilot. Use your existing subscription!
+- **Multiple AI Providers**: Support for Claude, Gemini, Codex, Copilot, and OpenCode. Use your existing subscription!
 - **Progressive**: Start simple with manual review, add AI analysis when you need it
 
 ## Quick Start
@@ -116,7 +116,7 @@ pair-review --local [path]
 | `-d`, `--debug` | Enable verbose debug logging for troubleshooting |
 | `-h`, `--help` | Show help message with full CLI documentation |
 | `-l`, `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
-| `--model <name>` | Override the AI model (currently only applies to Claude). Options: `opus`, `sonnet`, `haiku`. Default: `sonnet` |
+| `--model <name>` | Override the AI model for any provider. Model availability depends on provider configuration. |
 | `-v`, `--version` | Show version number |
 
 ### Examples
@@ -142,9 +142,15 @@ Configuration is stored in `~/.pair-review/config.json`:
 {
   "github_token": "ghp_your_token_here",
   "port": 3000,
-  "theme": "light"
+  "theme": "light",
+  "default_provider": "claude",
+  "default_model": "sonnet"
 }
 ```
+
+On first run, pair-review creates `~/.pair-review/config.example.json` with comprehensive examples of all available options, including custom provider and model configurations. Use this as a reference when customizing your setup.
+
+For advanced configuration with custom providers and models, see [AI Provider Configuration](#ai-provider-configuration) below.
 
 ### Environment Variables
 
@@ -157,6 +163,7 @@ pair-review supports several environment variables for customizing behavior:
 | `PAIR_REVIEW_GEMINI_CMD` | Custom command to invoke Gemini CLI | `gemini` |
 | `PAIR_REVIEW_CODEX_CMD` | Custom command to invoke Codex CLI | `codex` |
 | `PAIR_REVIEW_COPILOT_CMD` | Custom command to invoke Copilot CLI | `copilot` |
+| `PAIR_REVIEW_OPENCODE_CMD` | Custom command to invoke OpenCode CLI | `opencode` |
 | `PAIR_REVIEW_MODEL` | Override the AI model to use (same as `--model` flag) | Provider default |
 
 **Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
@@ -204,12 +211,110 @@ Create a Personal Access Token (PAT) with these scopes:
 
 pair-review integrates with AI providers via their CLI tools:
 
-- **Claude**: Uses Claude Code
+- **Claude**: Uses Claude Code CLI
 - **Gemini**: Uses Gemini CLI
 - **Codex**: Uses Codex CLI
 - **GitHub Copilot**: Uses Copilot CLI
+- **OpenCode**: Uses OpenCode CLI (requires model configuration)
 
 You can select your preferred provider and model in the repository settings UI.
+
+#### Built-in vs. Configurable Providers
+
+Most providers (Claude, Gemini, Codex, Copilot) come with built-in model definitions. **OpenCode is different** - it has no built-in models and requires you to configure which models to use.
+
+#### Configuring Custom Models
+
+You can override provider settings and define custom models in your config file. This is useful for:
+- Adding models to OpenCode (required)
+- Overriding default commands or arguments
+- Setting provider-specific environment variables
+
+**Full provider configuration example:**
+
+```json
+{
+  "github_token": "ghp_your_token_here",
+  "default_provider": "opencode",
+  "default_model": "anthropic/claude-sonnet-4",
+  "providers": {
+    "opencode": {
+      "command": "opencode",
+      "extra_args": ["--verbose"],
+      "env": { "OPENCODE_TELEMETRY": "off" },
+      "models": [
+        {
+          "id": "anthropic/claude-sonnet-4",
+          "tier": "balanced",
+          "default": true,
+          "name": "Claude Sonnet 4",
+          "description": "Fast and capable for most reviews",
+          "tagline": "Best balance of speed and quality"
+        },
+        {
+          "id": "anthropic/claude-opus-4",
+          "tier": "premium",
+          "name": "Claude Opus 4",
+          "description": "Most capable model for complex reviews"
+        },
+        {
+          "id": "openai/gpt-4.1",
+          "tier": "thorough",
+          "name": "GPT-4.1",
+          "description": "OpenAI's latest model"
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Provider Configuration Fields
+
+| Field | Description |
+|-------|-------------|
+| `command` | CLI command to execute (overrides default and environment variable) |
+| `extra_args` | Additional arguments to pass to the CLI |
+| `env` | Environment variables to set when running the CLI |
+| `installInstructions` | Custom installation instructions shown in UI |
+| `models` | Array of model definitions (see below) |
+
+#### Model Configuration Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | Yes | Model identifier passed to the CLI |
+| `tier` | Yes | One of: `fast`, `balanced`, `thorough` (aliases: `free`→`fast`, `premium`→`thorough`) |
+| `name` | No | Display name in the UI |
+| `description` | No | Longer description of the model |
+| `tagline` | No | Short description shown in model picker |
+| `badge` | No | Badge text (e.g., "NEW", "BETA") |
+| `badgeClass` | No | CSS class for badge styling |
+| `default` | No | Set to `true` to make this the default model for the provider |
+| `extra_args` | No | Model-specific CLI arguments |
+| `env` | No | Model-specific environment variables |
+
+#### Model Tiers
+
+Models are grouped by tier to help users choose appropriately:
+
+- **fast**: Quick analysis, lower cost, good for simple reviews
+- **balanced**: Best mix of speed and quality (recommended)
+- **thorough**: Most comprehensive analysis, higher cost
+
+Aliases are available for convenience: `free` (maps to `fast`), `premium` (maps to `thorough`).
+
+#### Command Precedence
+
+The CLI command used for a provider follows this precedence (highest to lowest):
+
+1. Environment variable (e.g., `PAIR_REVIEW_OPENCODE_CMD`)
+2. Config file `providers.<provider>.command`
+3. Built-in default
+
+#### Migration Notes
+
+If you have an older config file using `provider` and `model` keys at the top level, they are automatically treated as `default_provider` and `default_model`. No migration is required.
 
 ## Features
 
@@ -347,6 +452,9 @@ A: Add comments during review, click "Preview Review", copy the markdown, and pa
 
 **Q: Something isn't working right. What should I try first?**
 A: Try refreshing your browser. Many transient issues resolve with a simple page refresh.
+
+**Q: How do I use OpenCode as my AI provider?**
+A: OpenCode has no built-in models, so you must configure them in your `~/.pair-review/config.json`. Add a `providers.opencode.models` array with at least one model definition. See the [AI Provider Configuration](#ai-provider-configuration) section for a complete example.
 
 ## Contributing
 

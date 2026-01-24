@@ -50,7 +50,7 @@ function getPRKey(owner, repo, prNumber) {
 
 /**
  * Get the model to use for AI analysis
- * Priority: CLI flag (PAIR_REVIEW_MODEL env var) > config.model > 'sonnet' default
+ * Priority: CLI flag (PAIR_REVIEW_MODEL env var) > config.default_model > 'sonnet' default
  * @param {Object} req - Express request object
  * @returns {string} Model name to use
  */
@@ -60,10 +60,16 @@ function getModel(req) {
     return process.env.PAIR_REVIEW_MODEL;
   }
 
-  // Config file setting
+  // Config file setting (default_model preferred, model for backwards compatibility)
   const config = req.app.get('config');
-  if (config && config.model) {
-    return config.model;
+  if (config) {
+    if (config.default_model) {
+      return config.default_model;
+    }
+    // Backwards compatibility with old config key
+    if (config.model) {
+      return config.model;
+    }
   }
 
   // Default fallback

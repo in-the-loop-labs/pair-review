@@ -56,12 +56,21 @@ const CODEX_MODELS = [
 ];
 
 class CodexProvider extends AIProvider {
-  constructor(model = 'gpt-5.1-codex-max') {
+  /**
+   * @param {string} model - Model identifier
+   * @param {Object} configOverrides - Config overrides from providers config
+   * @param {string} configOverrides.command - Custom CLI command
+   * @param {string[]} configOverrides.extra_args - Additional CLI arguments
+   * @param {Object} configOverrides.env - Additional environment variables
+   * @param {Object[]} configOverrides.models - Custom model definitions
+   */
+  constructor(model = 'gpt-5.1-codex-max', configOverrides = {}) {
     super(model);
 
-    // Check for environment variable to override default command
-    // Supports multi-word commands like "npx codex" or "/path/to/codex --verbose"
-    const codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
+    // Command precedence: ENV > config > default
+    const envCmd = process.env.PAIR_REVIEW_CODEX_CMD;
+    const configCmd = configOverrides.command;
+    const codexCmd = envCmd || configCmd || 'codex';
 
     // For multi-word commands, use shell mode (same pattern as Claude provider)
     this.useShell = codexCmd.includes(' ');
@@ -82,13 +91,26 @@ class CodexProvider extends AIProvider {
     // --full-auto: Non-interactive mode that auto-approves within sandbox bounds.
     // Combined with workspace-write sandbox, this limits damage to the worktree only.
     // Note: The -a flag is for interactive mode only; exec subcommand uses --full-auto.
+
+    // Build args: base args + provider extra_args + model extra_args
+    const baseArgs = ['exec', '-m', model, '--json', '--sandbox', 'workspace-write', '--full-auto', '-'];
+    const providerArgs = configOverrides.extra_args || [];
+    const modelConfig = configOverrides.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    // Merge env: provider env + model env
+    this.extraEnv = {
+      ...(configOverrides.env || {}),
+      ...(modelConfig?.env || {})
+    };
+
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${codexCmd} exec -m ${model} --json --sandbox workspace-write --full-auto -`;
+      this.command = `${codexCmd} ${[...baseArgs, ...providerArgs, ...modelArgs].join(' ')}`;
       this.args = [];
     } else {
       this.command = codexCmd;
-      this.args = ['exec', '-m', model, '--json', '--sandbox', 'workspace-write', '--full-auto', '-'];
+      this.args = [...baseArgs, ...providerArgs, ...modelArgs];
     }
   }
 
@@ -110,6 +132,7 @@ class CodexProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
+          ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell
