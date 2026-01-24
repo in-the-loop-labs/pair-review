@@ -395,6 +395,7 @@ class GitHubClient {
             await new Promise(resolve => setTimeout(resolve, 1000));
           } else {
             console.error(`Batch ${batchNumber} failed after retry: ${error.message}`);
+            break; // Exit retry loop - all retries exhausted
           }
         }
       }
