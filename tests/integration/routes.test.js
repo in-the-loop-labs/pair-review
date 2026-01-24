@@ -1808,8 +1808,8 @@ describe('Review Submission Endpoint', () => {
       expect(comments.length).toBe(2);
     });
 
-    it('should reject reviews with too many comments', async () => {
-      // Insert more than 50 comments (GitHub API limit)
+    it('should accept reviews with more than 50 comments', async () => {
+      // Insert more than 50 comments - now supported via batched submission
       for (let i = 0; i < 55; i++) {
         await run(db, `
           INSERT INTO comments (review_id, source, file, line_start, diff_position, body, status)
@@ -1821,8 +1821,9 @@ describe('Review Submission Endpoint', () => {
         .post('/api/pr/owner/repo/1/submit-review')
         .send({ event: 'APPROVE' });
 
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('Too many comments');
+      // Large reviews are now supported through batched comment submission
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
     });
 
     it('should submit file-level comments with isFileLevel flag', async () => {

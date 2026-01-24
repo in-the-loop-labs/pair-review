@@ -807,13 +807,6 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       ORDER BY file, line_start
     `, [review.id]);
 
-    // Check if there are too many comments (GitHub API limit is ~50)
-    if (comments.length > 50) {
-      return res.status(400).json({
-        error: `Too many comments (${comments.length}). GitHub API supports up to 50 inline comments per review. Please reduce the number of comments.`
-      });
-    }
-
     // Get worktree path and generate diff for position calculation
     const worktreeManager = new GitWorktreeManager(db);
     const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });

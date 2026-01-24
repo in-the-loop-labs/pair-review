@@ -461,6 +461,185 @@ describe('GitHubClient', () => {
     });
   });
 
+  describe('addCommentsInBatches', () => {
+    it('should split comments into batches of the correct size', async () => {
+      const client = new GitHubClient('test-token');
+      const graphqlCalls = [];
+      const mockGraphql = vi.fn().mockImplementation((mutation) => {
+        graphqlCalls.push(mutation);
+        // Count how many comments are in this mutation
+        const commentMatches = mutation.match(/comment\d+:/g) || [];
+        const result = {};
+        commentMatches.forEach((match, index) => {
+          result[`comment${index}`] = { thread: { id: `thread-${index}` } };
+        });
+        return Promise.resolve(result);
+      });
+      client.octokit.graphql = mockGraphql;
+
+      // Create 30 comments with batch size 10 = should result in 3 batches
+      const comments = [];
+      for (let i = 0; i < 30; i++) {
+        comments.push({
+          path: `file${i}.js`,
+          line: i + 1,
+          side: 'RIGHT',
+          body: `Comment ${i}`
+        });
+      }
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 10);
+
+      expect(result.successCount).toBe(30);
+      expect(result.failed).toBe(false);
+      // Should have made 3 GraphQL calls (one per batch)
+      expect(mockGraphql).toHaveBeenCalledTimes(3);
+
+      // Verify each batch has the correct number of comments
+      expect(graphqlCalls[0].match(/comment\d+:/g).length).toBe(10);
+      expect(graphqlCalls[1].match(/comment\d+:/g).length).toBe(10);
+      expect(graphqlCalls[2].match(/comment\d+:/g).length).toBe(10);
+    });
+
+    it('should make multiple GraphQL calls (one per batch)', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockImplementation((mutation) => {
+        const commentMatches = mutation.match(/comment\d+:/g) || [];
+        const result = {};
+        commentMatches.forEach((match, index) => {
+          result[`comment${index}`] = { thread: { id: `thread-${index}` } };
+        });
+        return Promise.resolve(result);
+      });
+      client.octokit.graphql = mockGraphql;
+
+      // 7 comments with batch size 3 = 3 batches (3, 3, 1)
+      const comments = [];
+      for (let i = 0; i < 7; i++) {
+        comments.push({
+          path: `file${i}.js`,
+          line: i + 1,
+          side: 'RIGHT',
+          body: `Comment ${i}`
+        });
+      }
+
+      await client.addCommentsInBatches('PR_node123', 'review-123', comments, 3);
+
+      expect(mockGraphql).toHaveBeenCalledTimes(3);
+    });
+
+    it('should retry on transient failure and succeed', async () => {
+      const client = new GitHubClient('test-token');
+      let callCount = 0;
+      const mockGraphql = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // First call fails
+          return Promise.reject(new Error('Transient network error'));
+        }
+        // Retry succeeds
+        return Promise.resolve({
+          comment0: { thread: { id: 'thread-0' } }
+        });
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [{
+        path: 'file.js',
+        line: 1,
+        side: 'RIGHT',
+        body: 'Comment'
+      }];
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+
+      expect(result.successCount).toBe(1);
+      expect(result.failed).toBe(false);
+      // Should have been called twice (initial + 1 retry)
+      expect(mockGraphql).toHaveBeenCalledTimes(2);
+    });
+
+    it('should return failed: true on partial failure', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        comment0: { thread: { id: 'thread-0' } },
+        comment1: null // This comment failed
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [
+        { path: 'file1.js', line: 1, side: 'RIGHT', body: 'Comment 1' },
+        { path: 'file2.js', line: 2, side: 'RIGHT', body: 'Comment 2' }
+      ];
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+
+      expect(result.successCount).toBe(1);
+      expect(result.failed).toBe(true);
+    });
+
+    it('should return failed: true when batch completely fails after retry', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockRejectedValue(new Error('Persistent error'));
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [{
+        path: 'file.js',
+        line: 1,
+        side: 'RIGHT',
+        body: 'Comment'
+      }];
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+
+      expect(result.successCount).toBe(0);
+      expect(result.failed).toBe(true);
+      // Should have been called twice (initial + 1 retry)
+      expect(mockGraphql).toHaveBeenCalledTimes(2);
+    });
+
+    it('should return empty success for no comments', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn();
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', [], 25);
+
+      expect(result.successCount).toBe(0);
+      expect(result.failed).toBe(false);
+      expect(mockGraphql).not.toHaveBeenCalled();
+    });
+
+    it('should recover from partial error when all comments succeed', async () => {
+      const client = new GitHubClient('test-token');
+      // Simulate error with data (partial success that actually succeeded fully)
+      const errorWithData = new Error('GraphQL error with partial data');
+      errorWithData.data = {
+        comment0: { thread: { id: 'thread-0' } },
+        comment1: { thread: { id: 'thread-1' } }
+      };
+      errorWithData.errors = [{ message: 'Some warning' }];
+
+      const mockGraphql = vi.fn()
+        .mockRejectedValueOnce(errorWithData) // First attempt fails with partial data
+        .mockRejectedValueOnce(errorWithData); // Retry also returns same result
+
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [
+        { path: 'file1.js', line: 1, side: 'RIGHT', body: 'Comment 1' },
+        { path: 'file2.js', line: 2, side: 'RIGHT', body: 'Comment 2' }
+      ];
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+
+      // Should succeed because all comments in error.data succeeded
+      expect(result.successCount).toBe(2);
+      expect(result.failed).toBe(false);
+    });
+  });
+
   describe('calculateDiffPosition', () => {
     it('should return -1 for missing parameters', () => {
       const client = new GitHubClient('test-token');

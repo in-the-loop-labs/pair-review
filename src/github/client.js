@@ -295,6 +295,187 @@ class GitHubClient {
   }
 
   /**
+   * Add comments to a pending review in batches
+   * This helper splits comments into batches to avoid GitHub API limits
+   * on large mutations. Each batch is executed sequentially with retry logic.
+   *
+   * @param {string} prNodeId - GraphQL node ID for the PR (e.g., "PR_kwDOM...")
+   * @param {string} reviewId - GraphQL node ID for the pending review
+   * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
+   * @param {number} batchSize - Number of comments per batch (default: 25)
+   * @returns {Promise<Object>} Result with successCount and failed flag
+   */
+  // Batch size of 25 is empirically chosen to stay well under GitHub's GraphQL
+  // mutation size limits while still being efficient for large reviews.
+  async addCommentsInBatches(prNodeId, reviewId, comments, batchSize = 25) {
+    if (comments.length === 0) {
+      return { successCount: 0, failed: false };
+    }
+
+    // Split comments into batches
+    const batches = [];
+    for (let i = 0; i < comments.length; i += batchSize) {
+      batches.push(comments.slice(i, i + batchSize));
+    }
+
+    console.log(`Adding ${comments.length} comments in ${batches.length} batch(es) of up to ${batchSize} comments each`);
+
+    let totalSuccessful = 0;
+
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
+      const batchNumber = batchIndex + 1;
+      console.log(`Adding comments batch ${batchNumber}/${batches.length} (${batch.length} comments)...`);
+
+      // Build mutation for this batch
+      const commentMutations = batch.map((comment, index) => {
+        const isFileLevel = comment.isFileLevel || !comment.line;
+
+        if (isFileLevel) {
+          // File-level comment (for expanded context lines)
+          return `
+            comment${index}: addPullRequestReviewThread(input: {
+              pullRequestId: $prId
+              pullRequestReviewId: $reviewId
+              path: "${comment.path}"
+              subjectType: FILE
+              body: ${JSON.stringify(comment.body)}
+            }) {
+              thread { id }
+            }
+          `;
+        } else {
+          // Line-level comment
+          const side = comment.side || 'RIGHT';
+          const startLineField = comment.start_line ? `startLine: ${comment.start_line}\n                ` : '';
+          return `
+            comment${index}: addPullRequestReviewThread(input: {
+              pullRequestId: $prId
+              pullRequestReviewId: $reviewId
+              path: "${comment.path}"
+              ${startLineField}line: ${comment.line}
+              side: ${side}
+              body: ${JSON.stringify(comment.body)}
+            }) {
+              thread { id }
+            }
+          `;
+        }
+      }).join('\n');
+
+      const batchMutation = `
+        mutation AddReviewComments($prId: ID!, $reviewId: ID!) {
+          ${commentMutations}
+        }
+      `;
+
+      // Try the batch, with one retry on failure
+      let batchResult = null;
+      let batchError = null;
+      let retryAttempt = 0;
+      const maxRetries = 1;
+
+      while (retryAttempt <= maxRetries) {
+        try {
+          batchResult = await this.octokit.graphql(batchMutation, {
+            prId: prNodeId,
+            reviewId: reviewId
+          });
+          batchError = null;
+          break; // Success, exit retry loop
+        } catch (error) {
+          batchError = error;
+          if (retryAttempt < maxRetries) {
+            console.warn(`Batch ${batchNumber} failed, retrying... (${error.message})`);
+            retryAttempt++;
+            // Simple 1-second delay before retry. We use a fixed delay rather than
+            // exponential backoff because we only retry once before aborting for atomic
+            // behavior—either the batch succeeds quickly or we clean up the pending
+            // review. Backoff provides no benefit with a single retry attempt.
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } else {
+            console.error(`Batch ${batchNumber} failed after retry: ${error.message}`);
+            break; // Exit retry loop - all retries exhausted
+          }
+        }
+      }
+
+      // Check if batch succeeded
+      if (batchError) {
+        // Check if it's a partial success (error.data contains some results)
+        if (batchError.data) {
+          console.warn('GraphQL returned partial results with errors:', batchError.errors || batchError.message);
+          let batchSuccessful = 0;
+          for (let i = 0; i < batch.length; i++) {
+            const commentResult = batchError.data[`comment${i}`];
+            if (commentResult && commentResult.thread && commentResult.thread.id) {
+              batchSuccessful++;
+            } else {
+              console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${batch[i].path}:${batch[i].line || 'file-level'}`);
+            }
+          }
+          // If not all comments in batch succeeded, it's a failure
+          if (batchSuccessful < batch.length) {
+            console.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
+            return { successCount: totalSuccessful + batchSuccessful, failed: true };
+          }
+          // All comments succeeded despite the error being thrown (recovered from partial error)
+          console.log(`Batch ${batchNumber} complete (recovered from partial error): ${batchSuccessful} comments added`);
+          totalSuccessful += batchSuccessful;
+        } else {
+          // Total failure of the batch
+          console.error(`CRITICAL: Batch ${batchNumber} failed completely`);
+          return { successCount: totalSuccessful, failed: true };
+        }
+      } else if (batchResult) {
+        // Verify each comment was successfully added
+        let batchSuccessful = 0;
+        for (let i = 0; i < batch.length; i++) {
+          const commentResult = batchResult[`comment${i}`];
+          if (commentResult && commentResult.thread && commentResult.thread.id) {
+            batchSuccessful++;
+          } else {
+            console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${batch[i].path}:${batch[i].line || 'file-level'}`);
+          }
+        }
+
+        if (batchSuccessful < batch.length) {
+          console.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
+          return { successCount: totalSuccessful + batchSuccessful, failed: true };
+        }
+
+        totalSuccessful += batchSuccessful;
+        console.log(`Batch ${batchNumber} complete: ${batchSuccessful} comments added`);
+      }
+    }
+
+    console.log(`All ${batches.length} batches complete: ${totalSuccessful} total comments added`);
+    return { successCount: totalSuccessful, failed: false };
+  }
+
+  /**
+   * Delete a pending review (used for cleanup on failure)
+   * @param {string} reviewId - GraphQL node ID for the review
+   * @returns {Promise<boolean>} True if deleted successfully
+   */
+  async deletePendingReview(reviewId) {
+    try {
+      await this.octokit.graphql(`
+        mutation DeleteReview($reviewId: ID!) {
+          deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
+            pullRequestReview { id }
+          }
+        }
+      `, { reviewId });
+      console.log('Cleaned up pending review after failure');
+      return true;
+    } catch (cleanupError) {
+      console.warn('Failed to clean up pending review:', cleanupError.message);
+      return false;
+    }
+  }
+
+  /**
    * Submit a review using GraphQL API
    * This supports both line-level comments (within diff hunks) and file-level comments
    * (for expanded context lines outside diff hunks).
@@ -334,131 +515,22 @@ class GitHubClient {
       const reviewId = createReviewResult.addPullRequestReview.pullRequestReview.id;
       console.log(`Created pending review: ${reviewId}`);
 
-      // Step 2: Add all comments
-      // Build a batched mutation for all comments
+      // Step 2: Add comments in batches
       let successfulComments = 0;
       if (comments.length > 0) {
-        console.log(`Step 2: Adding ${comments.length} comments...`);
+        console.log(`Step 2: Adding ${comments.length} comments in batches...`);
+        const batchResult = await this.addCommentsInBatches(prNodeId, reviewId, comments);
+        successfulComments = batchResult.successCount;
 
-        // Build mutation with all comments
-        const commentMutations = comments.map((comment, index) => {
-          const isFileLevel = comment.isFileLevel || !comment.line;
-
-          if (isFileLevel) {
-            // File-level comment (for expanded context lines)
-            return `
-              comment${index}: addPullRequestReviewThread(input: {
-                pullRequestId: $prId
-                pullRequestReviewId: $reviewId
-                path: "${comment.path}"
-                subjectType: FILE
-                body: ${JSON.stringify(comment.body)}
-              }) {
-                thread { id }
-              }
-            `;
-          } else {
-            // Line-level comment
-            const side = comment.side || 'RIGHT';
-            const startLineField = comment.start_line ? `startLine: ${comment.start_line}\n                ` : '';
-            return `
-              comment${index}: addPullRequestReviewThread(input: {
-                pullRequestId: $prId
-                pullRequestReviewId: $reviewId
-                path: "${comment.path}"
-                ${startLineField}line: ${comment.line}
-                side: ${side}
-                body: ${JSON.stringify(comment.body)}
-              }) {
-                thread { id }
-              }
-            `;
+        if (batchResult.failed) {
+          const failedCount = comments.length - successfulComments;
+          console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
+          // Clean up the pending review since it has incomplete comments
+          const cleaned = await this.deletePendingReview(reviewId);
+          if (!cleaned) {
+            console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
           }
-        }).join('\n');
-
-        const addCommentsMutation = `
-          mutation AddReviewComments($prId: ID!, $reviewId: ID!) {
-            ${commentMutations}
-          }
-        `;
-
-        try {
-          const result = await this.octokit.graphql(addCommentsMutation, {
-            prId: prNodeId,
-            reviewId: reviewId
-          });
-
-          // Verify each comment was successfully added by checking for thread.id
-          for (let i = 0; i < comments.length; i++) {
-            const commentResult = result[`comment${i}`];
-            if (commentResult && commentResult.thread && commentResult.thread.id) {
-              successfulComments++;
-            } else {
-              console.warn(`Comment ${i} failed to add: ${comments[i].path}:${comments[i].line || 'file-level'}`);
-            }
-          }
-
-          if (successfulComments < comments.length) {
-            const failedCount = comments.length - successfulComments;
-            console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
-            throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub. Check server logs for details.`);
-          } else {
-            console.log(`Added ${successfulComments} comments to review`);
-          }
-        } catch (commentError) {
-          // Check if this is a partial success (error.data contains partial results)
-          // GraphQL may return partial data alongside errors
-          if (commentError.data) {
-            console.warn('GraphQL returned partial results with errors:', commentError.errors || commentError.message);
-            // Count successful comments from partial data
-            for (let i = 0; i < comments.length; i++) {
-              const commentResult = commentError.data[`comment${i}`];
-              if (commentResult && commentResult.thread && commentResult.thread.id) {
-                successfulComments++;
-              } else {
-                console.warn(`Comment ${i} failed to add: ${comments[i].path}:${comments[i].line || 'file-level'}`);
-              }
-            }
-
-            if (successfulComments < comments.length) {
-              const failedCount = comments.length - successfulComments;
-              console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub (partial success)`);
-              // Clean up the pending review since it has incomplete comments
-              try {
-                await this.octokit.graphql(`
-                  mutation DeleteReview($reviewId: ID!) {
-                    deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
-                      pullRequestReview { id }
-                    }
-                  }
-                `, { reviewId });
-                console.log('Cleaned up pending review after partial comment failure');
-              } catch (cleanupError) {
-                console.warn('Failed to clean up pending review:', cleanupError.message);
-              }
-              throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub. Check server logs for details.`);
-            } else {
-              // All comments succeeded despite the error - continue
-              console.log(`Added ${successfulComments} comments to review (recovered from partial error)`);
-            }
-          } else {
-            // Total failure - no partial data
-            console.error('Error adding comments:', commentError.message);
-            // Try to delete the pending review to clean up
-            try {
-              await this.octokit.graphql(`
-                mutation DeleteReview($reviewId: ID!) {
-                  deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
-                    pullRequestReview { id }
-                  }
-                }
-              `, { reviewId });
-              console.log('Cleaned up pending review after comment failure');
-            } catch (cleanupError) {
-              console.warn('Failed to clean up pending review:', cleanupError.message);
-            }
-            throw commentError;
-          }
+          throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub. Check server logs for details.`);
         }
       }
 
@@ -544,127 +616,22 @@ class GitHubClient {
       const reviewId = review.id;
       console.log(`Created pending review: ${reviewId}`);
 
-      // Step 2: Add all comments (same as createReviewGraphQL)
+      // Step 2: Add comments in batches
       let successfulComments = 0;
       if (comments.length > 0) {
-        console.log(`Step 2: Adding ${comments.length} comments...`);
+        console.log(`Step 2: Adding ${comments.length} comments in batches...`);
+        const batchResult = await this.addCommentsInBatches(prNodeId, reviewId, comments);
+        successfulComments = batchResult.successCount;
 
-        const commentMutations = comments.map((comment, index) => {
-          const isFileLevel = comment.isFileLevel || !comment.line;
-
-          if (isFileLevel) {
-            return `
-              comment${index}: addPullRequestReviewThread(input: {
-                pullRequestId: $prId
-                pullRequestReviewId: $reviewId
-                path: "${comment.path}"
-                subjectType: FILE
-                body: ${JSON.stringify(comment.body)}
-              }) {
-                thread { id }
-              }
-            `;
-          } else {
-            const side = comment.side || 'RIGHT';
-            const startLineField = comment.start_line ? `startLine: ${comment.start_line}\n                ` : '';
-            return `
-              comment${index}: addPullRequestReviewThread(input: {
-                pullRequestId: $prId
-                pullRequestReviewId: $reviewId
-                path: "${comment.path}"
-                ${startLineField}line: ${comment.line}
-                side: ${side}
-                body: ${JSON.stringify(comment.body)}
-              }) {
-                thread { id }
-              }
-            `;
+        if (batchResult.failed) {
+          const failedCount = comments.length - successfulComments;
+          console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
+          // Clean up the pending review since it has incomplete comments
+          const cleaned = await this.deletePendingReview(reviewId);
+          if (!cleaned) {
+            console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
           }
-        }).join('\n');
-
-        const addCommentsMutation = `
-          mutation AddReviewComments($prId: ID!, $reviewId: ID!) {
-            ${commentMutations}
-          }
-        `;
-
-        try {
-          const result = await this.octokit.graphql(addCommentsMutation, {
-            prId: prNodeId,
-            reviewId: reviewId
-          });
-
-          // Verify each comment was successfully added by checking for thread.id
-          for (let i = 0; i < comments.length; i++) {
-            const commentResult = result[`comment${i}`];
-            if (commentResult && commentResult.thread && commentResult.thread.id) {
-              successfulComments++;
-            } else {
-              console.warn(`Comment ${i} failed to add: ${comments[i].path}:${comments[i].line || 'file-level'}`);
-            }
-          }
-
-          if (successfulComments < comments.length) {
-            const failedCount = comments.length - successfulComments;
-            console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
-            throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to draft review. Check server logs for details.`);
-          } else {
-            console.log(`Added ${successfulComments} comments to draft review`);
-          }
-        } catch (commentError) {
-          // Check if this is a partial success (error.data contains partial results)
-          // GraphQL may return partial data alongside errors
-          if (commentError.data) {
-            console.warn('GraphQL returned partial results with errors:', commentError.errors || commentError.message);
-            // Count successful comments from partial data
-            for (let i = 0; i < comments.length; i++) {
-              const commentResult = commentError.data[`comment${i}`];
-              if (commentResult && commentResult.thread && commentResult.thread.id) {
-                successfulComments++;
-              } else {
-                console.warn(`Comment ${i} failed to add: ${comments[i].path}:${comments[i].line || 'file-level'}`);
-              }
-            }
-
-            if (successfulComments < comments.length) {
-              const failedCount = comments.length - successfulComments;
-              console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review (partial success)`);
-              // Clean up the pending review since it has incomplete comments
-              try {
-                await this.octokit.graphql(`
-                  mutation DeleteReview($reviewId: ID!) {
-                    deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
-                      pullRequestReview { id }
-                    }
-                  }
-                `, { reviewId });
-                console.log('Cleaned up pending review after partial comment failure');
-              } catch (cleanupError) {
-                console.warn('Failed to clean up pending review:', cleanupError.message);
-              }
-              throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to draft review. Check server logs for details.`);
-            } else {
-              // All comments succeeded despite the error - continue
-              console.log(`Added ${successfulComments} comments to draft review (recovered from partial error)`);
-            }
-          } else {
-            // Total failure - no partial data
-            console.error('Error adding comments to draft:', commentError.message);
-            // Try to delete the pending review to clean up
-            try {
-              await this.octokit.graphql(`
-                mutation DeleteReview($reviewId: ID!) {
-                  deletePullRequestReview(input: { pullRequestReviewId: $reviewId }) {
-                    pullRequestReview { id }
-                  }
-                }
-              `, { reviewId });
-              console.log('Cleaned up pending review after comment failure');
-            } catch (cleanupError) {
-              console.warn('Failed to clean up pending review:', cleanupError.message);
-            }
-            throw commentError;
-          }
+          throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to draft review. Check server logs for details.`);
         }
       }
 
