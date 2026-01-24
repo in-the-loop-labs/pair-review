@@ -9,15 +9,22 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
  */
 
 // Mock logger to suppress output during tests
-vi.mock('../../src/utils/logger', () => ({
-  default: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    success: vi.fn(),
-    debug: vi.fn()
-  }
-}));
+// Use actual implementation for state tracking, but mock output methods
+vi.mock('../../src/utils/logger', () => {
+  let streamDebugEnabled = false;
+  return {
+    default: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      success: vi.fn(),
+      debug: vi.fn(),
+      streamDebug: vi.fn(),
+      isStreamDebugEnabled: () => streamDebugEnabled,
+      setStreamDebugEnabled: (enabled) => { streamDebugEnabled = enabled; }
+    }
+  };
+});
 
 // Import after mocks are set up
 const OpenCodeProvider = require('../../src/ai/opencode-provider');
@@ -238,21 +245,44 @@ describe('OpenCodeProvider', () => {
 
   describe('logStreamLine', () => {
     let provider;
+    const logger = require('../../src/utils/logger');
 
     beforeEach(() => {
       provider = new OpenCodeProvider('test-model');
+      // Reset stream debug state before each test
+      logger.setStreamDebugEnabled(false);
+    });
+
+    afterEach(() => {
+      // Ensure stream debug is disabled after tests
+      logger.setStreamDebugEnabled(false);
     });
 
     // Note: These tests verify logStreamLine doesn't throw and handles various event types.
-    // Actual logging is verified via integration tests or manual testing.
-    // The CommonJS/ESM mock interop makes it difficult to verify mock calls directly.
+    // The mock uses the real isStreamDebugEnabled/setStreamDebugEnabled for state tracking.
+    // We verify behavior by checking that no errors are thrown.
+
+    it('should not throw when stream debug is disabled', () => {
+      logger.setStreamDebugEnabled(false);
+      const line = '{"type":"step_start","timestamp":1234}';
+      // Should complete without throwing
+      expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
+    });
+
+    it('should not throw when stream debug is enabled', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type":"step_start","timestamp":1234}';
+      expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
+    });
 
     it('should handle step_start events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = '{"type":"step_start","timestamp":1234}';
       expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
     });
 
     it('should handle step_finish events with token counts without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'step_finish',
         part: {
@@ -264,6 +294,7 @@ describe('OpenCodeProvider', () => {
     });
 
     it('should handle step_finish events without tokens without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'step_finish',
         part: { reason: 'stop' }
@@ -272,6 +303,7 @@ describe('OpenCodeProvider', () => {
     });
 
     it('should handle text events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'text',
         part: { text: 'Some text content here' }
@@ -280,6 +312,7 @@ describe('OpenCodeProvider', () => {
     });
 
     it('should handle long text without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const longText = 'A'.repeat(100);
       const line = JSON.stringify({
         type: 'text',
@@ -289,6 +322,7 @@ describe('OpenCodeProvider', () => {
     });
 
     it('should handle text with newlines without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'text',
         part: { text: 'Line1\nLine2\nLine3' }
@@ -297,6 +331,7 @@ describe('OpenCodeProvider', () => {
     });
 
     it('should handle empty text events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'text',
         part: { text: '   ' }
@@ -305,6 +340,7 @@ describe('OpenCodeProvider', () => {
     });
 
     it('should handle tool_call events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'tool_call',
         part: { name: 'read_file' }
@@ -312,7 +348,42 @@ describe('OpenCodeProvider', () => {
       expect(() => provider.logStreamLine(line, 5, '[Level 1]')).not.toThrow();
     });
 
+    it('should handle tool_use events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'tool_use',
+        part: { name: 'read_file', id: 'toolu_12345678' }
+      });
+      expect(() => provider.logStreamLine(line, 5, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle tool_call with input arguments without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'tool_call',
+        part: {
+          name: 'read_file',
+          id: 'toolu_abc123',
+          input: { file_path: '/path/to/file.js' }
+        }
+      });
+      expect(() => provider.logStreamLine(line, 5, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle tool_call with command input without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'tool_call',
+        part: {
+          name: 'bash',
+          input: { command: 'git diff HEAD~1' }
+        }
+      });
+      expect(() => provider.logStreamLine(line, 5, '[Level 1]')).not.toThrow();
+    });
+
     it('should handle tool_result events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'tool_result',
         part: { output: 'some result' }
@@ -320,7 +391,21 @@ describe('OpenCodeProvider', () => {
       expect(() => provider.logStreamLine(line, 6, '[Level 1]')).not.toThrow();
     });
 
+    it('should handle tool_result with error flag without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = JSON.stringify({
+        type: 'tool_result',
+        part: {
+          tool_use_id: 'toolu_abc123',
+          is_error: true,
+          output: 'File not found'
+        }
+      });
+      expect(() => provider.logStreamLine(line, 6, '[Level 1]')).not.toThrow();
+    });
+
     it('should handle unknown event types without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({
         type: 'custom_event',
         data: 'something'
@@ -329,14 +414,17 @@ describe('OpenCodeProvider', () => {
     });
 
     it('should handle malformed JSON gracefully without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       expect(() => provider.logStreamLine('not json', 1, '[Level 1]')).not.toThrow();
     });
 
     it('should handle empty line without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       expect(() => provider.logStreamLine('', 1, '[Level 1]')).not.toThrow();
     });
 
     it('should handle event with missing part field without throwing', () => {
+      logger.setStreamDebugEnabled(true);
       const line = JSON.stringify({ type: 'text' });
       expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
     });
