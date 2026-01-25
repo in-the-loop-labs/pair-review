@@ -19,6 +19,8 @@
  * - optional: Can be removed entirely if unhelpful
  */
 
+const { ORCHESTRATION_INPUT_SCHEMA_DOCS } = require('../../shared/output-schema');
+
 /**
  * Tagged prompt template for Orchestration Fast analysis
  *
@@ -27,9 +29,12 @@
  * - {{prContext}} - PR context section (optional, may be empty)
  * - {{customInstructions}} - Custom instructions section (optional)
  * - {{lineNumberGuidance}} - Line number guidance section
- * - {{level1Suggestions}} - Formatted Level 1 suggestions
- * - {{level2Suggestions}} - Formatted Level 2 suggestions
- * - {{level3Suggestions}} - Formatted Level 3 suggestions
+ * - {{level1Count}} - Number of Level 1 suggestions
+ * - {{level2Count}} - Number of Level 2 suggestions
+ * - {{level3Count}} - Number of Level 3 suggestions
+ * - {{level1Suggestions}} - Level 1 suggestions as JSON array
+ * - {{level2Suggestions}} - Level 2 suggestions as JSON array
+ * - {{level3Suggestions}} - Level 3 suggestions as JSON array
  * - {{fileLineCounts}} - File line count validation data (optional)
  */
 const taggedPrompt = `<section name="role" required="true" tier="fast">
@@ -60,13 +65,15 @@ Curate and merge 3-level suggestions. Remove duplicates. Keep high-value items o
 <section name="input-suggestions" locked="true">
 ## Input: Multi-Level Analysis Results
 
-**Level 1 - Diff Analysis:**
+${ORCHESTRATION_INPUT_SCHEMA_DOCS}
+
+**Level 1 - Diff Analysis ({{level1Count}} suggestions):**
 {{level1Suggestions}}
 
-**Level 2 - File Context:**
+**Level 2 - File Context ({{level2Count}} suggestions):**
 {{level2Suggestions}}
 
-**Level 3 - Codebase Context:**
+**Level 3 - Codebase Context ({{level3Count}} suggestions):**
 {{level3Suggestions}}
 </section>
 
