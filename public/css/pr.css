@@ -1543,8 +1543,7 @@
 
 .d2h-code-line-ctn {
   padding: 0 8px;
-  white-space: pre-wrap; /* Wrap long lines instead of scrolling */
-  word-break: break-all; /* Break anywhere if needed */
+  white-space: pre-wrap; /* Preserve whitespace but allow wrapping */
   font-family: inherit;
   vertical-align: top;
 }
@@ -1710,6 +1709,11 @@ tr.newly-expanded .d2h-code-line-ctn {
   box-shadow: 0 0 20px var(--ai-glow, rgba(245, 158, 11, 0.2)); /* Amber glow shadow */
   transition: all 0.2s ease;
   animation: slideUp 0.3s ease;
+  overflow: hidden;
+  word-break: break-word;
+  /* Viewport-based max-width: total viewport minus sidebar, AI panel, and padding/margins */
+  max-width: calc(100vw - var(--sidebar-width) - var(--ai-panel-width) - 100px);
+  box-sizing: border-box;
 }
 
 /* Dark theme suggestion background */
@@ -2006,6 +2010,9 @@ tr.newly-expanded .d2h-code-line-ctn {
   font-family: 'JetBrains Mono', 'SF Mono', 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
   font-size: 0.8125rem;
   color: var(--ai-secondary, #fbbf24);
+  /* Allow long inline code (file paths, etc.) to break when needed */
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .ai-suggestion-body pre,
@@ -2016,6 +2023,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   padding: 12px;
   margin: 12px 0;
   overflow-x: auto;
+  white-space: pre-wrap;  /* Allow wrapping while preserving whitespace */
+  word-break: break-word;
 }
 
 .ai-suggestion-body pre code,
@@ -2025,6 +2034,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   font-size: 0.8125rem;
   line-height: 1.6;
   color: var(--color-text-primary);
+  white-space: pre-wrap;  /* Inherit wrapping behavior */
+  word-break: break-word;
 }
 
 .ai-suggestion-body ul,
@@ -3506,6 +3517,11 @@ tr.line-range-start .d2h-code-line-ctn {
   margin: 6px 16px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   position: relative;
+  overflow: hidden;
+  word-break: break-word;
+  /* Viewport-based max-width: total viewport minus sidebar, AI panel, and padding/margins */
+  max-width: calc(100vw - var(--sidebar-width) - var(--ai-panel-width) - 100px);
+  box-sizing: border-box;
 }
 
 .user-comment-header {
@@ -5499,7 +5515,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
 .main-layout .diff-view {
   flex: 1 1 0; /* Grow, shrink, start from 0 basis to ensure proper flex calculation */
   min-width: 0; /* Prevent flex item from expanding beyond container */
-  overflow-x: hidden; /* No horizontal scroll on diff view */
+  overflow-x: hidden; /* No horizontal scroll - content wraps instead */
   overflow-y: auto;
   background: var(--color-bg-secondary);
   display: flex;
@@ -5841,7 +5857,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   min-width: 0; /* Prevent flex item from expanding beyond container */
   padding: 16px;
   overflow-y: auto;
-  overflow-x: auto; /* Allow horizontal scroll for long code lines */
+  overflow-x: auto; /* Allow scroll as fallback for unbreakable content */
 }
 
 /* --------------------------------------------------------------------------

@@ -227,9 +227,7 @@ mark.d2h-code-line-ctn {
 .d2h-code-line-ctn {
     padding-left: 10px !important;  /* Small buffer between line numbers and code */
     padding-right: 10px !important;
-    white-space: pre-wrap !important;  /* Preserve whitespace but allow wrapping for long lines */
-    word-wrap: anywhere !important;
-    overflow-wrap: anywhere !important;
+    white-space: pre-wrap !important;  /* Preserve whitespace but allow wrapping */
     font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace !important;
     font-size: 12px !important;
     tab-size: 4 !important;  /* Ensure tabs display correctly */
@@ -248,20 +246,16 @@ mark.d2h-code-line-ctn {
     display: none !important;
 }
 
-/* Collapse borders and spacing */
-.d2h-diff-table {
-    border-collapse: collapse !important;
-    border-spacing: 0 !important;
-}
-
-/* Clean unified diff table structure */
+/* Unified diff table structure */
 .d2h-diff-table {
     width: 100% !important;
     border-collapse: collapse !important;
+    border-spacing: 0 !important;
     font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace !important;
     font-size: 12px !important;
-    table-layout: fixed !important;
-    text-align: left !important;  /* Ensure table content is left-aligned */
+    table-layout: auto !important;  /* auto allows content-based column sizing */
+    text-align: left !important;
+    overflow: visible !important;
 }
 
 .d2h-diff-tbody td.d2h-code-linenumber,
@@ -337,12 +331,6 @@ mark.d2h-code-line-ctn {
 .d2h-code-line-ctn::before {
     content: none !important;
     display: none !important;
-}
-
-/* Ensure proper table layout */
-.d2h-diff-table {
-    table-layout: auto !important;
-    overflow: visible !important;
 }
 
 .d2h-diff-tbody {
