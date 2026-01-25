@@ -68,25 +68,28 @@ class EmojiPicker {
     const value = textarea.value;
     const cursorPos = textarea.selectionStart;
 
-    // Find the last ":" before cursor that's not part of a completed emoji
+    // First, check if cursor is immediately after a complete shortcode like :smile:
+    // This handles the case where user just typed the closing colon
+    const textBeforeCursor = value.substring(0, cursorPos);
+    const completeShortcodeMatch = textBeforeCursor.match(/:([a-zA-Z0-9_+-]+):$/);
+    if (completeShortcodeMatch) {
+      // User just completed a shortcode, hide popup and don't trigger new one
+      this.hidePopup();
+      return;
+    }
+
+    // Find the last ":" before cursor that could be a trigger (at start or after whitespace)
     let colonPos = -1;
     for (let i = cursorPos - 1; i >= 0; i--) {
       const char = value[i];
       if (char === ':') {
-        // Check if this colon is preceded by another colon (completed emoji)
-        // or is at start/after whitespace (new trigger)
+        // Valid trigger position: at start of string or after whitespace
         if (i === 0 || /\s/.test(value[i - 1])) {
           colonPos = i;
           break;
         }
-        // Check if there's matching closing colon (completed)
-        const textAfter = value.substring(i + 1, cursorPos);
-        if (textAfter.includes(':')) {
-          // This is likely a completed emoji, keep looking
-          continue;
-        }
-        colonPos = i;
-        break;
+        // Not a valid trigger position, keep looking
+        continue;
       }
       // Stop searching if we hit whitespace or newline
       if (/\s/.test(char)) {
