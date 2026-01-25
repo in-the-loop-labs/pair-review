@@ -2392,15 +2392,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    */
   _formatSuggestionsForOrchestration(suggestions) {
     if (!suggestions || suggestions.length === 0) {
-      return 'No suggestions from this level';
+      return '[]';
     }
-    return suggestions.map(s => {
-      const desc = s.description || '';
-      const truncatedDesc = desc.length > 100 ? desc.substring(0, 100) + '...' : desc;
-      return s.is_file_level
-        ? `- [FILE-LEVEL] ${s.type}: ${s.title} (${s.file}) - ${truncatedDesc}`
-        : `- ${s.type}: ${s.title} (${s.file}:${s.line_start}) - ${truncatedDesc}`;
-    }).join('\n');
+    return JSON.stringify(suggestions, null, 2);
   }
 
   /**
