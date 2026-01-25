@@ -188,6 +188,11 @@ class FileCommentManager {
     // Focus textarea
     textarea.focus();
 
+    // Attach emoji picker for autocomplete
+    if (window.emojiPicker) {
+      window.emojiPicker.attach(textarea);
+    }
+
     // Focus/blur for styling
     textarea.addEventListener('focus', () => form.classList.add('focused'));
     textarea.addEventListener('blur', () => form.classList.remove('focused'));
@@ -718,6 +723,11 @@ class FileCommentManager {
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
+    // Attach emoji picker for autocomplete
+    if (window.emojiPicker) {
+      window.emojiPicker.attach(textarea);
+    }
+
     textarea.addEventListener('focus', () => form.classList.add('focused'));
     textarea.addEventListener('blur', () => form.classList.remove('focused'));
 
@@ -861,6 +871,11 @@ class FileCommentManager {
 
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+    // Attach emoji picker for autocomplete
+    if (window.emojiPicker) {
+      window.emojiPicker.attach(textarea);
+    }
 
     const restoreView = () => {
       const renderedBody = window.renderMarkdown
