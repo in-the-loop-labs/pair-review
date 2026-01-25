@@ -115,6 +115,11 @@ class CommentManager {
     const textarea = td.querySelector('.comment-textarea');
     textarea.focus();
 
+    // Attach emoji picker for autocomplete
+    if (window.emojiPicker) {
+      window.emojiPicker.attach(textarea);
+    }
+
     // Add event listeners
     const saveBtn = td.querySelector('.save-comment-btn');
     const cancelBtn = td.querySelector('.cancel-comment-btn');
@@ -612,6 +617,11 @@ class CommentManager {
       textarea.focus();
       // Position cursor at end of text instead of selecting all
       textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+      // Attach emoji picker for autocomplete
+      if (window.emojiPicker) {
+        window.emojiPicker.attach(textarea);
+      }
 
       // Update suggestion button state based on content
       this.updateSuggestionButtonState(textarea, suggestionBtn);
