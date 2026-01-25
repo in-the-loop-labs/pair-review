@@ -18,12 +18,14 @@ class ClaudeCLI {
 
     if (this.useShell) {
       // Use the full command string with -p and --model appended
-      this.command = `${claudeCmd} -p --model ${model}`;
+      // Disable hooks to prevent project hooks from running during SDK mode invocation
+      this.command = `${claudeCmd} -p --model ${model} --settings '{"disableAllHooks":true}'`;
       this.args = [];
     } else {
       // Single command, use normal spawn mode
+      // Disable hooks to prevent project hooks from running during SDK mode invocation
       this.command = claudeCmd;
-      this.args = ['-p', '--model', model];
+      this.args = ['-p', '--model', model, '--settings', '{"disableAllHooks":true}'];
     }
   }
 
