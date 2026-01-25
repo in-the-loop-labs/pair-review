@@ -486,14 +486,26 @@ class ClaudeProvider extends AIProvider {
       const lines = stdout.trim().split('\n').filter(line => line.trim());
       let textContent = '';
       let resultEvent = null;
+      let assistantText = '';  // Fallback: collect text from assistant events
 
-      // First pass: find the result event (authoritative source)
+      // Parse all events to find result and collect assistant text as fallback
+      // Assistant text that matters comes BEFORE the result event
       for (const line of lines) {
         try {
           const event = JSON.parse(line);
           if (event.type === 'result') {
             resultEvent = event;
-            break; // Result is the final event, no need to continue
+            break; // Result is the final authoritative event, stop here
+          } else if (event.type === 'assistant') {
+            // Collect text from assistant events as fallback
+            // When Claude uses tools, the final response text may be in assistant
+            // events rather than the result event
+            const content = event.message?.content || [];
+            for (const block of content) {
+              if (block.type === 'text' && block.text) {
+                assistantText += block.text;
+              }
+            }
           }
         } catch (lineError) {
           // Skip malformed lines
@@ -501,9 +513,7 @@ class ClaudeProvider extends AIProvider {
         }
       }
 
-      // Extract content from result event only (single authoritative source)
-      // The result event contains the complete response - assistant messages and
-      // stream_event deltas are intermediate views of the same content.
+      // Extract content from result event (primary source)
       if (resultEvent) {
         // Check for subresult first (structured output takes precedence)
         // When subresult exists, it is the authoritative structured response and
@@ -523,6 +533,14 @@ class ClaudeProvider extends AIProvider {
             }
           }
         }
+      }
+
+      // If no text in result event, fall back to accumulated assistant text
+      // This handles cases where Claude uses tools and the response is spread
+      // across assistant events rather than being in the result event
+      if (!textContent && assistantText) {
+        logger.info(`${levelPrefix} No text in result event, using accumulated assistant text (${assistantText.length} chars)`);
+        textContent = assistantText;
       }
 
       if (textContent) {

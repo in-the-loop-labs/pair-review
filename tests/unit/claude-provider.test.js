@@ -516,6 +516,33 @@ describe('ClaudeProvider', () => {
         expect(result.success).toBe(true);
         expect(result.data).toEqual({ first: true });
       });
+
+      it('should fall back to assistant text when result has no text content', () => {
+        // This tests the scenario where Claude uses tools and the JSON response
+        // is in assistant events, not in the result event
+        const stdout = [
+          '{"type": "system"}',
+          '{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read"}]}}',
+          '{"type": "user", "message": {"content": [{"type": "tool_result", "content": "file contents"}]}}',
+          '{"type": "assistant", "message": {"content": [{"type": "text", "text": "{\\"suggestions\\": [{\\"id\\": 1}]}"}]}}',
+          '{"type": "result", "result": {"subresult": null, "content": []}}'
+        ].join('\n');
+
+        const result = provider.parseClaudeResponse(stdout, 1);
+        expect(result.success).toBe(true);
+        expect(result.data).toEqual({ suggestions: [{ id: 1 }] });
+      });
+
+      it('should prefer result.content over assistant text when both present', () => {
+        const stdout = [
+          '{"type": "assistant", "message": {"content": [{"type": "text", "text": "{\\"from\\": \\"assistant\\"}"}]}}',
+          '{"type": "result", "result": {"content": [{"type": "text", "text": "{\\"from\\": \\"result\\"}"}]}}'
+        ].join('\n');
+
+        const result = provider.parseClaudeResponse(stdout, 1);
+        expect(result.success).toBe(true);
+        expect(result.data).toEqual({ from: 'result' });
+      });
     });
   });
 
