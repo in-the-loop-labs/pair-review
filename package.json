@@ -28,7 +28,7 @@
     "test:e2e:debug": "playwright test --debug",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "npm run version && changeset tag && npm publish && git push && git push --tags"
+    "release": "npm whoami > /dev/null || { echo 'Error: Not logged in to npm. Run: npm login'; exit 1; } && npm run version && changeset tag && npm publish && git push && git push --tags"
   },
   "keywords": [
     "code-review",
