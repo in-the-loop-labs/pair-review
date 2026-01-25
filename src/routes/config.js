@@ -13,6 +13,7 @@ const express = require('express');
 const { RepoSettingsRepository, ReviewRepository } = require('../database');
 const { getAllProvidersInfo, testProviderAvailability } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
+const { isRunningViaNpx } = require('../config');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -27,7 +28,9 @@ router.get('/api/config', (req, res) => {
   // Only return safe configuration values (not secrets like github_token)
   res.json({
     theme: config.theme || 'light',
-    comment_button_action: config.comment_button_action || 'submit'
+    comment_button_action: config.comment_button_action || 'submit',
+    // Include npx detection for frontend command examples
+    is_running_via_npx: isRunningViaNpx()
   });
 });
 
