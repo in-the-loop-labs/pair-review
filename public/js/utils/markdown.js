@@ -34,6 +34,11 @@ if (typeof window !== 'undefined' && window.markdownit) {
       typographer: true   // Enable smartquotes and other typographic replacements
     });
 
+    // Enable emoji shortcode support (e.g., :smile: -> 😄)
+    if (window.markdownitEmoji) {
+      md.use(window.markdownitEmoji);
+    }
+
     // Configure link rendering to open in new tab and add security
     const defaultLinkRender = md.renderer.rules.link_open || function(tokens, idx, options, env, self) {
       return self.renderToken(tokens, idx, options);
