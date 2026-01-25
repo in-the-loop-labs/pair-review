@@ -1,5 +1,5 @@
 ---
-"pair-review": patch
+"@in-the-loop-labs/pair-review": patch
 ---
 
 Add help modal and improve onboarding experience
