@@ -7,6 +7,7 @@ build/
 coverage/
 .vscode/
 .idea/
+.claude/settings.local.json.bak
 
 test-*.js
 test_*.js
