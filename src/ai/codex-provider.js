@@ -279,17 +279,21 @@ class CodexProvider extends AIProvider {
     try {
       // Split by newlines and parse each JSON line
       const lines = stdout.trim().split('\n').filter(line => line.trim());
-      let agentMessage = null;
+      // Accumulate text from ALL agent_message events, not just the last one.
+      // When Codex uses tools, there may be multiple item.completed events with
+      // agent_message type, and the response text may be spread across them.
+      let agentMessageText = '';
 
       for (const line of lines) {
         try {
           const event = JSON.parse(line);
 
-          // Look for agent_message items which contain the actual response
+          // Accumulate text from agent_message items which contain the AI response
+          // Multiple agent_message events can occur when Codex uses tools
           if (event.type === 'item.completed' &&
               event.item?.type === 'agent_message' &&
               event.item?.text) {
-            agentMessage = event.item.text;
+            agentMessageText += event.item.text;
           }
         } catch (lineError) {
           // Skip malformed lines
@@ -297,10 +301,11 @@ class CodexProvider extends AIProvider {
         }
       }
 
-      if (agentMessage) {
-        // The agent_message contains the AI's text response
+      if (agentMessageText) {
+        // The accumulated agent_message text contains the AI's response
         // Try to extract JSON from it (the AI was asked to output JSON)
-        const extracted = extractJSON(agentMessage, level);
+        logger.debug(`${levelPrefix} Extracted ${agentMessageText.length} chars of agent message text from JSONL`);
+        const extracted = extractJSON(agentMessageText, level);
         if (extracted.success) {
           return extracted;
         }
