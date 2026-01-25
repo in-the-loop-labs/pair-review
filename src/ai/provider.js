@@ -6,7 +6,13 @@
  * and provides a factory function to create provider instances.
  */
 
+const path = require('path');
+const { spawn } = require('child_process');
 const logger = require('../utils/logger');
+const { extractJSON } = require('../utils/json-extractor');
+
+// Directory containing bin scripts (git-diff-lines, etc.)
+const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
 /**
  * Model tier definitions - provider-agnostic tiers that map to specific models
@@ -124,6 +130,161 @@ class AIProvider {
    */
   static getInstallInstructions() {
     throw new Error('getInstallInstructions() must be implemented by subclass');
+  }
+
+  /**
+   * Get the "fast" tier model for this provider, with fallback to analysis model.
+   * Used for auxiliary tasks like JSON extraction where speed matters more than depth.
+   * @returns {string} Model ID for extraction
+   */
+  getFastTierModel() {
+    const models = this.constructor.getModels();
+    const fastModel = models.find(m => m.tier === 'fast');
+    if (fastModel) {
+      return fastModel.id;
+    }
+    // Fall back to the analysis model if no fast tier exists
+    logger.debug(`No fast-tier model found for ${this.constructor.getProviderId()}, using analysis model: ${this.model}`);
+    return this.model;
+  }
+
+  /**
+   * Get CLI configuration for LLM extraction. Override in subclasses to enable extraction.
+   * @param {string} model - The model to use for extraction
+   * @returns {Object|null} Configuration object or null if extraction not supported
+   * @property {string} command - CLI command
+   * @property {string[]} args - Arguments (prompt will be appended if promptViaStdin is false)
+   * @property {boolean} useShell - Whether to use shell mode
+   * @property {boolean} promptViaStdin - If true, send prompt to stdin; if false, append to args
+   */
+  getExtractionConfig(model) {
+    // Default: extraction not supported
+    return null;
+  }
+
+  /**
+   * Extract JSON from raw response using LLM as a fallback when regex strategies fail.
+   * This is a common implementation used by all providers that support extraction.
+   * @param {string} rawResponse - The raw response text containing embedded JSON
+   * @param {Object} options - Optional configuration
+   * @param {string|number} options.level - Analysis level for logging
+   * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
+   * @param {Function} options.registerProcess - Function to register child process for cancellation
+   * @returns {Promise<{success: boolean, data?: Object, error?: string}>}
+   */
+  async extractJSONWithLLM(rawResponse, options = {}) {
+    const { level = 'extraction', analysisId, registerProcess } = options;
+    const levelPrefix = `[Level ${level}]`;
+
+    // Get the fast-tier model, with fallback to analysis model
+    const extractionModel = this.getFastTierModel();
+
+    // Get provider-specific CLI configuration
+    const config = this.getExtractionConfig(extractionModel);
+    if (!config) {
+      return {
+        success: false,
+        error: `${this.constructor.getProviderId()} does not support LLM extraction`
+      };
+    }
+
+    const { command, args, useShell, promptViaStdin } = config;
+    const prompt = `Extract the JSON object from the following text. Return ONLY the valid JSON, nothing else. Do not include any explanation, markdown formatting, or code blocks - just the raw JSON.
+
+=== BEGIN INPUT TEXT ===
+${rawResponse}
+=== END INPUT TEXT ===`;
+
+    return new Promise((resolve) => {
+      // Build final command and args based on prompt delivery method
+      const finalArgs = promptViaStdin ? args : [...args, prompt];
+
+      logger.info(`${levelPrefix} Attempting LLM-based JSON extraction with ${extractionModel}...`);
+
+      const proc = spawn(command, finalArgs, {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: `${BIN_DIR}:${process.env.PATH}`
+        },
+        shell: useShell
+      });
+
+      // Register process for cancellation tracking if analysisId provided
+      if (analysisId && registerProcess) {
+        registerProcess(analysisId, proc);
+        logger.info(`${levelPrefix} Registered extraction process ${proc.pid} for analysis ${analysisId}`);
+      }
+
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      const timeout = 60000; // 60 second timeout for extraction
+
+      const settle = (result) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        resolve(result);
+      };
+
+      const timeoutId = setTimeout(() => {
+        logger.warn(`${levelPrefix} LLM extraction timed out after ${timeout}ms`);
+        proc.kill('SIGTERM');
+        settle({ success: false, error: 'LLM extraction timed out' });
+      }, timeout);
+
+      proc.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (settled) return;
+
+        if (code !== 0) {
+          logger.warn(`${levelPrefix} LLM extraction process exited with code ${code}`);
+          if (stderr.trim()) {
+            logger.warn(`${levelPrefix} LLM extraction stderr: ${stderr}`);
+          }
+          settle({ success: false, error: `Process exited with code ${code}` });
+          return;
+        }
+
+        // Use the generic extractJSON for all providers - the LLM should return raw JSON
+        const extracted = extractJSON(stdout, level);
+        if (extracted.success) {
+          logger.success(`${levelPrefix} LLM extraction successful`);
+          settle(extracted);
+        } else {
+          logger.warn(`${levelPrefix} LLM extraction returned unparseable response`);
+          if (stderr.trim()) {
+            logger.warn(`${levelPrefix} LLM extraction stderr: ${stderr}`);
+          }
+          settle({ success: false, error: 'LLM extraction returned unparseable response' });
+        }
+      });
+
+      proc.on('error', (error) => {
+        logger.warn(`${levelPrefix} LLM extraction process error: ${error.message}`);
+        settle({ success: false, error: error.message });
+      });
+
+      // Send prompt via stdin if configured
+      if (promptViaStdin) {
+        proc.stdin.write(prompt, (err) => {
+          if (err) {
+            logger.warn(`${levelPrefix} Failed to write extraction prompt: ${err}`);
+            proc.kill('SIGTERM');
+            settle({ success: false, error: `Failed to write prompt: ${err}` });
+          }
+        });
+        proc.stdin.end();
+      }
+    });
   }
 }
 

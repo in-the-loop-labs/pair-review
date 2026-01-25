@@ -188,10 +188,28 @@ class CodexProvider extends AIProvider {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
           settle(resolve, parsed.data);
         } else {
-          logger.warn(`${levelPrefix} Failed to extract JSON: ${parsed.error}`);
+          // Regex extraction failed, try LLM-based extraction as fallback
+          logger.warn(`${levelPrefix} Regex extraction failed: ${parsed.error}`);
           logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
-          logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-          settle(resolve, { raw: stdout, parsed: false });
+          logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
+
+          // Use async IIFE to handle the async LLM extraction
+          (async () => {
+            try {
+              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess });
+              if (llmExtracted.success) {
+                logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
+                settle(resolve, llmExtracted.data);
+              } else {
+                logger.warn(`${levelPrefix} LLM extraction fallback also failed: ${llmExtracted.error}`);
+                logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
+                settle(resolve, { raw: stdout, parsed: false });
+              }
+            } catch (llmError) {
+              logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
+              settle(resolve, { raw: stdout, parsed: false });
+            }
+          })();
         }
       });
 
@@ -282,6 +300,32 @@ class CodexProvider extends AIProvider {
 
       return { success: false, error: `JSONL parse error: ${parseError.message}` };
     }
+  }
+
+  /**
+   * Get CLI configuration for LLM extraction
+   * @param {string} model - The model to use for extraction
+   * @returns {Object} Configuration for spawning extraction process
+   */
+  getExtractionConfig(model) {
+    const codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
+    const useShell = codexCmd.includes(' ');
+
+    // Use minimal sandbox for extraction - we don't need shell commands
+    if (useShell) {
+      return {
+        command: `${codexCmd} exec -m ${model} --json --sandbox read-only --full-auto -`,
+        args: [],
+        useShell: true,
+        promptViaStdin: true
+      };
+    }
+    return {
+      command: codexCmd,
+      args: ['exec', '-m', model, '--json', '--sandbox', 'read-only', '--full-auto', '-'],
+      useShell: false,
+      promptViaStdin: true
+    };
   }
 
   /**

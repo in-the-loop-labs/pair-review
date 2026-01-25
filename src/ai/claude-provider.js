@@ -190,10 +190,28 @@ class ClaudeProvider extends AIProvider {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
           settle(resolve, extracted.data);
         } else {
-          logger.warn(`${levelPrefix} Failed to extract JSON: ${extracted.error}`);
+          // Regex extraction failed, try LLM-based extraction as fallback
+          logger.warn(`${levelPrefix} Regex extraction failed: ${extracted.error}`);
           logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
-          logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-          settle(resolve, { raw: stdout, parsed: false });
+          logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
+
+          // Use async IIFE to handle the async LLM extraction
+          (async () => {
+            try {
+              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess });
+              if (llmExtracted.success) {
+                logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
+                settle(resolve, llmExtracted.data);
+              } else {
+                logger.warn(`${levelPrefix} LLM extraction fallback also failed: ${llmExtracted.error}`);
+                logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
+                settle(resolve, { raw: stdout, parsed: false });
+              }
+            } catch (llmError) {
+              logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
+              settle(resolve, { raw: stdout, parsed: false });
+            }
+          })();
         }
       });
 
@@ -218,6 +236,31 @@ class ClaudeProvider extends AIProvider {
       });
       claude.stdin.end();
     });
+  }
+
+  /**
+   * Get CLI configuration for LLM extraction
+   * @param {string} model - The model to use for extraction
+   * @returns {Object} Configuration for spawning extraction process
+   */
+  getExtractionConfig(model) {
+    const claudeCmd = process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
+    const useShell = claudeCmd.includes(' ');
+
+    if (useShell) {
+      return {
+        command: `${claudeCmd} -p --model ${model}`,
+        args: [],
+        useShell: true,
+        promptViaStdin: true
+      };
+    }
+    return {
+      command: claudeCmd,
+      args: ['-p', '--model', model],
+      useShell: false,
+      promptViaStdin: true
+    };
   }
 
   /**

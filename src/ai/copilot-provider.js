@@ -248,10 +248,28 @@ class CopilotProvider extends AIProvider {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
           settle(resolve, extracted.data);
         } else {
-          logger.warn(`${levelPrefix} Failed to extract JSON: ${extracted.error}`);
+          // Regex extraction failed, try LLM-based extraction as fallback
+          logger.warn(`${levelPrefix} Regex extraction failed: ${extracted.error}`);
           logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
-          logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-          settle(resolve, { raw: stdout, parsed: false });
+          logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
+
+          // Use async IIFE to handle the async LLM extraction
+          (async () => {
+            try {
+              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess });
+              if (llmExtracted.success) {
+                logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
+                settle(resolve, llmExtracted.data);
+              } else {
+                logger.warn(`${levelPrefix} LLM extraction fallback also failed: ${llmExtracted.error}`);
+                logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
+                settle(resolve, { raw: stdout, parsed: false });
+              }
+            } catch (llmError) {
+              logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
+              settle(resolve, { raw: stdout, parsed: false });
+            }
+          })();
         }
       });
 
@@ -266,6 +284,23 @@ class CopilotProvider extends AIProvider {
         }
       });
     });
+  }
+
+  /**
+   * Get CLI configuration for LLM extraction.
+   * Copilot reads from stdin when no -p argument is provided.
+   * @param {string} model - The model to use for extraction
+   * @returns {Object} Configuration for spawning extraction process
+   */
+  getExtractionConfig(model) {
+    const copilotCmd = process.env.PAIR_REVIEW_COPILOT_CMD || 'copilot';
+    // Use stdin for prompt - safer than command args for arbitrary content
+    return {
+      command: copilotCmd,
+      args: ['--model', model, '-s'],
+      useShell: false,
+      promptViaStdin: true
+    };
   }
 
   /**
