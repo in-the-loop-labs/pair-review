@@ -17,6 +17,7 @@ class AnalysisConfigModal {
     this.repoInstructions = '';
     this.lastInstructions = '';
     this.providersLoaded = false;
+    this.skipLevel3 = false;
 
     // Character limit constants (must match backend limit)
     this.CHAR_LIMIT = 5000;
@@ -152,6 +153,24 @@ class AnalysisConfigModal {
             </label>
           </section>
 
+          <!-- Skip Level 3 Analysis -->
+          <section class="config-section">
+            <h4 class="section-title">
+              Analysis Scope
+            </h4>
+            <div class="skip-level3-info" id="skip-level3-info" style="display: none;">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 100-2 1 1 0 000 2z"/>
+              </svg>
+              <span>Codebase-wide analysis is automatically skipped for fast-tier models.</span>
+            </div>
+            <label class="remember-toggle" id="skip-level3-toggle">
+              <input type="checkbox" id="skip-level3" />
+              <span class="toggle-switch"></span>
+              <span class="toggle-label">Skip codebase-wide analysis (Level 3)</span>
+            </label>
+          </section>
+
           <!-- Focus Presets - Hidden for now, may reintroduce later -->
           <section class="config-section" style="display: none;">
             <h4 class="section-title">
@@ -246,6 +265,12 @@ class AnalysisConfigModal {
     const rememberCheckbox = this.modal.querySelector('#remember-model');
     rememberCheckbox?.addEventListener('change', (e) => {
       this.rememberModel = e.target.checked;
+    });
+
+    // Skip Level 3 toggle
+    const skipLevel3Checkbox = this.modal.querySelector('#skip-level3');
+    skipLevel3Checkbox?.addEventListener('change', (e) => {
+      this.skipLevel3 = e.target.checked;
     });
 
     // Custom instructions character count and validation
@@ -395,6 +420,34 @@ class AnalysisConfigModal {
     this.modal.querySelectorAll('.model-card').forEach(card => {
       card.classList.toggle('selected', card.dataset.model === modelId);
     });
+
+    // Get the tier of the selected model
+    const selectedCard = this.modal.querySelector(`.model-card[data-model="${modelId}"]`);
+    const tier = selectedCard?.dataset?.tier;
+
+    // Update skip level 3 checkbox based on tier
+    const skipLevel3Checkbox = this.modal.querySelector('#skip-level3');
+    const skipLevel3Info = this.modal.querySelector('#skip-level3-info');
+
+    if (tier === 'fast') {
+      // Always check for fast tier models and show info banner
+      if (skipLevel3Checkbox) {
+        skipLevel3Checkbox.checked = true;
+        this.skipLevel3 = true;
+      }
+      if (skipLevel3Info) {
+        skipLevel3Info.style.display = 'flex';
+      }
+    } else {
+      // Always uncheck for non-fast tiers and hide info banner
+      if (skipLevel3Checkbox) {
+        skipLevel3Checkbox.checked = false;
+        this.skipLevel3 = false;
+      }
+      if (skipLevel3Info) {
+        skipLevel3Info.style.display = 'none';
+      }
+    }
   }
 
   /**
@@ -509,7 +562,8 @@ class AnalysisConfigModal {
       customInstructions: this.modal.querySelector('#custom-instructions')?.value?.trim() || '',
       presets: Array.from(this.selectedPresets),
       rememberModel: this.rememberModel,
-      repoInstructions: this.repoInstructions
+      repoInstructions: this.repoInstructions,
+      skipLevel3: this.skipLevel3
     };
 
     if (this.onSubmit) {
@@ -658,6 +712,16 @@ class AnalysisConfigModal {
       const rememberCheckbox = this.modal.querySelector('#remember-model');
       if (rememberCheckbox) {
         rememberCheckbox.checked = false;
+      }
+      // Reset skipLevel3 state
+      this.skipLevel3 = false;
+      const skipLevel3Checkbox = this.modal.querySelector('#skip-level3');
+      if (skipLevel3Checkbox) {
+        skipLevel3Checkbox.checked = false;
+      }
+      const skipLevel3Info = this.modal.querySelector('#skip-level3-info');
+      if (skipLevel3Info) {
+        skipLevel3Info.style.display = 'none';
       }
       // Clear callbacks
       this.onSubmit = null;
