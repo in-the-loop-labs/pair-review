@@ -1,21 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-// Mock window.EMOJI_LIST with a small test subset
-global.window = {
-  EMOJI_LIST: [
-    ['smile', '\u{1F604}'],
-    ['smiley', '\u{1F603}'],
-    ['grin', '\u{1F600}'],
-    ['heart', '\u{2764}\u{FE0F}'],
-    ['heart_eyes', '\u{1F60D}'],
-    ['thumbsup', '\u{1F44D}'],
-    ['+1', '\u{1F44D}'],
-    ['fire', '\u{1F525}'],
-    ['rocket', '\u{1F680}'],
-    ['star', '\u{2B50}']
-  ]
-};
+// Test emoji data
+const TEST_EMOJI_LIST = [
+  ['smile', '\u{1F604}'],
+  ['smiley', '\u{1F603}'],
+  ['grin', '\u{1F600}'],
+  ['heart', '\u{2764}\u{FE0F}'],
+  ['heart_eyes', '\u{1F60D}'],
+  ['thumbsup', '\u{1F44D}'],
+  ['+1', '\u{1F44D}'],
+  ['fire', '\u{1F525}'],
+  ['rocket', '\u{1F680}'],
+  ['star', '\u{2B50}']
+];
+
+// Mock window object
+global.window = {};
 
 // Minimal DOM mocks for Node environment
 global.document = {
@@ -48,6 +49,9 @@ global.document = {
   removeEventListener: vi.fn()
 };
 
+// Mock fetch for emoji bundle extraction
+global.fetch = vi.fn();
+
 // Import the EmojiPicker module which exports to window.EmojiPicker
 require('../../public/js/components/EmojiPicker.js');
 
@@ -57,11 +61,18 @@ describe('EmojiPicker', () => {
   let picker;
 
   beforeEach(() => {
+    // Reset the static cache before each test
+    EmojiPicker._emojiListCache = TEST_EMOJI_LIST;
+    EmojiPicker._extractionPromise = null;
+
     picker = new EmojiPicker({ maxResults: 5 });
   });
 
   afterEach(() => {
     picker = null;
+    // Reset cache
+    EmojiPicker._emojiListCache = null;
+    EmojiPicker._extractionPromise = null;
   });
 
   describe('filterEmoji', () => {
@@ -268,18 +279,101 @@ describe('EmojiPicker', () => {
   });
 
   describe('static EMOJI_LIST', () => {
-    it('should return window.EMOJI_LIST', () => {
-      expect(EmojiPicker.EMOJI_LIST).toBe(global.window.EMOJI_LIST);
+    it('should return cached emoji list', () => {
+      expect(EmojiPicker.EMOJI_LIST).toBe(TEST_EMOJI_LIST);
     });
 
-    it('should return empty array if window.EMOJI_LIST is not defined', () => {
-      const originalList = global.window.EMOJI_LIST;
-      delete global.window.EMOJI_LIST;
-
+    it('should return empty array if cache is null', () => {
+      EmojiPicker._emojiListCache = null;
       expect(EmojiPicker.EMOJI_LIST).toEqual([]);
+    });
+  });
 
-      // Restore
-      global.window.EMOJI_LIST = originalList;
+  describe('ensureEmojiLoaded', () => {
+    beforeEach(() => {
+      // Reset cache for these tests
+      EmojiPicker._emojiListCache = null;
+      EmojiPicker._extractionPromise = null;
+      global.fetch.mockClear();
+    });
+
+    it('should return cached list if already loaded', async () => {
+      EmojiPicker._emojiListCache = TEST_EMOJI_LIST;
+      const result = await EmojiPicker.ensureEmojiLoaded();
+      expect(result).toBe(TEST_EMOJI_LIST);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('should fetch and extract emoji from bundle', async () => {
+      // Mock bundle content with emoji data format matching the regex: /[a-z0-9_+-]+:"\\u[^"]+"/g
+      // The actual bundle format is: smile:"\uD83D\uDE04"
+      const mockBundleContent = 'var e={smile:"\\uD83D\\uDE04",grin:"\\uD83D\\uDE00"}';
+      global.fetch.mockResolvedValueOnce({
+        text: () => Promise.resolve(mockBundleContent)
+      });
+
+      const result = await EmojiPicker.ensureEmojiLoaded();
+
+      expect(global.fetch).toHaveBeenCalledWith(EmojiPicker.EMOJI_BUNDLE_URL);
+      expect(result).toHaveLength(2);
+      expect(result[0][0]).toBe('smile');
+      expect(result[1][0]).toBe('grin');
+    });
+
+    it('should return empty array on fetch error', async () => {
+      global.fetch.mockRejectedValueOnce(new Error('Network error'));
+
+      const result = await EmojiPicker.ensureEmojiLoaded();
+
+      expect(result).toEqual([]);
+      expect(EmojiPicker._emojiListCache).toEqual([]);
+    });
+
+    it('should not make duplicate requests', async () => {
+      const mockBundleContent = 'var e={smile:"\\uD83D\\uDE04"}';
+      global.fetch.mockResolvedValueOnce({
+        text: () => Promise.resolve(mockBundleContent)
+      });
+
+      // Start two loads simultaneously
+      const promise1 = EmojiPicker.ensureEmojiLoaded();
+      const promise2 = EmojiPicker.ensureEmojiLoaded();
+
+      await Promise.all([promise1, promise2]);
+
+      // Should only have fetched once
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('extractEmojiFromBundle', () => {
+    beforeEach(() => {
+      global.fetch.mockClear();
+    });
+
+    it('should extract emoji pairs from bundle content', async () => {
+      // The actual bundle uses standard Unicode escapes like \uD83D\uDE04
+      const mockBundleContent = 'var defs={smile:"\\uD83D\\uDE04",grin:"\\uD83D\\uDE00",heart:"\\u2764\\uFE0F"}';
+      global.fetch.mockResolvedValueOnce({
+        text: () => Promise.resolve(mockBundleContent)
+      });
+
+      const result = await EmojiPicker.extractEmojiFromBundle();
+
+      expect(result).toHaveLength(3);
+      expect(result.find(e => e[0] === 'smile')).toBeTruthy();
+      expect(result.find(e => e[0] === 'grin')).toBeTruthy();
+      expect(result.find(e => e[0] === 'heart')).toBeTruthy();
+    });
+
+    it('should return empty array if no emoji found', async () => {
+      global.fetch.mockResolvedValueOnce({
+        text: () => Promise.resolve('var empty = {}')
+      });
+
+      const result = await EmojiPicker.extractEmojiFromBundle();
+
+      expect(result).toEqual([]);
     });
   });
 

@@ -4,15 +4,82 @@
  * Shows emoji suggestions when user types ":" and filters as they type.
  * Supports keyboard navigation and click selection.
  *
- * Requires: public/js/data/emoji-list.js to be loaded first (sets window.EMOJI_LIST)
+ * Emoji data is lazily extracted from the markdown-it-emoji bundle at runtime.
  */
 class EmojiPicker {
   /**
-   * Reference to the emoji list (loaded from emoji-list.js)
-   * Each entry: [shortcode, unicode emoji]
+   * URL of the markdown-it-emoji bundle (already loaded by the page)
+   */
+  static EMOJI_BUNDLE_URL = 'https://cdn.jsdelivr.net/npm/markdown-it-emoji@2.0.2/dist/markdown-it-emoji.min.js';
+
+  /**
+   * Cached emoji list (populated on first use)
+   * @type {Array<[string, string]>|null}
+   */
+  static _emojiListCache = null;
+
+  /**
+   * Promise for in-progress extraction (prevents duplicate requests)
+   * @type {Promise|null}
+   */
+  static _extractionPromise = null;
+
+  /**
+   * Extract emoji data from the markdown-it-emoji bundle
+   * @returns {Promise<Array<[string, string]>>} Array of [shortcode, emoji] pairs
+   */
+  static async extractEmojiFromBundle() {
+    const response = await fetch(EmojiPicker.EMOJI_BUNDLE_URL);
+    const data = await response.text();
+
+    const pairs = data.match(/[a-z0-9_+-]+:"\\u[^"]+"/g);
+    if (!pairs) return [];
+
+    return pairs.map(p => {
+      const [name, unicode] = p.split(':"');
+      const emoji = JSON.parse('"' + unicode);
+      return [name, emoji];
+    });
+  }
+
+  /**
+   * Ensure emoji list is loaded (lazy loading with caching)
+   * @returns {Promise<Array<[string, string]>>} The emoji list
+   */
+  static async ensureEmojiLoaded() {
+    // Return cached list if available
+    if (EmojiPicker._emojiListCache !== null) {
+      return EmojiPicker._emojiListCache;
+    }
+
+    // If extraction is already in progress, wait for it
+    if (EmojiPicker._extractionPromise !== null) {
+      return EmojiPicker._extractionPromise;
+    }
+
+    // Start extraction
+    EmojiPicker._extractionPromise = EmojiPicker.extractEmojiFromBundle()
+      .then(list => {
+        EmojiPicker._emojiListCache = list;
+        EmojiPicker._extractionPromise = null;
+        return list;
+      })
+      .catch(err => {
+        console.error('Failed to extract emoji from bundle:', err);
+        EmojiPicker._extractionPromise = null;
+        EmojiPicker._emojiListCache = [];
+        return [];
+      });
+
+    return EmojiPicker._extractionPromise;
+  }
+
+  /**
+   * Synchronous getter for emoji list (returns cached or empty)
+   * Use ensureEmojiLoaded() for async access with loading
    */
   static get EMOJI_LIST() {
-    return window.EMOJI_LIST || [];
+    return EmojiPicker._emojiListCache || [];
   }
 
   /**
@@ -163,15 +230,17 @@ class EmojiPicker {
    * @returns {Array} Filtered emoji list
    */
   filterEmoji(search) {
+    const emojiList = EmojiPicker.EMOJI_LIST;
+
     if (!search) {
       // Return popular emoji when no search
-      return EmojiPicker.EMOJI_LIST.slice(0, this.maxResults);
+      return emojiList.slice(0, this.maxResults);
     }
 
     const lower = search.toLowerCase();
     const results = [];
 
-    for (const [shortcode, emoji] of EmojiPicker.EMOJI_LIST) {
+    for (const [shortcode, emoji] of emojiList) {
       if (shortcode.toLowerCase().startsWith(lower)) {
         results.push([shortcode, emoji]);
       }
@@ -180,7 +249,7 @@ class EmojiPicker {
 
     // If not enough exact prefix matches, try contains
     if (results.length < this.maxResults) {
-      for (const [shortcode, emoji] of EmojiPicker.EMOJI_LIST) {
+      for (const [shortcode, emoji] of emojiList) {
         if (!shortcode.toLowerCase().startsWith(lower) &&
             shortcode.toLowerCase().includes(lower)) {
           results.push([shortcode, emoji]);
@@ -197,7 +266,10 @@ class EmojiPicker {
    * @param {HTMLTextAreaElement} textarea - The active textarea
    * @param {string} search - Current search term
    */
-  showPopup(textarea, search) {
+  async showPopup(textarea, search) {
+    // Ensure emoji are loaded before showing popup
+    await EmojiPicker.ensureEmojiLoaded();
+
     this.activeTextarea = textarea;
     this.matches = this.filterEmoji(search);
 
