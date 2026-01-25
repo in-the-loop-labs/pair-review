@@ -79,13 +79,28 @@ class ConfirmDialog {
       }
     });
 
-    // Handle escape key with a stored reference for cleanup
-    this.escapeHandler = (e) => {
-      if (e.key === 'Escape' && this.isVisible) {
+    // Handle keyboard shortcuts with a stored reference for cleanup
+    this.keyHandler = (e) => {
+      if (!this.isVisible) return;
+
+      if (e.key === 'Escape') {
         this.handleCancel();
+      } else if (e.key === 'Enter') {
+        // Only trigger if confirm button exists and is enabled, and not in a textarea
+        const confirmBtn = this.dialogElement?.querySelector('.confirm-btn') ||
+                           this.modal?.querySelector('#confirm-dialog-btn');
+        if (confirmBtn && !confirmBtn.disabled && window.getComputedStyle(confirmBtn).display !== 'none') {
+          // Don't intercept Enter in textareas or input fields
+          if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+          e.preventDefault();
+          this.handleConfirm();
+        }
       }
     };
-    document.addEventListener('keydown', this.escapeHandler);
+    document.addEventListener('keydown', this.keyHandler);
+
+    // Keep escapeHandler reference for backward compatibility
+    this.escapeHandler = this.keyHandler;
   }
 
   /**

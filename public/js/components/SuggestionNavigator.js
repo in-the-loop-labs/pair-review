@@ -20,8 +20,7 @@ class SuggestionNavigator {
    */
   init() {
     this.createElement();
-    this.setupKeyboardShortcuts();
-    
+
     // Set initial main content classes based on collapsed state
     const mainContent = document.querySelector('.main-content');
     if (mainContent && this.isCollapsed) {
@@ -132,26 +131,6 @@ class SuggestionNavigator {
           document.dispatchEvent(event);
         }
       });
-    });
-  }
-
-  /**
-   * Setup keyboard shortcuts
-   */
-  setupKeyboardShortcuts() {
-    document.addEventListener('keydown', (e) => {
-      // Only handle shortcuts when not in input fields
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-        return;
-      }
-
-      if (e.key === 'j' && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault();
-        this.goToNext();
-      } else if (e.key === 'k' && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault();
-        this.goToPrevious();
-      }
     });
   }
 
