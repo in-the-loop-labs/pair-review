@@ -233,10 +233,28 @@ class OpenCodeProvider extends AIProvider {
 
           settle(resolve, parsed.data);
         } else {
-          logger.warn(`${levelPrefix} Failed to extract JSON: ${parsed.error}`);
+          // Regex extraction failed, try LLM-based extraction as fallback
+          logger.warn(`${levelPrefix} Regex extraction failed: ${parsed.error}`);
           logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
-          logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-          settle(resolve, { raw: stdout, parsed: false });
+          logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
+
+          // Use async IIFE to handle the async LLM extraction
+          (async () => {
+            try {
+              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess });
+              if (llmExtracted.success) {
+                logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
+                settle(resolve, llmExtracted.data);
+              } else {
+                logger.warn(`${levelPrefix} LLM extraction fallback also failed: ${llmExtracted.error}`);
+                logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
+                settle(resolve, { raw: stdout, parsed: false });
+              }
+            } catch (llmError) {
+              logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
+              settle(resolve, { raw: stdout, parsed: false });
+            }
+          })();
         }
       });
 
@@ -470,6 +488,33 @@ class OpenCodeProvider extends AIProvider {
 
       return { success: false, error: `JSONL parse error: ${parseError.message}` };
     }
+  }
+
+  /**
+   * Get CLI configuration for LLM extraction
+   * @param {string} model - The model to use for extraction
+   * @returns {Object} Configuration for spawning extraction process
+   */
+  getExtractionConfig(model) {
+    const opencodeCmd = process.env.PAIR_REVIEW_OPENCODE_CMD || 'opencode';
+    const useShell = opencodeCmd.includes(' ');
+
+    // For extraction, we use --format json and pass the prompt via stdin
+    // OpenCode reads from stdin when no positional message arguments are provided
+    if (useShell) {
+      return {
+        command: `${opencodeCmd} run --model ${model} --format json`,
+        args: [],
+        useShell: true,
+        promptViaStdin: true
+      };
+    }
+    return {
+      command: opencodeCmd,
+      args: ['run', '--model', model, '--format', 'json'],
+      useShell: false,
+      promptViaStdin: true
+    };
   }
 
   /**
