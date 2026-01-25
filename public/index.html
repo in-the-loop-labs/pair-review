@@ -218,6 +218,160 @@
             color: var(--color-text-primary);
         }
 
+        /* Help button */
+        #help-btn {
+            background: transparent;
+            border: 1px solid var(--color-border-primary);
+            color: var(--color-text-secondary);
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        #help-btn:hover {
+            background: var(--color-bg-secondary);
+            color: var(--color-text-primary);
+        }
+
+        /* Help Modal */
+        .help-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity var(--transition-default), visibility var(--transition-default);
+        }
+
+        .help-modal-overlay.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        [data-theme="dark"] .help-modal-overlay {
+            background: rgba(0, 0, 0, 0.7);
+        }
+
+        .help-modal {
+            background: var(--color-bg-primary);
+            border: 1px solid var(--color-border-primary);
+            border-radius: var(--radius-xl);
+            max-width: 750px;
+            width: 90%;
+            max-height: 85vh;
+            overflow-y: auto;
+            box-shadow: 0 8px 32px var(--color-shadow), 0 0 0 1px var(--color-border-secondary);
+            transform: scale(0.95);
+            transition: transform var(--transition-default);
+        }
+
+        .help-modal-overlay.visible .help-modal {
+            transform: scale(1);
+        }
+
+        .help-modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--color-border-secondary);
+        }
+
+        .help-modal-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--color-text-primary);
+            margin: 0;
+        }
+
+        .help-modal-close {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: var(--radius-md);
+            color: var(--color-text-tertiary);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .help-modal-close:hover {
+            background: var(--color-bg-secondary);
+            border-color: var(--color-border-primary);
+            color: var(--color-text-primary);
+        }
+
+        .help-modal-content {
+            padding: 24px;
+        }
+
+        .help-modal-content h3 {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--color-text-primary);
+            margin: 0 0 12px 0;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .help-modal-content h3:not(:first-child) {
+            margin-top: 24px;
+        }
+
+        .help-modal-content p {
+            font-size: 14px;
+            color: var(--color-text-secondary);
+            margin: 0 0 12px 0;
+            line-height: 1.6;
+        }
+
+        .help-modal-content code {
+            background-color: var(--color-bg-secondary);
+            padding: 2px 6px;
+            border-radius: var(--radius-sm);
+            font-family: var(--font-mono);
+            font-size: 13px;
+        }
+
+        .help-modal-content pre {
+            background-color: var(--color-bg-tertiary);
+            color: var(--color-text-primary);
+            padding: 16px;
+            border-radius: var(--radius-md);
+            margin: 12px 0;
+            overflow-x: auto;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .help-modal-content pre code {
+            background: none;
+            padding: 0;
+        }
+
+        .help-modal-content ul {
+            margin: 0 0 12px 0;
+            padding-left: 20px;
+        }
+
+        .help-modal-content li {
+            font-size: 14px;
+            color: var(--color-text-secondary);
+            margin-bottom: 8px;
+            line-height: 1.6;
+        }
+
         [data-theme="dark"] .theme-icon-light {
             display: none !important;
         }
@@ -592,6 +746,11 @@
             font-size: 14px;
         }
 
+        /* Initial loading state - hide content until JS determines what to show */
+        .loading-hidden {
+            display: none !important;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .main-content {
@@ -646,6 +805,7 @@
                         <path d="M9.598 1.591a.749.749 0 0 1 .785-.175 7.001 7.001 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Z"/>
                     </svg>
                 </button>
+                <button class="btn btn-icon" id="help-btn" title="Help" aria-label="Open help modal">?</button>
             </div>
         </header>
 
@@ -674,29 +834,13 @@
                     </div>
                 </div>
 
-                <!-- Usage Info (shown when no reviews) -->
-                <div class="usage-info" id="usage-info">
-                    <h3>Getting Started</h3>
-                    <p>To review a pull request, use one of these commands:</p>
-
-                    <pre><code># Review by PR number (from repository directory)
-npx pair-review 123
-
-# Review by full GitHub URL
-npx pair-review https://github.com/owner/repo/pull/123</code></pre>
-
-                    <p><strong>Configuration:</strong></p>
-                    <p>Set your GitHub token in <code>~/.pair-review/config.json</code>:</p>
-                    <pre><code>{
-  "github_token": "your_github_token_here",
-  "port": 3000,
-  "theme": "light"
-}</code></pre>
-                </div>
+                <!-- Usage Info (shown when no reviews, hidden initially during loading) -->
+                <!-- Content is populated from help modal via JS to avoid duplication -->
+                <div class="usage-info loading-hidden" id="usage-info"></div>
 
                 <!-- Recent Reviews Section -->
                 <div class="recent-reviews-section" id="recent-reviews-section">
-                    <div class="section-header">
+                    <div class="section-header loading-hidden" id="recent-reviews-header">
                         <h3 class="section-title">Recent Reviews</h3>
                     </div>
                     <div id="recent-reviews-container" class="recent-reviews-loading">
@@ -705,6 +849,45 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
                 </div>
             </div>
         </main>
+    </div>
+
+    <!-- Help Modal -->
+    <div class="help-modal-overlay" id="help-modal-overlay">
+        <div class="help-modal" id="help-modal" role="dialog" aria-labelledby="help-modal-title" aria-modal="true">
+            <div class="help-modal-header">
+                <h2 class="help-modal-title" id="help-modal-title">Getting Started</h2>
+                <button class="help-modal-close" id="help-modal-close" title="Close">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="help-modal-content">
+                <p>pair-review is an AI-assisted code review partner. You can start a review from the command line or by pasting a PR URL above.</p>
+
+                <h3>Review a PR by Number</h3>
+                <p>From within a cloned repository directory:</p>
+                <pre><code class="cmd-example" data-args="123"></code></pre>
+
+                <h3>Review a PR by URL</h3>
+                <p>From anywhere, using a full GitHub or Graphite URL:</p>
+                <pre><code class="cmd-example" data-args="https://github.com/owner/repo/pull/123"></code></pre>
+
+                <h3>Review Local Changes</h3>
+                <p>Review your uncommitted changes in the current repository before creating a PR:</p>
+                <pre><code class="cmd-example" data-args="--local [path]"></code></pre>
+                <p>This is useful for getting AI feedback on your changes before committing or opening a pull request.</p>
+
+                <h3>Configuration (Optional)</h3>
+                <p>To integrate with GitHub, set your token in <code>~/.pair-review/config.json</code>:</p>
+                <pre><code>{
+  "github_token": "your_github_token_here",
+  "port": 3000,
+  "theme": "light"
+}</code></pre>
+                <p>Generate a token at <a href="https://github.com/settings/tokens" target="_blank" rel="noopener" style="color: var(--color-text-link);">GitHub Settings &rarr; Developer settings &rarr; Personal access tokens</a>.</p>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -730,6 +913,44 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
 
         // Set up theme toggle button
         document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+
+        /**
+         * Help Modal Management
+         */
+        function openHelpModal() {
+            const overlay = document.getElementById('help-modal-overlay');
+            overlay.classList.add('visible');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeHelpModal() {
+            const overlay = document.getElementById('help-modal-overlay');
+            overlay.classList.remove('visible');
+            document.body.style.overflow = '';
+        }
+
+        // Set up help button
+        document.getElementById('help-btn').addEventListener('click', openHelpModal);
+
+        // Set up close button
+        document.getElementById('help-modal-close').addEventListener('click', closeHelpModal);
+
+        // Close on overlay click (but not modal click)
+        document.getElementById('help-modal-overlay').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeHelpModal();
+            }
+        });
+
+        // Close on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                const overlay = document.getElementById('help-modal-overlay');
+                if (overlay.classList.contains('visible')) {
+                    closeHelpModal();
+                }
+            }
+        });
 
         // Listen for system theme changes
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
@@ -876,6 +1097,7 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
         async function loadRecentReviews() {
             const container = document.getElementById('recent-reviews-container');
             const section = document.getElementById('recent-reviews-section');
+            const sectionHeader = document.getElementById('recent-reviews-header');
             const usageInfo = document.getElementById('usage-info');
 
             try {
@@ -888,20 +1110,22 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
                 const data = await response.json();
 
                 if (!data.success || !data.worktrees || data.worktrees.length === 0) {
-                    // Show friendly empty state
+                    // Show friendly empty state with usage info
                     container.innerHTML = `
                         <div class="recent-reviews-empty">
                             <p>No reviews yet. Paste a PR URL above to get started.</p>
                         </div>
                     `;
                     container.classList.remove('recent-reviews-loading');
-                    // Hide usage info when showing empty state
-                    if (usageInfo) usageInfo.style.display = 'none';
+                    // Show usage info when no reviews exist
+                    if (usageInfo) usageInfo.classList.remove('loading-hidden');
+                    // Keep header hidden for empty state
                     return;
                 }
 
-                // Hide usage info when there are reviews
-                if (usageInfo) usageInfo.style.display = 'none';
+                // Hide usage info when there are reviews (keep loading-hidden class)
+                // Show the section header
+                if (sectionHeader) sectionHeader.classList.remove('loading-hidden');
 
                 // Render the table of recent reviews
                 const html = `
@@ -926,8 +1150,9 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
 
             } catch (error) {
                 console.error('Error loading recent reviews:', error);
-                // Hide the section on error rather than showing an error message
+                // Hide the section on error, show usage info as fallback
                 section.style.display = 'none';
+                if (usageInfo) usageInfo.classList.remove('loading-hidden');
             }
         }
 
@@ -1079,8 +1304,56 @@ npx pair-review https://github.com/owner/repo/pull/123</code></pre>
             }
         }
 
+        /**
+         * Update command examples based on whether running via npx or installed
+         * @param {boolean} isNpx - True if running via npx
+         */
+        function updateCommandExamples(isNpx) {
+            const baseCmd = isNpx ? 'npx @in-the-loop-labs/pair-review' : 'pair-review';
+            const cmdExamples = document.querySelectorAll('.cmd-example');
+            cmdExamples.forEach(el => {
+                const args = el.dataset.args || '';
+                el.textContent = args ? `${baseCmd} ${args}` : baseCmd;
+            });
+        }
+
+        /**
+         * Fetch config from server and update UI accordingly
+         */
+        async function loadConfigAndUpdateUI() {
+            try {
+                const response = await fetch('/api/config');
+                if (response.ok) {
+                    const config = await response.json();
+                    updateCommandExamples(config.is_running_via_npx);
+                } else {
+                    // Fallback: assume installed (shorter command)
+                    updateCommandExamples(false);
+                }
+            } catch (error) {
+                console.error('Error loading config:', error);
+                // Fallback: assume installed (shorter command)
+                updateCommandExamples(false);
+            }
+        }
+
         // Load recent reviews when the page loads
         document.addEventListener('DOMContentLoaded', function() {
+            // Load config and update command examples based on npx detection
+            loadConfigAndUpdateUI().then(() => {
+                // Sync help content to usage-info section AFTER command examples are updated
+                const helpContent = document.querySelector('.help-modal-content');
+                const usageInfo = document.getElementById('usage-info');
+                if (helpContent && usageInfo) {
+                    // Clear any existing content
+                    usageInfo.innerHTML = '';
+                    // Clone the content nodes safely
+                    Array.from(helpContent.childNodes).forEach(node => {
+                        usageInfo.appendChild(node.cloneNode(true));
+                    });
+                }
+            });
+
             loadRecentReviews();
 
             // Set up start review form handler
