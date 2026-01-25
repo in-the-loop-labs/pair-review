@@ -2409,156 +2409,28 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    */
   buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null, tier = 'balanced') {
     logger.debug(`[Orchestration] Building prompt with tier: ${tier}`);
-    // Try new prompt architecture first
     const promptBuilder = getPromptBuilder('orchestration', tier, this.provider);
 
-    if (promptBuilder) {
-      // Build context for the new tagged prompt system
-      const isLocal = prMetadata.reviewType === 'local';
-      const reviewDescription = isLocal
-        ? `local changes (review #${prMetadata.number || 'local'})`
-        : `pull request #${prMetadata.number}`;
-
-      const context = {
-        reviewIntro: `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.`,
-        customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
-        lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
-        level1Count: allSuggestions.level1?.length || 0,
-        level2Count: allSuggestions.level2?.length || 0,
-        level3Count: allSuggestions.level3?.length || 0,
-        level1Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level1),
-        level2Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level2),
-        level3Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level3),
-        fileLineCounts: this.buildFileLineCountsSection(fileLineCountMap)
-      };
-
-      logger.debug('[Orchestration] Using new prompt architecture');
-      return promptBuilder.build(context);
-    }
-
-    // Fallback to legacy implementation if prompt not migrated
-    logger.debug('[Orchestration] Using legacy prompt implementation');
-    const level1Count = allSuggestions.level1?.length || 0;
-    const level2Count = allSuggestions.level2?.length || 0;
-    const level3Count = allSuggestions.level3?.length || 0;
-
-    // Build custom instructions guidance for orchestration if provided
-    const orchestrationCustomInstructions = customInstructions
-      ? `
-## Review Focus Instructions
-The following custom instructions have been provided by the reviewer. Use these to guide how you prioritize, filter, and curate suggestions:
-
-${customInstructions.trim()}
-
-When curating suggestions, give higher priority to findings that align with these instructions and consider filtering out suggestions that are less relevant to the stated focus areas.
-`
-      : '';
-
-    // Build file line counts section for validation
-    const fileLineCountsSection = this.buildFileLineCountsSection(fileLineCountMap);
-    const lineNumberGuidance = this.buildLineNumberGuidance(worktreePath);
-
+    // Build context for the tagged prompt system
     const isLocal = prMetadata.reviewType === 'local';
     const reviewDescription = isLocal
       ? `local changes (review #${prMetadata.number || 'local'})`
       : `pull request #${prMetadata.number}`;
 
-    return `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.
+    const context = {
+      reviewIntro: `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.`,
+      customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
+      lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
+      level1Count: allSuggestions.level1?.length || 0,
+      level2Count: allSuggestions.level2?.length || 0,
+      level3Count: allSuggestions.level3?.length || 0,
+      level1Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level1),
+      level2Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level2),
+      level3Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level3),
+      fileLineCounts: this.buildFileLineCountsSection(fileLineCountMap)
+    };
 
-# AI Suggestion Orchestration Task
-${lineNumberGuidance}
-## CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
-
-## Your Role
-You are helping a human reviewer by intelligently curating and merging suggestions from a 3-level analysis system. Your goal is to provide the most valuable, non-redundant guidance to accelerate the human review process.
-${orchestrationCustomInstructions}
-## Input: Multi-Level Analysis Results
-**Level 1 - Diff Analysis (${level1Count} suggestions):**
-${this._formatSuggestionsForOrchestration(allSuggestions.level1)}
-
-**Level 2 - File Context (${level2Count} suggestions):**
-${this._formatSuggestionsForOrchestration(allSuggestions.level2)}
-
-**Level 3 - Codebase Context (${level3Count} suggestions):**
-${this._formatSuggestionsForOrchestration(allSuggestions.level3)}
-${fileLineCountsSection}
-## Orchestration Guidelines
-
-### 1. Intelligent Merging
-- **Combine related suggestions** across levels into comprehensive insights
-- **Merge overlapping concerns** (e.g., same security issue found in multiple levels)
-- **Preserve unique insights** that only one level discovered
-- **Do NOT mention which level found the issue** - focus on the insight itself
-
-### 2. Priority-Based Curation
-Prioritize suggestions in this order:
-1. **Security vulnerabilities** - Critical safety issues
-2. **Bugs and errors** - Functional correctness issues  
-3. **Architecture concerns** - Design and structural issues
-4. **Performance optimizations** - Efficiency improvements
-5. **Code style** - Formatting and convention issues
-
-### 3. Balanced Output
-- **Limit praise suggestions** to 2-3 most noteworthy items
-- **Focus on actionable items** that provide clear value to reviewer
-- **Avoid suggestion overload** - aim for quality over quantity
-- **Include confidence scores** based on cross-level agreement
-
-### 4. Human-Centric Framing
-- Frame suggestions as **considerations and guidance**, not mandates
-- Use language like "Consider...", "You might want to review...", "Worth noting..."
-- **Preserve reviewer autonomy** - you're a pair programming partner, not an enforcer
-- **Provide context** for why each suggestion matters to the reviewer
-
-## Output Format
-Output ONLY the JSON object below with no additional text before or after. Do NOT use markdown code blocks or explanations:
-
-{
-  "level": "orchestrated",
-  "suggestions": [{
-    "file": "path/to/file",
-    "line": 42,
-    "old_or_new": "NEW",
-    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
-    "title": "Brief title describing the curated insight",
-    "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
-    "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
-    "confidence": 0.0-1.0
-  }],
-  "fileLevelSuggestions": [{
-    "file": "path/to/file",
-    "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
-    "title": "Brief title describing file-level concern",
-    "description": "Explanation of the file-level observation",
-    "suggestion": "How to address the file-level concern (omit for praise items)",
-    "confidence": 0.0-1.0
-  }],
-  "summary": "Brief summary of orchestration results and key patterns found"
-}
-
-## Line Number Reference (old_or_new field)
-The "old_or_new" field indicates which line number column to use:
-- **"NEW"** (default): Correct for ADDED lines and CONTEXT lines (unchanged lines in both versions)
-- **"OLD"**: ONLY for DELETED lines marked with [-]
-
-**IMPORTANT**: Context lines exist in BOTH versions - always use "NEW" for them.
-Preserve the old_or_new value from input suggestions when merging.
-
-## File-Level Suggestions
-Some input suggestions are marked as [FILE-LEVEL]. These are observations about entire files, not tied to specific lines:
-- Preserve file-level suggestions in the "fileLevelSuggestions" array
-- File-level suggestions should NOT have a line number
-- Good examples: architecture concerns, missing tests, naming conventions, file organization
-
-## Important Notes
-- **Quality over quantity** - Better to have 8 excellent suggestions than 20 mediocre ones
-- **Cross-level validation** - Higher confidence for issues found in multiple levels
-- **Preserve actionability** - Every suggestion should give clear next steps
-- **Maintain context** - Don't lose important details when merging
-- **Suggestions may target any line in modified files** - Context lines can reveal issues too
-- **Only include modified files** - Discard any suggestions for files not modified in this PR
-- **Preserve file-level insights** - Don't discard valuable file-level observations`;
+    return promptBuilder.build(context);
   }
 
 
