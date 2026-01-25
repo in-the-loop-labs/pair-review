@@ -10,6 +10,22 @@
  */
 
 /**
+ * Input schema documentation for orchestration prompts
+ * Documents the JSON structure of suggestions passed to the orchestration layer
+ */
+const ORCHESTRATION_INPUT_SCHEMA_DOCS = `Each level provides suggestions as a JSON array with the following schema per item:
+- file: path to the file
+- line_start: starting line number
+- line_end: ending line number
+- old_or_new: "NEW" for added/context lines, "OLD" for deleted lines
+- type: suggestion type (bug, improvement, praise, etc.)
+- title: brief title
+- description: full explanation
+- suggestion: remediation advice
+- confidence: 0.0-1.0 score
+- is_file_level: true if this is a file-level suggestion (no line numbers)`;
+
+/**
  * Level 1 output schema (diff analysis - changes in isolation)
  */
 const LEVEL1_OUTPUT_SCHEMA = {
@@ -171,6 +187,7 @@ module.exports = {
   LEVEL2_OUTPUT_SCHEMA,
   LEVEL3_OUTPUT_SCHEMA,
   ORCHESTRATION_OUTPUT_SCHEMA,
+  ORCHESTRATION_INPUT_SCHEMA_DOCS,
   outputSchemaSection,
   level1OutputSchemaSection,
   level3OutputSchemaSection,

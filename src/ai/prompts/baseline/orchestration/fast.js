@@ -19,6 +19,8 @@
  * - optional: Can be removed entirely if unhelpful
  */
 
+const { ORCHESTRATION_INPUT_SCHEMA_DOCS } = require('../../shared/output-schema');
+
 /**
  * Tagged prompt template for Orchestration Fast analysis
  *
@@ -63,17 +65,7 @@ Curate and merge 3-level suggestions. Remove duplicates. Keep high-value items o
 <section name="input-suggestions" locked="true">
 ## Input: Multi-Level Analysis Results
 
-Each level provides suggestions as a JSON array with the following schema per item:
-- file: path to the file
-- line_start: starting line number
-- line_end: ending line number
-- old_or_new: "NEW" for added/context lines, "OLD" for deleted lines
-- type: suggestion type (bug, improvement, praise, etc.)
-- title: brief title
-- description: full explanation
-- suggestion: remediation advice
-- confidence: 0.0-1.0 score
-- is_file_level: true if this is a file-level suggestion (no line numbers)
+${ORCHESTRATION_INPUT_SCHEMA_DOCS}
 
 **Level 1 - Diff Analysis ({{level1Count}} suggestions):**
 {{level1Suggestions}}
