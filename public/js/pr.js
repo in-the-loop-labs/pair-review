@@ -134,6 +134,8 @@ class PRManager {
     this.analysisHistoryManager = null;
     // Currently selected analysis run ID (null = latest)
     this.selectedRunId = null;
+    // Keyboard shortcuts manager
+    this.keyboardShortcuts = null;
 
     // Initialize modules
     this.lineTracker = new window.LineTracker();
@@ -171,6 +173,7 @@ class PRManager {
     this.setupEventHandlers();
     this.initTheme();
     this.initAnalysisConfigModal();
+    this.initKeyboardShortcuts();
 
     // In local mode, LocalManager handles init instead
     if (!window.PAIR_REVIEW_LOCAL_MODE) {
@@ -2624,6 +2627,84 @@ class PRManager {
           this.suggestionNavigator = new window.SuggestionNavigator();
         }
       });
+    }
+  }
+
+  /**
+   * Initialize keyboard shortcuts manager
+   */
+  initKeyboardShortcuts() {
+    if (!window.KeyboardShortcuts) {
+      console.warn('KeyboardShortcuts component not loaded');
+      return;
+    }
+
+    this.keyboardShortcuts = new window.KeyboardShortcuts({
+      onCopyComments: () => this.copyCommentsToClipboard(),
+      onClearComments: () => this.clearAllUserComments(),
+      onNextSuggestion: () => this.suggestionNavigator?.goToNext(),
+      onPrevSuggestion: () => this.suggestionNavigator?.goToPrevious()
+    });
+  }
+
+  /**
+   * Copy user comments to clipboard as markdown
+   * Used by keyboard shortcut 'c c'
+   */
+  async copyCommentsToClipboard() {
+    try {
+      // Get current PR from prManager
+      const pr = this.currentPR;
+      if (!pr) {
+        if (window.toast) {
+          window.toast.showWarning('No PR loaded');
+        }
+        return;
+      }
+
+      // Determine the correct API endpoint based on mode
+      let response;
+      if (window.PAIR_REVIEW_LOCAL_MODE && window.localManager?.reviewId) {
+        // Local mode - use local API endpoint
+        response = await fetch(`/api/local/${window.localManager.reviewId}/user-comments`);
+      } else {
+        // PR mode - use PR API endpoint
+        response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/user-comments`);
+      }
+
+      if (!response.ok) {
+        throw new Error('Failed to load comments');
+      }
+
+      const data = await response.json();
+      const comments = data.comments || [];
+
+      if (comments.length === 0) {
+        if (window.toast) {
+          window.toast.showInfo('No comments to copy');
+        }
+        return;
+      }
+
+      // Format comments using PreviewModal's static method
+      if (!window.PreviewModal?.formatComments) {
+        if (window.toast) {
+          window.toast.showError('PreviewModal not available');
+        }
+        return;
+      }
+      const formattedText = window.PreviewModal.formatComments(comments);
+
+      await navigator.clipboard.writeText(formattedText);
+
+      if (window.toast) {
+        window.toast.showSuccess('Comments copied to clipboard');
+      }
+    } catch (error) {
+      console.error('Error copying comments to clipboard:', error);
+      if (window.toast) {
+        window.toast.showError('Failed to copy comments');
+      }
     }
   }
 

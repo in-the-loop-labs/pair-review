@@ -327,6 +327,11 @@ class PreviewModal {
   }
 }
 
+// Export class to window for static method access
+if (typeof window !== 'undefined') {
+  window.PreviewModal = PreviewModal;
+}
+
 // Initialize when DOM is ready if not already initialized
 if (typeof window !== 'undefined' && !window.previewModal) {
   if (document.readyState === 'loading') {
