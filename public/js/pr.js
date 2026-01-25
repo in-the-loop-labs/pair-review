@@ -3375,7 +3375,8 @@ class PRManager {
           provider: config.provider || 'claude',
           model: config.model || 'sonnet',
           tier: config.tier || 'balanced',
-          customInstructions: config.customInstructions || null
+          customInstructions: config.customInstructions || null,
+          skipLevel3: config.skipLevel3 || false
         })
       });
 

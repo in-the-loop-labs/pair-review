@@ -47,7 +47,7 @@ class Analyzer {
    */
   async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
     const runId = uuidv4();
-    const { analysisId } = options;
+    const { analysisId, skipLevel3 } = options;
 
     // Handle both new object format and legacy string format for backward compatibility
     let repoInstructions = null;
@@ -117,17 +117,38 @@ class Analyzer {
       // Note: We no longer delete old AI suggestions to preserve analysis history.
       // The API endpoint filters to show only the latest ai_run_id.
 
-      // Run all 3 levels in parallel
-      logger.info('Starting all 3 analysis levels in parallel...');
+      // Run analysis levels in parallel (optionally skip level 3)
+      const levelsToRun = skipLevel3 ? 2 : 3;
+      logger.info(`Starting ${levelsToRun} analysis levels in parallel${skipLevel3 ? ' (Level 3 skipped)' : ''}...`);
       if (mergedInstructions) {
         logger.info(`Custom instructions provided: ${mergedInstructions.length} chars`);
       }
       const tier = options.tier || 'balanced';
-      const results = await Promise.allSettled([
+
+      // Build the promises array - always include levels 1 and 2, optionally include level 3
+      const analysisPromises = [
         this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier }),
-        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier }),
-        this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier })
-      ]);
+        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier })
+      ];
+
+      if (skipLevel3) {
+        // Return a pre-resolved promise with skipped status (include summary for consistent result shape)
+        analysisPromises.push(Promise.resolve({ suggestions: [], status: 'skipped', summary: 'Level 3 skipped' }));
+        // Update progress for level 3 as skipped
+        if (progressCallback) {
+          progressCallback({
+            status: 'skipped',
+            progress: 'Skipped',
+            level: 3
+          });
+        }
+      } else {
+        analysisPromises.push(
+          this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier })
+        );
+      }
+
+      const results = await Promise.allSettled(analysisPromises);
 
       // Step 3: Collect successful results
       const levelResults = {
@@ -148,12 +169,21 @@ class Analyzer {
       results.forEach((result, index) => {
         const levelName = ['level1', 'level2', 'level3'][index];
         if (result.status === 'fulfilled') {
-          levelResults[levelName] = {
-            suggestions: result.value.suggestions || [],
-            status: 'success',
-            summary: result.value.summary
-          };
-          logger.success(`Level ${index + 1} completed: ${levelResults[levelName].suggestions.length} suggestions`);
+          // Check if this level was skipped
+          if (result.value.status === 'skipped') {
+            levelResults[levelName] = {
+              suggestions: [],
+              status: 'skipped'
+            };
+            logger.info(`Level ${index + 1} skipped`);
+          } else {
+            levelResults[levelName] = {
+              suggestions: result.value.suggestions || [],
+              status: 'success',
+              summary: result.value.summary
+            };
+            logger.success(`Level ${index + 1} completed: ${levelResults[levelName].suggestions.length} suggestions`);
+          }
         } else {
           // Don't log cancellation as a warning - it's expected
           if (!result.reason?.isCancellation) {
@@ -162,9 +192,12 @@ class Analyzer {
         }
       });
 
-      // Check if at least one level succeeded
+      // Check if at least one level succeeded (skipped levels don't count as success, but also don't count as failure)
       const hasAnySuccess = Object.values(levelResults).some(r => r.status === 'success');
-      if (!hasAnySuccess) {
+      const allNonSkippedFailed = Object.values(levelResults)
+        .filter(r => r.status !== 'skipped')
+        .every(r => r.status === 'failed');
+      if (!hasAnySuccess && allNonSkippedFailed) {
         throw new Error('All analysis levels failed');
       }
 

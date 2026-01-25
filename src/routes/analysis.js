@@ -42,8 +42,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     const { owner, repo, pr } = req.params;
     const prNumber = parseInt(pr);
 
-    // Extract optional provider, model, tier and customInstructions from request body
-    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions } = req.body || {};
+    // Extract optional provider, model, tier, customInstructions and skipLevel3 from request body
+    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3 } = req.body || {};
 
     // Trim and validate custom instructions
     const MAX_INSTRUCTIONS_LENGTH = 5000;
@@ -148,7 +148,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       levels: {
         1: { status: 'running', progress: 'Starting...' },
         2: { status: 'running', progress: 'Starting...' },
-        3: { status: 'running', progress: 'Starting...' },
+        3: requestSkipLevel3 ? { status: 'skipped', progress: 'Skipped' } : { status: 'running', progress: 'Starting...' },
         4: { status: 'pending', progress: 'Pending' }
       },
       filesAnalyzed: 0,
@@ -223,7 +223,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Pass analysisId for process tracking/cancellation
     // Pass separate instructions for storage, analyzer will merge them for prompts
     // Pass tier for prompt selection
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, tier })
+    // Pass skipLevel3 flag to skip codebase-wide analysis when requested
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, tier, skipLevel3: requestSkipLevel3 })
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
