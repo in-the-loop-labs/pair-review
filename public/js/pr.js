@@ -2915,6 +2915,11 @@ class PRManager {
     if (isCollapsed) {
       sidebar.classList.add('collapsed');
       document.documentElement.style.setProperty('--sidebar-width', '0px');
+    } else {
+      const savedWidth = window.PanelResizer?.getSavedWidth('sidebar')
+        || window.PanelResizer?.getDefaultWidth('sidebar')
+        || 260;
+      document.documentElement.style.setProperty('--sidebar-width', `${savedWidth}px`);
     }
 
     // Collapse button (X) in sidebar header - collapses sidebar

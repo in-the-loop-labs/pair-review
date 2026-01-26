@@ -58,11 +58,18 @@ class AIPanel {
         if (this.isCollapsed) {
             document.documentElement.style.setProperty('--ai-panel-width', '0px');
         } else {
-            const savedWidth = window.PanelResizer?.getSavedWidth('ai-panel')
-                || window.PanelResizer?.getDefaultWidth('ai-panel')
-                || 320;
-            document.documentElement.style.setProperty('--ai-panel-width', `${savedWidth}px`);
+            document.documentElement.style.setProperty('--ai-panel-width', `${this.getEffectivePanelWidth()}px`);
         }
+    }
+
+    /**
+     * Get the effective panel width from saved preferences or defaults
+     * @returns {number} Width in pixels
+     */
+    getEffectivePanelWidth() {
+        return window.PanelResizer?.getSavedWidth('ai-panel')
+            || window.PanelResizer?.getDefaultWidth('ai-panel')
+            || 320;
     }
 
     initElements() {
@@ -275,10 +282,7 @@ class AIPanel {
             this.panel.classList.remove('collapsed');
         }
         // Restore CSS variable from saved width or default
-        const savedWidth = window.PanelResizer?.getSavedWidth('ai-panel')
-            || window.PanelResizer?.getDefaultWidth('ai-panel')
-            || 320;
-        document.documentElement.style.setProperty('--ai-panel-width', `${savedWidth}px`);
+        document.documentElement.style.setProperty('--ai-panel-width', `${this.getEffectivePanelWidth()}px`);
     }
 
     /**
