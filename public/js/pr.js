@@ -2889,40 +2889,40 @@ class PRManager {
 
     if (!sidebar || !toggleBtn || !collapsedBtn) return;
 
-    // Helper to update --sidebar-width CSS variable based on collapsed state
-    const updateSidebarWidthVar = (collapsed) => {
-      if (collapsed) {
-        // Set to 0 when collapsed so width calculations don't reserve space
-        document.documentElement.style.setProperty('--sidebar-width', '0px');
-      } else {
-        // Restore from saved width or default
-        const savedWidth = window.PanelResizer?.getSavedWidth('sidebar')
-          || window.PanelResizer?.getDefaultWidth('sidebar')
-          || 260;
-        document.documentElement.style.setProperty('--sidebar-width', `${savedWidth}px`);
-      }
+    // Helper to toggle sidebar with batched updates to prevent flicker
+    // Batches class change and CSS variable update in a single frame
+    const toggleSidebar = (collapse) => {
+      const widthValue = collapse
+        ? '0px'
+        : `${window.PanelResizer?.getSavedWidth('sidebar')
+            || window.PanelResizer?.getDefaultWidth('sidebar')
+            || 260}px`;
+
+      // Batch both changes in a single requestAnimationFrame to prevent double-reflow
+      requestAnimationFrame(() => {
+        document.documentElement.style.setProperty('--sidebar-width', widthValue);
+        if (collapse) {
+          sidebar.classList.add('collapsed');
+        } else {
+          sidebar.classList.remove('collapsed');
+        }
+      });
+
+      localStorage.setItem('file-sidebar-collapsed', String(collapse));
     };
 
-    // Restore collapsed state from localStorage
+    // Restore collapsed state from localStorage (synchronous on init is fine)
     const isCollapsed = localStorage.getItem('file-sidebar-collapsed') === 'true';
     if (isCollapsed) {
       sidebar.classList.add('collapsed');
-      updateSidebarWidthVar(true);
+      document.documentElement.style.setProperty('--sidebar-width', '0px');
     }
 
     // Collapse button (X) in sidebar header - collapses sidebar
-    toggleBtn.addEventListener('click', () => {
-      sidebar.classList.add('collapsed');
-      localStorage.setItem('file-sidebar-collapsed', 'true');
-      updateSidebarWidthVar(true);
-    });
+    toggleBtn.addEventListener('click', () => toggleSidebar(true));
 
     // Expand button in diff toolbar - expands sidebar
-    collapsedBtn.addEventListener('click', () => {
-      sidebar.classList.remove('collapsed');
-      localStorage.setItem('file-sidebar-collapsed', 'false');
-      updateSidebarWidthVar(false);
-    });
+    collapsedBtn.addEventListener('click', () => toggleSidebar(false));
   }
 
   scrollToFile(filePath) {

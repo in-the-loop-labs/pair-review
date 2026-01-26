@@ -1125,7 +1125,7 @@
 .main-content {
   flex: 1;
   min-width: 0;
-  transition: max-width 0.2s ease;
+  /* No transition on max-width to prevent flicker during sidebar toggle */
 }
 
 .diff-header {
@@ -1707,7 +1707,8 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-radius: 6px;
   position: relative;
   box-shadow: 0 0 20px var(--ai-glow, rgba(245, 158, 11, 0.2)); /* Amber glow shadow */
-  transition: all 0.2s ease;
+  /* Explicitly list transitions to exclude max-width - prevents flicker on sidebar toggle */
+  transition: box-shadow 0.2s ease, opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease;
   animation: slideUp 0.3s ease;
   overflow: hidden;
   word-break: break-word;

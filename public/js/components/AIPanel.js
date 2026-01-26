@@ -54,9 +54,14 @@ class AIPanel {
         this.setupKeyboardNavigation();
         // Don't restore segment on init - wait for setPR() call
 
-        // If panel is collapsed on init, ensure CSS variable reflects that
+        // Set CSS variable immediately based on collapsed state to prevent flicker
         if (this.isCollapsed) {
             document.documentElement.style.setProperty('--ai-panel-width', '0px');
+        } else {
+            const savedWidth = window.PanelResizer?.getSavedWidth('ai-panel')
+                || window.PanelResizer?.getDefaultWidth('ai-panel')
+                || 320;
+            document.documentElement.style.setProperty('--ai-panel-width', `${savedWidth}px`);
         }
     }
 
