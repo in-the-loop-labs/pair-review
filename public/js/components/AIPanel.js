@@ -53,6 +53,23 @@ class AIPanel {
         this.bindEvents();
         this.setupKeyboardNavigation();
         // Don't restore segment on init - wait for setPR() call
+
+        // Set CSS variable immediately based on collapsed state to prevent flicker
+        if (this.isCollapsed) {
+            document.documentElement.style.setProperty('--ai-panel-width', '0px');
+        } else {
+            document.documentElement.style.setProperty('--ai-panel-width', `${this.getEffectivePanelWidth()}px`);
+        }
+    }
+
+    /**
+     * Get the effective panel width from saved preferences or defaults
+     * @returns {number} Width in pixels
+     */
+    getEffectivePanelWidth() {
+        return window.PanelResizer?.getSavedWidth('ai-panel')
+            || window.PanelResizer?.getDefaultWidth('ai-panel')
+            || 320;
     }
 
     initElements() {
@@ -255,6 +272,8 @@ class AIPanel {
         if (this.panel) {
             this.panel.classList.add('collapsed');
         }
+        // Set CSS variable to 0 so width calculations don't reserve space
+        document.documentElement.style.setProperty('--ai-panel-width', '0px');
     }
 
     expand() {
@@ -262,6 +281,8 @@ class AIPanel {
         if (this.panel) {
             this.panel.classList.remove('collapsed');
         }
+        // Restore CSS variable from saved width or default
+        document.documentElement.style.setProperty('--ai-panel-width', `${this.getEffectivePanelWidth()}px`);
     }
 
     /**
