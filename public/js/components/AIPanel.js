@@ -53,6 +53,11 @@ class AIPanel {
         this.bindEvents();
         this.setupKeyboardNavigation();
         // Don't restore segment on init - wait for setPR() call
+
+        // If panel is collapsed on init, ensure CSS variable reflects that
+        if (this.isCollapsed) {
+            document.documentElement.style.setProperty('--ai-panel-width', '0px');
+        }
     }
 
     initElements() {
@@ -255,6 +260,8 @@ class AIPanel {
         if (this.panel) {
             this.panel.classList.add('collapsed');
         }
+        // Set CSS variable to 0 so width calculations don't reserve space
+        document.documentElement.style.setProperty('--ai-panel-width', '0px');
     }
 
     expand() {
@@ -262,6 +269,11 @@ class AIPanel {
         if (this.panel) {
             this.panel.classList.remove('collapsed');
         }
+        // Restore CSS variable from saved width or default
+        const savedWidth = window.PanelResizer?.getSavedWidth('ai-panel')
+            || window.PanelResizer?.getDefaultWidth('ai-panel')
+            || 320;
+        document.documentElement.style.setProperty('--ai-panel-width', `${savedWidth}px`);
     }
 
     /**

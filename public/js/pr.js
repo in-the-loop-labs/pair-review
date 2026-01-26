@@ -2889,22 +2889,39 @@ class PRManager {
 
     if (!sidebar || !toggleBtn || !collapsedBtn) return;
 
+    // Helper to update --sidebar-width CSS variable based on collapsed state
+    const updateSidebarWidthVar = (collapsed) => {
+      if (collapsed) {
+        // Set to 0 when collapsed so width calculations don't reserve space
+        document.documentElement.style.setProperty('--sidebar-width', '0px');
+      } else {
+        // Restore from saved width or default
+        const savedWidth = window.PanelResizer?.getSavedWidth('sidebar')
+          || window.PanelResizer?.getDefaultWidth('sidebar')
+          || 260;
+        document.documentElement.style.setProperty('--sidebar-width', `${savedWidth}px`);
+      }
+    };
+
     // Restore collapsed state from localStorage
     const isCollapsed = localStorage.getItem('file-sidebar-collapsed') === 'true';
     if (isCollapsed) {
       sidebar.classList.add('collapsed');
+      updateSidebarWidthVar(true);
     }
 
     // Collapse button (X) in sidebar header - collapses sidebar
     toggleBtn.addEventListener('click', () => {
       sidebar.classList.add('collapsed');
       localStorage.setItem('file-sidebar-collapsed', 'true');
+      updateSidebarWidthVar(true);
     });
 
     // Expand button in diff toolbar - expands sidebar
     collapsedBtn.addEventListener('click', () => {
       sidebar.classList.remove('collapsed');
       localStorage.setItem('file-sidebar-collapsed', 'false');
+      updateSidebarWidthVar(false);
     });
   }
 
