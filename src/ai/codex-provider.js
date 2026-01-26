@@ -72,6 +72,10 @@ class CodexProvider extends AIProvider {
     const configCmd = configOverrides.command;
     const codexCmd = envCmd || configCmd || 'codex';
 
+    // Store for use in getExtractionConfig and testAvailability
+    this.codexCmd = codexCmd;
+    this.configOverrides = configOverrides;
+
     // For multi-word commands, use shell mode (same pattern as Claude provider)
     this.useShell = codexCmd.includes(' ');
 
@@ -506,18 +510,44 @@ class CodexProvider extends AIProvider {
   }
 
   /**
+   * Build args for Codex CLI extraction, applying provider and model extra_args.
+   * This ensures consistent arg construction for getExtractionConfig().
+   *
+   * Note: For extraction, we use minimal sandbox (read-only) since we don't need
+   * shell commands for JSON extraction.
+   *
+   * @param {string} model - The model identifier to use
+   * @returns {string[]} Complete args array for the CLI
+   */
+  buildArgsForModel(model) {
+    // Base args for extraction (read-only sandbox, no shell access needed)
+    const baseArgs = ['exec', '-m', model, '--json', '--sandbox', 'read-only', '--full-auto', '-'];
+    // Provider-level extra_args (from configOverrides)
+    const providerArgs = this.configOverrides?.extra_args || [];
+    // Model-specific extra_args (from the model config for the given model)
+    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    return [...baseArgs, ...providerArgs, ...modelArgs];
+  }
+
+  /**
    * Get CLI configuration for LLM extraction
    * @param {string} model - The model to use for extraction
    * @returns {Object} Configuration for spawning extraction process
    */
   getExtractionConfig(model) {
-    const codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
-    const useShell = codexCmd.includes(' ');
+    // Use the already-resolved command from the constructor (this.codexCmd)
+    // which respects: ENV > config > default precedence
+    const codexCmd = this.codexCmd;
+    const useShell = this.useShell;
 
-    // Use minimal sandbox for extraction - we don't need shell commands
+    // Build args consistently using the shared method, applying provider and model extra_args
+    const args = this.buildArgsForModel(model);
+
     if (useShell) {
       return {
-        command: `${codexCmd} exec -m ${model} --json --sandbox read-only --full-auto -`,
+        command: `${codexCmd} ${args.join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true
@@ -525,7 +555,7 @@ class CodexProvider extends AIProvider {
     }
     return {
       command: codexCmd,
-      args: ['exec', '-m', model, '--json', '--sandbox', 'read-only', '--full-auto', '-'],
+      args,
       useShell: false,
       promptViaStdin: true
     };
@@ -533,15 +563,16 @@ class CodexProvider extends AIProvider {
 
   /**
    * Test if Codex CLI is available
+   * Uses the command configured in the instance (respects ENV > config > default precedence)
    * @returns {Promise<boolean>}
    */
   async testAvailability() {
     return new Promise((resolve) => {
       // For availability test, we just need to check --version
-      // Use shell mode if the command contains spaces
-      const codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
-      const useShell = codexCmd.includes(' ');
-      const command = useShell ? `${codexCmd} --version` : codexCmd;
+      // Use the already-resolved command from the constructor (this.codexCmd)
+      // which respects: ENV > config > default precedence
+      const useShell = this.useShell;
+      const command = useShell ? `${this.codexCmd} --version` : this.codexCmd;
       const args = useShell ? [] : ['--version'];
 
       const codex = spawn(command, args, {

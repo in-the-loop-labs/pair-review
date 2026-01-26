@@ -66,6 +66,10 @@ class ClaudeProvider extends AIProvider {
     const configCmd = configOverrides.command;
     const claudeCmd = envCmd || configCmd || 'claude';
 
+    // Store for use in getExtractionConfig and testAvailability
+    this.claudeCmd = claudeCmd;
+    this.configOverrides = configOverrides;
+
     // For multi-word commands like "devx claude", use shell mode
     this.useShell = claudeCmd.includes(' ');
 
@@ -303,17 +307,44 @@ class ClaudeProvider extends AIProvider {
   }
 
   /**
+   * Build args for Claude CLI extraction, applying provider and model extra_args.
+   * This ensures consistent arg construction for getExtractionConfig().
+   *
+   * Note: For extraction, we use simple -p mode without --allowedTools since
+   * extraction doesn't need tool access.
+   *
+   * @param {string} model - The model identifier to use
+   * @returns {string[]} Complete args array for the CLI
+   */
+  buildArgsForModel(model) {
+    // Base args for extraction (simple prompt mode, no tools needed)
+    const baseArgs = ['-p', '--model', model];
+    // Provider-level extra_args (from configOverrides)
+    const providerArgs = this.configOverrides?.extra_args || [];
+    // Model-specific extra_args (from the model config for the given model)
+    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    return [...baseArgs, ...providerArgs, ...modelArgs];
+  }
+
+  /**
    * Get CLI configuration for LLM extraction
    * @param {string} model - The model to use for extraction
    * @returns {Object} Configuration for spawning extraction process
    */
   getExtractionConfig(model) {
-    const claudeCmd = process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
-    const useShell = claudeCmd.includes(' ');
+    // Use the already-resolved command from the constructor (this.claudeCmd)
+    // which respects: ENV > config > default precedence
+    const claudeCmd = this.claudeCmd;
+    const useShell = this.useShell;
+
+    // Build args consistently using the shared method, applying provider and model extra_args
+    const args = this.buildArgsForModel(model);
 
     if (useShell) {
       return {
-        command: `${claudeCmd} -p --model ${model}`,
+        command: `${claudeCmd} ${args.join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true
@@ -321,7 +352,7 @@ class ClaudeProvider extends AIProvider {
     }
     return {
       command: claudeCmd,
-      args: ['-p', '--model', model],
+      args,
       useShell: false,
       promptViaStdin: true
     };

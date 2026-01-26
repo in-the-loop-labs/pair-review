@@ -79,6 +79,10 @@ class CopilotProvider extends AIProvider {
     const configCmd = configOverrides.command;
     const copilotCmd = envCmd || configCmd || 'copilot';
 
+    // Store for use in getExtractionConfig and testAvailability
+    this.copilotCmd = copilotCmd;
+    this.configOverrides = configOverrides;
+
     // For multi-word commands, use shell mode (same pattern as other providers)
     this.useShell = copilotCmd.includes(' ');
 
@@ -309,17 +313,54 @@ class CopilotProvider extends AIProvider {
   }
 
   /**
+   * Build args for Copilot CLI extraction, applying provider and model extra_args.
+   * This ensures consistent arg construction for getExtractionConfig().
+   *
+   * Note: For extraction, we use simple args without tool restrictions since
+   * extraction doesn't need tool access.
+   *
+   * @param {string} model - The model identifier to use
+   * @returns {string[]} Complete args array for the CLI
+   */
+  buildArgsForModel(model) {
+    // Base args for extraction (simple silent mode, no tools needed)
+    const baseArgs = ['--model', model, '-s'];
+    // Provider-level extra_args (from configOverrides)
+    const providerArgs = this.configOverrides?.extra_args || [];
+    // Model-specific extra_args (from the model config for the given model)
+    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    return [...baseArgs, ...providerArgs, ...modelArgs];
+  }
+
+  /**
    * Get CLI configuration for LLM extraction.
    * Copilot reads from stdin when no -p argument is provided.
    * @param {string} model - The model to use for extraction
    * @returns {Object} Configuration for spawning extraction process
    */
   getExtractionConfig(model) {
-    const copilotCmd = process.env.PAIR_REVIEW_COPILOT_CMD || 'copilot';
+    // Use the already-resolved command from the constructor (this.copilotCmd)
+    // which respects: ENV > config > default precedence
+    const copilotCmd = this.copilotCmd;
+    const useShell = this.useShell;
+
+    // Build args consistently using the shared method, applying provider and model extra_args
+    const args = this.buildArgsForModel(model);
+
     // Use stdin for prompt - safer than command args for arbitrary content
+    if (useShell) {
+      return {
+        command: `${copilotCmd} ${args.join(' ')}`,
+        args: [],
+        useShell: true,
+        promptViaStdin: true
+      };
+    }
     return {
       command: copilotCmd,
-      args: ['--model', model, '-s'],
+      args,
       useShell: false,
       promptViaStdin: true
     };
@@ -327,14 +368,16 @@ class CopilotProvider extends AIProvider {
 
   /**
    * Test if Copilot CLI is available
+   * Uses the command configured in the instance (respects ENV > config > default precedence)
    * @returns {Promise<boolean>}
    */
   async testAvailability() {
     return new Promise((resolve) => {
       // For availability test, check --version
-      const copilotCmd = process.env.PAIR_REVIEW_COPILOT_CMD || 'copilot';
-      const useShell = copilotCmd.includes(' ');
-      const command = useShell ? `${copilotCmd} --version` : copilotCmd;
+      // Use the already-resolved command from the constructor (this.copilotCmd)
+      // which respects: ENV > config > default precedence
+      const useShell = this.useShell;
+      const command = useShell ? `${this.copilotCmd} --version` : this.copilotCmd;
       const args = useShell ? [] : ['--version'];
 
       const copilot = spawn(command, args, {
