@@ -1302,7 +1302,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       })
       .filter(s => {
         // Ensure required fields exist after normalization
-        if (!s.file || !s.line || !s.type || !s.title) {
+        if (!s.file || !s.line_start || !s.type || !s.title) {
           logger.warn(`Skipping invalid suggestion: ${JSON.stringify(s)}`);
           return false;
         }
@@ -1322,8 +1322,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     return deduplicatedSuggestions
       .map(s => ({
         file: s.file,
-        line_start: s.line,
-        line_end: s.lineEnd || s.line,
+        line_start: s.line_start,
+        line_end: s.line_end || s.line_start,
         old_or_new: s.old_or_new || 'NEW',  // Default to NEW for added/context lines
         type: s.type,
         title: s.title,
@@ -1346,17 +1346,17 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     
     return newSuggestions.filter(newSugg => {
       // Check for exact duplicates based on file, line, and type
-      const hasExactMatch = previousSuggestions.some(prevSugg => 
-        prevSugg.file === newSugg.file && 
-        prevSugg.line_start === newSugg.line &&
+      const hasExactMatch = previousSuggestions.some(prevSugg =>
+        prevSugg.file === newSugg.file &&
+        prevSugg.line_start === newSugg.line_start &&
         prevSugg.type === newSugg.type
       );
-      
+
       if (hasExactMatch) {
         // Check text similarity for final deduplication
         const hasSimilarText = previousSuggestions.some(prevSugg => {
-          if (prevSugg.file === newSugg.file && 
-              prevSugg.line_start === newSugg.line &&
+          if (prevSugg.file === newSugg.file &&
+              prevSugg.line_start === newSugg.line_start &&
               prevSugg.type === newSugg.type) {
             const similarity = this.calculateTextSimilarity(
               prevSugg.title + ' ' + prevSugg.description,
@@ -1366,13 +1366,13 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
           }
           return false;
         });
-        
+
         if (hasSimilarText) {
-          logger.info(`Filtering duplicate suggestion: ${newSugg.title} (${newSugg.file}:${newSugg.line})`);
+          logger.info(`Filtering duplicate suggestion: ${newSugg.title} (${newSugg.file}:${newSugg.line_start})`);
           return false;
         }
       }
-      
+
       return true;
     });
   }

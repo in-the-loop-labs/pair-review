@@ -88,6 +88,9 @@ class OpenCodeProvider extends AIProvider {
     // Store base command and args (prompt added in execute)
     this.opencodeCmd = opencodeCmd;
     this.baseArgs = [...baseArgs, ...providerArgs, ...modelArgs];
+
+    // Store config overrides for getExtractionConfig to use
+    this.configOverrides = configOverrides;
   }
 
   /**
@@ -491,19 +494,43 @@ class OpenCodeProvider extends AIProvider {
   }
 
   /**
+   * Build args for OpenCode CLI execution, applying provider and model extra_args.
+   * This ensures consistent arg construction for both execute() and getExtractionConfig().
+   *
+   * @param {string} model - The model identifier to use
+   * @returns {string[]} Complete args array for the CLI
+   */
+  buildArgsForModel(model) {
+    // Base args for opencode run
+    const baseArgs = ['run', '--model', model, '--format', 'json'];
+    // Provider-level extra_args (from configOverrides)
+    const providerArgs = this.configOverrides?.extra_args || [];
+    // Model-specific extra_args (from the model config for the given model)
+    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    return [...baseArgs, ...providerArgs, ...modelArgs];
+  }
+
+  /**
    * Get CLI configuration for LLM extraction
    * @param {string} model - The model to use for extraction
    * @returns {Object} Configuration for spawning extraction process
    */
   getExtractionConfig(model) {
-    const opencodeCmd = process.env.PAIR_REVIEW_OPENCODE_CMD || 'opencode';
-    const useShell = opencodeCmd.includes(' ');
+    // Use the already-resolved command from the constructor (this.opencodeCmd)
+    // which respects: ENV > config > default precedence
+    const opencodeCmd = this.opencodeCmd;
+    const useShell = this.useShell;
 
-    // For extraction, we use --format json and pass the prompt via stdin
+    // Build args consistently using the shared method, applying provider and model extra_args
+    const args = this.buildArgsForModel(model);
+
+    // For extraction, we pass the prompt via stdin
     // OpenCode reads from stdin when no positional message arguments are provided
     if (useShell) {
       return {
-        command: `${opencodeCmd} run --model ${model} --format json`,
+        command: `${opencodeCmd} ${args.join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true
@@ -511,7 +538,7 @@ class OpenCodeProvider extends AIProvider {
     }
     return {
       command: opencodeCmd,
-      args: ['run', '--model', model, '--format', 'json'],
+      args,
       useShell: false,
       promptViaStdin: true
     };

@@ -543,6 +543,43 @@ describe('ClaudeProvider', () => {
         expect(result.success).toBe(true);
         expect(result.data).toEqual({ from: 'result' });
       });
+
+      it('should discard text before tool_use and only keep text after last tool interaction', () => {
+        // This tests the multi-turn tool usage scenario where earlier assistant messages
+        // contain reasoning/partial responses that should NOT be included in the final output.
+        // The text "Let me think..." is discarded when tool_use is encountered,
+        // and only the JSON after the tool result is captured.
+        const stdout = [
+          '{"type": "system"}',
+          '{"type": "assistant", "message": {"content": [{"type": "text", "text": "Let me think about this..."}, {"type": "tool_use", "name": "Read", "id": "tool1"}]}}',
+          '{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tool1", "content": "file contents"}]}}',
+          '{"type": "assistant", "message": {"content": [{"type": "text", "text": "{\\"suggestions\\": [{\\"id\\": 1}]}"}]}}',
+          '{"type": "result", "result": {"subresult": null, "content": []}}'
+        ].join('\n');
+
+        const result = provider.parseClaudeResponse(stdout, 1);
+        expect(result.success).toBe(true);
+        // Should only have the JSON, not "Let me think about this...{\"suggestions\": ...}"
+        expect(result.data).toEqual({ suggestions: [{ id: 1 }] });
+      });
+
+      it('should discard text from multiple tool turns and only keep final response', () => {
+        // Test with multiple tool usage rounds - only the last assistant text should be kept
+        const stdout = [
+          '{"type": "system"}',
+          '{"type": "assistant", "message": {"content": [{"type": "text", "text": "First I will read file A..."}, {"type": "tool_use", "name": "Read", "id": "tool1"}]}}',
+          '{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tool1", "content": "contents of A"}]}}',
+          '{"type": "assistant", "message": {"content": [{"type": "text", "text": "Now I will read file B..."}, {"type": "tool_use", "name": "Read", "id": "tool2"}]}}',
+          '{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tool2", "content": "contents of B"}]}}',
+          '{"type": "assistant", "message": {"content": [{"type": "text", "text": "{\\"final\\": \\"response\\"}"}]}}',
+          '{"type": "result", "result": {"subresult": null, "content": []}}'
+        ].join('\n');
+
+        const result = provider.parseClaudeResponse(stdout, 1);
+        expect(result.success).toBe(true);
+        // Should only have the final JSON, not accumulated text from earlier turns
+        expect(result.data).toEqual({ final: 'response' });
+      });
     });
   });
 

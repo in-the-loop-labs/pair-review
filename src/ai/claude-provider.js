@@ -502,7 +502,14 @@ class ClaudeProvider extends AIProvider {
             // events rather than the result event
             const content = event.message?.content || [];
             for (const block of content) {
-              if (block.type === 'text' && block.text) {
+              if (block.type === 'tool_use') {
+                // Clear accumulated text when we see a tool_use block.
+                // In multi-turn tool usage, earlier assistant messages contain reasoning
+                // or partial responses that aren't the final JSON output. By clearing here,
+                // we ensure only text AFTER the last tool interaction is captured,
+                // which is most likely to contain the final structured response.
+                assistantText = '';
+              } else if (block.type === 'text' && block.text) {
                 assistantText += block.text;
               }
             }

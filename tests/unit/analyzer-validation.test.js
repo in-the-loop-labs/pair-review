@@ -682,7 +682,8 @@ describe('Analyzer.validateSuggestions old_or_new field', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        line: 10,
+        line_start: 10,
+        line_end: 10,
         old_or_new: 'OLD',
         type: 'bug',
         title: 'Issue on deleted line',
@@ -701,7 +702,8 @@ describe('Analyzer.validateSuggestions old_or_new field', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        line: 10,
+        line_start: 10,
+        line_end: 10,
         old_or_new: 'NEW',
         type: 'bug',
         title: 'Issue on added line',
@@ -720,7 +722,8 @@ describe('Analyzer.validateSuggestions old_or_new field', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        line: 10,
+        line_start: 10,
+        line_end: 10,
         // old_or_new not specified
         type: 'bug',
         title: 'Some issue',
@@ -746,7 +749,7 @@ describe('Analyzer.parseResponse with file-level suggestions', () => {
   it('should parse both line-level and file-level suggestions from response object', () => {
     const response = {
       suggestions: [
-        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
+        { file: 'src/foo.js', line_start: 10, line_end: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
       ],
       fileLevelSuggestions: [
         { file: 'src/foo.js', type: 'design', title: 'File issue', confidence: 0.8 }
@@ -767,7 +770,7 @@ describe('Analyzer.parseResponse with file-level suggestions', () => {
   it('should handle response with only line-level suggestions', () => {
     const response = {
       suggestions: [
-        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
+        { file: 'src/foo.js', line_start: 10, line_end: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
       ]
     };
 

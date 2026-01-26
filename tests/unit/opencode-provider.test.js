@@ -485,6 +485,176 @@ describe('OpenCodeProvider', () => {
     });
   });
 
+  describe('buildArgsForModel', () => {
+    it('should include base args for the given model', () => {
+      const provider = new OpenCodeProvider('test-model');
+      const args = provider.buildArgsForModel('other-model');
+
+      expect(args).toContain('run');
+      expect(args).toContain('--model');
+      expect(args).toContain('other-model');
+      expect(args).toContain('--format');
+      expect(args).toContain('json');
+    });
+
+    it('should include provider-level extra_args', () => {
+      const provider = new OpenCodeProvider('test-model', {
+        extra_args: ['--verbose', '--timeout', '120']
+      });
+      const args = provider.buildArgsForModel('any-model');
+
+      expect(args).toContain('--verbose');
+      expect(args).toContain('--timeout');
+      expect(args).toContain('120');
+    });
+
+    it('should include model-specific extra_args for matching model', () => {
+      const provider = new OpenCodeProvider('test-model', {
+        models: [
+          { id: 'fast-model', extra_args: ['--fast-flag'] },
+          { id: 'slow-model', extra_args: ['--slow-flag'] }
+        ]
+      });
+
+      const fastArgs = provider.buildArgsForModel('fast-model');
+      expect(fastArgs).toContain('--fast-flag');
+      expect(fastArgs).not.toContain('--slow-flag');
+
+      const slowArgs = provider.buildArgsForModel('slow-model');
+      expect(slowArgs).toContain('--slow-flag');
+      expect(slowArgs).not.toContain('--fast-flag');
+    });
+
+    it('should combine provider and model extra_args', () => {
+      const provider = new OpenCodeProvider('test-model', {
+        extra_args: ['--provider-arg'],
+        models: [
+          { id: 'special-model', extra_args: ['--model-arg'] }
+        ]
+      });
+      const args = provider.buildArgsForModel('special-model');
+
+      expect(args).toContain('--provider-arg');
+      expect(args).toContain('--model-arg');
+    });
+
+    it('should not include model-specific args for non-matching model', () => {
+      const provider = new OpenCodeProvider('test-model', {
+        models: [
+          { id: 'special-model', extra_args: ['--special-flag'] }
+        ]
+      });
+      const args = provider.buildArgsForModel('other-model');
+
+      expect(args).not.toContain('--special-flag');
+    });
+
+    it('should handle missing configOverrides gracefully', () => {
+      const provider = new OpenCodeProvider('test-model');
+      // Manually unset configOverrides to simulate edge case
+      provider.configOverrides = undefined;
+      const args = provider.buildArgsForModel('any-model');
+
+      // Should still have base args
+      expect(args).toContain('run');
+      expect(args).toContain('--model');
+      expect(args).toContain('any-model');
+    });
+  });
+
+  describe('getExtractionConfig', () => {
+    afterEach(() => {
+      delete process.env.PAIR_REVIEW_OPENCODE_CMD;
+    });
+
+    it('should return correct structure for non-shell mode', () => {
+      const provider = new OpenCodeProvider('test-model');
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config).toHaveProperty('command', 'opencode');
+      expect(config).toHaveProperty('args');
+      expect(config).toHaveProperty('useShell', false);
+      expect(config).toHaveProperty('promptViaStdin', true);
+    });
+
+    it('should include base args for the extraction model', () => {
+      const provider = new OpenCodeProvider('test-model');
+      const config = provider.getExtractionConfig('fast-model');
+
+      expect(config.args).toContain('run');
+      expect(config.args).toContain('--model');
+      expect(config.args).toContain('fast-model');
+      expect(config.args).toContain('--format');
+      expect(config.args).toContain('json');
+    });
+
+    it('should include provider-level extra_args in extraction config', () => {
+      const provider = new OpenCodeProvider('main-model', {
+        extra_args: ['--verbose', '--debug']
+      });
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config.args).toContain('--verbose');
+      expect(config.args).toContain('--debug');
+    });
+
+    it('should include model-specific extra_args for extraction model', () => {
+      const provider = new OpenCodeProvider('main-model', {
+        models: [
+          { id: 'extraction-model', extra_args: ['--extraction-flag'] },
+          { id: 'main-model', extra_args: ['--main-flag'] }
+        ]
+      });
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config.args).toContain('--extraction-flag');
+      expect(config.args).not.toContain('--main-flag');
+    });
+
+    it('should use shell mode for multi-word commands', () => {
+      process.env.PAIR_REVIEW_OPENCODE_CMD = 'npx opencode';
+      const provider = new OpenCodeProvider('test-model', {
+        extra_args: ['--verbose']
+      });
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config.useShell).toBe(true);
+      expect(config.command).toContain('npx opencode');
+      expect(config.command).toContain('--verbose');
+      expect(config.args).toEqual([]);
+    });
+
+    it('should use configured command in shell mode', () => {
+      const provider = new OpenCodeProvider('test-model', {
+        command: 'docker run opencode'
+      });
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config.useShell).toBe(true);
+      expect(config.command).toContain('docker run opencode');
+      expect(config.command).toContain('run');
+      expect(config.command).toContain('--model');
+      expect(config.command).toContain('extraction-model');
+    });
+
+    it('should include all args in command string for shell mode', () => {
+      process.env.PAIR_REVIEW_OPENCODE_CMD = 'npx opencode';
+      const provider = new OpenCodeProvider('test-model', {
+        extra_args: ['--timeout', '60'],
+        models: [
+          { id: 'fast-model', extra_args: ['--fast'] }
+        ]
+      });
+      const config = provider.getExtractionConfig('fast-model');
+
+      expect(config.useShell).toBe(true);
+      expect(config.command).toContain('--timeout');
+      expect(config.command).toContain('60');
+      expect(config.command).toContain('--fast');
+      expect(config.command).toContain('fast-model');
+    });
+  });
+
   describe('provider registration', () => {
     it('should be registered with the correct ID', () => {
       const { getProviderClass } = require('../../src/ai/provider');

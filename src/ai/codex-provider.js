@@ -151,6 +151,8 @@ class CodexProvider extends AIProvider {
       let stderr = '';
       let timeoutId = null;
       let settled = false;  // Guard against multiple resolve/reject calls
+      let lineBuffer = '';  // Buffer for incomplete JSONL lines
+      let lineCount = 0;    // Count of JSONL events for progress tracking
 
       const settle = (fn, value) => {
         if (settled) return;
@@ -168,9 +170,23 @@ class CodexProvider extends AIProvider {
         }, timeout);
       }
 
-      // Collect stdout
+      // Collect stdout with streaming JSONL parsing for debug visibility
       codex.stdout.on('data', (data) => {
-        stdout += data.toString();
+        const chunk = data.toString();
+        stdout += chunk;
+
+        // Parse JSONL lines as they arrive for streaming debug output
+        lineBuffer += chunk;
+        const lines = lineBuffer.split('\n');
+        // Keep the last incomplete line in buffer
+        lineBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.trim()) {
+            lineCount++;
+            this.logStreamLine(line, lineCount, levelPrefix);
+          }
+        }
       });
 
       // Collect stderr
@@ -205,10 +221,27 @@ class CodexProvider extends AIProvider {
           return;
         }
 
+        // Log completion with event count (only for successful completion)
+        logger.info(`${levelPrefix} Codex CLI completed: ${lineCount} JSONL events received`);
+
+        // Process any remaining buffered line
+        if (lineBuffer.trim()) {
+          lineCount++;
+          this.logStreamLine(lineBuffer, lineCount, levelPrefix);
+        }
+
         // Parse the Codex JSONL response
         const parsed = this.parseCodexResponse(stdout, level);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
+          // Dump the parsed data for debugging
+          const dataPreview = JSON.stringify(parsed.data, null, 2);
+          logger.debug(`${levelPrefix} [parsed_data] ${dataPreview.substring(0, 3000)}${dataPreview.length > 3000 ? '...' : ''}`);
+          // Log suggestion count if present
+          if (parsed.data?.suggestions) {
+            const count = Array.isArray(parsed.data.suggestions) ? parsed.data.suggestions.length : 0;
+            logger.info(`${levelPrefix} [response] ${count} suggestions in parsed response`);
+          }
           settle(resolve, parsed.data);
         } else {
           // Regex extraction failed, try LLM-based extraction as fallback
@@ -327,6 +360,148 @@ class CodexProvider extends AIProvider {
       }
 
       return { success: false, error: `JSONL parse error: ${parseError.message}` };
+    }
+  }
+
+  /**
+   * Log a streaming JSONL line for debugging visibility
+   * Codex JSONL format event types:
+   * - thread.started: Session info
+   * - turn.started: Turn begins
+   * - item.completed: Contains reasoning, agent_message, or tool items
+   * - turn.completed: Turn ends with usage stats
+   *
+   * Uses logger.streamDebug() which only logs when --debug-stream flag is enabled.
+   *
+   * @param {string} line - A single JSONL line
+   * @param {number} lineNum - Line number for reference
+   * @param {string} levelPrefix - Logging prefix
+   */
+  logStreamLine(line, lineNum, levelPrefix) {
+    // Check stream debug status - branches exit early if disabled
+    const streamEnabled = logger.isStreamDebugEnabled();
+
+    try {
+      const event = JSON.parse(line);
+      const eventType = event.type;
+
+      if (eventType === 'thread.started') {
+        if (!streamEnabled) return;
+        const threadId = event.thread_id || '';
+        const idPart = threadId ? ` thread=${threadId.substring(0, 12)}` : '';
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] thread.started${idPart}`);
+
+      } else if (eventType === 'turn.started') {
+        if (!streamEnabled) return;
+        const turnId = event.turn_id || '';
+        const idPart = turnId ? ` turn=${turnId.substring(0, 8)}` : '';
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] turn.started${idPart}`);
+
+      } else if (eventType === 'item.completed') {
+        const item = event.item || {};
+        const itemType = item.type || 'unknown';
+
+        if (itemType === 'agent_message') {
+          // Agent message - this is the AI's text response
+          const text = item.text || '';
+          if (text && streamEnabled) {
+            const preview = text.replace(/\n/g, '\\n').substring(0, 60);
+            logger.streamDebug(`${levelPrefix} [#${lineNum}] agent_message: ${preview}${text.length > 60 ? '...' : ''}`);
+          } else if (streamEnabled) {
+            logger.streamDebug(`${levelPrefix} [#${lineNum}] agent_message (empty)`);
+          }
+
+        } else if (itemType === 'function_call' || itemType === 'tool_call' || itemType === 'tool_use') {
+          if (!streamEnabled) return;
+          // Tool/function call - extract name and input
+          const toolName = item.name || item.tool || 'unknown';
+          const toolId = item.id || item.call_id || '';
+          const toolArgs = item.arguments || item.input || item.args || null;
+
+          let argsPreview = '';
+          if (toolArgs) {
+            // Try to parse if it's a string (Codex often stringifies arguments)
+            let parsedArgs = toolArgs;
+            if (typeof toolArgs === 'string') {
+              try {
+                parsedArgs = JSON.parse(toolArgs);
+              } catch {
+                parsedArgs = toolArgs;
+              }
+            }
+
+            if (typeof parsedArgs === 'string') {
+              argsPreview = parsedArgs.length > 50 ? parsedArgs.substring(0, 50) + '...' : parsedArgs;
+            } else if (typeof parsedArgs === 'object' && parsedArgs !== null) {
+              const keys = Object.keys(parsedArgs);
+              if (parsedArgs.command) {
+                const cmd = parsedArgs.command;
+                argsPreview = `cmd="${cmd.substring(0, 50)}${cmd.length > 50 ? '...' : ''}"`;
+              } else if (parsedArgs.file_path || parsedArgs.path) {
+                argsPreview = `path="${parsedArgs.file_path || parsedArgs.path}"`;
+              } else if (keys.length === 1 && typeof parsedArgs[keys[0]] === 'string') {
+                const val = parsedArgs[keys[0]];
+                argsPreview = `${keys[0]}="${val.length > 40 ? val.substring(0, 40) + '...' : val}"`;
+              } else if (keys.length > 0) {
+                argsPreview = `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`;
+              }
+            }
+          }
+
+          const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+          const argsPart = argsPreview ? ` ${argsPreview}` : '';
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] tool_call: ${toolName}${idPart}${argsPart}`);
+
+        } else if (itemType === 'function_call_output' || itemType === 'tool_result') {
+          if (!streamEnabled) return;
+          // Tool result
+          const toolId = item.call_id || item.tool_use_id || item.id || '';
+          const output = item.output || item.result || item.content || '';
+          const isError = item.is_error || item.error || false;
+
+          let resultPreview = '';
+          if (typeof output === 'string' && output.length > 0) {
+            resultPreview = output.length > 60 ? output.substring(0, 60) + '...' : output;
+            resultPreview = resultPreview.replace(/\n/g, '\\n');
+          }
+
+          const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+          const statusPart = isError ? ' ERROR' : ' OK';
+          const previewPart = resultPreview ? ` ${resultPreview}` : '';
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] tool_result${idPart}${statusPart}${previewPart}`);
+
+        } else if (itemType === 'reasoning') {
+          if (!streamEnabled) return;
+          // Reasoning item - show brief summary
+          const summary = item.summary || '';
+          const preview = summary ? summary.substring(0, 50) : '';
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] reasoning: ${preview}${summary.length > 50 ? '...' : ''}`);
+
+        } else if (streamEnabled) {
+          // Other item types
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] item.completed (${itemType})`);
+        }
+
+      } else if (eventType === 'turn.completed') {
+        // Turn completed - always log this at info level for summary
+        const usage = event.usage || {};
+        const inputTokens = usage.input_tokens || usage.prompt_tokens || 0;
+        const outputTokens = usage.output_tokens || usage.completion_tokens || 0;
+        const totalTokens = usage.total_tokens || (inputTokens + outputTokens);
+
+        logger.info(`${levelPrefix} [turn.completed] tokens: ${inputTokens}in/${outputTokens}out (total: ${totalTokens})`);
+
+      } else if (eventType && streamEnabled) {
+        // Unknown event type - only log if we have an actual type and stream debug is on
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] ${eventType}`);
+      }
+      // Silently ignore events with no type
+
+    } catch (parseError) {
+      if (streamEnabled) {
+        // Skip malformed lines
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] (malformed: ${line.substring(0, 50)}${line.length > 50 ? '...' : ''})`);
+      }
     }
   }
 

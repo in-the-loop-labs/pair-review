@@ -32,7 +32,8 @@ const LEVEL1_OUTPUT_SCHEMA = {
   level: 1,
   suggestions: [{
     file: 'path/to/file',
-    line: 42,
+    line_start: 42,
+    line_end: 42,
     old_or_new: 'NEW',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
     title: 'Brief title',
@@ -50,7 +51,8 @@ const LEVEL2_OUTPUT_SCHEMA = {
   level: 2,
   suggestions: [{
     file: 'path/to/file',
-    line: 42,
+    line_start: 42,
+    line_end: 42,
     old_or_new: 'NEW',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
     title: 'Brief title',
@@ -76,7 +78,8 @@ const LEVEL3_OUTPUT_SCHEMA = {
   level: 3,
   suggestions: [{
     file: 'path/to/file',
-    line: 42,
+    line_start: 42,
+    line_end: 42,
     old_or_new: 'NEW',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
     title: 'Brief title',
@@ -102,7 +105,8 @@ const ORCHESTRATION_OUTPUT_SCHEMA = {
   level: 'orchestrated',
   suggestions: [{
     file: 'path/to/file',
-    line: 42,
+    line_start: 42,
+    line_end: 42,
     old_or_new: 'NEW',
     type: 'bug|improvement|praise|suggestion|design|performance|security|code-style',
     title: 'Brief title describing the curated insight',

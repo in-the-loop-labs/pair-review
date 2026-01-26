@@ -9,14 +9,19 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
  */
 
 // Mock logger to suppress output during tests
+// Use actual implementation for state tracking, but mock output methods
 vi.mock('../../src/utils/logger', () => {
+  let streamDebugEnabled = false;
   return {
     default: {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
       success: vi.fn(),
-      debug: vi.fn()
+      debug: vi.fn(),
+      streamDebug: vi.fn(),
+      isStreamDebugEnabled: () => streamDebugEnabled,
+      setStreamDebugEnabled: (enabled) => { streamDebugEnabled = enabled; }
     }
   };
 });
@@ -416,6 +421,184 @@ describe('CodexProvider', () => {
       expect(config.useShell).toBe(true);
       expect(config.command).toContain('docker run codex');
       expect(config.args).toEqual([]);
+    });
+  });
+
+  describe('logStreamLine', () => {
+    let provider;
+    const logger = require('../../src/utils/logger');
+
+    beforeEach(() => {
+      provider = new CodexProvider('gpt-5.1-codex-max');
+      vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+      // Ensure stream debug is disabled after tests
+      logger.setStreamDebugEnabled(false);
+    });
+
+    // Note: These tests verify logStreamLine doesn't throw and handles various event types.
+    // The mock uses the real isStreamDebugEnabled/setStreamDebugEnabled for state tracking.
+    // We verify behavior by checking that no errors are thrown.
+
+    it('should not throw when stream debug is disabled', () => {
+      logger.setStreamDebugEnabled(false);
+      const line = '{"type": "thread.started", "thread_id": "abc123"}';
+      expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
+    });
+
+    it('should not throw when stream debug is enabled', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "thread.started", "thread_id": "abc123"}';
+      expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle thread.started events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "thread.started", "thread_id": "abc123456789"}';
+      expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle turn.started events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "turn.started", "turn_id": "turn123"}';
+      expect(() => provider.logStreamLine(line, 2, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle agent_message events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "item.completed", "item": {"type": "agent_message", "text": "This is a test message"}}';
+      expect(() => provider.logStreamLine(line, 3, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle long agent_message text without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const longText = 'A'.repeat(100);
+      const line = `{"type": "item.completed", "item": {"type": "agent_message", "text": "${longText}"}}`;
+      expect(() => provider.logStreamLine(line, 3, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle empty agent_message without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "item.completed", "item": {"type": "agent_message", "text": ""}}';
+      expect(() => provider.logStreamLine(line, 3, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle function_call events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const event = {
+        type: 'item.completed',
+        item: {
+          type: 'function_call',
+          name: 'run_shell',
+          id: 'call_12345678',
+          arguments: JSON.stringify({ command: 'git diff HEAD~1' })
+        }
+      };
+      expect(() => provider.logStreamLine(JSON.stringify(event), 4, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle tool_call events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const event = {
+        type: 'item.completed',
+        item: {
+          type: 'tool_call',
+          name: 'read_file',
+          input: { file_path: '/path/to/file.js' }
+        }
+      };
+      expect(() => provider.logStreamLine(JSON.stringify(event), 5, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle function_call_output events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const event = {
+        type: 'item.completed',
+        item: {
+          type: 'function_call_output',
+          call_id: 'call_12345678',
+          output: 'File contents here'
+        }
+      };
+      expect(() => provider.logStreamLine(JSON.stringify(event), 5, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle tool_result with error flag without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const event = {
+        type: 'item.completed',
+        item: {
+          type: 'function_call_output',
+          is_error: true,
+          output: 'Command failed'
+        }
+      };
+      expect(() => provider.logStreamLine(JSON.stringify(event), 5, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle reasoning events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const event = {
+        type: 'item.completed',
+        item: {
+          type: 'reasoning',
+          summary: 'Analyzing the code structure'
+        }
+      };
+      expect(() => provider.logStreamLine(JSON.stringify(event), 6, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle unknown item types without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const event = {
+        type: 'item.completed',
+        item: {
+          type: 'new_future_type'
+        }
+      };
+      expect(() => provider.logStreamLine(JSON.stringify(event), 7, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle turn.completed events without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "turn.completed", "usage": {"input_tokens": 500, "output_tokens": 200, "total_tokens": 700}}';
+      expect(() => provider.logStreamLine(line, 10, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle turn.completed with alternate token field names', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "turn.completed", "usage": {"prompt_tokens": 100, "completion_tokens": 50}}';
+      expect(() => provider.logStreamLine(line, 10, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle unknown event types without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "some_new_event_type"}';
+      expect(() => provider.logStreamLine(line, 8, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle malformed JSON gracefully without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      expect(() => provider.logStreamLine('not valid json {', 9, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle empty line without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      expect(() => provider.logStreamLine('', 1, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle item.completed without item property without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "item.completed"}';
+      expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
+    });
+
+    it('should handle agent_message without text property without throwing', () => {
+      logger.setStreamDebugEnabled(true);
+      const line = '{"type": "item.completed", "item": {"type": "agent_message"}}';
+      expect(() => provider.logStreamLine(line, 1, '[Level 1]')).not.toThrow();
     });
   });
 
