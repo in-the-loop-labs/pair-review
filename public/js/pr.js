@@ -2906,9 +2906,8 @@ class PRManager {
         } else {
           sidebar.classList.remove('collapsed');
         }
+        localStorage.setItem('file-sidebar-collapsed', String(collapse));
       });
-
-      localStorage.setItem('file-sidebar-collapsed', String(collapse));
     };
 
     // Restore collapsed state from localStorage (synchronous on init is fine)
