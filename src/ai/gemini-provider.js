@@ -348,7 +348,8 @@ class GeminiProvider extends AIProvider {
    * Gemini with -o stream-json outputs JSONL with multiple event types:
    * - init: Session initialization with model info
    * - message (role: "user"): User message echo
-   * - message (role: "assistant", delta: true): Streaming assistant text chunks
+   * - message (role: "assistant"): Assistant text (may have delta: true for streaming chunks,
+   *   but we accumulate ALL assistant messages with content regardless of delta flag)
    * - tool_use: Tool invocation with tool_name, tool_id, parameters
    * - tool_result: Tool result with status and output
    * - result: Final result with stats (total_tokens, input_tokens, output_tokens)
@@ -557,6 +558,7 @@ class GeminiProvider extends AIProvider {
    */
   buildArgsForModel(model) {
     // Base args for extraction (text output, no tools needed)
+    // Use text format for simpler JSON parsing; analysis uses stream-json for progress feedback and tool visibility
     const baseArgs = ['-m', model, '-o', 'text'];
     // Provider-level extra_args (from configOverrides)
     const providerArgs = this.configOverrides?.extra_args || [];

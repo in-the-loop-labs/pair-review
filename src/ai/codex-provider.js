@@ -521,14 +521,16 @@ class CodexProvider extends AIProvider {
    */
   buildArgsForModel(model) {
     // Base args for extraction (read-only sandbox, no shell access needed)
-    const baseArgs = ['exec', '-m', model, '--json', '--sandbox', 'read-only', '--full-auto', '-'];
+    // Note: '-' (stdin marker) must come LAST, after any extra_args
+    const baseArgs = ['exec', '-m', model, '--json', '--sandbox', 'read-only', '--full-auto'];
     // Provider-level extra_args (from configOverrides)
     const providerArgs = this.configOverrides?.extra_args || [];
     // Model-specific extra_args (from the model config for the given model)
     const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];
 
-    return [...baseArgs, ...providerArgs, ...modelArgs];
+    // Append stdin marker '-' at the end after all other args
+    return [...baseArgs, ...providerArgs, ...modelArgs, '-'];
   }
 
   /**

@@ -1330,8 +1330,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     return deduplicatedSuggestions
       .map(s => ({
         file: s.file,
-        line_start: s.line_start ?? s.line,
-        line_end: s.line_end ?? s.line_start ?? s.line,
+        line_start: s.line_start,
+        line_end: s.line_end ?? s.line_start,
         old_or_new: s.old_or_new || 'NEW',  // Default to NEW for added/context lines
         type: s.type,
         title: s.title,

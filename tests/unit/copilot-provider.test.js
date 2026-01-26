@@ -9,19 +9,16 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
  */
 
 // Mock logger to suppress output during tests
+// Note: Logger exports directly via CommonJS (module.exports = new AILogger()),
+// so mock must export methods at top level, not under 'default'
 vi.mock('../../src/utils/logger', () => ({
-  default: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    success: vi.fn(),
-    debug: vi.fn()
-  },
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
   success: vi.fn(),
-  debug: vi.fn()
+  debug: vi.fn(),
+  streamDebug: vi.fn(),
+  section: vi.fn()
 }));
 
 // Import after mocks are set up

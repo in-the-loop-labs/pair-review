@@ -10,19 +10,20 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 // Mock logger to suppress output during tests
 // Use actual implementation for state tracking, but mock output methods
+// Note: Logger exports directly via CommonJS (module.exports = new AILogger()),
+// so mock must export methods at top level, not under 'default'
 vi.mock('../../src/utils/logger', () => {
   let streamDebugEnabled = false;
   return {
-    default: {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      success: vi.fn(),
-      debug: vi.fn(),
-      streamDebug: vi.fn(),
-      isStreamDebugEnabled: () => streamDebugEnabled,
-      setStreamDebugEnabled: (enabled) => { streamDebugEnabled = enabled; }
-    }
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    success: vi.fn(),
+    debug: vi.fn(),
+    streamDebug: vi.fn(),
+    section: vi.fn(),
+    isStreamDebugEnabled: () => streamDebugEnabled,
+    setStreamDebugEnabled: (enabled) => { streamDebugEnabled = enabled; }
   };
 });
 
