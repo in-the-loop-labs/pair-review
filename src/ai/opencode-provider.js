@@ -406,8 +406,8 @@ class OpenCodeProvider extends AIProvider {
           logger.streamDebug(`${levelPrefix} [#${lineNum}] ${type}`);
       }
     } catch {
-      // If we can't parse the line, just log a brief note
-      logger.streamDebug(`${levelPrefix} [#${lineNum}] (${line.length} bytes)`);
+      // If we can't parse the line, log the full content for debugging
+      logger.streamDebug(`${levelPrefix} [#${lineNum}] (unparseable): ${line}`);
     }
   }
 
