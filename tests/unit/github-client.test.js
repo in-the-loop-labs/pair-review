@@ -690,4 +690,193 @@ describe('GitHubClient', () => {
       expect(client.calculateDiffPosition(diff, 'other-file.js', 1)).toBe(-1);
     });
   });
+
+  describe('getPendingReviewForUser', () => {
+    it('should return the pending review authored by the viewer', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            reviews: {
+              nodes: [
+                {
+                  id: 'PR_R_abc123',
+                  databaseId: 12345,
+                  body: 'My draft review',
+                  url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
+                  state: 'PENDING',
+                  createdAt: '2024-01-15T10:00:00Z',
+                  viewerDidAuthor: true,
+                  comments: { totalCount: 3 }
+                }
+              ]
+            }
+          }
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getPendingReviewForUser('owner', 'repo', 42);
+
+      expect(result).toEqual({
+        id: 'PR_R_abc123',
+        databaseId: 12345,
+        body: 'My draft review',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
+        state: 'PENDING',
+        createdAt: '2024-01-15T10:00:00Z',
+        comments: { totalCount: 3 }
+      });
+
+      // Verify the GraphQL query was called with correct parameters
+      expect(mockGraphql).toHaveBeenCalledWith(
+        expect.stringContaining('reviews(states: PENDING'),
+        { owner: 'owner', repo: 'repo', prNumber: 42 }
+      );
+    });
+
+    it('should return null when no pending review exists', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            reviews: {
+              nodes: []
+            }
+          }
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getPendingReviewForUser('owner', 'repo', 42);
+
+      expect(result).toBeNull();
+    });
+
+    it('should filter out pending reviews not authored by the viewer', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            reviews: {
+              nodes: [
+                {
+                  id: 'PR_R_other123',
+                  databaseId: 99999,
+                  body: 'Someone else draft',
+                  url: 'https://github.com/owner/repo/pull/1#pullrequestreview-99999',
+                  state: 'PENDING',
+                  createdAt: '2024-01-14T10:00:00Z',
+                  viewerDidAuthor: false,
+                  comments: { totalCount: 1 }
+                }
+              ]
+            }
+          }
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getPendingReviewForUser('owner', 'repo', 42);
+
+      expect(result).toBeNull();
+    });
+
+    it('should find the viewer pending review among multiple reviews', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            reviews: {
+              nodes: [
+                {
+                  id: 'PR_R_other1',
+                  databaseId: 11111,
+                  body: 'Other user 1 draft',
+                  url: 'https://github.com/owner/repo/pull/1#pullrequestreview-11111',
+                  state: 'PENDING',
+                  createdAt: '2024-01-13T10:00:00Z',
+                  viewerDidAuthor: false,
+                  comments: { totalCount: 0 }
+                },
+                {
+                  id: 'PR_R_mine',
+                  databaseId: 22222,
+                  body: 'My draft',
+                  url: 'https://github.com/owner/repo/pull/1#pullrequestreview-22222',
+                  state: 'PENDING',
+                  createdAt: '2024-01-14T10:00:00Z',
+                  viewerDidAuthor: true,
+                  comments: { totalCount: 5 }
+                },
+                {
+                  id: 'PR_R_other2',
+                  databaseId: 33333,
+                  body: 'Other user 2 draft',
+                  url: 'https://github.com/owner/repo/pull/1#pullrequestreview-33333',
+                  state: 'PENDING',
+                  createdAt: '2024-01-15T10:00:00Z',
+                  viewerDidAuthor: false,
+                  comments: { totalCount: 2 }
+                }
+              ]
+            }
+          }
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getPendingReviewForUser('owner', 'repo', 42);
+
+      expect(result.id).toBe('PR_R_mine');
+      expect(result.databaseId).toBe(22222);
+    });
+
+    it('should throw error on authentication failure', async () => {
+      const client = new GitHubClient('test-token');
+      const authError = new Error('Bad credentials');
+      authError.status = 401;
+      const mockGraphql = vi.fn().mockRejectedValue(authError);
+      client.octokit.graphql = mockGraphql;
+
+      await expect(client.getPendingReviewForUser('owner', 'repo', 42))
+        .rejects.toThrow('GitHub authentication failed');
+    });
+
+    it('should throw error when PR is not found', async () => {
+      const client = new GitHubClient('test-token');
+      const notFoundError = new Error('Not found');
+      notFoundError.status = 404;
+      const mockGraphql = vi.fn().mockRejectedValue(notFoundError);
+      client.octokit.graphql = mockGraphql;
+
+      await expect(client.getPendingReviewForUser('owner', 'repo', 999))
+        .rejects.toThrow('Pull request #999 not found');
+    });
+
+    it('should throw error on GraphQL errors', async () => {
+      const client = new GitHubClient('test-token');
+      const graphqlError = new Error('GraphQL error');
+      graphqlError.errors = [{ message: 'Field X is invalid' }];
+      const mockGraphql = vi.fn().mockRejectedValue(graphqlError);
+      client.octokit.graphql = mockGraphql;
+
+      await expect(client.getPendingReviewForUser('owner', 'repo', 42))
+        .rejects.toThrow('GitHub GraphQL error: Field X is invalid');
+    });
+
+    it('should handle null/undefined values in response gracefully', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        repository: {
+          pullRequest: null
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getPendingReviewForUser('owner', 'repo', 42);
+
+      expect(result).toBeNull();
+    });
+  });
 });

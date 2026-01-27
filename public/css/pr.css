@@ -4278,6 +4278,62 @@ tr.line-range-start .d2h-code-line-ctn {
   gap: 16px;
 }
 
+/* Pending Draft Notice in Review Modal */
+.pending-draft-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background-color: #fff8e1;
+  border: 1px solid #fcd34d;
+  border-left: 4px solid #f59e0b;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pending-draft-notice-icon {
+  flex-shrink: 0;
+  color: #d97706;
+  margin-top: 1px;
+}
+
+.pending-draft-notice-content {
+  flex: 1;
+  color: #92400e;
+}
+
+.pending-draft-notice-text a {
+  color: #b45309;
+  text-decoration: underline;
+}
+
+.pending-draft-notice-text a:hover {
+  color: #92400e;
+}
+
+[data-theme="dark"] .pending-draft-notice {
+  background-color: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.4);
+  border-left-color: #fbbf24;
+}
+
+[data-theme="dark"] .pending-draft-notice-icon {
+  color: #fbbf24;
+}
+
+[data-theme="dark"] .pending-draft-notice-content {
+  color: #fcd34d;
+}
+
+[data-theme="dark"] .pending-draft-notice-text a {
+  color: #fde68a;
+}
+
+[data-theme="dark"] .pending-draft-notice-text a:hover {
+  color: #fef3c7;
+}
+
 .review-label {
   display: block;
   margin-bottom: 6px;
@@ -5674,6 +5730,71 @@ body:not([data-theme="dark"]) .theme-icon-light {
 .toolbar-commit-copy:hover {
   background-color: var(--color-bg-primary);
   color: var(--color-accent-primary);
+}
+
+/* Pending Draft Indicator in Toolbar */
+.pending-draft-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #744210;
+  background-color: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  transition: all var(--transition-fast);
+  cursor: pointer;
+  margin-left: 8px;
+}
+
+.pending-draft-indicator:hover {
+  background-color: #fde68a;
+  border-color: #fbbf24;
+  color: #92400e;
+}
+
+.pending-draft-indicator svg {
+  flex-shrink: 0;
+  color: #d97706;
+}
+
+.pending-draft-indicator .pending-draft-text {
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .pending-draft-indicator {
+  background-color: rgba(251, 191, 36, 0.15);
+  border-color: rgba(251, 191, 36, 0.4);
+  color: #fcd34d;
+}
+
+[data-theme="dark"] .pending-draft-indicator:hover {
+  background-color: rgba(251, 191, 36, 0.25);
+  border-color: rgba(251, 191, 36, 0.6);
+  color: #fef3c7;
+}
+
+[data-theme="dark"] .pending-draft-indicator svg {
+  color: #fbbf24;
+}
+
+/* Hide pending draft indicator on small screens */
+@media (max-width: 1200px) {
+  .pending-draft-indicator .pending-draft-text {
+    display: none;
+  }
+  .pending-draft-indicator {
+    padding: 4px 8px;
+  }
+}
+
+@media (max-width: 768px) {
+  .pending-draft-indicator {
+    display: none;
+  }
 }
 
 .toolbar-actions {

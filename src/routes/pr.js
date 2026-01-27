@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, WorktreeRepository, ReviewRepository } = require('../database');
+const { query, queryOne, run, WorktreeRepository, ReviewRepository, GitHubReviewRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
@@ -68,7 +68,8 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
 
     // Get review record if it exists (don't create on GET - REST compliance)
     // The review.id is used for comments to avoid ID collision with local mode
-    const reviewRepo = new ReviewRepository(req.app.get('db'));
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
     const review = await reviewRepo.getReviewByPR(prNumber, repository);
 
     // Parse extended PR data
@@ -81,6 +82,54 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
 
     // Parse owner and repo from repository field
     const [repoOwner, repoName] = repository.split('/');
+
+    // Check for pending GitHub draft if we have a review record
+    // This avoids unnecessary GitHub API calls for PRs the user hasn't started reviewing
+    let pendingDraft = null;
+    if (review) {
+      const config = req.app.get('config');
+      const githubToken = config?.github_token || req.app.get('githubToken');
+
+      if (githubToken) {
+        try {
+          const githubClient = new GitHubClient(githubToken);
+          const githubReviewRepo = new GitHubReviewRepository(db);
+
+          const githubPendingReview = await githubClient.getPendingReviewForUser(repoOwner, repoName, prNumber);
+
+          if (githubPendingReview) {
+            // Check if we already have a local record for this GitHub review
+            const existingRecord = await githubReviewRepo.findByGitHubNodeId(review.id, githubPendingReview.id);
+
+            if (existingRecord) {
+              // Update existing record with latest data from GitHub
+              await githubReviewRepo.update(existingRecord.id, {
+                github_review_id: String(githubPendingReview.databaseId),
+                github_url: githubPendingReview.url,
+                body: githubPendingReview.body,
+                state: 'pending'
+              });
+              pendingDraft = await githubReviewRepo.getById(existingRecord.id);
+            } else {
+              // Create new record for this pending review from GitHub
+              pendingDraft = await githubReviewRepo.create(review.id, {
+                github_review_id: String(githubPendingReview.databaseId),
+                github_node_id: githubPendingReview.id,
+                github_url: githubPendingReview.url,
+                body: githubPendingReview.body,
+                state: 'pending'
+              });
+            }
+
+            // Add comments_count from GitHub response
+            pendingDraft.comments_count = githubPendingReview.comments?.totalCount || 0;
+          }
+        } catch (githubError) {
+          // Log the error but don't fail the request - draft info is supplementary
+          logger.warn('Failed to fetch pending review from GitHub:', githubError.message);
+        }
+      }
+    }
 
     // Prepare response
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
@@ -107,7 +156,15 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         additions: extendedData.additions || 0,
         deletions: extendedData.deletions || 0,
         diff_content: extendedData.diff || '',
-        html_url: extendedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`
+        html_url: extendedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`,
+        pendingDraft: pendingDraft ? {
+          id: pendingDraft.id,
+          github_review_id: pendingDraft.github_review_id,
+          github_node_id: pendingDraft.github_node_id,
+          github_url: pendingDraft.github_url,
+          comments_count: pendingDraft.comments_count || 0,
+          created_at: pendingDraft.created_at
+        } : null
       }
     };
 
@@ -352,6 +409,100 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     res.json({
       isStale: null,
       error: errorMessage
+    });
+  }
+});
+
+/**
+ * Get pending GitHub draft review status for a PR
+ * Fetches from GitHub and syncs with local database
+ */
+router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+    const config = req.app.get('config');
+
+    // Get or create the local review record
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    // Initialize GitHub client and check for pending drafts on GitHub
+    const githubToken = config.github_token || req.app.get('githubToken');
+    if (!githubToken) {
+      return res.status(500).json({
+        error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
+      });
+    }
+
+    const githubClient = new GitHubClient(githubToken);
+    const githubReviewRepo = new GitHubReviewRepository(db);
+
+    // Fetch pending review from GitHub
+    let pendingDraft = null;
+    try {
+      const githubPendingReview = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
+
+      if (githubPendingReview) {
+        // Check if we already have a local record for this GitHub review
+        const existingRecord = await githubReviewRepo.findByGitHubNodeId(review.id, githubPendingReview.id);
+
+        if (existingRecord) {
+          // Update existing record with latest data from GitHub
+          await githubReviewRepo.update(existingRecord.id, {
+            github_review_id: String(githubPendingReview.databaseId),
+            github_url: githubPendingReview.url,
+            body: githubPendingReview.body,
+            state: 'pending'
+          });
+          pendingDraft = await githubReviewRepo.getById(existingRecord.id);
+        } else {
+          // Create new record for this pending review from GitHub
+          pendingDraft = await githubReviewRepo.create(review.id, {
+            github_review_id: String(githubPendingReview.databaseId),
+            github_node_id: githubPendingReview.id,
+            github_url: githubPendingReview.url,
+            body: githubPendingReview.body,
+            state: 'pending'
+          });
+        }
+
+        // Add comments_count from GitHub response
+        pendingDraft.comments_count = githubPendingReview.comments?.totalCount || 0;
+      }
+    } catch (githubError) {
+      // Log the error but don't fail the request - return local data only
+      logger.warn('Failed to fetch pending review from GitHub:', githubError.message);
+    }
+
+    // Get all github_reviews records for this review
+    const allGithubReviews = await githubReviewRepo.findByReviewId(review.id);
+
+    res.json({
+      pendingDraft: pendingDraft ? {
+        id: pendingDraft.id,
+        github_review_id: pendingDraft.github_review_id,
+        github_node_id: pendingDraft.github_node_id,
+        github_url: pendingDraft.github_url,
+        comments_count: pendingDraft.comments_count || 0,
+        created_at: pendingDraft.created_at
+      } : null,
+      allGithubReviews
+    });
+
+  } catch (error) {
+    logger.error('Error fetching GitHub draft status:', error);
+    res.status(500).json({
+      error: 'Internal server error while fetching GitHub draft status'
     });
   }
 });

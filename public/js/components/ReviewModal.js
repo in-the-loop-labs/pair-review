@@ -42,6 +42,22 @@ class ReviewModal {
         
         <div class="modal-body review-modal-body">
           <div class="review-form">
+            <!-- Pending draft notice -->
+            <div class="pending-draft-notice" id="pending-draft-notice" style="display: none;">
+              <div class="pending-draft-notice-icon">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v9.5A1.75 1.75 0 0 1 14.25 13H8.06l-2.573 2.573A1.458 1.458 0 0 1 3 14.543V13H1.75A1.75 1.75 0 0 1 0 11.25Zm1.75-.25a.25.25 0 0 0-.25.25v9.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h6.5a.25.25 0 0 0 .25-.25v-9.5a.25.25 0 0 0-.25-.25Z"/>
+                </svg>
+              </div>
+              <div class="pending-draft-notice-content">
+                <span class="pending-draft-notice-text">
+                  You have a pending draft review on GitHub with <strong id="pending-draft-count">0</strong> comments.
+                  Submitting here will create a new review.
+                  <a href="#" id="pending-draft-link" target="_blank" rel="noopener noreferrer">Manage your existing draft on GitHub</a>.
+                </span>
+              </div>
+            </div>
+
             <div class="review-summary-section">
               <div class="review-label-row">
                 <label for="review-body-modal" class="review-label">Review Summary</label>
@@ -231,6 +247,39 @@ class ReviewModal {
 
     // Update AI summary link visibility
     this.updateAISummaryLink();
+
+    // Update pending draft notice
+    this.updatePendingDraftNotice();
+  }
+
+  /**
+   * Update pending draft notice visibility and content
+   * Shows a notice if there's a pending draft review on GitHub
+   */
+  updatePendingDraftNotice() {
+    const notice = this.modal?.querySelector('#pending-draft-notice');
+    if (!notice) return;
+
+    // Get pending draft from the current PR data
+    const pendingDraft = window.prManager?.currentPR?.pendingDraft;
+
+    if (pendingDraft) {
+      // Update the comment count
+      const countElement = notice.querySelector('#pending-draft-count');
+      if (countElement) {
+        countElement.textContent = pendingDraft.comments_count || 0;
+      }
+
+      // Update the link
+      const linkElement = notice.querySelector('#pending-draft-link');
+      if (linkElement && pendingDraft.github_url) {
+        linkElement.href = pendingDraft.github_url;
+      }
+
+      notice.style.display = 'flex';
+    } else {
+      notice.style.display = 'none';
+    }
   }
 
   /**

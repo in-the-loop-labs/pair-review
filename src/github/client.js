@@ -454,6 +454,94 @@ class GitHubClient {
   }
 
   /**
+   * Get the pending (draft) review for the authenticated user on a PR
+   * GitHub allows only ONE pending review per user per PR, so this returns
+   * either the single pending review or null if none exists.
+   *
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} prNumber - Pull request number
+   * @returns {Promise<Object|null>} The pending review object or null if none exists
+   *   Returns: { id, databaseId, body, url, state, createdAt, comments: { totalCount } }
+   */
+  async getPendingReviewForUser(owner, repo, prNumber) {
+    try {
+      console.log(`Checking for pending review on PR #${prNumber} in ${owner}/${repo}`);
+
+      const result = await this.octokit.graphql(`
+        query($owner: String!, $repo: String!, $prNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $prNumber) {
+              reviews(states: PENDING, first: 10) {
+                nodes {
+                  id
+                  databaseId
+                  body
+                  url
+                  state
+                  createdAt
+                  viewerDidAuthor
+                  comments {
+                    totalCount
+                  }
+                }
+              }
+            }
+          }
+        }
+      `, {
+        owner,
+        repo,
+        prNumber
+      });
+
+      const reviews = result.repository?.pullRequest?.reviews?.nodes || [];
+
+      // Find the review authored by the authenticated user
+      const userPendingReview = reviews.find(review => review.viewerDidAuthor);
+
+      if (userPendingReview) {
+        console.log(`Found pending review for user: ${userPendingReview.id} with ${userPendingReview.comments.totalCount} comments`);
+        return {
+          id: userPendingReview.id,
+          databaseId: userPendingReview.databaseId,
+          body: userPendingReview.body,
+          url: userPendingReview.url,
+          state: userPendingReview.state,
+          createdAt: userPendingReview.createdAt,
+          comments: {
+            totalCount: userPendingReview.comments.totalCount
+          }
+        };
+      }
+
+      console.log('No pending review found for user');
+      return null;
+
+    } catch (error) {
+      console.error('Error checking for pending review:', error);
+
+      // Handle authentication errors
+      if (error.status === 401) {
+        throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
+      }
+
+      // Handle not found errors
+      if (error.status === 404 || error.errors?.some(e => e.type === 'NOT_FOUND')) {
+        throw new Error(`Pull request #${prNumber} not found in repository ${owner}/${repo}`);
+      }
+
+      // Parse GraphQL errors
+      if (error.errors) {
+        const messages = error.errors.map(e => e.message).join(', ');
+        throw new Error(`GitHub GraphQL error: ${messages}`);
+      }
+
+      throw new Error(`Failed to check for pending review: ${error.message}`);
+    }
+  }
+
+  /**
    * Delete a pending review (used for cleanup on failure)
    * @param {string} reviewId - GraphQL node ID for the review
    * @returns {Promise<boolean>} True if deleted successfully
