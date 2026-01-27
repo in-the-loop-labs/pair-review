@@ -476,7 +476,7 @@ class AIPanel {
      */
     getItemKey(item) {
         const file = item.file || '';
-        const line = item.line_start || item.line || 0;
+        const line = item.line_start || 0;
         const type = item._itemType || 'finding';
         return `${file}:${line}:${type}`;
     }
@@ -609,8 +609,8 @@ class AIPanel {
             if (!isFileLevelA && isFileLevelB) return 1;
 
             // Then sort by line number (null/undefined treated as file-level, comes first)
-            const lineA = a.line_start ?? a.line ?? 0;
-            const lineB = b.line_start ?? b.line ?? 0;
+            const lineA = a.line_start ?? 0;
+            const lineB = b.line_start ?? 0;
             return lineA - lineB;
         });
     }
@@ -1063,7 +1063,7 @@ class AIPanel {
         const type = this.getFindingType(finding);
         const title = this.truncateText(finding.title || finding.body || 'Suggestion', 50);
         const fileName = finding.file ? finding.file.split('/').pop() : null;
-        const lineNum = finding.line_start || finding.line;
+        const lineNum = finding.line_start;
         // Full location for tooltip, filename only for display
         const fullLocation = fileName ? `${fileName}${lineNum ? ':' + lineNum : ''}` : '';
         const statusClass = finding.status === 'dismissed' ? 'finding-dismissed' :
@@ -1603,7 +1603,7 @@ class AIPanel {
         const item = items[this.currentIndex];
         const itemId = item.id;
         const file = item.file;
-        const line = item.line_start || item.line;
+        const line = item.line_start;
 
         if (item._itemType === 'comment') {
             this.scrollToComment(itemId, file, line);

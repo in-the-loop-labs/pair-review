@@ -101,7 +101,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         selectedProvider = fetchedRepoSettings.default_provider;
       } else {
         const config = req.app.get('config') || {};
-        selectedProvider = config.provider || 'claude';
+        selectedProvider = config.default_provider || config.provider || 'claude';
       }
 
       // Determine model: request body > repo settings > config/CLI > default

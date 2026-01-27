@@ -50,12 +50,25 @@ const GEMINI_MODELS = [
 ];
 
 class GeminiProvider extends AIProvider {
-  constructor(model = 'gemini-2.5-pro') {
+  /**
+   * @param {string} model - Model identifier
+   * @param {Object} configOverrides - Config overrides from providers config
+   * @param {string} configOverrides.command - Custom CLI command
+   * @param {string[]} configOverrides.extra_args - Additional CLI arguments
+   * @param {Object} configOverrides.env - Additional environment variables
+   * @param {Object[]} configOverrides.models - Custom model definitions
+   */
+  constructor(model = 'gemini-2.5-pro', configOverrides = {}) {
     super(model);
 
-    // Check for environment variable to override default command
-    // Supports multi-word commands like "npx gemini" or "/path/to/gemini --verbose"
-    const geminiCmd = process.env.PAIR_REVIEW_GEMINI_CMD || 'gemini';
+    // Command precedence: ENV > config > default
+    const envCmd = process.env.PAIR_REVIEW_GEMINI_CMD;
+    const configCmd = configOverrides.command;
+    const geminiCmd = envCmd || configCmd || 'gemini';
+
+    // Store for use in getExtractionConfig and testAvailability
+    this.geminiCmd = geminiCmd;
+    this.configOverrides = configOverrides;
 
     // For multi-word commands, use shell mode (same pattern as Claude provider)
     this.useShell = geminiCmd.includes(' ');
@@ -119,13 +132,36 @@ class GeminiProvider extends AIProvider {
       // git-diff-lines is added to PATH via BIN_DIR so bare command works
       'run_shell_command(git-diff-lines)', // Custom annotated diff tool
     ].join(',');
+
+    // Build args: base args + provider extra_args + model extra_args
+    // Use --output-format stream-json for JSONL streaming output (better debugging visibility)
+    const baseArgs = ['-m', model, '-o', 'stream-json', '--allowed-tools', readOnlyTools];
+    const providerArgs = configOverrides.extra_args || [];
+    const modelConfig = configOverrides.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    // Merge env: provider env + model env
+    this.extraEnv = {
+      ...(configOverrides.env || {}),
+      ...(modelConfig?.env || {})
+    };
+
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${geminiCmd} -m ${model} -o json --allowed-tools "${readOnlyTools}"`;
+      // Quote the allowed-tools value to prevent shell interpretation of special characters
+      // (commas, parentheses in patterns like "run_shell_command(git diff)")
+      const quotedBaseArgs = baseArgs.map((arg, i) => {
+        // The allowed-tools value follows the --allowed-tools flag
+        if (baseArgs[i - 1] === '--allowed-tools') {
+          return `'${arg}'`;
+        }
+        return arg;
+      });
+      this.command = `${geminiCmd} ${[...quotedBaseArgs, ...providerArgs, ...modelArgs].join(' ')}`;
       this.args = [];
     } else {
       this.command = geminiCmd;
-      this.args = ['-m', model, '-o', 'json', '--allowed-tools', readOnlyTools];
+      this.args = [...baseArgs, ...providerArgs, ...modelArgs];
     }
   }
 
@@ -147,6 +183,7 @@ class GeminiProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
+          ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell
@@ -165,6 +202,8 @@ class GeminiProvider extends AIProvider {
       let stderr = '';
       let timeoutId = null;
       let settled = false;  // Guard against multiple resolve/reject calls
+      let lineBuffer = '';  // Buffer for incomplete JSONL lines
+      let lineCount = 0;    // Count of JSONL events for progress tracking
 
       const settle = (fn, value) => {
         if (settled) return;
@@ -182,9 +221,23 @@ class GeminiProvider extends AIProvider {
         }, timeout);
       }
 
-      // Collect stdout
+      // Collect stdout with streaming JSONL parsing for debug visibility
       gemini.stdout.on('data', (data) => {
-        stdout += data.toString();
+        const chunk = data.toString();
+        stdout += chunk;
+
+        // Parse JSONL lines as they arrive for streaming debug output
+        lineBuffer += chunk;
+        const lines = lineBuffer.split('\n');
+        // Keep the last incomplete line in buffer
+        lineBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.trim()) {
+            lineCount++;
+            this.logStreamLine(line, lineCount, levelPrefix);
+          }
+        }
       });
 
       // Collect stderr
@@ -219,11 +272,27 @@ class GeminiProvider extends AIProvider {
           return;
         }
 
-        // Parse the Gemini JSON response
-        // Gemini CLI with -o json returns: { session_id, response, stats }
+        // Log completion with event count (only for successful completion)
+        logger.info(`${levelPrefix} Gemini CLI completed: ${lineCount} JSONL events received`);
+
+        // Process any remaining buffered line
+        if (lineBuffer.trim()) {
+          lineCount++;
+          this.logStreamLine(lineBuffer, lineCount, levelPrefix);
+        }
+
+        // Parse the Gemini JSONL stream response
         const parsed = this.parseGeminiResponse(stdout, level);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
+          // Dump the parsed data for debugging
+          const dataPreview = JSON.stringify(parsed.data, null, 2);
+          logger.debug(`${levelPrefix} [parsed_data] ${dataPreview.substring(0, 3000)}${dataPreview.length > 3000 ? '...' : ''}`);
+          // Log suggestion count if present
+          if (parsed.data?.suggestions) {
+            const count = Array.isArray(parsed.data.suggestions) ? parsed.data.suggestions.length : 0;
+            logger.info(`${levelPrefix} [response] ${count} suggestions in parsed response`);
+          }
           settle(resolve, parsed.data);
         } else {
           // Regex extraction failed, try LLM-based extraction as fallback
@@ -275,9 +344,19 @@ class GeminiProvider extends AIProvider {
   }
 
   /**
-   * Parse Gemini CLI JSON response
-   * Gemini returns { session_id, response, stats } where response contains the actual content
-   * @param {string} stdout - Raw stdout from Gemini CLI
+   * Parse Gemini CLI JSONL stream response
+   * Gemini with -o stream-json outputs JSONL with multiple event types:
+   * - init: Session initialization with model info
+   * - message (role: "user"): User message echo
+   * - message (role: "assistant"): Assistant text (may have delta: true for streaming chunks,
+   *   but we accumulate ALL assistant messages with content regardless of delta flag)
+   * - tool_use: Tool invocation with tool_name, tool_id, parameters
+   * - tool_result: Tool result with status and output
+   * - result: Final result with stats (total_tokens, input_tokens, output_tokens)
+   *
+   * We need to accumulate text from assistant messages and extract JSON from them.
+   *
+   * @param {string} stdout - Raw stdout from Gemini CLI (JSONL format)
    * @param {string|number} level - Analysis level for logging
    * @returns {{success: boolean, data?: Object, error?: string}}
    */
@@ -285,35 +364,209 @@ class GeminiProvider extends AIProvider {
     const levelPrefix = `[Level ${level}]`;
 
     try {
-      // First, try to parse the Gemini wrapper JSON
-      const geminiWrapper = JSON.parse(stdout);
+      // Split by newlines and parse each JSON line
+      const lines = stdout.trim().split('\n').filter(line => line.trim());
+      // Accumulate text from ALL assistant message events with delta: true
+      // The AI's response may be spread across multiple streaming chunks
+      let assistantText = '';
 
-      if (geminiWrapper.response) {
-        // The response field contains the actual AI response
+      for (const line of lines) {
+        try {
+          const event = JSON.parse(line);
+
+          // Accumulate text from assistant messages which contain the AI response
+          // Multiple message events can occur as streaming chunks arrive
+          if (event.type === 'message' &&
+              event.role === 'assistant' &&
+              event.content) {
+            assistantText += event.content;
+          }
+        } catch (lineError) {
+          // Skip malformed lines
+          logger.debug(`${levelPrefix} Skipping malformed JSONL line: ${line.substring(0, 100)}`);
+        }
+      }
+
+      if (assistantText) {
+        // The accumulated assistant text contains the AI's response
         // Try to extract JSON from it (the AI was asked to output JSON)
-        const extracted = extractJSON(geminiWrapper.response, level);
+        logger.debug(`${levelPrefix} Extracted ${assistantText.length} chars of assistant message text from JSONL`);
+        const extracted = extractJSON(assistantText, level);
         if (extracted.success) {
           return extracted;
         }
 
-        // If the response itself is already the data we need, return it
-        logger.warn(`${levelPrefix} Gemini response is not JSON, treating as raw text`);
-        return { success: false, error: 'Response is not valid JSON' };
+        // If no JSON found, return the raw message
+        logger.warn(`${levelPrefix} Assistant message is not JSON, treating as raw text`);
+        return { success: false, error: 'Assistant message is not valid JSON' };
       }
 
-      // Maybe the stdout is directly the content we need
+      // No assistant message found, try extracting JSON directly from stdout
       const extracted = extractJSON(stdout, level);
       return extracted;
 
     } catch (parseError) {
-      // stdout might not be valid JSON at all, try extracting JSON from it
+      // stdout might not be valid JSONL at all, try extracting JSON from it
       const extracted = extractJSON(stdout, level);
       if (extracted.success) {
         return extracted;
       }
 
-      return { success: false, error: `JSON parse error: ${parseError.message}` };
+      return { success: false, error: `JSONL parse error: ${parseError.message}` };
     }
+  }
+
+  /**
+   * Log a streaming JSONL line for debugging visibility
+   * Gemini stream-json format event types:
+   * - init: Session initialization with model info
+   * - message (role: "user"): User message echo
+   * - message (role: "assistant", delta: true): Streaming assistant text chunks
+   * - tool_use: Tool invocation with tool_name, tool_id, parameters
+   * - tool_result: Tool result with status and output
+   * - result: Final result with stats
+   *
+   * Uses logger.streamDebug() which only logs when --debug-stream flag is enabled.
+   *
+   * @param {string} line - A single JSONL line
+   * @param {number} lineNum - Line number for reference
+   * @param {string} levelPrefix - Logging prefix
+   */
+  logStreamLine(line, lineNum, levelPrefix) {
+    // Check stream debug status - branches exit early if disabled
+    const streamEnabled = logger.isStreamDebugEnabled();
+
+    try {
+      const event = JSON.parse(line);
+      const eventType = event.type;
+
+      if (eventType === 'init') {
+        if (!streamEnabled) return;
+        const sessionId = event.session_id || '';
+        const model = event.model || '';
+        const sessionPart = sessionId ? ` session=${sessionId.substring(0, 12)}` : '';
+        const modelPart = model ? ` model=${model}` : '';
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] init${sessionPart}${modelPart}`);
+
+      } else if (eventType === 'message') {
+        if (!streamEnabled) return;
+        const role = event.role || 'unknown';
+        const content = event.content || '';
+        const isDelta = event.delta === true;
+
+        if (role === 'assistant') {
+          // Assistant message - this is the AI's text response
+          if (content) {
+            const preview = content.replace(/\n/g, '\\n').substring(0, 60);
+            const deltaPart = isDelta ? ' (delta)' : '';
+            logger.streamDebug(`${levelPrefix} [#${lineNum}] message[assistant]${deltaPart}: ${preview}${content.length > 60 ? '...' : ''}`);
+          } else {
+            logger.streamDebug(`${levelPrefix} [#${lineNum}] message[assistant] (empty)`);
+          }
+        } else if (role === 'user') {
+          // User message echo - brief log
+          const preview = content.replace(/\n/g, '\\n').substring(0, 40);
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] message[user]: ${preview}${content.length > 40 ? '...' : ''}`);
+        } else {
+          // Unknown role
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] message[${role}]`);
+        }
+
+      } else if (eventType === 'tool_use') {
+        if (!streamEnabled) return;
+        // Tool invocation - extract name and parameters
+        const toolName = event.tool_name || 'unknown';
+        const toolId = event.tool_id || '';
+        const params = event.parameters || null;
+
+        let paramsPreview = '';
+        if (params && typeof params === 'object') {
+          const keys = Object.keys(params);
+          if (params.command) {
+            const cmd = params.command;
+            paramsPreview = `cmd="${cmd.substring(0, 50)}${cmd.length > 50 ? '...' : ''}"`;
+          } else if (params.file_path || params.path) {
+            paramsPreview = `path="${params.file_path || params.path}"`;
+          } else if (keys.length === 1 && typeof params[keys[0]] === 'string') {
+            const val = params[keys[0]];
+            paramsPreview = `${keys[0]}="${val.length > 40 ? val.substring(0, 40) + '...' : val}"`;
+          } else if (keys.length > 0) {
+            paramsPreview = `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`;
+          }
+        }
+
+        const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+        const paramsPart = paramsPreview ? ` ${paramsPreview}` : '';
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] tool_use: ${toolName}${idPart}${paramsPart}`);
+
+      } else if (eventType === 'tool_result') {
+        if (!streamEnabled) return;
+        // Tool result
+        const toolId = event.tool_id || '';
+        const status = event.status || 'unknown';
+        const output = event.output || '';
+        const isError = status === 'error';
+
+        let resultPreview = '';
+        if (typeof output === 'string' && output.length > 0) {
+          resultPreview = output.length > 60 ? output.substring(0, 60) + '...' : output;
+          resultPreview = resultPreview.replace(/\n/g, '\\n');
+        }
+
+        const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+        const statusPart = isError ? ' ERROR' : ' OK';
+        const previewPart = resultPreview ? ` ${resultPreview}` : '';
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] tool_result${idPart}${statusPart}${previewPart}`);
+
+      } else if (eventType === 'result') {
+        // Final result - always log this at info level (not stream debug)
+        const stats = event.stats || {};
+        const inputTokens = stats.input_tokens || 0;
+        const outputTokens = stats.output_tokens || 0;
+        const totalTokens = stats.total_tokens || (inputTokens + outputTokens);
+        const durationMs = stats.duration_ms || 0;
+        const toolCalls = stats.tool_calls || 0;
+
+        const durationPart = durationMs ? ` duration=${durationMs}ms` : '';
+        const toolsPart = toolCalls ? ` tools=${toolCalls}` : '';
+        logger.info(`${levelPrefix} [result] tokens: ${inputTokens}in/${outputTokens}out (total: ${totalTokens})${durationPart}${toolsPart}`);
+
+      } else if (eventType && streamEnabled) {
+        // Unknown event type - only log if we have an actual type and stream debug is on
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] ${eventType}`);
+      }
+      // Silently ignore events with no type
+
+    } catch (parseError) {
+      if (streamEnabled) {
+        // Skip malformed lines
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] (malformed: ${line.substring(0, 50)}${line.length > 50 ? '...' : ''})`);
+      }
+    }
+  }
+
+  /**
+   * Build args for Gemini CLI extraction, applying provider and model extra_args.
+   * This ensures consistent arg construction for getExtractionConfig().
+   *
+   * Note: For extraction, we use text output (-o text) to get raw JSON without wrapper.
+   * This avoids needing parseGeminiResponse which expects the JSONL stream format.
+   * No --allowed-tools needed since extraction doesn't use tools.
+   *
+   * @param {string} model - The model identifier to use
+   * @returns {string[]} Complete args array for the CLI
+   */
+  buildArgsForModel(model) {
+    // Base args for extraction (text output, no tools needed)
+    // Use text format for simpler JSON parsing; analysis uses stream-json for progress feedback and tool visibility
+    const baseArgs = ['-m', model, '-o', 'text'];
+    // Provider-level extra_args (from configOverrides)
+    const providerArgs = this.configOverrides?.extra_args || [];
+    // Model-specific extra_args (from the model config for the given model)
+    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    return [...baseArgs, ...providerArgs, ...modelArgs];
   }
 
   /**
@@ -322,14 +575,18 @@ class GeminiProvider extends AIProvider {
    * @returns {Object} Configuration for spawning extraction process
    */
   getExtractionConfig(model) {
-    const geminiCmd = process.env.PAIR_REVIEW_GEMINI_CMD || 'gemini';
-    const useShell = geminiCmd.includes(' ');
+    // Use the already-resolved command from the constructor (this.geminiCmd)
+    // which respects: ENV > config > default precedence
+    const geminiCmd = this.geminiCmd;
+    const useShell = this.useShell;
 
-    // For extraction, we use text output (-o text) to get raw JSON without wrapper
-    // This avoids needing parseGeminiResponse which expects the {session_id, response} format
+    // Build args consistently using the shared method, applying provider and model extra_args
+    const args = this.buildArgsForModel(model);
+
+    // For extraction, we pass the prompt via stdin
     if (useShell) {
       return {
-        command: `${geminiCmd} -m ${model} -o text`,
+        command: `${geminiCmd} ${args.join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true
@@ -337,7 +594,7 @@ class GeminiProvider extends AIProvider {
     }
     return {
       command: geminiCmd,
-      args: ['-m', model, '-o', 'text'],
+      args,
       useShell: false,
       promptViaStdin: true
     };
@@ -345,15 +602,16 @@ class GeminiProvider extends AIProvider {
 
   /**
    * Test if Gemini CLI is available
+   * Uses the command configured in the instance (respects ENV > config > default precedence)
    * @returns {Promise<boolean>}
    */
   async testAvailability() {
     return new Promise((resolve) => {
       // For availability test, we just need to check --version
-      // Use shell mode if the command contains spaces
-      const geminiCmd = process.env.PAIR_REVIEW_GEMINI_CMD || 'gemini';
-      const useShell = geminiCmd.includes(' ');
-      const command = useShell ? `${geminiCmd} --version` : geminiCmd;
+      // Use the already-resolved command from the constructor (this.geminiCmd)
+      // which respects: ENV > config > default precedence
+      const useShell = this.useShell;
+      const command = useShell ? `${this.geminiCmd} --version` : this.geminiCmd;
       const args = useShell ? [] : ['--version'];
 
       const gemini = spawn(command, args, {

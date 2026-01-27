@@ -73,6 +73,7 @@ OPTIONS:
                             review on GitHub (headless mode)
     --configure             Show setup instructions and configuration options
     -d, --debug             Enable verbose debug logging
+    --debug-stream          Log AI provider streaming events (tool calls, text chunks)
     -h, --help              Show this help message and exit
     -l, --local [path]      Review local uncommitted changes
                             Optional path defaults to current directory
@@ -143,6 +144,7 @@ const KNOWN_FLAGS = new Set([
   '--ai-draft',
   '--configure',
   '-d', '--debug',
+  '--debug-stream',
   '-h', '--help',
   '-l', '--local',
   '--model',
@@ -169,6 +171,9 @@ function parseArgs(args) {
     if (arg === '-d' || arg === '--debug') {
       flags.debug = true;
       logger.setDebugEnabled(true);
+    } else if (arg === '--debug-stream') {
+      flags.debugStream = true;
+      logger.setStreamDebugEnabled(true);
     } else if (arg === '--ai') {
       flags.ai = true;
     } else if (arg === '--ai-draft') {

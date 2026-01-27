@@ -171,6 +171,39 @@ describe('main.js parseArgs', () => {
       // Clean up
       logger.setDebugEnabled(false);
     });
+
+    it('should parse --debug-stream flag', () => {
+      const result = parseArgs(['123', '--debug-stream']);
+      expect(result.flags.debugStream).toBe(true);
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should enable logger stream debug mode when --debug-stream flag is present', () => {
+      // Reset logger stream debug mode before test
+      logger.setStreamDebugEnabled(false);
+
+      parseArgs(['123', '--debug-stream']);
+      expect(logger.isStreamDebugEnabled()).toBe(true);
+
+      // Clean up
+      logger.setStreamDebugEnabled(false);
+    });
+
+    it('should allow both --debug and --debug-stream flags together', () => {
+      // Reset both modes before test
+      logger.setDebugEnabled(false);
+      logger.setStreamDebugEnabled(false);
+
+      const result = parseArgs(['123', '--debug', '--debug-stream']);
+      expect(result.flags.debug).toBe(true);
+      expect(result.flags.debugStream).toBe(true);
+      expect(logger.isDebugEnabled()).toBe(true);
+      expect(logger.isStreamDebugEnabled()).toBe(true);
+
+      // Clean up
+      logger.setDebugEnabled(false);
+      logger.setStreamDebugEnabled(false);
+    });
   });
 });
 
@@ -242,6 +275,13 @@ describe('CLI help and version', () => {
     const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
 
     expect(output).toContain('-d, --debug');
+  });
+
+  it('help output should mention --debug-stream flag', () => {
+    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+
+    expect(output).toContain('--debug-stream');
+    expect(output).toContain('streaming events');
   });
 
   it('help output should mention Claude Code as default provider', () => {

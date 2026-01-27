@@ -1,0 +1,145 @@
+{
+  "_comment": "Example configuration file for pair-review. Copy to ~/.pair-review/config.json and modify as needed.",
+
+  "github_token": "ghp_your_github_personal_access_token_here",
+  "port": 3000,
+  "theme": "light",
+  "default_provider": "claude",
+  "default_model": "sonnet",
+  "worktree_retention_days": 7,
+  "dev_mode": false,
+
+  "providers": {
+    "_comment": "Provider configurations override built-in defaults. Most providers have built-in models, but OpenCode requires manual configuration.",
+
+    "opencode": {
+      "_comment": "OpenCode has NO built-in models - you MUST configure models here to use it.",
+      "command": "opencode",
+      "extra_args": ["--verbose"],
+      "env": {
+        "OPENCODE_TELEMETRY": "off"
+      },
+      "installInstructions": "Install OpenCode: curl -fsSL https://opencode.ai/install | bash",
+      "models": [
+        {
+          "id": "anthropic/claude-sonnet-4",
+          "tier": "balanced",
+          "default": true,
+          "name": "Claude Sonnet 4",
+          "description": "Fast and capable for most reviews",
+          "tagline": "Best balance of speed and quality",
+          "badge": "Recommended",
+          "badgeClass": "badge-recommended"
+        },
+        {
+          "id": "anthropic/claude-opus-4",
+          "tier": "premium",
+          "name": "Claude Opus 4",
+          "description": "Most capable model for complex reviews",
+          "tagline": "Best Available",
+          "badge": "Premium",
+          "badgeClass": "badge-premium"
+        },
+        {
+          "id": "anthropic/claude-haiku-3.5",
+          "tier": "fast",
+          "name": "Claude Haiku 3.5",
+          "description": "Quick analysis for simple changes",
+          "tagline": "Lightning Fast",
+          "badge": "Fastest",
+          "badgeClass": "badge-speed"
+        },
+        {
+          "id": "openai/gpt-4.1",
+          "tier": "thorough",
+          "name": "GPT-4.1",
+          "description": "OpenAI's latest model for deep analysis",
+          "tagline": "Most Capable",
+          "badge": "Most Thorough",
+          "badgeClass": "badge-power"
+        },
+        {
+          "id": "google/gemini-2.5-pro",
+          "tier": "thorough",
+          "name": "Gemini 2.5 Pro",
+          "description": "Google's advanced reasoning model"
+        }
+      ]
+    },
+
+    "claude": {
+      "_comment": "Override Claude's built-in configuration. Useful for custom paths, wrapper scripts, or additional arguments.",
+      "command": "claude",
+      "extra_args": [],
+      "env": {},
+      "installInstructions": "Install Claude CLI: npm install -g @anthropic-ai/claude-code",
+      "models": [
+        {
+          "id": "haiku",
+          "tier": "fast",
+          "name": "Haiku",
+          "description": "Quick analysis for simple changes",
+          "tagline": "Lightning Fast",
+          "badge": "Fastest",
+          "badgeClass": "badge-speed"
+        },
+        {
+          "id": "sonnet",
+          "tier": "balanced",
+          "default": true,
+          "name": "Sonnet",
+          "description": "Recommended for most reviews",
+          "tagline": "Best Balance",
+          "badge": "Recommended",
+          "badgeClass": "badge-recommended"
+        },
+        {
+          "id": "opus",
+          "tier": "thorough",
+          "name": "Opus",
+          "description": "Deep analysis for complex code",
+          "tagline": "Most Capable",
+          "badge": "Most Thorough",
+          "badgeClass": "badge-power"
+        },
+        {
+          "id": "custom-model",
+          "tier": "premium",
+          "name": "Custom Model",
+          "description": "Example of adding a custom model with extra arguments",
+          "tagline": "Custom Configuration",
+          "badge": "Custom",
+          "badgeClass": "badge-premium",
+          "extra_args": ["--thinking-budget", "10000"],
+          "env": {
+            "CLAUDE_CUSTOM_FLAG": "true"
+          }
+        }
+      ]
+    },
+
+    "gemini": {
+      "_comment": "Override Gemini's built-in configuration.",
+      "command": "gemini",
+      "extra_args": [],
+      "env": {},
+      "installInstructions": "Install Gemini CLI: npm install -g @google/gemini-cli"
+    },
+
+    "codex": {
+      "_comment": "Override Codex's built-in configuration.",
+      "command": "codex",
+      "extra_args": [],
+      "env": {},
+      "installInstructions": "Install Codex CLI: npm install -g @openai/codex"
+    },
+
+    "copilot": {
+      "_comment": "Override Copilot's built-in configuration.",
+      "command": "copilot",
+      "extra_args": [],
+      "env": {},
+      "installInstructions": "Install Copilot CLI: npm install -g @github/copilot-cli"
+    }
+  }
+}

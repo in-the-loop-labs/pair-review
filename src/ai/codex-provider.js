@@ -56,12 +56,25 @@ const CODEX_MODELS = [
 ];
 
 class CodexProvider extends AIProvider {
-  constructor(model = 'gpt-5.1-codex-max') {
+  /**
+   * @param {string} model - Model identifier
+   * @param {Object} configOverrides - Config overrides from providers config
+   * @param {string} configOverrides.command - Custom CLI command
+   * @param {string[]} configOverrides.extra_args - Additional CLI arguments
+   * @param {Object} configOverrides.env - Additional environment variables
+   * @param {Object[]} configOverrides.models - Custom model definitions
+   */
+  constructor(model = 'gpt-5.1-codex-max', configOverrides = {}) {
     super(model);
 
-    // Check for environment variable to override default command
-    // Supports multi-word commands like "npx codex" or "/path/to/codex --verbose"
-    const codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
+    // Command precedence: ENV > config > default
+    const envCmd = process.env.PAIR_REVIEW_CODEX_CMD;
+    const configCmd = configOverrides.command;
+    const codexCmd = envCmd || configCmd || 'codex';
+
+    // Store for use in getExtractionConfig and testAvailability
+    this.codexCmd = codexCmd;
+    this.configOverrides = configOverrides;
 
     // For multi-word commands, use shell mode (same pattern as Claude provider)
     this.useShell = codexCmd.includes(' ');
@@ -82,13 +95,26 @@ class CodexProvider extends AIProvider {
     // --full-auto: Non-interactive mode that auto-approves within sandbox bounds.
     // Combined with workspace-write sandbox, this limits damage to the worktree only.
     // Note: The -a flag is for interactive mode only; exec subcommand uses --full-auto.
+
+    // Build args: base args + provider extra_args + model extra_args
+    const baseArgs = ['exec', '-m', model, '--json', '--sandbox', 'workspace-write', '--full-auto', '-'];
+    const providerArgs = configOverrides.extra_args || [];
+    const modelConfig = configOverrides.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    // Merge env: provider env + model env
+    this.extraEnv = {
+      ...(configOverrides.env || {}),
+      ...(modelConfig?.env || {})
+    };
+
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${codexCmd} exec -m ${model} --json --sandbox workspace-write --full-auto -`;
+      this.command = `${codexCmd} ${[...baseArgs, ...providerArgs, ...modelArgs].join(' ')}`;
       this.args = [];
     } else {
       this.command = codexCmd;
-      this.args = ['exec', '-m', model, '--json', '--sandbox', 'workspace-write', '--full-auto', '-'];
+      this.args = [...baseArgs, ...providerArgs, ...modelArgs];
     }
   }
 
@@ -110,6 +136,7 @@ class CodexProvider extends AIProvider {
         cwd,
         env: {
           ...process.env,
+          ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: this.useShell
@@ -128,6 +155,8 @@ class CodexProvider extends AIProvider {
       let stderr = '';
       let timeoutId = null;
       let settled = false;  // Guard against multiple resolve/reject calls
+      let lineBuffer = '';  // Buffer for incomplete JSONL lines
+      let lineCount = 0;    // Count of JSONL events for progress tracking
 
       const settle = (fn, value) => {
         if (settled) return;
@@ -145,9 +174,23 @@ class CodexProvider extends AIProvider {
         }, timeout);
       }
 
-      // Collect stdout
+      // Collect stdout with streaming JSONL parsing for debug visibility
       codex.stdout.on('data', (data) => {
-        stdout += data.toString();
+        const chunk = data.toString();
+        stdout += chunk;
+
+        // Parse JSONL lines as they arrive for streaming debug output
+        lineBuffer += chunk;
+        const lines = lineBuffer.split('\n');
+        // Keep the last incomplete line in buffer
+        lineBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.trim()) {
+            lineCount++;
+            this.logStreamLine(line, lineCount, levelPrefix);
+          }
+        }
       });
 
       // Collect stderr
@@ -182,10 +225,27 @@ class CodexProvider extends AIProvider {
           return;
         }
 
+        // Log completion with event count (only for successful completion)
+        logger.info(`${levelPrefix} Codex CLI completed: ${lineCount} JSONL events received`);
+
+        // Process any remaining buffered line
+        if (lineBuffer.trim()) {
+          lineCount++;
+          this.logStreamLine(lineBuffer, lineCount, levelPrefix);
+        }
+
         // Parse the Codex JSONL response
         const parsed = this.parseCodexResponse(stdout, level);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
+          // Dump the parsed data for debugging
+          const dataPreview = JSON.stringify(parsed.data, null, 2);
+          logger.debug(`${levelPrefix} [parsed_data] ${dataPreview.substring(0, 3000)}${dataPreview.length > 3000 ? '...' : ''}`);
+          // Log suggestion count if present
+          if (parsed.data?.suggestions) {
+            const count = Array.isArray(parsed.data.suggestions) ? parsed.data.suggestions.length : 0;
+            logger.info(`${levelPrefix} [response] ${count} suggestions in parsed response`);
+          }
           settle(resolve, parsed.data);
         } else {
           // Regex extraction failed, try LLM-based extraction as fallback
@@ -256,17 +316,21 @@ class CodexProvider extends AIProvider {
     try {
       // Split by newlines and parse each JSON line
       const lines = stdout.trim().split('\n').filter(line => line.trim());
-      let agentMessage = null;
+      // Accumulate text from ALL agent_message events, not just the last one.
+      // When Codex uses tools, there may be multiple item.completed events with
+      // agent_message type, and the response text may be spread across them.
+      let agentMessageText = '';
 
       for (const line of lines) {
         try {
           const event = JSON.parse(line);
 
-          // Look for agent_message items which contain the actual response
+          // Accumulate text from agent_message items which contain the AI response
+          // Multiple agent_message events can occur when Codex uses tools
           if (event.type === 'item.completed' &&
               event.item?.type === 'agent_message' &&
               event.item?.text) {
-            agentMessage = event.item.text;
+            agentMessageText += event.item.text;
           }
         } catch (lineError) {
           // Skip malformed lines
@@ -274,10 +338,11 @@ class CodexProvider extends AIProvider {
         }
       }
 
-      if (agentMessage) {
-        // The agent_message contains the AI's text response
+      if (agentMessageText) {
+        // The accumulated agent_message text contains the AI's response
         // Try to extract JSON from it (the AI was asked to output JSON)
-        const extracted = extractJSON(agentMessage, level);
+        logger.debug(`${levelPrefix} Extracted ${agentMessageText.length} chars of agent message text from JSONL`);
+        const extracted = extractJSON(agentMessageText, level);
         if (extracted.success) {
           return extracted;
         }
@@ -303,18 +368,188 @@ class CodexProvider extends AIProvider {
   }
 
   /**
+   * Log a streaming JSONL line for debugging visibility
+   * Codex JSONL format event types:
+   * - thread.started: Session info
+   * - turn.started: Turn begins
+   * - item.completed: Contains reasoning, agent_message, or tool items
+   * - turn.completed: Turn ends with usage stats
+   *
+   * Uses logger.streamDebug() which only logs when --debug-stream flag is enabled.
+   *
+   * @param {string} line - A single JSONL line
+   * @param {number} lineNum - Line number for reference
+   * @param {string} levelPrefix - Logging prefix
+   */
+  logStreamLine(line, lineNum, levelPrefix) {
+    // Check stream debug status - branches exit early if disabled
+    const streamEnabled = logger.isStreamDebugEnabled();
+
+    try {
+      const event = JSON.parse(line);
+      const eventType = event.type;
+
+      if (eventType === 'thread.started') {
+        if (!streamEnabled) return;
+        const threadId = event.thread_id || '';
+        const idPart = threadId ? ` thread=${threadId.substring(0, 12)}` : '';
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] thread.started${idPart}`);
+
+      } else if (eventType === 'turn.started') {
+        if (!streamEnabled) return;
+        const turnId = event.turn_id || '';
+        const idPart = turnId ? ` turn=${turnId.substring(0, 8)}` : '';
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] turn.started${idPart}`);
+
+      } else if (eventType === 'item.completed') {
+        const item = event.item || {};
+        const itemType = item.type || 'unknown';
+
+        if (itemType === 'agent_message') {
+          // Agent message - this is the AI's text response
+          const text = item.text || '';
+          if (text && streamEnabled) {
+            const preview = text.replace(/\n/g, '\\n').substring(0, 60);
+            logger.streamDebug(`${levelPrefix} [#${lineNum}] agent_message: ${preview}${text.length > 60 ? '...' : ''}`);
+          } else if (streamEnabled) {
+            logger.streamDebug(`${levelPrefix} [#${lineNum}] agent_message (empty)`);
+          }
+
+        } else if (itemType === 'function_call' || itemType === 'tool_call' || itemType === 'tool_use') {
+          if (!streamEnabled) return;
+          // Tool/function call - extract name and input
+          const toolName = item.name || item.tool || 'unknown';
+          const toolId = item.id || item.call_id || '';
+          const toolArgs = item.arguments || item.input || item.args || null;
+
+          let argsPreview = '';
+          if (toolArgs) {
+            // Try to parse if it's a string (Codex often stringifies arguments)
+            let parsedArgs = toolArgs;
+            if (typeof toolArgs === 'string') {
+              try {
+                parsedArgs = JSON.parse(toolArgs);
+              } catch {
+                parsedArgs = toolArgs;
+              }
+            }
+
+            if (typeof parsedArgs === 'string') {
+              argsPreview = parsedArgs.length > 50 ? parsedArgs.substring(0, 50) + '...' : parsedArgs;
+            } else if (typeof parsedArgs === 'object' && parsedArgs !== null) {
+              const keys = Object.keys(parsedArgs);
+              if (parsedArgs.command) {
+                const cmd = parsedArgs.command;
+                argsPreview = `cmd="${cmd.substring(0, 50)}${cmd.length > 50 ? '...' : ''}"`;
+              } else if (parsedArgs.file_path || parsedArgs.path) {
+                argsPreview = `path="${parsedArgs.file_path || parsedArgs.path}"`;
+              } else if (keys.length === 1 && typeof parsedArgs[keys[0]] === 'string') {
+                const val = parsedArgs[keys[0]];
+                argsPreview = `${keys[0]}="${val.length > 40 ? val.substring(0, 40) + '...' : val}"`;
+              } else if (keys.length > 0) {
+                argsPreview = `{${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''}}`;
+              }
+            }
+          }
+
+          const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+          const argsPart = argsPreview ? ` ${argsPreview}` : '';
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] tool_call: ${toolName}${idPart}${argsPart}`);
+
+        } else if (itemType === 'function_call_output' || itemType === 'tool_result') {
+          if (!streamEnabled) return;
+          // Tool result
+          const toolId = item.call_id || item.tool_use_id || item.id || '';
+          const output = item.output || item.result || item.content || '';
+          const isError = item.is_error || item.error || false;
+
+          let resultPreview = '';
+          if (typeof output === 'string' && output.length > 0) {
+            resultPreview = output.length > 60 ? output.substring(0, 60) + '...' : output;
+            resultPreview = resultPreview.replace(/\n/g, '\\n');
+          }
+
+          const idPart = toolId ? ` [${toolId.substring(0, 8)}]` : '';
+          const statusPart = isError ? ' ERROR' : ' OK';
+          const previewPart = resultPreview ? ` ${resultPreview}` : '';
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] tool_result${idPart}${statusPart}${previewPart}`);
+
+        } else if (itemType === 'reasoning') {
+          if (!streamEnabled) return;
+          // Reasoning item - show brief summary
+          const summary = item.summary || '';
+          const preview = summary ? summary.substring(0, 50) : '';
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] reasoning: ${preview}${summary.length > 50 ? '...' : ''}`);
+
+        } else if (streamEnabled) {
+          // Other item types
+          logger.streamDebug(`${levelPrefix} [#${lineNum}] item.completed (${itemType})`);
+        }
+
+      } else if (eventType === 'turn.completed') {
+        // Turn completed - always log this at info level for summary
+        const usage = event.usage || {};
+        const inputTokens = usage.input_tokens || usage.prompt_tokens || 0;
+        const outputTokens = usage.output_tokens || usage.completion_tokens || 0;
+        const totalTokens = usage.total_tokens || (inputTokens + outputTokens);
+
+        logger.info(`${levelPrefix} [turn.completed] tokens: ${inputTokens}in/${outputTokens}out (total: ${totalTokens})`);
+
+      } else if (eventType && streamEnabled) {
+        // Unknown event type - only log if we have an actual type and stream debug is on
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] ${eventType}`);
+      }
+      // Silently ignore events with no type
+
+    } catch (parseError) {
+      if (streamEnabled) {
+        // Skip malformed lines
+        logger.streamDebug(`${levelPrefix} [#${lineNum}] (malformed: ${line.substring(0, 50)}${line.length > 50 ? '...' : ''})`);
+      }
+    }
+  }
+
+  /**
+   * Build args for Codex CLI extraction, applying provider and model extra_args.
+   * This ensures consistent arg construction for getExtractionConfig().
+   *
+   * Note: For extraction, we use minimal sandbox (read-only) since we don't need
+   * shell commands for JSON extraction.
+   *
+   * @param {string} model - The model identifier to use
+   * @returns {string[]} Complete args array for the CLI
+   */
+  buildArgsForModel(model) {
+    // Base args for extraction (read-only sandbox, no shell access needed)
+    // Note: '-' (stdin marker) must come LAST, after any extra_args
+    const baseArgs = ['exec', '-m', model, '--json', '--sandbox', 'read-only', '--full-auto'];
+    // Provider-level extra_args (from configOverrides)
+    const providerArgs = this.configOverrides?.extra_args || [];
+    // Model-specific extra_args (from the model config for the given model)
+    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
+    const modelArgs = modelConfig?.extra_args || [];
+
+    // Append stdin marker '-' at the end after all other args
+    return [...baseArgs, ...providerArgs, ...modelArgs, '-'];
+  }
+
+  /**
    * Get CLI configuration for LLM extraction
    * @param {string} model - The model to use for extraction
    * @returns {Object} Configuration for spawning extraction process
    */
   getExtractionConfig(model) {
-    const codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
-    const useShell = codexCmd.includes(' ');
+    // Use the already-resolved command from the constructor (this.codexCmd)
+    // which respects: ENV > config > default precedence
+    const codexCmd = this.codexCmd;
+    const useShell = this.useShell;
 
-    // Use minimal sandbox for extraction - we don't need shell commands
+    // Build args consistently using the shared method, applying provider and model extra_args
+    const args = this.buildArgsForModel(model);
+
     if (useShell) {
       return {
-        command: `${codexCmd} exec -m ${model} --json --sandbox read-only --full-auto -`,
+        command: `${codexCmd} ${args.join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true
@@ -322,7 +557,7 @@ class CodexProvider extends AIProvider {
     }
     return {
       command: codexCmd,
-      args: ['exec', '-m', model, '--json', '--sandbox', 'read-only', '--full-auto', '-'],
+      args,
       useShell: false,
       promptViaStdin: true
     };
@@ -330,15 +565,16 @@ class CodexProvider extends AIProvider {
 
   /**
    * Test if Codex CLI is available
+   * Uses the command configured in the instance (respects ENV > config > default precedence)
    * @returns {Promise<boolean>}
    */
   async testAvailability() {
     return new Promise((resolve) => {
       // For availability test, we just need to check --version
-      // Use shell mode if the command contains spaces
-      const codexCmd = process.env.PAIR_REVIEW_CODEX_CMD || 'codex';
-      const useShell = codexCmd.includes(' ');
-      const command = useShell ? `${codexCmd} --version` : codexCmd;
+      // Use the already-resolved command from the constructor (this.codexCmd)
+      // which respects: ENV > config > default precedence
+      const useShell = this.useShell;
+      const command = useShell ? `${this.codexCmd} --version` : this.codexCmd;
       const args = useShell ? [] : ['--version'];
 
       const codex = spawn(command, args, {

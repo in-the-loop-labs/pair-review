@@ -682,7 +682,8 @@ describe('Analyzer.validateSuggestions old_or_new field', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        line: 10,
+        line_start: 10,
+        line_end: 10,
         old_or_new: 'OLD',
         type: 'bug',
         title: 'Issue on deleted line',
@@ -701,7 +702,8 @@ describe('Analyzer.validateSuggestions old_or_new field', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        line: 10,
+        line_start: 10,
+        line_end: 10,
         old_or_new: 'NEW',
         type: 'bug',
         title: 'Issue on added line',
@@ -720,7 +722,8 @@ describe('Analyzer.validateSuggestions old_or_new field', () => {
     const suggestions = [
       {
         file: 'src/foo.js',
-        line: 10,
+        line_start: 10,
+        line_end: 10,
         // old_or_new not specified
         type: 'bug',
         title: 'Some issue',
@@ -736,6 +739,105 @@ describe('Analyzer.validateSuggestions old_or_new field', () => {
   });
 });
 
+describe('Analyzer.validateSuggestions line to line_start/line_end normalization', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should convert line field to line_start and line_end', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line: 42,  // Old format - some AI models still output this
+        type: 'bug',
+        title: 'Issue on line 42',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].line_start).toBe(42);
+    expect(result[0].line_end).toBe(42);
+    expect(result[0]).not.toHaveProperty('line');
+  });
+
+  it('should preserve line_end if already provided alongside line', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line: 10,
+        line_end: 15,  // AI provided line and line_end
+        type: 'bug',
+        title: 'Multi-line issue',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].line_start).toBe(10);
+    expect(result[0].line_end).toBe(15);
+  });
+
+  it('should not overwrite line_start if already provided', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line: 5,           // Old format
+        line_start: 10,    // New format takes precedence
+        line_end: 15,
+        type: 'bug',
+        title: 'Issue with both formats',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].line_start).toBe(10);  // line_start preserved
+    expect(result[0].line_end).toBe(15);
+  });
+
+  it('should handle mixed suggestions with line and line_start formats', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line: 20,  // Old format
+        type: 'bug',
+        title: 'Old format issue',
+        description: 'Test',
+        confidence: 0.8
+      },
+      {
+        file: 'src/bar.js',
+        line_start: 30,  // New format
+        line_end: 35,
+        type: 'improvement',
+        title: 'New format issue',
+        description: 'Test',
+        confidence: 0.9
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].line_start).toBe(20);
+    expect(result[0].line_end).toBe(20);
+    expect(result[1].line_start).toBe(30);
+    expect(result[1].line_end).toBe(35);
+  });
+});
+
 describe('Analyzer.parseResponse with file-level suggestions', () => {
   let analyzer;
 
@@ -746,7 +848,7 @@ describe('Analyzer.parseResponse with file-level suggestions', () => {
   it('should parse both line-level and file-level suggestions from response object', () => {
     const response = {
       suggestions: [
-        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
+        { file: 'src/foo.js', line_start: 10, line_end: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
       ],
       fileLevelSuggestions: [
         { file: 'src/foo.js', type: 'design', title: 'File issue', confidence: 0.8 }
@@ -767,7 +869,7 @@ describe('Analyzer.parseResponse with file-level suggestions', () => {
   it('should handle response with only line-level suggestions', () => {
     const response = {
       suggestions: [
-        { file: 'src/foo.js', line: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
+        { file: 'src/foo.js', line_start: 10, line_end: 10, type: 'bug', title: 'Line issue', confidence: 0.8 }
       ]
     };
 

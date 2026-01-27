@@ -283,7 +283,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       selectedProvider = repoSettings.default_provider;
     } else {
       const config = req.app.get('config') || {};
-      selectedProvider = config.provider || 'claude';
+      selectedProvider = config.default_provider || config.provider || 'claude';
     }
 
     // Determine model: request body > repo settings > config/CLI > default
