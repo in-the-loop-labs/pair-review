@@ -359,8 +359,11 @@ class ReviewModal {
     const reviewBody = this.modal.querySelector('#review-body-modal').value.trim();
     const selectedOption = this.modal.querySelector('input[name="review-event"]:checked');
     const reviewEvent = selectedOption ? selectedOption.value : 'COMMENT';
-    const userComments = document.querySelectorAll('.user-comment-row');
-    const commentCount = userComments.length;
+    // Count BOTH line-level (.user-comment-row) and file-level (.file-comment-card.user-comment) comments
+    // This must match the counting logic in updateCommentCount() for consistency
+    const lineComments = document.querySelectorAll('.user-comment-row').length;
+    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
+    const commentCount = lineComments + fileComments;
     
     // Hide any previous errors
     this.hideError();
