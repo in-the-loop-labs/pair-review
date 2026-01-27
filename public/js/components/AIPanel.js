@@ -520,6 +520,13 @@ class AIPanel {
     /**
      * Update segment counts in the segment control
      * Dims counts when they are zero
+     *
+     * Design note: These counts reflect "inbox size" (total items in this.comments),
+     * which may include dismissed comments when the "show dismissed" filter is enabled.
+     * This differs from SplitButton/ReviewModal which use DOM-based counting to show
+     * only active comments (what will actually be submitted). The difference is intentional:
+     * - Segment counts = "how many items are in this panel view"
+     * - SplitButton counts = "how many comments will be submitted"
      */
     updateSegmentCounts() {
         const aiCount = this.findings.length;
@@ -1374,6 +1381,12 @@ class AIPanel {
         const comment = this.comments.find(c => c.id === commentId);
         if (comment) {
             Object.assign(comment, updates);
+            // Note: updateSegmentCounts() counts this.comments.length which won't change
+            // when status changes. This is intentional - segment counts show "inbox size"
+            // (total items in panel) while SplitButton uses DOM-based counting for
+            // submission validation (active comments only). We still call it here to
+            // trigger any button state updates (e.g., enabling/disabling).
+            this.updateSegmentCounts();
             this.renderFindings();
         }
     }
