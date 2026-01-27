@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.3
+
+### Patch Changes
+
+- c4fba4b: Fix panel width CSS variable and layout issues
+
+  - Fix --sidebar-width and --ai-panel-width CSS variables not updating when panels collapse
+  - Fix flicker when toggling file navigator sidebar by removing max-width transitions and batching updates in requestAnimationFrame
+  - Fix asymmetric spacing on comments and suggestions using margin: auto and reduced max-width padding
+  - Extract helper method for sidebar initialization and improve code consistency
+
+- 925d8d3: Fix comment count synchronization issues
+
+  - Fixed ReviewModal.submitReview() and PRManager.submitReview() to count both line-level and file-level comments for validation
+  - Added updateSegmentCounts() call in AIPanel.updateComment() to ensure UI updates when comment status changes
+  - Added documentation explaining the intentional difference between segment counts (inbox size) and submission counts (active only)
+
 ## 1.0.2
 
 ### Patch Changes
