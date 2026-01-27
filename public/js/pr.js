@@ -2529,7 +2529,11 @@ class PRManager {
     const reviewBody = document.getElementById('review-body').value.trim();
     const submitBtn = document.getElementById('submit-review-btn');
 
-    if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && document.querySelectorAll('.user-comment-row').length === 0) {
+    // Count BOTH line-level and file-level comments for validation
+    const lineComments = document.querySelectorAll('.user-comment-row').length;
+    const fileComments = document.querySelectorAll('.file-comment-card.user-comment').length;
+    const totalComments = lineComments + fileComments;
+    if (reviewEvent === 'REQUEST_CHANGES' && !reviewBody && totalComments === 0) {
       alert('Please add comments or a review summary when requesting changes.');
       return;
     }
