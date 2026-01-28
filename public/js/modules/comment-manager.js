@@ -659,3 +659,8 @@ class CommentManager {
 
 // Make CommentManager available globally
 window.CommentManager = CommentManager;
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { CommentManager };
+}
