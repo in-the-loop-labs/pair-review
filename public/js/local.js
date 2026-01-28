@@ -471,6 +471,7 @@ class LocalManager {
             line_start: lineNumber,
             line_end: endLineNumber,
             diff_position: diffPosition,
+            side: side,  // Include side for suggestion code extraction
             body: content,
             created_at: new Date().toISOString()
           };
@@ -603,6 +604,7 @@ class LocalManager {
           const fileName = commentRow.dataset.file || '';
           const lineStart = commentRow.dataset.lineStart || '';
           const lineEnd = commentRow.dataset.lineEnd || lineStart;
+          const side = commentRow.dataset.side || '';
 
           const editFormHTML = `
             <div class="user-comment-edit-form">
@@ -618,6 +620,7 @@ class LocalManager {
                 data-file="${fileName}"
                 data-line="${lineStart}"
                 data-line-end="${lineEnd}"
+                ${side ? `data-side="${side}"` : ''}
               >${manager.escapeHtml(currentText)}</textarea>
               <div class="comment-edit-actions">
                 <button class="btn btn-sm btn-primary save-edit-btn">Save</button>
