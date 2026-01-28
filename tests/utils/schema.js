@@ -134,7 +134,7 @@ const SCHEMA_SQL = {
       review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
       github_review_id TEXT,
       github_node_id TEXT,
-      state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local', 'pending', 'submitted')),
+      state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local', 'pending', 'submitted', 'unknown')),
       event TEXT CHECK(event IN ('APPROVE', 'COMMENT', 'REQUEST_CHANGES')),
       body TEXT,
       submitted_at DATETIME,

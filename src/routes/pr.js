@@ -28,23 +28,47 @@ const router = express.Router();
 
 /**
  * Sync pending draft review from GitHub with local database
+ *
+ * Handles three scenarios:
+ * 1. Same draft updated - The draft we know about has been updated on GitHub. Update our record.
+ * 2. NEW draft created outside pair-review - A new draft was created on GitHub (e.g., user
+ *    started a review directly on GitHub). Create a new record and mark old pending records
+ *    as 'unknown' (their fate is unclear - may have been dismissed or submitted externally).
+ * 3. No GitHub draft but we have pending records - Those drafts were dismissed/submitted
+ *    outside pair-review (handled by caller, not this function).
+ *
  * @param {GitHubReviewRepository} githubReviewRepo - The GitHub review repository
  * @param {number} reviewId - The local review ID
  * @param {Object} githubPendingReview - The pending review data from GitHub GraphQL API
  * @returns {Promise<Object>} The synced pending draft record with comments_count
  */
 async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPendingReview) {
-  const existingRecord = await githubReviewRepo.findByGitHubNodeId(reviewId, githubPendingReview.id);
+  // Find all our pending records for this review
+  const existingPendingRecords = await githubReviewRepo.findPendingByReviewId(reviewId);
+
+  // Check if this GitHub draft matches any of our records by node_id
+  const matchingRecord = existingPendingRecords.find(
+    r => r.github_node_id === githubPendingReview.id
+  );
+
   let pendingDraft;
-  if (existingRecord) {
-    await githubReviewRepo.update(existingRecord.id, {
+  if (matchingRecord) {
+    // Same draft - update it with latest data from GitHub
+    await githubReviewRepo.update(matchingRecord.id, {
       github_review_id: String(githubPendingReview.databaseId),
       github_url: githubPendingReview.url,
       body: githubPendingReview.body,
       state: 'pending'
     });
-    pendingDraft = await githubReviewRepo.getById(existingRecord.id);
+    pendingDraft = await githubReviewRepo.getById(matchingRecord.id);
   } else {
+    // New draft from GitHub - create new record
+    // Mark any existing pending records as 'unknown' since their fate is unclear
+    // (the draft they referenced may have been dismissed or submitted on GitHub)
+    for (const oldRecord of existingPendingRecords) {
+      await githubReviewRepo.update(oldRecord.id, { state: 'unknown' });
+    }
+
     pendingDraft = await githubReviewRepo.create(reviewId, {
       github_review_id: String(githubPendingReview.databaseId),
       github_node_id: githubPendingReview.id,
@@ -53,6 +77,7 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
       state: 'pending'
     });
   }
+
   pendingDraft.comments_count = githubPendingReview.comments?.totalCount || 0;
   return pendingDraft;
 }

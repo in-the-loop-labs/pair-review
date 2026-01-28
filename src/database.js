@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 13;
+const CURRENT_SCHEMA_VERSION = 14;
 
 /**
  * Database schema SQL statements
@@ -152,7 +152,7 @@ const SCHEMA_SQL = {
       review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
       github_review_id TEXT,
       github_node_id TEXT,
-      state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local', 'pending', 'submitted')),
+      state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local', 'pending', 'submitted', 'unknown')),
       event TEXT CHECK(event IN ('APPROVE', 'COMMENT', 'REQUEST_CHANGES')),
       body TEXT,
       submitted_at DATETIME,
@@ -644,6 +644,64 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 13 complete');
+  },
+
+  // Migration to version 14: adds 'unknown' state to github_reviews for stale drafts
+  14: (db) => {
+    console.log('Running migration to schema version 14...');
+
+    // Helper to check if table exists
+    const tableExists = (tableName) => {
+      const row = db.prepare(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name=?`
+      ).get(tableName);
+      return !!row;
+    };
+
+    // SQLite doesn't support altering CHECK constraints directly.
+    // We need to recreate the table with the new constraint.
+    if (tableExists('github_reviews')) {
+      // Check if we need to migrate (table exists with old constraint)
+      // We'll recreate the table with the new constraint
+      db.exec(`
+        -- Create temp table with new constraint
+        CREATE TABLE github_reviews_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+          github_review_id TEXT,
+          github_node_id TEXT,
+          state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local', 'pending', 'submitted', 'unknown')),
+          event TEXT CHECK(event IN ('APPROVE', 'COMMENT', 'REQUEST_CHANGES')),
+          body TEXT,
+          submitted_at DATETIME,
+          github_url TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      // Copy data
+      db.exec(`
+        INSERT INTO github_reviews_new (id, review_id, github_review_id, github_node_id, state, event, body, submitted_at, github_url, created_at)
+        SELECT id, review_id, github_review_id, github_node_id, state, event, body, submitted_at, github_url, created_at
+        FROM github_reviews
+      `);
+
+      // Drop old table
+      db.exec('DROP TABLE github_reviews');
+
+      // Rename new table
+      db.exec('ALTER TABLE github_reviews_new RENAME TO github_reviews');
+
+      // Recreate indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)');
+
+      console.log('  Updated github_reviews table to include unknown state');
+    } else {
+      console.log('  Table github_reviews does not exist (will be created with new schema)');
+    }
+
+    console.log('Migration to schema version 14 complete');
   }
 };
 

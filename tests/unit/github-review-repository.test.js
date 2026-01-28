@@ -144,6 +144,39 @@ describe('GitHubReviewRepository', () => {
       const records = await githubReviewRepo.findPendingByReviewId(reviewId);
       expect(records).toEqual([]);
     });
+
+    it('should not include unknown state records', async () => {
+      await githubReviewRepo.create(reviewId, { state: 'unknown' });
+      await githubReviewRepo.create(reviewId, { state: 'pending' });
+
+      const records = await githubReviewRepo.findPendingByReviewId(reviewId);
+
+      expect(records.length).toBe(1);
+      expect(records[0].state).toBe('pending');
+    });
+  });
+
+  describe('unknown state', () => {
+    it('should allow creating a record with unknown state', async () => {
+      const record = await githubReviewRepo.create(reviewId, {
+        github_node_id: 'PRR_stale',
+        state: 'unknown'
+      });
+
+      expect(record.state).toBe('unknown');
+    });
+
+    it('should allow updating a record to unknown state', async () => {
+      const created = await githubReviewRepo.create(reviewId, {
+        github_node_id: 'PRR_was_pending',
+        state: 'pending'
+      });
+
+      await githubReviewRepo.update(created.id, { state: 'unknown' });
+
+      const record = await githubReviewRepo.getById(created.id);
+      expect(record.state).toBe('unknown');
+    });
   });
 
   describe('findByGitHubNodeId', () => {
