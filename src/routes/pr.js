@@ -1076,6 +1076,19 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         reviewData: reviewData
       });
 
+      // Create a github_reviews record to track this submission
+      // Note: For GraphQL-created reviews, githubReview.id IS the node_id (e.g., "PRR_...")
+      const githubReviewRepo = new GitHubReviewRepository(db);
+      await githubReviewRepo.create(review.id, {
+        github_review_id: String(githubReview.id),
+        github_node_id: String(githubReview.id), // Same as github_review_id for GraphQL reviews
+        state: event === 'DRAFT' ? 'pending' : 'submitted',
+        event: event === 'DRAFT' ? null : event,
+        body: body || '',
+        submitted_at: event === 'DRAFT' ? null : new Date().toISOString(),
+        github_url: githubReview.html_url
+      });
+
       console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
 
       // Update comments table to mark submitted comments
