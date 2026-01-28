@@ -879,4 +879,110 @@ describe('GitHubClient', () => {
       expect(result).toBeNull();
     });
   });
+
+  describe('getReviewById', () => {
+    it('should return review data for a valid node ID', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        node: {
+          id: 'PRR_kwDOTest123',
+          state: 'APPROVED',
+          submittedAt: '2024-01-20T10:00:00Z',
+          url: 'https://github.com/owner/repo/pull/1#pullrequestreview-123'
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getReviewById('PRR_kwDOTest123');
+
+      expect(result).toEqual({
+        id: 'PRR_kwDOTest123',
+        state: 'APPROVED',
+        submittedAt: '2024-01-20T10:00:00Z',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-123'
+      });
+    });
+
+    it('should return null when review is not found', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        node: null
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getReviewById('PRR_nonexistent');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when node has no id (invalid response)', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        node: { state: 'PENDING' }  // Missing id
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getReviewById('PRR_invalid');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null on NOT_FOUND GraphQL error', async () => {
+      const client = new GitHubClient('test-token');
+      const notFoundError = new Error('Not found');
+      notFoundError.errors = [{ type: 'NOT_FOUND', message: 'Could not resolve to a node' }];
+      const mockGraphql = vi.fn().mockRejectedValue(notFoundError);
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getReviewById('PRR_deleted');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null on other errors (fail gracefully)', async () => {
+      const client = new GitHubClient('test-token');
+      const networkError = new Error('Network timeout');
+      const mockGraphql = vi.fn().mockRejectedValue(networkError);
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getReviewById('PRR_network_error');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return PENDING state for draft reviews', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        node: {
+          id: 'PRR_pending',
+          state: 'PENDING',
+          submittedAt: null,
+          url: null
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getReviewById('PRR_pending');
+
+      expect(result.state).toBe('PENDING');
+      expect(result.submittedAt).toBeNull();
+    });
+
+    it('should return DISMISSED state for dismissed reviews', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        node: {
+          id: 'PRR_dismissed',
+          state: 'DISMISSED',
+          submittedAt: null,
+          url: 'https://github.com/owner/repo/pull/1#pullrequestreview-456'
+        }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.getReviewById('PRR_dismissed');
+
+      expect(result.state).toBe('DISMISSED');
+    });
+  });
 });

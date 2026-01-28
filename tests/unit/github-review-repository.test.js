@@ -145,8 +145,8 @@ describe('GitHubReviewRepository', () => {
       expect(records).toEqual([]);
     });
 
-    it('should not include unknown state records', async () => {
-      await githubReviewRepo.create(reviewId, { state: 'unknown' });
+    it('should not include dismissed state records', async () => {
+      await githubReviewRepo.create(reviewId, { state: 'dismissed' });
       await githubReviewRepo.create(reviewId, { state: 'pending' });
 
       const records = await githubReviewRepo.findPendingByReviewId(reviewId);
@@ -156,26 +156,26 @@ describe('GitHubReviewRepository', () => {
     });
   });
 
-  describe('unknown state', () => {
-    it('should allow creating a record with unknown state', async () => {
+  describe('dismissed state', () => {
+    it('should allow creating a record with dismissed state', async () => {
       const record = await githubReviewRepo.create(reviewId, {
         github_node_id: 'PRR_stale',
-        state: 'unknown'
+        state: 'dismissed'
       });
 
-      expect(record.state).toBe('unknown');
+      expect(record.state).toBe('dismissed');
     });
 
-    it('should allow updating a record to unknown state', async () => {
+    it('should allow updating a record to dismissed state', async () => {
       const created = await githubReviewRepo.create(reviewId, {
         github_node_id: 'PRR_was_pending',
         state: 'pending'
       });
 
-      await githubReviewRepo.update(created.id, { state: 'unknown' });
+      await githubReviewRepo.update(created.id, { state: 'dismissed' });
 
       const record = await githubReviewRepo.getById(created.id);
-      expect(record.state).toBe('unknown');
+      expect(record.state).toBe('dismissed');
     });
   });
 

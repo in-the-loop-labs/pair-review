@@ -612,7 +612,7 @@ describe('PR Management Endpoints', () => {
       expect(response.body.allGithubReviews[0].state).toBe('pending');
     });
 
-    it('should create new record and mark old pending as unknown when GitHub has new draft', async () => {
+    it('should create new record and mark old pending as dismissed when GitHub has new draft', async () => {
       // Insert PR with review record
       const reviewId = await insertTestPR(db, 1, 'owner/repo');
 
@@ -634,6 +634,14 @@ describe('PR Management Endpoints', () => {
         comments: { totalCount: 2 }
       });
 
+      // Mock getReviewById to return DISMISSED state for the old draft
+      vi.spyOn(GitHubClient.prototype, 'getReviewById').mockResolvedValue({
+        id: 'PRR_old_draft',
+        state: 'DISMISSED',
+        submittedAt: null,
+        url: 'https://github.com/owner/repo/pull/1#old'
+      });
+
       const response = await request(app)
         .get('/api/pr/owner/repo/1/github-drafts');
 
@@ -648,10 +656,10 @@ describe('PR Management Endpoints', () => {
       // Should have 2 github_reviews records now
       expect(response.body.allGithubReviews.length).toBe(2);
 
-      // The old record should be marked as 'unknown'
+      // The old record should be marked as 'dismissed' (queried from GitHub)
       const oldRecord = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_old_draft');
       expect(oldRecord).toBeDefined();
-      expect(oldRecord.state).toBe('unknown');
+      expect(oldRecord.state).toBe('dismissed');
 
       // The new record should be 'pending'
       const newRecord = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_new_draft');
@@ -659,7 +667,7 @@ describe('PR Management Endpoints', () => {
       expect(newRecord.state).toBe('pending');
     });
 
-    it('should mark multiple old pending records as unknown when new draft appears', async () => {
+    it('should mark multiple old pending records as submitted/dismissed when new draft appears', async () => {
       // Insert PR with review record
       const reviewId = await insertTestPR(db, 1, 'owner/repo');
 
@@ -684,6 +692,17 @@ describe('PR Management Endpoints', () => {
         comments: { totalCount: 0 }
       });
 
+      // Mock getReviewById to return different states for the old drafts
+      // One was submitted (APPROVED), one was dismissed
+      vi.spyOn(GitHubClient.prototype, 'getReviewById').mockImplementation(async (nodeId) => {
+        if (nodeId === 'PRR_old1') {
+          return { id: nodeId, state: 'APPROVED', submittedAt: '2024-01-20T00:00:00Z', url: null };
+        } else if (nodeId === 'PRR_old2') {
+          return { id: nodeId, state: 'DISMISSED', submittedAt: null, url: null };
+        }
+        return null;
+      });
+
       const response = await request(app)
         .get('/api/pr/owner/repo/1/github-drafts');
 
@@ -695,11 +714,11 @@ describe('PR Management Endpoints', () => {
       // Should have 3 records now
       expect(response.body.allGithubReviews.length).toBe(3);
 
-      // Both old records should be marked as 'unknown'
+      // Old records should reflect their actual states from GitHub
       const old1 = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_old1');
       const old2 = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_old2');
-      expect(old1.state).toBe('unknown');
-      expect(old2.state).toBe('unknown');
+      expect(old1.state).toBe('submitted');  // APPROVED -> submitted
+      expect(old2.state).toBe('dismissed');  // DISMISSED -> dismissed
 
       // New record should be 'pending'
       const newRecord = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_brand_new');

@@ -542,6 +542,64 @@ class GitHubClient {
   }
 
   /**
+   * Get a review by its GraphQL node ID
+   * Used to determine the actual state of a review that may have been
+   * submitted or dismissed outside of pair-review.
+   *
+   * @param {string} nodeId - GraphQL node ID for the review (e.g., "PRR_kwDOM...")
+   * @returns {Promise<Object|null>} Review data or null if not found
+   *   Returns: { id, state, submittedAt, url } where state is 'PENDING', 'SUBMITTED', or 'DISMISSED'
+   *   Note: SUBMITTED covers APPROVED, COMMENTED, CHANGES_REQUESTED, etc.
+   */
+  async getReviewById(nodeId) {
+    try {
+      logger.debug(`Fetching review by node ID: ${nodeId}`);
+
+      const result = await this.octokit.graphql(`
+        query($nodeId: ID!) {
+          node(id: $nodeId) {
+            ... on PullRequestReview {
+              id
+              state
+              submittedAt
+              url
+            }
+          }
+        }
+      `, {
+        nodeId
+      });
+
+      // Check if we got a valid result
+      if (!result.node || !result.node.id) {
+        logger.debug(`Review not found for node ID: ${nodeId}`);
+        return null;
+      }
+
+      const review = result.node;
+      logger.debug(`Found review ${nodeId}: state=${review.state}, submittedAt=${review.submittedAt}`);
+
+      return {
+        id: review.id,
+        state: review.state,
+        submittedAt: review.submittedAt,
+        url: review.url
+      };
+
+    } catch (error) {
+      // Handle not found errors gracefully
+      if (error.errors?.some(e => e.type === 'NOT_FOUND' || e.message?.includes('not found'))) {
+        logger.debug(`Review not found for node ID: ${nodeId}`);
+        return null;
+      }
+
+      logger.warn(`Error fetching review by node ID ${nodeId}: ${error.message}`);
+      // Don't throw - return null to treat as "not found" for sync purposes
+      return null;
+    }
+  }
+
+  /**
    * Delete a pending review (used for cleanup on failure)
    * @param {string} reviewId - GraphQL node ID for the review
    * @returns {Promise<boolean>} True if deleted successfully

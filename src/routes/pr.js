@@ -32,17 +32,18 @@ const router = express.Router();
  * Handles three scenarios:
  * 1. Same draft updated - The draft we know about has been updated on GitHub. Update our record.
  * 2. NEW draft created outside pair-review - A new draft was created on GitHub (e.g., user
- *    started a review directly on GitHub). Create a new record and mark old pending records
- *    as 'unknown' (their fate is unclear - may have been dismissed or submitted externally).
+ *    started a review directly on GitHub). Create a new record and query GitHub for the actual
+ *    state of old pending records (submitted or dismissed).
  * 3. No GitHub draft but we have pending records - Those drafts were dismissed/submitted
  *    outside pair-review (handled by caller, not this function).
  *
  * @param {GitHubReviewRepository} githubReviewRepo - The GitHub review repository
  * @param {number} reviewId - The local review ID
  * @param {Object} githubPendingReview - The pending review data from GitHub GraphQL API
+ * @param {GitHubClient} [githubClient] - Optional GitHub client for querying old review states
  * @returns {Promise<Object>} The synced pending draft record with comments_count
  */
-async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPendingReview) {
+async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPendingReview, githubClient = null) {
   // Find all our pending records for this review
   const existingPendingRecords = await githubReviewRepo.findPendingByReviewId(reviewId);
 
@@ -63,10 +64,43 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
     pendingDraft = await githubReviewRepo.getById(matchingRecord.id);
   } else {
     // New draft from GitHub - create new record
-    // Mark any existing pending records as 'unknown' since their fate is unclear
-    // (the draft they referenced may have been dismissed or submitted on GitHub)
+    // Query GitHub for the actual state of old pending records
     for (const oldRecord of existingPendingRecords) {
-      await githubReviewRepo.update(oldRecord.id, { state: 'unknown' });
+      let actualState = 'dismissed'; // Default if we can't determine
+
+      if (githubClient && oldRecord.github_node_id) {
+        try {
+          const githubReviewData = await githubClient.getReviewById(oldRecord.github_node_id);
+
+          if (githubReviewData) {
+            // Map GitHub state to our local state
+            // GitHub states: PENDING, APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
+            // Our states: local, pending, submitted, dismissed
+            if (githubReviewData.state === 'PENDING') {
+              // This shouldn't happen (we have a different pending review now), but handle it
+              actualState = 'pending';
+            } else if (githubReviewData.state === 'DISMISSED') {
+              actualState = 'dismissed';
+            } else {
+              // APPROVED, CHANGES_REQUESTED, COMMENTED all mean it was submitted
+              actualState = 'submitted';
+            }
+            logger.debug(`Old review ${oldRecord.github_node_id} actual state from GitHub: ${githubReviewData.state} -> ${actualState}`);
+          } else {
+            // Review not found on GitHub - treat as dismissed
+            logger.debug(`Old review ${oldRecord.github_node_id} not found on GitHub, marking as dismissed`);
+            actualState = 'dismissed';
+          }
+        } catch (error) {
+          // On error, default to dismissed (most likely scenario)
+          logger.warn(`Error querying GitHub for old review ${oldRecord.github_node_id}: ${error.message}, marking as dismissed`);
+          actualState = 'dismissed';
+        }
+      }
+
+      // Update the old record with the actual state and submitted_at if available
+      const updateData = { state: actualState };
+      await githubReviewRepo.update(oldRecord.id, updateData);
     }
 
     pendingDraft = await githubReviewRepo.create(reviewId, {
@@ -154,7 +188,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
           const githubPendingReview = await githubClient.getPendingReviewForUser(repoOwner, repoName, prNumber);
 
           if (githubPendingReview) {
-            pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview);
+            pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview, githubClient);
           }
         } catch (githubError) {
           // Log the error but don't fail the request - draft info is supplementary
@@ -488,7 +522,7 @@ router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
       const githubPendingReview = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
 
       if (githubPendingReview) {
-        pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview);
+        pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview, githubClient);
       }
     } catch (githubError) {
       // Log the error but don't fail the request - return local data only
