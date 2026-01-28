@@ -599,8 +599,10 @@ class SuggestionManager {
     }
 
     // Collapse the AI suggestion in the UI
+    // Use suggestionId (found by ID) not suggestionRow.querySelector('.ai-suggestion')
+    // because multiple suggestions can share the same row when they target the same line
     if (suggestionRow) {
-      const suggestionDiv = suggestionRow.querySelector('.ai-suggestion');
+      const suggestionDiv = suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (suggestionDiv) {
         suggestionDiv.classList.add('collapsed');
         // Update collapsed content text
