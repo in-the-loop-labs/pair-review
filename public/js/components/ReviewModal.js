@@ -506,7 +506,21 @@ class ReviewModal {
       // Remove beforeunload handler if it was added
       if (isDraft && handleBeforeUnload) {
         window.removeEventListener('beforeunload', handleBeforeUnload);
-        
+
+        // Update the pending draft indicator immediately
+        // Count comments that were just submitted
+        const submittedCount = commentCount;
+        const pendingDraft = {
+          github_url: result.github_url,
+          comments_count: submittedCount
+        };
+
+        // Update currentPR and refresh the indicator
+        if (window.prManager?.currentPR) {
+          window.prManager.currentPR.pendingDraft = pendingDraft;
+          window.prManager.updatePendingDraftIndicator(pendingDraft);
+        }
+
         // After 2 seconds, open GitHub PR page for drafts
         setTimeout(() => {
           const githubUrl = result.github_url || `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
