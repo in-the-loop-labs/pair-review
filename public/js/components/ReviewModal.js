@@ -270,10 +270,15 @@ class ReviewModal {
         countElement.textContent = pendingDraft.comments_count || 0;
       }
 
-      // Update the link
+      // Update the link - hide if no github_url
       const linkElement = notice.querySelector('#pending-draft-link');
-      if (linkElement && pendingDraft.github_url) {
-        linkElement.href = pendingDraft.github_url;
+      if (linkElement) {
+        if (pendingDraft.github_url) {
+          linkElement.href = pendingDraft.github_url;
+          linkElement.style.display = 'inline';
+        } else {
+          linkElement.style.display = 'none';
+        }
       }
 
       notice.style.display = 'flex';

@@ -27,6 +27,37 @@ const simpleGit = require('simple-git');
 const router = express.Router();
 
 /**
+ * Sync pending draft review from GitHub with local database
+ * @param {GitHubReviewRepository} githubReviewRepo - The GitHub review repository
+ * @param {number} reviewId - The local review ID
+ * @param {Object} githubPendingReview - The pending review data from GitHub GraphQL API
+ * @returns {Promise<Object>} The synced pending draft record with comments_count
+ */
+async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPendingReview) {
+  const existingRecord = await githubReviewRepo.findByGitHubNodeId(reviewId, githubPendingReview.id);
+  let pendingDraft;
+  if (existingRecord) {
+    await githubReviewRepo.update(existingRecord.id, {
+      github_review_id: String(githubPendingReview.databaseId),
+      github_url: githubPendingReview.url,
+      body: githubPendingReview.body,
+      state: 'pending'
+    });
+    pendingDraft = await githubReviewRepo.getById(existingRecord.id);
+  } else {
+    pendingDraft = await githubReviewRepo.create(reviewId, {
+      github_review_id: String(githubPendingReview.databaseId),
+      github_node_id: githubPendingReview.id,
+      github_url: githubPendingReview.url,
+      body: githubPendingReview.body,
+      state: 'pending'
+    });
+  }
+  pendingDraft.comments_count = githubPendingReview.comments?.totalCount || 0;
+  return pendingDraft;
+}
+
+/**
  * Get pull request data by owner, repo, and number
  */
 router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
@@ -98,31 +129,7 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
           const githubPendingReview = await githubClient.getPendingReviewForUser(repoOwner, repoName, prNumber);
 
           if (githubPendingReview) {
-            // Check if we already have a local record for this GitHub review
-            const existingRecord = await githubReviewRepo.findByGitHubNodeId(review.id, githubPendingReview.id);
-
-            if (existingRecord) {
-              // Update existing record with latest data from GitHub
-              await githubReviewRepo.update(existingRecord.id, {
-                github_review_id: String(githubPendingReview.databaseId),
-                github_url: githubPendingReview.url,
-                body: githubPendingReview.body,
-                state: 'pending'
-              });
-              pendingDraft = await githubReviewRepo.getById(existingRecord.id);
-            } else {
-              // Create new record for this pending review from GitHub
-              pendingDraft = await githubReviewRepo.create(review.id, {
-                github_review_id: String(githubPendingReview.databaseId),
-                github_node_id: githubPendingReview.id,
-                github_url: githubPendingReview.url,
-                body: githubPendingReview.body,
-                state: 'pending'
-              });
-            }
-
-            // Add comments_count from GitHub response
-            pendingDraft.comments_count = githubPendingReview.comments?.totalCount || 0;
+            pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview);
           }
         } catch (githubError) {
           // Log the error but don't fail the request - draft info is supplementary
@@ -432,9 +439,12 @@ router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
     const db = req.app.get('db');
     const config = req.app.get('config');
 
-    // Get or create the local review record
+    // Get the local review record if it exists (don't create on GET - REST compliance)
     const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
+    if (!review) {
+      return res.json({ pendingDraft: null, allGithubReviews: [] });
+    }
 
     // Initialize GitHub client and check for pending drafts on GitHub
     const githubToken = config.github_token || req.app.get('githubToken');
@@ -453,31 +463,7 @@ router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
       const githubPendingReview = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
 
       if (githubPendingReview) {
-        // Check if we already have a local record for this GitHub review
-        const existingRecord = await githubReviewRepo.findByGitHubNodeId(review.id, githubPendingReview.id);
-
-        if (existingRecord) {
-          // Update existing record with latest data from GitHub
-          await githubReviewRepo.update(existingRecord.id, {
-            github_review_id: String(githubPendingReview.databaseId),
-            github_url: githubPendingReview.url,
-            body: githubPendingReview.body,
-            state: 'pending'
-          });
-          pendingDraft = await githubReviewRepo.getById(existingRecord.id);
-        } else {
-          // Create new record for this pending review from GitHub
-          pendingDraft = await githubReviewRepo.create(review.id, {
-            github_review_id: String(githubPendingReview.databaseId),
-            github_node_id: githubPendingReview.id,
-            github_url: githubPendingReview.url,
-            body: githubPendingReview.body,
-            state: 'pending'
-          });
-        }
-
-        // Add comments_count from GitHub response
-        pendingDraft.comments_count = githubPendingReview.comments?.totalCount || 0;
+        pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview);
       }
     } catch (githubError) {
       // Log the error but don't fail the request - return local data only

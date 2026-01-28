@@ -64,6 +64,7 @@ vi.spyOn(GitHubClient.prototype, 'validateToken').mockResolvedValue(true);
 vi.spyOn(GitHubClient.prototype, 'repositoryExists').mockResolvedValue(true);
 vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue(mockGitHubResponses.createReviewGraphQL);
 vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue(mockGitHubResponses.createDraftReviewGraphQL);
+vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
 
 // Spy on GitWorktreeManager prototype methods
 vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
@@ -480,6 +481,171 @@ describe('PR Management Endpoints', () => {
       `, [1, 'owner/repo']);
       const prData = JSON.parse(prMetadata.pr_data);
       expect(prData.viewedFiles).toEqual(['new-file1.js', 'new-file2.js']);
+    });
+  });
+
+  describe('GET /api/pr/:owner/:repo/:number/github-drafts', () => {
+    it('should return 400 for invalid PR number', async () => {
+      const response = await request(app)
+        .get('/api/pr/owner/repo/invalid/github-drafts');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid pull request number');
+    });
+
+    it('should return pendingDraft null when no review exists', async () => {
+      // Insert PR metadata only (no review record)
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title)
+        VALUES (?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR']);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      expect(response.status).toBe(200);
+      expect(response.body.pendingDraft).toBeNull();
+      expect(response.body.allGithubReviews).toEqual([]);
+    });
+
+    it('should NOT create review record on GET (REST compliance)', async () => {
+      // Insert PR metadata only (no review record)
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title)
+        VALUES (?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR']);
+
+      // Make the GET request
+      await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      // Verify no review record was created
+      const review = await queryOne(db, `
+        SELECT * FROM reviews WHERE pr_number = ? AND repository = ?
+      `, [1, 'owner/repo']);
+
+      expect(review).toBeUndefined();
+    });
+
+    it('should return pending draft info when review exists and GitHub has pending draft', async () => {
+      // Insert PR with review record
+      await insertTestPR(db, 1, 'owner/repo');
+
+      // Mock GitHub to return a pending draft
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
+        id: 'PRR_mock123',
+        databaseId: 12345,
+        body: 'Draft review body',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
+        state: 'PENDING',
+        createdAt: '2024-01-01T00:00:00Z',
+        comments: { totalCount: 3 }
+      });
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      expect(response.status).toBe(200);
+      expect(response.body.pendingDraft).not.toBeNull();
+      expect(response.body.pendingDraft.github_node_id).toBe('PRR_mock123');
+      expect(response.body.pendingDraft.github_review_id).toBe('12345');
+      expect(response.body.pendingDraft.github_url).toBe('https://github.com/owner/repo/pull/1#pullrequestreview-12345');
+      expect(response.body.pendingDraft.comments_count).toBe(3);
+    });
+
+    it('should return allGithubReviews when review exists', async () => {
+      // Insert PR with review record
+      const reviewId = await insertTestPR(db, 1, 'owner/repo');
+
+      // Insert a github_reviews record
+      await run(db, `
+        INSERT INTO github_reviews (review_id, github_review_id, github_node_id, state, body, github_url)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [reviewId, '12345', 'PRR_node123', 'submitted', 'Previous review', 'https://github.com/owner/repo/pull/1#pullrequestreview-12345']);
+
+      // Mock GitHub to return no pending draft
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      expect(response.status).toBe(200);
+      expect(response.body.pendingDraft).toBeNull();
+      expect(response.body.allGithubReviews.length).toBe(1);
+      expect(response.body.allGithubReviews[0].github_review_id).toBe('12345');
+      expect(response.body.allGithubReviews[0].state).toBe('submitted');
+    });
+  });
+
+  describe('GET /api/pr/:owner/:repo/:number pendingDraft in response', () => {
+    it('should return pendingDraft null when no review record exists', async () => {
+      // Insert PR metadata without review record
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR', 'Description', 'testuser', 'main', 'feature', JSON.stringify({ state: 'open' })]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.pendingDraft).toBeNull();
+    });
+
+    it('should return pendingDraft when review exists and GitHub has pending draft', async () => {
+      // Insert PR with review record
+      await insertTestPR(db, 1, 'owner/repo');
+
+      // Mock GitHub to return a pending draft
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
+        id: 'PRR_pending456',
+        databaseId: 67890,
+        body: 'Pending review',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-67890',
+        state: 'PENDING',
+        createdAt: '2024-01-15T12:00:00Z',
+        comments: { totalCount: 5 }
+      });
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.pendingDraft).not.toBeNull();
+      expect(response.body.data.pendingDraft.github_node_id).toBe('PRR_pending456');
+      expect(response.body.data.pendingDraft.github_review_id).toBe('67890');
+      expect(response.body.data.pendingDraft.comments_count).toBe(5);
+    });
+
+    it('should return pendingDraft null when review exists but GitHub has no pending draft', async () => {
+      // Insert PR with review record
+      await insertTestPR(db, 1, 'owner/repo');
+
+      // Mock GitHub to return no pending draft
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.pendingDraft).toBeNull();
+    });
+
+    it('should handle GitHub API errors gracefully and return pendingDraft null', async () => {
+      // Insert PR with review record
+      await insertTestPR(db, 1, 'owner/repo');
+
+      // Mock GitHub to throw an error
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockRejectedValue(
+        new Error('GitHub API rate limit exceeded')
+      );
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1');
+
+      // Should still return 200 but with pendingDraft null
+      expect(response.status).toBe(200);
+      expect(response.body.data.pendingDraft).toBeNull();
     });
   });
 });

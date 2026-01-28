@@ -636,8 +636,8 @@ const MIGRATIONS = {
       console.log('  Created github_reviews table');
 
       // Create indexes
-      db.exec('CREATE INDEX idx_github_reviews_review_id ON github_reviews(review_id)');
-      db.exec('CREATE INDEX idx_github_reviews_state ON github_reviews(state)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)');
       console.log('  Created indexes for github_reviews table');
     } else {
       console.log('  Table github_reviews already exists');

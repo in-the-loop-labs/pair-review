@@ -466,7 +466,7 @@ class GitHubClient {
    */
   async getPendingReviewForUser(owner, repo, prNumber) {
     try {
-      console.log(`Checking for pending review on PR #${prNumber} in ${owner}/${repo}`);
+      logger.debug(`Checking for pending review on PR #${prNumber} in ${owner}/${repo}`);
 
       const result = await this.octokit.graphql(`
         query($owner: String!, $repo: String!, $prNumber: Int!) {
@@ -501,7 +501,7 @@ class GitHubClient {
       const userPendingReview = reviews.find(review => review.viewerDidAuthor);
 
       if (userPendingReview) {
-        console.log(`Found pending review for user: ${userPendingReview.id} with ${userPendingReview.comments.totalCount} comments`);
+        logger.debug(`Found pending review for user: ${userPendingReview.id} with ${userPendingReview.comments.totalCount} comments`);
         return {
           id: userPendingReview.id,
           databaseId: userPendingReview.databaseId,
@@ -515,11 +515,11 @@ class GitHubClient {
         };
       }
 
-      console.log('No pending review found for user');
+      logger.debug('No pending review found for user');
       return null;
 
     } catch (error) {
-      console.error('Error checking for pending review:', error);
+      logger.error(`Error checking for pending review: ${error.message}`);
 
       // Handle authentication errors
       if (error.status === 401) {
