@@ -472,7 +472,7 @@ class GitHubClient {
         query($owner: String!, $repo: String!, $prNumber: Int!) {
           repository(owner: $owner, name: $repo) {
             pullRequest(number: $prNumber) {
-              reviews(states: PENDING, first: 10) {
+              reviews(states: PENDING, first: 1) {
                 nodes {
                   id
                   databaseId

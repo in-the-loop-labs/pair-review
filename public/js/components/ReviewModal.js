@@ -52,8 +52,8 @@ class ReviewModal {
               <div class="pending-draft-notice-content">
                 <span class="pending-draft-notice-text">
                   You have a pending draft review on GitHub with <strong id="pending-draft-count">0</strong> comments.
-                  Submitting here will create a new review.
-                  <a href="#" id="pending-draft-link" target="_blank" rel="noopener noreferrer">Manage your existing draft on GitHub</a>.
+                  Submitting here will add to or complete this review.
+                  <a href="#" id="pending-draft-link" target="_blank" rel="noopener noreferrer">Manage on GitHub</a>.
                 </span>
               </div>
             </div>
