@@ -375,6 +375,7 @@ class CommentManager {
         line_start: lineNumber,
         line_end: endLineNumber,
         diff_position: diffPosition,  // Include for expanded context warning logic
+        side: side,  // Include side for suggestion code extraction
         body: content,
         created_at: new Date().toISOString()
       };
@@ -415,10 +416,13 @@ class CommentManager {
     const commentRow = document.createElement('tr');
     commentRow.className = 'user-comment-row';
     commentRow.dataset.commentId = comment.id;
-    // Store file/line data for editing
+    // Store file/line/side data for editing
     commentRow.dataset.file = comment.file;
     commentRow.dataset.lineStart = comment.line_start;
     commentRow.dataset.lineEnd = comment.line_end || comment.line_start;
+    if (comment.side) {
+      commentRow.dataset.side = comment.side;
+    }
 
     const td = document.createElement('td');
     td.colSpan = 4;
@@ -518,10 +522,13 @@ class CommentManager {
     const commentRow = document.createElement('tr');
     commentRow.className = 'user-comment-row';
     commentRow.dataset.commentId = comment.id;
-    // Store file/line data for editing
+    // Store file/line/side data for editing
     commentRow.dataset.file = comment.file;
     commentRow.dataset.lineStart = comment.line_start;
     commentRow.dataset.lineEnd = comment.line_end || comment.line_start;
+    if (comment.side) {
+      commentRow.dataset.side = comment.side;
+    }
 
     const td = document.createElement('td');
     td.colSpan = 4;
@@ -580,6 +587,7 @@ class CommentManager {
             data-file="${comment.file}"
             data-line="${comment.line_start}"
             data-line-end="${comment.line_end || comment.line_start}"
+            ${comment.side ? `data-side="${comment.side}"` : ''}
           >${escapeHtml(comment.body)}</textarea>
           <div class="comment-edit-actions">
             <button class="btn btn-sm btn-primary save-edit-btn">
@@ -651,3 +659,8 @@ class CommentManager {
 
 // Make CommentManager available globally
 window.CommentManager = CommentManager;
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { CommentManager };
+}
