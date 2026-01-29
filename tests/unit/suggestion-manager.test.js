@@ -630,6 +630,7 @@ describe('SuggestionManager.collapseAISuggestion()', () => {
       querySelector: vi.fn().mockReturnValue({ textContent: '' })
     };
     const mockSuggestionDiv1 = {
+      dataset: {},
       classList: {
         add: vi.fn()
       },
@@ -751,5 +752,23 @@ describe('SuggestionManager.collapseAISuggestion()', () => {
     await expect(
       suggestionManager.collapseAISuggestion('123', null, 'Test', 'dismissed')
     ).resolves.not.toThrow();
+  });
+
+  it('should handle suggestionRow present but querySelector returning null', async () => {
+    const suggestionManager = createTestSuggestionManager();
+
+    mockFetch.mockResolvedValueOnce({ ok: true });
+
+    // Row exists but the suggestion div is not found (e.g., removed from DOM)
+    const mockRow = {
+      querySelector: vi.fn().mockReturnValue(null)
+    };
+
+    // Should not throw when suggestionDiv is null
+    await expect(
+      suggestionManager.collapseAISuggestion('123', mockRow, 'Test', 'dismissed')
+    ).resolves.not.toThrow();
+
+    expect(mockRow.querySelector).toHaveBeenCalledWith('[data-suggestion-id="123"]');
   });
 });
