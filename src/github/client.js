@@ -548,8 +548,9 @@ class GitHubClient {
    *
    * @param {string} nodeId - GraphQL node ID for the review (e.g., "PRR_kwDOM...")
    * @returns {Promise<Object|null>} Review data or null if not found
-   *   Returns: { id, state, submittedAt, url } where state is 'PENDING', 'SUBMITTED', or 'DISMISSED'
-   *   Note: SUBMITTED covers APPROVED, COMMENTED, CHANGES_REQUESTED, etc.
+   *   Returns: { id, state, submittedAt, url } where state is GitHub's review state
+   *   (PENDING, APPROVED, CHANGES_REQUESTED, COMMENTED, or DISMISSED).
+   *   Note: APPROVED, COMMENTED, CHANGES_REQUESTED all indicate a submitted review.
    */
   async getReviewById(nodeId) {
     try {

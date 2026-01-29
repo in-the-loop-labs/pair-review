@@ -67,10 +67,11 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
     // Query GitHub for the actual state of old pending records
     for (const oldRecord of existingPendingRecords) {
       let actualState = 'dismissed'; // Default if we can't determine
+      let githubReviewData = null;
 
       if (githubClient && oldRecord.github_node_id) {
         try {
-          const githubReviewData = await githubClient.getReviewById(oldRecord.github_node_id);
+          githubReviewData = await githubClient.getReviewById(oldRecord.github_node_id);
 
           if (githubReviewData) {
             // Map GitHub state to our local state
@@ -100,6 +101,9 @@ async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPend
 
       // Update the old record with the actual state and submitted_at if available
       const updateData = { state: actualState };
+      if (actualState === 'submitted' && githubReviewData?.submittedAt) {
+        updateData.submitted_at = githubReviewData.submittedAt;
+      }
       await githubReviewRepo.update(oldRecord.id, updateData);
     }
 
