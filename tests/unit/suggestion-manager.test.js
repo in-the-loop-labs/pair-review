@@ -601,3 +601,176 @@ describe('SuggestionManager.getFileAndLineInfo()', () => {
     });
   });
 });
+
+describe('SuggestionManager.collapseAISuggestion()', () => {
+  // Mock global fetch for API calls
+  const mockFetch = vi.fn();
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    global.fetch = mockFetch;
+  });
+
+  it('should correctly collapse the second suggestion when two suggestions are on the same line (regression test for pair_review-149d)', async () => {
+    // This test verifies the fix for the bug where adopting/dismissing the second
+    // suggestion on the same line would incorrectly collapse the first suggestion.
+    // The bug was caused by using suggestionRow.querySelector('.ai-suggestion') which
+    // always returned the first suggestion div, rather than using the suggestionId
+    // to find the correct one.
+    const suggestionManager = createTestSuggestionManager();
+
+    // Mock successful API response
+    mockFetch.mockResolvedValueOnce({ ok: true });
+
+    // Create two mock suggestion divs that share the same parent row
+    // Note: In the real DOM, these would have data-suggestion-id attributes
+    const mockCollapsedText1 = { textContent: '' };
+    const mockButton1 = {
+      title: '',
+      querySelector: vi.fn().mockReturnValue({ textContent: '' })
+    };
+    const mockSuggestionDiv1 = {
+      dataset: {},
+      classList: {
+        add: vi.fn()
+      },
+      querySelector: vi.fn((selector) => {
+        if (selector === '.collapsed-text') return mockCollapsedText1;
+        if (selector === '.btn-restore') return mockButton1;
+        return null;
+      })
+    };
+
+    const mockCollapsedText2 = { textContent: '' };
+    const mockButton2 = {
+      title: '',
+      querySelector: vi.fn().mockReturnValue({ textContent: '' })
+    };
+    const mockSuggestionDiv2 = {
+      dataset: {},
+      classList: {
+        add: vi.fn()
+      },
+      querySelector: vi.fn((selector) => {
+        if (selector === '.collapsed-text') return mockCollapsedText2;
+        if (selector === '.btn-restore') return mockButton2;
+        return null;
+      })
+    };
+
+    // Both suggestions share the same row
+    // The row's querySelector should return the CORRECT suggestion div based on the selector
+    const mockRow = {
+      dataset: {},
+      querySelector: vi.fn((selector) => {
+        // This is the fix: the selector should be [data-suggestion-id="X"] not '.ai-suggestion'
+        if (selector === '[data-suggestion-id="1"]') return mockSuggestionDiv1;
+        if (selector === '[data-suggestion-id="2"]') return mockSuggestionDiv2;
+        // Before the fix, '.ai-suggestion' would always return the first one
+        if (selector === '.ai-suggestion') return mockSuggestionDiv1;
+        return null;
+      })
+    };
+
+    // Collapse the SECOND suggestion (ID: 2)
+    await suggestionManager.collapseAISuggestion('2', mockRow, 'Suggestion adopted', 'adopted');
+
+    // Verify the API was called with the correct suggestion ID
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/ai-suggestion/2/status',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ status: 'adopted' })
+      })
+    );
+
+    // The row's querySelector should have been called with the ID-based selector
+    expect(mockRow.querySelector).toHaveBeenCalledWith('[data-suggestion-id="2"]');
+
+    // The SECOND suggestion's classList.add should be called, NOT the first
+    expect(mockSuggestionDiv2.classList.add).toHaveBeenCalledWith('collapsed');
+    expect(mockSuggestionDiv1.classList.add).not.toHaveBeenCalled();
+
+    // The collapsed text within the SECOND suggestion should be updated, NOT the first
+    expect(mockCollapsedText2.textContent).toBe('Suggestion adopted');
+    expect(mockCollapsedText1.textContent).toBe(''); // Should remain unchanged
+
+    // The individual suggestion div should be marked as hidden for adoption (not the row)
+    expect(mockSuggestionDiv2.dataset.hiddenForAdoption).toBe('true');
+  });
+
+  it('should collapse the suggestion when API call succeeds', async () => {
+    const suggestionManager = createTestSuggestionManager();
+
+    mockFetch.mockResolvedValueOnce({ ok: true });
+
+    const mockCollapsedText = { textContent: '' };
+    const mockButton = {
+      title: '',
+      querySelector: vi.fn().mockReturnValue({ textContent: '' })
+    };
+    const mockSuggestionDiv = {
+      dataset: {},
+      classList: { add: vi.fn() },
+      querySelector: vi.fn((selector) => {
+        if (selector === '.collapsed-text') return mockCollapsedText;
+        if (selector === '.btn-restore') return mockButton;
+        return null;
+      })
+    };
+
+    const mockRow = {
+      dataset: {},
+      querySelector: vi.fn().mockReturnValue(mockSuggestionDiv)
+    };
+
+    await suggestionManager.collapseAISuggestion('123', mockRow, 'Test collapse', 'dismissed');
+
+    expect(mockSuggestionDiv.classList.add).toHaveBeenCalledWith('collapsed');
+    expect(mockCollapsedText.textContent).toBe('Test collapse');
+    expect(mockButton.title).toBe('Show suggestion');
+    // Dismissed suggestions should not be marked as hidden for adoption
+    expect(mockSuggestionDiv.dataset.hiddenForAdoption).toBeUndefined();
+  });
+
+  it('should throw error when API call fails', async () => {
+    const suggestionManager = createTestSuggestionManager();
+
+    mockFetch.mockResolvedValueOnce({ ok: false });
+
+    const mockRow = { dataset: {} };
+
+    await expect(
+      suggestionManager.collapseAISuggestion('123', mockRow, 'Test', 'dismissed')
+    ).rejects.toThrow('Failed to update suggestion status');
+  });
+
+  it('should handle null suggestionRow gracefully', async () => {
+    const suggestionManager = createTestSuggestionManager();
+
+    mockFetch.mockResolvedValueOnce({ ok: true });
+
+    // Should not throw when suggestionRow is null
+    await expect(
+      suggestionManager.collapseAISuggestion('123', null, 'Test', 'dismissed')
+    ).resolves.not.toThrow();
+  });
+
+  it('should handle suggestionRow present but querySelector returning null', async () => {
+    const suggestionManager = createTestSuggestionManager();
+
+    mockFetch.mockResolvedValueOnce({ ok: true });
+
+    // Row exists but the suggestion div is not found (e.g., removed from DOM)
+    const mockRow = {
+      querySelector: vi.fn().mockReturnValue(null)
+    };
+
+    // Should not throw when suggestionDiv is null
+    await expect(
+      suggestionManager.collapseAISuggestion('123', mockRow, 'Test', 'dismissed')
+    ).resolves.not.toThrow();
+
+    expect(mockRow.querySelector).toHaveBeenCalledWith('[data-suggestion-id="123"]');
+  });
+});

@@ -136,26 +136,15 @@ describe('PRManager Suggestion Status', () => {
       const suggestionId = 'test-suggestion-adopted';
 
       // Mock element that is hidden for adoption (was adopted and user comment still exists)
-      const mockDiv = {
-        classList: {
-          add: vi.fn()
-        },
-        querySelector: vi.fn().mockReturnValue(null)
-      };
       const mockButton = {
         title: '',
         querySelector: vi.fn().mockReturnValue({ textContent: '' })
       };
-      const mockRow = {
-        dataset: { hiddenForAdoption: 'true' },
-        querySelector: vi.fn((selector) => {
-          if (selector === '.btn-restore') return mockButton;
-          return null;
-        })
-      };
       const mockElement = {
-        closest: vi.fn().mockReturnValue(mockRow),
-        classList: mockDiv.classList,
+        dataset: { hiddenForAdoption: 'true' },
+        classList: {
+          add: vi.fn()
+        },
         querySelector: vi.fn((selector) => {
           if (selector === '.btn-restore') return mockButton;
           return null;
@@ -172,7 +161,7 @@ describe('PRManager Suggestion Status', () => {
       // suggestionNavigator should NOT be updated
       expect(prManager.suggestionNavigator.updateSuggestions).not.toHaveBeenCalled();
       // But the visual collapse should still happen
-      expect(mockDiv.classList.add).toHaveBeenCalledWith('collapsed');
+      expect(mockElement.classList.add).toHaveBeenCalledWith('collapsed');
     });
   });
 
@@ -245,16 +234,13 @@ describe('PRManager Suggestion Status', () => {
       const suggestionId = 'test-suggestion-hidden';
 
       // Mock element that is hidden for adoption
-      // The fix uses suggestionDiv directly, not suggestionRow.querySelector('.ai-suggestion')
+      // hiddenForAdoption is now on the suggestion div, not the row
       const mockButton = {
         title: '',
         querySelector: vi.fn().mockReturnValue({ textContent: '' })
       };
-      const mockRow = {
-        dataset: { hiddenForAdoption: 'true' }
-      };
       const mockElement = {
-        closest: vi.fn().mockReturnValue(mockRow),
+        dataset: { hiddenForAdoption: 'true' },
         classList: {
           toggle: vi.fn(),
           contains: vi.fn().mockReturnValue(true)
@@ -295,6 +281,7 @@ describe('PRManager Suggestion Status', () => {
       };
 
       const mockSuggestionDiv1 = {
+        dataset: { hiddenForAdoption: 'true' },
         classList: {
           toggle: vi.fn(),
           contains: vi.fn().mockReturnValue(true)
@@ -306,6 +293,7 @@ describe('PRManager Suggestion Status', () => {
       };
 
       const mockSuggestionDiv2 = {
+        dataset: { hiddenForAdoption: 'true' },
         classList: {
           toggle: vi.fn(),
           contains: vi.fn().mockReturnValue(true)
@@ -315,15 +303,6 @@ describe('PRManager Suggestion Status', () => {
           return null;
         })
       };
-
-      // Both suggestions share the same row
-      const mockRow = {
-        dataset: { hiddenForAdoption: 'true' }
-      };
-
-      // Connect both divs to the same row
-      mockSuggestionDiv1.closest = vi.fn().mockReturnValue(mockRow);
-      mockSuggestionDiv2.closest = vi.fn().mockReturnValue(mockRow);
 
       // Test restoring the SECOND suggestion (ID: 2)
       // The document.querySelector should find the correct suggestion by ID
@@ -449,16 +428,8 @@ describe('PRManager Suggestion Status', () => {
         title: 'Show suggestion',
         querySelector: vi.fn().mockReturnValue({ textContent: 'Show' })
       };
-      const mockRow = {
-        dataset: { hiddenForAdoption: 'true' },
-        querySelector: vi.fn((selector) => {
-          if (selector === '.ai-suggestion') return mockDiv;
-          if (selector === '.btn-restore') return mockButton;
-          return null;
-        })
-      };
       const mockElement = {
-        closest: vi.fn().mockReturnValue(mockRow),
+        dataset: { hiddenForAdoption: 'true' },
         classList: mockDiv.classList,
         querySelector: vi.fn((selector) => {
           if (selector === '.btn-restore') return mockButton;
@@ -501,18 +472,11 @@ describe('PRManager Suggestion Status', () => {
 
       // Simulate a suggestion that was adopted but the user comment was deleted
       // hiddenForAdoption is now 'false' (or not set)
-      const mockDiv = {
+      const mockElement = {
+        dataset: { hiddenForAdoption: 'false' },
         classList: {
           add: vi.fn()
-        }
-      };
-      const mockRow = {
-        dataset: { hiddenForAdoption: 'false' },
-        querySelector: vi.fn().mockReturnValue(null)
-      };
-      const mockElement = {
-        closest: vi.fn().mockReturnValue(mockRow),
-        classList: mockDiv.classList,
+        },
         querySelector: vi.fn().mockReturnValue(null)
       };
       document.querySelector.mockReturnValue(mockElement);
