@@ -34,11 +34,8 @@
         collapsedText.textContent = HIDDEN_SUGGESTION_TEXT;
       }
 
-      // Update the parent row dataset
-      const suggestionRow = suggestionDiv.closest('tr');
-      if (suggestionRow) {
-        suggestionRow.dataset.hiddenForAdoption = 'false';
-      }
+      // Update the suggestion div dataset
+      suggestionDiv.dataset.hiddenForAdoption = 'false';
     }
 
     // Update AI Panel status

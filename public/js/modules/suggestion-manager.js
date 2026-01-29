@@ -378,13 +378,8 @@ class SuggestionManager {
       const isAdopted = wasAdopted || suggestion.status === 'adopted';
       if (isAdopted) {
         suggestionDiv.classList.add('collapsed');
-        // Mark the row as adopted after it's created
-        setTimeout(() => {
-          const suggestionRow = suggestionDiv.closest('tr');
-          if (suggestionRow) {
-            suggestionRow.dataset.hiddenForAdoption = 'true';
-          }
-        }, 0);
+        // Mark the suggestion div as adopted after it's created
+        suggestionDiv.dataset.hiddenForAdoption = 'true';
       } else if (suggestion.status === 'dismissed') {
         suggestionDiv.classList.add('collapsed');
       }
@@ -599,8 +594,10 @@ class SuggestionManager {
     }
 
     // Collapse the AI suggestion in the UI
+    // Use suggestionId (found by ID) not suggestionRow.querySelector('.ai-suggestion')
+    // because multiple suggestions can share the same row when they target the same line
     if (suggestionRow) {
-      const suggestionDiv = suggestionRow.querySelector('.ai-suggestion');
+      const suggestionDiv = suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (suggestionDiv) {
         suggestionDiv.classList.add('collapsed');
         // Update collapsed content text
@@ -617,8 +614,10 @@ class SuggestionManager {
             btnText.textContent = 'Show';
           }
         }
+        if (status === 'adopted') {
+          suggestionDiv.dataset.hiddenForAdoption = 'true';
+        }
       }
-      suggestionRow.dataset.hiddenForAdoption = 'true';
     }
   }
 

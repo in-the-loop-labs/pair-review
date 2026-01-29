@@ -2309,18 +2309,17 @@ class PRManager {
 
   /**
    * Dismiss an AI suggestion
-   * If the suggestion was adopted (hiddenForAdoption === 'true'), only toggle visibility
-   * without changing the underlying status - the suggestion remains "adopted"
+   * If the suggestion was adopted (hiddenForAdoption === 'true' on the suggestion div),
+   * only toggle visibility without changing the underlying status - the suggestion remains "adopted"
    */
   async dismissSuggestion(suggestionId) {
     try {
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-      const suggestionRow = suggestionDiv?.closest('tr');
 
       // If this suggestion was adopted, only toggle visibility - don't change status
       // The adoption still exists (there's a user comment linked to this suggestion)
-      if (suggestionRow?.dataset.hiddenForAdoption === 'true') {
-        // suggestionDiv is guaranteed to exist since suggestionRow was derived from it
+      if (suggestionDiv?.dataset?.hiddenForAdoption === 'true') {
+        // suggestionDiv is guaranteed to exist since we just queried for it
         suggestionDiv.classList.add('collapsed');
 
         const button = suggestionDiv.querySelector('.btn-restore');
@@ -2372,9 +2371,8 @@ class PRManager {
   async restoreSuggestion(suggestionId) {
     try {
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-      const suggestionRow = suggestionDiv?.closest('tr');
 
-      if (suggestionRow?.dataset.hiddenForAdoption === 'true') {
+      if (suggestionDiv?.dataset?.hiddenForAdoption === 'true') {
         // Use suggestionDiv (found by ID) not suggestionRow.querySelector('.ai-suggestion')
         // because multiple suggestions can share the same row when they target the same line
         suggestionDiv.classList.toggle('collapsed');
