@@ -646,6 +646,7 @@ describe('SuggestionManager.collapseAISuggestion()', () => {
       querySelector: vi.fn().mockReturnValue({ textContent: '' })
     };
     const mockSuggestionDiv2 = {
+      dataset: {},
       classList: {
         add: vi.fn()
       },
@@ -693,8 +694,8 @@ describe('SuggestionManager.collapseAISuggestion()', () => {
     expect(mockCollapsedText2.textContent).toBe('Suggestion adopted');
     expect(mockCollapsedText1.textContent).toBe(''); // Should remain unchanged
 
-    // The row should be marked as hidden for adoption
-    expect(mockRow.dataset.hiddenForAdoption).toBe('true');
+    // The individual suggestion div should be marked as hidden for adoption (not the row)
+    expect(mockSuggestionDiv2.dataset.hiddenForAdoption).toBe('true');
   });
 
   it('should collapse the suggestion when API call succeeds', async () => {
@@ -708,6 +709,7 @@ describe('SuggestionManager.collapseAISuggestion()', () => {
       querySelector: vi.fn().mockReturnValue({ textContent: '' })
     };
     const mockSuggestionDiv = {
+      dataset: {},
       classList: { add: vi.fn() },
       querySelector: vi.fn((selector) => {
         if (selector === '.collapsed-text') return mockCollapsedText;

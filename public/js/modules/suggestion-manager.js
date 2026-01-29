@@ -378,13 +378,8 @@ class SuggestionManager {
       const isAdopted = wasAdopted || suggestion.status === 'adopted';
       if (isAdopted) {
         suggestionDiv.classList.add('collapsed');
-        // Mark the row as adopted after it's created
-        setTimeout(() => {
-          const suggestionRow = suggestionDiv.closest('tr');
-          if (suggestionRow) {
-            suggestionRow.dataset.hiddenForAdoption = 'true';
-          }
-        }, 0);
+        // Mark the suggestion div as adopted after it's created
+        suggestionDiv.dataset.hiddenForAdoption = 'true';
       } else if (suggestion.status === 'dismissed') {
         suggestionDiv.classList.add('collapsed');
       }
@@ -620,7 +615,7 @@ class SuggestionManager {
           }
         }
       }
-      suggestionRow.dataset.hiddenForAdoption = 'true';
+      suggestionDiv.dataset.hiddenForAdoption = 'true';
     }
   }
 
