@@ -65,6 +65,7 @@ vi.spyOn(GitHubClient.prototype, 'repositoryExists').mockResolvedValue(true);
 vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue(mockGitHubResponses.createReviewGraphQL);
 vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue(mockGitHubResponses.createDraftReviewGraphQL);
 vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
+vi.spyOn(GitHubClient.prototype, 'addCommentsInBatches').mockResolvedValue({ successCount: 1, failed: false });
 
 // Spy on GitWorktreeManager prototype methods
 vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
@@ -784,8 +785,8 @@ describe('PR Management Endpoints', () => {
       // Insert PR with review record
       await insertTestPR(db, 1, 'owner/repo');
 
-      // Mock GitHub to throw an error
-      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockRejectedValue(
+      // Mock GitHub to throw an error for one call, then fall back to the default null
+      GitHubClient.prototype.getPendingReviewForUser.mockRejectedValueOnce(
         new Error('GitHub API rate limit exceeded')
       );
 
@@ -2233,6 +2234,48 @@ describe('Review Submission Endpoint', () => {
       expect(comments.length).toBe(1);
       expect(comments[0].isFileLevel).toBe(true);
       expect(comments[0].path).toBe('file.js');
+    });
+
+    it('should add comments to existing pending draft instead of creating a new one', async () => {
+      // Simulate an existing pending draft on GitHub
+      const existingDraft = {
+        id: 'PRR_existing123',
+        databaseId: 99999,
+        body: 'Existing draft body',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-99999',
+        state: 'PENDING',
+        createdAt: new Date().toISOString(),
+        comments: { totalCount: 3 }
+      };
+      GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(existingDraft);
+      GitHubClient.prototype.addCommentsInBatches.mockResolvedValueOnce({ successCount: 1, failed: false });
+
+      // Insert a comment to submit
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+        VALUES (?, 'user', 'file.js', 10, 5, 'RIGHT', 'New draft comment', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'DRAFT', body: 'Draft review' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.github_review_id).toBe('PRR_existing123');
+
+      // Should NOT have created a new draft
+      expect(GitHubClient.prototype.createDraftReviewGraphQL).not.toHaveBeenCalled();
+
+      // Should have added comments to the existing draft via addCommentsInBatches
+      expect(GitHubClient.prototype.addCommentsInBatches).toHaveBeenCalledWith(
+        'PR_node123', // prNodeId
+        'PRR_existing123', // existingDraft.id
+        expect.any(Array) // graphqlComments
+      );
+
+      // Verify the response uses the existing draft's URL
+      expect(response.body.github_url).toBe('https://github.com/owner/repo/pull/1#pullrequestreview-99999');
     });
 
     it('should handle expanded context comments as file-level with line reference', async () => {

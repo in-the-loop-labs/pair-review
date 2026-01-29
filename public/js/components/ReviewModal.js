@@ -263,6 +263,11 @@ class ReviewModal {
     // Get pending draft from the current PR data
     const pendingDraft = window.prManager?.currentPR?.pendingDraft;
 
+    // Update the DRAFT radio option label based on pending draft existence
+    const draftRadioLabel = this.modal?.querySelector('input[name="review-event"][value="DRAFT"]')
+      ?.closest('.review-type-option')
+      ?.querySelector('.review-type-label');
+
     if (pendingDraft) {
       // Update the comment count
       const countElement = notice.querySelector('#pending-draft-count');
@@ -282,8 +287,18 @@ class ReviewModal {
       }
 
       notice.style.display = 'flex';
+
+      // Change draft label to indicate adding to existing draft
+      if (draftRadioLabel) {
+        draftRadioLabel.textContent = 'Add to Draft';
+      }
     } else {
       notice.style.display = 'none';
+
+      // Restore original draft label
+      if (draftRadioLabel) {
+        draftRadioLabel.textContent = 'Save as Draft';
+      }
     }
   }
 
@@ -599,4 +614,9 @@ if (typeof window !== 'undefined' && !window.reviewModal) {
   } else {
     window.reviewModal = new ReviewModal();
   }
+}
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { ReviewModal };
 }
