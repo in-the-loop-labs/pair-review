@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect } from 'vitest';
-import { normalizePath, normalizeRepository } from '../../src/utils/paths.js';
+import { normalizePath, normalizeRepository, resolveRenamedFile } from '../../src/utils/paths.js';
 
 describe('normalizePath', () => {
   describe('leading ./ removal', () => {
@@ -257,6 +257,60 @@ describe('normalizeRepository', () => {
 
     it('should handle tabs and newlines in repo', () => {
       expect(normalizeRepository('owner', '\t\nrepo\t\n')).toBe('owner/repo');
+    });
+  });
+});
+
+describe('resolveRenamedFile', () => {
+  describe('no rename syntax', () => {
+    it('should return unchanged when no rename syntax present', () => {
+      expect(resolveRenamedFile('src/foo.js')).toBe('src/foo.js');
+    });
+
+    it('should return unchanged for plain filename', () => {
+      expect(resolveRenamedFile('file.txt')).toBe('file.txt');
+    });
+
+    it('should return unchanged for deeply nested path', () => {
+      expect(resolveRenamedFile('a/b/c/d/e.js')).toBe('a/b/c/d/e.js');
+    });
+  });
+
+  describe('file rename in directory', () => {
+    it('should resolve simple file rename', () => {
+      expect(resolveRenamedFile('tests/{old.js => new.js}')).toBe('tests/new.js');
+    });
+
+    it('should resolve real-world long filename rename', () => {
+      expect(resolveRenamedFile(
+        'tests/unit/{suggestion-manager-getfileandlineinfo.test.js => suggestion-manager.test.js}'
+      )).toBe('tests/unit/suggestion-manager.test.js');
+    });
+  });
+
+  describe('directory rename', () => {
+    it('should resolve directory rename', () => {
+      expect(resolveRenamedFile('{old-dir => new-dir}/file.js')).toBe('new-dir/file.js');
+    });
+  });
+
+  describe('mid-path rename', () => {
+    it('should resolve rename in middle of path', () => {
+      expect(resolveRenamedFile('a/{b => c}/d.js')).toBe('a/c/d.js');
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should return null for null input', () => {
+      expect(resolveRenamedFile(null)).toBe(null);
+    });
+
+    it('should return undefined for undefined input', () => {
+      expect(resolveRenamedFile(undefined)).toBe(undefined);
+    });
+
+    it('should return empty string for empty string input', () => {
+      expect(resolveRenamedFile('')).toBe('');
     });
   });
 });

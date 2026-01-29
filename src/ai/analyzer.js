@@ -9,7 +9,7 @@ const execPromise = util.promisify(exec);
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
-const { normalizePath, pathExistsInList } = require('../utils/paths');
+const { normalizePath, pathExistsInList, resolveRenamedFile } = require('../utils/paths');
 const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
 const { getPromptBuilder } = require('./prompts');
 const { formatValidFiles } = require('./prompts/shared/valid-files');
@@ -589,13 +589,15 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
     }
 
     // Create a Set of normalized valid paths for efficient lookup
-    const normalizedValidPaths = new Set(validPaths.map(p => normalizePath(p)));
+    // Resolve git rename syntax (e.g., "tests/{old.js => new.js}" → "tests/new.js")
+    // so both the rename syntax path and the plain new filename will match
+    const normalizedValidPaths = new Set(validPaths.map(p => normalizePath(resolveRenamedFile(p))));
 
     const validSuggestions = [];
     const discardedSuggestions = [];
 
     for (const suggestion of suggestions) {
-      const normalizedSuggestionPath = normalizePath(suggestion.file);
+      const normalizedSuggestionPath = normalizePath(resolveRenamedFile(suggestion.file));
 
       if (normalizedValidPaths.has(normalizedSuggestionPath)) {
         validSuggestions.push(suggestion);
@@ -1458,7 +1460,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     // Fallback to getValidFilePaths() which properly looks up pr_metadata via review.id
     let validFilePaths;
     if (changedFiles && changedFiles.length > 0) {
-      validFilePaths = changedFiles.map(f => normalizePath(f));
+      validFilePaths = changedFiles.map(f => normalizePath(resolveRenamedFile(f)));
     } else {
       // Fallback to pr_metadata lookup via review -> pr_metadata join
       validFilePaths = await this.getValidFilePaths(reviewId);
@@ -1611,12 +1613,13 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     }
 
     // Use O(1) Set lookup if validPaths is a Set, otherwise normalize and check
-    const normalizedSuggestionPath = normalizePath(suggestionPath);
+    // Resolve git rename syntax so suggestions for renamed files match
+    const normalizedSuggestionPath = normalizePath(resolveRenamedFile(suggestionPath));
     if (validPaths instanceof Set) {
       return validPaths.has(normalizedSuggestionPath);
     }
     // Fallback for array (convert to Set for lookup)
-    const validPathsSet = new Set(validPaths.map(p => normalizePath(p)));
+    const validPathsSet = new Set(validPaths.map(p => normalizePath(resolveRenamedFile(p))));
     return validPathsSet.has(normalizedSuggestionPath);
   }
 

@@ -152,10 +152,34 @@ function normalizeRepository(owner, repo) {
   return `${trimmedOwner.toLowerCase()}/${trimmedRepo.toLowerCase()}`;
 }
 
+/**
+ * Resolve git rename syntax to extract the new filename.
+ *
+ * Git represents renames with curly-brace syntax:
+ *   "tests/{old.js => new.js}"      → "tests/new.js"
+ *   "{old-dir => new-dir}/file.js"  → "new-dir/file.js"
+ *   "a/{b => c}/d.js"              → "a/c/d.js"
+ *
+ * @param {string} fileName - File name possibly containing rename syntax
+ * @returns {string} Resolved file name with the new path, or original if no rename syntax
+ *
+ * @example
+ * resolveRenamedFile('tests/{old.js => new.js}')  // => 'tests/new.js'
+ * resolveRenamedFile('{old-dir => new-dir}/file.js')  // => 'new-dir/file.js'
+ * resolveRenamedFile('a/{b => c}/d.js')  // => 'a/c/d.js'
+ * resolveRenamedFile('src/foo.js')  // => 'src/foo.js'
+ * resolveRenamedFile(null)  // => null
+ */
+function resolveRenamedFile(fileName) {
+  if (!fileName) return fileName;
+  return fileName.replace(/\{[^}]*\s+=>\s+([^}]*)\}/, '$1');
+}
+
 module.exports = {
   normalizePath,
   pathsEqual,
   pathExistsInList,
   pathExistsInSet,
-  normalizeRepository
+  normalizeRepository,
+  resolveRenamedFile
 };

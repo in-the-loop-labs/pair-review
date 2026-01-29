@@ -151,6 +151,22 @@ class DiffRenderer {
   }
 
   /**
+   * Resolve git rename syntax to extract the new filename.
+   *
+   * Git represents renames with curly-brace syntax:
+   *   "tests/{old.js => new.js}"      → "tests/new.js"
+   *   "{old-dir => new-dir}/file.js"  → "new-dir/file.js"
+   *   "a/{b => c}/d.js"              → "a/c/d.js"
+   *
+   * @param {string} fileName - File name possibly containing rename syntax
+   * @returns {string} Resolved file name with the new path, or original if no rename syntax
+   */
+  static resolveRenamedFile(fileName) {
+    if (!fileName) return fileName;
+    return fileName.replace(/\{[^}]*\s+=>\s+([^}]*)\}/, '$1');
+  }
+
+  /**
    * Escape HTML characters
    * @param {string} text - Text to escape
    * @returns {string} Escaped text
@@ -567,6 +583,17 @@ class DiffRenderer {
       const fileName = wrapper.dataset.fileName;
       if (fileName && (fileName === filePath || fileName.endsWith('/' + filePath) || filePath.endsWith('/' + fileName))) {
         return wrapper;
+      }
+    }
+
+    // Try resolving git rename syntax in data-file-name attributes
+    for (const wrapper of allFileWrappers) {
+      const fileName = wrapper.dataset.fileName;
+      if (fileName && fileName.includes('{')) {
+        const resolvedName = DiffRenderer.resolveRenamedFile(fileName);
+        if (resolvedName === filePath || resolvedName.endsWith('/' + filePath) || filePath.endsWith('/' + resolvedName)) {
+          return wrapper;
+        }
       }
     }
 

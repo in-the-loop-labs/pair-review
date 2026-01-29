@@ -307,6 +307,143 @@ describe('DiffRenderer', () => {
     });
   });
 
+  describe('resolveRenamedFile', () => {
+    describe('no rename syntax', () => {
+      it('should return unchanged when no rename syntax present', () => {
+        expect(DiffRenderer.resolveRenamedFile('src/foo.js')).toBe('src/foo.js');
+      });
+
+      it('should return unchanged for plain filename', () => {
+        expect(DiffRenderer.resolveRenamedFile('file.txt')).toBe('file.txt');
+      });
+    });
+
+    describe('file rename in directory', () => {
+      it('should resolve simple file rename', () => {
+        expect(DiffRenderer.resolveRenamedFile('tests/{old.js => new.js}')).toBe('tests/new.js');
+      });
+
+      it('should resolve real-world long filename rename', () => {
+        expect(DiffRenderer.resolveRenamedFile(
+          'tests/unit/{suggestion-manager-getfileandlineinfo.test.js => suggestion-manager.test.js}'
+        )).toBe('tests/unit/suggestion-manager.test.js');
+      });
+    });
+
+    describe('directory rename', () => {
+      it('should resolve directory rename', () => {
+        expect(DiffRenderer.resolveRenamedFile('{old-dir => new-dir}/file.js')).toBe('new-dir/file.js');
+      });
+    });
+
+    describe('mid-path rename', () => {
+      it('should resolve rename in middle of path', () => {
+        expect(DiffRenderer.resolveRenamedFile('a/{b => c}/d.js')).toBe('a/c/d.js');
+      });
+    });
+
+    describe('edge cases', () => {
+      it('should return null for null input', () => {
+        expect(DiffRenderer.resolveRenamedFile(null)).toBe(null);
+      });
+
+      it('should return undefined for undefined input', () => {
+        expect(DiffRenderer.resolveRenamedFile(undefined)).toBe(undefined);
+      });
+
+      it('should return empty string for empty string input', () => {
+        expect(DiffRenderer.resolveRenamedFile('')).toBe('');
+      });
+    });
+  });
+
+  describe('findFileElement', () => {
+    describe('rename syntax matching', () => {
+      // Helper to mock document.querySelector and document.querySelectorAll
+      // since tests run in Node environment (no real DOM)
+      function setupDocumentMock(wrappers) {
+        global.document = {
+          querySelector: vi.fn().mockReturnValue(null),
+          querySelectorAll: vi.fn().mockReturnValue(wrappers)
+        };
+      }
+
+      function createMockWrapper(fileName) {
+        return {
+          dataset: { fileName }
+        };
+      }
+
+      afterEach(() => {
+        delete global.document;
+      });
+
+      it('should find file by resolving rename syntax in data-file-name', () => {
+        const wrapper = createMockWrapper('tests/unit/{old-name.test.js => new-name.test.js}');
+        setupDocumentMock([wrapper]);
+
+        const result = DiffRenderer.findFileElement('tests/unit/new-name.test.js');
+        expect(result).toBe(wrapper);
+      });
+
+      it('should find file with directory rename syntax', () => {
+        const wrapper = createMockWrapper('{old-dir => new-dir}/file.js');
+        setupDocumentMock([wrapper]);
+
+        const result = DiffRenderer.findFileElement('new-dir/file.js');
+        expect(result).toBe(wrapper);
+      });
+
+      it('should find file with mid-path rename syntax', () => {
+        const wrapper = createMockWrapper('a/{b => c}/d.js');
+        setupDocumentMock([wrapper]);
+
+        const result = DiffRenderer.findFileElement('a/c/d.js');
+        expect(result).toBe(wrapper);
+      });
+
+      it('should prefer exact match over rename resolution', () => {
+        const exactWrapper = createMockWrapper('tests/new-name.test.js');
+        const renameWrapper = createMockWrapper('tests/{old-name.test.js => new-name.test.js}');
+        // querySelector finds exact match via data-file-name attribute selector
+        global.document = {
+          querySelector: vi.fn().mockReturnValue(exactWrapper),
+          querySelectorAll: vi.fn().mockReturnValue([exactWrapper, renameWrapper])
+        };
+
+        const result = DiffRenderer.findFileElement('tests/new-name.test.js');
+        expect(result).toBe(exactWrapper);
+      });
+
+      it('should return null when no match found even after rename resolution', () => {
+        const wrapper = createMockWrapper('tests/{old.js => new.js}');
+        setupDocumentMock([wrapper]);
+
+        const result = DiffRenderer.findFileElement('tests/nonexistent.js');
+        expect(result).toBeNull();
+      });
+
+      it('should skip wrappers without curly brace in rename fallback', () => {
+        const wrapper = createMockWrapper('src/plain-file.js');
+        setupDocumentMock([wrapper]);
+
+        // Should return null since there's no rename syntax to resolve
+        // and exact/partial match won't match
+        const result = DiffRenderer.findFileElement('src/different-file.js');
+        expect(result).toBeNull();
+      });
+
+      it('should handle partial path matching with resolved rename', () => {
+        const wrapper = createMockWrapper('src/{old.js => new.js}');
+        setupDocumentMock([wrapper]);
+
+        // filePath.endsWith('/' + resolvedName) should match
+        const result = DiffRenderer.findFileElement('full/path/src/new.js');
+        expect(result).toBe(wrapper);
+      });
+    });
+  });
+
   describe('fixRubyHighlighting', () => {
     // Workaround for highlight.js Ruby grammar limitation:
     // Variables at end-of-line truncate at last underscore due to lookahead constraints
