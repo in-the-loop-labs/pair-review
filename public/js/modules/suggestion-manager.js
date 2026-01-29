@@ -614,8 +614,8 @@ class SuggestionManager {
             btnText.textContent = 'Show';
           }
         }
+        suggestionDiv.dataset.hiddenForAdoption = 'true';
       }
-      suggestionDiv.dataset.hiddenForAdoption = 'true';
     }
   }
 
