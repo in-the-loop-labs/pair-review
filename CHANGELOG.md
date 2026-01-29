@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.4
+
+### Patch Changes
+
+- 3aff8c4: Fix dismissing AI suggestions when multiple suggestions exist on the same line
+
+  - Fix `collapseAISuggestion` to target the correct suggestion div instead of always finding the first one via `querySelector('.ai-suggestion')`
+  - Move `hiddenForAdoption` tracking from the row element to individual suggestion divs so each suggestion is tracked independently
+  - Move `hiddenForAdoption` assignment inside the null guard to prevent errors when the suggestion div is not found
+  - Only set `hiddenForAdoption` when the suggestion status is `adopted`, not for other dismiss reasons
+
+- 3a81a20: Fix suggestion line text extraction to use correct side when inserting suggestions on modified lines
+
 ## 1.0.3
 
 ### Patch Changes
