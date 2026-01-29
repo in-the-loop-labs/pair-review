@@ -633,7 +633,7 @@ class GitHubClient {
    * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
    * @returns {Promise<Object>} Review submission result
    */
-  async createReviewGraphQL(prNodeId, event, body, comments = []) {
+  async createReviewGraphQL(prNodeId, event, body, comments = [], existingReviewId = null) {
     try {
       console.log(`Creating GraphQL review for PR ${prNodeId} with ${comments.length} comments`);
 
@@ -643,24 +643,31 @@ class GitHubClient {
         throw new Error(`Invalid review event: ${event}. Must be one of: ${validEvents.join(', ')}`);
       }
 
-      // Step 1: Create a pending review
-      console.log('Step 1: Creating pending review...');
-      const createReviewResult = await this.octokit.graphql(`
-        mutation AddPendingReview($prId: ID!) {
-          addPullRequestReview(input: {
-            pullRequestId: $prId
-          }) {
-            pullRequestReview {
-              id
+      // Step 1: Use existing pending review or create a new one
+      let reviewId;
+      const usedExistingReview = !!existingReviewId;
+      if (existingReviewId) {
+        console.log(`Step 1: Using existing pending review: ${existingReviewId}`);
+        reviewId = existingReviewId;
+      } else {
+        console.log('Step 1: Creating pending review...');
+        const createReviewResult = await this.octokit.graphql(`
+          mutation AddPendingReview($prId: ID!) {
+            addPullRequestReview(input: {
+              pullRequestId: $prId
+            }) {
+              pullRequestReview {
+                id
+              }
             }
           }
-        }
-      `, {
-        prId: prNodeId
-      });
+        `, {
+          prId: prNodeId
+        });
 
-      const reviewId = createReviewResult.addPullRequestReview.pullRequestReview.id;
-      console.log(`Created pending review: ${reviewId}`);
+        reviewId = createReviewResult.addPullRequestReview.pullRequestReview.id;
+        console.log(`Created pending review: ${reviewId}`);
+      }
 
       // Step 2: Add comments in batches
       let successfulComments = 0;
@@ -672,10 +679,14 @@ class GitHubClient {
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
-          // Clean up the pending review since it has incomplete comments
-          const cleaned = await this.deletePendingReview(reviewId);
-          if (!cleaned) {
-            console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+          // Only clean up the pending review if we created it (not if it was pre-existing)
+          if (!usedExistingReview) {
+            const cleaned = await this.deletePendingReview(reviewId);
+            if (!cleaned) {
+              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+            }
+          } else {
+            console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
           }
           throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub. Check server logs for details.`);
         }

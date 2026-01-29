@@ -1093,12 +1093,14 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
 
       let githubReview;
+
+      // Always check for existing pending draft first
+      // GitHub only allows one pending review per user per PR
+      const existingDraft = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
+
       if (event === 'DRAFT') {
-        // For drafts, check if user already has a pending draft on GitHub
-        const existingDraft = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
         if (existingDraft) {
           // Add comments to the existing pending draft instead of creating a new one
-          // (GitHub only allows one pending review per user per PR)
           console.log(`Found existing pending draft review ${existingDraft.id} with ${existingDraft.comments.totalCount} comments, adding new comments to it`);
           let successfulComments = 0;
           if (graphqlComments.length > 0) {
@@ -1121,8 +1123,8 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
           githubReview = await githubClient.createDraftReviewGraphQL(prNodeId, body || '', graphqlComments);
         }
       } else {
-        // For non-drafts, create, add comments, and submit
-        githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments);
+        // For non-drafts, create/use review, add comments, and submit
+        githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments, existingDraft?.id);
       }
 
       // Build review metadata for database storage

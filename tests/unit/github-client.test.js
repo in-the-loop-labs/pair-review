@@ -308,6 +308,150 @@ describe('GitHubClient', () => {
     });
   });
 
+  describe('createReviewGraphQL with existingReviewId', () => {
+    it('should skip creating a new pending review when existingReviewId is provided', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        // No first call to create a pending review - skipped!
+        .mockResolvedValueOnce({
+          comment0: { thread: { id: 'thread-0' } }
+        })
+        .mockResolvedValueOnce({
+          submitPullRequestReview: {
+            pullRequestReview: {
+              id: 'existing-review-123',
+              url: 'https://github.com/owner/repo/pull/1#pullrequestreview-123',
+              state: 'COMMENTED'
+            }
+          }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [{
+        path: 'src/file.js',
+        line: 42,
+        side: 'RIGHT',
+        body: 'Line-level comment',
+        isFileLevel: false
+      }];
+
+      await client.createReviewGraphQL('PR_node123', 'COMMENT', 'Review body', comments, 'existing-review-123');
+
+      // Should only have 2 calls (add comments + submit), NOT 3 (no create review)
+      expect(mockGraphql).toHaveBeenCalledTimes(2);
+
+      // First call should be add comments (not create review)
+      const firstCallMutation = mockGraphql.mock.calls[0][0];
+      expect(firstCallMutation).toContain('addPullRequestReviewThread');
+      // Should NOT contain the create-review mutation (AddPendingReview)
+      expect(firstCallMutation).not.toContain('AddPendingReview');
+
+      // Second call should be submit review
+      const secondCallMutation = mockGraphql.mock.calls[1][0];
+      expect(secondCallMutation).toContain('submitPullRequestReview');
+    });
+
+    it('should still create a new pending review when existingReviewId is null', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        .mockResolvedValueOnce({
+          addPullRequestReview: {
+            pullRequestReview: { id: 'new-review-123' }
+          }
+        })
+        .mockResolvedValueOnce({
+          comment0: { thread: { id: 'thread-0' } }
+        })
+        .mockResolvedValueOnce({
+          submitPullRequestReview: {
+            pullRequestReview: {
+              id: 'new-review-123',
+              url: 'https://github.com/owner/repo/pull/1#pullrequestreview-123',
+              state: 'APPROVED'
+            }
+          }
+        });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [{
+        path: 'src/file.js',
+        line: 10,
+        side: 'RIGHT',
+        body: 'Comment',
+        isFileLevel: false
+      }];
+
+      await client.createReviewGraphQL('PR_node123', 'APPROVE', 'LGTM', comments, null);
+
+      // Should have 3 calls (create review + add comments + submit)
+      expect(mockGraphql).toHaveBeenCalledTimes(3);
+
+      // First call should be create review
+      const firstCallMutation = mockGraphql.mock.calls[0][0];
+      expect(firstCallMutation).toContain('addPullRequestReview');
+    });
+
+    it('should NOT delete pre-existing review on batch failure', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        // Add comments batch fails completely
+        .mockRejectedValueOnce(new Error('Batch failed'))
+        .mockRejectedValueOnce(new Error('Batch failed retry'));
+      client.octokit.graphql = mockGraphql;
+
+      // Spy on deletePendingReview to ensure it's NOT called
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{
+        path: 'src/file.js',
+        line: 1,
+        side: 'RIGHT',
+        body: 'Comment',
+        isFileLevel: false
+      }];
+
+      await expect(
+        client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments, 'existing-review-id')
+      ).rejects.toThrow('Failed to add');
+
+      // deletePendingReview should NOT be called for pre-existing reviews
+      expect(deleteSpy).not.toHaveBeenCalled();
+    });
+
+    it('should delete newly-created review on batch failure', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn()
+        // Step 1: Create review succeeds
+        .mockResolvedValueOnce({
+          addPullRequestReview: {
+            pullRequestReview: { id: 'new-review-456' }
+          }
+        })
+        // Step 2: Add comments fails
+        .mockRejectedValueOnce(new Error('Batch failed'))
+        .mockRejectedValueOnce(new Error('Batch failed retry'));
+      client.octokit.graphql = mockGraphql;
+
+      // Spy on deletePendingReview
+      const deleteSpy = vi.spyOn(client, 'deletePendingReview').mockResolvedValue(true);
+
+      const comments = [{
+        path: 'src/file.js',
+        line: 1,
+        side: 'RIGHT',
+        body: 'Comment',
+        isFileLevel: false
+      }];
+
+      await expect(
+        client.createReviewGraphQL('PR_node123', 'COMMENT', 'Body', comments)
+      ).rejects.toThrow('Failed to add');
+
+      // deletePendingReview SHOULD be called for reviews we created
+      expect(deleteSpy).toHaveBeenCalledWith('new-review-456');
+    });
+  });
+
   describe('createDraftReviewGraphQL', () => {
     it('should format file-level comments with subjectType: FILE for drafts', async () => {
       const client = new GitHubClient('test-token');

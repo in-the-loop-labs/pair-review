@@ -2278,6 +2278,63 @@ describe('Review Submission Endpoint', () => {
       expect(response.body.github_url).toBe('https://github.com/owner/repo/pull/1#pullrequestreview-99999');
     });
 
+    it('should pass existing draft ID to createReviewGraphQL for non-DRAFT submissions', async () => {
+      // Simulate an existing pending draft on GitHub
+      const existingDraft = {
+        id: 'PRR_existing_for_submit',
+        databaseId: 88888,
+        body: 'Existing draft body',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-88888',
+        state: 'PENDING',
+        createdAt: new Date().toISOString(),
+        comments: { totalCount: 2 }
+      };
+      GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(existingDraft);
+
+      // Insert a comment to submit
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+        VALUES (?, 'user', 'file.js', 10, 5, 'RIGHT', 'Review comment', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Submitting review' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify createReviewGraphQL was called with the existing draft's ID as the 5th argument
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      expect(callArgs[0]).toBe('PR_node123'); // prNodeId
+      expect(callArgs[1]).toBe('COMMENT'); // event
+      expect(callArgs[4]).toBe('PRR_existing_for_submit'); // existingReviewId
+    });
+
+    it('should pass null existingReviewId to createReviewGraphQL when no draft exists', async () => {
+      // getPendingReviewForUser returns null (no existing draft) - default mock behavior
+      GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(null);
+
+      // Insert a comment to submit
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+        VALUES (?, 'user', 'file.js', 10, 5, 'RIGHT', 'Review comment', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'APPROVE', body: 'LGTM' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify createReviewGraphQL was called with undefined (no existing draft)
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      expect(callArgs[4]).toBeUndefined(); // existingReviewId should be undefined (existingDraft?.id when null)
+    });
+
     it('should handle expanded context comments as file-level with line reference', async () => {
       // Insert an expanded context comment (no diff_position, not explicitly file-level)
       // This represents a comment on a line outside the diff hunk
