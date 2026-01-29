@@ -729,6 +729,8 @@ describe('SuggestionManager.collapseAISuggestion()', () => {
     expect(mockSuggestionDiv.classList.add).toHaveBeenCalledWith('collapsed');
     expect(mockCollapsedText.textContent).toBe('Test collapse');
     expect(mockButton.title).toBe('Show suggestion');
+    // Dismissed suggestions should not be marked as hidden for adoption
+    expect(mockSuggestionDiv.dataset.hiddenForAdoption).toBeUndefined();
   });
 
   it('should throw error when API call fails', async () => {
