@@ -8,6 +8,7 @@
   "default_model": "sonnet",
   "worktree_retention_days": 7,
   "dev_mode": false,
+  "debug_stream": false,
 
   "providers": {
     "_comment": "Provider configurations override built-in defaults. Most providers have built-in models, but OpenCode requires manual configuration.",

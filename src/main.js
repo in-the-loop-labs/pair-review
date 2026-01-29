@@ -249,7 +249,8 @@ CONFIG FILE:
     {
       "github_token": "ghp_your_token_here",
       "port": 3000,
-      "theme": "light"
+      "theme": "light",
+      "debug_stream": true
     }
 
 GITHUB TOKEN:
@@ -306,6 +307,12 @@ AI PROVIDERS:
 
     // Parse command line arguments including flags
     const { prArgs, flags } = parseArgs(args);
+
+    // Apply debug_stream from config if not already enabled by CLI flag
+    if (!flags.debugStream && config.debug_stream) {
+      flags.debugStream = true;
+      logger.setStreamDebugEnabled(true);
+    }
 
     // Check for local mode (review uncommitted local changes)
     if (flags.local) {
