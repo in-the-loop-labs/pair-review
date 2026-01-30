@@ -9,7 +9,7 @@ export default defineConfig({
   reporter: process.env.CI ? 'github' : 'list',
 
   use: {
-    baseURL: 'http://localhost:3456',
+    baseURL: `http://localhost:${process.env.E2E_PORT || '3456'}`,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
