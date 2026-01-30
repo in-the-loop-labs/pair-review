@@ -303,13 +303,13 @@ class GitHubClient {
    * @param {string} reviewId - GraphQL node ID for the pending review
    * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
    * @param {number} batchSize - Number of comments per batch (default: 25)
-   * @returns {Promise<Object>} Result with successCount and failed flag
+   * @returns {Promise<Object>} Result with successCount, failed flag, and failedDetails array of error strings
    */
   // Batch size of 25 is empirically chosen to stay well under GitHub's GraphQL
   // mutation size limits while still being efficient for large reviews.
   async addCommentsInBatches(prNodeId, reviewId, comments, batchSize = 25) {
     if (comments.length === 0) {
-      return { successCount: 0, failed: false };
+      return { successCount: 0, failed: false, failedDetails: [] };
     }
 
     // Split comments into batches
@@ -321,6 +321,7 @@ class GitHubClient {
     console.log(`Adding ${comments.length} comments in ${batches.length} batch(es) of up to ${batchSize} comments each`);
 
     let totalSuccessful = 0;
+    const failedDetails = [];
 
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const batch = batches[batchIndex];
@@ -402,6 +403,19 @@ class GitHubClient {
 
       // Check if batch succeeded
       if (batchError) {
+        // Build a map of per-comment errors from the GraphQL errors array.
+        // Each GraphQL error has a `path` like ["comment0"] that maps to the
+        // mutation alias, letting us match errors to specific comments.
+        const perCommentErrors = {};
+        if (batchError.errors && Array.isArray(batchError.errors)) {
+          for (const err of batchError.errors) {
+            if (err.path && err.path.length > 0) {
+              const alias = err.path[0]; // e.g. "comment0"
+              perCommentErrors[alias] = err.message || 'Unknown error';
+            }
+          }
+        }
+
         // Check if it's a partial success (error.data contains some results)
         if (batchError.data) {
           console.warn('GraphQL returned partial results with errors:', batchError.errors || batchError.message);
@@ -411,21 +425,31 @@ class GitHubClient {
             if (commentResult && commentResult.thread && commentResult.thread.id) {
               batchSuccessful++;
             } else {
-              console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${batch[i].path}:${batch[i].line || 'file-level'}`);
+              const ghError = perCommentErrors[`comment${i}`] || 'No error details available';
+              const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
+              console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${location} - ${ghError}`);
+              failedDetails.push(`${location} - ${ghError}`);
             }
           }
           // If not all comments in batch succeeded, it's a failure
           if (batchSuccessful < batch.length) {
             console.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
-            return { successCount: totalSuccessful + batchSuccessful, failed: true };
+            return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails };
           }
           // All comments succeeded despite the error being thrown (recovered from partial error)
           console.log(`Batch ${batchNumber} complete (recovered from partial error): ${batchSuccessful} comments added`);
           totalSuccessful += batchSuccessful;
         } else {
           // Total failure of the batch
-          console.error(`CRITICAL: Batch ${batchNumber} failed completely`);
-          return { successCount: totalSuccessful, failed: true };
+          const totalError = batchError.message || 'Unknown error';
+          console.error(`CRITICAL: Batch ${batchNumber} failed completely: ${totalError}`);
+          // Add an entry for each comment in this batch so callers see what was lost
+          for (let i = 0; i < batch.length; i++) {
+            const ghError = perCommentErrors[`comment${i}`] || totalError;
+            const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
+            failedDetails.push(`${location} - ${ghError}`);
+          }
+          return { successCount: totalSuccessful, failed: true, failedDetails };
         }
       } else if (batchResult) {
         // Verify each comment was successfully added
@@ -435,13 +459,15 @@ class GitHubClient {
           if (commentResult && commentResult.thread && commentResult.thread.id) {
             batchSuccessful++;
           } else {
-            console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${batch[i].path}:${batch[i].line || 'file-level'}`);
+            const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
+            console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${location} - No error details available`);
+            failedDetails.push(`${location} - No error details available`);
           }
         }
 
         if (batchSuccessful < batch.length) {
           console.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
-          return { successCount: totalSuccessful + batchSuccessful, failed: true };
+          return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails };
         }
 
         totalSuccessful += batchSuccessful;
@@ -450,7 +476,154 @@ class GitHubClient {
     }
 
     console.log(`All ${batches.length} batches complete: ${totalSuccessful} total comments added`);
-    return { successCount: totalSuccessful, failed: false };
+    return { successCount: totalSuccessful, failed: false, failedDetails };
+  }
+
+  /**
+   * Get the pending (draft) review for the authenticated user on a PR
+   * GitHub allows only ONE pending review per user per PR, so this returns
+   * either the single pending review or null if none exists.
+   *
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} prNumber - Pull request number
+   * @returns {Promise<Object|null>} The pending review object or null if none exists
+   *   Returns: { id, databaseId, body, url, state, createdAt, comments: { totalCount } }
+   */
+  async getPendingReviewForUser(owner, repo, prNumber) {
+    try {
+      logger.debug(`Checking for pending review on PR #${prNumber} in ${owner}/${repo}`);
+
+      const result = await this.octokit.graphql(`
+        query($owner: String!, $repo: String!, $prNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $prNumber) {
+              reviews(states: PENDING, first: 1) {
+                nodes {
+                  id
+                  databaseId
+                  body
+                  url
+                  state
+                  createdAt
+                  viewerDidAuthor
+                  comments {
+                    totalCount
+                  }
+                }
+              }
+            }
+          }
+        }
+      `, {
+        owner,
+        repo,
+        prNumber
+      });
+
+      const reviews = result.repository?.pullRequest?.reviews?.nodes || [];
+
+      // Find the review authored by the authenticated user
+      const userPendingReview = reviews.find(review => review.viewerDidAuthor);
+
+      if (userPendingReview) {
+        logger.debug(`Found pending review for user: ${userPendingReview.id} with ${userPendingReview.comments.totalCount} comments`);
+        return {
+          id: userPendingReview.id,
+          databaseId: userPendingReview.databaseId,
+          body: userPendingReview.body,
+          url: userPendingReview.url,
+          state: userPendingReview.state,
+          createdAt: userPendingReview.createdAt,
+          comments: {
+            totalCount: userPendingReview.comments.totalCount
+          }
+        };
+      }
+
+      logger.debug('No pending review found for user');
+      return null;
+
+    } catch (error) {
+      logger.error(`Error checking for pending review: ${error.message}`);
+
+      // Handle authentication errors
+      if (error.status === 401) {
+        throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
+      }
+
+      // Handle not found errors
+      if (error.status === 404 || error.errors?.some(e => e.type === 'NOT_FOUND')) {
+        throw new Error(`Pull request #${prNumber} not found in repository ${owner}/${repo}`);
+      }
+
+      // Parse GraphQL errors
+      if (error.errors) {
+        const messages = error.errors.map(e => e.message).join(', ');
+        throw new Error(`GitHub GraphQL error: ${messages}`);
+      }
+
+      throw new Error(`Failed to check for pending review: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get a review by its GraphQL node ID
+   * Used to determine the actual state of a review that may have been
+   * submitted or dismissed outside of pair-review.
+   *
+   * @param {string} nodeId - GraphQL node ID for the review (e.g., "PRR_kwDOM...")
+   * @returns {Promise<Object|null>} Review data or null if not found
+   *   Returns: { id, state, submittedAt, url } where state is GitHub's review state
+   *   (PENDING, APPROVED, CHANGES_REQUESTED, COMMENTED, or DISMISSED).
+   *   Note: APPROVED, COMMENTED, CHANGES_REQUESTED all indicate a submitted review.
+   */
+  async getReviewById(nodeId) {
+    try {
+      logger.debug(`Fetching review by node ID: ${nodeId}`);
+
+      const result = await this.octokit.graphql(`
+        query($nodeId: ID!) {
+          node(id: $nodeId) {
+            ... on PullRequestReview {
+              id
+              state
+              submittedAt
+              url
+            }
+          }
+        }
+      `, {
+        nodeId
+      });
+
+      // Check if we got a valid result
+      if (!result.node || !result.node.id) {
+        logger.debug(`Review not found for node ID: ${nodeId}`);
+        return null;
+      }
+
+      const review = result.node;
+      logger.debug(`Found review ${nodeId}: state=${review.state}, submittedAt=${review.submittedAt}`);
+
+      return {
+        id: review.id,
+        state: review.state,
+        submittedAt: review.submittedAt,
+        url: review.url
+      };
+
+    } catch (error) {
+      // Handle not found errors gracefully
+      if (error.errors?.some(e => e.type === 'NOT_FOUND' || e.message?.includes('not found'))) {
+        logger.debug(`Review not found for node ID: ${nodeId}`);
+        return null;
+      }
+
+      logger.warn(`Error fetching review by node ID ${nodeId}: ${error.message}`);
+      // Don't throw - return null to treat as "not found" for sync purposes
+      return null;
+    }
   }
 
   /**
@@ -484,9 +657,10 @@ class GitHubClient {
    * @param {string} event - Review event (APPROVE, REQUEST_CHANGES, COMMENT)
    * @param {string} body - Overall review body/summary
    * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
+   * @param {string|null} [existingReviewId=null] - GraphQL node ID of an existing pending review to reuse instead of creating a new one. When provided, skips creating a new pending review and won't delete the review on comment batch failure.
    * @returns {Promise<Object>} Review submission result
    */
-  async createReviewGraphQL(prNodeId, event, body, comments = []) {
+  async createReviewGraphQL(prNodeId, event, body, comments = [], existingReviewId = null) {
     try {
       console.log(`Creating GraphQL review for PR ${prNodeId} with ${comments.length} comments`);
 
@@ -496,24 +670,31 @@ class GitHubClient {
         throw new Error(`Invalid review event: ${event}. Must be one of: ${validEvents.join(', ')}`);
       }
 
-      // Step 1: Create a pending review
-      console.log('Step 1: Creating pending review...');
-      const createReviewResult = await this.octokit.graphql(`
-        mutation AddPendingReview($prId: ID!) {
-          addPullRequestReview(input: {
-            pullRequestId: $prId
-          }) {
-            pullRequestReview {
-              id
+      // Step 1: Use existing pending review or create a new one
+      let reviewId;
+      const usedExistingReview = !!existingReviewId;
+      if (existingReviewId) {
+        console.log(`Step 1: Using existing pending review: ${existingReviewId}`);
+        reviewId = existingReviewId;
+      } else {
+        console.log('Step 1: Creating pending review...');
+        const createReviewResult = await this.octokit.graphql(`
+          mutation AddPendingReview($prId: ID!) {
+            addPullRequestReview(input: {
+              pullRequestId: $prId
+            }) {
+              pullRequestReview {
+                id
+              }
             }
           }
-        }
-      `, {
-        prId: prNodeId
-      });
+        `, {
+          prId: prNodeId
+        });
 
-      const reviewId = createReviewResult.addPullRequestReview.pullRequestReview.id;
-      console.log(`Created pending review: ${reviewId}`);
+        reviewId = createReviewResult.addPullRequestReview.pullRequestReview.id;
+        console.log(`Created pending review: ${reviewId}`);
+      }
 
       // Step 2: Add comments in batches
       let successfulComments = 0;
@@ -524,13 +705,19 @@ class GitHubClient {
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
+          const details = batchResult.failedDetails || [];
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
-          // Clean up the pending review since it has incomplete comments
-          const cleaned = await this.deletePendingReview(reviewId);
-          if (!cleaned) {
-            console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+          // Only clean up the pending review if we created it (not if it was pre-existing)
+          if (!usedExistingReview) {
+            const cleaned = await this.deletePendingReview(reviewId);
+            if (!cleaned) {
+              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+            }
+          } else {
+            console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
           }
-          throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub. Check server logs for details.`);
+          const detailSuffix = details.length > 0 ? ` Failures:\n${details.join('\n')}` : '';
+          throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub.${detailSuffix}`);
         }
       }
 
@@ -545,6 +732,7 @@ class GitHubClient {
           }) {
             pullRequestReview {
               id
+              databaseId
               url
               state
             }
@@ -561,6 +749,7 @@ class GitHubClient {
 
       return {
         id: result.id,
+        databaseId: result.databaseId,
         html_url: result.url,
         state: result.state,
         comments_count: successfulComments
@@ -587,34 +776,52 @@ class GitHubClient {
    * @param {string} prNodeId - GraphQL node ID for the PR (e.g., "PR_kwDOM...")
    * @param {string} body - Overall review body/summary
    * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
+   * @param {string|null} [existingReviewId=null] - GraphQL node ID of an existing pending review to add comments to instead of creating a new one. When provided, skips creating a new pending review and won't delete the review on comment batch failure.
    * @returns {Promise<Object>} Draft review result
    */
-  async createDraftReviewGraphQL(prNodeId, body, comments = []) {
+  async createDraftReviewGraphQL(prNodeId, body, comments = [], existingReviewId = null) {
     try {
       console.log(`Creating GraphQL draft review for PR ${prNodeId} with ${comments.length} comments`);
 
-      // Step 1: Create a pending review
-      console.log('Step 1: Creating pending review...');
-      const createReviewResult = await this.octokit.graphql(`
-        mutation AddPendingReview($prId: ID!, $body: String) {
-          addPullRequestReview(input: {
-            pullRequestId: $prId
-            body: $body
-          }) {
-            pullRequestReview {
-              id
-              url
+      // Step 1: Use existing pending review or create a new one
+      let reviewId;
+      let reviewDatabaseId = null;
+      let reviewUrl;
+      const usedExistingReview = !!existingReviewId;
+      // Note: the body parameter is not updated for existing pending reviews because
+      // GitHub only uses the body at submission time (via submitPullRequestReview),
+      // not during the pending/draft phase.
+      if (existingReviewId) {
+        console.log(`Step 1: Using existing pending review: ${existingReviewId}`);
+        reviewId = existingReviewId;
+        // URL and databaseId not available from existing review ID alone; callers use existingDraft fields as fallbacks
+        reviewUrl = null;
+      } else {
+        console.log('Step 1: Creating pending review...');
+        const createReviewResult = await this.octokit.graphql(`
+          mutation AddPendingReview($prId: ID!, $body: String) {
+            addPullRequestReview(input: {
+              pullRequestId: $prId
+              body: $body
+            }) {
+              pullRequestReview {
+                id
+                databaseId
+                url
+              }
             }
           }
-        }
-      `, {
-        prId: prNodeId,
-        body: body || null
-      });
+        `, {
+          prId: prNodeId,
+          body: body || null
+        });
 
-      const review = createReviewResult.addPullRequestReview.pullRequestReview;
-      const reviewId = review.id;
-      console.log(`Created pending review: ${reviewId}`);
+        const review = createReviewResult.addPullRequestReview.pullRequestReview;
+        reviewId = review.id;
+        reviewDatabaseId = review.databaseId;
+        reviewUrl = review.url;
+        console.log(`Created pending review: ${reviewId}`);
+      }
 
       // Step 2: Add comments in batches
       let successfulComments = 0;
@@ -625,22 +832,33 @@ class GitHubClient {
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
+          const details = batchResult.failedDetails || [];
+          const detailSuffix = details.length > 0 ? ` Failures:\n${details.join('\n')}` : '';
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
-          // Clean up the pending review since it has incomplete comments
-          const cleaned = await this.deletePendingReview(reviewId);
-          if (!cleaned) {
-            console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+          // Only clean up the pending review if we created it (not if it was pre-existing)
+          if (!usedExistingReview) {
+            const cleaned = await this.deletePendingReview(reviewId);
+            if (!cleaned) {
+              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+            }
+            throw new Error(
+              `Failed to add ${failedCount} of ${comments.length} comments to draft review. ` +
+              `The draft review has been deleted.${detailSuffix}`
+            );
+          } else {
+            console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
+            throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to existing draft review. ${successfulComments} comments were added to the GitHub draft.${detailSuffix}`);
           }
-          throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to draft review. Check server logs for details.`);
         }
       }
 
       // Note: We do NOT submit the review - it stays as PENDING (draft)
-      console.log(`Draft review created successfully (pending): ${review.url || reviewId}`);
+      console.log(`Draft review created successfully (pending): ${reviewUrl || reviewId}`);
 
       return {
         id: reviewId,
-        html_url: review.url,
+        databaseId: reviewDatabaseId,
+        html_url: reviewUrl,
         state: 'PENDING',
         comments_count: successfulComments
       };

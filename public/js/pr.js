@@ -595,6 +595,55 @@ class PRManager {
         });
       }
     }
+
+    // Update pending draft indicator in toolbar
+    this.updatePendingDraftIndicator(pr.pendingDraft);
+  }
+
+  /**
+   * Update the pending draft indicator in the toolbar
+   * @param {Object|null} pendingDraft - Pending draft data or null if no draft
+   */
+  updatePendingDraftIndicator(pendingDraft) {
+    // Find or create the draft indicator container
+    const toolbarMeta = document.getElementById('toolbar-meta');
+    if (!toolbarMeta) return;
+
+    // Remove existing indicator if present
+    const existing = document.getElementById('pending-draft-indicator');
+    if (existing) {
+      existing.remove();
+    }
+
+    // Don't show if no pending draft
+    if (!pendingDraft) return;
+
+    // Create the indicator
+    const indicator = document.createElement('a');
+    indicator.id = 'pending-draft-indicator';
+    indicator.className = 'pending-draft-indicator';
+    indicator.href = pendingDraft.github_url || '#';
+    indicator.target = '_blank';
+    indicator.rel = 'noopener noreferrer';
+    indicator.title = 'View your pending draft review on GitHub';
+
+    const commentCount = pendingDraft.comments_count || 0;
+    const commentText = commentCount === 1 ? '1 comment' : `${commentCount} comments`;
+
+    indicator.innerHTML = `
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v9.5A1.75 1.75 0 0 1 14.25 13H8.06l-2.573 2.573A1.458 1.458 0 0 1 3 14.543V13H1.75A1.75 1.75 0 0 1 0 11.25Zm1.75-.25a.25.25 0 0 0-.25.25v9.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h6.5a.25.25 0 0 0 .25-.25v-9.5a.25.25 0 0 0-.25-.25Zm5.03 2.22a.75.75 0 0 1 0 1.06L5.31 6.25l1.47 1.47a.751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018l-2-2a.75.75 0 0 1 0-1.06l2-2a.75.75 0 0 1 1.06 0Zm2.44 0a.75.75 0 0 1 1.06 0l2 2a.75.75 0 0 1 0 1.06l-2 2a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042l1.47-1.47-1.47-1.47a.75.75 0 0 1 0-1.06Z"/>
+      </svg>
+      <span class="pending-draft-text">Draft on GitHub (${commentText})</span>
+    `;
+
+    // Insert after the commit element (or at the end of toolbar-meta)
+    const commitElement = document.getElementById('pr-commit');
+    if (commitElement && commitElement.nextSibling) {
+      toolbarMeta.insertBefore(indicator, commitElement.nextSibling);
+    } else {
+      toolbarMeta.appendChild(indicator);
+    }
   }
 
   /**

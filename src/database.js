@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 12;
+const CURRENT_SCHEMA_VERSION = 13;
 
 /**
  * Database schema SQL statements
@@ -144,6 +144,21 @@ const SCHEMA_SQL = {
       completed_at TIMESTAMP,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
+  `,
+
+  github_reviews: `
+    CREATE TABLE IF NOT EXISTS github_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+      github_review_id TEXT,
+      github_node_id TEXT,
+      state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local', 'pending', 'submitted', 'dismissed')),
+      event TEXT CHECK(event IN ('APPROVE', 'COMMENT', 'REQUEST_CHANGES')),
+      body TEXT,
+      submitted_at DATETIME,
+      github_url TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -165,7 +180,10 @@ const INDEX_SQL = [
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = \'pr\'',
   // Analysis runs indexes
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)',
-  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)'
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)',
+  // GitHub reviews indexes
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)'
 ];
 
 /**
@@ -585,6 +603,47 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 12 complete');
+  },
+
+  // Migration to version 13: adds github_reviews table for tracking GitHub review submissions
+  13: (db) => {
+    console.log('Running migration to schema version 13...');
+
+    // Helper to check if table exists
+    const tableExists = (tableName) => {
+      const row = db.prepare(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name=?`
+      ).get(tableName);
+      return !!row;
+    };
+
+    // Create github_reviews table if it doesn't exist
+    if (!tableExists('github_reviews')) {
+      db.exec(`
+        CREATE TABLE github_reviews (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+          github_review_id TEXT,
+          github_node_id TEXT,
+          state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local', 'pending', 'submitted', 'dismissed')),
+          event TEXT CHECK(event IN ('APPROVE', 'COMMENT', 'REQUEST_CHANGES')),
+          body TEXT,
+          submitted_at DATETIME,
+          github_url TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      console.log('  Created github_reviews table');
+
+      // Create indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)');
+      console.log('  Created indexes for github_reviews table');
+    } else {
+      console.log('  Table github_reviews already exists');
+    }
+
+    console.log('Migration to schema version 13 complete');
   }
 };
 
@@ -1813,7 +1872,7 @@ class ReviewRepository {
    * Update a review record after submission to GitHub
    *
    * This method is used after submitting a review (draft or final) to GitHub.
-   * It updates the review record with the GitHub review ID, status, and metadata.
+   * It updates the review record with the submission status and metadata.
    *
    * IMPORTANT: This method uses UPDATE, not INSERT OR REPLACE. Using INSERT OR REPLACE
    * would trigger a DELETE+INSERT sequence, which cascade-deletes all associated
@@ -1821,30 +1880,30 @@ class ReviewRepository {
    *
    * @param {number} id - Review ID (from reviews table)
    * @param {Object} submissionData - Submission result data
-   * @param {number} submissionData.githubReviewId - GitHub's review ID
    * @param {string} submissionData.event - Review event type ('DRAFT', 'APPROVE', 'REQUEST_CHANGES', 'COMMENT')
-   * @param {Object} submissionData.reviewData - Additional review metadata (github_url, comments_count, etc.)
+   * @param {Object} submissionData.reviewData - Additional review metadata (github_node_id, github_url, comments_count, etc.)
    * @returns {Promise<boolean>} True if record was updated
    */
-  async updateAfterSubmission(id, { githubReviewId, event, reviewData }) {
+  async updateAfterSubmission(id, { event, reviewData }) {
     const now = new Date().toISOString();
     const status = event === 'DRAFT' ? 'draft' : 'submitted';
 
-    // For non-draft submissions, set submitted_at timestamp
+    // Note: reviews.review_id is legacy and no longer written.
+    // GitHub review IDs are now tracked in the github_reviews table.
     if (event === 'DRAFT') {
       const result = await run(this.db, `
         UPDATE reviews
-        SET status = ?, review_id = ?, updated_at = ?, review_data = ?
+        SET status = ?, updated_at = ?, review_data = ?
         WHERE id = ?
-      `, [status, githubReviewId, now, JSON.stringify(reviewData), id]);
+      `, [status, now, JSON.stringify(reviewData), id]);
 
       return result.changes > 0;
     } else {
       const result = await run(this.db, `
         UPDATE reviews
-        SET status = ?, review_id = ?, updated_at = ?, submitted_at = ?, review_data = ?
+        SET status = ?, updated_at = ?, submitted_at = ?, review_data = ?
         WHERE id = ?
-      `, [status, githubReviewId, now, now, JSON.stringify(reviewData), id]);
+      `, [status, now, now, JSON.stringify(reviewData), id]);
 
       return result.changes > 0;
     }
@@ -2259,6 +2318,184 @@ class AnalysisRunRepository {
   }
 }
 
+/**
+ * GitHubReviewRepository class for managing GitHub review submission records
+ */
+class GitHubReviewRepository {
+  /**
+   * Create a new GitHubReviewRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a new github_review record
+   * @param {number} reviewId - Review ID (from reviews table)
+   * @param {Object} data - GitHub review data
+   * @param {string} [data.github_review_id] - GitHub's review ID
+   * @param {string} [data.github_node_id] - GraphQL node ID
+   * @param {string} [data.state='local'] - State: 'local', 'pending', or 'submitted'
+   * @param {string} [data.event] - Event type: 'APPROVE', 'COMMENT', or 'REQUEST_CHANGES'
+   * @param {string} [data.body] - Review body/summary
+   * @param {Date|string} [data.submitted_at] - Submission timestamp
+   * @param {string} [data.github_url] - GitHub URL for the review
+   * @returns {Promise<Object>} Created github_review record
+   */
+  async create(reviewId, data = {}) {
+    const {
+      github_review_id = null,
+      github_node_id = null,
+      state = 'local',
+      event = null,
+      body = null,
+      submitted_at = null,
+      github_url = null
+    } = data;
+
+    const submittedAtStr = submitted_at instanceof Date
+      ? submitted_at.toISOString()
+      : submitted_at;
+
+    const result = await run(this.db, `
+      INSERT INTO github_reviews (review_id, github_review_id, github_node_id, state, event, body, submitted_at, github_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [reviewId, github_review_id, github_node_id, state, event, body, submittedAtStr, github_url]);
+
+    return this.getById(result.lastID);
+  }
+
+  /**
+   * Get a single github_review record by ID
+   * @param {number} id - GitHub review record ID
+   * @returns {Promise<Object|null>} GitHub review record or null if not found
+   */
+  async getById(id) {
+    const row = await queryOne(this.db, `
+      SELECT id, review_id, github_review_id, github_node_id, state, event, body, submitted_at, github_url, created_at
+      FROM github_reviews
+      WHERE id = ?
+    `, [id]);
+
+    return row || null;
+  }
+
+  /**
+   * Get all github_reviews for a local review
+   * @param {number} reviewId - Review ID (from reviews table)
+   * @returns {Promise<Array<Object>>} Array of github_review records
+   */
+  async findByReviewId(reviewId) {
+    return query(this.db, `
+      SELECT id, review_id, github_review_id, github_node_id, state, event, body, submitted_at, github_url, created_at
+      FROM github_reviews
+      WHERE review_id = ?
+      ORDER BY created_at DESC
+    `, [reviewId]);
+  }
+
+  /**
+   * Get pending drafts for a review
+   * @param {number} reviewId - Review ID (from reviews table)
+   * @returns {Promise<Array<Object>>} Array of pending github_review records
+   */
+  async findPendingByReviewId(reviewId) {
+    return query(this.db, `
+      SELECT id, review_id, github_review_id, github_node_id, state, event, body, submitted_at, github_url, created_at
+      FROM github_reviews
+      WHERE review_id = ? AND state = 'pending'
+      ORDER BY created_at DESC
+    `, [reviewId]);
+  }
+
+  /**
+   * Find a github_review record by GitHub's GraphQL node ID
+   * @param {number} reviewId - Review ID (from reviews table)
+   * @param {string} githubNodeId - GitHub's GraphQL node ID for the review
+   * @returns {Promise<Object|null>} GitHub review record or null if not found
+   */
+  async findByGitHubNodeId(reviewId, githubNodeId) {
+    const row = await queryOne(this.db, `
+      SELECT id, review_id, github_review_id, github_node_id, state, event, body, submitted_at, github_url, created_at
+      FROM github_reviews
+      WHERE review_id = ? AND github_node_id = ?
+    `, [reviewId, githubNodeId]);
+
+    return row || null;
+  }
+
+  /**
+   * Update a github_review record
+   * @param {number} id - GitHub review record ID
+   * @param {Object} data - Fields to update
+   * @param {string} [data.github_review_id] - GitHub's review ID
+   * @param {string} [data.github_node_id] - GraphQL node ID
+   * @param {string} [data.state] - State: 'local', 'pending', or 'submitted'
+   * @param {string} [data.event] - Event type: 'APPROVE', 'COMMENT', or 'REQUEST_CHANGES'
+   * @param {string} [data.body] - Review body/summary
+   * @param {Date|string} [data.submitted_at] - Submission timestamp
+   * @param {string} [data.github_url] - GitHub URL for the review
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async update(id, data) {
+    const setClauses = [];
+    const params = [];
+
+    if (data.github_review_id !== undefined) {
+      setClauses.push('github_review_id = ?');
+      params.push(data.github_review_id);
+    }
+
+    if (data.github_node_id !== undefined) {
+      setClauses.push('github_node_id = ?');
+      params.push(data.github_node_id);
+    }
+
+    if (data.state !== undefined) {
+      setClauses.push('state = ?');
+      params.push(data.state);
+    }
+
+    if (data.event !== undefined) {
+      setClauses.push('event = ?');
+      params.push(data.event);
+    }
+
+    if (data.body !== undefined) {
+      setClauses.push('body = ?');
+      params.push(data.body);
+    }
+
+    if (data.submitted_at !== undefined) {
+      setClauses.push('submitted_at = ?');
+      const submittedAtStr = data.submitted_at instanceof Date
+        ? data.submitted_at.toISOString()
+        : data.submitted_at;
+      params.push(submittedAtStr);
+    }
+
+    if (data.github_url !== undefined) {
+      setClauses.push('github_url = ?');
+      params.push(data.github_url);
+    }
+
+    if (setClauses.length === 0) {
+      return false;
+    }
+
+    params.push(id);
+
+    const result = await run(this.db, `
+      UPDATE github_reviews
+      SET ${setClauses.join(', ')}
+      WHERE id = ?
+    `, params);
+
+    return result.changes > 0;
+  }
+}
+
 module.exports = {
   initializeDatabase,
   closeDatabase,
@@ -2279,6 +2516,7 @@ module.exports = {
   CommentRepository,
   PRMetadataRepository,
   AnalysisRunRepository,
+  GitHubReviewRepository,
   generateWorktreeId,
   migrateExistingWorktrees
 };

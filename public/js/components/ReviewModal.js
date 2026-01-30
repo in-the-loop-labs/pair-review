@@ -42,6 +42,22 @@ class ReviewModal {
         
         <div class="modal-body review-modal-body">
           <div class="review-form">
+            <!-- Pending draft notice -->
+            <div class="pending-draft-notice" id="pending-draft-notice" style="display: none;">
+              <div class="pending-draft-notice-icon">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v9.5A1.75 1.75 0 0 1 14.25 13H8.06l-2.573 2.573A1.458 1.458 0 0 1 3 14.543V13H1.75A1.75 1.75 0 0 1 0 11.25Zm1.75-.25a.25.25 0 0 0-.25.25v9.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h6.5a.25.25 0 0 0 .25-.25v-9.5a.25.25 0 0 0-.25-.25Z"/>
+                </svg>
+              </div>
+              <div class="pending-draft-notice-content">
+                <span class="pending-draft-notice-text">
+                  You have a pending draft review on GitHub with <strong id="pending-draft-count">0</strong> comments.
+                  Submitting here will add to or complete this review.
+                  <a href="#" id="pending-draft-link" target="_blank" rel="noopener noreferrer">Manage on GitHub</a>.
+                </span>
+              </div>
+            </div>
+
             <div class="review-summary-section">
               <div class="review-label-row">
                 <label for="review-body-modal" class="review-label">Review Summary</label>
@@ -231,6 +247,59 @@ class ReviewModal {
 
     // Update AI summary link visibility
     this.updateAISummaryLink();
+
+    // Update pending draft notice
+    this.updatePendingDraftNotice();
+  }
+
+  /**
+   * Update pending draft notice visibility and content
+   * Shows a notice if there's a pending draft review on GitHub
+   */
+  updatePendingDraftNotice() {
+    const notice = this.modal?.querySelector('#pending-draft-notice');
+    if (!notice) return;
+
+    // Get pending draft from the current PR data
+    const pendingDraft = window.prManager?.currentPR?.pendingDraft;
+
+    // Update the DRAFT radio option label based on pending draft existence
+    const draftRadioLabel = this.modal?.querySelector('input[name="review-event"][value="DRAFT"]')
+      ?.closest('.review-type-option')
+      ?.querySelector('.review-type-label');
+
+    if (pendingDraft) {
+      // Update the comment count
+      const countElement = notice.querySelector('#pending-draft-count');
+      if (countElement) {
+        countElement.textContent = String(pendingDraft.comments_count || 0);
+      }
+
+      // Update the link - hide if no github_url
+      const linkElement = notice.querySelector('#pending-draft-link');
+      if (linkElement) {
+        if (pendingDraft.github_url) {
+          linkElement.href = pendingDraft.github_url;
+          linkElement.style.display = 'inline';
+        } else {
+          linkElement.style.display = 'none';
+        }
+      }
+
+      notice.style.display = 'flex';
+
+      // Change draft label to indicate adding to existing draft
+      if (draftRadioLabel) {
+        draftRadioLabel.textContent = 'Add to Draft';
+      }
+    } else {
+      notice.style.display = 'none';
+
+      // Restore original draft label
+      if (draftRadioLabel) {
+        draftRadioLabel.textContent = 'Save as Draft';
+      }
+    }
   }
 
   /**
@@ -457,7 +526,26 @@ class ReviewModal {
       // Remove beforeunload handler if it was added
       if (isDraft && handleBeforeUnload) {
         window.removeEventListener('beforeunload', handleBeforeUnload);
-        
+      }
+
+      // Update the pending draft indicator and modal state
+      if (window.prManager?.currentPR) {
+        if (isDraft) {
+          // Draft submission: update pending draft with new info from server
+          const pendingDraft = {
+            github_url: result.github_url,
+            comments_count: result.comments_submitted ?? commentCount
+          };
+          window.prManager.currentPR.pendingDraft = pendingDraft;
+          window.prManager.updatePendingDraftIndicator(pendingDraft);
+        } else {
+          // Non-draft submission (COMMENT/APPROVE/REQUEST_CHANGES): draft was consumed
+          window.prManager.currentPR.pendingDraft = null;
+          window.prManager.updatePendingDraftIndicator(null);
+        }
+      }
+
+      if (isDraft) {
         // After 2 seconds, open GitHub PR page for drafts
         setTimeout(() => {
           const githubUrl = result.github_url || `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;
@@ -531,4 +619,9 @@ if (typeof window !== 'undefined' && !window.reviewModal) {
   } else {
     window.reviewModal = new ReviewModal();
   }
+}
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { ReviewModal };
 }

@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, WorktreeRepository, ReviewRepository } = require('../database');
+const { query, queryOne, run, WorktreeRepository, ReviewRepository, GitHubReviewRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
@@ -25,6 +25,100 @@ const logger = require('../utils/logger');
 const simpleGit = require('simple-git');
 
 const router = express.Router();
+
+/**
+ * Sync pending draft review from GitHub with local database
+ *
+ * Handles three scenarios:
+ * 1. Same draft updated - The draft we know about has been updated on GitHub. Update our record.
+ * 2. NEW draft created outside pair-review - A new draft was created on GitHub (e.g., user
+ *    started a review directly on GitHub). Create a new record and query GitHub for the actual
+ *    state of old pending records (submitted or dismissed).
+ * 3. No GitHub draft but we have pending records - Those drafts were dismissed/submitted
+ *    outside pair-review (handled by caller, not this function).
+ *
+ * @param {GitHubReviewRepository} githubReviewRepo - The GitHub review repository
+ * @param {number} reviewId - The local review ID
+ * @param {Object} githubPendingReview - The pending review data from GitHub GraphQL API
+ * @param {GitHubClient} [githubClient] - Optional GitHub client for querying old review states
+ * @returns {Promise<Object>} The synced pending draft record with comments_count
+ */
+async function syncPendingDraftFromGitHub(githubReviewRepo, reviewId, githubPendingReview, githubClient = null) {
+  // Find all our pending records for this review
+  const existingPendingRecords = await githubReviewRepo.findPendingByReviewId(reviewId);
+
+  // Check if this GitHub draft matches any of our records by node_id
+  const matchingRecord = existingPendingRecords.find(
+    r => r.github_node_id === githubPendingReview.id
+  );
+
+  let pendingDraft;
+  if (matchingRecord) {
+    // Same draft - update it with latest data from GitHub
+    await githubReviewRepo.update(matchingRecord.id, {
+      github_review_id: String(githubPendingReview.databaseId),
+      github_url: githubPendingReview.url,
+      body: githubPendingReview.body,
+      state: 'pending'
+    });
+    pendingDraft = await githubReviewRepo.getById(matchingRecord.id);
+  } else {
+    // New draft from GitHub - create new record
+    // Query GitHub for the actual state of old pending records
+    for (const oldRecord of existingPendingRecords) {
+      let actualState = 'dismissed'; // Default if we can't determine
+      let githubReviewData = null;
+
+      if (githubClient && oldRecord.github_node_id) {
+        try {
+          githubReviewData = await githubClient.getReviewById(oldRecord.github_node_id);
+
+          if (githubReviewData) {
+            // Map GitHub state to our local state
+            // GitHub states: PENDING, APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
+            // Our states: local, pending, submitted, dismissed
+            if (githubReviewData.state === 'PENDING') {
+              // This shouldn't happen (we have a different pending review now), but handle it
+              actualState = 'pending';
+            } else if (githubReviewData.state === 'DISMISSED') {
+              actualState = 'dismissed';
+            } else {
+              // APPROVED, CHANGES_REQUESTED, COMMENTED all mean it was submitted
+              actualState = 'submitted';
+            }
+            logger.debug(`Old review ${oldRecord.github_node_id} actual state from GitHub: ${githubReviewData.state} -> ${actualState}`);
+          } else {
+            // Review not found on GitHub - treat as dismissed
+            logger.debug(`Old review ${oldRecord.github_node_id} not found on GitHub, marking as dismissed`);
+            actualState = 'dismissed';
+          }
+        } catch (error) {
+          // On error, default to dismissed (most likely scenario)
+          logger.warn(`Error querying GitHub for old review ${oldRecord.github_node_id}: ${error.message}, marking as dismissed`);
+          actualState = 'dismissed';
+        }
+      }
+
+      // Update the old record with the actual state and submitted_at if available
+      const updateData = { state: actualState };
+      if (actualState === 'submitted' && githubReviewData?.submittedAt) {
+        updateData.submitted_at = githubReviewData.submittedAt;
+      }
+      await githubReviewRepo.update(oldRecord.id, updateData);
+    }
+
+    pendingDraft = await githubReviewRepo.create(reviewId, {
+      github_review_id: String(githubPendingReview.databaseId),
+      github_node_id: githubPendingReview.id,
+      github_url: githubPendingReview.url,
+      body: githubPendingReview.body,
+      state: 'pending'
+    });
+  }
+
+  pendingDraft.comments_count = githubPendingReview.comments?.totalCount || 0;
+  return pendingDraft;
+}
 
 /**
  * Get pull request data by owner, repo, and number
@@ -68,7 +162,8 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
 
     // Get review record if it exists (don't create on GET - REST compliance)
     // The review.id is used for comments to avoid ID collision with local mode
-    const reviewRepo = new ReviewRepository(req.app.get('db'));
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
     const review = await reviewRepo.getReviewByPR(prNumber, repository);
 
     // Parse extended PR data
@@ -81,6 +176,30 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
 
     // Parse owner and repo from repository field
     const [repoOwner, repoName] = repository.split('/');
+
+    // Check for pending GitHub draft if we have a review record
+    // This avoids unnecessary GitHub API calls for PRs the user hasn't started reviewing
+    let pendingDraft = null;
+    if (review) {
+      const config = req.app.get('config');
+      const githubToken = config?.github_token || req.app.get('githubToken');
+
+      if (githubToken) {
+        try {
+          const githubClient = new GitHubClient(githubToken);
+          const githubReviewRepo = new GitHubReviewRepository(db);
+
+          const githubPendingReview = await githubClient.getPendingReviewForUser(repoOwner, repoName, prNumber);
+
+          if (githubPendingReview) {
+            pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview, githubClient);
+          }
+        } catch (githubError) {
+          // Log the error but don't fail the request - draft info is supplementary
+          logger.warn('Failed to fetch pending review from GitHub:', githubError.message);
+        }
+      }
+    }
 
     // Prepare response
     // Use review.id instead of prMetadata.id to avoid ID collision with local mode
@@ -107,7 +226,15 @@ router.get('/api/pr/:owner/:repo/:number', async (req, res) => {
         additions: extendedData.additions || 0,
         deletions: extendedData.deletions || 0,
         diff_content: extendedData.diff || '',
-        html_url: extendedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`
+        html_url: extendedData.html_url || `https://github.com/${repoOwner}/${repoName}/pull/${prMetadata.pr_number}`,
+        pendingDraft: pendingDraft ? {
+          id: pendingDraft.id,
+          github_review_id: pendingDraft.github_review_id,
+          github_node_id: pendingDraft.github_node_id,
+          github_url: pendingDraft.github_url,
+          comments_count: pendingDraft.comments_count || 0,
+          created_at: pendingDraft.created_at
+        } : null
       }
     };
 
@@ -352,6 +479,79 @@ router.get('/api/pr/:owner/:repo/:number/check-stale', async (req, res) => {
     res.json({
       isStale: null,
       error: errorMessage
+    });
+  }
+});
+
+/**
+ * Get pending GitHub draft review status for a PR
+ * Fetches from GitHub and syncs with local database
+ */
+router.get('/api/pr/:owner/:repo/:number/github-drafts', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+    const config = req.app.get('config');
+
+    // Get the local review record if it exists (don't create on GET - REST compliance)
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getReviewByPR(prNumber, repository);
+    if (!review) {
+      return res.json({ pendingDraft: null, allGithubReviews: [] });
+    }
+
+    // Initialize GitHub client and check for pending drafts on GitHub
+    const githubToken = config.github_token || req.app.get('githubToken');
+    if (!githubToken) {
+      return res.status(500).json({
+        error: 'GitHub token not configured. Please check your ~/.pair-review/config.json'
+      });
+    }
+
+    const githubClient = new GitHubClient(githubToken);
+    const githubReviewRepo = new GitHubReviewRepository(db);
+
+    // Fetch pending review from GitHub
+    let pendingDraft = null;
+    try {
+      const githubPendingReview = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
+
+      if (githubPendingReview) {
+        pendingDraft = await syncPendingDraftFromGitHub(githubReviewRepo, review.id, githubPendingReview, githubClient);
+      }
+    } catch (githubError) {
+      // Log the error but don't fail the request - return local data only
+      logger.warn('Failed to fetch pending review from GitHub:', githubError.message);
+    }
+
+    // Get all github_reviews records for this review
+    const allGithubReviews = await githubReviewRepo.findByReviewId(review.id);
+
+    res.json({
+      pendingDraft: pendingDraft ? {
+        id: pendingDraft.id,
+        github_review_id: pendingDraft.github_review_id,
+        github_node_id: pendingDraft.github_node_id,
+        github_url: pendingDraft.github_url,
+        comments_count: pendingDraft.comments_count || 0,
+        created_at: pendingDraft.created_at
+      } : null,
+      allGithubReviews
+    });
+
+  } catch (error) {
+    logger.error('Error fetching GitHub draft status:', error);
+    res.status(500).json({
+      error: 'Internal server error while fetching GitHub draft status'
     });
   }
 });
@@ -885,51 +1085,87 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       return commentObj;
     });
 
+    // Submit review using GraphQL API (supports file-level comments)
+    console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
+
+    let githubReview;
+
+    // Always check for existing pending draft first
+    // GitHub only allows one pending review per user per PR
+    const existingDraft = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
+
+    if (event === 'DRAFT') {
+      // Delegate to createDraftReviewGraphQL (handles both new and existing drafts)
+      githubReview = await githubClient.createDraftReviewGraphQL(
+        prNodeId, body || '', graphqlComments, existingDraft?.id
+      );
+      // When adding to an existing draft, use the existing URL and include prior comments in total count
+      if (existingDraft) {
+        githubReview.html_url = githubReview.html_url || existingDraft.url;
+        githubReview.comments_count = existingDraft.comments.totalCount + githubReview.comments_count;
+      }
+    } else {
+      // For non-drafts, create/use review, add comments, and submit
+      githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments, existingDraft?.id);
+    }
+
+    // ID storage strategy:
+    // - github_reviews.github_review_id -> numeric database ID (consistent with syncPendingDraftFromGitHub)
+    // - github_reviews.github_node_id -> GraphQL node ID (e.g., "PRR_kwDOM..."), always present
+    // - reviewData JSON -> uses 'github_node_id' key for the GraphQL node ID
+    // - reviews.review_id -> legacy column, no longer written (github_reviews table has taken over)
+    const githubNodeId = String(githubReview.id); // GraphQL methods return node IDs
+    // Use databaseId from the mutation response, or fall back to existingDraft's databaseId
+    const githubDatabaseId = githubReview.databaseId
+      ? String(githubReview.databaseId)
+      : existingDraft ? String(existingDraft.databaseId) : null;
+
+    // Build review metadata for database storage
+    const reviewData = {
+      github_node_id: githubNodeId,
+      github_url: githubReview.html_url,
+      event: event,
+      body: body || '',
+      comments_count: githubReview.comments_count
+    };
+
+    // Add timestamps based on review type
+    if (event === 'DRAFT') {
+      reviewData.created_at = new Date().toISOString();
+    } else {
+      reviewData.submitted_at = new Date().toISOString();
+    }
+
     // Begin database transaction for submission tracking
+    // Moved after GitHub API calls to avoid holding SQLite write lock during network requests.
+    // Accepted risk: if the GitHub review succeeds but the DB transaction fails, the review
+    // exists on GitHub with no local record. For drafts, syncPendingDraftFromGitHub can recover
+    // on next page load. For submitted reviews, there is currently no reconciliation path.
     await run(db, 'BEGIN TRANSACTION');
 
     try {
-      // Submit review using GraphQL API (supports file-level comments)
-      console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
-
-      let githubReview;
-      if (event === 'DRAFT') {
-        // For drafts, create pending review and add comments but don't submit
-        githubReview = await githubClient.createDraftReviewGraphQL(prNodeId, body || '', graphqlComments);
-      } else {
-        // For non-drafts, create, add comments, and submit
-        githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments);
-      }
-
-      // Build review metadata for database storage
-      const reviewData = {
-        github_review_id: githubReview.id,
-        github_url: githubReview.html_url,
-        event: event,
-        body: body || '',
-        comments_count: githubReview.comments_count
-      };
-
-      // Add timestamps based on review type
-      if (event === 'DRAFT') {
-        reviewData.created_at = new Date().toISOString();
-      } else {
-        reviewData.submitted_at = githubReview.submitted_at;
-      }
-
-      // Update review record via repository method
-      // Uses UPDATE (not INSERT OR REPLACE) to avoid cascade deletion of comments/analysis_runs
+      // Update review record (status, timestamps, review_data JSON)
+      // Note: reviews.review_id is legacy and no longer written; github_reviews table tracks GitHub IDs
       await reviewRepo.updateAfterSubmission(review.id, {
-        githubReviewId: githubReview.id,
         event: event,
         reviewData: reviewData
+      });
+
+      // Create a github_reviews record to track this submission
+      const githubReviewRepo = new GitHubReviewRepository(db);
+      await githubReviewRepo.create(review.id, {
+        github_review_id: githubDatabaseId,
+        github_node_id: githubNodeId,
+        state: event === 'DRAFT' ? 'pending' : 'submitted',
+        event: event === 'DRAFT' ? null : event,
+        body: body || '',
+        submitted_at: event === 'DRAFT' ? null : new Date().toISOString(),
+        github_url: githubReview.html_url
       });
 
       console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
 
       // Update comments table to mark submitted comments
-      // Note: Since comments table doesn't have github-specific columns in current schema,
-      // we'll update the status to indicate submission
       const commentStatus = event === 'DRAFT' ? 'draft' : 'submitted';
       const commentUpdateTime = new Date().toISOString();
       for (const comment of comments) {
@@ -948,7 +1184,6 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         success: true,
         message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} GitHub`,
         github_url: githubReview.html_url,
-        github_review_id: githubReview.id,
         comments_submitted: githubReview.comments_count,
         event: event,
         status: event === 'DRAFT' ? githubReview.state : undefined // Include status for drafts

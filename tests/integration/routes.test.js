@@ -38,14 +38,16 @@ const mockGitHubResponses = {
     deletions: 5
   },
   createReviewGraphQL: {
-    id: 12345,
+    id: 'PRR_review12345',
+    databaseId: 12345,
     html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
     comments_count: 2,
     submitted_at: new Date().toISOString(),
     state: 'APPROVED'
   },
   createDraftReviewGraphQL: {
-    id: 12346,
+    id: 'PRR_draft12346',
+    databaseId: 12346,
     html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
     comments_count: 2,
     state: 'PENDING'
@@ -64,6 +66,8 @@ vi.spyOn(GitHubClient.prototype, 'validateToken').mockResolvedValue(true);
 vi.spyOn(GitHubClient.prototype, 'repositoryExists').mockResolvedValue(true);
 vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue(mockGitHubResponses.createReviewGraphQL);
 vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue(mockGitHubResponses.createDraftReviewGraphQL);
+vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
+vi.spyOn(GitHubClient.prototype, 'addCommentsInBatches').mockResolvedValue({ successCount: 1, failed: false });
 
 // Spy on GitWorktreeManager prototype methods
 vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue(mockWorktreeResponses.getWorktreePath);
@@ -214,14 +218,16 @@ describe('PR Management Endpoints', () => {
     vi.clearAllMocks();
     // Restore default mock responses for GitHub client
     vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue({
-      id: 12345,
+      id: 'PRR_review12345',
+      databaseId: 12345,
       html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
       comments_count: 2,
       submitted_at: new Date().toISOString(),
       state: 'APPROVED'
     });
     vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue({
-      id: 12346,
+      id: 'PRR_draft12346',
+      databaseId: 12346,
       html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
       comments_count: 2,
       state: 'PENDING'
@@ -480,6 +486,320 @@ describe('PR Management Endpoints', () => {
       `, [1, 'owner/repo']);
       const prData = JSON.parse(prMetadata.pr_data);
       expect(prData.viewedFiles).toEqual(['new-file1.js', 'new-file2.js']);
+    });
+  });
+
+  describe('GET /api/pr/:owner/:repo/:number/github-drafts', () => {
+    it('should return 400 for invalid PR number', async () => {
+      const response = await request(app)
+        .get('/api/pr/owner/repo/invalid/github-drafts');
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid pull request number');
+    });
+
+    it('should return pendingDraft null when no review exists', async () => {
+      // Insert PR metadata only (no review record)
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title)
+        VALUES (?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR']);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      expect(response.status).toBe(200);
+      expect(response.body.pendingDraft).toBeNull();
+      expect(response.body.allGithubReviews).toEqual([]);
+    });
+
+    it('should NOT create review record on GET (REST compliance)', async () => {
+      // Insert PR metadata only (no review record)
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title)
+        VALUES (?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR']);
+
+      // Make the GET request
+      await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      // Verify no review record was created
+      const review = await queryOne(db, `
+        SELECT * FROM reviews WHERE pr_number = ? AND repository = ?
+      `, [1, 'owner/repo']);
+
+      expect(review).toBeUndefined();
+    });
+
+    it('should return pending draft info when review exists and GitHub has pending draft', async () => {
+      // Insert PR with review record
+      await insertTestPR(db, 1, 'owner/repo');
+
+      // Mock GitHub to return a pending draft
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
+        id: 'PRR_mock123',
+        databaseId: 12345,
+        body: 'Draft review body',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
+        state: 'PENDING',
+        createdAt: '2024-01-01T00:00:00Z',
+        comments: { totalCount: 3 }
+      });
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      expect(response.status).toBe(200);
+      expect(response.body.pendingDraft).not.toBeNull();
+      expect(response.body.pendingDraft.github_node_id).toBe('PRR_mock123');
+      expect(response.body.pendingDraft.github_review_id).toBe('12345');
+      expect(response.body.pendingDraft.github_url).toBe('https://github.com/owner/repo/pull/1#pullrequestreview-12345');
+      expect(response.body.pendingDraft.comments_count).toBe(3);
+    });
+
+    it('should return allGithubReviews when review exists', async () => {
+      // Insert PR with review record
+      const reviewId = await insertTestPR(db, 1, 'owner/repo');
+
+      // Insert a github_reviews record
+      await run(db, `
+        INSERT INTO github_reviews (review_id, github_review_id, github_node_id, state, body, github_url)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [reviewId, '12345', 'PRR_node123', 'submitted', 'Previous review', 'https://github.com/owner/repo/pull/1#pullrequestreview-12345']);
+
+      // Mock GitHub to return no pending draft
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      expect(response.status).toBe(200);
+      expect(response.body.pendingDraft).toBeNull();
+      expect(response.body.allGithubReviews.length).toBe(1);
+      expect(response.body.allGithubReviews[0].github_review_id).toBe('12345');
+      expect(response.body.allGithubReviews[0].state).toBe('submitted');
+    });
+
+    it('should update existing pending record when GitHub draft matches node_id', async () => {
+      // Insert PR with review record
+      const reviewId = await insertTestPR(db, 1, 'owner/repo');
+
+      // Insert an existing pending github_reviews record with same node_id
+      await run(db, `
+        INSERT INTO github_reviews (review_id, github_review_id, github_node_id, state, body, github_url)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [reviewId, '12345', 'PRR_existing', 'pending', 'Old body', 'https://github.com/owner/repo/pull/1#old']);
+
+      // Mock GitHub to return an updated draft with same node_id
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
+        id: 'PRR_existing',  // Same node_id as existing record
+        databaseId: 99999,   // Updated database ID
+        body: 'Updated body',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-99999',
+        state: 'PENDING',
+        createdAt: '2024-01-20T00:00:00Z',
+        comments: { totalCount: 7 }
+      });
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      expect(response.status).toBe(200);
+      expect(response.body.pendingDraft).not.toBeNull();
+      expect(response.body.pendingDraft.github_node_id).toBe('PRR_existing');
+      expect(response.body.pendingDraft.github_review_id).toBe('99999');  // Updated
+      expect(response.body.pendingDraft.github_url).toContain('99999');  // Updated
+      expect(response.body.pendingDraft.comments_count).toBe(7);
+
+      // Should still only have 1 github_reviews record (updated, not duplicated)
+      expect(response.body.allGithubReviews.length).toBe(1);
+      expect(response.body.allGithubReviews[0].state).toBe('pending');
+    });
+
+    it('should create new record and mark old pending as dismissed when GitHub has new draft', async () => {
+      // Insert PR with review record
+      const reviewId = await insertTestPR(db, 1, 'owner/repo');
+
+      // Insert an existing pending github_reviews record with OLD node_id
+      await run(db, `
+        INSERT INTO github_reviews (review_id, github_review_id, github_node_id, state, body, github_url)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [reviewId, '11111', 'PRR_old_draft', 'pending', 'Old draft body', 'https://github.com/owner/repo/pull/1#old']);
+
+      // Mock GitHub to return a NEW draft with DIFFERENT node_id
+      // This simulates user dismissing old draft on GitHub and starting a new one
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
+        id: 'PRR_new_draft',  // Different node_id!
+        databaseId: 22222,
+        body: 'New draft from GitHub',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-22222',
+        state: 'PENDING',
+        createdAt: '2024-01-25T00:00:00Z',
+        comments: { totalCount: 2 }
+      });
+
+      // Mock getReviewById to return DISMISSED state for the old draft
+      vi.spyOn(GitHubClient.prototype, 'getReviewById').mockResolvedValue({
+        id: 'PRR_old_draft',
+        state: 'DISMISSED',
+        submittedAt: null,
+        url: 'https://github.com/owner/repo/pull/1#old'
+      });
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      expect(response.status).toBe(200);
+
+      // Should return the NEW draft as pendingDraft
+      expect(response.body.pendingDraft).not.toBeNull();
+      expect(response.body.pendingDraft.github_node_id).toBe('PRR_new_draft');
+      expect(response.body.pendingDraft.github_review_id).toBe('22222');
+      expect(response.body.pendingDraft.comments_count).toBe(2);
+
+      // Should have 2 github_reviews records now
+      expect(response.body.allGithubReviews.length).toBe(2);
+
+      // The old record should be marked as 'dismissed' (queried from GitHub)
+      const oldRecord = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_old_draft');
+      expect(oldRecord).toBeDefined();
+      expect(oldRecord.state).toBe('dismissed');
+
+      // The new record should be 'pending'
+      const newRecord = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_new_draft');
+      expect(newRecord).toBeDefined();
+      expect(newRecord.state).toBe('pending');
+    });
+
+    it('should mark multiple old pending records as submitted/dismissed when new draft appears', async () => {
+      // Insert PR with review record
+      const reviewId = await insertTestPR(db, 1, 'owner/repo');
+
+      // Insert TWO existing pending records (edge case - shouldn't normally happen, but handle it)
+      await run(db, `
+        INSERT INTO github_reviews (review_id, github_review_id, github_node_id, state, body)
+        VALUES (?, ?, ?, ?, ?)
+      `, [reviewId, '11111', 'PRR_old1', 'pending', 'Old draft 1']);
+
+      await run(db, `
+        INSERT INTO github_reviews (review_id, github_review_id, github_node_id, state, body)
+        VALUES (?, ?, ?, ?, ?)
+      `, [reviewId, '22222', 'PRR_old2', 'pending', 'Old draft 2']);
+
+      // Mock GitHub to return a NEW draft with DIFFERENT node_id
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
+        id: 'PRR_brand_new',
+        databaseId: 33333,
+        body: 'Brand new draft',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-33333',
+        state: 'PENDING',
+        comments: { totalCount: 0 }
+      });
+
+      // Mock getReviewById to return different states for the old drafts
+      // One was submitted (APPROVED), one was dismissed
+      vi.spyOn(GitHubClient.prototype, 'getReviewById').mockImplementation(async (nodeId) => {
+        if (nodeId === 'PRR_old1') {
+          return { id: nodeId, state: 'APPROVED', submittedAt: '2024-01-20T00:00:00Z', url: null };
+        } else if (nodeId === 'PRR_old2') {
+          return { id: nodeId, state: 'DISMISSED', submittedAt: null, url: null };
+        }
+        return null;
+      });
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/github-drafts');
+
+      expect(response.status).toBe(200);
+
+      // Should return the NEW draft as pendingDraft
+      expect(response.body.pendingDraft.github_node_id).toBe('PRR_brand_new');
+
+      // Should have 3 records now
+      expect(response.body.allGithubReviews.length).toBe(3);
+
+      // Old records should reflect their actual states from GitHub
+      const old1 = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_old1');
+      const old2 = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_old2');
+      expect(old1.state).toBe('submitted');  // APPROVED -> submitted
+      expect(old2.state).toBe('dismissed');  // DISMISSED -> dismissed
+
+      // New record should be 'pending'
+      const newRecord = response.body.allGithubReviews.find(r => r.github_node_id === 'PRR_brand_new');
+      expect(newRecord.state).toBe('pending');
+    });
+  });
+
+  describe('GET /api/pr/:owner/:repo/:number pendingDraft in response', () => {
+    it('should return pendingDraft null when no review record exists', async () => {
+      // Insert PR metadata without review record
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR', 'Description', 'testuser', 'main', 'feature', JSON.stringify({ state: 'open' })]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.pendingDraft).toBeNull();
+    });
+
+    it('should return pendingDraft when review exists and GitHub has pending draft', async () => {
+      // Insert PR with review record
+      await insertTestPR(db, 1, 'owner/repo');
+
+      // Mock GitHub to return a pending draft
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue({
+        id: 'PRR_pending456',
+        databaseId: 67890,
+        body: 'Pending review',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-67890',
+        state: 'PENDING',
+        createdAt: '2024-01-15T12:00:00Z',
+        comments: { totalCount: 5 }
+      });
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.pendingDraft).not.toBeNull();
+      expect(response.body.data.pendingDraft.github_node_id).toBe('PRR_pending456');
+      expect(response.body.data.pendingDraft.github_review_id).toBe('67890');
+      expect(response.body.data.pendingDraft.comments_count).toBe(5);
+    });
+
+    it('should return pendingDraft null when review exists but GitHub has no pending draft', async () => {
+      // Insert PR with review record
+      await insertTestPR(db, 1, 'owner/repo');
+
+      // Mock GitHub to return no pending draft
+      vi.spyOn(GitHubClient.prototype, 'getPendingReviewForUser').mockResolvedValue(null);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1');
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.pendingDraft).toBeNull();
+    });
+
+    it('should handle GitHub API errors gracefully and return pendingDraft null', async () => {
+      // Insert PR with review record
+      await insertTestPR(db, 1, 'owner/repo');
+
+      // Mock GitHub to throw an error for one call, then fall back to the default null
+      GitHubClient.prototype.getPendingReviewForUser.mockRejectedValueOnce(
+        new Error('GitHub API rate limit exceeded')
+      );
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1');
+
+      // Should still return 200 but with pendingDraft null
+      expect(response.status).toBe(200);
+      expect(response.body.data.pendingDraft).toBeNull();
     });
   });
 });
@@ -1918,6 +2238,112 @@ describe('Review Submission Endpoint', () => {
       expect(comments.length).toBe(1);
       expect(comments[0].isFileLevel).toBe(true);
       expect(comments[0].path).toBe('file.js');
+    });
+
+    it('should add comments to existing pending draft instead of creating a new one', async () => {
+      // Simulate an existing pending draft on GitHub
+      const existingDraft = {
+        id: 'PRR_existing123',
+        databaseId: 99999,
+        body: 'Existing draft body',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-99999',
+        state: 'PENDING',
+        createdAt: new Date().toISOString(),
+        comments: { totalCount: 3 }
+      };
+      GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(existingDraft);
+      // Mock createDraftReviewGraphQL to return existing draft info (since it now handles existing drafts)
+      GitHubClient.prototype.createDraftReviewGraphQL.mockResolvedValueOnce({
+        id: 'PRR_existing123',
+        databaseId: null, // databaseId not available when adding to existing draft
+        html_url: null, // URL not available from existing review ID alone
+        state: 'PENDING',
+        comments_count: 1
+      });
+
+      // Insert a comment to submit
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+        VALUES (?, 'user', 'file.js', 10, 5, 'RIGHT', 'New draft comment', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'DRAFT', body: 'Draft review' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Should have called createDraftReviewGraphQL with the existing draft ID as 4th argument
+      expect(GitHubClient.prototype.createDraftReviewGraphQL).toHaveBeenCalledWith(
+        'PR_node123', // prNodeId
+        'Draft review', // body
+        expect.any(Array), // graphqlComments
+        'PRR_existing123' // existingDraft.id
+      );
+
+      // Verify the response uses the existing draft's URL (falls back from null to existingDraft.url)
+      expect(response.body.github_url).toBe('https://github.com/owner/repo/pull/1#pullrequestreview-99999');
+
+      // Verify comments_count includes existing comments (3) + newly added (1)
+      expect(response.body.comments_submitted).toBe(4);
+    });
+
+    it('should pass existing draft ID to createReviewGraphQL for non-DRAFT submissions', async () => {
+      // Simulate an existing pending draft on GitHub
+      const existingDraft = {
+        id: 'PRR_existing_for_submit',
+        databaseId: 88888,
+        body: 'Existing draft body',
+        url: 'https://github.com/owner/repo/pull/1#pullrequestreview-88888',
+        state: 'PENDING',
+        createdAt: new Date().toISOString(),
+        comments: { totalCount: 2 }
+      };
+      GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(existingDraft);
+
+      // Insert a comment to submit
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+        VALUES (?, 'user', 'file.js', 10, 5, 'RIGHT', 'Review comment', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Submitting review' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify createReviewGraphQL was called with the existing draft's ID as the 5th argument
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      expect(callArgs[0]).toBe('PR_node123'); // prNodeId
+      expect(callArgs[1]).toBe('COMMENT'); // event
+      expect(callArgs[4]).toBe('PRR_existing_for_submit'); // existingReviewId
+    });
+
+    it('should pass null existingReviewId to createReviewGraphQL when no draft exists', async () => {
+      // getPendingReviewForUser returns null (no existing draft) - default mock behavior
+      GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(null);
+
+      // Insert a comment to submit
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status)
+        VALUES (?, 'user', 'file.js', 10, 5, 'RIGHT', 'Review comment', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'APPROVE', body: 'LGTM' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+
+      // Verify createReviewGraphQL was called with undefined (no existing draft)
+      expect(GitHubClient.prototype.createReviewGraphQL).toHaveBeenCalled();
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      expect(callArgs[4]).toBeUndefined(); // existingReviewId should be undefined (existingDraft?.id when null)
     });
 
     it('should handle expanded context comments as file-level with line reference', async () => {

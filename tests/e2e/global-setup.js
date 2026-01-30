@@ -232,15 +232,19 @@ async function globalSetup() {
   GitHubClient.prototype.fetchPullRequest = async () => mockGitHubResponses.fetchPullRequest;
   GitHubClient.prototype.validateToken = async () => true;
   GitHubClient.prototype.repositoryExists = async () => true;
+  GitHubClient.prototype.getPendingReviewForUser = async () => null; // No pending draft in tests
+  GitHubClient.prototype.getReviewById = async () => null; // No review lookup needed in tests
   GitHubClient.prototype.createReviewGraphQL = async () => ({
-    id: 12345,
+    id: 'PRR_test12345',
+    databaseId: 12345,
     html_url: 'https://github.com/test-owner/test-repo/pull/1#review-12345',
     state: 'APPROVED',
     comments_count: 0,
     submitted_at: new Date().toISOString()
   });
   GitHubClient.prototype.createDraftReviewGraphQL = async () => ({
-    id: 12346,
+    id: 'PRR_test12346',
+    databaseId: 12346,
     html_url: 'https://github.com/test-owner/test-repo/pull/1#review-12346',
     state: 'PENDING',
     comments_count: 0
@@ -255,10 +259,10 @@ async function globalSetup() {
   GitWorktreeManager.prototype.createWorktreeForPR = async () => mockWorktreeResponses.getWorktreePath;
   GitWorktreeManager.prototype.pathExists = async () => true;
 
-  // Mock config
+  // Mock config (port is set dynamically after server starts via E2E_PORT env var)
   configModule.loadConfig = async () => ({
     github_token: 'test-token-e2e',
-    port: 3456,
+    port: parseInt(process.env.E2E_PORT || '3456', 10),
     theme: 'light',
     model: 'sonnet'
   });
@@ -283,10 +287,9 @@ async function globalSetup() {
   app.get('/settings/:owner/:repo', (req, res) => res.sendFile(path.join(publicDir, 'repo-settings.html')));
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-  // Store database and config
+  // Store database and config (port is set after server starts — see port retry block below)
   app.set('db', db);
   app.set('githubToken', 'test-token-e2e');
-  app.set('config', { github_token: 'test-token-e2e', port: 3456, theme: 'light', model: 'sonnet' });
 
   // Track analysis state for mocking
   let analysisRunning = false;
@@ -532,15 +535,33 @@ async function globalSetup() {
   });
   app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
-  // Start server
-  return new Promise((resolve) => {
-    server = app.listen(3456, () => {
-      console.log('E2E test server running on http://localhost:3456');
-      // Store server reference for teardown
+  // Start server with port retry on EADDRINUSE
+  const BASE_PORT = 3456;
+  const MAX_PORT_ATTEMPTS = 10;
+
+  for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt++) {
+    const port = BASE_PORT + attempt;
+    try {
+      await new Promise((resolve, reject) => {
+        server = app.listen(port, () => resolve());
+        server.on('error', (err) => reject(err));
+      });
+      // Success — store the chosen port so Playwright tests can find it
+      process.env.E2E_PORT = port.toString();
       process.env.E2E_SERVER_PID = process.pid.toString();
-      resolve();
-    });
-  });
+      // Update the stored config to reflect the actual port
+      app.set('config', { github_token: 'test-token-e2e', port, theme: 'light', model: 'sonnet' });
+      console.log(`E2E test server running on http://localhost:${port}`);
+      return;
+    } catch (err) {
+      if (err.code === 'EADDRINUSE') {
+        console.log(`Port ${port} in use, trying ${port + 1}...`);
+        continue;
+      }
+      throw err; // unexpected error — bail out
+    }
+  }
+  throw new Error(`Could not find an available port after ${MAX_PORT_ATTEMPTS} attempts (tried ${BASE_PORT}–${BASE_PORT + MAX_PORT_ATTEMPTS - 1})`);
 }
 
 module.exports = globalSetup;

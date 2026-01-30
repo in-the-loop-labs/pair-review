@@ -126,6 +126,21 @@ const SCHEMA_SQL = {
       completed_at TIMESTAMP,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
+  `,
+
+  github_reviews: `
+    CREATE TABLE IF NOT EXISTS github_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+      github_review_id TEXT,
+      github_node_id TEXT,
+      state TEXT NOT NULL DEFAULT 'local' CHECK(state IN ('local', 'pending', 'submitted', 'dismissed')),
+      event TEXT CHECK(event IN ('APPROVE', 'COMMENT', 'REQUEST_CHANGES')),
+      body TEXT,
+      submitted_at DATETIME,
+      github_url TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -146,7 +161,10 @@ const INDEX_SQL = [
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_local ON reviews(local_path, local_head_sha) WHERE review_type = 'local'",
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pr_unique ON reviews(pr_number, repository) WHERE review_type = 'pr'",
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)',
-  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)'
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)',
+  // GitHub reviews indexes
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)'
 ];
 
 /**
