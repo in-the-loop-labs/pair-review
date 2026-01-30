@@ -1809,6 +1809,35 @@ describe('AI Suggestion Endpoints', () => {
       expect(rightSide.line_start).toBe(sameLine);
       expect(rightSide.body).toBe('Issue on added line 15');
     });
+
+    it('should return suggestions with draft status (from --ai-draft submissions)', async () => {
+      // When --ai-draft submits suggestions to GitHub, their status is updated to 'draft'.
+      // The API must still return these so they appear when viewing the PR in the web UI.
+      const runId = 'test-run-draft';
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Draft suggestion', 'draft', ?)
+      `, [prId, runId]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Active suggestion', 'active', ?)
+      `, [prId, runId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/ai-suggestions');
+
+      expect(response.status).toBe(200);
+      const testSuggestions = response.body.suggestions.filter(s => s.ai_run_id === runId);
+      expect(testSuggestions.length).toBe(2);
+
+      const draftSuggestion = testSuggestions.find(s => s.status === 'draft');
+      expect(draftSuggestion).toBeDefined();
+      expect(draftSuggestion.body).toBe('Draft suggestion');
+
+      const activeSuggestion = testSuggestions.find(s => s.status === 'active');
+      expect(activeSuggestion).toBeDefined();
+      expect(activeSuggestion.body).toBe('Active suggestion');
+    });
   });
 
   describe('POST /api/ai-suggestion/:id/status', () => {
@@ -4184,6 +4213,35 @@ describe('Local Review File-Level Comments', () => {
       // File-level should come first due to ORDER BY is_file_level DESC
       expect(response.body.suggestions[0].is_file_level).toBe(1);
       expect(response.body.suggestions[1].line_start).toBe(10);
+    });
+
+    it('should return suggestions with draft status (parity with PR mode)', async () => {
+      // The local mode endpoint received the same status filter fix as PR mode.
+      // Verify draft suggestions are returned alongside active ones.
+      const runId = 'test-run-local-draft';
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Draft suggestion', 'draft', ?)
+      `, [reviewId, runId]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Active suggestion', 'active', ?)
+      `, [reviewId, runId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/suggestions`);
+
+      expect(response.status).toBe(200);
+      const testSuggestions = response.body.suggestions.filter(s => s.ai_run_id === runId);
+      expect(testSuggestions.length).toBe(2);
+
+      const draftSuggestion = testSuggestions.find(s => s.status === 'draft');
+      expect(draftSuggestion).toBeDefined();
+      expect(draftSuggestion.body).toBe('Draft suggestion');
+
+      const activeSuggestion = testSuggestions.find(s => s.status === 'active');
+      expect(activeSuggestion).toBeDefined();
+      expect(activeSuggestion.body).toBe('Active suggestion');
     });
   });
 });
