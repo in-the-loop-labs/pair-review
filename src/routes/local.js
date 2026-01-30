@@ -600,7 +600,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
       WHERE review_id = ?
         AND source = 'ai'
         AND ${levelFilter}
-        AND status IN ('active', 'dismissed', 'adopted')
+        AND status IN ('active', 'dismissed', 'adopted', 'draft')
         AND ${runIdFilter}
       ORDER BY
         CASE
