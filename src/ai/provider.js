@@ -77,6 +77,10 @@ class AIProvider {
    * @param {string|number} options.level - Analysis level for logging
    * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @param {Function} options.registerProcess - Function to register child process for cancellation
+   * @param {Function} [options.onStreamEvent] - Callback for real-time stream events.
+   *   Called with normalized events: { type: 'assistant_text'|'tool_use', text: string, timestamp: number }.
+   *   Providers that support streaming (Claude, Codex) will call this as data arrives.
+   *   Providers without streaming support silently ignore this option.
    * @returns {Promise<Object>} Parsed JSON response or { raw, parsed: false }
    */
   async execute(prompt, options = {}) {

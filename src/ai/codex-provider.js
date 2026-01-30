@@ -12,6 +12,7 @@ const { AIProvider, registerProvider } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
+const { StreamParser, parseCodexLine } = require('./stream-parser');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -126,7 +127,7 @@ class CodexProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent } = options;
 
       const levelPrefix = `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Codex CLI...`);
@@ -165,6 +166,11 @@ class CodexProvider extends AIProvider {
         fn(value);
       };
 
+      // Set up side-channel stream parser for live progress events
+      const streamParser = onStreamEvent
+        ? new StreamParser(parseCodexLine, onStreamEvent)
+        : null;
+
       // Set timeout
       if (timeout) {
         timeoutId = setTimeout(() => {
@@ -178,6 +184,11 @@ class CodexProvider extends AIProvider {
       codex.stdout.on('data', (data) => {
         const chunk = data.toString();
         stdout += chunk;
+
+        // Feed side-channel stream parser for live progress events
+        if (streamParser) {
+          streamParser.feed(chunk);
+        }
 
         // Parse JSONL lines as they arrive for streaming debug output
         lineBuffer += chunk;
@@ -201,6 +212,11 @@ class CodexProvider extends AIProvider {
       // Handle completion
       codex.on('close', (code) => {
         if (settled) return;  // Already settled by timeout or error
+
+        // Flush any remaining stream parser buffer
+        if (streamParser) {
+          streamParser.flush();
+        }
 
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
         const isCancellationCode = code === 143 || code === 137;

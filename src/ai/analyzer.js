@@ -218,7 +218,7 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, fileLineCountMap, worktreePath, { analysisId, tier });
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, fileLineCountMap, worktreePath, { analysisId, tier, progressCallback });
 
         // Validate and finalize suggestions
         const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -714,7 +714,10 @@ Or simply ignore any changes to files matching these patterns in your analysis.
         timeout: 600000, // 10 minutes for Level 1
         level: 1,
         analysisId,
-        registerProcess
+        registerProcess,
+        onStreamEvent: progressCallback ? (event) => {
+          progressCallback({ level: 1, status: 'running', streamEvent: event });
+        } : undefined
       });
 
       // Parse and validate the response
@@ -1704,7 +1707,10 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         timeout: 600000, // 10 minutes for Level 2
         level: 2,
         analysisId,
-        registerProcess
+        registerProcess,
+        onStreamEvent: progressCallback ? (event) => {
+          progressCallback({ level: 2, status: 'running', streamEvent: event });
+        } : undefined
       });
 
       // Parse and validate the response
@@ -1813,7 +1819,10 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         timeout: 600000, // 10 minutes for Level 3
         level: 3,
         analysisId,
-        registerProcess
+        registerProcess,
+        onStreamEvent: progressCallback ? (event) => {
+          progressCallback({ level: 3, status: 'running', streamEvent: event });
+        } : undefined
       });
 
       // Parse and validate the response
@@ -2324,7 +2333,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @returns {Promise<Array>} Curated suggestions array
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced' } = options;
+    const { analysisId, tier = 'balanced', progressCallback } = options;
     logger.section('[Orchestration] AI Orchestration Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
@@ -2351,7 +2360,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         timeout: 600000, // 10 minutes for orchestration
         level: 'orchestration',
         analysisId,
-        registerProcess
+        registerProcess,
+        onStreamEvent: progressCallback ? (event) => {
+          progressCallback({ level: 'orchestration', status: 'running', streamEvent: event });
+        } : undefined
       });
 
       // Parse the orchestrated response

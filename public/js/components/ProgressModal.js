@@ -58,9 +58,10 @@ class ProgressModal {
                     <div class="barbershop-stripes"></div>
                   </div>
                 </div>
+                <div class="level-stream-snippet" style="display: none;"></div>
               </div>
             </div>
-            
+
             <div class="progress-level" id="level-2">
               <div class="level-icon">
                 <span class="icon pending">○</span>
@@ -73,9 +74,10 @@ class ProgressModal {
                     <div class="barbershop-stripes"></div>
                   </div>
                 </div>
+                <div class="level-stream-snippet" style="display: none;"></div>
               </div>
             </div>
-            
+
             <div class="progress-level" id="level-3">
               <div class="level-icon">
                 <span class="icon pending">○</span>
@@ -88,6 +90,7 @@ class ProgressModal {
                     <div class="barbershop-stripes"></div>
                   </div>
                 </div>
+                <div class="level-stream-snippet" style="display: none;"></div>
               </div>
             </div>
 
@@ -103,6 +106,7 @@ class ProgressModal {
                     <div class="barbershop-stripes"></div>
                   </div>
                 </div>
+                <div class="level-stream-snippet" style="display: none;"></div>
               </div>
             </div>
           </div>
@@ -222,6 +226,7 @@ class ProgressModal {
         const icon = level.querySelector('.icon');
         const status = level.querySelector('.level-status');
         const progressContainer = level.querySelector('.progress-bar-container');
+        const snippetEl = level.querySelector('.level-stream-snippet');
 
         icon.className = 'icon active';
         icon.textContent = '▶';
@@ -232,6 +237,12 @@ class ProgressModal {
         if (progressContainer) {
           progressContainer.style.display = 'block';
         }
+
+        // Clear stream snippet
+        if (snippetEl) {
+          snippetEl.style.display = 'none';
+          snippetEl.textContent = '';
+        }
       }
     }
 
@@ -241,6 +252,7 @@ class ProgressModal {
       const icon = level4.querySelector('.icon');
       const status = level4.querySelector('.level-status');
       const progressContainer = level4.querySelector('.progress-bar-container');
+      const snippetEl = level4.querySelector('.level-stream-snippet');
 
       icon.className = 'icon pending';
       icon.textContent = '○';
@@ -249,6 +261,11 @@ class ProgressModal {
 
       if (progressContainer) {
         progressContainer.style.display = 'none';
+      }
+
+      if (snippetEl) {
+        snippetEl.style.display = 'none';
+        snippetEl.textContent = '';
       }
     }
 
@@ -431,6 +448,7 @@ class ProgressModal {
     const icon = levelElement.querySelector('.icon');
     const statusText = levelElement.querySelector('.level-status');
     const progressContainer = levelElement.querySelector('.progress-bar-container');
+    const snippetEl = levelElement.querySelector('.level-stream-snippet');
 
     // Update icon and status based on current state
     if (levelStatus.status === 'running') {
@@ -443,15 +461,27 @@ class ProgressModal {
         progressContainer.style.display = 'block';
       }
 
+      // Show stream snippet if present
+      if (snippetEl && levelStatus.streamEvent) {
+        const evt = levelStatus.streamEvent;
+        const prefix = evt.type === 'tool_use' ? 'Using ' : '';
+        snippetEl.textContent = prefix + evt.text;
+        snippetEl.style.display = 'block';
+      }
+
     } else if (levelStatus.status === 'completed') {
       icon.className = 'icon completed';
       icon.textContent = '✓';
       statusText.textContent = 'Completed';
       statusText.style.display = 'block';
 
-      // Hide progress bar for completed levels
+      // Hide progress bar and snippet for completed levels
       if (progressContainer) {
         progressContainer.style.display = 'none';
+      }
+      if (snippetEl) {
+        snippetEl.style.display = 'none';
+        snippetEl.textContent = '';
       }
 
     } else if (levelStatus.status === 'failed') {
@@ -460,9 +490,13 @@ class ProgressModal {
       statusText.textContent = 'Failed';
       statusText.style.display = 'block';
 
-      // Hide progress bar for failed levels
+      // Hide progress bar and snippet for failed levels
       if (progressContainer) {
         progressContainer.style.display = 'none';
+      }
+      if (snippetEl) {
+        snippetEl.style.display = 'none';
+        snippetEl.textContent = '';
       }
 
     } else if (levelStatus.status === 'cancelled') {
@@ -471,9 +505,13 @@ class ProgressModal {
       statusText.textContent = 'Cancelled';
       statusText.style.display = 'block';
 
-      // Hide progress bar for cancelled levels
+      // Hide progress bar and snippet for cancelled levels
       if (progressContainer) {
         progressContainer.style.display = 'none';
+      }
+      if (snippetEl) {
+        snippetEl.style.display = 'none';
+        snippetEl.textContent = '';
       }
 
     } else {
@@ -486,6 +524,10 @@ class ProgressModal {
 
       if (progressContainer) {
         progressContainer.style.display = 'none';
+      }
+      if (snippetEl) {
+        snippetEl.style.display = 'none';
+        snippetEl.textContent = '';
       }
     }
 

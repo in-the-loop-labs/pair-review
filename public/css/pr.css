@@ -2460,6 +2460,26 @@ tr.newly-expanded .d2h-code-line-ctn {
   margin-bottom: 6px;
 }
 
+.level-stream-snippet {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  color: var(--color-text-tertiary, #8b949e);
+  background: var(--color-canvas-subtle, #f6f8fa);
+  border-radius: 4px;
+  padding: 3px 6px;
+  margin-top: 4px;
+  max-width: 400px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+[data-theme="dark"] .level-stream-snippet,
+.dark .level-stream-snippet {
+  color: #8b949e;
+  background: #161b22;
+}
+
 .level-files {
   display: flex;
   gap: 16px;

@@ -375,13 +375,35 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
     }
 
+    // Per-level throttle tracking for stream events (300ms minimum interval)
+    const streamThrottleMap = new Map();
+    const STREAM_THROTTLE_MS = 300;
+
     // Create progress callback function that tracks each level separately
     const progressCallback = (progressUpdate) => {
       const currentStatus = activeAnalyses.get(analysisId);
       if (!currentStatus) return;
 
       const level = progressUpdate.level;
+      const levelKey = level === 'orchestration' ? 4 : level;
 
+      // Stream event: store latest and throttle broadcasts
+      if (progressUpdate.streamEvent && levelKey) {
+        if (!currentStatus.levels[levelKey]) return;
+        currentStatus.levels[levelKey].streamEvent = progressUpdate.streamEvent;
+        activeAnalyses.set(analysisId, currentStatus);
+
+        // Throttle: only broadcast if enough time has elapsed
+        const now = Date.now();
+        const lastBroadcast = streamThrottleMap.get(levelKey) || 0;
+        if (now - lastBroadcast >= STREAM_THROTTLE_MS) {
+          streamThrottleMap.set(levelKey, now);
+          broadcastProgress(analysisId, currentStatus);
+        }
+        return;
+      }
+
+      // Regular status update (not a stream event)
       // Update the specific level's status
       if (level && level >= 1 && level <= 3) {
         currentStatus.levels[level] = {
