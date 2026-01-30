@@ -272,7 +272,7 @@ class ReviewModal {
       // Update the comment count
       const countElement = notice.querySelector('#pending-draft-count');
       if (countElement) {
-        countElement.textContent = pendingDraft.comments_count || 0;
+        countElement.textContent = String(pendingDraft.comments_count || 0);
       }
 
       // Update the link - hide if no github_url
@@ -526,21 +526,26 @@ class ReviewModal {
       // Remove beforeunload handler if it was added
       if (isDraft && handleBeforeUnload) {
         window.removeEventListener('beforeunload', handleBeforeUnload);
+      }
 
-        // Update the pending draft indicator immediately
-        // Count comments that were just submitted
-        const submittedCount = commentCount;
-        const pendingDraft = {
-          github_url: result.github_url,
-          comments_count: submittedCount
-        };
-
-        // Update currentPR and refresh the indicator
-        if (window.prManager?.currentPR) {
+      // Update the pending draft indicator and modal state
+      if (window.prManager?.currentPR) {
+        if (isDraft) {
+          // Draft submission: update pending draft with new info from server
+          const pendingDraft = {
+            github_url: result.github_url,
+            comments_count: result.comments_submitted ?? commentCount
+          };
           window.prManager.currentPR.pendingDraft = pendingDraft;
           window.prManager.updatePendingDraftIndicator(pendingDraft);
+        } else {
+          // Non-draft submission (COMMENT/APPROVE/REQUEST_CHANGES): draft was consumed
+          window.prManager.currentPR.pendingDraft = null;
+          window.prManager.updatePendingDraftIndicator(null);
         }
+      }
 
+      if (isDraft) {
         // After 2 seconds, open GitHub PR page for drafts
         setTimeout(() => {
           const githubUrl = result.github_url || `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`;

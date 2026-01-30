@@ -631,6 +631,7 @@ class GitHubClient {
    * @param {string} event - Review event (APPROVE, REQUEST_CHANGES, COMMENT)
    * @param {string} body - Overall review body/summary
    * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
+   * @param {string|null} [existingReviewId=null] - GraphQL node ID of an existing pending review to reuse instead of creating a new one. When provided, skips creating a new pending review and won't delete the review on comment batch failure.
    * @returns {Promise<Object>} Review submission result
    */
   async createReviewGraphQL(prNodeId, event, body, comments = [], existingReviewId = null) {
@@ -703,6 +704,7 @@ class GitHubClient {
           }) {
             pullRequestReview {
               id
+              databaseId
               url
               state
             }
@@ -719,6 +721,7 @@ class GitHubClient {
 
       return {
         id: result.id,
+        databaseId: result.databaseId,
         html_url: result.url,
         state: result.state,
         comments_count: successfulComments
@@ -745,34 +748,52 @@ class GitHubClient {
    * @param {string} prNodeId - GraphQL node ID for the PR (e.g., "PR_kwDOM...")
    * @param {string} body - Overall review body/summary
    * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
+   * @param {string|null} [existingReviewId=null] - GraphQL node ID of an existing pending review to add comments to instead of creating a new one. When provided, skips creating a new pending review and won't delete the review on comment batch failure.
    * @returns {Promise<Object>} Draft review result
    */
-  async createDraftReviewGraphQL(prNodeId, body, comments = []) {
+  async createDraftReviewGraphQL(prNodeId, body, comments = [], existingReviewId = null) {
     try {
       console.log(`Creating GraphQL draft review for PR ${prNodeId} with ${comments.length} comments`);
 
-      // Step 1: Create a pending review
-      console.log('Step 1: Creating pending review...');
-      const createReviewResult = await this.octokit.graphql(`
-        mutation AddPendingReview($prId: ID!, $body: String) {
-          addPullRequestReview(input: {
-            pullRequestId: $prId
-            body: $body
-          }) {
-            pullRequestReview {
-              id
-              url
+      // Step 1: Use existing pending review or create a new one
+      let reviewId;
+      let reviewDatabaseId = null;
+      let reviewUrl;
+      const usedExistingReview = !!existingReviewId;
+      // Note: the body parameter is not updated for existing pending reviews because
+      // GitHub only uses the body at submission time (via submitPullRequestReview),
+      // not during the pending/draft phase.
+      if (existingReviewId) {
+        console.log(`Step 1: Using existing pending review: ${existingReviewId}`);
+        reviewId = existingReviewId;
+        // URL and databaseId not available from existing review ID alone; callers use existingDraft fields as fallbacks
+        reviewUrl = null;
+      } else {
+        console.log('Step 1: Creating pending review...');
+        const createReviewResult = await this.octokit.graphql(`
+          mutation AddPendingReview($prId: ID!, $body: String) {
+            addPullRequestReview(input: {
+              pullRequestId: $prId
+              body: $body
+            }) {
+              pullRequestReview {
+                id
+                databaseId
+                url
+              }
             }
           }
-        }
-      `, {
-        prId: prNodeId,
-        body: body || null
-      });
+        `, {
+          prId: prNodeId,
+          body: body || null
+        });
 
-      const review = createReviewResult.addPullRequestReview.pullRequestReview;
-      const reviewId = review.id;
-      console.log(`Created pending review: ${reviewId}`);
+        const review = createReviewResult.addPullRequestReview.pullRequestReview;
+        reviewId = review.id;
+        reviewDatabaseId = review.databaseId;
+        reviewUrl = review.url;
+        console.log(`Created pending review: ${reviewId}`);
+      }
 
       // Step 2: Add comments in batches
       let successfulComments = 0;
@@ -784,21 +805,30 @@ class GitHubClient {
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
-          // Clean up the pending review since it has incomplete comments
-          const cleaned = await this.deletePendingReview(reviewId);
-          if (!cleaned) {
-            console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+          // Only clean up the pending review if we created it (not if it was pre-existing)
+          if (!usedExistingReview) {
+            const cleaned = await this.deletePendingReview(reviewId);
+            if (!cleaned) {
+              console.warn('Warning: Failed to clean up pending review - manual cleanup may be required');
+            }
+            throw new Error(
+              `Failed to add ${failedCount} of ${comments.length} comments to draft review. ` +
+              'The draft review has been deleted. Check server logs for details.'
+            );
+          } else {
+            console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
+            throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to existing draft review. ${successfulComments} comments were added to the GitHub draft. Check the draft on GitHub.`);
           }
-          throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to draft review. Check server logs for details.`);
         }
       }
 
       // Note: We do NOT submit the review - it stays as PENDING (draft)
-      console.log(`Draft review created successfully (pending): ${review.url || reviewId}`);
+      console.log(`Draft review created successfully (pending): ${reviewUrl || reviewId}`);
 
       return {
         id: reviewId,
-        html_url: review.url,
+        databaseId: reviewDatabaseId,
+        html_url: reviewUrl,
         state: 'PENDING',
         comments_count: successfulComments
       };

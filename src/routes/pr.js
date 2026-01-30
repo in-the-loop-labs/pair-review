@@ -1085,78 +1085,77 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       return commentObj;
     });
 
+    // Submit review using GraphQL API (supports file-level comments)
+    console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
+
+    let githubReview;
+
+    // Always check for existing pending draft first
+    // GitHub only allows one pending review per user per PR
+    const existingDraft = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
+
+    if (event === 'DRAFT') {
+      // Delegate to createDraftReviewGraphQL (handles both new and existing drafts)
+      githubReview = await githubClient.createDraftReviewGraphQL(
+        prNodeId, body || '', graphqlComments, existingDraft?.id
+      );
+      // When adding to an existing draft, use the existing URL and include prior comments in total count
+      if (existingDraft) {
+        githubReview.html_url = githubReview.html_url || existingDraft.url;
+        githubReview.comments_count = existingDraft.comments.totalCount + githubReview.comments_count;
+      }
+    } else {
+      // For non-drafts, create/use review, add comments, and submit
+      githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments, existingDraft?.id);
+    }
+
+    // ID storage strategy:
+    // - github_reviews.github_review_id -> numeric database ID (consistent with syncPendingDraftFromGitHub)
+    // - github_reviews.github_node_id -> GraphQL node ID (e.g., "PRR_kwDOM..."), always present
+    // - reviewData JSON -> uses 'github_node_id' key for the GraphQL node ID
+    // - reviews.review_id -> legacy column, no longer written (github_reviews table has taken over)
+    const githubNodeId = String(githubReview.id); // GraphQL methods return node IDs
+    // Use databaseId from the mutation response, or fall back to existingDraft's databaseId
+    const githubDatabaseId = githubReview.databaseId
+      ? String(githubReview.databaseId)
+      : existingDraft ? String(existingDraft.databaseId) : null;
+
+    // Build review metadata for database storage
+    const reviewData = {
+      github_node_id: githubNodeId,
+      github_url: githubReview.html_url,
+      event: event,
+      body: body || '',
+      comments_count: githubReview.comments_count
+    };
+
+    // Add timestamps based on review type
+    if (event === 'DRAFT') {
+      reviewData.created_at = new Date().toISOString();
+    } else {
+      reviewData.submitted_at = new Date().toISOString();
+    }
+
     // Begin database transaction for submission tracking
+    // Moved after GitHub API calls to avoid holding SQLite write lock during network requests.
+    // Accepted risk: if the GitHub review succeeds but the DB transaction fails, the review
+    // exists on GitHub with no local record. For drafts, syncPendingDraftFromGitHub can recover
+    // on next page load. For submitted reviews, there is currently no reconciliation path.
     await run(db, 'BEGIN TRANSACTION');
 
     try {
-      // Submit review using GraphQL API (supports file-level comments)
-      console.log(`${event === 'DRAFT' ? 'Creating draft review' : 'Submitting review'} for PR #${prNumber} with ${comments.length} comments`);
-
-      let githubReview;
-
-      // Always check for existing pending draft first
-      // GitHub only allows one pending review per user per PR
-      const existingDraft = await githubClient.getPendingReviewForUser(owner, repo, prNumber);
-
-      if (event === 'DRAFT') {
-        if (existingDraft) {
-          // Add comments to the existing pending draft instead of creating a new one
-          console.log(`Found existing pending draft review ${existingDraft.id} with ${existingDraft.comments.totalCount} comments, adding new comments to it`);
-          let successfulComments = 0;
-          if (graphqlComments.length > 0) {
-            const batchResult = await githubClient.addCommentsInBatches(prNodeId, existingDraft.id, graphqlComments);
-            successfulComments = batchResult.successCount;
-
-            if (batchResult.failed) {
-              const failedCount = graphqlComments.length - successfulComments;
-              throw new Error(`Failed to add ${failedCount} of ${graphqlComments.length} comments to existing draft review. Check server logs for details.`);
-            }
-          }
-          githubReview = {
-            id: existingDraft.id,
-            html_url: existingDraft.url,
-            state: 'PENDING',
-            comments_count: successfulComments
-          };
-        } else {
-          // No existing draft - create a new one
-          githubReview = await githubClient.createDraftReviewGraphQL(prNodeId, body || '', graphqlComments);
-        }
-      } else {
-        // For non-drafts, create/use review, add comments, and submit
-        githubReview = await githubClient.createReviewGraphQL(prNodeId, event, body || '', graphqlComments, existingDraft?.id);
-      }
-
-      // Build review metadata for database storage
-      const reviewData = {
-        github_review_id: githubReview.id,
-        github_url: githubReview.html_url,
-        event: event,
-        body: body || '',
-        comments_count: githubReview.comments_count
-      };
-
-      // Add timestamps based on review type
-      if (event === 'DRAFT') {
-        reviewData.created_at = new Date().toISOString();
-      } else {
-        reviewData.submitted_at = githubReview.submitted_at;
-      }
-
-      // Update review record via repository method
-      // Uses UPDATE (not INSERT OR REPLACE) to avoid cascade deletion of comments/analysis_runs
+      // Update review record (status, timestamps, review_data JSON)
+      // Note: reviews.review_id is legacy and no longer written; github_reviews table tracks GitHub IDs
       await reviewRepo.updateAfterSubmission(review.id, {
-        githubReviewId: githubReview.id,
         event: event,
         reviewData: reviewData
       });
 
       // Create a github_reviews record to track this submission
-      // Note: For GraphQL-created reviews, githubReview.id IS the node_id (e.g., "PRR_...")
       const githubReviewRepo = new GitHubReviewRepository(db);
       await githubReviewRepo.create(review.id, {
-        github_review_id: String(githubReview.id),
-        github_node_id: String(githubReview.id), // Same as github_review_id for GraphQL reviews
+        github_review_id: githubDatabaseId,
+        github_node_id: githubNodeId,
         state: event === 'DRAFT' ? 'pending' : 'submitted',
         event: event === 'DRAFT' ? null : event,
         body: body || '',
@@ -1167,8 +1166,6 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       console.log(`${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully: ${githubReview.html_url}${event === 'DRAFT' ? ' (Review ID: ' + githubReview.id + ')' : ''}`);
 
       // Update comments table to mark submitted comments
-      // Note: Since comments table doesn't have github-specific columns in current schema,
-      // we'll update the status to indicate submission
       const commentStatus = event === 'DRAFT' ? 'draft' : 'submitted';
       const commentUpdateTime = new Date().toISOString();
       for (const comment of comments) {
@@ -1187,7 +1184,6 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         success: true,
         message: `${event === 'DRAFT' ? 'Draft review created' : 'Review submitted'} successfully ${event === 'DRAFT' ? 'on' : 'to'} GitHub`,
         github_url: githubReview.html_url,
-        github_review_id: githubReview.id,
         comments_submitted: githubReview.comments_count,
         event: event,
         status: event === 'DRAFT' ? githubReview.state : undefined // Include status for drafts

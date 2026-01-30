@@ -261,7 +261,7 @@ describe('ReviewModal', () => {
 
       modal.updatePendingDraftNotice();
 
-      expect(pendingDraftCount.textContent).toBe(7);
+      expect(pendingDraftCount.textContent).toBe('7');
     });
 
     it('should hide pending draft link when no github_url', () => {

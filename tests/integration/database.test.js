@@ -656,14 +656,13 @@ describe('ReviewRepository', () => {
       });
 
       const reviewData = {
-        github_review_id: 999,
+        github_node_id: 'PRR_draft999',
         github_url: 'https://github.com/owner/repo/pull/123#pullrequestreview-999',
         event: 'DRAFT',
         comments_count: 5
       };
 
       const result = await reviewRepo.updateAfterSubmission(created.id, {
-        githubReviewId: 999,
         event: 'DRAFT',
         reviewData
       });
@@ -672,8 +671,7 @@ describe('ReviewRepository', () => {
 
       const retrieved = await reviewRepo.getReview(created.id);
       expect(retrieved.status).toBe('draft');
-      expect(retrieved.review_id).toBe(999);
-      expect(retrieved.review_data.github_review_id).toBe(999);
+      expect(retrieved.review_data.github_node_id).toBe('PRR_draft999');
       expect(retrieved.submitted_at).toBeNull(); // Should NOT be set for drafts
     });
 
@@ -684,14 +682,13 @@ describe('ReviewRepository', () => {
       });
 
       const reviewData = {
-        github_review_id: 1000,
+        github_node_id: 'PRR_approve1000',
         github_url: 'https://github.com/owner/repo/pull/123#pullrequestreview-1000',
         event: 'APPROVE',
         comments_count: 3
       };
 
       const result = await reviewRepo.updateAfterSubmission(created.id, {
-        githubReviewId: 1000,
         event: 'APPROVE',
         reviewData
       });
@@ -700,8 +697,8 @@ describe('ReviewRepository', () => {
 
       const retrieved = await reviewRepo.getReview(created.id);
       expect(retrieved.status).toBe('submitted');
-      expect(retrieved.review_id).toBe(1000);
       expect(retrieved.submitted_at).not.toBeNull(); // Should be set for submissions
+      expect(retrieved.review_data.github_node_id).toBe('PRR_approve1000');
     });
 
     it('should update review for REQUEST_CHANGES event', async () => {
@@ -711,7 +708,6 @@ describe('ReviewRepository', () => {
       });
 
       const result = await reviewRepo.updateAfterSubmission(created.id, {
-        githubReviewId: 2000,
         event: 'REQUEST_CHANGES',
         reviewData: { event: 'REQUEST_CHANGES' }
       });
@@ -730,7 +726,6 @@ describe('ReviewRepository', () => {
       });
 
       const result = await reviewRepo.updateAfterSubmission(created.id, {
-        githubReviewId: 3000,
         event: 'COMMENT',
         reviewData: { event: 'COMMENT' }
       });
@@ -744,7 +739,6 @@ describe('ReviewRepository', () => {
 
     it('should return false for non-existent review ID', async () => {
       const result = await reviewRepo.updateAfterSubmission(99999, {
-        githubReviewId: 1,
         event: 'DRAFT',
         reviewData: {}
       });
@@ -771,7 +765,6 @@ describe('ReviewRepository', () => {
 
       // Update the review after submission
       await reviewRepo.updateAfterSubmission(review.id, {
-        githubReviewId: 999,
         event: 'DRAFT',
         reviewData: { event: 'DRAFT' }
       });
@@ -804,7 +797,6 @@ describe('ReviewRepository', () => {
 
       // Update the review after submission
       await reviewRepo.updateAfterSubmission(review.id, {
-        githubReviewId: 999,
         event: 'APPROVE',
         reviewData: { event: 'APPROVE' }
       });

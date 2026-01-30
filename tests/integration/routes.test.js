@@ -38,14 +38,16 @@ const mockGitHubResponses = {
     deletions: 5
   },
   createReviewGraphQL: {
-    id: 12345,
+    id: 'PRR_review12345',
+    databaseId: 12345,
     html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
     comments_count: 2,
     submitted_at: new Date().toISOString(),
     state: 'APPROVED'
   },
   createDraftReviewGraphQL: {
-    id: 12346,
+    id: 'PRR_draft12346',
+    databaseId: 12346,
     html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
     comments_count: 2,
     state: 'PENDING'
@@ -216,14 +218,16 @@ describe('PR Management Endpoints', () => {
     vi.clearAllMocks();
     // Restore default mock responses for GitHub client
     vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue({
-      id: 12345,
+      id: 'PRR_review12345',
+      databaseId: 12345,
       html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12345',
       comments_count: 2,
       submitted_at: new Date().toISOString(),
       state: 'APPROVED'
     });
     vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue({
-      id: 12346,
+      id: 'PRR_draft12346',
+      databaseId: 12346,
       html_url: 'https://github.com/owner/repo/pull/1#pullrequestreview-12346',
       comments_count: 2,
       state: 'PENDING'
@@ -2248,7 +2252,14 @@ describe('Review Submission Endpoint', () => {
         comments: { totalCount: 3 }
       };
       GitHubClient.prototype.getPendingReviewForUser.mockResolvedValueOnce(existingDraft);
-      GitHubClient.prototype.addCommentsInBatches.mockResolvedValueOnce({ successCount: 1, failed: false });
+      // Mock createDraftReviewGraphQL to return existing draft info (since it now handles existing drafts)
+      GitHubClient.prototype.createDraftReviewGraphQL.mockResolvedValueOnce({
+        id: 'PRR_existing123',
+        databaseId: null, // databaseId not available when adding to existing draft
+        html_url: null, // URL not available from existing review ID alone
+        state: 'PENDING',
+        comments_count: 1
+      });
 
       // Insert a comment to submit
       await run(db, `
@@ -2262,20 +2273,20 @@ describe('Review Submission Endpoint', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
-      expect(response.body.github_review_id).toBe('PRR_existing123');
 
-      // Should NOT have created a new draft
-      expect(GitHubClient.prototype.createDraftReviewGraphQL).not.toHaveBeenCalled();
-
-      // Should have added comments to the existing draft via addCommentsInBatches
-      expect(GitHubClient.prototype.addCommentsInBatches).toHaveBeenCalledWith(
+      // Should have called createDraftReviewGraphQL with the existing draft ID as 4th argument
+      expect(GitHubClient.prototype.createDraftReviewGraphQL).toHaveBeenCalledWith(
         'PR_node123', // prNodeId
-        'PRR_existing123', // existingDraft.id
-        expect.any(Array) // graphqlComments
+        'Draft review', // body
+        expect.any(Array), // graphqlComments
+        'PRR_existing123' // existingDraft.id
       );
 
-      // Verify the response uses the existing draft's URL
+      // Verify the response uses the existing draft's URL (falls back from null to existingDraft.url)
       expect(response.body.github_url).toBe('https://github.com/owner/repo/pull/1#pullrequestreview-99999');
+
+      // Verify comments_count includes existing comments (3) + newly added (1)
+      expect(response.body.comments_submitted).toBe(4);
     });
 
     it('should pass existing draft ID to createReviewGraphQL for non-DRAFT submissions', async () => {
