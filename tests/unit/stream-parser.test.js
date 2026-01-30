@@ -21,7 +21,7 @@ vi.mock('../../src/utils/logger', () => {
   };
 });
 
-const { StreamParser, truncateSnippet, stripPathPrefix, parseClaudeLine, parseCodexLine } = require('../../src/ai/stream-parser');
+const { StreamParser, truncateSnippet, stripPathPrefix, extractToolDetail, parseClaudeLine, parseCodexLine, parseGeminiLine, parseOpenCodeLine } = require('../../src/ai/stream-parser');
 
 // ---------------------------------------------------------------------------
 // truncateSnippet
@@ -855,6 +855,80 @@ describe('stripPathPrefix', () => {
 });
 
 // ---------------------------------------------------------------------------
+// extractToolDetail
+// ---------------------------------------------------------------------------
+describe('extractToolDetail', () => {
+  it('returns empty string for null/undefined input', () => {
+    expect(extractToolDetail(null)).toBe('');
+    expect(extractToolDetail(undefined)).toBe('');
+  });
+
+  it('extracts command field', () => {
+    expect(extractToolDetail({ command: 'git diff HEAD' })).toBe('git diff HEAD');
+  });
+
+  it('extracts description field', () => {
+    expect(extractToolDetail({ description: 'Explore codebase structure' })).toBe('Explore codebase structure');
+  });
+
+  it('prefers command over description', () => {
+    expect(extractToolDetail({ command: 'ls', description: 'list files' })).toBe('ls');
+  });
+
+  it('prefers description over file_path', () => {
+    expect(extractToolDetail({ description: 'Read config', file_path: '/src/config.js' })).toBe('Read config');
+  });
+
+  it('extracts file_path field', () => {
+    expect(extractToolDetail({ file_path: '/src/app.js' })).toBe('/src/app.js');
+  });
+
+  it('extracts filePath (camelCase) field', () => {
+    expect(extractToolDetail({ filePath: '/src/app.js' })).toBe('/src/app.js');
+  });
+
+  it('prefers file_path over filePath', () => {
+    expect(extractToolDetail({ file_path: '/a.js', filePath: '/b.js' })).toBe('/a.js');
+  });
+
+  it('extracts path field', () => {
+    expect(extractToolDetail({ path: '/src' })).toBe('/src');
+  });
+
+  it('strips cwd from file_path', () => {
+    expect(extractToolDetail({ file_path: '/tmp/wt/src/app.js' }, '/tmp/wt')).toBe('src/app.js');
+  });
+
+  it('strips cwd from filePath', () => {
+    expect(extractToolDetail({ filePath: '/tmp/wt/src/app.js' }, '/tmp/wt')).toBe('src/app.js');
+  });
+
+  it('strips cwd from path', () => {
+    expect(extractToolDetail({ path: '/tmp/wt/src' }, '/tmp/wt')).toBe('src');
+  });
+
+  it('returns empty string for object with no recognized fields', () => {
+    expect(extractToolDetail({ foo: 'bar' })).toBe('');
+  });
+
+  it('parses JSON string input', () => {
+    expect(extractToolDetail(JSON.stringify({ command: 'git log' }))).toBe('git log');
+  });
+
+  it('parses JSON string with filePath', () => {
+    expect(extractToolDetail(JSON.stringify({ filePath: '/src/index.js' }))).toBe('/src/index.js');
+  });
+
+  it('returns plain string input when not valid JSON', () => {
+    expect(extractToolDetail('not-json')).toBe('not-json');
+  });
+
+  it('returns empty string for non-string non-object', () => {
+    expect(extractToolDetail(42)).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parseClaudeLine with cwd option
 // ---------------------------------------------------------------------------
 describe('parseClaudeLine with cwd option', () => {
@@ -915,6 +989,39 @@ describe('parseClaudeLine with cwd option', () => {
     expect(result.type).toBe('assistant_text');
     expect(result.text).toBe('Hello');
   });
+
+  it('extracts description from Task tool_use', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          name: 'Task',
+          input: { description: 'Explore codebase structure' }
+        }]
+      }
+    });
+    const result = parseClaudeLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('Task: Explore codebase structure');
+  });
+
+  it('extracts filePath (camelCase) from tool_use', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          name: 'Read',
+          input: { filePath: '/tmp/wt/src/app.js' }
+        }]
+      }
+    });
+    const result = parseClaudeLine(line, { cwd: '/tmp/wt' });
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('src/app.js');
+    expect(result.text).not.toContain('/tmp/wt');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -961,5 +1068,473 @@ describe('parseCodexLine with cwd option', () => {
     });
     const result = parseCodexLine(line);
     expect(result.text).toContain('/tmp/worktree-abc/src/app.js');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseGeminiLine
+// ---------------------------------------------------------------------------
+describe('parseGeminiLine', () => {
+  it('returns null for empty/null/undefined input', () => {
+    expect(parseGeminiLine(null)).toBeNull();
+    expect(parseGeminiLine(undefined)).toBeNull();
+    expect(parseGeminiLine('')).toBeNull();
+    expect(parseGeminiLine('   ')).toBeNull();
+  });
+
+  it('returns null for non-JSON lines', () => {
+    expect(parseGeminiLine('not json at all')).toBeNull();
+  });
+
+  it('parses assistant message as assistant_text', () => {
+    const line = JSON.stringify({
+      type: 'message',
+      role: 'assistant',
+      content: 'Analyzing the diff now...'
+    });
+    const result = parseGeminiLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Analyzing the diff now...');
+    expect(result.timestamp).toBeGreaterThan(0);
+  });
+
+  it('returns null for user messages', () => {
+    const line = JSON.stringify({
+      type: 'message',
+      role: 'user',
+      content: 'Review this code'
+    });
+    expect(parseGeminiLine(line)).toBeNull();
+  });
+
+  it('returns null for assistant message with empty content', () => {
+    const line = JSON.stringify({
+      type: 'message',
+      role: 'assistant',
+      content: ''
+    });
+    expect(parseGeminiLine(line)).toBeNull();
+  });
+
+  it('returns null for assistant message with whitespace-only content', () => {
+    const line = JSON.stringify({
+      type: 'message',
+      role: 'assistant',
+      content: '   '
+    });
+    expect(parseGeminiLine(line)).toBeNull();
+  });
+
+  it('returns null for assistant message with no content field', () => {
+    const line = JSON.stringify({
+      type: 'message',
+      role: 'assistant'
+    });
+    expect(parseGeminiLine(line)).toBeNull();
+  });
+
+  it('parses tool_use with tool_name and command parameter', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      tool_name: 'run_shell_command',
+      parameters: { command: 'git diff HEAD~1' }
+    });
+    const result = parseGeminiLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('run_shell_command: git diff HEAD~1');
+  });
+
+  it('parses tool_use with file_path parameter', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      tool_name: 'read_file',
+      parameters: { file_path: '/src/app.js' }
+    });
+    const result = parseGeminiLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('read_file: /src/app.js');
+  });
+
+  it('parses tool_use with path parameter', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      tool_name: 'glob',
+      parameters: { path: '/src' }
+    });
+    const result = parseGeminiLine(line);
+    expect(result.text).toBe('glob: /src');
+  });
+
+  it('parses tool_use with no parameters', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      tool_name: 'list_directory'
+    });
+    const result = parseGeminiLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('list_directory');
+  });
+
+  it('defaults tool_name to unknown', () => {
+    const line = JSON.stringify({ type: 'tool_use' });
+    const result = parseGeminiLine(line);
+    expect(result.text).toBe('unknown');
+  });
+
+  it('returns null for init events', () => {
+    const line = JSON.stringify({ type: 'init', session_id: 'abc', model: 'gemini-2.5-pro' });
+    expect(parseGeminiLine(line)).toBeNull();
+  });
+
+  it('returns null for tool_result events', () => {
+    const line = JSON.stringify({ type: 'tool_result', tool_id: 'abc', status: 'ok', output: 'data' });
+    expect(parseGeminiLine(line)).toBeNull();
+  });
+
+  it('returns null for result events', () => {
+    const line = JSON.stringify({ type: 'result', stats: { total_tokens: 5000 } });
+    expect(parseGeminiLine(line)).toBeNull();
+  });
+
+  it('truncates long assistant text', () => {
+    const longText = 'x'.repeat(300);
+    const line = JSON.stringify({ type: 'message', role: 'assistant', content: longText });
+    const result = parseGeminiLine(line);
+    expect(result.text.length).toBe(201); // 200 + ellipsis
+    expect(result.text.endsWith('…')).toBe(true);
+  });
+
+  it('truncates long tool_use text', () => {
+    const longCmd = 'git diff ' + 'x'.repeat(300);
+    const line = JSON.stringify({
+      type: 'tool_use',
+      tool_name: 'run_shell_command',
+      parameters: { command: longCmd }
+    });
+    const result = parseGeminiLine(line);
+    expect(result.text.length).toBeLessThanOrEqual(201);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseGeminiLine with cwd option
+// ---------------------------------------------------------------------------
+describe('parseGeminiLine with cwd option', () => {
+  it('strips cwd prefix from file_path in tool_use', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      tool_name: 'read_file',
+      parameters: { file_path: '/tmp/worktree-abc/src/index.js' }
+    });
+    const result = parseGeminiLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('src/index.js');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('strips cwd prefix from path in tool_use', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      tool_name: 'glob',
+      parameters: { path: '/tmp/worktree-abc/src' }
+    });
+    const result = parseGeminiLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.text).toContain('src');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('does not strip when cwd not provided', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      tool_name: 'read_file',
+      parameters: { file_path: '/tmp/worktree-abc/src/index.js' }
+    });
+    const result = parseGeminiLine(line);
+    expect(result.text).toContain('/tmp/worktree-abc/src/index.js');
+  });
+
+  it('does not affect assistant_text events', () => {
+    const line = JSON.stringify({ type: 'message', role: 'assistant', content: 'Hello' });
+    const result = parseGeminiLine(line, { cwd: '/tmp' });
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Hello');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseOpenCodeLine
+// ---------------------------------------------------------------------------
+describe('parseOpenCodeLine', () => {
+  it('returns null for empty/null/undefined input', () => {
+    expect(parseOpenCodeLine(null)).toBeNull();
+    expect(parseOpenCodeLine(undefined)).toBeNull();
+    expect(parseOpenCodeLine('')).toBeNull();
+    expect(parseOpenCodeLine('   ')).toBeNull();
+  });
+
+  it('returns null for non-JSON lines', () => {
+    expect(parseOpenCodeLine('not json')).toBeNull();
+  });
+
+  it('parses text event with part.text as assistant_text', () => {
+    const line = JSON.stringify({
+      type: 'text',
+      part: { type: 'text', text: 'Looking at the changes...' }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Looking at the changes...');
+    expect(result.timestamp).toBeGreaterThan(0);
+  });
+
+  it('parses text event with direct event.text', () => {
+    const line = JSON.stringify({
+      type: 'text',
+      text: 'Direct text content'
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Direct text content');
+  });
+
+  it('returns null for text event with empty text', () => {
+    const line = JSON.stringify({
+      type: 'text',
+      part: { type: 'text', text: '' }
+    });
+    expect(parseOpenCodeLine(line)).toBeNull();
+  });
+
+  it('returns null for text event with whitespace-only text', () => {
+    const line = JSON.stringify({
+      type: 'text',
+      part: { type: 'text', text: '   ' }
+    });
+    expect(parseOpenCodeLine(line)).toBeNull();
+  });
+
+  it('parses tool_use event with part.tool and state.input command', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        type: 'tool',
+        tool: 'bash',
+        callID: 'abc123',
+        state: { input: { command: 'git diff HEAD~1' } }
+      }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('bash: git diff HEAD~1');
+  });
+
+  it('parses tool_call event with part.tool and file_path', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      part: {
+        tool: 'read',
+        state: { input: { file_path: '/src/app.js' } }
+      }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('read: /src/app.js');
+  });
+
+  it('parses tool_use with path parameter', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'glob',
+        state: { input: { path: '/src' } }
+      }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.text).toBe('glob: /src');
+  });
+
+  it('parses tool_use with filePath (camelCase) in state.input', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'read',
+        state: { input: { filePath: '/src/app.js' } }
+      }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('read: /src/app.js');
+  });
+
+  it('parses tool_use with description field (Task tool)', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'Task',
+        state: { input: { description: 'Explore codebase structure' } }
+      }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('Task: Explore codebase structure');
+  });
+
+  it('parses tool_use with filePath in JSON-encoded string args', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'read',
+        input: JSON.stringify({ filePath: '/src/index.js', offset: 10, limit: 50 })
+      }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('read: /src/index.js');
+  });
+
+  it('parses tool_use with no input', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: { tool: 'list_files' }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('list_files');
+  });
+
+  it('parses tool_use with string arguments (JSON-encoded)', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'bash',
+        input: JSON.stringify({ command: 'ls -la' })
+      }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('bash: ls -la');
+  });
+
+  it('parses tool_use with string arguments (plain string)', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'bash',
+        input: 'not-json-string'
+      }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('bash: not-json-string');
+  });
+
+  it('defaults tool name to unknown', () => {
+    const line = JSON.stringify({ type: 'tool_use', part: {} });
+    const result = parseOpenCodeLine(line);
+    expect(result.text).toBe('unknown');
+  });
+
+  it('returns null for step_start events', () => {
+    const line = JSON.stringify({ type: 'step_start' });
+    expect(parseOpenCodeLine(line)).toBeNull();
+  });
+
+  it('returns null for step_finish events', () => {
+    const line = JSON.stringify({ type: 'step_finish', part: { reason: 'end_turn' } });
+    expect(parseOpenCodeLine(line)).toBeNull();
+  });
+
+  it('returns null for tool_result events', () => {
+    const line = JSON.stringify({
+      type: 'tool_result',
+      part: { tool_use_id: 'abc', output: 'file contents here' }
+    });
+    expect(parseOpenCodeLine(line)).toBeNull();
+  });
+
+  it('truncates long assistant text', () => {
+    const longText = 'y'.repeat(300);
+    const line = JSON.stringify({ type: 'text', part: { text: longText } });
+    const result = parseOpenCodeLine(line);
+    expect(result.text.length).toBe(201);
+    expect(result.text.endsWith('…')).toBe(true);
+  });
+
+  it('truncates long tool_use text', () => {
+    const longCmd = 'git diff ' + 'z'.repeat(300);
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: { tool: 'bash', state: { input: { command: longCmd } } }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.text.length).toBeLessThanOrEqual(201);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseOpenCodeLine with cwd option
+// ---------------------------------------------------------------------------
+describe('parseOpenCodeLine with cwd option', () => {
+  it('strips cwd prefix from file_path in tool_use', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'read',
+        state: { input: { file_path: '/tmp/worktree-abc/src/index.js' } }
+      }
+    });
+    const result = parseOpenCodeLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('src/index.js');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('strips cwd prefix from path in tool_use', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'glob',
+        state: { input: { path: '/tmp/worktree-abc/src' } }
+      }
+    });
+    const result = parseOpenCodeLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.text).toContain('src');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('strips cwd from JSON-encoded string arguments', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'read',
+        input: JSON.stringify({ file_path: '/tmp/worktree-abc/src/app.js' })
+      }
+    });
+    const result = parseOpenCodeLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.text).toContain('src/app.js');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('does not strip when cwd not provided', () => {
+    const line = JSON.stringify({
+      type: 'tool_use',
+      part: {
+        tool: 'read',
+        state: { input: { file_path: '/tmp/worktree-abc/src/index.js' } }
+      }
+    });
+    const result = parseOpenCodeLine(line);
+    expect(result.text).toContain('/tmp/worktree-abc/src/index.js');
+  });
+
+  it('does not affect assistant_text events', () => {
+    const line = JSON.stringify({ type: 'text', part: { text: 'Hello' } });
+    const result = parseOpenCodeLine(line, { cwd: '/tmp' });
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Hello');
   });
 });

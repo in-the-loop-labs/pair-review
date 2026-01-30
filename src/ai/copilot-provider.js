@@ -169,6 +169,8 @@ class CopilotProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
+      // Note: Copilot does not support streaming — output is plain text returned on process exit, not JSONL.
+      // onStreamEvent is therefore not destructured here (no StreamParser integration).
       const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess } = options;
 
       const levelPrefix = `[Level ${level}]`;

@@ -47,6 +47,41 @@ function stripPathPrefix(filePath, cwdPrefix) {
 }
 
 /**
+ * Extract a human-readable detail string from tool input/arguments.
+ * Shared across all provider-specific line parsers.
+ *
+ * Priority: command > description > file_path/filePath/path
+ *
+ * @param {Object|string|null} input - Tool input (object or JSON string)
+ * @param {string} [cwd] - Working directory to strip from file paths
+ * @returns {string} Detail string for display (may be empty)
+ */
+function extractToolDetail(input, cwd) {
+  if (!input) return '';
+
+  let parsed = input;
+  if (typeof input === 'string') {
+    try { parsed = JSON.parse(input); } catch { return input; }
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) {
+    return typeof parsed === 'string' ? parsed : '';
+  }
+
+  // Command execution (bash, shell, etc.)
+  if (parsed.command) return parsed.command;
+
+  // Task/agent description (Claude Code Task tool, etc.)
+  if (parsed.description) return parsed.description;
+
+  // File path (various field naming conventions)
+  const rawPath = parsed.file_path || parsed.filePath || parsed.path;
+  if (rawPath) return cwd ? stripPathPrefix(rawPath, cwd) : rawPath;
+
+  return '';
+}
+
+/**
  * Parse a single Claude stream-json line into a normalized event.
  * Returns null if the line should not be emitted (e.g. tool_result, system, result).
  *
@@ -99,16 +134,7 @@ function parseClaudeLine(line, options = {}) {
         }
         if (block.type === 'tool_use' && !toolUseEvent) {
           const toolName = block.name || 'unknown';
-          let detail = '';
-          const input = block.input;
-          if (input) {
-            if (input.command) {
-              detail = input.command;
-            } else if (input.file_path || input.path) {
-              const rawPath = input.file_path || input.path;
-              detail = cwd ? stripPathPrefix(rawPath, cwd) : rawPath;
-            }
-          }
+          const detail = extractToolDetail(block.input, cwd);
           const text = detail ? `${toolName}: ${detail}` : toolName;
           toolUseEvent = {
             type: 'tool_use',
@@ -167,24 +193,7 @@ function parseCodexLine(line, options = {}) {
 
     if (itemType === 'function_call' || itemType === 'tool_call' || itemType === 'tool_use') {
       const toolName = item.name || item.tool || 'unknown';
-      let detail = '';
-      const args = item.arguments || item.input || item.args || null;
-      if (args) {
-        let parsed = args;
-        if (typeof args === 'string') {
-          try { parsed = JSON.parse(args); } catch { parsed = args; }
-        }
-        if (typeof parsed === 'string') {
-          detail = parsed;
-        } else if (typeof parsed === 'object' && parsed !== null) {
-          if (parsed.command) {
-            detail = parsed.command;
-          } else if (parsed.file_path || parsed.path) {
-            const rawPath = parsed.file_path || parsed.path;
-            detail = cwd ? stripPathPrefix(rawPath, cwd) : rawPath;
-          }
-        }
-      }
+      const detail = extractToolDetail(item.arguments || item.input || item.args, cwd);
       const text = detail ? `${toolName}: ${detail}` : toolName;
       return {
         type: 'tool_use',
@@ -203,12 +212,117 @@ function parseCodexLine(line, options = {}) {
 }
 
 /**
+ * Parse a single Gemini stream-json JSONL line into a normalized event.
+ * Returns null if the line should not be emitted.
+ *
+ * Gemini stream-json event types:
+ * - message (role: "assistant") → assistant_text
+ * - tool_use (tool_name, parameters) → tool_use
+ * - init, message (role: "user"), tool_result, result → filtered out
+ *
+ * @param {string} line - A single JSONL line from Gemini stdout
+ * @param {Object} [options] - Parse options
+ * @param {string} [options.cwd] - Working directory to strip from file paths
+ * @returns {{ type: string, text: string, timestamp: number } | null}
+ */
+function parseGeminiLine(line, options = {}) {
+  if (!line || !line.trim()) return null;
+
+  const { cwd } = options;
+
+  try {
+    const event = JSON.parse(line);
+    const eventType = event.type;
+
+    if (eventType === 'message' && event.role === 'assistant' && event.content && event.content.trim()) {
+      return {
+        type: 'assistant_text',
+        text: truncateSnippet(event.content),
+        timestamp: Date.now()
+      };
+    }
+
+    if (eventType === 'tool_use') {
+      const toolName = event.tool_name || 'unknown';
+      const detail = extractToolDetail(event.parameters, cwd);
+      const text = detail ? `${toolName}: ${detail}` : toolName;
+      return {
+        type: 'tool_use',
+        text: truncateSnippet(text),
+        timestamp: Date.now()
+      };
+    }
+
+    // init, user messages, tool_result, result — never emit
+    return null;
+  } catch {
+    // Best-effort side channel — silently ignore non-JSON or malformed lines.
+    return null;
+  }
+}
+
+/**
+ * Parse a single OpenCode JSONL line into a normalized event.
+ * Returns null if the line should not be emitted.
+ *
+ * OpenCode JSONL event types:
+ * - text (part.text or event.text) → assistant_text
+ * - tool_call / tool_use (part.tool, part.state.input) → tool_use
+ * - step_start, step_finish, tool_result → filtered out
+ *
+ * @param {string} line - A single JSONL line from OpenCode stdout
+ * @param {Object} [options] - Parse options
+ * @param {string} [options.cwd] - Working directory to strip from file paths
+ * @returns {{ type: string, text: string, timestamp: number } | null}
+ */
+function parseOpenCodeLine(line, options = {}) {
+  if (!line || !line.trim()) return null;
+
+  const { cwd } = options;
+
+  try {
+    const event = JSON.parse(line);
+    const eventType = event.type;
+
+    if (eventType === 'text') {
+      const text = event.part?.text || event.text || '';
+      if (text.trim()) {
+        return {
+          type: 'assistant_text',
+          text: truncateSnippet(text),
+          timestamp: Date.now()
+        };
+      }
+      return null;
+    }
+
+    if (eventType === 'tool_call' || eventType === 'tool_use') {
+      const part = event.part || {};
+      const toolName = part.tool || part.name || part.tool_name || 'unknown';
+      const detail = extractToolDetail(part.state?.input || part.input || part.arguments, cwd);
+      const text = detail ? `${toolName}: ${detail}` : toolName;
+      return {
+        type: 'tool_use',
+        text: truncateSnippet(text),
+        timestamp: Date.now()
+      };
+    }
+
+    // step_start, step_finish, tool_result — filtered out
+    return null;
+  } catch {
+    // Best-effort side channel — silently ignore non-JSON or malformed lines.
+    return null;
+  }
+}
+
+/**
  * Line-buffered stream parser that handles partial lines across chunks.
  * Feeds data incrementally and calls onEvent for each parsed event.
  */
 class StreamParser {
   /**
-   * @param {Function} parseLine - Provider-specific line parser (parseClaudeLine or parseCodexLine)
+   * @param {Function} parseLine - Provider-specific line parser (e.g. parseClaudeLine, parseGeminiLine)
    * @param {Function} onEvent - Callback receiving normalized events { type, text, timestamp }
    * @param {Object} [options] - Options passed through to parseLine (e.g. { cwd })
    */
@@ -267,6 +381,9 @@ module.exports = {
   StreamParser,
   truncateSnippet,
   stripPathPrefix,
+  extractToolDetail,
   parseClaudeLine,
-  parseCodexLine
+  parseCodexLine,
+  parseGeminiLine,
+  parseOpenCodeLine
 };

@@ -11,6 +11,7 @@ const { AIProvider, registerProvider } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
+const { StreamParser, parseGeminiLine } = require('./stream-parser');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -173,7 +174,7 @@ class GeminiProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent } = options;
 
       const levelPrefix = `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Gemini CLI...`);
@@ -212,6 +213,11 @@ class GeminiProvider extends AIProvider {
         fn(value);
       };
 
+      // Set up side-channel stream parser for live progress events
+      const streamParser = onStreamEvent
+        ? new StreamParser(parseGeminiLine, onStreamEvent, { cwd })
+        : null;
+
       // Set timeout
       if (timeout) {
         timeoutId = setTimeout(() => {
@@ -225,6 +231,11 @@ class GeminiProvider extends AIProvider {
       gemini.stdout.on('data', (data) => {
         const chunk = data.toString();
         stdout += chunk;
+
+        // Feed side-channel stream parser for live progress events
+        if (streamParser) {
+          streamParser.feed(chunk);
+        }
 
         // Parse JSONL lines as they arrive for streaming debug output
         lineBuffer += chunk;
@@ -248,6 +259,11 @@ class GeminiProvider extends AIProvider {
       // Handle completion
       gemini.on('close', (code) => {
         if (settled) return;  // Already settled by timeout or error
+
+        // Flush any remaining stream parser buffer
+        if (streamParser) {
+          streamParser.flush();
+        }
 
         // Check for cancellation signals (SIGTERM=143, SIGKILL=137)
         const isCancellationCode = code === 143 || code === 137;
