@@ -152,10 +152,58 @@ function normalizeRepository(owner, repo) {
   return `${trimmedOwner.toLowerCase()}/${trimmedRepo.toLowerCase()}`;
 }
 
+/**
+ * Resolve git rename syntax to extract the new filename.
+ *
+ * Git represents renames with curly-brace syntax:
+ *   "tests/{old.js => new.js}"      → "tests/new.js"
+ *   "{old-dir => new-dir}/file.js"  → "new-dir/file.js"
+ *   "a/{b => c}/d.js"              → "a/c/d.js"
+ *
+ * @param {string} fileName - File name possibly containing rename syntax
+ * @returns {string} Resolved file name with the new path, or original if no rename syntax
+ *
+ * @example
+ * resolveRenamedFile('tests/{old.js => new.js}')  // => 'tests/new.js'
+ * resolveRenamedFile('{old-dir => new-dir}/file.js')  // => 'new-dir/file.js'
+ * resolveRenamedFile('a/{b => c}/d.js')  // => 'a/c/d.js'
+ * resolveRenamedFile('src/foo.js')  // => 'src/foo.js'
+ * resolveRenamedFile(null)  // => null
+ */
+function resolveRenamedFile(fileName) {
+  if (!fileName) return fileName;
+  return fileName.replace(/\{[^}]*\s*=>\s*([^}]*)\}/, '$1').replace(/\/+/g, '/').replace(/^\//, '');
+}
+
+/**
+ * Resolve git rename syntax to extract the OLD filename.
+ *
+ * Git represents renames with curly-brace syntax:
+ *   "tests/{old.js => new.js}"      → "tests/old.js"
+ *   "{old-dir => new-dir}/file.js"  → "old-dir/file.js"
+ *   "a/{b => c}/d.js"              → "a/b/d.js"
+ *
+ * @param {string} fileName - File name possibly containing rename syntax
+ * @returns {string} Resolved file name with the old path, or original if no rename syntax
+ *
+ * @example
+ * resolveRenamedFileOld('tests/{old.js => new.js}')  // => 'tests/old.js'
+ * resolveRenamedFileOld('{old-dir => new-dir}/file.js')  // => 'old-dir/file.js'
+ * resolveRenamedFileOld('a/{b => c}/d.js')  // => 'a/b/d.js'
+ * resolveRenamedFileOld('src/foo.js')  // => 'src/foo.js'
+ * resolveRenamedFileOld(null)  // => null
+ */
+function resolveRenamedFileOld(fileName) {
+  if (!fileName) return fileName;
+  return fileName.replace(/\{([^}]*?)\s*=>\s*[^}]*\}/, '$1').replace(/\/+/g, '/').replace(/^\//, '');
+}
+
 module.exports = {
   normalizePath,
   pathsEqual,
   pathExistsInList,
   pathExistsInSet,
-  normalizeRepository
+  normalizeRepository,
+  resolveRenamedFile,
+  resolveRenamedFileOld
 };
