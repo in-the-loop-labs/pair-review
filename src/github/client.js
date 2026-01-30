@@ -303,13 +303,13 @@ class GitHubClient {
    * @param {string} reviewId - GraphQL node ID for the pending review
    * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
    * @param {number} batchSize - Number of comments per batch (default: 25)
-   * @returns {Promise<Object>} Result with successCount and failed flag
+   * @returns {Promise<Object>} Result with successCount, failed flag, and failedDetails array of error strings
    */
   // Batch size of 25 is empirically chosen to stay well under GitHub's GraphQL
   // mutation size limits while still being efficient for large reviews.
   async addCommentsInBatches(prNodeId, reviewId, comments, batchSize = 25) {
     if (comments.length === 0) {
-      return { successCount: 0, failed: false };
+      return { successCount: 0, failed: false, failedDetails: [] };
     }
 
     // Split comments into batches
@@ -321,6 +321,7 @@ class GitHubClient {
     console.log(`Adding ${comments.length} comments in ${batches.length} batch(es) of up to ${batchSize} comments each`);
 
     let totalSuccessful = 0;
+    const failedDetails = [];
 
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
       const batch = batches[batchIndex];
@@ -402,6 +403,19 @@ class GitHubClient {
 
       // Check if batch succeeded
       if (batchError) {
+        // Build a map of per-comment errors from the GraphQL errors array.
+        // Each GraphQL error has a `path` like ["comment0"] that maps to the
+        // mutation alias, letting us match errors to specific comments.
+        const perCommentErrors = {};
+        if (batchError.errors && Array.isArray(batchError.errors)) {
+          for (const err of batchError.errors) {
+            if (err.path && err.path.length > 0) {
+              const alias = err.path[0]; // e.g. "comment0"
+              perCommentErrors[alias] = err.message || 'Unknown error';
+            }
+          }
+        }
+
         // Check if it's a partial success (error.data contains some results)
         if (batchError.data) {
           console.warn('GraphQL returned partial results with errors:', batchError.errors || batchError.message);
@@ -411,21 +425,31 @@ class GitHubClient {
             if (commentResult && commentResult.thread && commentResult.thread.id) {
               batchSuccessful++;
             } else {
-              console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${batch[i].path}:${batch[i].line || 'file-level'}`);
+              const ghError = perCommentErrors[`comment${i}`] || 'No error details available';
+              const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
+              console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${location} - ${ghError}`);
+              failedDetails.push(`${location} - ${ghError}`);
             }
           }
           // If not all comments in batch succeeded, it's a failure
           if (batchSuccessful < batch.length) {
             console.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
-            return { successCount: totalSuccessful + batchSuccessful, failed: true };
+            return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails };
           }
           // All comments succeeded despite the error being thrown (recovered from partial error)
           console.log(`Batch ${batchNumber} complete (recovered from partial error): ${batchSuccessful} comments added`);
           totalSuccessful += batchSuccessful;
         } else {
           // Total failure of the batch
-          console.error(`CRITICAL: Batch ${batchNumber} failed completely`);
-          return { successCount: totalSuccessful, failed: true };
+          const totalError = batchError.message || 'Unknown error';
+          console.error(`CRITICAL: Batch ${batchNumber} failed completely: ${totalError}`);
+          // Add an entry for each comment in this batch so callers see what was lost
+          for (let i = 0; i < batch.length; i++) {
+            const ghError = perCommentErrors[`comment${i}`] || totalError;
+            const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
+            failedDetails.push(`${location} - ${ghError}`);
+          }
+          return { successCount: totalSuccessful, failed: true, failedDetails };
         }
       } else if (batchResult) {
         // Verify each comment was successfully added
@@ -435,13 +459,15 @@ class GitHubClient {
           if (commentResult && commentResult.thread && commentResult.thread.id) {
             batchSuccessful++;
           } else {
-            console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${batch[i].path}:${batch[i].line || 'file-level'}`);
+            const location = `${batch[i].path}:${batch[i].line || 'file-level'}`;
+            console.warn(`Comment ${i} in batch ${batchNumber} failed to add: ${location} - No error details available`);
+            failedDetails.push(`${location} - No error details available`);
           }
         }
 
         if (batchSuccessful < batch.length) {
           console.error(`CRITICAL: Batch ${batchNumber} had ${batch.length - batchSuccessful} failures`);
-          return { successCount: totalSuccessful + batchSuccessful, failed: true };
+          return { successCount: totalSuccessful + batchSuccessful, failed: true, failedDetails };
         }
 
         totalSuccessful += batchSuccessful;
@@ -450,7 +476,7 @@ class GitHubClient {
     }
 
     console.log(`All ${batches.length} batches complete: ${totalSuccessful} total comments added`);
-    return { successCount: totalSuccessful, failed: false };
+    return { successCount: totalSuccessful, failed: false, failedDetails };
   }
 
   /**
@@ -679,6 +705,7 @@ class GitHubClient {
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
+          const details = batchResult.failedDetails || [];
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to GitHub`);
           // Only clean up the pending review if we created it (not if it was pre-existing)
           if (!usedExistingReview) {
@@ -689,7 +716,8 @@ class GitHubClient {
           } else {
             console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
           }
-          throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub. Check server logs for details.`);
+          const detailSuffix = details.length > 0 ? ` Failures:\n${details.join('\n')}` : '';
+          throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to GitHub.${detailSuffix}`);
         }
       }
 
@@ -804,6 +832,8 @@ class GitHubClient {
 
         if (batchResult.failed) {
           const failedCount = comments.length - successfulComments;
+          const details = batchResult.failedDetails || [];
+          const detailSuffix = details.length > 0 ? ` Failures:\n${details.join('\n')}` : '';
           console.error(`CRITICAL: ${failedCount} of ${comments.length} comments failed to add to draft review`);
           // Only clean up the pending review if we created it (not if it was pre-existing)
           if (!usedExistingReview) {
@@ -813,11 +843,11 @@ class GitHubClient {
             }
             throw new Error(
               `Failed to add ${failedCount} of ${comments.length} comments to draft review. ` +
-              'The draft review has been deleted. Check server logs for details.'
+              `The draft review has been deleted.${detailSuffix}`
             );
           } else {
             console.warn('Skipping cleanup of pre-existing pending review - comments may be partially added');
-            throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to existing draft review. ${successfulComments} comments were added to the GitHub draft. Check the draft on GitHub.`);
+            throw new Error(`Failed to add ${failedCount} of ${comments.length} comments to existing draft review. ${successfulComments} comments were added to the GitHub draft.${detailSuffix}`);
           }
         }
       }

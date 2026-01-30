@@ -782,6 +782,119 @@ describe('GitHubClient', () => {
       expect(result.successCount).toBe(2);
       expect(result.failed).toBe(false);
     });
+
+    it('should include per-comment GitHub error messages in failedDetails on partial failure', async () => {
+      const client = new GitHubClient('test-token');
+      // Simulate a GraphQL partial failure where comment1 fails with a specific GitHub error
+      const errorWithData = new Error('GraphQL partial failure');
+      errorWithData.data = {
+        comment0: { thread: { id: 'thread-0' } },
+        comment1: null // This comment failed
+      };
+      errorWithData.errors = [
+        { path: ['comment1'], message: 'line is not part of the diff' }
+      ];
+
+      const mockGraphql = vi.fn()
+        .mockRejectedValueOnce(errorWithData)  // First attempt
+        .mockRejectedValueOnce(errorWithData); // Retry
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [
+        { path: 'src/good.js', line: 10, side: 'RIGHT', body: 'OK comment' },
+        { path: 'src/bad.js', line: 999, side: 'RIGHT', body: 'Bad comment' }
+      ];
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+
+      expect(result.failed).toBe(true);
+      expect(result.successCount).toBe(1);
+      expect(result.failedDetails).toHaveLength(1);
+      expect(result.failedDetails[0]).toBe('src/bad.js:999 - line is not part of the diff');
+    });
+
+    it('should include error message in failedDetails on total batch failure', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockRejectedValue(new Error('Server unavailable'));
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [
+        { path: 'file1.js', line: 1, side: 'RIGHT', body: 'Comment 1' },
+        { path: 'file2.js', line: 2, side: 'RIGHT', body: 'Comment 2' }
+      ];
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+
+      expect(result.failed).toBe(true);
+      expect(result.successCount).toBe(0);
+      expect(result.failedDetails).toHaveLength(2);
+      // Without per-comment GraphQL errors, each comment gets the batch-level error
+      expect(result.failedDetails[0]).toBe('file1.js:1 - Server unavailable');
+      expect(result.failedDetails[1]).toBe('file2.js:2 - Server unavailable');
+    });
+
+    it('should return empty failedDetails on success', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        comment0: { thread: { id: 'thread-0' } }
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [
+        { path: 'file.js', line: 1, side: 'RIGHT', body: 'Comment' }
+      ];
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+
+      expect(result.failed).toBe(false);
+      expect(result.failedDetails).toEqual([]);
+    });
+
+    it('should include file-level comment failures in failedDetails', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockResolvedValue({
+        comment0: null // File-level comment failed
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [
+        { path: 'README.md', isFileLevel: true, body: 'File-level comment' }
+      ];
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+
+      expect(result.failed).toBe(true);
+      expect(result.failedDetails).toHaveLength(1);
+      expect(result.failedDetails[0]).toBe('README.md:file-level - No error details available');
+    });
+
+    it('should match per-comment GraphQL errors to specific comments on total failure', async () => {
+      const client = new GitHubClient('test-token');
+      // Simulate a total failure that still has per-comment GraphQL error details
+      const error = new Error('GraphQL mutation failed');
+      error.errors = [
+        { path: ['comment0'], message: 'path not found in diff' },
+        { path: ['comment1'], message: 'line is not part of the diff' }
+      ];
+      // No error.data means total failure (no partial results)
+
+      const mockGraphql = vi.fn()
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error);
+      client.octokit.graphql = mockGraphql;
+
+      const comments = [
+        { path: 'deleted-file.js', line: 5, side: 'RIGHT', body: 'Comment 1' },
+        { path: 'other-file.js', line: 100, side: 'RIGHT', body: 'Comment 2' }
+      ];
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', comments, 25);
+
+      expect(result.failed).toBe(true);
+      expect(result.failedDetails).toHaveLength(2);
+      expect(result.failedDetails[0]).toBe('deleted-file.js:5 - path not found in diff');
+      expect(result.failedDetails[1]).toBe('other-file.js:100 - line is not part of the diff');
+    });
   });
 
   describe('calculateDiffPosition', () => {
