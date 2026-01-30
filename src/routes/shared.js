@@ -207,6 +207,87 @@ function isAnalysisCancelled(analysisId) {
   return analysis?.status === 'cancelled';
 }
 
+/**
+ * Create a progress callback for analysis that handles both regular status
+ * updates and throttled stream events with smart filtering.
+ *
+ * Encapsulates the per-level throttle map (300ms), assistant_text preference
+ * (tool_use shown only after 2s gap), and stale-streamEvent clearing logic.
+ *
+ * @param {string} analysisId - Analysis ID for looking up status in activeAnalyses
+ * @returns {Function} progressCallback(progressUpdate)
+ */
+function createProgressCallback(analysisId) {
+  const streamThrottleMap = new Map();
+  const STREAM_THROTTLE_MS = 300;
+  const lastAssistantTextMap = new Map();
+  const TOOL_USE_FALLBACK_MS = 2000;
+
+  return (progressUpdate) => {
+    const currentStatus = activeAnalyses.get(analysisId);
+    if (!currentStatus) return;
+
+    const level = progressUpdate.level;
+    const levelKey = level === 'orchestration' ? 4 : level;
+
+    // Stream event: store latest and throttle broadcasts
+    if (progressUpdate.streamEvent && levelKey) {
+      if (!currentStatus.levels[levelKey]) return;
+
+      const now = Date.now();
+      const evt = progressUpdate.streamEvent;
+
+      // Smart filtering: prefer assistant_text, show tool_use only after 2s gap
+      if (evt.type === 'assistant_text') {
+        lastAssistantTextMap.set(levelKey, now);
+      } else if (evt.type === 'tool_use') {
+        const lastAssistant = lastAssistantTextMap.get(levelKey) || 0;
+        if (now - lastAssistant < TOOL_USE_FALLBACK_MS) {
+          return;
+        }
+      }
+
+      currentStatus.levels[levelKey].streamEvent = evt;
+      activeAnalyses.set(analysisId, currentStatus);
+
+      // Throttle: only broadcast if enough time has elapsed
+      const lastBroadcast = streamThrottleMap.get(levelKey) || 0;
+      if (now - lastBroadcast >= STREAM_THROTTLE_MS) {
+        streamThrottleMap.set(levelKey, now);
+        broadcastProgress(analysisId, currentStatus);
+      }
+      return;
+    }
+
+    // Regular status update (not a stream event)
+    // Update the specific level's status, clearing any stale streamEvent
+    if (level && level >= 1 && level <= 3) {
+      currentStatus.levels[level] = {
+        status: progressUpdate.status || 'running',
+        progress: progressUpdate.progress || 'In progress...',
+        streamEvent: undefined
+      };
+    }
+
+    // Handle orchestration as level 4
+    if (level === 'orchestration') {
+      currentStatus.levels[4] = {
+        status: progressUpdate.status || 'running',
+        progress: progressUpdate.progress || 'Finalizing results...',
+        streamEvent: undefined
+      };
+    }
+
+    // Update overall progress message if provided
+    if (progressUpdate.progress && !level) {
+      currentStatus.progress = progressUpdate.progress;
+    }
+
+    activeAnalyses.set(analysisId, currentStatus);
+    broadcastProgress(analysisId, currentStatus);
+  };
+}
+
 module.exports = {
   CancellationError,
   activeAnalyses,
@@ -220,5 +301,6 @@ module.exports = {
   broadcastProgress,
   registerProcess,
   killProcesses,
-  isAnalysisCancelled
+  isAnalysisCancelled,
+  createProgressCallback
 };

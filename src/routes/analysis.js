@@ -29,7 +29,8 @@ const {
   broadcastProgress,
   killProcesses,
   isAnalysisCancelled,
-  CancellationError
+  CancellationError,
+  createProgressCallback
 } = require('./shared');
 
 const router = express.Router();
@@ -186,78 +187,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
     }
 
-    // Per-level throttle tracking for stream events (300ms minimum interval)
-    const streamThrottleMap = new Map();
-    const STREAM_THROTTLE_MS = 300;
-    // Per-level timestamp of last assistant_text event (for smart filtering)
-    const lastAssistantTextMap = new Map();
-    const TOOL_USE_FALLBACK_MS = 2000; // Show tool_use only after 2s without assistant_text
-
-    // Create progress callback function that tracks each level separately
-    const progressCallback = (progressUpdate) => {
-      const currentStatus = activeAnalyses.get(analysisId);
-      if (!currentStatus) return;
-
-      const level = progressUpdate.level;
-      const levelKey = level === 'orchestration' ? 4 : level;
-
-      // Stream event: store latest and throttle broadcasts
-      if (progressUpdate.streamEvent && levelKey) {
-        if (!currentStatus.levels[levelKey]) return;
-
-        const now = Date.now();
-        const evt = progressUpdate.streamEvent;
-
-        // Smart filtering: prefer assistant_text, show tool_use only after 2s gap
-        if (evt.type === 'assistant_text') {
-          lastAssistantTextMap.set(levelKey, now);
-        } else if (evt.type === 'tool_use') {
-          const lastAssistant = lastAssistantTextMap.get(levelKey) || 0;
-          if (now - lastAssistant < TOOL_USE_FALLBACK_MS) {
-            // Suppress tool_use when we recently had assistant_text
-            return;
-          }
-        }
-
-        currentStatus.levels[levelKey].streamEvent = evt;
-        activeAnalyses.set(analysisId, currentStatus);
-
-        // Throttle: only broadcast if enough time has elapsed
-        const lastBroadcast = streamThrottleMap.get(levelKey) || 0;
-        if (now - lastBroadcast >= STREAM_THROTTLE_MS) {
-          streamThrottleMap.set(levelKey, now);
-          broadcastProgress(analysisId, currentStatus);
-        }
-        return;
-      }
-
-      // Regular status update (not a stream event)
-      // Update the specific level's status, clearing any stale streamEvent
-      if (level && level >= 1 && level <= 3) {
-        currentStatus.levels[level] = {
-          status: progressUpdate.status || 'running',
-          progress: progressUpdate.progress || 'In progress...',
-          streamEvent: undefined
-        };
-      }
-
-      // Handle orchestration as level 4
-      if (level === 'orchestration') {
-        currentStatus.levels[4] = {
-          status: progressUpdate.status || 'running',
-          progress: progressUpdate.progress || 'Finalizing results...',
-          streamEvent: undefined
-        };
-      }
-
-      // Update overall progress message if provided
-      if (progressUpdate.progress && !level) {
-        currentStatus.progress = progressUpdate.progress;
-      }
-
-      activeAnalyses.set(analysisId, currentStatus);
-      broadcastProgress(analysisId, currentStatus);
-    };
+    const progressCallback = createProgressCallback(analysisId);
 
     // Start analysis asynchronously with progress callback and custom instructions
     // Use review.id (not prMetadata.id) to avoid ID collision with local mode

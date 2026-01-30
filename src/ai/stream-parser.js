@@ -10,6 +10,8 @@
  *   { type: 'assistant_text' | 'tool_use', text: string, timestamp: number }
  */
 
+const logger = require('../utils/logger');
+
 /**
  * Collapse whitespace and truncate text for display as a snippet.
  * @param {string} text - Raw text to truncate
@@ -37,8 +39,9 @@ function stripPathPrefix(filePath, cwdPrefix) {
   if (filePath.startsWith(normalized)) {
     return filePath.substring(normalized.length);
   }
-  if (filePath.startsWith(cwdPrefix)) {
-    return filePath.substring(cwdPrefix.length);
+  // Exact match (filePath is the directory itself)
+  if (filePath === cwdPrefix) {
+    return '';
   }
   return filePath;
 }
@@ -235,7 +238,7 @@ class StreamParser {
           this.onEvent(event);
         } catch (error) {
           // Don't let a callback error halt stream processing for the analysis
-          console.error('[StreamParser] onEvent callback error:', error);
+          logger.warn('[StreamParser] onEvent callback error: ' + error.message);
         }
       }
     }
@@ -252,7 +255,7 @@ class StreamParser {
         try {
           this.onEvent(event);
         } catch (error) {
-          console.error('[StreamParser] onEvent callback error:', error);
+          logger.warn('[StreamParser] onEvent callback error: ' + error.message);
         }
       }
     }

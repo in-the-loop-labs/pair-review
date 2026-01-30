@@ -1,6 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Mock logger to suppress output during tests
+vi.mock('../../src/utils/logger', () => {
+  return {
+    default: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      success: vi.fn(),
+      debug: vi.fn(),
+      log: vi.fn()
+    },
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    success: vi.fn(),
+    debug: vi.fn(),
+    log: vi.fn()
+  };
+});
+
 const { StreamParser, truncateSnippet, stripPathPrefix, parseClaudeLine, parseCodexLine } = require('../../src/ai/stream-parser');
 
 // ---------------------------------------------------------------------------
@@ -751,7 +771,6 @@ describe('StreamParser', () => {
     const errorEvent = vi.fn(() => {
       throw new Error('callback explosion');
     });
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const parser = new StreamParser(parseClaudeLine, errorEvent);
     const line1 = JSON.stringify({
@@ -766,16 +785,14 @@ describe('StreamParser', () => {
     // Should not throw, and should process both lines
     parser.feed(line1 + '\n' + line2 + '\n');
 
+    // Both events were attempted despite the callback throwing
     expect(errorEvent).toHaveBeenCalledTimes(2);
-    expect(consoleSpy).toHaveBeenCalledTimes(2);
-    consoleSpy.mockRestore();
   });
 
   it('continues processing after onEvent callback throws in flush()', () => {
     const errorEvent = vi.fn(() => {
       throw new Error('flush explosion');
     });
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const parser = new StreamParser(parseClaudeLine, errorEvent);
     const line = JSON.stringify({
@@ -788,8 +805,6 @@ describe('StreamParser', () => {
     parser.flush();
 
     expect(errorEvent).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledTimes(1);
-    consoleSpy.mockRestore();
   });
 });
 
@@ -827,6 +842,15 @@ describe('stripPathPrefix', () => {
 
   it('handles path that equals prefix exactly', () => {
     expect(stripPathPrefix('/tmp/worktree', '/tmp/worktree')).toBe('');
+  });
+
+  it('does not match prefix that shares a common path segment prefix', () => {
+    // /tmp/work should NOT match /tmp/worker/foo.js
+    expect(stripPathPrefix('/tmp/worker/foo.js', '/tmp/work')).toBe('/tmp/worker/foo.js');
+  });
+
+  it('does not mangle paths with similar directory names', () => {
+    expect(stripPathPrefix('/home/user-extra/file.js', '/home/user')).toBe('/home/user-extra/file.js');
   });
 });
 

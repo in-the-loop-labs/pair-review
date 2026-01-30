@@ -2343,7 +2343,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .modal-container {
   position: relative;
-  width: 960px;
+  width: min(960px, 90vw);
   height: 520px; /* Increased from 420px to show all 4 levels without scrolling */
   background: var(--color-bg-primary, #ffffff);
   border-radius: 20px;
@@ -2468,7 +2468,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   border-radius: 4px;
   padding: 3px 6px;
   margin-top: 4px;
-  max-width: 860px;
+  max-width: calc(100% - 40px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

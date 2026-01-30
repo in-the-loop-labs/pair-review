@@ -450,6 +450,12 @@ class ProgressModal {
     const progressContainer = levelElement.querySelector('.progress-bar-container');
     const snippetEl = levelElement.querySelector('.level-stream-snippet');
 
+    // Default: clear snippet. Only the running+streamEvent branch re-shows it.
+    if (snippetEl) {
+      snippetEl.style.display = 'none';
+      snippetEl.textContent = '';
+    }
+
     // Update icon and status based on current state
     if (levelStatus.status === 'running') {
       icon.className = 'icon active';
@@ -473,13 +479,8 @@ class ProgressModal {
       statusText.textContent = 'Completed';
       statusText.style.display = 'block';
 
-      // Hide progress bar and snippet for completed levels
       if (progressContainer) {
         progressContainer.style.display = 'none';
-      }
-      if (snippetEl) {
-        snippetEl.style.display = 'none';
-        snippetEl.textContent = '';
       }
 
     } else if (levelStatus.status === 'failed') {
@@ -488,13 +489,8 @@ class ProgressModal {
       statusText.textContent = 'Failed';
       statusText.style.display = 'block';
 
-      // Hide progress bar and snippet for failed levels
       if (progressContainer) {
         progressContainer.style.display = 'none';
-      }
-      if (snippetEl) {
-        snippetEl.style.display = 'none';
-        snippetEl.textContent = '';
       }
 
     } else if (levelStatus.status === 'cancelled') {
@@ -503,13 +499,8 @@ class ProgressModal {
       statusText.textContent = 'Cancelled';
       statusText.style.display = 'block';
 
-      // Hide progress bar and snippet for cancelled levels
       if (progressContainer) {
         progressContainer.style.display = 'none';
-      }
-      if (snippetEl) {
-        snippetEl.style.display = 'none';
-        snippetEl.textContent = '';
       }
 
     } else {
@@ -522,10 +513,6 @@ class ProgressModal {
 
       if (progressContainer) {
         progressContainer.style.display = 'none';
-      }
-      if (snippetEl) {
-        snippetEl.style.display = 'none';
-        snippetEl.textContent = '';
       }
     }
 
