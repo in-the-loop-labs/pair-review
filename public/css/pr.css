@@ -295,18 +295,6 @@
   /* Styles handled by individual file items */
 }
 
-.file-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-  border-bottom: 1px solid #f6f8fa;
-}
-
-.file-item:last-child {
-  border-bottom: none;
-}
-
 .file-name {
   font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', 'Menlo', monospace;
   font-size: 13px;
