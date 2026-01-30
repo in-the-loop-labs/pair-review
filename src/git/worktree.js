@@ -6,7 +6,7 @@ const os = require('os');
 const { getConfigDir } = require('../config');
 const { WorktreeRepository, generateWorktreeId } = require('../database');
 const { getGeneratedFilePatterns } = require('./gitattributes');
-const { normalizeRepository } = require('../utils/paths');
+const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
 
 /**
  * Git worktree manager for handling PR branch checkouts and diffs
@@ -294,14 +294,23 @@ class GitWorktreeManager {
       // Parse .gitattributes to identify generated files
       const gitattributes = await getGeneratedFilePatterns(worktreePath);
 
-      return diffSummary.files.map(file => ({
-        file: file.file,
-        insertions: file.insertions,
-        deletions: file.deletions,
-        changes: file.changes,
-        binary: file.binary || false,
-        generated: gitattributes.isGenerated(file.file)
-      }));
+      return diffSummary.files.map(file => {
+        const resolvedFile = resolveRenamedFile(file.file);
+        const isRenamed = resolvedFile !== file.file;
+        const result = {
+          file: resolvedFile,
+          insertions: file.insertions,
+          deletions: file.deletions,
+          changes: file.changes,
+          binary: file.binary || false,
+          generated: gitattributes.isGenerated(resolvedFile)
+        };
+        if (isRenamed) {
+          result.renamed = true;
+          result.renamedFrom = resolveRenamedFileOld(file.file);
+        }
+        return result;
+      });
 
     } catch (error) {
       console.error('Error getting changed files:', error);

@@ -151,22 +151,6 @@ class DiffRenderer {
   }
 
   /**
-   * Resolve git rename syntax to extract the new filename.
-   *
-   * Git represents renames with curly-brace syntax:
-   *   "tests/{old.js => new.js}"      → "tests/new.js"
-   *   "{old-dir => new-dir}/file.js"  → "new-dir/file.js"
-   *   "a/{b => c}/d.js"              → "a/c/d.js"
-   *
-   * @param {string} fileName - File name possibly containing rename syntax
-   * @returns {string} Resolved file name with the new path, or original if no rename syntax
-   */
-  static resolveRenamedFile(fileName) {
-    if (!fileName) return fileName;
-    return fileName.replace(/\{[^}]*\s+=>\s+([^}]*)\}/, '$1');
-  }
-
-  /**
    * Escape HTML characters
    * @param {string} text - Text to escape
    * @returns {string} Escaped text
@@ -349,6 +333,8 @@ class DiffRenderer {
    * @param {boolean} [options.isViewed=false] - Whether file is marked as viewed
    * @param {Object} [options.generatedInfo] - Info about generated file (insertions, deletions)
    * @param {Object} [options.fileStats] - File stats for collapsed view {insertions, deletions}
+   * @param {boolean} [options.renamed=false] - Whether the file was renamed
+   * @param {string|null} [options.renamedFrom=null] - Original file path before rename
    * @param {Function} [options.onToggleCollapse] - Callback for toggling collapse state
    * @param {Function} [options.onToggleViewed] - Callback for toggling viewed state
    * @returns {HTMLElement} File header element
@@ -360,6 +346,8 @@ class DiffRenderer {
       isViewed = false,
       generatedInfo = null,
       fileStats = null,
+      renamed = false,
+      renamedFrom = null,
       onToggleCollapse = null,
       onToggleViewed = null
     } = options;
@@ -391,7 +379,20 @@ class DiffRenderer {
     // File name
     const fileName = document.createElement('span');
     fileName.className = 'd2h-file-name';
-    fileName.textContent = filePath;
+    if (renamed && renamedFrom) {
+      const oldPath = document.createElement('span');
+      oldPath.className = 'file-rename-old-path';
+      oldPath.textContent = renamedFrom;
+      const arrow = document.createElement('span');
+      arrow.className = 'file-rename-arrow';
+      arrow.textContent = '\u2192';
+      const newPath = document.createTextNode(filePath);
+      fileName.appendChild(oldPath);
+      fileName.appendChild(arrow);
+      fileName.appendChild(newPath);
+    } else {
+      fileName.textContent = filePath;
+    }
     fileHeader.appendChild(fileName);
 
     // File stats summary (visible in collapsed view)
@@ -583,17 +584,6 @@ class DiffRenderer {
       const fileName = wrapper.dataset.fileName;
       if (fileName && (fileName === filePath || fileName.endsWith('/' + filePath) || filePath.endsWith('/' + fileName))) {
         return wrapper;
-      }
-    }
-
-    // Try resolving git rename syntax in data-file-name attributes
-    for (const wrapper of allFileWrappers) {
-      const fileName = wrapper.dataset.fileName;
-      if (fileName && fileName.includes('{')) {
-        const resolvedName = DiffRenderer.resolveRenamedFile(fileName);
-        if (resolvedName === filePath || resolvedName.endsWith('/' + filePath) || filePath.endsWith('/' + resolvedName)) {
-          return wrapper;
-        }
       }
     }
 

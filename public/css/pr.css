@@ -963,6 +963,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .file-item .file-changes {
@@ -973,16 +975,38 @@
   margin-left: 8px;
 }
 
-.file-item[data-status="added"] .file-changes {
+.file-additions {
   color: var(--diff-addition-marker, #3fb950);
 }
 
-.file-item[data-status="modified"] .file-changes {
-  color: var(--color-warning, #d29922);
+.file-deletions {
+  color: var(--diff-deletion-marker, #f85149);
+  margin-left: 6px;
 }
 
-.file-item[data-status="deleted"] .file-changes {
-  color: var(--diff-deletion-marker, #f85149);
+.file-item[data-status="renamed"] .file-changes {
+  color: var(--color-fg-muted, #8b949e);
+}
+
+.file-rename-icon-wrapper {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.file-rename-icon {
+  color: var(--color-fg-muted, #8b949e);
+  margin-right: 4px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.file-rename-old-path {
+  opacity: 0.7;
+}
+
+.file-rename-arrow {
+  margin: 0 4px;
 }
 
 .file-item.generated {
