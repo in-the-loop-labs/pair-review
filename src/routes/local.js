@@ -27,7 +27,8 @@ const {
   getModel,
   determineCompletionInfo,
   broadcastProgress,
-  CancellationError
+  CancellationError,
+  createProgressCallback
 } = require('./shared');
 
 const router = express.Router();
@@ -375,37 +376,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
     }
 
-    // Create progress callback function that tracks each level separately
-    const progressCallback = (progressUpdate) => {
-      const currentStatus = activeAnalyses.get(analysisId);
-      if (!currentStatus) return;
-
-      const level = progressUpdate.level;
-
-      // Update the specific level's status
-      if (level && level >= 1 && level <= 3) {
-        currentStatus.levels[level] = {
-          status: progressUpdate.status || 'running',
-          progress: progressUpdate.progress || 'In progress...'
-        };
-      }
-
-      // Handle orchestration as level 4
-      if (level === 'orchestration') {
-        currentStatus.levels[4] = {
-          status: progressUpdate.status || 'running',
-          progress: progressUpdate.progress || 'Finalizing results...'
-        };
-      }
-
-      // Update overall progress message if provided
-      if (progressUpdate.progress && !level) {
-        currentStatus.progress = progressUpdate.progress;
-      }
-
-      activeAnalyses.set(analysisId, currentStatus);
-      broadcastProgress(analysisId, currentStatus);
-    };
+    const progressCallback = createProgressCallback(analysisId);
 
     // Start analysis asynchronously (pass changedFiles for local mode path validation)
     // Pass analysisId for process tracking/cancellation
