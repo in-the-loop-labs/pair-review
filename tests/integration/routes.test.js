@@ -4214,6 +4214,35 @@ describe('Local Review File-Level Comments', () => {
       expect(response.body.suggestions[0].is_file_level).toBe(1);
       expect(response.body.suggestions[1].line_start).toBe(10);
     });
+
+    it('should return suggestions with draft status (parity with PR mode)', async () => {
+      // The local mode endpoint received the same status filter fix as PR mode.
+      // Verify draft suggestions are returned alongside active ones.
+      const runId = 'test-run-local-draft';
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 10, NULL, 'Draft suggestion', 'draft', ?)
+      `, [reviewId, runId]);
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, ai_level, body, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 20, NULL, 'Active suggestion', 'active', ?)
+      `, [reviewId, runId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/suggestions`);
+
+      expect(response.status).toBe(200);
+      const testSuggestions = response.body.suggestions.filter(s => s.ai_run_id === runId);
+      expect(testSuggestions.length).toBe(2);
+
+      const draftSuggestion = testSuggestions.find(s => s.status === 'draft');
+      expect(draftSuggestion).toBeDefined();
+      expect(draftSuggestion.body).toBe('Draft suggestion');
+
+      const activeSuggestion = testSuggestions.find(s => s.status === 'active');
+      expect(activeSuggestion).toBeDefined();
+      expect(activeSuggestion.body).toBe('Active suggestion');
+    });
   });
 });
 
