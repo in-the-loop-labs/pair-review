@@ -168,7 +168,7 @@ class CodexProvider extends AIProvider {
 
       // Set up side-channel stream parser for live progress events
       const streamParser = onStreamEvent
-        ? new StreamParser(parseCodexLine, onStreamEvent)
+        ? new StreamParser(parseCodexLine, onStreamEvent, { cwd })
         : null;
 
       // Set timeout

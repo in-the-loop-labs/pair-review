@@ -2343,7 +2343,7 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .modal-container {
   position: relative;
-  width: 480px;
+  width: 960px;
   height: 520px; /* Increased from 420px to show all 4 levels without scrolling */
   background: var(--color-bg-primary, #ffffff);
   border-radius: 20px;
@@ -2464,20 +2464,14 @@ tr.newly-expanded .d2h-code-line-ctn {
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 12px;
   color: var(--color-text-tertiary, #8b949e);
-  background: var(--color-canvas-subtle, #f6f8fa);
+  background: var(--color-bg-subtle, #f6f8fa);
   border-radius: 4px;
   padding: 3px 6px;
   margin-top: 4px;
-  max-width: 400px;
+  max-width: 860px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-[data-theme="dark"] .level-stream-snippet,
-.dark .level-stream-snippet {
-  color: #8b949e;
-  background: #161b22;
 }
 
 .level-files {

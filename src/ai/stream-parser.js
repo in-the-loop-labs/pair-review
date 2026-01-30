@@ -13,14 +13,34 @@
 /**
  * Collapse whitespace and truncate text for display as a snippet.
  * @param {string} text - Raw text to truncate
- * @param {number} maxLen - Maximum output length (default 100)
+ * @param {number} maxLen - Maximum output length (default 200)
  * @returns {string} Collapsed and truncated text
  */
-function truncateSnippet(text, maxLen = 100) {
+function truncateSnippet(text, maxLen = 200) {
   if (!text) return '';
   const collapsed = text.replace(/\s+/g, ' ').trim();
   if (collapsed.length <= maxLen) return collapsed;
   return collapsed.substring(0, maxLen) + '…';
+}
+
+/**
+ * Strip a worktree/cwd prefix from a file path, returning a relative path.
+ * If the path doesn't start with the prefix, returns the original path.
+ * @param {string} filePath - Absolute file path
+ * @param {string} cwdPrefix - Working directory prefix to strip
+ * @returns {string} Relative path
+ */
+function stripPathPrefix(filePath, cwdPrefix) {
+  if (!filePath || !cwdPrefix) return filePath || '';
+  // Normalize: ensure prefix ends with /
+  const normalized = cwdPrefix.endsWith('/') ? cwdPrefix : cwdPrefix + '/';
+  if (filePath.startsWith(normalized)) {
+    return filePath.substring(normalized.length);
+  }
+  if (filePath.startsWith(cwdPrefix)) {
+    return filePath.substring(cwdPrefix.length);
+  }
+  return filePath;
 }
 
 /**
@@ -35,10 +55,14 @@ function truncateSnippet(text, maxLen = 100) {
  * - system (filtered out)
  *
  * @param {string} line - A single JSONL line from Claude stdout
+ * @param {Object} [options] - Parse options
+ * @param {string} [options.cwd] - Working directory to strip from file paths
  * @returns {{ type: string, text: string, timestamp: number } | null}
  */
-function parseClaudeLine(line) {
+function parseClaudeLine(line, options = {}) {
   if (!line || !line.trim()) return null;
+
+  const { cwd } = options;
 
   try {
     const event = JSON.parse(line);
@@ -58,26 +82,11 @@ function parseClaudeLine(line) {
 
     if (eventType === 'assistant') {
       const content = event.message?.content || [];
-      // Emit the first interesting block we find
+      // Emit the first interesting block (priority: text > tool_use).
+      // Text blocks represent the agent reasoning aloud and are generally
+      // more informative than tool invocations for the human observer.
+      let toolUseEvent = null;
       for (const block of content) {
-        if (block.type === 'tool_use') {
-          const toolName = block.name || 'unknown';
-          let detail = '';
-          const input = block.input;
-          if (input) {
-            if (input.command) {
-              detail = truncateSnippet(input.command, 60);
-            } else if (input.file_path || input.path) {
-              detail = input.file_path || input.path;
-            }
-          }
-          const text = detail ? `${toolName}: ${detail}` : toolName;
-          return {
-            type: 'tool_use',
-            text: truncateSnippet(text),
-            timestamp: Date.now()
-          };
-        }
         if (block.type === 'text' && block.text) {
           return {
             type: 'assistant_text',
@@ -85,14 +94,34 @@ function parseClaudeLine(line) {
             timestamp: Date.now()
           };
         }
+        if (block.type === 'tool_use' && !toolUseEvent) {
+          const toolName = block.name || 'unknown';
+          let detail = '';
+          const input = block.input;
+          if (input) {
+            if (input.command) {
+              detail = input.command;
+            } else if (input.file_path || input.path) {
+              const rawPath = input.file_path || input.path;
+              detail = cwd ? stripPathPrefix(rawPath, cwd) : rawPath;
+            }
+          }
+          const text = detail ? `${toolName}: ${detail}` : toolName;
+          toolUseEvent = {
+            type: 'tool_use',
+            text: truncateSnippet(text),
+            timestamp: Date.now()
+          };
+        }
       }
-      return null;
+      return toolUseEvent;
     }
 
     // tool_result (user), result, system — never emit
     return null;
   } catch {
-    // Non-JSON or malformed line — ignore
+    // Best-effort side channel — silently ignore non-JSON or malformed lines.
+    // The main stdout buffer handles authoritative response parsing.
     return null;
   }
 }
@@ -108,10 +137,14 @@ function parseClaudeLine(line) {
  * - thread.started, turn.started, turn.completed → filtered out
  *
  * @param {string} line - A single JSONL line from Codex stdout
+ * @param {Object} [options] - Parse options
+ * @param {string} [options.cwd] - Working directory to strip from file paths
  * @returns {{ type: string, text: string, timestamp: number } | null}
  */
-function parseCodexLine(line) {
+function parseCodexLine(line, options = {}) {
   if (!line || !line.trim()) return null;
+
+  const { cwd } = options;
 
   try {
     const event = JSON.parse(line);
@@ -139,12 +172,13 @@ function parseCodexLine(line) {
           try { parsed = JSON.parse(args); } catch { parsed = args; }
         }
         if (typeof parsed === 'string') {
-          detail = truncateSnippet(parsed, 60);
+          detail = parsed;
         } else if (typeof parsed === 'object' && parsed !== null) {
           if (parsed.command) {
-            detail = truncateSnippet(parsed.command, 60);
+            detail = parsed.command;
           } else if (parsed.file_path || parsed.path) {
-            detail = parsed.file_path || parsed.path;
+            const rawPath = parsed.file_path || parsed.path;
+            detail = cwd ? stripPathPrefix(rawPath, cwd) : rawPath;
           }
         }
       }
@@ -159,6 +193,8 @@ function parseCodexLine(line) {
     // tool_result, reasoning, etc. — filtered out
     return null;
   } catch {
+    // Best-effort side channel — silently ignore non-JSON or malformed lines.
+    // The main stdout buffer handles authoritative response parsing.
     return null;
   }
 }
@@ -171,10 +207,12 @@ class StreamParser {
   /**
    * @param {Function} parseLine - Provider-specific line parser (parseClaudeLine or parseCodexLine)
    * @param {Function} onEvent - Callback receiving normalized events { type, text, timestamp }
+   * @param {Object} [options] - Options passed through to parseLine (e.g. { cwd })
    */
-  constructor(parseLine, onEvent) {
+  constructor(parseLine, onEvent, options = {}) {
     this.parseLine = parseLine;
     this.onEvent = onEvent;
+    this.options = options;
     this.buffer = '';
   }
 
@@ -191,9 +229,14 @@ class StreamParser {
 
     for (const line of lines) {
       if (!line.trim()) continue;
-      const event = this.parseLine(line);
+      const event = this.parseLine(line, this.options);
       if (event) {
-        this.onEvent(event);
+        try {
+          this.onEvent(event);
+        } catch (error) {
+          // Don't let a callback error halt stream processing for the analysis
+          console.error('[StreamParser] onEvent callback error:', error);
+        }
       }
     }
   }
@@ -204,9 +247,13 @@ class StreamParser {
    */
   flush() {
     if (this.buffer.trim()) {
-      const event = this.parseLine(this.buffer);
+      const event = this.parseLine(this.buffer, this.options);
       if (event) {
-        this.onEvent(event);
+        try {
+          this.onEvent(event);
+        } catch (error) {
+          console.error('[StreamParser] onEvent callback error:', error);
+        }
       }
     }
     this.buffer = '';
@@ -216,6 +263,7 @@ class StreamParser {
 module.exports = {
   StreamParser,
   truncateSnippet,
+  stripPathPrefix,
   parseClaudeLine,
   parseCodexLine
 };

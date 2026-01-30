@@ -378,6 +378,9 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     // Per-level throttle tracking for stream events (300ms minimum interval)
     const streamThrottleMap = new Map();
     const STREAM_THROTTLE_MS = 300;
+    // Per-level timestamp of last assistant_text event (for smart filtering)
+    const lastAssistantTextMap = new Map();
+    const TOOL_USE_FALLBACK_MS = 2000; // Show tool_use only after 2s without assistant_text
 
     // Create progress callback function that tracks each level separately
     const progressCallback = (progressUpdate) => {
@@ -390,11 +393,25 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       // Stream event: store latest and throttle broadcasts
       if (progressUpdate.streamEvent && levelKey) {
         if (!currentStatus.levels[levelKey]) return;
-        currentStatus.levels[levelKey].streamEvent = progressUpdate.streamEvent;
+
+        const now = Date.now();
+        const evt = progressUpdate.streamEvent;
+
+        // Smart filtering: prefer assistant_text, show tool_use only after 2s gap
+        if (evt.type === 'assistant_text') {
+          lastAssistantTextMap.set(levelKey, now);
+        } else if (evt.type === 'tool_use') {
+          const lastAssistant = lastAssistantTextMap.get(levelKey) || 0;
+          if (now - lastAssistant < TOOL_USE_FALLBACK_MS) {
+            // Suppress tool_use when we recently had assistant_text
+            return;
+          }
+        }
+
+        currentStatus.levels[levelKey].streamEvent = evt;
         activeAnalyses.set(analysisId, currentStatus);
 
         // Throttle: only broadcast if enough time has elapsed
-        const now = Date.now();
         const lastBroadcast = streamThrottleMap.get(levelKey) || 0;
         if (now - lastBroadcast >= STREAM_THROTTLE_MS) {
           streamThrottleMap.set(levelKey, now);
@@ -404,11 +421,12 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       }
 
       // Regular status update (not a stream event)
-      // Update the specific level's status
+      // Update the specific level's status, clearing any stale streamEvent
       if (level && level >= 1 && level <= 3) {
         currentStatus.levels[level] = {
           status: progressUpdate.status || 'running',
-          progress: progressUpdate.progress || 'In progress...'
+          progress: progressUpdate.progress || 'In progress...',
+          streamEvent: undefined
         };
       }
 
@@ -416,7 +434,8 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       if (level === 'orchestration') {
         currentStatus.levels[4] = {
           status: progressUpdate.status || 'running',
-          progress: progressUpdate.progress || 'Finalizing results...'
+          progress: progressUpdate.progress || 'Finalizing results...',
+          streamEvent: undefined
         };
       }
 

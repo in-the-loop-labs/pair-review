@@ -463,9 +463,7 @@ class ProgressModal {
 
       // Show stream snippet if present
       if (snippetEl && levelStatus.streamEvent) {
-        const evt = levelStatus.streamEvent;
-        const prefix = evt.type === 'tool_use' ? 'Using ' : '';
-        snippetEl.textContent = prefix + evt.text;
+        snippetEl.textContent = levelStatus.streamEvent.text;
         snippetEl.style.display = 'block';
       }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { StreamParser, truncateSnippet, parseClaudeLine, parseCodexLine } = require('../../src/ai/stream-parser');
+const { StreamParser, truncateSnippet, stripPathPrefix, parseClaudeLine, parseCodexLine } = require('../../src/ai/stream-parser');
 
 // ---------------------------------------------------------------------------
 // truncateSnippet
@@ -31,11 +31,11 @@ describe('truncateSnippet', () => {
   });
 
   it('truncates with \u2026 when over maxLen', () => {
-    const longText = 'a'.repeat(150);
+    const longText = 'a'.repeat(250);
     const result = truncateSnippet(longText);
-    expect(result.length).toBe(101); // 100 chars + '\u2026'
+    expect(result.length).toBe(201); // 200 chars + '\u2026'
     expect(result.endsWith('\u2026')).toBe(true);
-    expect(result).toBe('a'.repeat(100) + '\u2026');
+    expect(result).toBe('a'.repeat(200) + '\u2026');
   });
 
   it('respects custom maxLen parameter', () => {
@@ -244,7 +244,7 @@ describe('parseClaudeLine', () => {
   });
 
   it('truncates long text_delta content', () => {
-    const longText = 'x'.repeat(200);
+    const longText = 'x'.repeat(300);
     const line = JSON.stringify({
       type: 'stream_event',
       event: {
@@ -255,17 +255,31 @@ describe('parseClaudeLine', () => {
       }
     });
     const result = parseClaudeLine(line);
-    expect(result.text.length).toBe(101);
+    expect(result.text.length).toBe(201); // 200 + \u2026
     expect(result.text.endsWith('\u2026')).toBe(true);
   });
 
-  it('returns first interesting block when multiple content blocks exist', () => {
+  it('prefers text block over tool_use when both are present', () => {
     const line = JSON.stringify({
       type: 'assistant',
       message: {
         content: [
           { type: 'tool_use', name: 'Bash', input: { command: 'ls' } },
           { type: 'text', text: 'Some text' }
+        ]
+      }
+    });
+    const result = parseClaudeLine(line);
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Some text');
+  });
+
+  it('falls back to tool_use when no text block exists', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', name: 'Bash', input: { command: 'ls' } }
         ]
       }
     });
@@ -705,5 +719,223 @@ describe('StreamParser', () => {
     expect(onEvent).toHaveBeenCalledTimes(1);
     expect(onEvent.mock.calls[0][0].type).toBe('custom');
     expect(onEvent.mock.calls[0][0].text).toBe('emitted');
+  });
+
+  it('passes options through to parseLine', () => {
+    const customParser = vi.fn((line, opts) => {
+      if (line === 'test') return { type: 'custom', text: opts?.cwd || 'none', timestamp: Date.now() };
+      return null;
+    });
+    const parser = new StreamParser(customParser, onEvent, { cwd: '/my/worktree' });
+
+    parser.feed('test\n');
+
+    expect(customParser).toHaveBeenCalledWith('test', { cwd: '/my/worktree' });
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(onEvent.mock.calls[0][0].text).toBe('/my/worktree');
+  });
+
+  it('passes options through to parseLine on flush()', () => {
+    const customParser = vi.fn((line, opts) => {
+      return { type: 'custom', text: opts?.cwd || 'none', timestamp: Date.now() };
+    });
+    const parser = new StreamParser(customParser, onEvent, { cwd: '/flush/path' });
+
+    parser.feed('leftover');
+    parser.flush();
+
+    expect(customParser).toHaveBeenCalledWith('leftover', { cwd: '/flush/path' });
+  });
+
+  it('continues processing after onEvent callback throws in feed()', () => {
+    const errorEvent = vi.fn(() => {
+      throw new Error('callback explosion');
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const parser = new StreamParser(parseClaudeLine, errorEvent);
+    const line1 = JSON.stringify({
+      type: 'stream_event',
+      event: { delta: { type: 'text_delta', text: 'first' } }
+    });
+    const line2 = JSON.stringify({
+      type: 'stream_event',
+      event: { delta: { type: 'text_delta', text: 'second' } }
+    });
+
+    // Should not throw, and should process both lines
+    parser.feed(line1 + '\n' + line2 + '\n');
+
+    expect(errorEvent).toHaveBeenCalledTimes(2);
+    expect(consoleSpy).toHaveBeenCalledTimes(2);
+    consoleSpy.mockRestore();
+  });
+
+  it('continues processing after onEvent callback throws in flush()', () => {
+    const errorEvent = vi.fn(() => {
+      throw new Error('flush explosion');
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const parser = new StreamParser(parseClaudeLine, errorEvent);
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { delta: { type: 'text_delta', text: 'flushed' } }
+    });
+
+    parser.feed(line);
+    // Should not throw
+    parser.flush();
+
+    expect(errorEvent).toHaveBeenCalledTimes(1);
+    expect(consoleSpy).toHaveBeenCalledTimes(1);
+    consoleSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stripPathPrefix
+// ---------------------------------------------------------------------------
+describe('stripPathPrefix', () => {
+  it('strips prefix from path', () => {
+    expect(stripPathPrefix('/tmp/worktree-abc/src/index.js', '/tmp/worktree-abc')).toBe('src/index.js');
+  });
+
+  it('strips prefix with trailing slash', () => {
+    expect(stripPathPrefix('/tmp/worktree-abc/src/index.js', '/tmp/worktree-abc/')).toBe('src/index.js');
+  });
+
+  it('returns original path when prefix does not match', () => {
+    expect(stripPathPrefix('/other/path/file.js', '/tmp/worktree-abc')).toBe('/other/path/file.js');
+  });
+
+  it('handles null filePath', () => {
+    expect(stripPathPrefix(null, '/tmp')).toBe('');
+  });
+
+  it('handles undefined filePath', () => {
+    expect(stripPathPrefix(undefined, '/tmp')).toBe('');
+  });
+
+  it('handles null cwdPrefix', () => {
+    expect(stripPathPrefix('/some/file.js', null)).toBe('/some/file.js');
+  });
+
+  it('handles empty cwdPrefix', () => {
+    expect(stripPathPrefix('/some/file.js', '')).toBe('/some/file.js');
+  });
+
+  it('handles path that equals prefix exactly', () => {
+    expect(stripPathPrefix('/tmp/worktree', '/tmp/worktree')).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseClaudeLine with cwd option
+// ---------------------------------------------------------------------------
+describe('parseClaudeLine with cwd option', () => {
+  it('strips cwd prefix from file_path in tool_use', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          name: 'Read',
+          input: { file_path: '/tmp/worktree-abc/src/index.js' }
+        }]
+      }
+    });
+    const result = parseClaudeLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('src/index.js');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('strips cwd prefix from path in tool_use', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          name: 'Glob',
+          input: { path: '/tmp/worktree-abc/src' }
+        }]
+      }
+    });
+    const result = parseClaudeLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.text).toContain('src');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('does not strip when cwd not provided', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          name: 'Read',
+          input: { file_path: '/tmp/worktree-abc/src/index.js' }
+        }]
+      }
+    });
+    const result = parseClaudeLine(line);
+    expect(result.text).toContain('/tmp/worktree-abc/src/index.js');
+  });
+
+  it('does not affect assistant_text events', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { delta: { type: 'text_delta', text: 'Hello' } }
+    });
+    const result = parseClaudeLine(line, { cwd: '/tmp' });
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Hello');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseCodexLine with cwd option
+// ---------------------------------------------------------------------------
+describe('parseCodexLine with cwd option', () => {
+  it('strips cwd prefix from file_path in tool call arguments', () => {
+    const line = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        type: 'function_call',
+        name: 'read',
+        input: { file_path: '/tmp/worktree-abc/src/app.js' }
+      }
+    });
+    const result = parseCodexLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('src/app.js');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('strips cwd prefix from path in tool call args', () => {
+    const line = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        type: 'tool_call',
+        name: 'glob',
+        args: { path: '/tmp/worktree-abc/src' }
+      }
+    });
+    const result = parseCodexLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.text).toContain('src');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('does not strip when cwd not provided', () => {
+    const line = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        type: 'function_call',
+        name: 'read',
+        input: { file_path: '/tmp/worktree-abc/src/app.js' }
+      }
+    });
+    const result = parseCodexLine(line);
+    expect(result.text).toContain('/tmp/worktree-abc/src/app.js');
   });
 });

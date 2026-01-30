@@ -184,7 +184,7 @@ class ClaudeProvider extends AIProvider {
 
       // Set up side-channel stream parser for live progress events
       const streamParser = onStreamEvent
-        ? new StreamParser(parseClaudeLine, onStreamEvent)
+        ? new StreamParser(parseClaudeLine, onStreamEvent, { cwd })
         : null;
 
       // Set timeout
