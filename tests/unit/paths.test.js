@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect } from 'vitest';
-import { normalizePath, normalizeRepository } from '../../src/utils/paths.js';
+import { normalizePath, normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } from '../../src/utils/paths.js';
 
 describe('normalizePath', () => {
   describe('leading ./ removal', () => {
@@ -257,6 +257,178 @@ describe('normalizeRepository', () => {
 
     it('should handle tabs and newlines in repo', () => {
       expect(normalizeRepository('owner', '\t\nrepo\t\n')).toBe('owner/repo');
+    });
+  });
+});
+
+describe('resolveRenamedFile', () => {
+  describe('no rename syntax', () => {
+    it('should return unchanged when no rename syntax present', () => {
+      expect(resolveRenamedFile('src/foo.js')).toBe('src/foo.js');
+    });
+
+    it('should return unchanged for plain filename', () => {
+      expect(resolveRenamedFile('file.txt')).toBe('file.txt');
+    });
+
+    it('should return unchanged for deeply nested path', () => {
+      expect(resolveRenamedFile('a/b/c/d/e.js')).toBe('a/b/c/d/e.js');
+    });
+  });
+
+  describe('file rename in directory', () => {
+    it('should resolve simple file rename', () => {
+      expect(resolveRenamedFile('tests/{old.js => new.js}')).toBe('tests/new.js');
+    });
+
+    it('should resolve real-world long filename rename', () => {
+      expect(resolveRenamedFile(
+        'tests/unit/{suggestion-manager-getfileandlineinfo.test.js => suggestion-manager.test.js}'
+      )).toBe('tests/unit/suggestion-manager.test.js');
+    });
+  });
+
+  describe('directory rename', () => {
+    it('should resolve directory rename', () => {
+      expect(resolveRenamedFile('{old-dir => new-dir}/file.js')).toBe('new-dir/file.js');
+    });
+  });
+
+  describe('mid-path rename', () => {
+    it('should resolve rename in middle of path', () => {
+      expect(resolveRenamedFile('a/{b => c}/d.js')).toBe('a/c/d.js');
+    });
+  });
+
+  describe('compact form (no spaces around arrow)', () => {
+    it('should handle rename without spaces around arrow', () => {
+      expect(resolveRenamedFile('tests/{old.js=>new.js}')).toBe('tests/new.js');
+    });
+
+    it('should handle directory rename without spaces', () => {
+      expect(resolveRenamedFile('{old-dir=>new-dir}/file.js')).toBe('new-dir/file.js');
+    });
+
+    it('should handle mid-path rename without spaces', () => {
+      expect(resolveRenamedFile('a/{b=>c}/d.js')).toBe('a/c/d.js');
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should return null for null input', () => {
+      expect(resolveRenamedFile(null)).toBe(null);
+    });
+
+    it('should return undefined for undefined input', () => {
+      expect(resolveRenamedFile(undefined)).toBe(undefined);
+    });
+
+    it('should return empty string for empty string input', () => {
+      expect(resolveRenamedFile('')).toBe('');
+    });
+  });
+
+  describe('empty rename sides', () => {
+    it('should resolve move from root into directory without leading slash', () => {
+      expect(resolveRenamedFile('{ => new-dir}/file.js')).toBe('new-dir/file.js');
+    });
+
+    it('should resolve move from directory to root without leading slash', () => {
+      expect(resolveRenamedFile('{old-dir => }/file.js')).toBe('file.js');
+    });
+
+    it('should resolve no-op rename without leading slash', () => {
+      expect(resolveRenamedFile('{ => }/file.js')).toBe('file.js');
+    });
+
+    it('should collapse double slashes from mid-path empty side', () => {
+      expect(resolveRenamedFile('a/{b => }/d.js')).toBe('a/d.js');
+    });
+  });
+});
+
+describe('resolveRenamedFileOld', () => {
+  describe('no rename syntax', () => {
+    it('should return unchanged when no rename syntax present', () => {
+      expect(resolveRenamedFileOld('src/foo.js')).toBe('src/foo.js');
+    });
+
+    it('should return unchanged for plain filename', () => {
+      expect(resolveRenamedFileOld('file.txt')).toBe('file.txt');
+    });
+
+    it('should return unchanged for deeply nested path', () => {
+      expect(resolveRenamedFileOld('a/b/c/d/e.js')).toBe('a/b/c/d/e.js');
+    });
+  });
+
+  describe('file rename in directory', () => {
+    it('should resolve simple file rename to old name', () => {
+      expect(resolveRenamedFileOld('tests/{old.js => new.js}')).toBe('tests/old.js');
+    });
+
+    it('should resolve real-world long filename rename to old name', () => {
+      expect(resolveRenamedFileOld(
+        'tests/unit/{suggestion-manager-getfileandlineinfo.test.js => suggestion-manager.test.js}'
+      )).toBe('tests/unit/suggestion-manager-getfileandlineinfo.test.js');
+    });
+  });
+
+  describe('directory rename', () => {
+    it('should resolve directory rename to old directory', () => {
+      expect(resolveRenamedFileOld('{old-dir => new-dir}/file.js')).toBe('old-dir/file.js');
+    });
+  });
+
+  describe('mid-path rename', () => {
+    it('should resolve rename in middle of path to old path', () => {
+      expect(resolveRenamedFileOld('a/{b => c}/d.js')).toBe('a/b/d.js');
+    });
+  });
+
+  describe('compact form (no spaces around arrow)', () => {
+    it('should handle rename without spaces around arrow', () => {
+      expect(resolveRenamedFileOld('tests/{old.js=>new.js}')).toBe('tests/old.js');
+    });
+
+    it('should handle directory rename without spaces', () => {
+      expect(resolveRenamedFileOld('{old-dir=>new-dir}/file.js')).toBe('old-dir/file.js');
+    });
+
+    it('should handle mid-path rename without spaces', () => {
+      expect(resolveRenamedFileOld('a/{b=>c}/d.js')).toBe('a/b/d.js');
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should return null for null input', () => {
+      expect(resolveRenamedFileOld(null)).toBe(null);
+    });
+
+    it('should return undefined for undefined input', () => {
+      expect(resolveRenamedFileOld(undefined)).toBe(undefined);
+    });
+
+    it('should return empty string for empty string input', () => {
+      expect(resolveRenamedFileOld('')).toBe('');
+    });
+  });
+
+  describe('empty rename sides', () => {
+    it('should resolve move from root into directory without leading slash', () => {
+      expect(resolveRenamedFileOld('{ => new-dir}/file.js')).toBe('file.js');
+    });
+
+    it('should resolve move from directory to root without leading slash', () => {
+      expect(resolveRenamedFileOld('{old-dir => }/file.js')).toBe('old-dir/file.js');
+    });
+
+    it('should resolve no-op rename without leading slash', () => {
+      expect(resolveRenamedFileOld('{ => }/file.js')).toBe('file.js');
+    });
+
+    it('should collapse double slashes from mid-path empty side', () => {
+      expect(resolveRenamedFileOld('a/{ => c}/d.js')).toBe('a/d.js');
     });
   });
 });

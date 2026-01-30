@@ -307,6 +307,88 @@ describe('DiffRenderer', () => {
     });
   });
 
+  describe('findFileElement', () => {
+    describe('file matching', () => {
+      // Helper to mock document.querySelector and document.querySelectorAll
+      // since tests run in Node environment (no real DOM)
+      function setupDocumentMock(wrappers) {
+        global.document = {
+          querySelector: vi.fn().mockReturnValue(null),
+          querySelectorAll: vi.fn().mockReturnValue(wrappers)
+        };
+      }
+
+      function createMockWrapper(fileName) {
+        return {
+          dataset: { fileName }
+        };
+      }
+
+      afterEach(() => {
+        delete global.document;
+      });
+
+      it('should find file by exact data-file-name match', () => {
+        const wrapper = createMockWrapper('tests/unit/new-name.test.js');
+        global.document = {
+          querySelector: vi.fn().mockReturnValue(wrapper),
+          querySelectorAll: vi.fn().mockReturnValue([wrapper])
+        };
+
+        const result = DiffRenderer.findFileElement('tests/unit/new-name.test.js');
+        expect(result).toBe(wrapper);
+      });
+
+      it('should find file by partial path matching', () => {
+        const wrapper = createMockWrapper('src/utils/helper.js');
+        setupDocumentMock([wrapper]);
+
+        const result = DiffRenderer.findFileElement('utils/helper.js');
+        expect(result).toBe(wrapper);
+      });
+
+      it('should return null when no match found', () => {
+        const wrapper = createMockWrapper('src/foo.js');
+        setupDocumentMock([wrapper]);
+
+        const result = DiffRenderer.findFileElement('src/nonexistent.js');
+        expect(result).toBeNull();
+      });
+
+      it('should return null when no wrappers exist', () => {
+        setupDocumentMock([]);
+
+        const result = DiffRenderer.findFileElement('src/any-file.js');
+        expect(result).toBeNull();
+      });
+
+      it('should find file by reverse partial path matching', () => {
+        // data-file-name has short path, query has full path
+        // filePath='src/utils/helper.js', fileName='helper.js'
+        // filePath.endsWith('/helper.js') => true
+        const wrapper = createMockWrapper('helper.js');
+        setupDocumentMock([wrapper]);
+
+        const result = DiffRenderer.findFileElement('src/utils/helper.js');
+        expect(result).toBe(wrapper);
+      });
+
+      it('should find file by data-file-path attribute', () => {
+        const wrapper = { dataset: { filePath: 'src/utils/helper.js' } };
+        global.document = {
+          querySelector: vi.fn().mockImplementation((selector) => {
+            if (selector.includes('data-file-path')) return wrapper;
+            return null;
+          }),
+          querySelectorAll: vi.fn().mockReturnValue([])
+        };
+
+        const result = DiffRenderer.findFileElement('src/utils/helper.js');
+        expect(result).toBe(wrapper);
+      });
+    });
+  });
+
   describe('fixRubyHighlighting', () => {
     // Workaround for highlight.js Ruby grammar limitation:
     // Variables at end-of-line truncate at last underscore due to lookahead constraints

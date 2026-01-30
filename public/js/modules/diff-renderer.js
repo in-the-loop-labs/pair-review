@@ -333,6 +333,8 @@ class DiffRenderer {
    * @param {boolean} [options.isViewed=false] - Whether file is marked as viewed
    * @param {Object} [options.generatedInfo] - Info about generated file (insertions, deletions)
    * @param {Object} [options.fileStats] - File stats for collapsed view {insertions, deletions}
+   * @param {boolean} [options.renamed=false] - Whether the file was renamed
+   * @param {string|null} [options.renamedFrom=null] - Original file path before rename
    * @param {Function} [options.onToggleCollapse] - Callback for toggling collapse state
    * @param {Function} [options.onToggleViewed] - Callback for toggling viewed state
    * @returns {HTMLElement} File header element
@@ -344,6 +346,8 @@ class DiffRenderer {
       isViewed = false,
       generatedInfo = null,
       fileStats = null,
+      renamed = false,
+      renamedFrom = null,
       onToggleCollapse = null,
       onToggleViewed = null
     } = options;
@@ -375,7 +379,20 @@ class DiffRenderer {
     // File name
     const fileName = document.createElement('span');
     fileName.className = 'd2h-file-name';
-    fileName.textContent = filePath;
+    if (renamed && renamedFrom) {
+      const oldPath = document.createElement('span');
+      oldPath.className = 'file-rename-old-path';
+      oldPath.textContent = renamedFrom;
+      const arrow = document.createElement('span');
+      arrow.className = 'file-rename-arrow';
+      arrow.textContent = '\u2192';
+      const newPath = document.createTextNode(filePath);
+      fileName.appendChild(oldPath);
+      fileName.appendChild(arrow);
+      fileName.appendChild(newPath);
+    } else {
+      fileName.textContent = filePath;
+    }
     fileHeader.appendChild(fileName);
 
     // File stats summary (visible in collapsed view)
