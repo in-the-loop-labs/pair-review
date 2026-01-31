@@ -404,6 +404,10 @@ AI PROVIDERS:
         console.log('⚠️  Warning: Multiple AI flags provided. Using highest precedence: --ai-review > --ai-draft > --ai');
       }
 
+      if (flags.useCheckout && !flags.aiDraft && !flags.aiReview) {
+        console.log('⚠️  Warning: --use-checkout has no effect in interactive mode (requires --ai-draft or --ai-review)');
+      }
+
       // Check for --ai-review mode (takes precedence over --ai-draft and --ai)
       if (flags.aiReview) {
         await handleActionReview(effectivePrArgs, config, db, flags);
@@ -626,22 +630,27 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
  * @param {string} diff - Unified diff content
  * @param {Array} changedFiles - Changed files information
  * @param {string} worktreePath - Worktree path
+ * @param {Object} [options] - Optional settings
+ * @param {boolean} [options.skipWorktreeRecord] - Skip creating a worktree DB record (for --use-checkout mode)
  */
-async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath) {
+async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, options = {}) {
   const repository = normalizeRepository(prInfo.owner, prInfo.repo);
 
   // Begin transaction for atomic database operations
   await run(db, 'BEGIN TRANSACTION');
 
   try {
-    // Store or update worktree record
-    const worktreeRepo = new WorktreeRepository(db);
-    await worktreeRepo.getOrCreate({
-      prNumber: prInfo.number,
-      repository,
-      branch: prData.head_branch,
-      path: worktreePath
-    });
+    // Store or update worktree record (skip when using --use-checkout,
+    // since the path is the user's working directory, not a managed worktree)
+    if (!options.skipWorktreeRecord) {
+      const worktreeRepo = new WorktreeRepository(db);
+      await worktreeRepo.getOrCreate({
+        prNumber: prInfo.number,
+        repository,
+        branch: prData.head_branch,
+        path: worktreePath
+      });
+    }
 
     // Prepare extended PR data (keep worktree_path for backward compat, but DB is source of truth)
     const extendedPRData = {
@@ -879,7 +888,9 @@ async function performHeadlessReview(args, config, db, flags, options) {
 
     // Store PR data in database
     console.log('Storing pull request data...');
-    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: !!flags.useCheckout
+    });
 
     // Get PR metadata ID for AI analysis
     const prMetadata = await queryOne(db, `
