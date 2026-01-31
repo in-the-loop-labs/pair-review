@@ -152,20 +152,21 @@ describe('MCP Routes Integration', () => {
       const result = extractResult(res);
       expect(result.result).toBeDefined();
       const toolNames = result.result.tools.map(t => t.name);
-      expect(toolNames).toContain('get_review_comments');
+      expect(toolNames).toContain('get_user_comments');
+      expect(toolNames).toContain('get_ai_analysis_runs');
       expect(toolNames).toContain('get_ai_suggestions');
-      expect(result.result.tools).toHaveLength(2);
+      expect(result.result.tools).toHaveLength(3);
     });
   });
 
   describe('POST /mcp - tools/call', () => {
-    it('should call get_review_comments and return user comments', async () => {
+    it('should call get_user_comments and return user comments', async () => {
       const res = await mcpRequest(app, {
         jsonrpc: '2.0',
         id: 3,
         method: 'tools/call',
         params: {
-          name: 'get_review_comments',
+          name: 'get_user_comments',
           arguments: { repo: 'test-owner/test-repo', prNumber: 1 }
         }
       });
@@ -177,6 +178,29 @@ describe('MCP Routes Integration', () => {
       expect(content.review_id).toBe(1);
       expect(content.comments['src/index.js']).toHaveLength(1);
       expect(content.comments['src/index.js'][0].body).toBe('This logic is fragile');
+    });
+
+    it('should call get_ai_analysis_runs and return runs', async () => {
+      const res = await mcpRequest(app, {
+        jsonrpc: '2.0',
+        id: 10,
+        method: 'tools/call',
+        params: {
+          name: 'get_ai_analysis_runs',
+          arguments: { repo: 'test-owner/test-repo', prNumber: 1 }
+        }
+      });
+
+      expect(res.status).toBe(200);
+      const result = extractResult(res);
+      expect(result.result).toBeDefined();
+      const content = JSON.parse(result.result.content[0].text);
+      expect(content.review_id).toBe(1);
+      expect(content.count).toBe(1);
+      expect(content.runs[0].id).toBe('test-run-1');
+      expect(content.runs[0].provider).toBe('claude');
+      expect(content.runs[0].status).toBe('completed');
+      expect(content.runs[0].total_suggestions).toBe(1);
     });
 
     it('should call get_ai_suggestions and return suggestions', async () => {
@@ -195,9 +219,49 @@ describe('MCP Routes Integration', () => {
       expect(result.result).toBeDefined();
       const content = JSON.parse(result.result.content[0].text);
       expect(content.review_id).toBe(1);
+      expect(content.run_id).toBe('test-run-1');
+      expect(content.summary).toBe('Found 1 issue');
       expect(content.count).toBe(1);
       expect(content.suggestions[0].title).toBe('Possible NPE');
       expect(content.suggestions[0].ai_confidence).toBe(0.92);
+    });
+
+    it('should call get_ai_suggestions with runId filter', async () => {
+      const res = await mcpRequest(app, {
+        jsonrpc: '2.0',
+        id: 11,
+        method: 'tools/call',
+        params: {
+          name: 'get_ai_suggestions',
+          arguments: { repo: 'test-owner/test-repo', prNumber: 1, runId: 'test-run-1' }
+        }
+      });
+
+      expect(res.status).toBe(200);
+      const result = extractResult(res);
+      const content = JSON.parse(result.result.content[0].text);
+      expect(content.run_id).toBe('test-run-1');
+      expect(content.summary).toBe('Found 1 issue');
+      expect(content.count).toBe(1);
+      expect(content.suggestions[0].title).toBe('Possible NPE');
+    });
+
+    it('should return empty suggestions for nonexistent runId', async () => {
+      const res = await mcpRequest(app, {
+        jsonrpc: '2.0',
+        id: 12,
+        method: 'tools/call',
+        params: {
+          name: 'get_ai_suggestions',
+          arguments: { repo: 'test-owner/test-repo', prNumber: 1, runId: 'nonexistent-run' }
+        }
+      });
+
+      expect(res.status).toBe(200);
+      const result = extractResult(res);
+      const content = JSON.parse(result.result.content[0].text);
+      expect(content.count).toBe(0);
+      expect(content.suggestions).toEqual([]);
     });
 
     it('should return error for missing review', async () => {
@@ -206,7 +270,7 @@ describe('MCP Routes Integration', () => {
         id: 6,
         method: 'tools/call',
         params: {
-          name: 'get_review_comments',
+          name: 'get_user_comments',
           arguments: { repo: 'nonexistent/repo', prNumber: 999 }
         }
       });
@@ -224,7 +288,7 @@ describe('MCP Routes Integration', () => {
         id: 7,
         method: 'tools/call',
         params: {
-          name: 'get_review_comments',
+          name: 'get_user_comments',
           arguments: {}
         }
       });
@@ -242,7 +306,7 @@ describe('MCP Routes Integration', () => {
         id: 8,
         method: 'tools/call',
         params: {
-          name: 'get_review_comments',
+          name: 'get_user_comments',
           arguments: { repo: 'test-owner/test-repo', prNumber: 1, file: 'nonexistent.js' }
         }
       });

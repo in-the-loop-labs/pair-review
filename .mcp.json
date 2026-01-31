@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pair-review": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["bin/pair-review.js", "--mcp"]
+    }
+  }
+}

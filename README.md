@@ -380,13 +380,16 @@ pair-review --mcp
 
 | Tool | Description | Availability |
 |------|-------------|--------------|
-| `get_review_comments` | Get user-authored review comments, grouped by file | stdio + HTTP |
-| `get_ai_suggestions` | Get AI-generated suggestions from the latest analysis run | stdio + HTTP |
+| `get_user_comments` | Get human-curated review comments (authored or adopted), grouped by file | stdio + HTTP |
+| `get_ai_analysis_runs` | List all AI analysis runs for a review | stdio + HTTP |
+| `get_ai_suggestions` | Get AI-generated suggestions from the latest analysis run, or from a specific run via `runId` | stdio + HTTP |
 | `get_server_info` | Get server info including web UI URL and version | stdio only |
 
 All review tools accept lookup parameters:
 - **Local reviews**: `path` + `headSha`
 - **PR reviews**: `repo` (e.g. `"owner/repo"`) + `prNumber`
+
+`get_ai_suggestions` also accepts an optional `runId` to target a specific analysis run (discovered via `get_ai_analysis_runs`), bypassing the need for review lookup parameters.
 
 ### Adding to Claude Code
 

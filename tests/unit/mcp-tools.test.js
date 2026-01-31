@@ -165,15 +165,63 @@ describe('MCP tools via in-memory client', () => {
   it('should list all tools (no port option)', async () => {
     const { tools } = await client.listTools();
     const names = tools.map(t => t.name);
-    expect(names).toContain('get_review_comments');
+    expect(names).toContain('get_user_comments');
+    expect(names).toContain('get_ai_analysis_runs');
     expect(names).toContain('get_ai_suggestions');
-    expect(tools).toHaveLength(2);
+    expect(tools).toHaveLength(3);
   });
 
-  describe('get_review_comments', () => {
+  describe('get_ai_analysis_runs', () => {
+    it('should return analysis runs for a review', async () => {
+      const result = await client.callTool({
+        name: 'get_ai_analysis_runs',
+        arguments: { repo: 'test/repo', prNumber: 1 },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      expect(content.review_id).toBe(1);
+      expect(content.count).toBe(1);
+      expect(content.runs[0].id).toBe('run-001');
+      expect(content.runs[0].provider).toBe('claude');
+      expect(content.runs[0].model).toBe('sonnet');
+      expect(content.runs[0].status).toBe('completed');
+      expect(content.runs[0].summary).toBe('Found 2 issues');
+      expect(content.runs[0].head_sha).toBeNull();
+      expect(content.runs[0].total_suggestions).toBe(2);
+      expect(content.runs[0].files_analyzed).toBe(2);
+      expect(content.runs[0].started_at).toBeDefined();
+      expect(content.runs[0].completed_at).toBeDefined();
+    });
+
+    it('should return empty runs for review with no analysis', async () => {
+      const reviewRepo = new ReviewRepository(db);
+      await reviewRepo.createReview({ prNumber: 99, repository: 'empty/repo' });
+
+      const result = await client.callTool({
+        name: 'get_ai_analysis_runs',
+        arguments: { repo: 'empty/repo', prNumber: 99 },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      expect(content.count).toBe(0);
+      expect(content.runs).toEqual([]);
+    });
+
+    it('should return error for missing review', async () => {
+      const result = await client.callTool({
+        name: 'get_ai_analysis_runs',
+        arguments: { repo: 'nope/nope', prNumber: 999 },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      expect(content.error).toContain('No review found');
+    });
+  });
+
+  describe('get_user_comments', () => {
     it('should return user comments grouped by file', async () => {
       const result = await client.callTool({
-        name: 'get_review_comments',
+        name: 'get_user_comments',
         arguments: { repo: 'test/repo', prNumber: 1 },
       });
       const content = JSON.parse(result.content[0].text);
@@ -189,7 +237,7 @@ describe('MCP tools via in-memory client', () => {
 
     it('should filter comments by file', async () => {
       const result = await client.callTool({
-        name: 'get_review_comments',
+        name: 'get_user_comments',
         arguments: { repo: 'test/repo', prNumber: 1, file: 'src/app.js' },
       });
       const content = JSON.parse(result.content[0].text);
@@ -200,7 +248,7 @@ describe('MCP tools via in-memory client', () => {
 
     it('should return empty comments for non-existent file filter', async () => {
       const result = await client.callTool({
-        name: 'get_review_comments',
+        name: 'get_user_comments',
         arguments: { repo: 'test/repo', prNumber: 1, file: 'nonexistent.js' },
       });
       const content = JSON.parse(result.content[0].text);
@@ -210,7 +258,7 @@ describe('MCP tools via in-memory client', () => {
 
     it('should return error for missing review', async () => {
       const result = await client.callTool({
-        name: 'get_review_comments',
+        name: 'get_user_comments',
         arguments: { repo: 'nope/nope', prNumber: 999 },
       });
       const content = JSON.parse(result.content[0].text);
@@ -220,7 +268,7 @@ describe('MCP tools via in-memory client', () => {
 
     it('should return error when no lookup params provided', async () => {
       const result = await client.callTool({
-        name: 'get_review_comments',
+        name: 'get_user_comments',
         arguments: {},
       });
       const content = JSON.parse(result.content[0].text);
@@ -239,6 +287,8 @@ describe('MCP tools via in-memory client', () => {
 
       // Default excludes dismissed, so only the 2 active final suggestions
       expect(content.count).toBe(2);
+      expect(content.run_id).toBe('run-001');
+      expect(content.summary).toBe('Found 2 issues');
       expect(content.suggestions[0].file).toBe('src/app.js');
       expect(content.suggestions[0].ai_confidence).toBe(0.95);
       expect(content.suggestions[0].title).toBe('Potential null dereference');
@@ -290,6 +340,47 @@ describe('MCP tools via in-memory client', () => {
       const content = JSON.parse(result.content[0].text);
 
       expect(content.count).toBe(0);
+      expect(content.run_id).toBeNull();
+      expect(content.summary).toBeNull();
+      expect(content.suggestions).toEqual([]);
+    });
+
+    it('should return suggestions from a specific run via runId', async () => {
+      const result = await client.callTool({
+        name: 'get_ai_suggestions',
+        arguments: { repo: 'test/repo', prNumber: 1, runId: 'run-001' },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      expect(content.count).toBe(2);
+      expect(content.run_id).toBe('run-001');
+      expect(content.summary).toBe('Found 2 issues');
+      expect(content.suggestions[0].title).toBe('Potential null dereference');
+    });
+
+    it('should return suggestions using only runId (no review lookup)', async () => {
+      const result = await client.callTool({
+        name: 'get_ai_suggestions',
+        arguments: { runId: 'run-001' },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      // review_id is resolved from the analysis run
+      expect(content.review_id).toBe(1);
+      expect(content.run_id).toBe('run-001');
+      expect(content.summary).toBe('Found 2 issues');
+      expect(content.count).toBe(2);
+      expect(content.suggestions[0].title).toBe('Potential null dereference');
+    });
+
+    it('should return empty suggestions for nonexistent runId', async () => {
+      const result = await client.callTool({
+        name: 'get_ai_suggestions',
+        arguments: { runId: 'nonexistent-run' },
+      });
+      const content = JSON.parse(result.content[0].text);
+
+      expect(content.count).toBe(0);
       expect(content.suggestions).toEqual([]);
     });
 
@@ -329,13 +420,14 @@ describe('get_server_info tool', () => {
     if (db) closeTestDatabase(db);
   });
 
-  it('should register 3 tools when port option is provided', async () => {
+  it('should register 4 tools when port option is provided', async () => {
     const { tools } = await client.listTools();
     const names = tools.map(t => t.name);
     expect(names).toContain('get_server_info');
-    expect(names).toContain('get_review_comments');
+    expect(names).toContain('get_user_comments');
+    expect(names).toContain('get_ai_analysis_runs');
     expect(names).toContain('get_ai_suggestions');
-    expect(tools).toHaveLength(3);
+    expect(tools).toHaveLength(4);
   });
 
   it('should return JSON with url, port, and version', async () => {
@@ -363,7 +455,7 @@ describe('get_server_info tool', () => {
     const { tools } = await clientNoPort.listTools();
     const names = tools.map(t => t.name);
     expect(names).not.toContain('get_server_info');
-    expect(tools).toHaveLength(2);
+    expect(tools).toHaveLength(3);
 
     await clientNoPort.close();
     await serverNoPort.close();

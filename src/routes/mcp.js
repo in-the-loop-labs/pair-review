@@ -3,7 +3,7 @@ const express = require('express');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { z } = require('zod');
-const { ReviewRepository, CommentRepository, query } = require('../database');
+const { ReviewRepository, CommentRepository, AnalysisRunRepository, query } = require('../database');
 
 const router = express.Router();
 
@@ -70,7 +70,8 @@ function createMCPServer(db, options = {}) {
     server.tool(
       'get_server_info',
       'Get pair-review server info including the web UI URL. ' +
-      'Use this to find the URL that the human reviewer can open in their browser.',
+      'Call this FIRST to discover the running server URL before any other action. ' +
+      'Use it to open the review UI in the browser (e.g. `open {url}/pr/{owner}/{repo}/{number}`).',
       {},
       async () => {
         return {
@@ -87,10 +88,11 @@ function createMCPServer(db, options = {}) {
     );
   }
 
-  // --- Tool: get_review_comments ---
+  // --- Tool: get_user_comments ---
   server.tool(
-    'get_review_comments',
-    'Get user-authored review comments for a pair-review code review. ' +
+    'get_user_comments',
+    'Get human-curated review comments for a code review. ' +
+    'These are comments the user authored or adopted from AI suggestions — use them as actionable feedback to fix and iterate on code. ' +
     'Returns comments grouped by file. Provide (path + headSha) for local reviews or (repo + prNumber) for PR reviews.',
     {
       ...reviewLookupSchema,
@@ -136,17 +138,14 @@ function createMCPServer(db, options = {}) {
     }
   );
 
-  // --- Tool: get_ai_suggestions ---
+  // --- Tool: get_ai_analysis_runs ---
   server.tool(
-    'get_ai_suggestions',
-    'Get AI-generated review suggestions for a pair-review code review. ' +
-    'Returns suggestions from the latest analysis run, optionally filtered by status. ' +
+    'get_ai_analysis_runs',
+    'List all AI analysis runs for a code review. ' +
+    'Use this to discover available runs before requesting AI suggestions from a specific one. ' +
     'Provide (path + headSha) for local reviews or (repo + prNumber) for PR reviews.',
     {
       ...reviewLookupSchema,
-      file: z.string().optional().describe('Filter results to a single file path'),
-      status: z.enum(['active', 'adopted', 'dismissed']).optional()
-        .describe('Filter by suggestion status. Defaults to active and adopted (dismissed excluded).'),
     },
     async (args) => {
       const { review, error } = await resolveReview(args, db);
@@ -154,9 +153,95 @@ function createMCPServer(db, options = {}) {
         return { content: [{ type: 'text', text: JSON.stringify({ error }) }] };
       }
 
+      const runRepo = new AnalysisRunRepository(db);
+      const runs = await runRepo.getByReviewId(review.id);
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            review_id: review.id,
+            count: runs.length,
+            runs: runs.map(r => ({
+              id: r.id,
+              provider: r.provider,
+              model: r.model,
+              status: r.status,
+              summary: r.summary,
+              head_sha: r.head_sha,
+              total_suggestions: r.total_suggestions,
+              files_analyzed: r.files_analyzed,
+              started_at: r.started_at,
+              completed_at: r.completed_at,
+            }))
+          }, null, 2)
+        }]
+      };
+    }
+  );
+
+  // --- Tool: get_ai_suggestions ---
+  server.tool(
+    'get_ai_suggestions',
+    'Get AI-generated review suggestions for a code review, enabling a critic loop where an AI reviewer flags issues for the coding agent to address. ' +
+    'Returns suggestions from the latest analysis run by default, or from a specific run via runId. ' +
+    'Provide (path + headSha) for local reviews, (repo + prNumber) for PR reviews, or just runId if already known.',
+    {
+      ...reviewLookupSchema,
+      file: z.string().optional().describe('Filter results to a single file path'),
+      status: z.enum(['active', 'adopted', 'dismissed']).optional()
+        .describe('Filter by suggestion status. Defaults to active and adopted (dismissed excluded).'),
+      runId: z.string().optional()
+        .describe('Analysis run ID to fetch suggestions from. Use get_ai_analysis_runs to list available runs. Defaults to the latest run.'),
+    },
+    async (args) => {
+      let reviewId = null;
+      let runId = args.runId || null;
+      let runSummary = null;
+
+      const runRepo = new AnalysisRunRepository(db);
+
+      if (!args.runId) {
+        // No runId provided — resolve the review, then find its latest analysis run
+        const { review, error } = await resolveReview(args, db);
+        if (error) {
+          return { content: [{ type: 'text', text: JSON.stringify({ error }) }] };
+        }
+        reviewId = review.id;
+
+        const latestRun = await runRepo.getLatestByReviewId(reviewId);
+        if (latestRun) {
+          runId = latestRun.id;
+          runSummary = latestRun.summary;
+        }
+      } else {
+        // runId is globally unique — look up the review_id from the analysis run
+        const analysisRun = await runRepo.getById(args.runId);
+        if (analysisRun) {
+          reviewId = analysisRun.review_id;
+          runSummary = analysisRun.summary;
+        }
+      }
+
+      // No run found — return early with empty results
+      if (!runId) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              review_id: reviewId,
+              run_id: null,
+              summary: null,
+              count: 0,
+              suggestions: [],
+            }, null, 2)
+          }]
+        };
+      }
+
       // Build parameterized WHERE conditions
-      const params = [review.id];
-      const conditions = ["review_id = ?", "source = 'ai'", 'ai_level IS NULL'];
+      const params = [runId];
+      const conditions = ["ai_run_id = ?", "source = 'ai'", 'ai_level IS NULL'];
 
       if (args.status) {
         conditions.push('status = ?');
@@ -166,15 +251,6 @@ function createMCPServer(db, options = {}) {
         // rejected by the reviewer and would be noise for an iterating agent.
         conditions.push("status IN ('active', 'adopted')");
       }
-
-      // Latest run subquery (needs review_id param)
-      conditions.push(`ai_run_id = (
-            SELECT ai_run_id FROM comments
-            WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
-            ORDER BY created_at DESC
-            LIMIT 1
-          )`);
-      params.push(review.id);
 
       const suggestions = await query(db, `
         SELECT
@@ -195,7 +271,9 @@ function createMCPServer(db, options = {}) {
         content: [{
           type: 'text',
           text: JSON.stringify({
-            review_id: review.id,
+            review_id: reviewId,
+            run_id: runId,
+            summary: runSummary,
             count: filtered.length,
             suggestions: filtered.map(s => ({
               file: s.file,
