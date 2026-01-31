@@ -2,8 +2,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { execSync, spawnSync } from 'child_process';
 
-// Test the parseArgs function which is exported from main.js
-const { parseArgs } = require('../../src/main');
+// Test the parseArgs and detectPRFromGitHubEnvironment functions exported from main.js
+const { parseArgs, detectPRFromGitHubEnvironment } = require('../../src/main');
 const logger = require('../../src/utils/logger');
 
 describe('main.js parseArgs', () => {
@@ -218,17 +218,10 @@ describe('main.js parseArgs', () => {
       expect(result.prArgs).toEqual(['123']);
     });
 
-    it('should parse --fail-on-issues flag', () => {
-      const result = parseArgs(['123', '--fail-on-issues']);
-      expect(result.flags.failOnIssues).toBe(true);
-      expect(result.prArgs).toEqual(['123']);
-    });
-
     it('should parse all action mode flags together', () => {
-      const result = parseArgs(['123', '--ai-review', '--use-checkout', '--fail-on-issues', '--model', 'haiku']);
+      const result = parseArgs(['123', '--ai-review', '--use-checkout', '--model', 'haiku']);
       expect(result.flags.aiReview).toBe(true);
       expect(result.flags.useCheckout).toBe(true);
-      expect(result.flags.failOnIssues).toBe(true);
       expect(result.flags.model).toBe('haiku');
       expect(result.prArgs).toEqual(['123']);
     });
@@ -366,5 +359,88 @@ describe('CLI --configure', () => {
   it('--configure should exit with code 0', () => {
     const result = spawnSync('node', ['bin/pair-review.js', '--configure']);
     expect(result.status).toBe(0);
+  });
+});
+
+describe('detectPRFromGitHubEnvironment', () => {
+  const originalEnv = {};
+
+  beforeEach(() => {
+    // Save original values for all GitHub env vars we'll manipulate
+    originalEnv.GITHUB_ACTIONS = process.env.GITHUB_ACTIONS;
+    originalEnv.GITHUB_REPOSITORY = process.env.GITHUB_REPOSITORY;
+    originalEnv.GITHUB_REF = process.env.GITHUB_REF;
+    originalEnv.GITHUB_EVENT_PATH = process.env.GITHUB_EVENT_PATH;
+
+    // Clear them all so tests start from a clean state
+    delete process.env.GITHUB_ACTIONS;
+    delete process.env.GITHUB_REPOSITORY;
+    delete process.env.GITHUB_REF;
+    delete process.env.GITHUB_EVENT_PATH;
+  });
+
+  afterEach(() => {
+    // Restore original values
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+
+  it('should return null when GITHUB_ACTIONS is not true', () => {
+    expect(detectPRFromGitHubEnvironment()).toBeNull();
+  });
+
+  it('should return null when GITHUB_ACTIONS is true but GITHUB_REPOSITORY is not set', () => {
+    process.env.GITHUB_ACTIONS = 'true';
+    expect(detectPRFromGitHubEnvironment()).toBeNull();
+  });
+
+  it('should return null when GITHUB_REPOSITORY has no slash', () => {
+    process.env.GITHUB_ACTIONS = 'true';
+    process.env.GITHUB_REPOSITORY = 'invalid-repo';
+    expect(detectPRFromGitHubEnvironment()).toBeNull();
+  });
+
+  it('should extract PR number from GITHUB_REF', () => {
+    process.env.GITHUB_ACTIONS = 'true';
+    process.env.GITHUB_REPOSITORY = 'owner/repo';
+    process.env.GITHUB_REF = 'refs/pull/123/merge';
+
+    const result = detectPRFromGitHubEnvironment();
+    expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123 });
+  });
+
+  it('should fall back to GITHUB_EVENT_PATH when GITHUB_REF has no PR pattern', () => {
+    process.env.GITHUB_ACTIONS = 'true';
+    process.env.GITHUB_REPOSITORY = 'owner/repo';
+    process.env.GITHUB_REF = 'refs/heads/main';
+
+    // Create a temporary event file
+    const path = require('path');
+    const fs = require('fs');
+    const os = require('os');
+    const eventFile = path.join(os.tmpdir(), `pr-event-${Date.now()}.json`);
+    fs.writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 456 } }));
+    process.env.GITHUB_EVENT_PATH = eventFile;
+
+    try {
+      const result = detectPRFromGitHubEnvironment();
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 456 });
+    } finally {
+      fs.unlinkSync(eventFile);
+    }
+  });
+
+  it('should return null when no PR info is available', () => {
+    process.env.GITHUB_ACTIONS = 'true';
+    process.env.GITHUB_REPOSITORY = 'owner/repo';
+    process.env.GITHUB_REF = 'refs/heads/main';
+    // No GITHUB_EVENT_PATH set
+
+    expect(detectPRFromGitHubEnvironment()).toBeNull();
   });
 });
