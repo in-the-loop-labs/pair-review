@@ -93,6 +93,9 @@ class GitHubClient {
       await this.octokit.rest.repos.get({ owner, repo });
       return true;
     } catch (error) {
+      if (error.status === 401 || error.status === 403) {
+        throw new Error('GitHub authentication failed. Check your token permissions.');
+      }
       if (error.status === 404) {
         return false;
       }
@@ -159,12 +162,6 @@ class GitHubClient {
     try {
       const reviewType = event === 'DRAFT' ? 'draft review' : 'review';
       console.log(`Creating ${reviewType} for PR #${pullNumber} in ${owner}/${repo}`);
-      
-      // Validate GitHub token before attempting submission
-      const isValidToken = await this.validateToken();
-      if (!isValidToken) {
-        throw new Error('Invalid or expired GitHub token. Please check your token in ~/.pair-review/config.json');
-      }
 
       // Validate event type
       const validEvents = ['APPROVE', 'REQUEST_CHANGES', 'COMMENT', 'DRAFT'];

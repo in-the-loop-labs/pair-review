@@ -59,18 +59,20 @@ router.post('/api/worktrees/create', async (req, res) => {
     logger.section(`Web UI Start Review - PR #${parsedPrNumber}`);
     logger.log('API', `Repository: ${repository}`, 'magenta');
 
-    // Create GitHub client and validate token
+    // Create GitHub client and verify repository access
     const githubClient = new GitHubClient(config.github_token);
-    const tokenValid = await githubClient.validateToken();
-    if (!tokenValid) {
-      return res.status(401).json({
-        success: false,
-        error: 'GitHub authentication failed. Please check your token in ~/.pair-review/config.json'
-      });
+    let repoExists;
+    try {
+      repoExists = await githubClient.repositoryExists(owner, repo);
+    } catch (error) {
+      if (error.message.includes('authentication failed')) {
+        return res.status(401).json({
+          success: false,
+          error: 'GitHub authentication failed. Please check your token in ~/.pair-review/config.json'
+        });
+      }
+      throw error;
     }
-
-    // Check if repository is accessible
-    const repoExists = await githubClient.repositoryExists(owner, repo);
     if (!repoExists) {
       return res.status(404).json({
         success: false,

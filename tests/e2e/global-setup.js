@@ -230,7 +230,6 @@ async function globalSetup() {
 
   // Mock GitHub client
   GitHubClient.prototype.fetchPullRequest = async () => mockGitHubResponses.fetchPullRequest;
-  GitHubClient.prototype.validateToken = async () => true;
   GitHubClient.prototype.repositoryExists = async () => true;
   GitHubClient.prototype.getPendingReviewForUser = async () => null; // No pending draft in tests
   GitHubClient.prototype.getReviewById = async () => null; // No review lookup needed in tests

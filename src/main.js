@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+const fs = require('fs');
 const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
@@ -7,8 +8,10 @@ const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
-const { normalizeRepository } = require('./utils/paths');
+const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const logger = require('./utils/logger');
+const simpleGit = require('simple-git');
+const { getGeneratedFilePatterns } = require('./git/gitattributes');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
@@ -36,6 +39,53 @@ async function registerRepositoryLocation(db, currentDir, owner, repo) {
     // Non-fatal: registration failure shouldn't block the review
     console.warn(`Could not register repository location: ${error.message}`);
   }
+}
+
+/**
+ * Detect PR information from GitHub Actions environment variables.
+ * Returns null if not in GitHub Actions or PR info cannot be determined.
+ *
+ * @returns {Object|null} { owner, repo, number } or null
+ */
+function detectPRFromGitHubEnvironment() {
+  // Must be in GitHub Actions
+  if (process.env.GITHUB_ACTIONS !== 'true') {
+    return null;
+  }
+
+  // Get owner/repo from GITHUB_REPOSITORY
+  const repository = process.env.GITHUB_REPOSITORY;
+  if (!repository || !repository.includes('/')) {
+    console.warn('GITHUB_REPOSITORY not set or invalid');
+    return null;
+  }
+
+  const [owner, repo] = repository.split('/');
+
+  // Try to get PR number from GITHUB_REF (format: refs/pull/123/merge)
+  const ref = process.env.GITHUB_REF;
+  if (ref) {
+    const prMatch = ref.match(/refs\/pull\/(\d+)\//);
+    if (prMatch) {
+      return { owner, repo, number: parseInt(prMatch[1], 10) };
+    }
+  }
+
+  // Fallback: read from event payload
+  const eventPath = process.env.GITHUB_EVENT_PATH;
+  if (eventPath) {
+    try {
+      const event = JSON.parse(fs.readFileSync(eventPath, 'utf8'));
+      if (event.pull_request && event.pull_request.number) {
+        return { owner, repo, number: event.pull_request.number };
+      }
+    } catch (error) {
+      console.warn(`Could not read GitHub event payload: ${error.message}`);
+    }
+  }
+
+  console.warn('Could not detect PR number from GitHub Actions environment');
+  return null;
 }
 
 /**
@@ -71,6 +121,8 @@ OPTIONS:
     --ai                    Automatically run AI analysis when the review loads
     --ai-draft              Run AI analysis and save suggestions as a draft
                             review on GitHub (headless mode)
+    --ai-review             Run AI analysis and submit review to GitHub (CI mode)
+                            Auto-detects PR in GitHub Actions environment
     --configure             Show setup instructions and configuration options
     -d, --debug             Enable verbose debug logging
     --debug-stream          Log AI provider streaming events (tool calls, text chunks)
@@ -80,6 +132,8 @@ OPTIONS:
     --model <name>          Override the AI model. Claude Code is the default provider.
                             Available models: opus, sonnet, haiku (Claude Code);
                             or use provider-specific models with Gemini/Codex
+    --use-checkout          Use current directory instead of creating worktree
+                            (automatic in GitHub Actions)
     -v, --version           Show version number and exit
 
 EXAMPLES:
@@ -87,6 +141,7 @@ EXAMPLES:
     pair-review https://github.com/owner/repo/pull/456
     pair-review --local                # Review uncommitted local changes
     pair-review 123 --ai               # Auto-run AI analysis
+    pair-review --ai-review            # CI mode: auto-detect PR, submit review
 
 ENVIRONMENT VARIABLES:
     GITHUB_TOKEN            GitHub Personal Access Token (takes precedence over config file)
@@ -142,12 +197,14 @@ function cleanupStaleWorktreesAsync(config) {
 const KNOWN_FLAGS = new Set([
   '--ai',
   '--ai-draft',
+  '--ai-review',
   '--configure',
   '-d', '--debug',
   '--debug-stream',
   '-h', '--help',
   '-l', '--local',
   '--model',
+  '--use-checkout',
   '-v', '--version'
 ]);
 
@@ -178,6 +235,10 @@ function parseArgs(args) {
       flags.ai = true;
     } else if (arg === '--ai-draft') {
       flags.aiDraft = true;
+    } else if (arg === '--ai-review') {
+      flags.aiReview = true;
+    } else if (arg === '--use-checkout') {
+      flags.useCheckout = true;
     } else if (arg === '--model') {
       // Next argument is the model name
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
@@ -322,18 +383,40 @@ AI PROVIDERS:
       return; // Exit after local review
     }
 
+    // Auto-detect GitHub Actions environment
+    const isGitHubAction = process.env.GITHUB_ACTIONS === 'true';
+    let effectivePrArgs = prArgs;
+
+    // In GitHub Actions, auto-detect PR if no args provided and using --ai-review
+    if (isGitHubAction && prArgs.length === 0 && flags.aiReview) {
+      const prInfo = detectPRFromGitHubEnvironment();
+      if (prInfo) {
+        effectivePrArgs = [`https://github.com/${prInfo.owner}/${prInfo.repo}/pull/${prInfo.number}`];
+        console.log(`Detected PR #${prInfo.number} from GitHub Actions environment`);
+        // Auto-enable use-checkout in GitHub Actions
+        flags.useCheckout = true;
+      }
+    }
+
     // Check if PR arguments were provided
-    if (prArgs.length > 0) {
-      // Warn if both --ai and --ai-draft flags are provided
-      if (flags.ai && flags.aiDraft) {
-        console.log('⚠️  Warning: Both --ai and --ai-draft flags provided. Using --ai-draft mode.');
+    if (effectivePrArgs.length > 0) {
+      // Warn if multiple AI flags are provided
+      const aiFlags = [flags.ai, flags.aiDraft, flags.aiReview].filter(Boolean).length;
+      if (aiFlags > 1) {
+        console.log('⚠️  Warning: Multiple AI flags provided. Using highest precedence: --ai-review > --ai-draft > --ai');
       }
 
-      // Check for --ai-draft mode (takes precedence over --ai)
-      if (flags.aiDraft) {
-        await handleDraftModeReview(prArgs, config, db, flags);
+      if (flags.useCheckout && !flags.aiDraft && !flags.aiReview) {
+        console.log('⚠️  Warning: --use-checkout has no effect in interactive mode (requires --ai-draft or --ai-review)');
+      }
+
+      // Check for --ai-review mode (takes precedence over --ai-draft and --ai)
+      if (flags.aiReview) {
+        await handleActionReview(effectivePrArgs, config, db, flags);
+      } else if (flags.aiDraft) {
+        await handleDraftModeReview(effectivePrArgs, config, db, flags);
       } else {
-        await handlePullRequest(prArgs, config, db, flags);
+        await handlePullRequest(effectivePrArgs, config, db, flags);
       }
     } else {
       // Check if --ai or --ai-draft flags were used without PR identifier
@@ -342,6 +425,9 @@ AI PROVIDERS:
       }
       if (flags.aiDraft) {
         throw new Error('--ai-draft flag requires a pull request number or URL to be specified');
+      }
+      if (flags.aiReview) {
+        throw new Error('--ai-review flag requires a pull request number or URL (or run in GitHub Actions environment)');
       }
 
       // No PR arguments - just start the server
@@ -378,14 +464,8 @@ async function handlePullRequest(args, config, db, flags = {}) {
 
     console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo}`);
 
-    // Create GitHub client and validate token
+    // Create GitHub client and verify repository access
     const githubClient = new GitHubClient(githubToken);
-    const tokenValid = await githubClient.validateToken();
-    if (!tokenValid) {
-      throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
-    }
-
-    // Check if repository is accessible
     const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
     if (!repoExists) {
       throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
@@ -546,22 +626,27 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
  * @param {string} diff - Unified diff content
  * @param {Array} changedFiles - Changed files information
  * @param {string} worktreePath - Worktree path
+ * @param {Object} [options] - Optional settings
+ * @param {boolean} [options.skipWorktreeRecord] - Skip creating a worktree DB record (for --use-checkout mode)
  */
-async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath) {
+async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, options = {}) {
   const repository = normalizeRepository(prInfo.owner, prInfo.repo);
 
   // Begin transaction for atomic database operations
   await run(db, 'BEGIN TRANSACTION');
 
   try {
-    // Store or update worktree record
-    const worktreeRepo = new WorktreeRepository(db);
-    await worktreeRepo.getOrCreate({
-      prNumber: prInfo.number,
-      repository,
-      branch: prData.head_branch,
-      path: worktreePath
-    });
+    // Store or update worktree record (skip when using --use-checkout,
+    // since the path is the user's working directory, not a managed worktree)
+    if (!options.skipWorktreeRecord) {
+      const worktreeRepo = new WorktreeRepository(db);
+      await worktreeRepo.getOrCreate({
+        prNumber: prInfo.number,
+        repository,
+        branch: prData.head_branch,
+        path: worktreePath
+      });
+    }
 
     // Prepare extended PR data (keep worktree_path for backward compat, but DB is source of truth)
     const extendedPRData = {
@@ -699,14 +784,20 @@ function formatAISuggestion(text, category) {
 }
 
 /**
- * Handle draft mode review workflow
- * Runs AI analysis and submits draft review to GitHub without opening browser
+ * Shared implementation for headless (non-interactive) review modes.
+ * Used by both --ai-draft and --ai-review.
+ *
  * @param {Array<string>} args - Command line arguments
  * @param {Object} config - Application configuration
  * @param {Object} db - Database instance
- * @param {Object} flags - Parsed command line flags
+ * @param {Object} flags - Parsed CLI flags
+ * @param {Object} options - Mode-specific options
+ * @param {string} options.mode - 'draft' or 'review'
+ * @param {string} options.reviewEvent - 'DRAFT' or 'COMMENT'
+ * @param {string} options.commentStatus - 'draft' or 'submitted'
+ * @param {string} options.modeLabel - Display label for log messages (e.g., 'draft mode', 'action review mode')
  */
-async function handleDraftModeReview(args, config, db, flags = {}) {
+async function performHeadlessReview(args, config, db, flags, options) {
   let prInfo = null;
 
   try {
@@ -720,16 +811,10 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     const parser = new PRArgumentParser();
     prInfo = await parser.parsePRArguments(args);
 
-    console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in draft mode`);
+    console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in ${options.modeLabel}`);
 
-    // Create GitHub client and validate token
+    // Create GitHub client and verify repository access
     const githubClient = new GitHubClient(githubToken);
-    const tokenValid = await githubClient.validateToken();
-    if (!tokenValid) {
-      throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
-    }
-
-    // Check if repository is accessible
     const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
     if (!repoExists) {
       throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
@@ -739,26 +824,75 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     console.log('Fetching pull request data from GitHub...');
     const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
 
-    // Get current repository path
-    const currentDir = parser.getCurrentDirectory();
     const repository = normalizeRepository(prInfo.owner, prInfo.repo);
+    let worktreePath;
+    let diff;
+    let changedFiles;
 
-    // Register the known repository location for future web UI usage
-    await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+    // Determine working directory: --use-checkout uses current directory
+    if (flags.useCheckout) {
+      worktreePath = process.cwd();
+      await registerRepositoryLocation(db, worktreePath, prInfo.owner, prInfo.repo);
+      console.log(`Using current checkout at ${worktreePath}`);
 
-    // Setup git worktree
-    console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager(db);
-    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
+      // Generate diff directly from current checkout
+      console.log('Generating unified diff from checkout...');
+      const git = simpleGit(worktreePath);
 
-    // Generate unified diff
-    console.log('Generating unified diff...');
-    const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
-    const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+      // Ensure we have the base SHA available (fetch if needed)
+      try {
+        await git.fetch(['origin', prData.base_sha]);
+      } catch (fetchError) {
+        // Fetch by SHA may fail (not all servers support it); verify SHA is available locally
+        try {
+          await git.raw(['cat-file', '-t', prData.base_sha]);
+        } catch {
+          throw new Error(`Base SHA ${prData.base_sha} is not available locally and fetch failed: ${fetchError.message}`);
+        }
+      }
+
+      diff = await git.diff([`${prData.base_sha}...${prData.head_sha}`, '--unified=3']);
+
+      // Get changed files
+      const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`]);
+      const gitattributes = await getGeneratedFilePatterns(worktreePath);
+
+      changedFiles = diffSummary.files.map(file => {
+        const resolvedFile = resolveRenamedFile(file.file);
+        const isRenamed = resolvedFile !== file.file;
+        const result = {
+          file: resolvedFile,
+          insertions: file.insertions,
+          deletions: file.deletions,
+          changes: file.changes,
+          binary: file.binary || false,
+          generated: gitattributes.isGenerated(resolvedFile)
+        };
+        if (isRenamed) {
+          result.renamed = true;
+          result.renamedFrom = resolveRenamedFileOld(file.file);
+        }
+        return result;
+      });
+    } else {
+      // Use worktree approach
+      const currentDir = parser.getCurrentDirectory();
+      await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+
+      console.log('Setting up git worktree...');
+      const worktreeManager = new GitWorktreeManager(db);
+      worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
+
+      console.log('Generating unified diff...');
+      diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
+      changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+    }
 
     // Store PR data in database
     console.log('Storing pull request data...');
-    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
+    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, {
+      skipWorktreeRecord: !!flags.useCheckout
+    });
 
     // Get PR metadata ID for AI analysis
     const prMetadata = await queryOne(db, `
@@ -797,7 +931,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     } catch (analysisError) {
       console.error(`AI analysis failed: ${analysisError.message}`);
       console.error('Suggestions (if any) have been saved to the database.');
-      console.error('You can run pair-review without --ai-draft to view them in the UI.');
+      console.error(`You can run pair-review without --ai-${options.mode} to view them in the UI.`);
       throw new Error(`AI analysis failed: ${analysisError.message}`);
     }
 
@@ -820,7 +954,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     console.log(`Found ${aiSuggestions.length} AI suggestions to submit`);
 
     if (aiSuggestions.length === 0) {
-      console.log('No AI suggestions to submit. Exiting without creating draft review.');
+      console.log('No AI suggestions to submit. Exiting without creating review.');
       return; // Exit gracefully without creating a review
     }
 
@@ -841,7 +975,7 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     console.log(`Filtered to ${validSuggestions.length} suggestions with valid line information`);
 
     if (validSuggestions.length === 0) {
-      console.log('No suggestions with valid line information. Exiting without creating draft review.');
+      console.log('No suggestions with valid line information. Exiting without creating review.');
       return; // Exit gracefully without creating a review
     }
 
@@ -860,24 +994,25 @@ async function handleDraftModeReview(args, config, db, flags = {}) {
     });
 
     // Build review body with AI-generated summary
+    const footerFlag = options.mode === 'draft' ? '--ai-draft' : '--ai-review';
     const reviewBody = analysisSummary
       ? `## AI Analysis Summary
 
 ${analysisSummary}
 
-> Generated by [pair-review](https://github.com/in-the-loop-labs/pair-review) with \`--ai-draft\` mode`
+> Generated by [pair-review](https://github.com/in-the-loop-labs/pair-review) with \`${footerFlag}\` mode`
       : `## AI Analysis Summary
 
 Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' : 's'} from automated analysis.
 
-> Generated by [pair-review](https://github.com/in-the-loop-labs/pair-review) with \`--ai-draft\` mode`;
+> Generated by [pair-review](https://github.com/in-the-loop-labs/pair-review) with \`${footerFlag}\` mode`;
 
-    // Submit draft review to GitHub via GraphQL (same path as web UI)
-    console.log(`Submitting draft review with ${githubComments.length} comments...`);
+    // Submit review to GitHub via GraphQL (same path as web UI)
+    console.log(`Submitting review with ${githubComments.length} comments...`);
 
     const prNodeId = storedPRData.node_id;
     if (!prNodeId) {
-      throw new Error(`PR node_id not available for ${prInfo.owner}/${prInfo.repo}#${prInfo.number}. Cannot submit draft review without GraphQL node ID.`);
+      throw new Error(`PR node_id not available for ${prInfo.owner}/${prInfo.repo}#${prInfo.number}. Cannot submit review without GraphQL node ID.`);
     }
 
     // Check for existing pending draft (GitHub only allows one per user per PR)
@@ -885,9 +1020,16 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
       prInfo.owner, prInfo.repo, prInfo.number
     );
 
-    const githubReview = await githubClient.createDraftReviewGraphQL(
-      prNodeId, reviewBody, githubComments, existingDraft?.id
-    );
+    let githubReview;
+    if (options.reviewEvent === 'DRAFT') {
+      githubReview = await githubClient.createDraftReviewGraphQL(
+        prNodeId, reviewBody, githubComments, existingDraft?.id
+      );
+    } else {
+      githubReview = await githubClient.createReviewGraphQL(
+        prNodeId, options.reviewEvent, reviewBody, githubComments, existingDraft?.id
+      );
+    }
 
     // When adding to an existing draft, use the existing URL and include prior comments in total count
     if (existingDraft) {
@@ -904,7 +1046,9 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
       ? String(githubReview.databaseId)
       : existingDraft ? String(existingDraft.databaseId) : null;
 
-    // Update database to track the draft review
+    const githubReviewState = options.reviewEvent === 'DRAFT' ? 'pending' : 'submitted';
+
+    // Update database to track the review
     await run(db, 'BEGIN TRANSACTION');
 
     try {
@@ -912,7 +1056,7 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
       const reviewData = {
         github_node_id: githubNodeId,
         github_url: githubReview.html_url,
-        event: 'DRAFT',
+        event: options.reviewEvent,
         body: reviewBody || '',
         comments_count: githubReview.comments_count,
         created_at: now
@@ -921,7 +1065,7 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
       // Update review record via repository method
       // Uses UPDATE (not INSERT OR REPLACE) to avoid cascade deletion of comments/analysis_runs
       await reviewRepo.updateAfterSubmission(review.id, {
-        event: 'DRAFT',
+        event: options.reviewEvent,
         reviewData: reviewData
       });
 
@@ -930,25 +1074,27 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
       await githubReviewRepo.create(review.id, {
         github_review_id: githubDatabaseId,
         github_node_id: githubNodeId,
-        state: 'pending',
+        state: githubReviewState,
         body: reviewBody || '',
         github_url: githubReview.html_url
       });
 
-      // Update AI suggestions to 'draft' status (batch update for performance)
-      if (aiSuggestions.length > 0) {
-        const suggestionIds = aiSuggestions.map(s => s.id);
+      // Update AI suggestions to appropriate status (batch update for performance)
+      // Use validSuggestions (not aiSuggestions) to only update those that were actually submitted
+      if (validSuggestions.length > 0) {
+        const suggestionIds = validSuggestions.map(s => s.id);
         const placeholders = suggestionIds.map(() => '?').join(',');
         await run(db, `
           UPDATE comments
-          SET status = 'draft', updated_at = ?
+          SET status = ?, updated_at = ?
           WHERE id IN (${placeholders})
-        `, [now, ...suggestionIds]);
+        `, [options.commentStatus, now, ...suggestionIds]);
       }
 
       await run(db, 'COMMIT');
 
-      console.log(`\n✅ Draft review created successfully!`);
+      const successLabel = options.reviewEvent === 'DRAFT' ? 'Draft review created' : 'Review submitted';
+      console.log(`\n✅ ${successLabel} successfully!`);
       console.log(`   Review URL: ${githubReview.html_url}`);
       console.log(`   Comments submitted: ${githubReview.comments_count}\n`);
 
@@ -981,6 +1127,41 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
     }
     process.exit(1);
   }
+}
+
+/**
+ * Handle draft mode review workflow
+ * Runs AI analysis and submits draft review to GitHub without opening browser
+ * @param {Array<string>} args - Command line arguments
+ * @param {Object} config - Application configuration
+ * @param {Object} db - Database instance
+ * @param {Object} flags - Parsed command line flags
+ */
+async function handleDraftModeReview(args, config, db, flags = {}) {
+  await performHeadlessReview(args, config, db, flags, {
+    mode: 'draft',
+    reviewEvent: 'DRAFT',
+    commentStatus: 'draft',
+    modeLabel: 'draft mode'
+  });
+}
+
+/**
+ * Handle GitHub Action review mode.
+ * Submits as COMMENT (not DRAFT), supports --use-checkout.
+ *
+ * @param {Array<string>} args - Command line arguments
+ * @param {Object} config - Application configuration
+ * @param {Object} db - Database instance
+ * @param {Object} flags - Parsed command line flags
+ */
+async function handleActionReview(args, config, db, flags = {}) {
+  await performHeadlessReview(args, config, db, flags, {
+    mode: 'review',
+    reviewEvent: 'COMMENT',
+    commentStatus: 'submitted',
+    modeLabel: 'action review mode'
+  });
 }
 
 /**
@@ -1021,4 +1202,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { main, parseArgs };
+module.exports = { main, parseArgs, detectPRFromGitHubEnvironment };
