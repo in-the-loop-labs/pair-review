@@ -1447,70 +1447,89 @@ describe('Analyzer.buildLineNumberGuidance', () => {
   });
 });
 
-describe('Analyzer.buildFileLineCountsSection', () => {
+describe('Analyzer.buildOrchestrationLineNumberGuidance', () => {
   let analyzer;
 
   beforeEach(() => {
     analyzer = new Analyzer({}, 'sonnet', 'claude');
   });
 
-  it('should return empty string for null map', () => {
-    const result = analyzer.buildFileLineCountsSection(null);
-    expect(result).toBe('');
+  it('should return guidance containing git-diff-lines --cwd when worktreePath is provided', () => {
+    const worktreePath = '/path/to/worktree';
+    const result = analyzer.buildOrchestrationLineNumberGuidance(worktreePath);
+
+    expect(result).toContain('git-diff-lines --cwd "/path/to/worktree"');
   });
 
-  it('should return empty string for empty map', () => {
-    const result = analyzer.buildFileLineCountsSection(new Map());
-    expect(result).toBe('');
+  it('should omit --cwd when worktreePath is null', () => {
+    const result = analyzer.buildOrchestrationLineNumberGuidance(null);
+
+    expect(result).toContain('git-diff-lines');
+    expect(result).not.toContain('--cwd');
   });
 
-  it('should format files with line counts', () => {
-    const map = new Map([
-      ['src/foo.js', 50],
-      ['src/bar.js', 100]
-    ]);
-    const result = analyzer.buildFileLineCountsSection(map);
-    expect(result).toContain('- src/foo.js: 50 lines');
-    expect(result).toContain('- src/bar.js: 100 lines');
+  it('should omit --cwd when worktreePath is undefined (default)', () => {
+    const result = analyzer.buildOrchestrationLineNumberGuidance();
+
+    expect(result).toContain('git-diff-lines');
+    expect(result).not.toContain('--cwd');
   });
 
-  it('should include empty files with special notation', () => {
-    const map = new Map([
-      ['src/empty.js', 0],
-      ['src/normal.js', 10]
-    ]);
-    const result = analyzer.buildFileLineCountsSection(map);
-    expect(result).toContain('- src/empty.js: 0 lines (empty file)');
-    expect(result).toContain('- src/normal.js: 10 lines');
+  it('should omit --cwd when worktreePath is empty string', () => {
+    const result = analyzer.buildOrchestrationLineNumberGuidance('');
+
+    expect(result).not.toContain('--cwd');
   });
 
-  it('should skip binary/missing files (lineCount === -1)', () => {
-    const map = new Map([
-      ['image.png', -1],
-      ['src/code.js', 25]
-    ]);
-    const result = analyzer.buildFileLineCountsSection(map);
-    expect(result).not.toContain('image.png');
-    expect(result).toContain('- src/code.js: 25 lines');
+  it('should contain Preserve line numbers as-is instruction', () => {
+    const result = analyzer.buildOrchestrationLineNumberGuidance();
+
+    expect(result).toContain('Preserve line numbers as-is');
   });
 
-  it('should include validation instructions', () => {
-    const map = new Map([['src/foo.js', 10]]);
-    const result = analyzer.buildFileLineCountsSection(map);
-    expect(result).toContain('Verify that all suggestion line numbers are within these bounds');
-    expect(result).toContain('file-level suggestion');
+  it('should mention old_or_new preservation', () => {
+    const result = analyzer.buildOrchestrationLineNumberGuidance();
+
+    expect(result).toContain('old_or_new');
+    expect(result).toContain('Preserve `old_or_new` values');
   });
 
-  it('should handle map with only binary files', () => {
-    const map = new Map([
-      ['image.png', -1],
-      ['data.bin', -1]
-    ]);
-    const result = analyzer.buildFileLineCountsSection(map);
-    // Should still have header but no file entries
-    expect(result).toContain('## File Line Counts for Validation');
-    expect(result).not.toContain('image.png');
-    expect(result).not.toContain('data.bin');
+  it('should include the level preference hierarchy for architectural issues', () => {
+    const result = analyzer.buildOrchestrationLineNumberGuidance();
+
+    expect(result).toContain('Level 3 > Level 2 > Level 1');
+  });
+
+  it('should distinguish architectural vs line-level issue preferences', () => {
+    const result = analyzer.buildOrchestrationLineNumberGuidance();
+
+    expect(result).toContain('architectural or cross-cutting issues');
+    expect(result).toContain('precise line-level bugs or typos');
+  });
+
+  it('should properly quote worktreePath with spaces in the command', () => {
+    const worktreePath = '/path/with spaces/to/worktree';
+    const result = analyzer.buildOrchestrationLineNumberGuidance(worktreePath);
+
+    expect(result).toContain('--cwd "/path/with spaces/to/worktree"');
+  });
+
+  it('should include --cwd in both the command block and example usage', () => {
+    const worktreePath = '/my/worktree';
+    const result = analyzer.buildOrchestrationLineNumberGuidance(worktreePath);
+
+    const fullCommand = 'git-diff-lines --cwd "/my/worktree"';
+    expect(result).toContain(fullCommand);
+
+    // Should also appear in the example usage lines
+    expect(result).toContain(`${fullCommand} HEAD~1`);
+    expect(result).toContain(`${fullCommand} -- src/`);
+  });
+
+  it('should include Line Number Handling header', () => {
+    const result = analyzer.buildOrchestrationLineNumberGuidance();
+
+    expect(result).toContain('## Line Number Handling');
   });
 });
 
