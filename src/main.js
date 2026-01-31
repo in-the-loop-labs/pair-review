@@ -10,6 +10,8 @@ const Analyzer = require('./ai/analyzer');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
 const { normalizeRepository } = require('./utils/paths');
 const logger = require('./utils/logger');
+const simpleGit = require('simple-git');
+const { getGeneratedFilePatterns } = require('./git/gitattributes');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
@@ -830,26 +832,29 @@ async function performHeadlessReview(args, config, db, flags, options) {
     // Determine working directory: --use-checkout uses current directory
     if (flags.useCheckout) {
       worktreePath = process.cwd();
+      await registerRepositoryLocation(db, worktreePath, prInfo.owner, prInfo.repo);
       console.log(`Using current checkout at ${worktreePath}`);
 
       // Generate diff directly from current checkout
       console.log('Generating unified diff from checkout...');
-      const simpleGit = require('simple-git');
       const git = simpleGit(worktreePath);
 
       // Ensure we have the base SHA available (fetch if needed)
       try {
-        await git.fetch(['origin', prData.base_sha, '--depth=1']);
+        await git.fetch(['origin', prData.base_sha]);
       } catch (fetchError) {
-        // Fetch might fail if already available, that's ok
-        console.log(`Fetch note: ${fetchError.message}`);
+        // Fetch by SHA may fail (not all servers support it); verify SHA is available locally
+        try {
+          await git.raw(['cat-file', '-t', prData.base_sha]);
+        } catch {
+          throw new Error(`Base SHA ${prData.base_sha} is not available locally and fetch failed: ${fetchError.message}`);
+        }
       }
 
       diff = await git.diff([`${prData.base_sha}...${prData.head_sha}`, '--unified=3']);
 
       // Get changed files
       const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`]);
-      const { getGeneratedFilePatterns } = require('./git/gitattributes');
       const gitattributes = await getGeneratedFilePatterns(worktreePath);
 
       changedFiles = diffSummary.files.map(file => ({
@@ -1072,9 +1077,9 @@ Found ${validSuggestions.length} suggestion${validSuggestions.length === 1 ? '' 
         const placeholders = suggestionIds.map(() => '?').join(',');
         await run(db, `
           UPDATE comments
-          SET status = '${options.commentStatus}', updated_at = ?
+          SET status = ?, updated_at = ?
           WHERE id IN (${placeholders})
-        `, [now, ...suggestionIds]);
+        `, [options.commentStatus, now, ...suggestionIds]);
       }
 
       await run(db, 'COMMIT');

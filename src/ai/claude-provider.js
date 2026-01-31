@@ -111,7 +111,12 @@ class ClaudeProvider extends AIProvider {
     // This is a known requirement of the Claude CLI - do not remove --verbose from these args.
     const baseArgs = ['-p', '--verbose', '--model', model, '--output-format', 'stream-json', '--allowedTools', allowedTools];
     if (maxBudget) {
-      baseArgs.push('--max-budget-usd', maxBudget);
+      const budgetNum = parseFloat(maxBudget);
+      if (isNaN(budgetNum) || budgetNum <= 0) {
+        console.warn(`Warning: PAIR_REVIEW_MAX_BUDGET_USD="${maxBudget}" is not a valid positive number, ignoring`);
+      } else {
+        baseArgs.push('--max-budget-usd', String(budgetNum));
+      }
     }
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);

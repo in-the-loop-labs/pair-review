@@ -37,6 +37,7 @@ describe('ClaudeProvider', () => {
     vi.clearAllMocks();
     // Reset environment for each test
     delete process.env.PAIR_REVIEW_CLAUDE_CMD;
+    delete process.env.PAIR_REVIEW_MAX_BUDGET_USD;
   });
 
   afterEach(() => {
@@ -175,6 +176,77 @@ describe('ClaudeProvider', () => {
       });
       expect(provider.extraEnv.VAR1).toBe('model');
       expect(provider.extraEnv.VAR2).toBe('extra');
+    });
+  });
+
+  describe('PAIR_REVIEW_MAX_BUDGET_USD validation', () => {
+    let warnSpy;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    it('should pass valid positive number through to args', () => {
+      process.env.PAIR_REVIEW_MAX_BUDGET_USD = '2';
+      const provider = new ClaudeProvider('sonnet');
+      const budgetIdx = provider.args.indexOf('--max-budget-usd');
+      expect(budgetIdx).not.toBe(-1);
+      expect(provider.args[budgetIdx + 1]).toBe('2');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('should pass decimal budget values through to args', () => {
+      process.env.PAIR_REVIEW_MAX_BUDGET_USD = '0.5';
+      const provider = new ClaudeProvider('sonnet');
+      const budgetIdx = provider.args.indexOf('--max-budget-usd');
+      expect(budgetIdx).not.toBe(-1);
+      expect(provider.args[budgetIdx + 1]).toBe('0.5');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('should ignore invalid string "abc" with a warning', () => {
+      process.env.PAIR_REVIEW_MAX_BUDGET_USD = 'abc';
+      const provider = new ClaudeProvider('sonnet');
+      expect(provider.args).not.toContain('--max-budget-usd');
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('PAIR_REVIEW_MAX_BUDGET_USD="abc"')
+      );
+    });
+
+    it('should ignore empty string (falsy, does not enter if block)', () => {
+      process.env.PAIR_REVIEW_MAX_BUDGET_USD = '';
+      const provider = new ClaudeProvider('sonnet');
+      expect(provider.args).not.toContain('--max-budget-usd');
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('should ignore negative number "-1" with a warning', () => {
+      process.env.PAIR_REVIEW_MAX_BUDGET_USD = '-1';
+      const provider = new ClaudeProvider('sonnet');
+      expect(provider.args).not.toContain('--max-budget-usd');
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('PAIR_REVIEW_MAX_BUDGET_USD="-1"')
+      );
+    });
+
+    it('should ignore zero "0" with a warning', () => {
+      process.env.PAIR_REVIEW_MAX_BUDGET_USD = '0';
+      const provider = new ClaudeProvider('sonnet');
+      expect(provider.args).not.toContain('--max-budget-usd');
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('PAIR_REVIEW_MAX_BUDGET_USD="0"')
+      );
+    });
+
+    it('should not include budget args when env var is not set', () => {
+      delete process.env.PAIR_REVIEW_MAX_BUDGET_USD;
+      const provider = new ClaudeProvider('sonnet');
+      expect(provider.args).not.toContain('--max-budget-usd');
+      expect(warnSpy).not.toHaveBeenCalled();
     });
   });
 

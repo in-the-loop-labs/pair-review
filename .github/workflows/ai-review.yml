@@ -24,9 +24,6 @@ jobs:
           fetch-depth: 0  # Full history for diff generation
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Fetch base branch
-        run: git fetch origin ${{ github.event.pull_request.base.sha }}
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -45,4 +42,4 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PAIR_REVIEW_MAX_BUDGET_USD: "2"
         run: |
-          node bin/pair-review.js --ai-review --use-checkout
+          node bin/pair-review.js --ai-review --use-checkout --debug
