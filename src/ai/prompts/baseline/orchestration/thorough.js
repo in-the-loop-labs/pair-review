@@ -39,7 +39,6 @@ const { ORCHESTRATION_INPUT_SCHEMA_DOCS } = require('../../shared/output-schema'
  * - {{level1Suggestions}} - Level 1 suggestions as JSON array
  * - {{level2Suggestions}} - Level 2 suggestions as JSON array
  * - {{level3Suggestions}} - Level 3 suggestions as JSON array
- * - {{fileLineCounts}} - File line count validation data (optional)
  */
 const taggedPrompt = `<section name="role" required="true" tier="thorough">
 {{reviewIntro}}
@@ -99,10 +98,6 @@ ${ORCHESTRATION_INPUT_SCHEMA_DOCS}
 
 **Level 3 - Codebase Context ({{level3Count}} suggestions):**
 {{level3Suggestions}}
-</section>
-
-<section name="file-line-counts" optional="true" tier="balanced,thorough">
-{{fileLineCounts}}
 </section>
 
 <section name="intelligent-merging" required="true" tier="thorough">
@@ -375,7 +370,6 @@ const sections = [
   { name: 'reasoning-encouragement', required: true, tier: ['thorough'] },
   { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
   { name: 'input-suggestions', locked: true },
-  { name: 'file-line-counts', optional: true, tier: ['balanced', 'thorough'] },
   { name: 'intelligent-merging', required: true, tier: ['thorough'] },
   { name: 'priority-curation', required: true, tier: ['thorough'] },
   { name: 'balanced-output', required: true, tier: ['thorough'] },
@@ -401,7 +395,6 @@ const defaultOrder = [
   'reasoning-encouragement',
   'custom-instructions',
   'input-suggestions',
-  'file-line-counts',
   'intelligent-merging',
   'priority-curation',
   'balanced-output',

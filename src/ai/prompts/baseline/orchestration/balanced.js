@@ -32,7 +32,6 @@ const { ORCHESTRATION_INPUT_SCHEMA_DOCS } = require('../../shared/output-schema'
  * - {{level1Suggestions}} - Level 1 suggestions as JSON array
  * - {{level2Suggestions}} - Level 2 suggestions as JSON array
  * - {{level3Suggestions}} - Level 3 suggestions as JSON array
- * - {{fileLineCounts}} - File line count validation data (optional)
  */
 const taggedPrompt = `<section name="role" required="true">
 {{reviewIntro}}
@@ -72,10 +71,6 @@ ${ORCHESTRATION_INPUT_SCHEMA_DOCS}
 
 **Level 3 - Codebase Context ({{level3Count}} suggestions):**
 {{level3Suggestions}}
-</section>
-
-<section name="file-line-counts" optional="true">
-{{fileLineCounts}}
 </section>
 
 <section name="intelligent-merging" required="true">
@@ -194,7 +189,6 @@ const sections = [
   { name: 'role-description', required: true },
   { name: 'custom-instructions', optional: true },
   { name: 'input-suggestions', locked: true },
-  { name: 'file-line-counts', optional: true },
   { name: 'intelligent-merging', required: true },
   { name: 'priority-curation', required: true },
   { name: 'balanced-output', required: true },
@@ -216,7 +210,6 @@ const defaultOrder = [
   'role-description',
   'custom-instructions',
   'input-suggestions',
-  'file-line-counts',
   'intelligent-merging',
   'priority-curation',
   'balanced-output',
