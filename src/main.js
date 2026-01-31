@@ -8,7 +8,7 @@ const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
-const { normalizeRepository } = require('./utils/paths');
+const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
 const { getGeneratedFilePatterns } = require('./git/gitattributes');
@@ -857,14 +857,23 @@ async function performHeadlessReview(args, config, db, flags, options) {
       const diffSummary = await git.diffSummary([`${prData.base_sha}...${prData.head_sha}`]);
       const gitattributes = await getGeneratedFilePatterns(worktreePath);
 
-      changedFiles = diffSummary.files.map(file => ({
-        file: file.file,
-        insertions: file.insertions,
-        deletions: file.deletions,
-        changes: file.changes,
-        binary: file.binary || false,
-        generated: gitattributes.isGenerated(file.file)
-      }));
+      changedFiles = diffSummary.files.map(file => {
+        const resolvedFile = resolveRenamedFile(file.file);
+        const isRenamed = resolvedFile !== file.file;
+        const result = {
+          file: resolvedFile,
+          insertions: file.insertions,
+          deletions: file.deletions,
+          changes: file.changes,
+          binary: file.binary || false,
+          generated: gitattributes.isGenerated(resolvedFile)
+        };
+        if (isRenamed) {
+          result.renamed = true;
+          result.renamedFrom = resolveRenamedFileOld(file.file);
+        }
+        return result;
+      });
     } else {
       // Use worktree approach
       const currentDir = parser.getCurrentDirectory();
