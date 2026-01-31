@@ -162,7 +162,7 @@ describe('MCP tools via in-memory client', () => {
     if (db) closeTestDatabase(db);
   });
 
-  it('should list all tools', async () => {
+  it('should list all tools (no port option)', async () => {
     const { tools } = await client.listTools();
     const names = tools.map(t => t.name);
     expect(names).toContain('get_review_comments');
@@ -304,4 +304,68 @@ describe('MCP tools via in-memory client', () => {
     });
   });
 
+});
+
+describe('get_server_info tool', () => {
+  let db;
+  let client;
+  let mcpServer;
+
+  beforeEach(async () => {
+    db = createTestDatabase();
+
+    // Create MCP server WITH port option to enable get_server_info
+    mcpServer = createMCPServer(db, { port: 3456 });
+    client = new Client({ name: 'test-client', version: '1.0.0' });
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcpServer.connect(serverTransport);
+    await client.connect(clientTransport);
+  });
+
+  afterEach(async () => {
+    await client.close();
+    await mcpServer.close();
+    if (db) closeTestDatabase(db);
+  });
+
+  it('should register 3 tools when port option is provided', async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map(t => t.name);
+    expect(names).toContain('get_server_info');
+    expect(names).toContain('get_review_comments');
+    expect(names).toContain('get_ai_suggestions');
+    expect(tools).toHaveLength(3);
+  });
+
+  it('should return JSON with url, port, and version', async () => {
+    const result = await client.callTool({
+      name: 'get_server_info',
+      arguments: {},
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.url).toBe('http://localhost:3456');
+    expect(content.port).toBe(3456);
+    expect(content.version).toBeDefined();
+    expect(typeof content.version).toBe('string');
+  });
+
+  it('should not register get_server_info when no port option is provided', async () => {
+    // Create a second server without port
+    const serverNoPort = createMCPServer(db);
+    const clientNoPort = new Client({ name: 'test-client-no-port', version: '1.0.0' });
+
+    const [clientTransport2, serverTransport2] = InMemoryTransport.createLinkedPair();
+    await serverNoPort.connect(serverTransport2);
+    await clientNoPort.connect(clientTransport2);
+
+    const { tools } = await clientNoPort.listTools();
+    const names = tools.map(t => t.name);
+    expect(names).not.toContain('get_server_info');
+    expect(tools).toHaveLength(2);
+
+    await clientNoPort.close();
+    await serverNoPort.close();
+  });
 });

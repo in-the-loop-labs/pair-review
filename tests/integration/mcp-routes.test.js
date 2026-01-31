@@ -140,7 +140,7 @@ describe('MCP Routes Integration', () => {
   });
 
   describe('POST /mcp - tools/list', () => {
-    it('should return all 3 tools', async () => {
+    it('should return all registered tools', async () => {
       const res = await mcpRequest(app, {
         jsonrpc: '2.0',
         id: 2,

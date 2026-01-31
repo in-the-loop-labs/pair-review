@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "pair-review": {
-      "type": "http",
-      "url": "http://localhost:7247/mcp"
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@in-the-loop-labs/pair-review", "--mcp"]
     }
   }
 }

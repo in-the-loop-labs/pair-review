@@ -30,6 +30,16 @@ class AILogger {
     this.enabled = true;
     this.debugEnabled = false;
     this.streamDebugEnabled = false;
+    this._stdout = process.stdout;
+  }
+
+  /**
+   * Redirect all non-error output to a different stream.
+   * Used in MCP stdio mode to keep stdout reserved for the JSON-RPC protocol.
+   * @param {NodeJS.WritableStream} stream - Target stream (e.g. process.stderr)
+   */
+  setOutputStream(stream) {
+    this._stdout = stream;
   }
 
   /**
@@ -70,7 +80,7 @@ class AILogger {
   debug(message) {
     if (!this.enabled || !this.debugEnabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-    process.stdout.write(
+    this._stdout.write(
       `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
       `${COLORS.dim}[AI DBG]${COLORS.reset} ` +
       `${COLORS.dim}${message}${COLORS.reset}\n`
@@ -84,7 +94,7 @@ class AILogger {
   streamDebug(message) {
     if (!this.enabled || !this.streamDebugEnabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-    process.stdout.write(
+    this._stdout.write(
       `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
       `${COLORS.dim}[STREAM]${COLORS.reset} ` +
       `${COLORS.dim}${message}${COLORS.reset}\n`
@@ -97,7 +107,7 @@ class AILogger {
   info(message) {
     if (!this.enabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-    process.stdout.write(
+    this._stdout.write(
       `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
       `${COLORS.bright}${COLORS.blue}[AI]${COLORS.reset} ` +
       `${message}\n`
@@ -110,7 +120,7 @@ class AILogger {
   success(message) {
     if (!this.enabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-    process.stdout.write(
+    this._stdout.write(
       `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
       `${COLORS.bright}${COLORS.green}[AI ✓]${COLORS.reset} ` +
       `${COLORS.green}${message}${COLORS.reset}\n`
@@ -136,7 +146,7 @@ class AILogger {
   warn(message) {
     if (!this.enabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-    process.stdout.write(
+    this._stdout.write(
       `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
       `${COLORS.bright}${COLORS.yellow}[AI ⚠]${COLORS.reset} ` +
       `${COLORS.yellow}${message}${COLORS.reset}\n`
@@ -150,7 +160,7 @@ class AILogger {
     if (!this.enabled) return;
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
     const prefixColor = COLORS[color] || COLORS.blue;
-    process.stdout.write(
+    this._stdout.write(
       `${COLORS.cyan}[${timestamp}]${COLORS.reset} ` +
       `${COLORS.bright}${prefixColor}[${prefix}]${COLORS.reset} ` +
       `${message}\n`
@@ -162,7 +172,7 @@ class AILogger {
    */
   section(title) {
     if (!this.enabled) return;
-    process.stdout.write(
+    this._stdout.write(
       `\n${COLORS.bright}${COLORS.cyan}${'─'.repeat(60)}${COLORS.reset}\n` +
       `${COLORS.bright}${COLORS.cyan}▶ ${title}${COLORS.reset}\n` +
       `${COLORS.cyan}${'─'.repeat(60)}${COLORS.reset}\n`

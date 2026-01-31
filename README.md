@@ -364,25 +364,39 @@ Perfect for:
 
 ## MCP Integration
 
-pair-review exposes a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) endpoint, allowing AI coding agents to programmatically read review feedback.
+pair-review exposes a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) interface, allowing AI coding agents to programmatically read review feedback.
 
-### Endpoint
+### Transport Modes
 
-The MCP endpoint is available at `http://localhost:7247/mcp` (Streamable HTTP transport, stateless mode) whenever the pair-review server is running.
+**stdio (recommended)** — run pair-review as a stdio MCP server. The agent communicates via stdin/stdout JSON-RPC while the web UI launches on a local port for the human reviewer:
+
+```bash
+pair-review --mcp
+```
+
+**HTTP** — the Streamable HTTP endpoint at `http://localhost:7247/mcp` (stateless mode) is available whenever the pair-review web server is running.
 
 ### Available Tools
 
-| Tool | Description |
-|------|-------------|
-| `get_review_comments` | Get user-authored review comments, grouped by file |
-| `get_ai_suggestions` | Get AI-generated suggestions from the latest analysis run |
-| `get_review_summary` | Get review summary with AI analysis metadata |
+| Tool | Description | Availability |
+|------|-------------|--------------|
+| `get_review_comments` | Get user-authored review comments, grouped by file | stdio + HTTP |
+| `get_ai_suggestions` | Get AI-generated suggestions from the latest analysis run | stdio + HTTP |
+| `get_server_info` | Get server info including web UI URL and version | stdio only |
 
-All tools accept review lookup parameters:
+All review tools accept lookup parameters:
 - **Local reviews**: `path` + `headSha`
 - **PR reviews**: `repo` (e.g. `"owner/repo"`) + `prNumber`
 
 ### Adding to Claude Code
+
+**stdio transport (recommended):**
+
+```bash
+claude mcp add pair-review -- npx @in-the-loop-labs/pair-review --mcp
+```
+
+**HTTP transport:**
 
 ```bash
 claude mcp add --transport http pair-review http://localhost:7247/mcp

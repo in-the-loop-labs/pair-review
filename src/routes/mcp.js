@@ -51,9 +51,11 @@ const reviewLookupSchema = {
  * Create and configure an MCP server with tools bound to the given database.
  *
  * @param {Object} db - Database instance
+ * @param {Object} [options] - Optional configuration
+ * @param {number} [options.port] - When provided, enables the get_server_info tool with this port
  * @returns {McpServer}
  */
-function createMCPServer(db) {
+function createMCPServer(db, options = {}) {
   const packageJson = require('../../package.json');
 
   const server = new McpServer({
@@ -62,6 +64,28 @@ function createMCPServer(db) {
   }, {
     capabilities: { tools: {} }
   });
+
+  // --- Tool: get_server_info (when port is provided) ---
+  if (options.port) {
+    server.tool(
+      'get_server_info',
+      'Get pair-review server info including the web UI URL. ' +
+      'Use this to find the URL that the human reviewer can open in their browser.',
+      {},
+      async () => {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              url: `http://localhost:${options.port}`,
+              port: options.port,
+              version: packageJson.version,
+            }, null, 2)
+          }]
+        };
+      }
+    );
+  }
 
   // --- Tool: get_review_comments ---
   server.tool(

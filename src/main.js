@@ -130,6 +130,8 @@ OPTIONS:
     -h, --help              Show this help message and exit
     -l, --local [path]      Review local uncommitted changes
                             Optional path defaults to current directory
+    --mcp                   Start as an MCP stdio server for AI coding agents.
+                            The web UI also starts for the human reviewer.
     --model <name>          Override the AI model. Claude Code is the default provider.
                             Available models: opus, sonnet, haiku (Claude Code);
                             or use provider-specific models with Gemini/Codex
@@ -206,6 +208,7 @@ const KNOWN_FLAGS = new Set([
   '--debug-stream',
   '-h', '--help',
   '-l', '--local',
+  '--mcp',
   '--model',
   '--use-checkout',
   '--yolo',
@@ -262,7 +265,7 @@ function parseArgs(args) {
         i++; // Skip next argument since we consumed it
       }
       // localPath will be resolved to cwd if not provided
-    } else if (arg === '--configure' || arg === '-h' || arg === '--help' || arg === '-v' || arg === '--version') {
+    } else if (arg === '--configure' || arg === '-h' || arg === '--help' || arg === '--mcp' || arg === '-v' || arg === '--version') {
       // Skip flags that are handled earlier in main()
       continue;
     } else if (arg.startsWith('-')) {
@@ -289,6 +292,15 @@ function parseArgs(args) {
 async function main() {
   try {
     const args = process.argv.slice(2);
+
+    // IMPORTANT: MCP stdio mode must be handled before ANY code that writes to stdout.
+    // In MCP mode, stdout is reserved for JSON-RPC protocol messages.
+    // Moving this below other handlers (help, version, config, etc.) will break MCP.
+    if (args.includes('--mcp')) {
+      const { startMCPStdio } = require('./mcp-stdio');
+      await startMCPStdio();
+      return; // process stays alive via stdin
+    }
 
     // Handle help flag (before any other processing)
     if (args.includes('-h') || args.includes('--help')) {
