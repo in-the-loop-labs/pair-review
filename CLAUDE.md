@@ -71,7 +71,7 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
   ```json
   {
     "github_token": "...",
-    "port": 3000,
+    "port": 7247,
     "theme": "light"
   }
   ```

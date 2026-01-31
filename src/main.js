@@ -158,7 +158,7 @@ CONFIGURATION:
 
     {
       "github_token": "ghp_your_token_here",
-      "port": 3000,
+      "port": 7247,
       "theme": "light"
     }
 
@@ -315,7 +315,7 @@ CONFIG FILE:
     Example config:
     {
       "github_token": "ghp_your_token_here",
-      "port": 3000,
+      "port": 7247,
       "theme": "light",
       "debug_stream": false,
       "yolo": false

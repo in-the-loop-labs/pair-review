@@ -198,6 +198,7 @@ async function startServer(sharedDb = null) {
     const configRoutes = require('./routes/config');
     const prRoutes = require('./routes/pr');
     const localRoutes = require('./routes/local');
+    const mcpRoutes = require('./routes/mcp');
 
     // Mount specific routes first to ensure they match before general PR routes
     app.use('/', analysisRoutes);
@@ -205,6 +206,7 @@ async function startServer(sharedDb = null) {
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);
     app.use('/', localRoutes);
+    app.use('/', mcpRoutes);
     app.use('/', prRoutes);
     
     // Error handling middleware

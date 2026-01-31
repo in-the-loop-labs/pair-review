@@ -81,7 +81,7 @@ vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockResolvedValue(true);
 vi.spyOn(configModule, 'saveConfig').mockResolvedValue(undefined);
 vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
   github_token: 'test-token',
-  port: 3000,
+  port: 7247,
   theme: 'light'
 });
 vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
@@ -138,7 +138,7 @@ function createTestApp(db) {
   app.set('githubToken', 'test-token');
   app.set('config', {
     github_token: 'test-token',
-    port: 3000,
+    port: 7247,
     theme: 'light',
     model: 'sonnet'
   });

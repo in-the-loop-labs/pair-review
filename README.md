@@ -141,7 +141,7 @@ Configuration is stored in `~/.pair-review/config.json`:
 ```json
 {
   "github_token": "ghp_your_token_here",
-  "port": 3000,
+  "port": 7247,
   "theme": "light",
   "default_provider": "claude",
   "default_model": "sonnet"
@@ -361,6 +361,34 @@ Perfect for:
 - Iterating with a coding agent on local changes
 - Reviewing only the unstaged files that are still changing
 - Staging the files you've already reviewed and viewing the next round of changes
+
+## MCP Integration
+
+pair-review exposes a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) endpoint, allowing AI coding agents to programmatically read review feedback.
+
+### Endpoint
+
+The MCP endpoint is available at `http://localhost:7247/mcp` (Streamable HTTP transport, stateless mode) whenever the pair-review server is running.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `get_review_comments` | Get user-authored review comments, grouped by file |
+| `get_ai_suggestions` | Get AI-generated suggestions from the latest analysis run |
+| `get_review_summary` | Get review summary with AI analysis metadata |
+
+All tools accept review lookup parameters:
+- **Local reviews**: `path` + `headSha`
+- **PR reviews**: `repo` (e.g. `"owner/repo"`) + `prNumber`
+
+### Adding to Claude Code
+
+```bash
+claude mcp add --transport http pair-review http://localhost:7247/mcp
+```
+
+Or copy the `plugin/.mcp.json` file from this package into your project.
 
 ## Development
 
