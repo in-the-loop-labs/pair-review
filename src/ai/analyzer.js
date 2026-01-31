@@ -185,7 +185,7 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, fileLineCountMap, worktreePath, { analysisId, tier });
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback });
 
         // Validate and finalize suggestions
         const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -419,6 +419,54 @@ Your suggestions MUST reference the EXACT line where the issue exists:
   }
 
   /**
+   * Build lightweight line number guidance for the orchestration step.
+   *
+   * Unlike buildLineNumberGuidance() (used for levels 1-3), this does NOT
+   * instruct the AI to routinely run git-diff-lines or verify every line number.
+   * The orchestration step receives pre-computed suggestions whose line numbers
+   * were already determined by the analysis levels; its primary job is to
+   * intelligently combine them. However, it retains access to git-diff-lines
+   * for cases where it needs to investigate conflicting suggestions or verify
+   * a specific concern.
+   *
+   * @param {string|null} worktreePath - Path to the git worktree (for --cwd option)
+   * @returns {string} Orchestration-specific line number guidance
+   */
+  buildOrchestrationLineNumberGuidance(worktreePath = null) {
+    const scriptCommand = 'git-diff-lines';
+    const cwdOption = worktreePath ? ` --cwd "${worktreePath}"` : '';
+    const fullCommand = `${scriptCommand}${cwdOption}`;
+    return `
+## Line Number Handling
+
+You are receiving pre-computed suggestions from the analysis levels. Each suggestion
+already carries a \`line\` number and \`old_or_new\` value determined during analysis.
+Your primary focus is curation and synthesis, not line number verification.
+
+**Your responsibilities:**
+- **Preserve line numbers as-is** when passing suggestions through to the output.
+- **Preserve \`old_or_new\` values** from input suggestions.
+- **When merging duplicates or near-duplicates** that reference the same line,
+  keep the line number and \`old_or_new\` from the suggestion with the richest
+  context (prefer higher-level analysis when in doubt).
+- **When levels conflict** on the line number or \`old_or_new\` for what appears to
+  be the same issue, use your judgment based on the nature of the concern:
+  - For **architectural or cross-cutting issues**, prefer the suggestion from the
+    level with broader context (Level 3 > Level 2 > Level 1).
+  - For **precise line-level bugs or typos**, prefer the suggestion from the level
+    that targets the specific line most directly (often Level 1, which works
+    closest to the raw diff).
+
+**If you need to inspect a file diff** (e.g., to resolve conflicting suggestions or
+verify a specific concern), use the annotated diff tool instead of \`git diff\`:
+\`\`\`
+${fullCommand}
+\`\`\`
+All git diff arguments work: \`${fullCommand} HEAD~1\`, \`${fullCommand} -- src/\`
+`;
+  }
+
+  /**
    * Build the section of the prompt that includes custom review instructions
    * @param {string} customInstructions - Custom instructions text
    * @returns {string} Prompt section or empty string
@@ -452,31 +500,6 @@ ${changedFiles.map(f => `- ${f}`).join('\n')}
 
 Do NOT create suggestions for any files not in this list. If you cannot find issues in these files, that's okay - just return fewer suggestions.
 `;
-  }
-
-  /**
-   * Build the file line counts section for orchestration prompt
-   * @param {Map<string, number>} fileLineCountMap - Map of file paths to line counts
-   * @returns {string} Prompt section or empty string
-   */
-  buildFileLineCountsSection(fileLineCountMap) {
-    if (!fileLineCountMap || fileLineCountMap.size === 0) return '';
-
-    const lines = ['', '## File Line Counts for Validation'];
-    for (const [filePath, lineCount] of fileLineCountMap) {
-      if (lineCount === 0) {
-        // Empty files are valid text files - any line-specific suggestion would be invalid
-        lines.push(`- ${filePath}: 0 lines (empty file)`);
-      } else if (lineCount > 0) {
-        lines.push(`- ${filePath}: ${lineCount} lines`);
-      }
-      // Skip binary/missing files (lineCount === -1)
-    }
-    lines.push('');
-    lines.push('Verify that all suggestion line numbers are within these bounds.');
-    lines.push('If a suggestion has an invalid line number but valuable insight, convert it to a file-level suggestion.');
-    lines.push('');
-    return lines.join('\n');
   }
 
   /**
@@ -2276,14 +2299,13 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} allSuggestions - Object containing suggestions from all levels: {level1: [...], level2: [...], level3: [...]}
    * @param {Object} prMetadata - PR metadata for context
    * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
-   * @param {Map<string, number>} fileLineCountMap - Optional map of file paths to line counts for validation
    * @param {string} worktreePath - Path to the git worktree
    * @param {Object} options - Additional options
    * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @returns {Promise<Array>} Curated suggestions array
    */
-  async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced' } = options;
+  async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
+    const { analysisId, tier = 'balanced', progressCallback } = options;
     logger.section('[Orchestration] AI Orchestration Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
@@ -2302,7 +2324,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       const aiProvider = createProvider(this.provider, this.model);
 
       // Build the orchestration prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, fileLineCountMap, worktreePath, tier);
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier);
 
       // Execute Claude CLI for orchestration
       logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
@@ -2405,12 +2427,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} allSuggestions - Suggestions from all levels
    * @param {Object} prMetadata - PR metadata for context
    * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
-   * @param {Map<string, number>} fileLineCountMap - Optional map of file paths to line counts for validation
    * @param {string} worktreePath - Path to the git worktree
    * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
    * @returns {string} Orchestration prompt
    */
-  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, fileLineCountMap = null, worktreePath = null, tier = 'balanced') {
+  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, tier = 'balanced') {
     logger.debug(`[Orchestration] Building prompt with tier: ${tier}`);
     const promptBuilder = getPromptBuilder('orchestration', tier, this.provider);
 
@@ -2423,14 +2444,13 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const context = {
       reviewIntro: `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.`,
       customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
-      lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
+      lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
       level1Count: allSuggestions.level1?.length || 0,
       level2Count: allSuggestions.level2?.length || 0,
       level3Count: allSuggestions.level3?.length || 0,
       level1Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level1),
       level2Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level2),
-      level3Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level3),
-      fileLineCounts: this.buildFileLineCountsSection(fileLineCountMap)
+      level3Suggestions: this._formatSuggestionsForOrchestration(allSuggestions.level3)
     };
 
     return promptBuilder.build(context);
