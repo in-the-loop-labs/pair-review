@@ -62,7 +62,6 @@ const mockWorktreeResponses = {
 
 // Spy on GitHubClient prototype methods
 vi.spyOn(GitHubClient.prototype, 'fetchPullRequest').mockResolvedValue(mockGitHubResponses.fetchPullRequest);
-vi.spyOn(GitHubClient.prototype, 'validateToken').mockResolvedValue(true);
 vi.spyOn(GitHubClient.prototype, 'repositoryExists').mockResolvedValue(true);
 vi.spyOn(GitHubClient.prototype, 'createReviewGraphQL').mockResolvedValue(mockGitHubResponses.createReviewGraphQL);
 vi.spyOn(GitHubClient.prototype, 'createDraftReviewGraphQL').mockResolvedValue(mockGitHubResponses.createDraftReviewGraphQL);

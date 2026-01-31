@@ -462,14 +462,8 @@ async function handlePullRequest(args, config, db, flags = {}) {
 
     console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo}`);
 
-    // Create GitHub client and validate token
+    // Create GitHub client and verify repository access
     const githubClient = new GitHubClient(githubToken);
-    const tokenValid = await githubClient.validateToken();
-    if (!tokenValid) {
-      throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
-    }
-
-    // Check if repository is accessible
     const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
     if (!repoExists) {
       throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
@@ -817,14 +811,8 @@ async function performHeadlessReview(args, config, db, flags, options) {
 
     console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo} in ${options.modeLabel}`);
 
-    // Create GitHub client and validate token
+    // Create GitHub client and verify repository access
     const githubClient = new GitHubClient(githubToken);
-    const tokenValid = await githubClient.validateToken();
-    if (!tokenValid) {
-      throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
-    }
-
-    // Check if repository is accessible
     const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
     if (!repoExists) {
       throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
