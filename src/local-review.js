@@ -442,7 +442,7 @@ async function generateLocalDiff(repoPath) {
           // We need to normalize this to relative paths from the repo root,
           // e.g., "diff --git a/file.js b/file.js"
           const normalizedDiff = fileDiff
-            .replace(/^diff --git a\/.+ b\/.+$/m, `diff --git a/${untracked.file} b/${untracked.file}`)
+            .replace(/^diff --git a\/.+? b\/.+$/m, `diff --git a/${untracked.file} b/${untracked.file}`)
             .replace(/^\+\+\+ b\/.+$/m, `+++ b/${untracked.file}`);
 
           if (diff) {

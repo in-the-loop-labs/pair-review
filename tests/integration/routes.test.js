@@ -3406,6 +3406,46 @@ describe('Local Review Diff Generated Files', () => {
       expect(response.body).toHaveProperty('diff');
       expect(response.body).toHaveProperty('stats');
     });
+
+    it('should correctly extract file paths containing b/ directory segments', async () => {
+      // Regression: a greedy .+ in the diff header regex would match
+      // "a/b/test.js b/b" leaving the capture group with just "test.js"
+      // instead of the correct "b/test.js".
+      const diffWithBDir = [
+        'diff --git a/b/test.js b/b/test.js',
+        '--- a/b/test.js',
+        '+++ b/b/test.js',
+        '@@ -1,3 +1,4 @@',
+        ' const a = 1;',
+        '+const b = 2;',
+        ' const c = 3;',
+        'diff --git a/src/index.js b/src/index.js',
+        '--- a/src/index.js',
+        '+++ b/src/index.js',
+        '@@ -1,3 +1,4 @@',
+        ' const x = 1;',
+        '+const y = 2;',
+        ' const z = 3;'
+      ].join('\n');
+
+      localReviewDiffs.set(reviewId, {
+        diff: diffWithBDir,
+        stats: { unstagedChanges: 2, untrackedFiles: 0 }
+      });
+
+      // Mark b/test.js as generated via .gitattributes
+      fs.writeFileSync(
+        nodePath.join(tempDir, '.gitattributes'),
+        'b/test.js linguist-generated=true\n'
+      );
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/diff`);
+
+      expect(response.status).toBe(200);
+      // The key assertion: b/test.js must be correctly identified, not just "test.js"
+      expect(response.body.generated_files).toEqual(['b/test.js']);
+    });
   });
 });
 
