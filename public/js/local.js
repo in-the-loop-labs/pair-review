@@ -1437,6 +1437,7 @@ class LocalManager {
       const data = await response.json();
       const diffContent = data.diff || '';
       const stats = data.stats || {};
+      const generatedFiles = new Set(data.generated_files || []);
 
       if (!diffContent) {
         // Clear the diff container
@@ -1476,11 +1477,14 @@ class LocalManager {
           }
         }
 
+        const isGenerated = generatedFiles.has(fileName);
+
         files.push({
           file: fileName,
           patch: patch,
           insertions: additions,
           deletions: deletions,
+          generated: isGenerated,
           status: patch.includes('new file mode') ? 'added' :
                   patch.includes('deleted file mode') ? 'removed' : 'modified'
         });
@@ -1488,6 +1492,17 @@ class LocalManager {
         totalAdditions += additions;
         totalDeletions += deletions;
       }
+
+      // Populate generatedFiles map (mirrors PR mode in loadAndDisplayFiles)
+      manager.generatedFiles.clear();
+      files.forEach(file => {
+        if (file.generated) {
+          manager.generatedFiles.set(file.file, {
+            insertions: file.insertions || 0,
+            deletions: file.deletions || 0
+          });
+        }
+      });
 
       // Sort files alphabetically by path for consistent ordering across all components
       if (!window.FileOrderUtils) {
