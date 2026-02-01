@@ -8726,6 +8726,27 @@ body.resizing * {
 .file-comment-card.user-comment {
   /* Override file-comment-card defaults to use user-comment styling */
   margin: 0;  /* Remove margin since container handles spacing */
+  background: linear-gradient(to right, #f5f0ff 0%, var(--file-comment-bg, #ffffff) 100%);
+  border: 1px solid #8b5cf6;
+  border-left: 4px solid #8b5cf6;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.file-comment-card.user-comment .file-comment-header {
+  background: transparent;
+  border-bottom-color: rgba(139, 92, 246, 0.1);
+}
+
+[data-theme="dark"] .file-comment-card.user-comment {
+  background: linear-gradient(to right, rgba(139, 92, 246, 0.15) 0%, var(--file-comment-bg, #0d1117) 100%);
+  border-color: #a78bfa;
+  border-left-color: #a78bfa;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .file-comment-card.user-comment .file-comment-header {
+  background: transparent;
+  border-bottom-color: rgba(167, 139, 250, 0.1);
 }
 
 /* ==========================================================================
