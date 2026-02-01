@@ -1,5 +1,10 @@
 {
   "name": "pair-review",
   "version": "1.0.0",
-  "description": "AI-assisted code review partner — read review feedback via MCP"
+  "description": "AI-assisted code review partner",
+  "author": {
+    "name": "in-the-loop-labs"
+  },
+  "repository": "https://github.com/in-the-loop-labs/pair-review",
+  "license": "GPL-3.0-or-later"
 }
