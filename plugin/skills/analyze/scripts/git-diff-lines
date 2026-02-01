@@ -1,0 +1,371 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# git-diff-lines - Annotated diff with explicit line numbers
+#
+# Usage: git-diff-lines [--cwd <path>] [git-diff-options]
+#
+# This script wraps 'git diff' and adds explicit OLD and NEW line numbers
+# to make it easier to reference specific lines in code reviews.
+#
+# Options:
+#   --cwd <path>    Run git diff in the specified directory
+#
+# Output format:
+#   === filename.js ===
+#    OLD | NEW |
+#     10 |  12 |      context line
+#     11 |  -- | [-]  deleted line
+#     -- |  13 | [+]  added line
+
+set -euo pipefail
+
+STDERR_TMP=$(mktemp "${TMPDIR:-/tmp}/git-diff-lines-stderr.XXXXXX")
+trap 'rm -f "$STDERR_TMP"' EXIT
+
+print_help() {
+  cat <<'HELP'
+git-diff-lines - Annotated diff with explicit line numbers
+
+Usage: git-diff-lines [--cwd <path>] [git-diff-options]
+
+This script wraps 'git diff' and adds explicit OLD and NEW line numbers
+to make it easier to reference specific lines in code reviews.
+
+Options:
+  --cwd <path>    Run git diff in the specified directory (useful when
+                  the script is invoked from a different working directory)
+
+Output format:
+  === filename.js ===
+   OLD | NEW |
+    10 |  12 |      context line
+    11 |  -- | [-]  deleted line
+    -- |  13 | [+]  added line
+
+All standard git diff options are supported:
+  git-diff-lines HEAD~1           # Compare with previous commit
+  git-diff-lines main...feature   # Compare branches
+  git-diff-lines -- src/          # Limit to specific path
+  git-diff-lines --cached         # Show staged changes
+  git-diff-lines --cwd /path/to/repo HEAD~1  # Run in specific directory
+
+For git diff help, run: git diff --help
+HELP
+}
+
+# Parse arguments
+GIT_CWD=""
+GIT_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      print_help
+      exit 0
+      ;;
+    --cwd)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --cwd requires a path argument" >&2
+        exit 1
+      fi
+      GIT_CWD="$2"
+      shift 2
+      ;;
+    *)
+      GIT_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# Build the git diff command
+GIT_CMD=(git)
+if [[ -n "$GIT_CWD" ]]; then
+  GIT_CMD+=(-C "$GIT_CWD")
+fi
+GIT_CMD+=(diff)
+# Guard: expanding an empty array with set -u fails in Bash < 4.4
+if [[ ${#GIT_ARGS[@]} -gt 0 ]]; then
+  GIT_CMD+=("${GIT_ARGS[@]}")
+fi
+
+# Execute git diff and capture output
+# Exit code 1 from git diff means "differences found" (normal)
+RAW_DIFF=$("${GIT_CMD[@]}" 2>"$STDERR_TMP") || {
+  exit_code=$?
+  stderr=$(cat "$STDERR_TMP" 2>/dev/null || true)
+  if [[ $exit_code -gt 1 ]] || { [[ $exit_code -ne 0 ]] && [[ -n "$stderr" ]]; }; then
+    echo "Error: git diff failed: $stderr" >&2
+    exit 1
+  fi
+}
+
+# If no diff output, exit silently (same behavior as git diff)
+if [[ -z "${RAW_DIFF}" ]]; then
+  exit 0
+fi
+
+# Annotate the diff with awk
+echo "$RAW_DIFF" | awk '
+# --- Helper functions ---
+
+# Return max of two integers
+function max(a, b) { return (a > b) ? a : b }
+
+# Calculate number of digits in a number
+function numlen(n) {
+  if (n <= 0) return 1
+  return length(sprintf("%d", n))
+}
+
+# Format a line number right-aligned in the given width, or "--" if negative
+function fmt(num, width,    s) {
+  if (num < 0) {
+    s = "--"
+  } else {
+    s = sprintf("%d", num)
+  }
+  return sprintf("%" width "s", s)
+}
+
+BEGIN {
+  old_line = 0
+  new_line = 0
+  in_hunk = 0
+  width = 4
+  file_started = 0
+  file_header_output = 0
+  is_first_file = 1
+
+  # File metadata
+  old_path = ""
+  new_path = ""
+  renamed_from = ""
+  renamed_to = ""
+  is_binary = 0
+}
+
+# --- New file header (diff --git a/... b/...) ---
+/^diff --git / {
+  # Blank line between files (except first)
+  if (!is_first_file && NR > 1) {
+    print ""
+  }
+  is_first_file = 0
+
+  # Reset file state
+  old_path = ""
+  new_path = ""
+  renamed_from = ""
+  renamed_to = ""
+  is_binary = 0
+  in_hunk = 0
+  file_started = 1
+  file_header_output = 0
+
+  # Extract paths from "diff --git a/X b/Y"
+  s = $0
+  sub(/^diff --git a\//, "", s)
+  # Split on " b/" - we need to find the right split point.
+  # The b/ path is always at the end, and for identical names a/X b/X
+  # we split at the midpoint. Use the last occurrence of " b/".
+  n = split(s, parts, " b/")
+  if (n >= 2) {
+    old_path = parts[1]
+    new_path = parts[n]
+    # If there were multiple " b/" in the path, reconstruct
+    for (i = 2; i < n; i++) {
+      old_path = old_path " b/" parts[i]
+    }
+  }
+  next
+}
+
+# --- File metadata lines ---
+/^index / { next }
+/^old mode / { next }
+/^new mode / { next }
+/^new file mode / { next }
+/^deleted file mode / { next }
+/^similarity index / { next }
+/^copy from / { next }
+/^copy to / { next }
+
+/^rename from / {
+  s = $0
+  sub(/^rename from /, "", s)
+  renamed_from = s
+  next
+}
+
+/^rename to / {
+  s = $0
+  sub(/^rename to /, "", s)
+  renamed_to = s
+  next
+}
+
+# --- and +++ headers ---
+/^--- / {
+  s = $0
+  sub(/^--- /, "", s)
+  sub(/^a\//, "", s)
+  if (s != "/dev/null") {
+    old_path = s
+  }
+  next
+}
+
+/^\+\+\+ / {
+  s = $0
+  sub(/^\+\+\+ /, "", s)
+  sub(/^b\//, "", s)
+  if (s != "/dev/null") {
+    new_path = s
+  }
+  next
+}
+
+# --- Binary file indicators ---
+/^Binary files / || /^GIT binary patch/ {
+  is_binary = 1
+  if (file_started && !file_header_output) {
+    if (renamed_from != "" && renamed_to != "") {
+      print "=== " renamed_from " -> " renamed_to " ==="
+    } else {
+      fp = (new_path != "") ? new_path : ((old_path != "") ? old_path : "unknown")
+      print "=== " fp " ==="
+    }
+    print "Binary file (not annotated)"
+    file_started = 0
+    file_header_output = 1
+    in_hunk = 0
+  }
+  next
+}
+
+# --- Hunk header ---
+# Parse: @@ -oldStart[,oldCount] +newStart[,newCount] @@ [context]
+/^@@ -[0-9]/ {
+  s = $0
+
+  # Extract the range part between @@ markers
+  # Remove leading "@@ -"
+  range = s
+  sub(/^@@ -/, "", range)
+
+  # Find the closing " @@" to separate range from context
+  # range now looks like: "10,5 +12,7 @@ function context"
+  idx = index(range, " @@")
+  if (idx > 0) {
+    rest_after = substr(range, idx + 3)  # everything after " @@"
+    range = substr(range, 1, idx - 1)     # "10,5 +12,7"
+  } else {
+    next  # malformed hunk header
+  }
+
+  # Split range on " +" to get old and new parts
+  # range = "10,5 +12,7" -> old_part="10,5", new_part="12,7"
+  plus_idx = index(range, " +")
+  if (plus_idx > 0) {
+    old_part = substr(range, 1, plus_idx - 1)
+    new_part = substr(range, plus_idx + 2)
+  } else {
+    next  # malformed
+  }
+
+  # Parse old_part: "10,5" or "10"
+  comma_idx = index(old_part, ",")
+  if (comma_idx > 0) {
+    old_start = substr(old_part, 1, comma_idx - 1) + 0
+    old_count = substr(old_part, comma_idx + 1) + 0
+  } else {
+    old_start = old_part + 0
+    old_count = 1
+  }
+
+  # Parse new_part: "12,7" or "12"
+  comma_idx = index(new_part, ",")
+  if (comma_idx > 0) {
+    new_start = substr(new_part, 1, comma_idx - 1) + 0
+    new_count = substr(new_part, comma_idx + 1) + 0
+  } else {
+    new_start = new_part + 0
+    new_count = 1
+  }
+
+  # Output file header if this is the first hunk
+  if (file_started && !file_header_output) {
+    if (renamed_from != "" && renamed_to != "") {
+      print "=== " renamed_from " -> " renamed_to " ==="
+    } else {
+      fp = (new_path != "") ? new_path : ((old_path != "") ? old_path : "unknown")
+      print "=== " fp " ==="
+    }
+
+    if (is_binary) {
+      print "Binary file (not annotated)"
+      file_started = 0
+      file_header_output = 1
+      next
+    }
+
+    print " OLD | NEW |"
+    file_header_output = 1
+  }
+
+  # Pass through the original hunk header
+  print s
+
+  old_line = old_start
+  new_line = new_start
+
+  # Calculate width: max line number that could appear
+  max_old = old_start + old_count
+  max_new = new_start + new_count
+  max_num = max(max_old, max_new)
+  width = max(4, numlen(max_num))
+
+  in_hunk = 1
+  next
+}
+
+# --- Skip non-hunk lines ---
+!in_hunk { next }
+
+# --- "No newline at end of file" marker ---
+/^\\ No newline at end of file/ {
+  printf "%s | %s |     %s\n", fmt(-1, width), fmt(-1, width), $0
+  next
+}
+
+# --- Addition line ---
+/^\+/ {
+  content = substr($0, 2)
+  printf "%s | %s | [+] %s\n", fmt(-1, width), fmt(new_line, width), content
+  new_line++
+  next
+}
+
+# --- Deletion line ---
+/^-/ {
+  content = substr($0, 2)
+  printf "%s | %s | [-] %s\n", fmt(old_line, width), fmt(-1, width), content
+  old_line++
+  next
+}
+
+# --- Context line (starts with space) or empty line ---
+/^ / || /^$/ {
+  if ($0 == "") {
+    content = ""
+  } else {
+    content = substr($0, 2)
+  }
+  printf "%s | %s |     %s\n", fmt(old_line, width), fmt(new_line, width), content
+  old_line++
+  new_line++
+  next
+}
+'
