@@ -21,8 +21,8 @@ describe('Prompt System Configuration', () => {
       expect(resolveTier('thorough')).toBe('thorough');
     });
 
-    it('should fall back to balanced for unknown tiers', () => {
-      expect(resolveTier('unknown')).toBe('balanced');
+    it('should throw for unknown tiers', () => {
+      expect(() => resolveTier('unknown')).toThrow(/Unknown tier/);
     });
   });
 
@@ -186,11 +186,8 @@ describe('Prompt Builder', () => {
       expect(() => getPromptBuilder('invalid', 'balanced')).toThrow('Invalid prompt type');
     });
 
-    it('should fall back to balanced for invalid tiers', () => {
-      // Invalid tiers are resolved to 'balanced' with a warning
-      const builder = getPromptBuilder('level2', 'invalid');
-      expect(builder).not.toBeNull();
-      expect(builder.tier).toBe('balanced');
+    it('should throw for invalid tiers', () => {
+      expect(() => getPromptBuilder('level2', 'invalid')).toThrow(/Unknown tier/);
     });
   });
 

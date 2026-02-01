@@ -282,6 +282,14 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       });
     }
 
+    // Validate tier
+    const VALID_TIERS = ['fast', 'balanced', 'thorough', 'free', 'standard', 'premium'];
+    if (requestTier && !VALID_TIERS.includes(requestTier)) {
+      return res.status(400).json({
+        error: `Invalid tier: "${requestTier}". Valid tiers: ${VALID_TIERS.join(', ')}`
+      });
+    }
+
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
     const review = await reviewRepo.getLocalReviewById(reviewId);

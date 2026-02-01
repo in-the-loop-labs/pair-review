@@ -157,6 +157,10 @@ Test structure:
   - Ensure index names match the production schema exactly
 - **Test coverage is mandatory for new functionality**: When adding new methods, parameters, or behavioral changes to existing code, add corresponding unit tests in the same task. Do not defer test writing to a separate task or leave it for later. Tests should cover: (1) the happy path, (2) edge cases like missing/null inputs, (3) error conditions. For bug fixes, add a regression test that would have caught the bug.
 
+### Skill Prompt Regeneration
+- When modifying prompt templates or line number guidance in `src/ai/prompts/`, run `node scripts/generate-skill-prompts.js` to regenerate the static reference files in `plugin/skills/agent-analyze/references/`
+- These reference files are used by the `agent-analyze` skill when no MCP connection is available, so they must stay in sync with the source prompts
+
 ### Research Before Implementation
 - **Look for official documentation before guessing at technical specs**. When integrating with external tools or APIs (Claude CLI, Gemini CLI, etc.), search for and consult official documentation rather than inferring behavior from trial and error. This prevents bugs from incorrect assumptions about data formats, message types, or API contracts.
 - Key documentation sources for AI provider CLIs:

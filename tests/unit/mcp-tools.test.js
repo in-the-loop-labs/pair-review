@@ -165,10 +165,69 @@ describe('MCP tools via in-memory client', () => {
   it('should list all tools (no port option)', async () => {
     const { tools } = await client.listTools();
     const names = tools.map(t => t.name);
+    expect(names).toContain('get_analysis_prompt');
     expect(names).toContain('get_user_comments');
     expect(names).toContain('get_ai_analysis_runs');
     expect(names).toContain('get_ai_suggestions');
-    expect(tools).toHaveLength(3);
+    expect(tools).toHaveLength(4);
+  });
+
+  describe('get_analysis_prompt', () => {
+    const PROMPT_TYPES = ['level1', 'level2', 'level3', 'orchestration'];
+
+    for (const type of PROMPT_TYPES) {
+      it(`should return non-empty text for ${type}`, async () => {
+        const result = await client.callTool({
+          name: 'get_analysis_prompt',
+          arguments: { promptType: type },
+        });
+        expect(result.content[0].type).toBe('text');
+        expect(result.content[0].text.length).toBeGreaterThan(100);
+      });
+    }
+
+    it('should default to balanced tier when omitted', async () => {
+      const withDefault = await client.callTool({
+        name: 'get_analysis_prompt',
+        arguments: { promptType: 'level1' },
+      });
+      const withExplicit = await client.callTool({
+        name: 'get_analysis_prompt',
+        arguments: { promptType: 'level1', tier: 'balanced' },
+      });
+      expect(withDefault.content[0].text).toBe(withExplicit.content[0].text);
+    });
+
+    it('should have no XML section tags in output', async () => {
+      const result = await client.callTool({
+        name: 'get_analysis_prompt',
+        arguments: { promptType: 'level1', tier: 'thorough' },
+      });
+      expect(result.content[0].text).not.toMatch(/<section[\s>]/);
+      expect(result.content[0].text).not.toMatch(/<\/section>/);
+    });
+
+    it('should include custom instructions when provided', async () => {
+      const result = await client.callTool({
+        name: 'get_analysis_prompt',
+        arguments: {
+          promptType: 'level2',
+          tier: 'fast',
+          customInstructions: 'Focus on error handling patterns',
+        },
+      });
+      expect(result.content[0].text).toContain('Focus on error handling patterns');
+    });
+
+    it('should work without any database seeding (stateless tool)', async () => {
+      // This test uses the same client/server setup which has DB seeding,
+      // but the tool itself never touches the database.
+      const result = await client.callTool({
+        name: 'get_analysis_prompt',
+        arguments: { promptType: 'orchestration', tier: 'thorough' },
+      });
+      expect(result.content[0].text.length).toBeGreaterThan(100);
+    });
   });
 
   describe('get_ai_analysis_runs', () => {
@@ -420,14 +479,15 @@ describe('get_server_info tool', () => {
     if (db) closeTestDatabase(db);
   });
 
-  it('should register 4 tools when port option is provided', async () => {
+  it('should register 5 tools when port option is provided', async () => {
     const { tools } = await client.listTools();
     const names = tools.map(t => t.name);
     expect(names).toContain('get_server_info');
+    expect(names).toContain('get_analysis_prompt');
     expect(names).toContain('get_user_comments');
     expect(names).toContain('get_ai_analysis_runs');
     expect(names).toContain('get_ai_suggestions');
-    expect(tools).toHaveLength(4);
+    expect(tools).toHaveLength(5);
   });
 
   it('should return JSON with url, port, and version', async () => {
@@ -455,7 +515,7 @@ describe('get_server_info tool', () => {
     const { tools } = await clientNoPort.listTools();
     const names = tools.map(t => t.name);
     expect(names).not.toContain('get_server_info');
-    expect(tools).toHaveLength(3);
+    expect(tools).toHaveLength(4);
 
     await clientNoPort.close();
     await serverNoPort.close();

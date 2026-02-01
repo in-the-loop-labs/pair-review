@@ -4,6 +4,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { z } = require('zod');
 const { ReviewRepository, CommentRepository, AnalysisRunRepository, query } = require('../database');
+const { renderPromptForSkill } = require('../ai/prompts/render-for-skill');
 
 const router = express.Router();
 
@@ -89,6 +90,35 @@ function createMCPServer(db, options = {}) {
       }
     );
   }
+
+  // --- Tool: get_analysis_prompt (stateless — no DB dependency) ---
+  server.tool(
+    'get_analysis_prompt',
+    'Get the rendered analysis prompt for a review level and tier. ' +
+    'Returns prompt text to use as instructions for an analysis agent. ' +
+    'Tiers: "fast" for quick/surface review (best for Haiku-class models), ' +
+    '"balanced" for standard review (Sonnet-class, recommended default), ' +
+    '"thorough" for deep analysis (Opus-class or reasoning models). ' +
+    'Supports optional custom instructions to inject repo/user-specific guidance.',
+    {
+      promptType: z.enum(['level1', 'level2', 'level3', 'orchestration'])
+        .describe('Analysis level'),
+      tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced')
+        .describe('Prompt tier — fast (surface), balanced (standard), or thorough (deep)'),
+      customInstructions: z.string().optional()
+        .describe('Optional repo or user-specific review instructions to include'),
+    },
+    async (args) => {
+      try {
+        const rendered = renderPromptForSkill(args.promptType, args.tier, {
+          customInstructions: args.customInstructions,
+        });
+        return { content: [{ type: 'text', text: rendered }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }] };
+      }
+    }
+  );
 
   // --- Tool: get_user_comments ---
   server.tool(

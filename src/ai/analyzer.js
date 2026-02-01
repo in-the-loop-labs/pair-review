@@ -13,6 +13,10 @@ const { normalizePath, pathExistsInList, resolveRenamedFile } = require('../util
 const { buildFileLineCountMap, validateSuggestionLineNumbers } = require('../utils/line-validation');
 const { getPromptBuilder } = require('./prompts');
 const { formatValidFiles } = require('./prompts/shared/valid-files');
+const {
+  buildAnalysisLineNumberGuidance,
+  buildOrchestrationLineNumberGuidance: buildOrchestrationGuidance,
+} = require('./prompts/line-number-guidance');
 const { registerProcess, isAnalysisCancelled, CancellationError } = require('../routes/shared');
 const { AnalysisRunRepository } = require('../database');
 const { mergeInstructions } = require('../utils/instructions');
@@ -405,50 +409,9 @@ class Analyzer {
    * @returns {string} Markdown guidance for line numbers
    */
   buildLineNumberGuidance(worktreePath = null) {
-    // Use bare command name since BIN_DIR is added to PATH in all providers.
-    // Using the absolute path causes issues with AI providers that pattern-match
-    // allowed tools (e.g., Gemini only matches 'git-diff-lines', not the full path).
-    const scriptCommand = 'git-diff-lines';
-    // Include --cwd option to ensure git runs in the correct directory
-    // This is critical when the script is invoked from an environment where
-    // the working directory may not match the target repository
-    const cwdOption = worktreePath ? ` --cwd "${worktreePath}"` : '';
-    const fullCommand = `${scriptCommand}${cwdOption}`;
-    return `
-## Viewing Code Changes
-
-IMPORTANT: Use the annotated diff tool instead of \`git diff\` directly:
-\`\`\`
-${fullCommand}
-\`\`\`
-
-This shows explicit line numbers in two columns:
-\`\`\`
- OLD | NEW |
-  10 |  12 |      context line
-  11 |  -- | [-]  deleted line (exists only in base)
-  -- |  13 | [+]  added line (exists only in PR)
-\`\`\`
-
-All git diff arguments work: \`${fullCommand} HEAD~1\`, \`${fullCommand} -- src/\`
-
-## Line Number Precision
-
-Your suggestions MUST reference the EXACT line where the issue exists:
-
-1. **Be literal, not conceptual**
-   - BAD: Commenting on function definition (line 10) when the bug is inside the function body (line 25)
-   - GOOD: Commenting on line 25 where the actual problematic code is
-
-2. **Use correct line numbers from the annotated diff**
-   - For ADDED lines [+]: use the NEW column number
-   - For CONTEXT lines: use the NEW column number
-   - For DELETED lines [-]: use the OLD column number
-
-3. **Verify before suggesting**
-   - Run the annotated diff tool to see exact line numbers
-   - Double-check line numbers match the output before submitting suggestions
-`;
+    return buildAnalysisLineNumberGuidance({
+      scriptCommand: this._buildScriptCommand(worktreePath),
+    });
   }
 
   /**
@@ -466,37 +429,27 @@ Your suggestions MUST reference the EXACT line where the issue exists:
    * @returns {string} Orchestration-specific line number guidance
    */
   buildOrchestrationLineNumberGuidance(worktreePath = null) {
+    return buildOrchestrationGuidance({
+      scriptCommand: this._buildScriptCommand(worktreePath),
+    });
+  }
+
+  /**
+   * Build the full script command string, optionally including --cwd.
+   *
+   * Uses the bare command name since BIN_DIR is added to PATH in all
+   * providers.  Using the absolute path causes issues with AI providers
+   * that pattern-match allowed tools (e.g., Gemini only matches
+   * 'git-diff-lines', not the full path).
+   *
+   * @param {string|null} worktreePath - Path to the git worktree
+   * @returns {string} e.g. `git-diff-lines` or `git-diff-lines --cwd "/path"`
+   * @private
+   */
+  _buildScriptCommand(worktreePath) {
     const scriptCommand = 'git-diff-lines';
     const cwdOption = worktreePath ? ` --cwd "${worktreePath}"` : '';
-    const fullCommand = `${scriptCommand}${cwdOption}`;
-    return `
-## Line Number Handling
-
-You are receiving pre-computed suggestions from the analysis levels. Each suggestion
-already carries a \`line\` number and \`old_or_new\` value determined during analysis.
-Your primary focus is curation and synthesis, not line number verification.
-
-**Your responsibilities:**
-- **Preserve line numbers as-is** when passing suggestions through to the output.
-- **Preserve \`old_or_new\` values** from input suggestions.
-- **When merging duplicates or near-duplicates** that reference the same line,
-  keep the line number and \`old_or_new\` from the suggestion with the richest
-  context (prefer higher-level analysis when in doubt).
-- **When levels conflict** on the line number or \`old_or_new\` for what appears to
-  be the same issue, use your judgment based on the nature of the concern:
-  - For **architectural or cross-cutting issues**, prefer the suggestion from the
-    level with broader context (Level 3 > Level 2 > Level 1).
-  - For **precise line-level bugs or typos**, prefer the suggestion from the level
-    that targets the specific line most directly (often Level 1, which works
-    closest to the raw diff).
-
-**If you need to inspect a file diff** (e.g., to resolve conflicting suggestions or
-verify a specific concern), use the annotated diff tool instead of \`git diff\`:
-\`\`\`
-${fullCommand}
-\`\`\`
-All git diff arguments work: \`${fullCommand} HEAD~1\`, \`${fullCommand} -- src/\`
-`;
+    return `${scriptCommand}${cwdOption}`;
   }
 
   /**

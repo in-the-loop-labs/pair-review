@@ -38,10 +38,7 @@ function resolveTier(tierOrAlias) {
   if (TIERS.includes(tierOrAlias)) {
     return tierOrAlias;
   }
-  // Unknown tier - fall back to balanced with warning
-  const logger = require('../../utils/logger');
-  logger.warn(`Unknown tier "${tierOrAlias}", falling back to "balanced"`);
-  return 'balanced';
+  throw new Error(`Unknown tier: "${tierOrAlias}". Valid tiers: ${TIERS.join(', ')} (aliases: ${Object.keys(TIER_ALIASES).join(', ')})`);
 }
 
 module.exports = {

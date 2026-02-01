@@ -55,6 +55,14 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       });
     }
 
+    // Validate tier
+    const VALID_TIERS = ['fast', 'balanced', 'thorough', 'free', 'standard', 'premium'];
+    if (requestTier && !VALID_TIERS.includes(requestTier)) {
+      return res.status(400).json({
+        error: `Invalid tier: "${requestTier}". Valid tiers: ${VALID_TIERS.join(', ')}`
+      });
+    }
+
     if (isNaN(prNumber) || prNumber <= 0) {
       return res.status(400).json({
         error: 'Invalid pull request number'

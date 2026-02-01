@@ -152,10 +152,11 @@ describe('MCP Routes Integration', () => {
       const result = extractResult(res);
       expect(result.result).toBeDefined();
       const toolNames = result.result.tools.map(t => t.name);
+      expect(toolNames).toContain('get_analysis_prompt');
       expect(toolNames).toContain('get_user_comments');
       expect(toolNames).toContain('get_ai_analysis_runs');
       expect(toolNames).toContain('get_ai_suggestions');
-      expect(result.result.tools).toHaveLength(3);
+      expect(result.result.tools).toHaveLength(4);
     });
   });
 
