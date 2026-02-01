@@ -20,6 +20,7 @@ const logger = require('../utils/logger');
 const { mergeInstructions } = require('../utils/instructions');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
+const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const {
   activeAnalyses,
   progressClients,
@@ -135,8 +136,30 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
     const diffData = localReviewDiffs.get(reviewId) || { diff: '', stats: {} };
     const { diff: diffContent, stats } = diffData;
 
+    // Detect generated files via .gitattributes
+    let generatedFiles = [];
+    if (diffContent && review.local_path) {
+      try {
+        const gitattributes = await getGeneratedFilePatterns(review.local_path);
+        if (gitattributes.getPatterns().length > 0) {
+          // Extract file paths from the diff header lines (--- a/path and +++ b/path)
+          const filePathRegex = /^diff --git a\/.+? b\/(.+)$/gm;
+          let match;
+          while ((match = filePathRegex.exec(diffContent)) !== null) {
+            const filePath = match[1];
+            if (gitattributes.isGenerated(filePath)) {
+              generatedFiles.push(filePath);
+            }
+          }
+        }
+      } catch (error) {
+        logger.warn(`Could not load .gitattributes: ${error.message}`);
+      }
+    }
+
     res.json({
       diff: diffContent || '',
+      generated_files: generatedFiles,
       stats: {
         trackedChanges: stats?.trackedChanges || 0,
         untrackedFiles: stats?.untrackedFiles || 0,

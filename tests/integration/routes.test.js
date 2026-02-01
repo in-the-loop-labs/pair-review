@@ -102,7 +102,8 @@ vi.mock('../../src/ai/analyzer', () => ({
 
 vi.mock('../../src/git/gitattributes', () => ({
   getGeneratedFilePatterns: vi.fn().mockResolvedValue({
-    isGenerated: vi.fn().mockReturnValue(false)
+    isGenerated: vi.fn().mockReturnValue(false),
+    getPatterns: vi.fn().mockReturnValue([])
   })
 }));
 
@@ -2806,6 +2807,190 @@ describe('Local Review Check-Stale Endpoint', () => {
       // When no baseline digest exists, should assume stale for safety
       expect(response.body.isStale).toBe(true);
       expect(response.body.error).toContain('No baseline digest');
+    });
+  });
+});
+
+// ============================================================================
+// Local Review Diff Generated Files Tests
+// ============================================================================
+
+describe('Local Review Diff Generated Files', () => {
+  let db;
+  let app;
+  let reviewId;
+  let tempDir;
+  const { localReviewDiffs } = require('../../src/routes/shared');
+  const fs = require('fs');
+  const nodePath = require('path');
+  const os = require('os');
+
+  const sampleDiff = [
+    'diff --git a/src/index.js b/src/index.js',
+    '--- a/src/index.js',
+    '+++ b/src/index.js',
+    '@@ -1,3 +1,4 @@',
+    ' const a = 1;',
+    '+const b = 2;',
+    ' const c = 3;',
+    'diff --git a/package-lock.json b/package-lock.json',
+    '--- a/package-lock.json',
+    '+++ b/package-lock.json',
+    '@@ -1,3 +1,4 @@',
+    ' {',
+    '+  "added": true,',
+    ' }'
+  ].join('\n');
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    // Create a real temp directory for .gitattributes tests
+    tempDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'pair-review-test-'));
+
+    const result = await run(db, `
+      INSERT INTO reviews (repository, status, review_type, local_path, local_head_sha)
+      VALUES ('owner/repo', 'draft', 'local', ?, 'abc123def')
+    `, [tempDir]);
+    reviewId = result.lastID;
+
+    localReviewDiffs.clear();
+  });
+
+  afterEach(async () => {
+    localReviewDiffs.clear();
+    // Clean up temp directory
+    if (tempDir) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('GET /api/local/:reviewId/diff', () => {
+    it('should return generated_files when .gitattributes marks files as generated', async () => {
+      localReviewDiffs.set(reviewId, {
+        diff: sampleDiff,
+        stats: { unstagedChanges: 2, untrackedFiles: 0 }
+      });
+
+      // Create a real .gitattributes file
+      fs.writeFileSync(
+        nodePath.join(tempDir, '.gitattributes'),
+        'package-lock.json linguist-generated=true\n'
+      );
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/diff`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.generated_files).toBeDefined();
+      expect(response.body.generated_files).toEqual(['package-lock.json']);
+      expect(response.body.diff).toBeTruthy();
+    });
+
+    it('should return empty generated_files when no .gitattributes exists', async () => {
+      localReviewDiffs.set(reviewId, {
+        diff: sampleDiff,
+        stats: { unstagedChanges: 2, untrackedFiles: 0 }
+      });
+
+      // No .gitattributes file
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/diff`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.generated_files).toEqual([]);
+    });
+
+    it('should return empty generated_files when .gitattributes has no generated patterns', async () => {
+      localReviewDiffs.set(reviewId, {
+        diff: sampleDiff,
+        stats: { unstagedChanges: 2, untrackedFiles: 0 }
+      });
+
+      // Create .gitattributes with non-generated attributes only
+      fs.writeFileSync(
+        nodePath.join(tempDir, '.gitattributes'),
+        '*.js text eol=lf\n'
+      );
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/diff`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.generated_files).toEqual([]);
+    });
+
+    it('should return empty generated_files when diff is empty', async () => {
+      localReviewDiffs.set(reviewId, {
+        diff: '',
+        stats: { unstagedChanges: 0, untrackedFiles: 0 }
+      });
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/diff`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.generated_files).toEqual([]);
+    });
+
+    it('should always include generated_files key in response', async () => {
+      localReviewDiffs.set(reviewId, {
+        diff: sampleDiff,
+        stats: { unstagedChanges: 1, untrackedFiles: 0 }
+      });
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/diff`);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('generated_files');
+      expect(response.body).toHaveProperty('diff');
+      expect(response.body).toHaveProperty('stats');
+    });
+
+    it('should correctly extract file paths containing b/ directory segments', async () => {
+      // Regression: a greedy .+ in the diff header regex would match
+      // "a/b/test.js b/b" leaving the capture group with just "test.js"
+      // instead of the correct "b/test.js".
+      const diffWithBDir = [
+        'diff --git a/b/test.js b/b/test.js',
+        '--- a/b/test.js',
+        '+++ b/b/test.js',
+        '@@ -1,3 +1,4 @@',
+        ' const a = 1;',
+        '+const b = 2;',
+        ' const c = 3;',
+        'diff --git a/src/index.js b/src/index.js',
+        '--- a/src/index.js',
+        '+++ b/src/index.js',
+        '@@ -1,3 +1,4 @@',
+        ' const x = 1;',
+        '+const y = 2;',
+        ' const z = 3;'
+      ].join('\n');
+
+      localReviewDiffs.set(reviewId, {
+        diff: diffWithBDir,
+        stats: { unstagedChanges: 2, untrackedFiles: 0 }
+      });
+
+      // Mark b/test.js as generated via .gitattributes
+      fs.writeFileSync(
+        nodePath.join(tempDir, '.gitattributes'),
+        'b/test.js linguist-generated=true\n'
+      );
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/diff`);
+
+      expect(response.status).toBe(200);
+      // The key assertion: b/test.js must be correctly identified, not just "test.js"
+      expect(response.body.generated_files).toEqual(['b/test.js']);
     });
   });
 });
