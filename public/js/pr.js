@@ -792,40 +792,11 @@ class PRManager {
    * @param {string} fileName - File name
    */
   renderPatch(tbody, patch, fileName) {
-    const lines = patch.split('\n');
     let diffPosition = 0;  // GitHub diff_position (1-indexed, consecutive)
     let prevBlockEnd = { old: 0, new: 0 };
     let isFirstHunk = true;
 
-    // Parse diff into blocks (hunks)
-    const blocks = [];
-    let currentBlock = null;
-
-    lines.forEach(line => {
-      if (line.startsWith('@@')) {
-        // Start new block
-        if (currentBlock) {
-          blocks.push(currentBlock);
-        }
-
-        // Parse hunk header
-        const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-        if (match) {
-          currentBlock = {
-            header: line,
-            oldStart: parseInt(match[1]),
-            newStart: parseInt(match[2]),
-            lines: []
-          };
-        }
-      } else if (currentBlock) {
-        currentBlock.lines.push(line);
-      }
-    });
-
-    if (currentBlock) {
-      blocks.push(currentBlock);
-    }
+    const blocks = window.HunkParser.parseDiffIntoBlocks(patch);
 
     // Render blocks with gap sections
     blocks.forEach((block, blockIndex) => {
@@ -838,7 +809,7 @@ class PRManager {
       );
 
       const gapStartOld = prevBlockEnd.old + 1;
-      const gapEndOld = (blockBounds.old || block.oldStart) - 1;
+      const gapEndOld = (blockBounds.old ?? block.oldStart) - 1;
       const gapSize = gapEndOld - gapStartOld + 1;
       // Calculate the corresponding NEW line number for correct right-side display
       const gapStartNew = prevBlockEnd.new + 1;
@@ -943,8 +914,8 @@ class PRManager {
         'last'
       );
       prevBlockEnd = {
-        old: endBounds.old || (block.oldStart + block.lines.filter(l => !l.startsWith('+')).length - 1),
-        new: endBounds.new || (block.newStart + block.lines.filter(l => !l.startsWith('-')).length - 1)
+        old: endBounds.old ?? (block.oldStart + block.lines.filter(l => !l.startsWith('+')).length - 1),
+        new: endBounds.new ?? (block.newStart + block.lines.filter(l => !l.startsWith('-')).length - 1)
       };
     });
 
@@ -952,7 +923,9 @@ class PRManager {
     // This handles the case where there are unchanged lines after the last change
     // Use EOF_SENTINEL (-1) for endLine to indicate "rest of file" (unknown size)
     // The gap is marked as pending validation and will be removed async if no lines exist
-    if (blocks.length > 0) {
+    // Skip for new files: when gapStartOld <= 0, the old file has no content (e.g. @@ -0,0 +1,N @@)
+    // so there are no trailing unchanged lines to expand
+    if (blocks.length > 0 && prevBlockEnd.old > 0) {
       const gapStartOld = prevBlockEnd.old + 1;
       const gapStartNew = prevBlockEnd.new + 1;
       const gapRow = window.HunkParser.createGapSection(
@@ -1217,6 +1190,14 @@ class PRManager {
 
       const fileName = controls.dataset.fileName;
       const startLine = parseInt(controls.dataset.startLine);
+
+      // Safety net: remove gaps with invalid start lines (should not occur after
+      // the prevBlockEnd.old > 0 guard in renderPatch, but handles edge cases defensively)
+      if (startLine <= 0) {
+        console.debug('Removing EOF gap with invalid startLine:', startLine, 'for file:', fileName);
+        gapRow.remove();
+        return;
+      }
 
       try {
         const data = await this.fetchFileContent(fileName);
