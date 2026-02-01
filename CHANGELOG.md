@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.6
+
+### Patch Changes
+
+- 724ecb2: Fix file-level user comment styling to match line-level comments
+
+  - Add purple gradient background, border, and shadow to file-level user comment cards in both light and dark themes
+  - Use `var(--file-comment-bg)` as gradient end color so cards blend with their container zone background
+  - Set file-comment headers to transparent so the gradient shows through consistently
+
+- 12c8b47: Fix duplicate lines in diff display for new files
+
+  - New files showed all added lines AND an expandable "hidden lines" gap that, when expanded, repeated the entire file content
+  - Root cause: `patch.split('\n')` on newline-terminated diff output produces a trailing empty string that gets misclassified as a context line with oldNumber=0, making `prevBlockEnd.old = 0` instead of staying unset — this caused the EOF gap check to pass when it shouldn't
+  - Strip trailing empty strings from parsed hunk blocks before rendering
+  - Tighten EOF gap guard from `prevBlockEnd.old + 1 > 0` to `prevBlockEnd.old > 0` so files with no old-side content (new files) never get a trailing expand section
+  - Also guard EOF validation to immediately remove gaps with startLine <= 0
+
+- 52ef1e1: Sharpen orchestration prompts to focus on synthesis over revalidation. Replace generic line number guidance with orchestration-specific guidance that preserves analysis results while retaining investigative capability. Remove file-line-counts section and dead code chain. Clean up unused fileLineCountMap parameter threading.
+
 ## 1.0.5
 
 ### Patch Changes
