@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <script>
+        // Initialize theme immediately to prevent flash
+        (function() {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+        })();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setting up review... - Pair Review</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <style>
+        /* ── Theme Variables ── */
+        :root {
+            --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+
+            --transition-fast: 0.1s ease;
+            --transition-default: 0.2s ease;
+
+            --radius-sm: 4px;
+            --radius-md: 6px;
+            --radius-lg: 8px;
+            --radius-xl: 12px;
+
+            --color-bg-primary: #ffffff;
+            --color-bg-secondary: #f6f8fa;
+            --color-bg-page: #f6f8fa;
+            --color-text-primary: #24292f;
+            --color-text-secondary: #57606a;
+            --color-text-tertiary: #656d76;
+            --color-border-primary: #d1d9e0;
+            --color-border-secondary: #e1e4e8;
+            --color-accent-primary: #0969da;
+            --color-accent-emphasis: #238636;
+            --color-danger: #d1242f;
+            --color-shadow: rgba(27, 31, 36, 0.04);
+
+            --ai-primary: #d97706;
+            --ai-secondary: #f59e0b;
+            --ai-subtle: rgba(217, 119, 6, 0.08);
+            --ai-glow: rgba(217, 119, 6, 0.15);
+        }
+
+        [data-theme="dark"] {
+            --color-bg-primary: #0d1117;
+            --color-bg-secondary: #161b22;
+            --color-bg-page: #0d1117;
+            --color-text-primary: #c9d1d9;
+            --color-text-secondary: #8b949e;
+            --color-text-tertiary: #6e7681;
+            --color-border-primary: #30363d;
+            --color-border-secondary: #21262d;
+            --color-accent-primary: #58a6ff;
+            --color-accent-emphasis: #238636;
+            --color-danger: #f85149;
+            --color-shadow: rgba(0, 0, 0, 0.3);
+
+            --ai-primary: #f59e0b;
+            --ai-secondary: #fbbf24;
+            --ai-subtle: rgba(245, 158, 11, 0.1);
+            --ai-glow: rgba(245, 158, 11, 0.2);
+        }
+
+        /* ── Reset & Base ── */
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            height: 100%;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background-color: var(--color-bg-page);
+            color: var(--color-text-primary);
+            line-height: 1.5;
+            font-size: 14px;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* ── Layout ── */
+        .setup-page {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 20px;
+        }
+
+        .setup-container {
+            width: 100%;
+            max-width: 480px;
+        }
+
+        /* ── Header / Logo ── */
+        .setup-header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .setup-logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            text-decoration: none;
+            color: inherit;
+            margin-bottom: 16px;
+        }
+
+        .setup-logo .logo-icon {
+            width: 28px;
+            height: 28px;
+            color: var(--ai-primary);
+        }
+
+        .setup-logo .logo-text {
+            font-size: 1.125rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            color: var(--color-text-secondary);
+        }
+
+        .setup-logo .logo-accent {
+            color: var(--color-text-primary);
+        }
+
+        .setup-target {
+            font-family: var(--font-mono);
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--color-text-primary);
+            word-break: break-all;
+        }
+
+        .setup-subtitle {
+            font-size: 13px;
+            color: var(--color-text-tertiary);
+            margin-top: 4px;
+        }
+
+        /* ── Card ── */
+        .setup-card {
+            background: var(--color-bg-primary);
+            border: 1px solid var(--color-border-primary);
+            border-radius: var(--radius-xl);
+            box-shadow: 0 1px 3px var(--color-shadow), 0 0 0 1px var(--color-border-secondary);
+            overflow: hidden;
+        }
+
+        .setup-card-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--color-border-secondary);
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--color-text-tertiary);
+        }
+
+        .setup-card-body {
+            padding: 8px 0;
+        }
+
+        /* ── Step List ── */
+        .step-list {
+            list-style: none;
+        }
+
+        .step-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+            padding: 12px 20px;
+            transition: background-color var(--transition-fast);
+        }
+
+        .step-item.running {
+            background-color: var(--ai-subtle);
+        }
+
+        .step-item.error {
+            background-color: rgba(208, 36, 47, 0.04);
+        }
+
+        [data-theme="dark"] .step-item.error {
+            background-color: rgba(248, 81, 73, 0.06);
+        }
+
+        /* ── Step Icon ── */
+        .step-icon {
+            flex-shrink: 0;
+            width: 22px;
+            height: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 1px;
+        }
+
+        /* Pending: hollow circle */
+        .step-icon-pending {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            border: 2px solid var(--color-border-primary);
+        }
+
+        /* Running: animated spinner ring */
+        .step-icon-running {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            border: 2px solid var(--color-border-primary);
+            border-top-color: var(--ai-primary);
+            animation: step-spin 0.7s linear infinite;
+        }
+
+        @keyframes step-spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Completed: green checkmark circle */
+        .step-icon-completed {
+            width: 22px;
+            height: 22px;
+            color: var(--color-accent-emphasis);
+        }
+
+        /* Error: red X circle */
+        .step-icon-error {
+            width: 22px;
+            height: 22px;
+            color: var(--color-danger);
+        }
+
+        /* ── Step Content ── */
+        .step-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .step-label {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--color-text-primary);
+            transition: color var(--transition-fast);
+        }
+
+        .step-item.pending .step-label {
+            color: var(--color-text-tertiary);
+        }
+
+        .step-item.completed .step-label {
+            color: var(--color-text-secondary);
+        }
+
+        .step-item.error .step-label {
+            color: var(--color-danger);
+        }
+
+        .step-message {
+            font-size: 12px;
+            color: var(--color-text-tertiary);
+            margin-top: 2px;
+            line-height: 1.4;
+        }
+
+        .step-item.running .step-message {
+            color: var(--color-text-secondary);
+        }
+
+        .step-item.error .step-message {
+            color: var(--color-danger);
+        }
+
+        /* ── Progress Bar (bottom of card, below all steps) ── */
+        .setup-progress-track {
+            height: 3px;
+            background: var(--color-border-secondary);
+        }
+
+        .setup-progress-bar {
+            height: 100%;
+            width: 0%;
+            background: var(--ai-primary);
+            transition: width 0.4s ease;
+            border-radius: 0 2px 2px 0;
+        }
+
+        .setup-progress-bar.error {
+            background: var(--color-danger);
+        }
+
+        .setup-progress-bar.complete {
+            background: var(--color-accent-emphasis);
+            width: 100%;
+        }
+
+        /* ── Error Section ── */
+        .setup-error-section {
+            display: none;
+            padding: 16px 20px;
+            border-top: 1px solid var(--color-border-secondary);
+        }
+
+        .setup-error-section.visible {
+            display: block;
+        }
+
+        .setup-error-box {
+            padding: 12px 14px;
+            background-color: rgba(208, 36, 47, 0.06);
+            border: 1px solid rgba(208, 36, 47, 0.2);
+            border-radius: var(--radius-md);
+            margin-bottom: 14px;
+        }
+
+        [data-theme="dark"] .setup-error-box {
+            background-color: rgba(248, 81, 73, 0.08);
+            border-color: rgba(248, 81, 73, 0.2);
+        }
+
+        .setup-error-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--color-danger);
+            margin-bottom: 4px;
+        }
+
+        .setup-error-message {
+            font-size: 13px;
+            color: var(--color-text-secondary);
+            line-height: 1.5;
+            word-break: break-word;
+        }
+
+        .setup-error-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 8px 16px;
+            font-family: var(--font-sans);
+            font-size: 13px;
+            font-weight: 500;
+            border-radius: var(--radius-md);
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            text-decoration: none;
+            white-space: nowrap;
+        }
+
+        .btn-primary {
+            background-color: var(--ai-primary);
+            color: #ffffff;
+            border-color: var(--ai-primary);
+        }
+
+        .btn-primary:hover {
+            background-color: #b45309;
+            border-color: #b45309;
+        }
+
+        .btn-secondary {
+            background-color: transparent;
+            color: var(--color-text-secondary);
+            border-color: var(--color-border-primary);
+        }
+
+        .btn-secondary:hover {
+            background-color: var(--color-bg-secondary);
+            color: var(--color-text-primary);
+        }
+
+        /* ── Footer Links ── */
+        .setup-footer {
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        .setup-footer a {
+            font-size: 13px;
+            color: var(--color-text-tertiary);
+            text-decoration: none;
+            transition: color var(--transition-fast);
+        }
+
+        .setup-footer a:hover {
+            color: var(--ai-primary);
+        }
+
+        .setup-footer a svg {
+            vertical-align: -2px;
+            margin-right: 4px;
+        }
+
+        /* ── Redirect message ── */
+        .setup-redirect {
+            display: none;
+            text-align: center;
+            padding: 16px 20px;
+            border-top: 1px solid var(--color-border-secondary);
+            font-size: 13px;
+            color: var(--color-text-secondary);
+        }
+
+        .setup-redirect.visible {
+            display: block;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 540px) {
+            .setup-page {
+                padding: 24px 16px;
+                justify-content: flex-start;
+                padding-top: 60px;
+            }
+
+            .step-item {
+                padding: 10px 16px;
+                gap: 12px;
+            }
+
+            .setup-card-header {
+                padding: 14px 16px;
+            }
+
+            .setup-error-section {
+                padding: 14px 16px;
+            }
+        }
+    </style>
+</head>
+<body data-mode="" data-context="">
+
+    <div class="setup-page">
+        <div class="setup-container">
+
+            <!-- Header -->
+            <div class="setup-header">
+                <a href="/" class="setup-logo">
+                    <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="28" height="28">
+                        <path transform="rotate(-50 12 12)" d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.356-8-5.096 0-5.096 8 0 8 5.223 0 7.26-8 12.356-8z"/>
+                    </svg>
+                    <span class="logo-text">pair<span class="logo-accent">review</span></span>
+                </a>
+                <div class="setup-target" id="setup-target"></div>
+                <div class="setup-subtitle">Setting up review</div>
+            </div>
+
+            <!-- Card -->
+            <div class="setup-card">
+                <div class="setup-card-header">Setup Progress</div>
+                <div class="setup-card-body">
+                    <ol class="step-list" id="step-list">
+                        <!-- Steps injected by JS -->
+                    </ol>
+                </div>
+
+                <!-- Error section (hidden by default) -->
+                <div class="setup-error-section" id="error-section">
+                    <div class="setup-error-box">
+                        <div class="setup-error-title">Setup failed</div>
+                        <div class="setup-error-message" id="error-message"></div>
+                    </div>
+                    <div class="setup-error-actions">
+                        <button class="btn btn-primary" id="retry-btn">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5ZM1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834Z"/>
+                            </svg>
+                            Retry
+                        </button>
+                        <a href="/" class="btn btn-secondary">Back to Home</a>
+                    </div>
+                </div>
+
+                <!-- Redirect message (shown on complete) -->
+                <div class="setup-redirect" id="redirect-section">
+                    Redirecting to review...
+                </div>
+
+                <!-- Progress bar -->
+                <div class="setup-progress-track">
+                    <div class="setup-progress-bar" id="progress-bar"></div>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="setup-footer">
+                <a href="/">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                        <path fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
+                    </svg>
+                    Back to home
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // SPDX-License-Identifier: GPL-3.0-or-later
+
+        (function() {
+            'use strict';
+
+            /* ── Step Definitions ── */
+            const PR_STEPS = [
+                { id: 'verify',   label: 'Verifying repository access' },
+                { id: 'fetch',    label: 'Fetching pull request data' },
+                { id: 'repo',     label: 'Locating repository' },
+                { id: 'worktree', label: 'Setting up worktree' },
+                { id: 'diff',     label: 'Generating diff' },
+                { id: 'store',    label: 'Storing review data' },
+            ];
+
+            const LOCAL_STEPS = [
+                { id: 'validate', label: 'Validating path' },
+                { id: 'git',      label: 'Finding git repository' },
+                { id: 'identity', label: 'Identifying review session' },
+                { id: 'diff',     label: 'Generating diff' },
+                { id: 'store',    label: 'Storing review data' },
+            ];
+
+            /* ── SVG Templates ── */
+            const ICON_PENDING = '<div class="step-icon-pending"></div>';
+
+            const ICON_RUNNING = '<div class="step-icon-running"></div>';
+
+            const ICON_COMPLETED =
+                '<svg class="step-icon-completed" viewBox="0 0 22 22" fill="none">' +
+                    '<circle cx="11" cy="11" r="10" fill="currentColor" opacity="0.12"/>' +
+                    '<circle cx="11" cy="11" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/>' +
+                    '<path d="M7 11.5l2.5 2.5L15 8.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>' +
+                '</svg>';
+
+            const ICON_ERROR =
+                '<svg class="step-icon-error" viewBox="0 0 22 22" fill="none">' +
+                    '<circle cx="11" cy="11" r="10" fill="currentColor" opacity="0.12"/>' +
+                    '<circle cx="11" cy="11" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/>' +
+                    '<path d="M8 8l6 6M14 8l-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+                '</svg>';
+
+            /* ── Determine Mode & Context ── */
+            const body = document.body;
+            let mode = body.getAttribute('data-mode');
+            let context = {};
+
+            try {
+                context = JSON.parse(body.getAttribute('data-context') || '{}');
+            } catch (e) {
+                // Fall back to URL parsing
+            }
+
+            // If mode is not set by server, determine from URL
+            if (!mode) {
+                const path = window.location.pathname;
+                if (path.startsWith('/pr/')) {
+                    mode = 'pr';
+                } else if (path.startsWith('/local')) {
+                    mode = 'local';
+                }
+            }
+
+            // If context is empty, try to parse from URL
+            if (!context.owner && mode === 'pr') {
+                const parts = window.location.pathname.split('/').filter(Boolean);
+                // Expected: ['pr', owner, repo, number, 'setup'] or similar
+                if (parts.length >= 4) {
+                    context.owner = parts[1];
+                    context.repo = parts[2];
+                    context.number = parseInt(parts[3], 10);
+                }
+            }
+            if (!context.path && mode === 'local') {
+                const params = new URLSearchParams(window.location.search);
+                if (params.get('path')) {
+                    context.path = params.get('path');
+                }
+            }
+
+            const steps = mode === 'local' ? LOCAL_STEPS : PR_STEPS;
+            const stepStates = {};
+
+            /* ── Render Target Label ── */
+            const targetEl = document.getElementById('setup-target');
+            if (mode === 'pr' && context.owner && context.repo && context.number) {
+                targetEl.textContent = context.owner + '/' + context.repo + ' #' + context.number;
+            } else if (mode === 'local' && context.path) {
+                targetEl.textContent = context.path;
+            } else {
+                targetEl.textContent = '';
+            }
+
+            /* ── Render Step List ── */
+            const stepListEl = document.getElementById('step-list');
+
+            function renderSteps() {
+                stepListEl.innerHTML = steps.map(function(step) {
+                    const state = stepStates[step.id] || { status: 'pending', message: '' };
+                    const statusClass = state.status;
+                    let iconHtml;
+
+                    switch (state.status) {
+                        case 'running':
+                            iconHtml = ICON_RUNNING;
+                            break;
+                        case 'completed':
+                            iconHtml = ICON_COMPLETED;
+                            break;
+                        case 'error':
+                            iconHtml = ICON_ERROR;
+                            break;
+                        default:
+                            iconHtml = ICON_PENDING;
+                    }
+
+                    const messageHtml = state.message
+                        ? '<div class="step-message">' + escapeHtml(state.message) + '</div>'
+                        : '';
+
+                    return '<li class="step-item ' + statusClass + '" data-step="' + step.id + '">' +
+                        '<div class="step-icon">' + iconHtml + '</div>' +
+                        '<div class="step-content">' +
+                            '<div class="step-label">' + escapeHtml(step.label) + '</div>' +
+                            messageHtml +
+                        '</div>' +
+                    '</li>';
+                }).join('');
+            }
+
+            function updateProgressBar() {
+                var bar = document.getElementById('progress-bar');
+                var total = steps.length;
+                var completed = 0;
+                var hasError = false;
+
+                for (var i = 0; i < steps.length; i++) {
+                    var state = stepStates[steps[i].id];
+                    if (state && state.status === 'completed') {
+                        completed++;
+                    }
+                    if (state && state.status === 'error') {
+                        hasError = true;
+                    }
+                }
+
+                bar.classList.remove('error', 'complete');
+
+                if (hasError) {
+                    bar.classList.add('error');
+                    bar.style.width = ((completed + 1) / total * 100) + '%';
+                } else if (completed === total) {
+                    bar.classList.add('complete');
+                    bar.style.width = '100%';
+                } else {
+                    // Include partial progress for the running step
+                    var runningFraction = 0;
+                    for (var j = 0; j < steps.length; j++) {
+                        var s = stepStates[steps[j].id];
+                        if (s && s.status === 'running') {
+                            runningFraction = 0.5;
+                            break;
+                        }
+                    }
+                    bar.style.width = ((completed + runningFraction) / total * 100) + '%';
+                }
+            }
+
+            function escapeHtml(text) {
+                var div = document.createElement('div');
+                div.textContent = text || '';
+                return div.innerHTML;
+            }
+
+            // Initial render
+            renderSteps();
+
+            /* ── Error & Redirect UI ── */
+            var errorSection = document.getElementById('error-section');
+            var errorMessageEl = document.getElementById('error-message');
+            var redirectSection = document.getElementById('redirect-section');
+
+            function showError(message) {
+                errorMessageEl.textContent = message;
+                errorSection.classList.add('visible');
+                document.title = 'Setup failed - Pair Review';
+            }
+
+            function showRedirect() {
+                redirectSection.classList.add('visible');
+                document.title = 'Redirecting... - Pair Review';
+            }
+
+            /* ── Retry Button ── */
+            document.getElementById('retry-btn').addEventListener('click', function() {
+                window.location.reload();
+            });
+
+            /* ── Setup Flow ── */
+            async function startSetup() {
+                var postUrl, sseBaseUrl;
+
+                if (mode === 'pr') {
+                    var o = encodeURIComponent(context.owner);
+                    var r = encodeURIComponent(context.repo);
+                    var n = encodeURIComponent(context.number);
+                    postUrl = '/api/setup/pr/' + o + '/' + r + '/' + n;
+                    sseBaseUrl = postUrl + '/progress';
+                } else if (mode === 'local') {
+                    postUrl = '/api/setup/local';
+                    sseBaseUrl = '/api/setup/local';
+                } else {
+                    showError('Unable to determine review mode. Please return home and try again.');
+                    return;
+                }
+
+                // POST to initiate setup
+                try {
+                    var fetchOptions = { method: 'POST' };
+                    if (mode === 'local') {
+                        fetchOptions.headers = { 'Content-Type': 'application/json' };
+                        fetchOptions.body = JSON.stringify({ path: context.path });
+                    }
+
+                    var response = await fetch(postUrl, fetchOptions);
+
+                    if (!response.ok) {
+                        var errData;
+                        try { errData = await response.json(); } catch (e) { errData = {}; }
+                        throw new Error(errData.error || 'Server returned ' + response.status);
+                    }
+
+                    var data = await response.json();
+
+                    // If the review already exists, redirect immediately
+                    if (data.existing && data.reviewUrl) {
+                        window.location.href = data.reviewUrl;
+                        return;
+                    }
+
+                    if (!data.setupId) {
+                        throw new Error('No setup ID returned from server');
+                    }
+
+                    // Connect to SSE endpoint
+                    var sseUrl;
+                    if (mode === 'pr') {
+                        sseUrl = sseBaseUrl + '?setupId=' + encodeURIComponent(data.setupId);
+                    } else {
+                        sseUrl = sseBaseUrl + '/' + encodeURIComponent(data.setupId) + '/progress';
+                    }
+
+                    connectSSE(sseUrl);
+
+                } catch (err) {
+                    showError(err.message || 'Failed to start setup. Please try again.');
+                    // Mark first step as error
+                    stepStates[steps[0].id] = { status: 'error', message: 'Setup request failed' };
+                    renderSteps();
+                    updateProgressBar();
+                }
+            }
+
+            /* ── SSE Connection ── */
+            function connectSSE(url) {
+                var eventSource = new EventSource(url);
+
+                eventSource.addEventListener('step', function(e) {
+                    try {
+                        var payload = JSON.parse(e.data);
+                        var stepId = payload.step || payload.id;
+                        var status = payload.status || 'running';
+                        var message = payload.message || '';
+
+                        stepStates[stepId] = { status: status, message: message };
+                        renderSteps();
+                        updateProgressBar();
+                    } catch (err) {
+                        console.error('Error parsing step event:', err);
+                    }
+                });
+
+                eventSource.addEventListener('complete', function(e) {
+                    try {
+                        var payload = JSON.parse(e.data);
+
+                        // Mark all steps as completed
+                        for (var i = 0; i < steps.length; i++) {
+                            if (!stepStates[steps[i].id] || stepStates[steps[i].id].status !== 'completed') {
+                                stepStates[steps[i].id] = { status: 'completed', message: '' };
+                            }
+                        }
+                        renderSteps();
+                        updateProgressBar();
+
+                        showRedirect();
+                        eventSource.close();
+
+                        // Small delay so the user sees the completed state
+                        setTimeout(function() {
+                            if (payload.reviewUrl) {
+                                window.location.href = payload.reviewUrl;
+                            }
+                        }, 400);
+                    } catch (err) {
+                        console.error('Error parsing complete event:', err);
+                    }
+                });
+
+                eventSource.addEventListener('error', function(e) {
+                    // SSE 'error' event type from server (custom)
+                    if (e.data) {
+                        try {
+                            var payload = JSON.parse(e.data);
+                            var failedStep = payload.step;
+                            var errorMsg = payload.message || 'An unexpected error occurred';
+
+                            if (failedStep && stepStates[failedStep]) {
+                                stepStates[failedStep] = { status: 'error', message: errorMsg };
+                            } else if (failedStep) {
+                                stepStates[failedStep] = { status: 'error', message: errorMsg };
+                            }
+
+                            renderSteps();
+                            updateProgressBar();
+                            showError(errorMsg);
+                            eventSource.close();
+                            return;
+                        } catch (parseErr) {
+                            // Not a JSON error event, fall through
+                        }
+                    }
+
+                    // Native EventSource error (connection lost, etc.)
+                    if (eventSource.readyState === EventSource.CLOSED) {
+                        // Check if we got any errors already shown
+                        if (!errorSection.classList.contains('visible')) {
+                            showError('Connection to server was lost. Please retry.');
+                            updateProgressBar();
+                        }
+                    }
+                });
+
+                eventSource.onerror = function() {
+                    // EventSource connection failure
+                    if (eventSource.readyState === EventSource.CLOSED) {
+                        if (!errorSection.classList.contains('visible') && !redirectSection.classList.contains('visible')) {
+                            showError('Connection to server was lost. Please retry.');
+                            updateProgressBar();
+                        }
+                    }
+                };
+            }
+
+            /* ── Kick Off ── */
+            startSetup();
+        })();
+    </script>
+</body>
+</html>

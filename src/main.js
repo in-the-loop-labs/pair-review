@@ -9,6 +9,7 @@ const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
+const { storePRData, registerRepositoryLocation } = require('./setup/pr-setup');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
@@ -16,31 +17,6 @@ const { getGeneratedFilePatterns } = require('./git/gitattributes');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
-
-/**
- * Register the known location of a GitHub repository in the database.
- * This allows the web UI to find the repo without cloning when reviewing PRs.
- *
- * @param {Object} db - Database instance
- * @param {string} currentDir - Current working directory (or any directory in the repo)
- * @param {string} owner - Repository owner
- * @param {string} repo - Repository name
- * @returns {Promise<void>}
- */
-async function registerRepositoryLocation(db, currentDir, owner, repo) {
-  const repository = normalizeRepository(owner, repo);
-  try {
-    // Use findMainGitRoot to resolve worktrees to their parent repo
-    // This ensures we always store the actual git root, not a worktree path
-    const gitRoot = await findMainGitRoot(currentDir);
-    const repoSettingsRepo = new RepoSettingsRepository(db);
-    await repoSettingsRepo.setLocalPath(repository, gitRoot);
-    console.log(`Registered repository location: ${gitRoot}`);
-  } catch (error) {
-    // Non-fatal: registration failure shouldn't block the review
-    console.warn(`Could not register repository location: ${error.message}`);
-  }
-}
 
 /**
  * Detect PR information from GitHub Actions environment variables.
@@ -649,138 +625,6 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
 
   // Return the actual port the server started on
   return actualPort;
-}
-
-/**
- * Store PR data in database
- * @param {Object} db - Database instance
- * @param {Object} prInfo - PR information
- * @param {Object} prData - PR data from GitHub
- * @param {string} diff - Unified diff content
- * @param {Array} changedFiles - Changed files information
- * @param {string} worktreePath - Worktree path
- * @param {Object} [options] - Optional settings
- * @param {boolean} [options.skipWorktreeRecord] - Skip creating a worktree DB record (for --use-checkout mode)
- */
-async function storePRData(db, prInfo, prData, diff, changedFiles, worktreePath, options = {}) {
-  const repository = normalizeRepository(prInfo.owner, prInfo.repo);
-
-  // Begin transaction for atomic database operations
-  await run(db, 'BEGIN TRANSACTION');
-
-  try {
-    // Store or update worktree record (skip when using --use-checkout,
-    // since the path is the user's working directory, not a managed worktree)
-    if (!options.skipWorktreeRecord) {
-      const worktreeRepo = new WorktreeRepository(db);
-      await worktreeRepo.getOrCreate({
-        prNumber: prInfo.number,
-        repository,
-        branch: prData.head_branch,
-        path: worktreePath
-      });
-    }
-
-    // Prepare extended PR data (keep worktree_path for backward compat, but DB is source of truth)
-    const extendedPRData = {
-      ...prData,
-      diff: diff,
-      changed_files: changedFiles,
-      worktree_path: worktreePath,
-      fetched_at: new Date().toISOString()
-    };
-
-    // First check if PR metadata exists
-    const existingPR = await queryOne(db, `
-      SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-    `, [prInfo.number, repository]);
-
-    if (existingPR) {
-      // Update existing PR metadata (preserves ID)
-      await run(db, `
-        UPDATE pr_metadata
-        SET title = ?, description = ?, author = ?,
-            base_branch = ?, head_branch = ?, pr_data = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [
-        prData.title,
-        prData.body,
-        prData.author,
-        prData.base_branch,
-        prData.head_branch,
-        JSON.stringify(extendedPRData),
-        existingPR.id
-      ]);
-      console.log(`Updated existing PR metadata (ID: ${existingPR.id})`);
-    } else {
-      // Insert new PR metadata
-      const result = await run(db, `
-        INSERT INTO pr_metadata
-        (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        prInfo.number,
-        repository,
-        prData.title,
-        prData.body,
-        prData.author,
-        prData.base_branch,
-        prData.head_branch,
-        JSON.stringify(extendedPRData)
-      ]);
-      console.log(`Created new PR metadata (ID: ${result.lastID})`);
-    }
-
-    // Create or update review record
-    // NOTE: Uses raw SQL instead of ReviewRepository to participate in the surrounding
-    // transaction and to update only review_data without overwriting custom_instructions
-    // or summary fields that may have been set by previous analysis runs.
-    const existingReview = await queryOne(db, `
-      SELECT id FROM reviews WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-    `, [prInfo.number, repository]);
-
-    if (existingReview) {
-      // Update existing review (preserves ID)
-      await run(db, `
-        UPDATE reviews
-        SET review_data = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [
-        JSON.stringify({
-          worktree_path: worktreePath,
-          created_at: new Date().toISOString()
-        }),
-        existingReview.id
-      ]);
-      console.log(`Updated existing review (ID: ${existingReview.id})`);
-    } else {
-      // Insert new review
-      const result = await run(db, `
-        INSERT INTO reviews
-        (pr_number, repository, status, review_data)
-        VALUES (?, ?, 'draft', ?)
-      `, [
-        prInfo.number,
-        repository,
-        JSON.stringify({
-          worktree_path: worktreePath,
-          created_at: new Date().toISOString()
-        })
-      ]);
-      console.log(`Created new review (ID: ${result.lastID})`);
-    }
-
-    // Commit transaction
-    await run(db, 'COMMIT');
-    console.log(`Stored PR data for ${repository} #${prInfo.number}`);
-
-  } catch (error) {
-    // Rollback transaction on error
-    await run(db, 'ROLLBACK');
-    console.error('Error storing PR data:', error);
-    throw new Error(`Failed to store PR data: ${error.message}`);
-  }
 }
 
 /**

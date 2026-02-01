@@ -71,7 +71,9 @@ function createMCPServer(db, options = {}) {
       'get_server_info',
       'Get pair-review server info including the web UI URL. ' +
       'Call this FIRST to discover the running server URL before any other action. ' +
-      'Use it to open the review UI in the browser (e.g. `open {url}/pr/{owner}/{repo}/{number}`).',
+      'To open a GitHub PR for review: `open {url}/pr/{owner}/{repo}/{number}`. ' +
+      'To open a local directory for review: `open {url}/local?path={absolute_directory_path}` (URL-encode the path). ' +
+      'If the review does not yet exist, the setup flow will automatically create it.',
       {},
       async () => {
         return {

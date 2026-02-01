@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  * The actual GitHub API calls are mocked by replacing the graphql method on each client instance.
  */
 
-const { GitHubClient } = require('../../src/github/client');
+const { GitHubClient, GitHubApiError } = require('../../src/github/client');
 
 describe('GitHubClient', () => {
   describe('createReviewGraphQL', () => {
@@ -1089,7 +1089,7 @@ describe('GitHubClient', () => {
       expect(result.databaseId).toBe(22222);
     });
 
-    it('should throw error on authentication failure', async () => {
+    it('should throw GitHubApiError with status 401 on authentication failure', async () => {
       const client = new GitHubClient('test-token');
       const authError = new Error('Bad credentials');
       authError.status = 401;
@@ -1098,9 +1098,16 @@ describe('GitHubClient', () => {
 
       await expect(client.getPendingReviewForUser('owner', 'repo', 42))
         .rejects.toThrow('GitHub authentication failed');
+
+      try {
+        await client.getPendingReviewForUser('owner', 'repo', 42);
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(401);
+      }
     });
 
-    it('should throw error when PR is not found', async () => {
+    it('should throw GitHubApiError with status 404 when PR is not found', async () => {
       const client = new GitHubClient('test-token');
       const notFoundError = new Error('Not found');
       notFoundError.status = 404;
@@ -1109,6 +1116,13 @@ describe('GitHubClient', () => {
 
       await expect(client.getPendingReviewForUser('owner', 'repo', 999))
         .rejects.toThrow('Pull request #999 not found');
+
+      try {
+        await client.getPendingReviewForUser('owner', 'repo', 999);
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(404);
+      }
     });
 
     it('should throw error on GraphQL errors', async () => {
@@ -1240,6 +1254,148 @@ describe('GitHubClient', () => {
       const result = await client.getReviewById('PRR_dismissed');
 
       expect(result.state).toBe('DISMISSED');
+    });
+  });
+
+  describe('GitHubApiError', () => {
+    it('should be an instance of Error', () => {
+      const error = new GitHubApiError('test message', 401);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toBeInstanceOf(GitHubApiError);
+    });
+
+    it('should preserve the HTTP status code', () => {
+      const error = new GitHubApiError('auth failed', 401);
+      expect(error.status).toBe(401);
+      expect(error.message).toBe('auth failed');
+      expect(error.name).toBe('GitHubApiError');
+    });
+
+    it('should work with different status codes', () => {
+      const codes = [401, 403, 404, 429, 503];
+      for (const code of codes) {
+        const error = new GitHubApiError(`error ${code}`, code);
+        expect(error.status).toBe(code);
+      }
+    });
+  });
+
+  describe('handleApiError', () => {
+    it('should throw GitHubApiError with status 401 for authentication errors', async () => {
+      const client = new GitHubClient('test-token');
+      const octokitError = new Error('Bad credentials');
+      octokitError.status = 401;
+
+      try {
+        await client.handleApiError(octokitError, 'owner', 'repo', 1);
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(401);
+        expect(error.message).toContain('authentication failed');
+      }
+    });
+
+    it('should throw GitHubApiError with status 429 for rate limit errors', async () => {
+      const client = new GitHubClient('test-token');
+      const rateLimitError = new Error('Rate limit exceeded');
+      rateLimitError.status = 403;
+      rateLimitError.response = {
+        headers: {
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': String(Math.floor(Date.now() / 1000) + 60)
+        }
+      };
+
+      try {
+        await client.handleApiError(rateLimitError, 'owner', 'repo', 1);
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(429);
+        expect(error.message).toContain('rate limit');
+      }
+    });
+
+    it('should throw GitHubApiError with status 404 for not found errors', async () => {
+      const client = new GitHubClient('test-token');
+      const notFoundError = new Error('Not Found');
+      notFoundError.status = 404;
+
+      try {
+        await client.handleApiError(notFoundError, 'owner', 'repo', 42);
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(404);
+        expect(error.message).toContain('Pull request #42 not found');
+      }
+    });
+
+    it('should throw GitHubApiError with status 503 for network errors', async () => {
+      const client = new GitHubClient('test-token');
+      const networkError = new Error('getaddrinfo ENOTFOUND api.github.com');
+      networkError.code = 'ENOTFOUND';
+
+      try {
+        await client.handleApiError(networkError, 'owner', 'repo', 1);
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(503);
+        expect(error.message).toContain('Network error');
+      }
+    });
+
+    it('should throw plain Error for unknown errors', async () => {
+      const client = new GitHubClient('test-token');
+      const unknownError = new Error('Something unexpected');
+      unknownError.status = 500;
+
+      try {
+        await client.handleApiError(unknownError, 'owner', 'repo', 1);
+      } catch (error) {
+        expect(error).not.toBeInstanceOf(GitHubApiError);
+        expect(error).toBeInstanceOf(Error);
+        expect(error.message).toContain('GitHub API error');
+      }
+    });
+  });
+
+  describe('repositoryExists', () => {
+    it('should throw GitHubApiError with status on auth failure', async () => {
+      const client = new GitHubClient('test-token');
+      const authError = new Error('Bad credentials');
+      authError.status = 401;
+      client.octokit.rest = { repos: { get: vi.fn().mockRejectedValue(authError) } };
+
+      try {
+        await client.repositoryExists('owner', 'repo');
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(401);
+        expect(error.message).toContain('authentication failed');
+      }
+    });
+
+    it('should throw GitHubApiError with status 403 on forbidden', async () => {
+      const client = new GitHubClient('test-token');
+      const forbiddenError = new Error('Forbidden');
+      forbiddenError.status = 403;
+      client.octokit.rest = { repos: { get: vi.fn().mockRejectedValue(forbiddenError) } };
+
+      try {
+        await client.repositoryExists('owner', 'repo');
+      } catch (error) {
+        expect(error).toBeInstanceOf(GitHubApiError);
+        expect(error.status).toBe(403);
+      }
+    });
+
+    it('should return false for 404 (not throw)', async () => {
+      const client = new GitHubClient('test-token');
+      const notFoundError = new Error('Not Found');
+      notFoundError.status = 404;
+      client.octokit.rest = { repos: { get: vi.fn().mockRejectedValue(notFoundError) } };
+
+      const result = await client.repositoryExists('owner', 'repo');
+      expect(result).toBe(false);
     });
   });
 });
