@@ -345,6 +345,61 @@ class HunkParser {
   static shouldAutoExpand(gapSize) {
     return gapSize < HunkParser.AUTO_EXPAND_THRESHOLD;
   }
+
+  /**
+   * Parse a unified diff patch string into structured blocks (hunks).
+   * Each block contains the hunk header info and its content lines.
+   * Strips trailing empty-string artifacts from split('\n') on newline-terminated input,
+   * which would otherwise be misclassified as context lines and corrupt coordinate calculations.
+   * @param {string} patch - Unified diff patch string (may include diff --git headers)
+   * @returns {Array<{header: string, oldStart: number, newStart: number, lines: string[]}>}
+   */
+  static parseDiffIntoBlocks(patch) {
+    const lines = patch.split('\n');
+    const blocks = [];
+    let currentBlock = null;
+
+    lines.forEach(line => {
+      if (line.startsWith('@@')) {
+        if (currentBlock) {
+          HunkParser._stripTrailingEmpty(currentBlock);
+          blocks.push(currentBlock);
+        }
+        currentBlock = null;
+
+        const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (match) {
+          currentBlock = {
+            header: line,
+            oldStart: parseInt(match[1]),
+            newStart: parseInt(match[2]),
+            lines: []
+          };
+        }
+      } else if (currentBlock) {
+        currentBlock.lines.push(line);
+      }
+    });
+
+    if (currentBlock) {
+      HunkParser._stripTrailingEmpty(currentBlock);
+      blocks.push(currentBlock);
+    }
+
+    return blocks;
+  }
+
+  /**
+   * Remove trailing empty string artifact from a block's lines array.
+   * split('\n') on newline-terminated input produces a trailing '' that has no
+   * diff prefix (+/-/space) and would be misclassified as a context line.
+   * @param {Object} block - Block with lines array to clean up
+   */
+  static _stripTrailingEmpty(block) {
+    if (block.lines.length > 0 && block.lines[block.lines.length - 1] === '') {
+      block.lines.pop();
+    }
+  }
 }
 
 // Make HunkParser available globally in browser
