@@ -520,11 +520,29 @@ class PRManager {
     // Update meta info - show only head branch, full info in tooltip
     const branchName = document.getElementById('pr-branch-name');
     const branchContainer = document.getElementById('pr-branch');
+    const branchCopy = document.getElementById('pr-branch-copy');
     if (branchName) {
       branchName.textContent = pr.head_branch;
       // Set tooltip with full branch info (base <- head, showing merge direction)
       if (branchContainer) {
         branchContainer.title = `${pr.base_branch} <- ${pr.head_branch}`;
+      }
+
+      if (branchCopy && !branchCopy.hasAttribute('data-listener-added')) {
+        branchCopy.setAttribute('data-listener-added', 'true');
+        branchCopy.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const branch = branchName.textContent;
+          if (!branch || branch === '--') return;
+          try {
+            await navigator.clipboard.writeText(branch);
+            // Visual feedback
+            branchCopy.classList.add('copied');
+            setTimeout(() => branchCopy.classList.remove('copied'), 2000);
+          } catch (err) {
+            console.error('Failed to copy branch name:', err);
+          }
+        });
       }
     }
 
