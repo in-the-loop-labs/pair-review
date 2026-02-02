@@ -14,6 +14,10 @@ arguments:
     description: "Analysis tier: fast (Haiku-class), balanced (Sonnet-class, default), or thorough (Opus-class)"
     required: false
     default: balanced
+  skipLevel3:
+    description: "Skip Level 3 (codebase context) analysis. Set 'true' to skip, 'false' to force, or 'auto' to let the analysis agent decide based on change scope (default: auto)."
+    required: false
+    default: auto
   customInstructions:
     description: "Optional review-specific instructions (e.g., 'focus on security', 'this repo uses X pattern')"
     required: false
@@ -81,6 +85,7 @@ If context grows large after many iterations, you may `/compact` between iterati
 - Project root: {project_root}
 - maxIterations: {value}
 - tier: {value}
+- skipLevel3: {value}
 - customInstructions: {value or "none"}
 - iteration: 0
 ```
@@ -125,6 +130,7 @@ Launch a **single Task agent** (subagent_type: "general-purpose") that performs 
 > ```
 > Suggestions: {N} line-level, {M} file-level
 > Types: {comma-separated list of types found, e.g. "bug, improvement, praise"}
+> Level 3: {ran|skipped} — {reason if auto}
 > Objective status: complete|incomplete|partial — {brief reason}
 > Summary: {2 sentences describing the most significant findings}
 > ```
@@ -136,17 +142,24 @@ Launch a **single Task agent** (subagent_type: "general-purpose") that performs 
 >    - Use Glob to find `**/agent-analyze/scripts/git-diff-lines` — this is the diff annotation script
 >    - Use Glob to find `**/agent-analyze/references/` — this directory contains the analysis prompts
 >    - Resolve the absolute path to the scripts directory from the Glob result. Use this resolved path in all `PATH=` commands below and include it in each sub-task prompt.
->    - Read these reference files for tier "{tier}":
+>    - Read the reference files for tier "{tier}" (read Level 3 only if it will be needed based on `skipLevel3` setting):
 >      - `references/level1-{tier}.md`
 >      - `references/level2-{tier}.md`
->      - `references/level3-{tier}.md`
+>      - `references/level3-{tier}.md` (skip if `skipLevel3` is `true`; read if `false` or `auto` since the agent may need it)
 >      - `references/orchestration-{tier}.md`
 >
 > 2. Get the annotated diff:
 >    - Run `PATH="{scripts-dir}:$PATH" git-diff-lines HEAD` to get the diff with line numbers
 >    - Run `git diff --name-only HEAD` to get the list of changed files
 >
-> 3. Launch Level 1, Level 2, and Level 3 analysis as **parallel Task agents** (subagent_type: "general-purpose"). Each task:
+> 3. Determine which analysis levels to run:
+>    - **Level 1 and Level 2**: Always run these.
+>    - **Level 3 (codebase context)**: Depends on the `skipLevel3` setting:
+>      - If `skipLevel3` is `true`: **Skip Level 3** — do not launch a Level 3 task.
+>      - If `skipLevel3` is `false`: **Run Level 3** — always launch a Level 3 task.
+>      - If `skipLevel3` is `auto`: Assess the diff to decide. Run Level 3 if ANY of these apply: changes affect shared utilities/APIs/types/interfaces, entire modules are added or deleted, changes are cross-cutting (e.g., renaming a widely-used function). Skip Level 3 if changes are small and localized (CSS/copy/config/test-only, no cross-cutting concerns). When in doubt, run Level 3.
+>
+>    Launch the analysis levels you determined above as **parallel Task agents** (subagent_type: "general-purpose"). Each task:
 >    - Receives the full prompt text from its reference file as core instructions
 >    - Receives the annotated diff output and list of changed files
 >    - Must return valid JSON (no markdown wrapping) matching the schema in its prompt
@@ -154,7 +167,7 @@ Launch a **single Task agent** (subagent_type: "general-purpose") that performs 
 >
 > 4. After all levels complete, launch one **orchestration Task agent** that:
 >    - Receives the orchestration prompt from the reference file
->    - Receives the JSON output from all three levels
+>    - Receives the JSON output from all completed levels (pass empty `[]` for Level 3 if it was skipped)
 >    - Merges, deduplicates, and curates suggestions
 >    - Returns final curated JSON
 >
@@ -175,6 +188,7 @@ This phase runs in the **main session** — it is lightweight.
 Parse the summary returned by the Analysis Task. It contains:
 - Suggestion counts (line-level and file-level)
 - Types of suggestions found
+- Level 3 status (ran or skipped, with reason if auto-decided)
 - Objective status (`complete`, `incomplete`, or `partial`) with a brief reason
 - A 2-sentence summary of findings
 
