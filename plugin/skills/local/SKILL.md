@@ -2,8 +2,14 @@
 name: local
 description: >
   Open local uncommitted changes for review in the pair-review web UI.
+  This only opens the browser — it does not run AI analysis or generate suggestions.
+  Once open, the user can browse the diff, leave comments, and trigger analysis
+  from the web UI themselves.
   Use when the user says "review my local changes", "review local", "open local review",
-  or wants to start a pair-review session for uncommitted work in the current directory.
+  or wants to open a pair-review session for uncommitted work in the current directory.
+  If the user wants automated AI analysis of their local changes rather than just opening
+  the browser, use the `agent-analyze` skill (standalone) or `analyze` skill (requires MCP server) instead. Note that the user can
+  also trigger AI analysis from within the pair-review web UI after opening it.
 ---
 
 # Local Review

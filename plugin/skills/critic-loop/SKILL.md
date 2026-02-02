@@ -26,7 +26,7 @@ Implement an objective, then iterate with AI-powered code review — addressing 
 ## Core Principle: Delegate Heavy Lifting
 
 **Implementation and fix work MUST run in Task agents** (subagent_type: "general-purpose").
-Analysis runs in the main session (via the `agent-analyze` skill — see Step 2).
+Analysis runs in the main session (via the `agent-analyze` skill, which works standalone without requiring an MCP server connection — see Step 2).
 The main session orchestrates: invoking skills, launching tasks, parsing their JSON results,
 running lightweight git commands, evaluating loop conditions, and reporting to the user.
 

@@ -1,11 +1,21 @@
 ---
 name: agent-analyze
 description: >
-  Perform AI-powered code review analysis using pair-review's three-level framework.
+  Perform AI-powered code review analysis by spawning parallel Task agents directly within
+  the coding agent's context. Does not require the pair-review MCP server — works standalone.
   Runs Level 1 (diff isolation), Level 2 (file context), and Level 3 (codebase context)
   as parallel tasks, then orchestrates results into curated suggestions.
-  Use when the user says "analyze my changes", "analyze this PR", "run analysis",
-  "AI review", or wants automated code review suggestions on local or PR changes.
+  Results are returned directly in the conversation (not in the pair-review web UI).
+  Use when the user says "analyze using tasks", "agent analyze", "analyze with agents",
+  "analyze directly", "analyze here", "analyze without server",
+  or wants analysis without requiring a pair-review server connection.
+  If the user says something ambiguous like "analyze my changes" or "run analysis" without
+  specifying a method, and both the `agent-analyze` and `analyze` skills are available
+  (i.e., the pair-review MCP server is connected), ask whether they want:
+  (1) agent-based analysis (`agent-analyze` — results returned directly in the conversation,
+  no server required), or (2) server-side analysis (`analyze` — results appear in the
+  pair-review web UI, requires MCP connection). If only one analysis skill is available,
+  use it directly without asking.
 arguments:
   tier:
     description: "Prompt tier: fast (surface/Haiku-class), balanced (standard/Sonnet-class, default), or thorough (deep/Opus-class)"

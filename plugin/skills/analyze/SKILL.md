@@ -5,9 +5,16 @@ description: >
   Requires the pair-review MCP server to be connected. For standalone analysis without MCP,
   use the agent-analyze skill instead.
   Starts analysis via the pair-review MCP start_analysis tool, polls for completion,
-  then fetches and presents the curated suggestions.
-  Use when the user says "analyze my changes", "analyze this PR", "run analysis",
-  "AI review", or wants automated code review suggestions on local or PR changes.
+  then fetches and presents the curated suggestions. Results are also visible in the
+  pair-review web UI alongside the diff.
+  Use when the user says "analyze using pair-review", "analyze in the UI", "run server analysis", "analyze with pair-review",
+  or wants analysis results integrated into the pair-review web UI.
+  If the user says something ambiguous like "analyze my changes" or "run analysis" without
+  specifying a method, and both the `analyze` and `agent-analyze` skills are available,
+  ask whether they want: (1) agent-based analysis (`agent-analyze` — results returned
+  directly in the conversation, no server required), or (2) server-side analysis
+  (`analyze` — results appear in the pair-review web UI, requires MCP connection).
+  If only one analysis skill is available, use it directly without asking.
 arguments:
   tier:
     description: "Prompt tier: fast (surface/Haiku-class), balanced (standard/Sonnet-class, default), or thorough (deep/Opus-class)"

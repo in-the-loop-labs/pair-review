@@ -2,7 +2,7 @@
 name: ai-critic
 description: >
   Fetch AI-generated review suggestions from pair-review and make code changes to address them.
-  Use when the user says "run critic loop", "address AI suggestions", "fix AI review feedback",
+  Use when the user says "address AI feedback", "address AI suggestions", "fix AI review feedback",
   or wants to iterate on code based on AI analysis results from pair-review.
 ---
 
