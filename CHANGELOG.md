@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.7
+
+### Patch Changes
+
+- b9a4663: Support .gitattributes generated file detection in local mode, collapsing linguist-generated files in the diff UI to match PR mode behavior
+
 ## 1.0.6
 
 ### Patch Changes
