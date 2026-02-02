@@ -5,7 +5,7 @@ description: >
   the coding agent's context. Does not require the pair-review MCP server — works standalone.
   Runs Level 1 (diff isolation), Level 2 (file context), and Level 3 (codebase context)
   as parallel tasks, then orchestrates results into curated suggestions.
-  Results are returned directly in the conversation (not in the pair-review web UI).
+  Results are returned directly in the conversation and also pushed to the pair-review web UI (if running).
   Use when the user says "analyze", "analyze my changes", "run analysis", "analyze using tasks",
   "analyze directly", "analyze here", or wants code review analysis of their changes.
   This is the default analysis skill. If the user says something ambiguous like
@@ -93,7 +93,37 @@ Launch one more Task agent (subagent_type: "general-purpose") that:
 3. Merges, deduplicates, and curates suggestions
 4. Returns final curated JSON
 
-## 5. Report
+## 5. Push results to server
+
+Push the orchestrated JSON to the pair-review web UI so suggestions appear inline. This step does **not** require MCP — it uses a direct HTTP POST with a fallback to `http://localhost:7247` when the MCP `get_server_info` tool is unavailable.
+
+1. **Determine server URL**:
+   - If the `get_server_info` MCP tool is available, call it and use the `url` field
+   - Otherwise, try reading the port from config: `cat ~/.pair-review/config.json 2>/dev/null | jq -r '.port // empty'`
+   - If neither works, default to `http://localhost:7247`
+
+2. **Build the POST body** from the orchestrated output:
+   - For local mode: set `path` (absolute working directory from `pwd`) and `headSha` (from `git rev-parse HEAD`)
+   - For PR mode: set `repo` (`owner/repo`) and `prNumber`
+   - Include `provider`, `model`, `summary`, `suggestions`, and `fileLevelSuggestions` from the orchestrated JSON
+
+3. **POST via `curl`** to `${SERVER_URL}/api/analysis-results`:
+   ```
+   curl -s --connect-timeout 3 --max-time 10 \
+     -X POST "${SERVER_URL}/api/analysis-results" \
+     -H "Content-Type: application/json" \
+     -d @- <<'PAYLOAD'
+   { ... }
+   PAYLOAD
+   ```
+
+   A successful import returns HTTP 201 with `{ runId, reviewId, totalSuggestions, status: "completed" }`.
+
+4. **Graceful degradation**: If the request fails (server not running, timeout, etc.), log a short warning and continue to the Report step. The push is best-effort.
+
+5. Note in the report whether results were successfully pushed to the pair-review UI.
+
+## 6. Report
 
 Present the curated suggestions to the user, organized by file. For each suggestion:
 - File and line reference

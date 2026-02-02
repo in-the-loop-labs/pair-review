@@ -11,18 +11,20 @@
  */
 
 const express = require('express');
-const { query, queryOne, withTransaction, RepoSettingsRepository, ReviewRepository, AnalysisRunRepository, PRMetadataRepository } = require('../database');
+const { query, queryOne, withTransaction, RepoSettingsRepository, ReviewRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { mergeInstructions } = require('../utils/instructions');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
+const path = require('path');
 const { normalizeRepository } = require('../utils/paths');
 const {
   activeAnalyses,
   prToAnalysisId,
   progressClients,
+  localReviewDiffs,
   getPRKey,
   getModel,
   determineCompletionInfo,
@@ -32,6 +34,7 @@ const {
   CancellationError,
   createProgressCallback
 } = require('./shared');
+const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 
 const router = express.Router();
 
@@ -908,6 +911,179 @@ router.get('/api/analysis-run/:runId', async (req, res) => {
   } catch (error) {
     logger.error('Error fetching analysis run:', error);
     res.status(500).json({ error: 'Failed to fetch analysis run' });
+  }
+});
+
+/**
+ * Import externally-produced analysis results
+ *
+ * Accepts suggestions generated outside pair-review (e.g. by a coding agent's
+ * analyze skill) and stores them as a completed analysis run so they appear
+ * inline in the web UI.
+ */
+router.post('/api/analysis-results', async (req, res) => {
+  try {
+    const {
+      path: localPath,
+      headSha,
+      repo,
+      prNumber,
+      provider = null,
+      model = null,
+      summary = null,
+      suggestions = [],
+      fileLevelSuggestions = []
+    } = req.body || {};
+
+    // --- Validate identification pair ---
+    const hasLocal = localPath && headSha;
+    const hasPR = repo && prNumber != null;
+
+    if (!hasLocal && !hasPR) {
+      return res.status(400).json({
+        error: 'Must provide either (path + headSha) for local mode or (repo + prNumber) for PR mode'
+      });
+    }
+    if (hasLocal && hasPR) {
+      return res.status(400).json({
+        error: 'Provide only one identification pair: (path + headSha) or (repo + prNumber), not both'
+      });
+    }
+
+    // --- Validate suggestions ---
+    if (!Array.isArray(suggestions)) {
+      return res.status(400).json({ error: 'suggestions must be an array' });
+    }
+    if (!Array.isArray(fileLevelSuggestions)) {
+      return res.status(400).json({ error: 'fileLevelSuggestions must be an array' });
+    }
+
+    const REQUIRED_SUGGESTION_FIELDS = ['file', 'type', 'title', 'description'];
+    for (const [idx, s] of suggestions.entries()) {
+      for (const field of REQUIRED_SUGGESTION_FIELDS) {
+        if (!s[field]) {
+          return res.status(400).json({
+            error: `suggestions[${idx}] missing required field: ${field}`
+          });
+        }
+      }
+    }
+    for (const [idx, s] of fileLevelSuggestions.entries()) {
+      for (const field of REQUIRED_SUGGESTION_FIELDS) {
+        if (!s[field]) {
+          return res.status(400).json({
+            error: `fileLevelSuggestions[${idx}] missing required field: ${field}`
+          });
+        }
+      }
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const analysisRunRepo = new AnalysisRunRepository(db);
+
+    // --- Resolve review ---
+    let reviewId;
+    if (hasLocal) {
+      // Local mode: derive repository name from the directory basename
+      const repository = path.basename(localPath) || 'local';
+      reviewId = await reviewRepo.upsertLocalReview({
+        localPath,
+        localHeadSha: headSha,
+        repository
+      });
+
+      // Generate and store diff so the web UI can display it
+      // This is a git operation, not a DB operation, so it runs outside the transaction
+      try {
+        const diffResult = await generateLocalDiff(localPath);
+        const digest = await computeLocalDiffDigest(localPath);
+        localReviewDiffs.set(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
+      } catch (diffError) {
+        // Non-fatal: the review is still usable, just without diff data
+        logger.warn(`Could not generate diff for local review ${reviewId}: ${diffError.message}`);
+      }
+    } else {
+      const repoParts = repo.split('/');
+      if (repoParts.length !== 2 || !repoParts[0] || !repoParts[1]) {
+        return res.status(400).json({ error: 'repo must be in format owner/repo' });
+      }
+      const parsedPR = parseInt(prNumber, 10);
+      if (isNaN(parsedPR) || parsedPR <= 0) {
+        return res.status(400).json({ error: 'Invalid pull request number' });
+      }
+      const repository = normalizeRepository(repoParts[0], repoParts[1]);
+      const review = await reviewRepo.getOrCreate({
+        prNumber: parsedPR,
+        repository
+      });
+      reviewId = review.id;
+    }
+
+    // --- Create completed analysis run, insert suggestions, update stats ---
+    const runId = uuidv4();
+    const allSuggestions = [
+      ...suggestions.map(s => ({ ...s, is_file_level: false })),
+      ...fileLevelSuggestions.map(s => ({ ...s, is_file_level: true }))
+    ];
+    const totalSuggestions = allSuggestions.length;
+    const filesAnalyzed = new Set(allSuggestions.map(s => s.file)).size;
+
+    const commentRepo = new CommentRepository(db);
+
+    await withTransaction(db, async () => {
+      await analysisRunRepo.create({
+        id: runId,
+        reviewId,
+        provider,
+        model,
+        headSha: headSha || null,
+        status: 'completed'
+      });
+
+      await commentRepo.bulkInsertAISuggestions(reviewId, runId, allSuggestions);
+
+      await analysisRunRepo.update(runId, {
+        summary,
+        totalSuggestions,
+        filesAnalyzed
+      });
+    });
+
+    // --- Broadcast SSE completion event (after transaction completes) ---
+    const completionEvent = {
+      id: runId,
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      progress: `Analysis complete — ${totalSuggestions} suggestion${totalSuggestions !== 1 ? 's' : ''}`,
+      suggestionsCount: totalSuggestions,
+      filesAnalyzed,
+      levels: {
+        1: { status: 'completed', progress: 'Complete' },
+        2: { status: 'completed', progress: 'Complete' },
+        3: { status: 'completed', progress: 'Complete' },
+        4: { status: 'completed', progress: 'Complete' }
+      }
+    };
+    broadcastProgress(runId, completionEvent);
+
+    // Broadcast on the review-level key so the frontend auto-refreshes.
+    // Local mode SSE clients register under `local-${reviewId}`;
+    // PR mode SSE clients register under `review-${reviewId}`.
+    const reviewKey = hasLocal ? `local-${reviewId}` : `review-${reviewId}`;
+    broadcastProgress(reviewKey, { ...completionEvent, source: 'external' });
+
+    logger.success(`Imported ${totalSuggestions} external analysis suggestions (run ${runId})`);
+
+    res.status(201).json({
+      runId,
+      reviewId,
+      totalSuggestions,
+      status: 'completed'
+    });
+  } catch (error) {
+    logger.error('Error importing analysis results:', error);
+    res.status(500).json({ error: 'Failed to import analysis results' });
   }
 });
 

@@ -374,12 +374,53 @@ class PRManager {
       // Check if AI analysis is currently running
       await this.checkRunningAnalysis();
 
+      // Listen for externally-imported analysis results via SSE
+      this.startExternalResultsListener();
+
     } catch (error) {
       console.error('Error loading PR:', error);
       this.showError(error.message);
     } finally {
       this.setLoading(false);
     }
+  }
+
+  /**
+   * Listen for externally-imported analysis results via SSE.
+   * When POST /api/analysis-results stores new suggestions for this review,
+   * it broadcasts on `review-${reviewId}`. This listener picks that up
+   * and refreshes suggestions automatically.
+   */
+  startExternalResultsListener() {
+    if (this._externalResultsSource) return;
+    const reviewId = this.currentPR?.id;
+    if (!reviewId) return;
+
+    this._externalResultsSource = new EventSource(
+      `/api/pr/review-${reviewId}/ai-suggestions/status`
+    );
+
+    this._externalResultsSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'progress' && data.status === 'completed' && data.source === 'external') {
+          console.log('External analysis results detected, refreshing suggestions');
+          if (this.analysisHistoryManager) {
+            this.analysisHistoryManager.refresh({ switchToNew: true })
+              .then(() => this.loadAISuggestions());
+          } else {
+            this.loadAISuggestions();
+          }
+        }
+      } catch (e) { /* ignore parse errors */ }
+    };
+
+    window.addEventListener('beforeunload', () => {
+      if (this._externalResultsSource) {
+        this._externalResultsSource.close();
+        this._externalResultsSource = null;
+      }
+    });
   }
 
   /**

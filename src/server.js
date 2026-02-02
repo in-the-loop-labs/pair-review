@@ -30,7 +30,7 @@ function requestLogger(req, res, next) {
  * @param {number} maxAttempts - Maximum number of ports to try
  * @returns {Promise<number>} - Available port number
  */
-function findAvailablePort(app, startPort, maxAttempts = 5) {
+function findAvailablePort(app, startPort, maxAttempts = 20) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
     let currentPort = startPort;

@@ -1666,6 +1666,56 @@ class CommentRepository {
 
     return result.changes > 0;
   }
+
+  /**
+   * Bulk insert AI suggestions into the comments table
+   * @param {number} reviewId - Review ID (from reviews table)
+   * @param {string} runId - Analysis run ID
+   * @param {Array<Object>} suggestions - Normalized suggestion array (with is_file_level already set)
+   */
+  async bulkInsertAISuggestions(reviewId, runId, suggestions) {
+    // Normalize: convert single 'line' field to 'line_start'/'line_end'
+    // Work with shallow copies to avoid mutating the caller's array
+    const normalized = suggestions.map(s => ({ ...s }));
+    for (const s of normalized) {
+      if (s.line !== undefined && s.line_start === undefined) {
+        s.line_start = s.line;
+        s.line_end = s.line_end ?? s.line_start;
+        delete s.line;
+      }
+    }
+
+    for (const suggestion of normalized) {
+      const body = suggestion.description +
+        (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
+
+      const isFileLevel = suggestion.is_file_level ? 1 : 0;
+      const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';
+
+      await run(this.db, `
+        INSERT INTO comments (
+          review_id, source, author, ai_run_id, ai_level, ai_confidence,
+          file, line_start, line_end, side, type, title, body, status, is_file_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        reviewId,
+        'ai',
+        'AI Assistant',
+        runId,
+        null,          // ai_level NULL = orchestrated/final
+        suggestion.confidence ?? null,
+        suggestion.file,
+        isFileLevel ? null : (suggestion.line_start ?? null),
+        isFileLevel ? null : (suggestion.line_end ?? null),
+        side,
+        suggestion.type,
+        suggestion.title,
+        body,
+        'active',
+        isFileLevel
+      ]);
+    }
+  }
 }
 
 /**
@@ -2174,13 +2224,16 @@ class AnalysisRunRepository {
    * @param {string} [runInfo.repoInstructions] - Repository-level instructions from repo_settings
    * @param {string} [runInfo.requestInstructions] - Request-level instructions from the analyze request
    * @param {string} [runInfo.headSha] - Git HEAD SHA at the time of analysis (PR head commit or local HEAD)
+   * @param {string} [runInfo.status='running'] - Initial status (default 'running'; pass 'completed' for externally-produced results)
    * @returns {Promise<Object>} Created analysis run record
    */
-  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null }) {
+  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, status = 'running' }) {
+    const isTerminal = ['completed', 'failed', 'cancelled'].includes(status);
+    const completedAt = isTerminal ? 'CURRENT_TIMESTAMP' : 'NULL';
     await run(this.db, `
-      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, head_sha, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running')
-    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions, headSha]);
+      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, head_sha, status, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt})
+    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions, headSha, status]);
 
     // Query back the inserted row to return actual database values (including timestamps)
     return await this.getById(id);
