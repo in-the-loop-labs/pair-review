@@ -74,32 +74,6 @@ class ClaudeProvider extends AIProvider {
     // For multi-word commands like "devx claude", use shell mode
     this.useShell = claudeCmd.includes(' ');
 
-    // SECURITY: Claude CLI with -p (print mode) requires explicit tool permissions.
-    // We use --allowedTools to grant only read-only operations needed for code review:
-    // - Read: Read file contents
-    // - Bash(git *): Git commands (read operations like diff, log, show, status)
-    // - Bash(*git-diff-lines*): Our annotated diff script
-    // - Bash(cat *), Bash(ls *), Bash(grep *), Bash(find *): Read-only shell commands
-    //
-    // Dangerous operations (Write, Edit, Bash(rm *), Bash(git push*), etc.) are NOT allowed.
-    const allowedTools = [
-      'Read',
-      'Bash(git diff*)',
-      'Bash(git log*)',
-      'Bash(git show*)',
-      'Bash(git status*)',
-      'Bash(git branch*)',
-      'Bash(git rev-parse*)',
-      'Bash(*git-diff-lines*)',
-      'Bash(cat *)',
-      'Bash(ls *)',
-      'Bash(head *)',
-      'Bash(tail *)',
-      'Bash(grep *)',
-      'Bash(find *)',
-      'Bash(rg *)',
-    ].join(',');
-
     // Check for budget limit environment variable
     const maxBudget = process.env.PAIR_REVIEW_MAX_BUDGET_USD;
 
@@ -109,7 +83,39 @@ class ClaudeProvider extends AIProvider {
     // IMPORTANT: --verbose is MANDATORY when combining --output-format stream-json with -p (print mode).
     // Without --verbose, the stream-json output is incomplete or malformed in print mode.
     // This is a known requirement of the Claude CLI - do not remove --verbose from these args.
-    const baseArgs = ['-p', '--verbose', '--model', model, '--output-format', 'stream-json', '--allowedTools', allowedTools];
+    let permissionArgs;
+    if (configOverrides.yolo) {
+      // In yolo mode, skip all fine-grained tool permissions
+      permissionArgs = ['--dangerously-skip-permissions'];
+    } else {
+      // SECURITY: Claude CLI with -p (print mode) requires explicit tool permissions.
+      // We use --allowedTools to grant only read-only operations needed for code review:
+      // - Read: Read file contents
+      // - Bash(git *): Git commands (read operations like diff, log, show, status)
+      // - Bash(*git-diff-lines*): Our annotated diff script
+      // - Bash(cat *), Bash(ls *), Bash(grep *), Bash(find *): Read-only shell commands
+      //
+      // Dangerous operations (Write, Edit, Bash(rm *), Bash(git push*), etc.) are NOT allowed.
+      const allowedTools = [
+        'Read',
+        'Bash(git diff*)',
+        'Bash(git log*)',
+        'Bash(git show*)',
+        'Bash(git status*)',
+        'Bash(git branch*)',
+        'Bash(git rev-parse*)',
+        'Bash(*git-diff-lines*)',
+        'Bash(cat *)',
+        'Bash(ls *)',
+        'Bash(head *)',
+        'Bash(tail *)',
+        'Bash(grep *)',
+        'Bash(find *)',
+        'Bash(rg *)',
+      ].join(',');
+      permissionArgs = ['--allowedTools', allowedTools];
+    }
+    const baseArgs = ['-p', '--verbose', '--model', model, '--output-format', 'stream-json', ...permissionArgs];
     if (maxBudget) {
       const budgetNum = parseFloat(maxBudget);
       if (isNaN(budgetNum) || budgetNum <= 0) {

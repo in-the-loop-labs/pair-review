@@ -177,6 +177,26 @@ describe('ClaudeProvider', () => {
       expect(provider.extraEnv.VAR1).toBe('model');
       expect(provider.extraEnv.VAR2).toBe('extra');
     });
+
+    describe('yolo mode', () => {
+      it('should use --allowedTools and not --dangerously-skip-permissions by default', () => {
+        const provider = new ClaudeProvider('sonnet');
+        expect(provider.args).toContain('--allowedTools');
+        expect(provider.args).not.toContain('--dangerously-skip-permissions');
+      });
+
+      it('should use --dangerously-skip-permissions and not --allowedTools when yolo is true', () => {
+        const provider = new ClaudeProvider('sonnet', { yolo: true });
+        expect(provider.args).toContain('--dangerously-skip-permissions');
+        expect(provider.args).not.toContain('--allowedTools');
+      });
+
+      it('should use --allowedTools and not --dangerously-skip-permissions when yolo is false', () => {
+        const provider = new ClaudeProvider('sonnet', { yolo: false });
+        expect(provider.args).toContain('--allowedTools');
+        expect(provider.args).not.toContain('--dangerously-skip-permissions');
+      });
+    });
   });
 
   describe('PAIR_REVIEW_MAX_BUDGET_USD validation', () => {

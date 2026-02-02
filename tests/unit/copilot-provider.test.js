@@ -205,6 +205,48 @@ describe('CopilotProvider', () => {
       const provider = new CopilotProvider();
       expect(provider.baseArgs).not.toContain('-p');
     });
+
+    describe('yolo mode', () => {
+      it('should include deny rules and per-command allow rules by default', () => {
+        const provider = new CopilotProvider('gemini-3-pro-preview', {});
+        const args = provider.baseArgs;
+
+        // Default mode enforces read-only restrictions
+        expect(args).toContain('--deny-tool');
+        expect(args).toContain('--allow-tool');
+        expect(args).toContain('shell(git diff)');
+        expect(args).toContain('shell(rm)');
+        expect(args).toContain('write');
+      });
+
+      it('should skip deny rules and per-command allow rules when yolo is true', () => {
+        const provider = new CopilotProvider('gemini-3-pro-preview', { yolo: true });
+        const args = provider.baseArgs;
+
+        // Yolo mode: broad permissions only, no fine-grained rules
+        expect(args).toContain('--allow-all-tools');
+        expect(args).toContain('--allow-all-paths');
+
+        // Should NOT have any deny or per-command allow entries
+        expect(args).not.toContain('--deny-tool');
+        expect(args).not.toContain('--allow-tool');
+        expect(args).not.toContain('shell(git diff)');
+        expect(args).not.toContain('shell(rm)');
+        expect(args).not.toContain('write');
+      });
+
+      it('should use deny rules when yolo is explicitly false', () => {
+        const provider = new CopilotProvider('gemini-3-pro-preview', { yolo: false });
+        const args = provider.baseArgs;
+
+        // Explicit false behaves the same as default — restrictions apply
+        expect(args).toContain('--deny-tool');
+        expect(args).toContain('--allow-tool');
+        expect(args).toContain('shell(git diff)');
+        expect(args).toContain('shell(rm)');
+        expect(args).toContain('write');
+      });
+    });
   });
 
   describe('model metadata', () => {

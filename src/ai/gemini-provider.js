@@ -107,36 +107,42 @@ class GeminiProvider extends AIProvider {
     // E.g., run_shell_command(git) allows "git status", "git diff", etc.
     // Commands NOT matching any prefix will be denied in non-interactive mode.
     // ============================================================================
-    const readOnlyTools = [
-      // File system tools (read-only)
-      'list_directory',
-      'read_file',
-      'glob',
-      'search_file_content',
-      // Specific read-only git commands (not blanket 'git' to avoid git commit, push, etc.)
-      'run_shell_command(git diff)',
-      'run_shell_command(git log)',
-      'run_shell_command(git show)',
-      'run_shell_command(git status)',
-      'run_shell_command(git branch)',
-      'run_shell_command(git rev-parse)',
-      // Read-only shell commands
-      'run_shell_command(ls)',           // Directory listing
-      'run_shell_command(cat)',          // File content viewing
-      'run_shell_command(pwd)',          // Current directory
-      'run_shell_command(head)',         // File head viewing
-      'run_shell_command(tail)',         // File tail viewing
-      'run_shell_command(wc)',           // Word/line count
-      'run_shell_command(find)',         // File finding
-      'run_shell_command(grep)',         // Pattern searching
-      'run_shell_command(rg)',           // Ripgrep (fast pattern searching)
-      // git-diff-lines is added to PATH via BIN_DIR so bare command works
-      'run_shell_command(git-diff-lines)', // Custom annotated diff tool
-    ].join(',');
-
     // Build args: base args + provider extra_args + model extra_args
     // Use --output-format stream-json for JSONL streaming output (better debugging visibility)
-    const baseArgs = ['-m', model, '-o', 'stream-json', '--allowed-tools', readOnlyTools];
+    let baseArgs;
+    if (configOverrides.yolo) {
+      // In yolo mode, use Gemini's --yolo flag to auto-approve all tools
+      // (including write operations and destructive shell commands)
+      baseArgs = ['-m', model, '-o', 'stream-json', '--yolo'];
+    } else {
+      const readOnlyTools = [
+        // File system tools (read-only)
+        'list_directory',
+        'read_file',
+        'glob',
+        'search_file_content',
+        // Specific read-only git commands (not blanket 'git' to avoid git commit, push, etc.)
+        'run_shell_command(git diff)',
+        'run_shell_command(git log)',
+        'run_shell_command(git show)',
+        'run_shell_command(git status)',
+        'run_shell_command(git branch)',
+        'run_shell_command(git rev-parse)',
+        // Read-only shell commands
+        'run_shell_command(ls)',           // Directory listing
+        'run_shell_command(cat)',          // File content viewing
+        'run_shell_command(pwd)',          // Current directory
+        'run_shell_command(head)',         // File head viewing
+        'run_shell_command(tail)',         // File tail viewing
+        'run_shell_command(wc)',           // Word/line count
+        'run_shell_command(find)',         // File finding
+        'run_shell_command(grep)',         // Pattern searching
+        'run_shell_command(rg)',           // Ripgrep (fast pattern searching)
+        // git-diff-lines is added to PATH via BIN_DIR so bare command works
+        'run_shell_command(git-diff-lines)', // Custom annotated diff tool
+      ].join(',');
+      baseArgs = ['-m', model, '-o', 'stream-json', '--allowed-tools', readOnlyTools];
+    }
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];

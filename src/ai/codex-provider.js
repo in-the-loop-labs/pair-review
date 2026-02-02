@@ -98,7 +98,12 @@ class CodexProvider extends AIProvider {
     // Note: The -a flag is for interactive mode only; exec subcommand uses --full-auto.
 
     // Build args: base args + provider extra_args + model extra_args
-    const baseArgs = ['exec', '-m', model, '--json', '--sandbox', 'workspace-write', '--full-auto', '-'];
+    // In yolo mode, bypass all sandbox restrictions and approval prompts
+    // (--dangerously-bypass-approvals-and-sandbox is the Codex CLI equivalent of Claude's --dangerously-skip-permissions)
+    const sandboxArgs = configOverrides.yolo
+      ? ['--dangerously-bypass-approvals-and-sandbox']
+      : ['--sandbox', 'workspace-write', '--full-auto'];
+    const baseArgs = ['exec', '-m', model, '--json', ...sandboxArgs, '-'];
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];
