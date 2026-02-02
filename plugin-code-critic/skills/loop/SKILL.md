@@ -1,9 +1,9 @@
 ---
-name: critic-loop
+name: loop
 description: >
   Implement code, review changes with AI analysis, fix issues, and repeat until clean
   or max iterations reached. Creates a tight implement-review-fix feedback loop.
-  Use when the user says "critic loop", "implement and review", "build with review loop",
+  Use when the user says "critic loop", "code review loop", "implement and review", "build with review loop",
   or wants iterative development with automated quality checks.
 arguments:
   maxIterations:
@@ -277,7 +277,7 @@ Report the final status to the user:
 
 Then offer next steps (do not perform them automatically):
 - Run tests if applicable
-- Use `/local` or `/pr` to open a human review in the pair-review web UI
+- Use `pair-review:local` or `pair-review:pr` to open a human review in the pair-review web UI (requires the pair-review plugin)
 - Stage or commit the changes when satisfied
 
 Clean up:

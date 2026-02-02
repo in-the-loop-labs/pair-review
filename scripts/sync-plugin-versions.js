@@ -3,8 +3,9 @@
 
 /**
  * Synchronizes the version from package.json into the plugin manifest files:
- *   - .claude-plugin/marketplace.json  (metadata.version + plugins[0].version)
+ *   - .claude-plugin/marketplace.json  (metadata.version + all plugins[].version)
  *   - plugin/.claude-plugin/plugin.json (version)
+ *   - plugin-code-critic/.claude-plugin/plugin.json (version)
  *
  * Run automatically as part of `npm run version` (after changeset version).
  */
@@ -24,12 +25,21 @@ const files = [
     path: join(root, '.claude-plugin', 'marketplace.json'),
     update(obj) {
       obj.metadata.version = version;
-      if (obj.plugins && obj.plugins[0]) obj.plugins[0].version = version;
+      for (const plugin of obj.plugins || []) {
+        plugin.version = version;
+      }
       return obj;
     },
   },
   {
     path: join(root, 'plugin', '.claude-plugin', 'plugin.json'),
+    update(obj) {
+      obj.version = version;
+      return obj;
+    },
+  },
+  {
+    path: join(root, 'plugin-code-critic', '.claude-plugin', 'plugin.json'),
     update(obj) {
       obj.version = version;
       return obj;

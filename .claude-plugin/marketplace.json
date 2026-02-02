@@ -6,14 +6,40 @@
   },
   "metadata": {
     "description": "AI-powered code review partner - Close the feedback loop with AI coding agents",
-    "version": "1.2.0"
+    "version": "1.1.0"
   },
   "plugins": [
     {
+      "name": "code-critic",
+      "source": "./plugin-code-critic",
+      "description": "AI-powered code review analysis — Run three-level AI analysis and implement-review-fix loops directly in your coding agent. Works standalone, no server required.",
+      "version": "1.1.0",
+      "author": {
+        "name": "in-the-loop-labs",
+        "email": "tjwp@inthelooplabs.com"
+      },
+      "homepage": "https://github.com/in-the-loop-labs/pair-review",
+      "repository": "https://github.com/in-the-loop-labs/pair-review",
+      "license": "GPL-3.0-or-later",
+      "keywords": [
+        "code-review",
+        "ai",
+        "analysis",
+        "code-critic",
+        "critic-loop"
+      ],
+      "category": "development-workflows",
+      "tags": [
+        "code-review",
+        "ai-analysis",
+        "standalone"
+      ]
+    },
+    {
       "name": "pair-review",
       "source": "./plugin",
-      "description": "AI-powered code review partner with skills for reviewing PRs, local changes, running AI analysis, and addressing review feedback. Includes MCP server for tight integration with Claude Code.",
-      "version": "1.2.0",
+      "description": "pair-review app integration — Open PRs and local changes in the pair-review web UI, run server-side AI analysis, and address review feedback. Includes MCP server.",
+      "version": "1.1.0",
       "author": {
         "name": "in-the-loop-labs",
         "email": "tjwp@inthelooplabs.com"

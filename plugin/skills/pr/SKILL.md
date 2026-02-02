@@ -8,7 +8,7 @@ description: >
   Use when the user says "review this PR", "review pull request", "open PR review",
   or wants to open a pair-review session for the current branch's pull request.
   If the user wants automated AI analysis of the PR rather than just opening the browser,
-  use the `analyze` skill (standalone) or `analyze-in-app` skill (requires MCP server) instead. Note that the user can also trigger
+  use the `code-critic:analyze` skill (standalone, requires code-critic plugin) or `pair-review:analyze` skill (requires MCP server) instead. Note that the user can also trigger
   AI analysis from within the pair-review web UI after opening it.
 ---
 

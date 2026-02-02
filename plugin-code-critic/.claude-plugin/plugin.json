@@ -1,7 +1,7 @@
 {
-  "name": "pair-review",
+  "name": "code-critic",
   "version": "1.1.0",
-  "description": "pair-review app integration — Open PRs and local changes in the pair-review web UI, run server-side AI analysis, and address review feedback. Requires the pair-review MCP server.",
+  "description": "AI-powered code review analysis — Run three-level AI analysis and implement-review-fix loops directly in your coding agent. Works standalone, no server required.",
   "author": {
     "name": "in-the-loop-labs",
     "email": "pair-review@inthelooplabs.com"
@@ -11,10 +11,9 @@
   "license": "GPL-3.0-or-later",
   "keywords": [
     "code-review",
-    "pull-request",
     "ai",
-    "pair-programming",
-    "feedback-loop",
-    "mcp"
+    "analysis",
+    "code-critic",
+    "critic-loop"
   ]
 }
