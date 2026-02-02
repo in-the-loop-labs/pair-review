@@ -1,5 +1,71 @@
 # Changelog
 
+## 1.1.0
+
+### Minor Changes
+
+- b120f82: Add GitHub Action review mode for CI-based code reviews
+
+  - New `--ai-review` flag that runs AI analysis and submits a published review (COMMENT event) to GitHub, designed for CI pipelines
+  - Auto-detect PR number, owner, and repo from GitHub Actions environment variables (`GITHUB_REPOSITORY`, `GITHUB_REF`, `GITHUB_EVENT_PATH`)
+  - New `--use-checkout` flag to skip worktree creation and use the current working directory (automatic in GitHub Actions)
+  - Support `PAIR_REVIEW_MAX_BUDGET_USD` environment variable to cap Claude API spend per review
+  - Include a ready-to-use GitHub Actions workflow (`.github/workflows/ai-review.yml`)
+  - Drop the `validateToken()` pre-flight call that failed with `GITHUB_TOKEN` in Actions ("Resource not accessible by integration")
+  - Show AI suggestions with `submitted` status in the web UI after headless review
+
+- d0ef29b: Add keyboard shortcuts for common operations
+
+  - Press `?` to show keyboard shortcuts help overlay
+  - Press `c c` to copy all comments to clipboard as markdown
+  - Press `c x` to clear all comments (with confirmation)
+  - Press `j`/`k` to navigate between AI suggestions
+  - Press `Enter` to confirm dialogs, `Escape` to cancel
+
+  Shortcuts use chord detection (e.g., press `c` then `c` within 500ms) and are disabled when typing in input fields or when modals are open.
+
+- 6284608: Add OpenCode as AI provider with configurable models system
+
+  - Add OpenCode provider for flexible model configuration via CLI
+  - Introduce `providers` config section for customizing any provider's models, command, extra_args, and env
+  - Rename config keys: `provider` → `default_provider`, `model` → `default_model` (with auto-migration)
+  - Add `config.example.json` reference file copied to user's config directory on first run
+  - Support model tiers: fast, balanced, thorough (with free/premium as aliases)
+
+- 5c4cada: Add GitHub draft review tracking with `github_reviews` table
+
+  - Track GitHub review submissions in a new `github_reviews` table with full lifecycle management (pending, submitted, dismissed)
+  - Detect existing pending drafts on GitHub and add comments to them instead of creating duplicate reviews
+  - Sync draft state with GitHub, including drafts created outside pair-review
+  - Show pending draft indicator in toolbar and context-aware labels in the Submit Review dialog
+  - Unify CLI `--ai-draft` and web UI to use the same GraphQL API and database tracking
+
+- faffdeb: Add option to skip Level 3 codebase-wide analysis
+
+  - Added "Analysis Scope" section to the AI Analysis config modal with a checkbox to skip Level 3 analysis
+  - Fast-tier models automatically have Level 3 skipped with an informational banner explaining why
+  - Switching between model tiers automatically updates the checkbox state to match
+  - Backend properly handles skipped Level 3 by passing empty results to orchestration
+  - Reduces analysis time for simple PRs or when using faster models
+
+- 4a56ec7: Show real-time AI activity snippets in the progress modal during analysis
+
+  - Display live assistant text and tool usage under each analysis level while running
+  - Side-channel StreamParser reads provider stdout incrementally without affecting existing output handling
+  - Support streaming from Claude, Codex, Gemini, and OpenCode providers (Copilot excluded — no JSONL output)
+  - Smart filtering: prefer assistant text, show tool calls only after 2s gap
+  - Throttled broadcasts (300ms per level) to avoid UI flicker
+  - Strip worktree path prefixes from file paths for cleaner display
+  - Extract meaningful detail from tool calls: commands, file paths (snake_case and camelCase), and Task descriptions
+
+- bdcdc37: Add `--yolo` flag to skip fine-grained AI provider permission restrictions
+
+### Patch Changes
+
+- 0fb3683: Fix AI suggestions from `--ai-draft` not appearing in web UI
+
+  - Include `'draft'` status in AI suggestions API query filters so suggestions submitted via `--ai-draft` remain visible when viewing the PR in the browser
+
 ## 1.0.7
 
 ### Patch Changes
