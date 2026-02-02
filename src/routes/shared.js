@@ -37,6 +37,9 @@ const localReviewDiffs = new Map();
 // Maps analysisId -> Set of ChildProcess objects
 const activeProcesses = new Map();
 
+// Store mapping of local review key to analysis ID for tracking
+const localReviewToAnalysisId = new Map();
+
 // Store active review setup operations (concurrency guard)
 // Maps setupKey (e.g., "pr:owner/repo/123" or "local:/path") -> { setupId, promise }
 const activeSetups = new Map();
@@ -54,6 +57,15 @@ const setupProgressClients = new Map();
  */
 function getPRKey(owner, repo, prNumber) {
   return `${owner}/${repo}/${prNumber}`;
+}
+
+/**
+ * Generate a consistent key for local review mapping
+ * @param {number} reviewId - Local review ID
+ * @returns {string} Review key
+ */
+function getLocalReviewKey(reviewId) {
+  return `local/${reviewId}`;
 }
 
 /**
@@ -324,12 +336,14 @@ module.exports = {
   CancellationError,
   activeAnalyses,
   prToAnalysisId,
+  localReviewToAnalysisId,
   progressClients,
   localReviewDiffs,
   activeProcesses,
   activeSetups,
   setupProgressClients,
   getPRKey,
+  getLocalReviewKey,
   getModel,
   determineCompletionInfo,
   broadcastProgress,

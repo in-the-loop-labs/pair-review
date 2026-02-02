@@ -47,11 +47,19 @@ class Analyzer {
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode validation
    * @param {Object} options - Additional options
    * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
+   * @param {string} [options.runId] - Pre-generated run ID (required if skipRunCreation is true)
+   * @param {boolean} [options.skipRunCreation] - Skip creating analysis_run record in database
+   * @param {boolean} [options.skipLevel3] - Skip Level 3 codebase context analysis
+   * @param {string} [options.tier='balanced'] - Analysis tier (fast, balanced, thorough)
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
-    const runId = uuidv4();
-    const { analysisId, skipLevel3 } = options;
+    const runId = options.runId || uuidv4();
+    const { analysisId, skipRunCreation, skipLevel3 } = options;
+
+    if (skipRunCreation && !options.runId) {
+      throw new Error('runId is required when skipRunCreation is true');
+    }
 
     // Handle both new object format and legacy string format for backward compatibility
     let repoInstructions = null;
@@ -84,23 +92,25 @@ class Analyzer {
       logger.info(`HEAD SHA: ${headSha}`);
     }
 
-    // Create analysis run record in database
+    // Create analysis run record in database (skip when caller already created it)
     const analysisRunRepo = new AnalysisRunRepository(this.db);
-    try {
-      await analysisRunRepo.create({
-        id: runId,
-        reviewId: prId,  // prId is actually review.id (works for both PR and local modes)
-        provider: this.provider,
-        model: this.model,
-        customInstructions: mergedInstructions,  // Keep for backward compat
-        repoInstructions,
-        requestInstructions,
-        headSha
-      });
-      logger.info(`Created analysis_run record: ${runId}`);
-    } catch (createError) {
-      logger.warn(`Failed to create analysis_run record: ${createError.message}`);
-      // Continue with analysis even if record creation fails
+    if (!skipRunCreation) {
+      try {
+        await analysisRunRepo.create({
+          id: runId,
+          reviewId: prId,  // prId is actually review.id (works for both PR and local modes)
+          provider: this.provider,
+          model: this.model,
+          customInstructions: mergedInstructions,  // Keep for backward compat
+          repoInstructions,
+          requestInstructions,
+          headSha
+        });
+        logger.info(`Created analysis_run record: ${runId}`);
+      } catch (createError) {
+        logger.warn(`Failed to create analysis_run record: ${createError.message}`);
+        // Continue with analysis even if record creation fails
+      }
     }
 
     // Load generated file patterns to skip during analysis

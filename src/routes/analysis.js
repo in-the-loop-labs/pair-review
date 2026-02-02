@@ -142,8 +142,26 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       };
     });
 
-    // Create analysis ID
-    const analysisId = uuidv4();
+    // Create unified run/analysis ID
+    const runId = uuidv4();
+    const analysisId = runId;
+
+    // Get or create a review record for this PR
+    // The review.id is passed to the analyzer so comments use review.id, not prMetadata.id
+    // This avoids ID collision with local mode where comments also use reviews.id
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    // Create DB analysis_runs record immediately so it's queryable for polling
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    await analysisRunRepo.create({
+      id: runId,
+      reviewId: review.id,
+      provider,
+      model,
+      repoInstructions,
+      requestInstructions,
+      headSha: prMetadata.head_sha || null
+    });
 
     // Store analysis status with separate tracking for each level
     const initialStatus = {
@@ -172,11 +190,6 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
 
-    // Get or create a review record for this PR
-    // The review.id is passed to the analyzer so comments use review.id, not prMetadata.id
-    // This avoids ID collision with local mode where comments also use reviews.id
-    const review = await reviewRepo.getOrCreate({ prNumber, repository });
-
     // Create analyzer instance with provider and model
     const analyzer = new Analyzer(req.app.get('db'), model, provider);
 
@@ -197,13 +210,8 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     const progressCallback = createProgressCallback(analysisId);
 
-    // Start analysis asynchronously with progress callback and custom instructions
-    // Use review.id (not prMetadata.id) to avoid ID collision with local mode
-    // Pass analysisId for process tracking/cancellation
-    // Pass separate instructions for storage, analyzer will merge them for prompts
-    // Pass tier for prompt selection
-    // Pass skipLevel3 flag to skip codebase-wide analysis when requested
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, tier, skipLevel3: requestSkipLevel3 })
+    // Start analysis asynchronously (skipRunCreation since we created the record above; tier for prompt selection, skipLevel3 flag)
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3 })
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);
@@ -245,7 +253,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
         const currentStatus = activeAnalyses.get(analysisId);
         if (!currentStatus) {
-          console.warn('Analysis already completed or removed:', analysisId);
+          logger.warn('Analysis already completed or removed:', analysisId);
           return;
         }
 
@@ -285,7 +293,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       .catch(error => {
         const currentStatus = activeAnalyses.get(analysisId);
         if (!currentStatus) {
-          console.warn('Analysis status not found during error handling:', analysisId);
+          logger.warn('Analysis status not found during error handling:', analysisId);
           return;
         }
 
@@ -325,15 +333,16 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         prToAnalysisId.delete(prKey);
       });
 
-    // Return analysis ID immediately
+    // Return analysis ID immediately (runId added for unified ID)
     res.json({
       analysisId,
+      runId,
       status: 'started',
       message: 'AI analysis started in background'
     });
 
   } catch (error) {
-    console.error('Error starting AI analysis:', error);
+    logger.error('Error starting AI analysis:', error);
     res.status(500).json({
       error: 'Failed to start AI analysis'
     });
@@ -358,7 +367,7 @@ router.get('/api/analyze/status/:id', async (req, res) => {
     res.json(analysis);
 
   } catch (error) {
-    console.error('Error fetching analysis status:', error);
+    logger.error('Error fetching analysis status:', error);
     res.status(500).json({
       error: 'Failed to fetch analysis status'
     });
@@ -466,34 +475,62 @@ router.get('/api/pr/:owner/:repo/:number/analysis-status', async (req, res) => {
 
     const analysisId = prToAnalysisId.get(prKey);
 
-    if (!analysisId) {
-      return res.json({
-        running: false,
-        analysisId: null,
-        status: null
-      });
-    }
+    if (analysisId) {
+      const analysis = activeAnalyses.get(analysisId);
 
-    const analysis = activeAnalyses.get(analysisId);
+      if (analysis) {
+        return res.json({
+          running: true,
+          analysisId,
+          status: analysis
+        });
+      }
 
-    if (!analysis) {
       // Clean up stale mapping
       prToAnalysisId.delete(prKey);
-      return res.json({
-        running: false,
-        analysisId: null,
-        status: null
-      });
+    }
+
+    // Fall back to database — an analysis may have been started externally (e.g. via MCP)
+    const db = req.app.get('db');
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const repository = `${owner}/${repo}`;
+    const review = await queryOne(db, 'SELECT id FROM reviews WHERE repository = ? AND pr_number = ?', [repository, number]);
+
+    if (review) {
+      const latestRun = await analysisRunRepo.getLatestByReviewId(review.id);
+
+      if (latestRun && latestRun.status === 'running') {
+        return res.json({
+          running: true,
+          analysisId: latestRun.id,
+          status: {
+            id: latestRun.id,
+            prNumber: parseInt(number),
+            repository: `${owner}/${repo}`,
+            status: 'running',
+            startedAt: latestRun.started_at,
+            progress: 'Analysis in progress...',
+            levels: {
+              1: { status: 'running', progress: 'Running...' },
+              2: { status: 'running', progress: 'Running...' },
+              3: { status: 'running', progress: 'Running...' },
+              4: { status: 'pending', progress: 'Pending' }
+            },
+            filesAnalyzed: latestRun.files_analyzed || 0,
+            filesRemaining: 0
+          }
+        });
+      }
     }
 
     res.json({
-      running: true,
-      analysisId,
-      status: analysis
+      running: false,
+      analysisId: null,
+      status: null
     });
 
   } catch (error) {
-    console.error('Error checking PR analysis status:', error);
+    logger.error('Error checking PR analysis status:', error);
     res.status(500).json({
       error: 'Failed to check analysis status'
     });
@@ -599,7 +636,7 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
         const statsResult = await query(db, statsQuery.query, statsQuery.params(review.id));
         stats = calculateStats(statsResult);
       } catch (e) {
-        console.warn('Error fetching AI suggestion stats:', e);
+        logger.warn('Error fetching AI suggestion stats:', e);
       }
     }
 
@@ -610,7 +647,7 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
       stats: stats
     });
   } catch (error) {
-    console.error('Error checking for AI suggestions:', error);
+    logger.error('Error checking for AI suggestions:', error);
     res.status(500).json({
       error: 'Failed to check for AI suggestions'
     });
@@ -749,7 +786,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
     res.json({ suggestions });
 
   } catch (error) {
-    console.error('Error fetching AI suggestions:', error);
+    logger.error('Error fetching AI suggestions:', error);
     res.status(500).json({
       error: 'Failed to fetch AI suggestions'
     });
@@ -825,7 +862,7 @@ router.get('/api/analysis-runs/:reviewId', async (req, res) => {
 
     res.json({ runs });
   } catch (error) {
-    console.error('Error fetching analysis runs:', error);
+    logger.error('Error fetching analysis runs:', error);
     res.status(500).json({ error: 'Failed to fetch analysis runs' });
   }
 });
@@ -847,7 +884,7 @@ router.get('/api/analysis-runs/:reviewId/latest', async (req, res) => {
 
     res.json({ run });
   } catch (error) {
-    console.error('Error fetching latest analysis run:', error);
+    logger.error('Error fetching latest analysis run:', error);
     res.status(500).json({ error: 'Failed to fetch latest analysis run' });
   }
 });
@@ -869,7 +906,7 @@ router.get('/api/analysis-run/:runId', async (req, res) => {
 
     res.json({ run });
   } catch (error) {
-    console.error('Error fetching analysis run:', error);
+    logger.error('Error fetching analysis run:', error);
     res.status(500).json({ error: 'Failed to fetch analysis run' });
   }
 });

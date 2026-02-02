@@ -2845,6 +2845,61 @@ describe('Analysis Status Endpoints', () => {
       expect(response.body.running).toBe(false);
       expect(response.body.analysisId).toBeNull();
     });
+
+    it('should return running when DB has a running analysis run', async () => {
+      // Insert a review record for the PR
+      const reviewResult = await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type)
+        VALUES (1, 'owner/repo', 'draft', 'pr')
+      `);
+      const reviewId = reviewResult.lastID;
+
+      // Insert a running analysis_runs record
+      const analysisId = 'db-fallback-running-pr';
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, status, provider, model, files_analyzed, started_at)
+        VALUES (?, ?, 'running', 'claude', 'sonnet', 3, datetime('now'))
+      `, [analysisId, reviewId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/analysis-status');
+
+      expect(response.status).toBe(200);
+      expect(response.body.running).toBe(true);
+      expect(response.body.analysisId).toBe(analysisId);
+      expect(response.body.status).toBeDefined();
+      expect(response.body.status.id).toBe(analysisId);
+      expect(response.body.status.status).toBe('running');
+      expect(response.body.status.prNumber).toBe(1);
+      expect(response.body.status.repository).toBe('owner/repo');
+      expect(response.body.status.progress).toBe('Analysis in progress...');
+      expect(response.body.status.filesAnalyzed).toBe(3);
+      expect(response.body.status.levels).toBeDefined();
+      expect(response.body.status.levels[1].status).toBe('running');
+      expect(response.body.status.levels[4].status).toBe('pending');
+    });
+
+    it('should return not running when DB analysis is completed', async () => {
+      // Insert a review record for the PR
+      const reviewResult = await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type)
+        VALUES (1, 'owner/repo', 'draft', 'pr')
+      `);
+      const reviewId = reviewResult.lastID;
+
+      // Insert a completed analysis_runs record
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, status, provider, model, started_at, completed_at)
+        VALUES (?, ?, 'completed', 'claude', 'sonnet', datetime('now', '-5 minutes'), datetime('now'))
+      `, ['db-fallback-completed-pr', reviewId]);
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/analysis-status');
+
+      expect(response.status).toBe(200);
+      expect(response.body.running).toBe(false);
+      expect(response.body.analysisId).toBeNull();
+    });
   });
 
   describe('GET /api/analyze/status/:id', () => {
@@ -3015,6 +3070,63 @@ describe('Analysis Status Endpoints', () => {
         // Cleanup always runs
         activeAnalyses.delete(analysisId);
       }
+    });
+  });
+
+  describe('GET /api/local/:reviewId/analysis-status', () => {
+    it('should return running when DB has a running analysis for local review', async () => {
+      // Insert a local review record
+      const reviewResult = await run(db, `
+        INSERT INTO reviews (repository, status, review_type, local_path, local_head_sha)
+        VALUES ('owner/repo', 'draft', 'local', '/tmp/test-repo', 'abc123def')
+      `);
+      const reviewId = reviewResult.lastID;
+
+      // Insert a running analysis_runs record
+      const analysisId = 'db-fallback-running-local';
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, status, provider, model, files_analyzed, started_at)
+        VALUES (?, ?, 'running', 'claude', 'sonnet', 5, datetime('now'))
+      `, [analysisId, reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/analysis-status`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.running).toBe(true);
+      expect(response.body.analysisId).toBe(analysisId);
+      expect(response.body.status).toBeDefined();
+      expect(response.body.status.id).toBe(analysisId);
+      expect(response.body.status.reviewId).toBe(reviewId);
+      expect(response.body.status.reviewType).toBe('local');
+      expect(response.body.status.status).toBe('running');
+      expect(response.body.status.progress).toBe('Analysis in progress...');
+      expect(response.body.status.filesAnalyzed).toBe(5);
+      expect(response.body.status.levels).toBeDefined();
+      expect(response.body.status.levels[1].status).toBe('running');
+      expect(response.body.status.levels[4].status).toBe('pending');
+    });
+
+    it('should return not running when DB analysis is completed for local review', async () => {
+      // Insert a local review record
+      const reviewResult = await run(db, `
+        INSERT INTO reviews (repository, status, review_type, local_path, local_head_sha)
+        VALUES ('owner/repo', 'draft', 'local', '/tmp/test-repo-2', 'def456abc')
+      `);
+      const reviewId = reviewResult.lastID;
+
+      // Insert a completed analysis_runs record
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, status, provider, model, started_at, completed_at)
+        VALUES (?, ?, 'completed', 'claude', 'sonnet', datetime('now', '-5 minutes'), datetime('now'))
+      `, ['db-fallback-completed-local', reviewId]);
+
+      const response = await request(app)
+        .get(`/api/local/${reviewId}/analysis-status`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.running).toBe(false);
+      expect(response.body.analysisId).toBeNull();
     });
   });
 });

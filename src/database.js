@@ -2258,18 +2258,25 @@ class AnalysisRunRepository {
   }
 
   /**
-   * Get all analysis runs for a review, ordered by most recent first
+   * Get analysis runs for a review, ordered by most recent first
    * @param {number} reviewId - Review ID (works for both PR and local modes)
+   * @param {Object} [options] - Optional query options
+   * @param {number} [options.limit] - Maximum number of runs to return
    * @returns {Promise<Array<Object>>} Array of analysis run records
    */
-  async getByReviewId(reviewId) {
-    return query(this.db, `
+  async getByReviewId(reviewId, { limit } = {}) {
+    const params = [reviewId];
+    let sql = `
       SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
              head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at
       FROM analysis_runs
       WHERE review_id = ?
-      ORDER BY started_at DESC, id DESC
-    `, [reviewId]);
+      ORDER BY started_at DESC, id DESC`;
+    if (limit) {
+      sql += `\n      LIMIT ?`;
+      params.push(limit);
+    }
+    return query(this.db, sql, params);
   }
 
   /**
@@ -2278,17 +2285,8 @@ class AnalysisRunRepository {
    * @returns {Promise<Object|null>} Most recent analysis run or null
    */
   async getLatestByReviewId(reviewId) {
-    const row = await queryOne(this.db, `
-      SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at
-      FROM analysis_runs
-      WHERE review_id = ?
-      ORDER BY started_at DESC, id DESC
-      LIMIT 1
-    `, [reviewId]);
-
-    if (!row) return null;
-    return row;
+    const rows = await this.getByReviewId(reviewId, { limit: 1 });
+    return rows.length > 0 ? rows[0] : null;
   }
 
   /**

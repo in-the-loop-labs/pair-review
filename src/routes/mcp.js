@@ -3,10 +3,101 @@ const express = require('express');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { z } = require('zod');
-const { ReviewRepository, CommentRepository, AnalysisRunRepository, query } = require('../database');
+const { v4: uuidv4 } = require('uuid');
+const { ReviewRepository, CommentRepository, AnalysisRunRepository, RepoSettingsRepository, PRMetadataRepository, query } = require('../database');
 const { renderPromptForSkill } = require('../ai/prompts/render-for-skill');
+const Analyzer = require('../ai/analyzer');
+const { GitWorktreeManager } = require('../git/worktree');
+const path = require('path');
+const { normalizeRepository } = require('../utils/paths');
+const logger = require('../utils/logger');
+const {
+  activeAnalyses,
+  prToAnalysisId,
+  localReviewToAnalysisId,
+  getLocalReviewKey,
+  determineCompletionInfo,
+  broadcastProgress,
+  createProgressCallback
+} = require('./shared');
 
 const router = express.Router();
+
+/**
+ * Handle successful completion of an analysis run.
+ * Shared between local and PR modes — mode-specific persistence is injected via savePersistence.
+ *
+ * @param {string} analysisId - The analysis/run tracking ID
+ * @param {string} runId - The DB analysis_runs record ID
+ * @param {Object} result - The analysis result from Analyzer
+ * @param {Function} savePersistence - Async callback for mode-specific DB operations (summary, metadata, etc.). Receives (result) => Promise<void>
+ */
+async function handleAnalysisCompletion(analysisId, runId, result, savePersistence) {
+  // Run mode-specific persistence first (summary, PR metadata, etc.)
+  await savePersistence(result);
+
+  const completionInfo = determineCompletionInfo(result);
+  const currentStatus = activeAnalyses.get(analysisId);
+  if (!currentStatus) return;
+
+  for (let i = 1; i <= completionInfo.completedLevel; i++) {
+    if (currentStatus.levels[i]?.status !== 'skipped') {
+      currentStatus.levels[i] = { status: 'completed', progress: `Level ${i} complete` };
+    }
+  }
+  currentStatus.levels[4] = { status: 'completed', progress: 'Results finalized' };
+
+  const completedStatus = {
+    ...currentStatus,
+    status: 'completed',
+    level: completionInfo.completedLevel,
+    completedLevel: completionInfo.completedLevel,
+    completedAt: new Date().toISOString(),
+    runId,
+    progress: completionInfo.progressMessage,
+    suggestionsCount: completionInfo.totalSuggestions,
+    filesAnalyzed: currentStatus.filesAnalyzed || 0,
+    filesRemaining: 0
+  };
+  activeAnalyses.set(analysisId, completedStatus);
+  broadcastProgress(analysisId, completedStatus);
+
+  // Auto-cleanup after 30 minutes
+  setTimeout(() => activeAnalyses.delete(analysisId), 30 * 60 * 1000);
+}
+
+/**
+ * Handle analysis failure. Preserves skipped/completed level statuses and marks remaining as failed.
+ *
+ * @param {string} analysisId - The analysis/run tracking ID
+ * @param {Error} error - The error that caused the failure
+ * @param {string} logContext - Human-readable context for logging (e.g., "local review #1" or "PR #42")
+ */
+function handleAnalysisFailure(analysisId, error, logContext) {
+  const currentStatus = activeAnalyses.get(analysisId);
+  if (!currentStatus) return;
+  if (error.isCancellation) return;
+
+  logger.error(`MCP analysis failed for ${logContext}: ${error.message}`);
+  for (let i = 1; i <= 4; i++) {
+    const levelStatus = currentStatus.levels[i]?.status;
+    if (levelStatus !== 'skipped' && levelStatus !== 'completed') {
+      currentStatus.levels[i] = { status: 'failed', progress: 'Failed' };
+    }
+  }
+  const failedStatus = {
+    ...currentStatus,
+    status: 'failed',
+    completedAt: new Date().toISOString(),
+    error: error.message,
+    progress: 'Analysis failed'
+  };
+  activeAnalyses.set(analysisId, failedStatus);
+  broadcastProgress(analysisId, failedStatus);
+
+  // Auto-cleanup after 30 minutes
+  setTimeout(() => activeAnalyses.delete(analysisId), 30 * 60 * 1000);
+}
 
 /**
  * Resolve a review from the database using either local (path + headSha) or PR (repo + prNumber) params.
@@ -54,6 +145,7 @@ const reviewLookupSchema = {
  * @param {Object} db - Database instance
  * @param {Object} [options] - Optional configuration
  * @param {number} [options.port] - When provided, enables the get_server_info tool with this port
+ * @param {Object} [options.config] - App config (for model/provider resolution in start_analysis)
  * @returns {McpServer}
  */
 function createMCPServer(db, options = {}) {
@@ -105,7 +197,7 @@ function createMCPServer(db, options = {}) {
         .describe('Analysis level'),
       tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced')
         .describe('Prompt tier — fast (surface), balanced (standard), or thorough (deep)'),
-      customInstructions: z.string().optional()
+      customInstructions: z.string().max(5000).optional()
         .describe('Optional repo or user-specific review instructions to include'),
     },
     async (args) => {
@@ -115,7 +207,7 @@ function createMCPServer(db, options = {}) {
         });
         return { content: [{ type: 'text', text: rendered }] };
       } catch (err) {
-        return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }] };
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }] };
       }
     }
   );
@@ -133,7 +225,7 @@ function createMCPServer(db, options = {}) {
     async (args) => {
       const { review, error } = await resolveReview(args, db);
       if (error) {
-        return { content: [{ type: 'text', text: JSON.stringify({ error }) }] };
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error }) }] };
       }
 
       const commentRepo = new CommentRepository(db);
@@ -173,20 +265,23 @@ function createMCPServer(db, options = {}) {
   // --- Tool: get_ai_analysis_runs ---
   server.tool(
     'get_ai_analysis_runs',
-    'List all AI analysis runs for a code review. ' +
+    'List AI analysis runs for a code review, ordered by most recent first. ' +
     'Use this to discover available runs before requesting AI suggestions from a specific one. ' +
+    'Use limit=1 to poll for the latest run\'s status after starting an analysis. ' +
     'Provide (path + headSha) for local reviews or (repo + prNumber) for PR reviews.',
     {
       ...reviewLookupSchema,
+      limit: z.number().int().positive().optional()
+        .describe('Maximum number of runs to return (most recent first). Use limit=1 to poll for the latest run.'),
     },
     async (args) => {
       const { review, error } = await resolveReview(args, db);
       if (error) {
-        return { content: [{ type: 'text', text: JSON.stringify({ error }) }] };
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error }) }] };
       }
 
       const runRepo = new AnalysisRunRepository(db);
-      const runs = await runRepo.getByReviewId(review.id);
+      const runs = await runRepo.getByReviewId(review.id, { limit: args.limit });
 
       return {
         content: [{
@@ -237,7 +332,7 @@ function createMCPServer(db, options = {}) {
         // No runId provided — resolve the review, then find its latest analysis run
         const { review, error } = await resolveReview(args, db);
         if (error) {
-          return { content: [{ type: 'text', text: JSON.stringify({ error }) }] };
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error }) }] };
         }
         reviewId = review.id;
 
@@ -284,7 +379,12 @@ function createMCPServer(db, options = {}) {
         conditions.push("status IN ('active', 'adopted')");
       }
 
-      const suggestions = await query(db, `
+      if (args.file) {
+        conditions.push('file = ?');
+        params.push(args.file);
+      }
+
+      const filtered = await query(db, `
         SELECT
           id, ai_run_id, ai_level, ai_confidence,
           file, line_start, line_end, type, title, body,
@@ -293,11 +393,6 @@ function createMCPServer(db, options = {}) {
         WHERE ${conditions.join('\n          AND ')}
         ORDER BY file, line_start
       `, params);
-
-      let filtered = suggestions;
-      if (args.file) {
-        filtered = suggestions.filter(s => s.file === args.file);
-      }
 
       return {
         content: [{
@@ -323,6 +418,386 @@ function createMCPServer(db, options = {}) {
     }
   );
 
+  // --- Tool: start_analysis ---
+  server.tool(
+    'start_analysis',
+    'Start an AI analysis within pair-review for local or PR changes. ' +
+    'Returns immediately with tracking IDs so the caller can poll for completion. ' +
+    'For local mode, provide (path + headSha). For PR mode, provide (repo + prNumber). ' +
+    'Use get_ai_analysis_runs with limit=1 to poll for completion, then get_ai_suggestions to fetch results.',
+    {
+      ...reviewLookupSchema,
+      customInstructions: z.string().max(5000).optional()
+        .describe('Optional repo or user-specific review instructions'),
+      skipLevel3: z.boolean().default(false)
+        .describe('Whether to skip Level 3 (codebase context) analysis'),
+      tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced')
+        .describe('Analysis tier: fast (surface), balanced (standard), or thorough (deep)'),
+    },
+    async (args) => {
+      // Track analysisId and key for cleanup in catch block (must be outside try scope)
+      let analysisId = null;
+      let trackingKey = null;
+      let trackingMap = null;
+
+      try {
+        const reviewRepo = new ReviewRepository(db);
+        const repoSettingsRepo = new RepoSettingsRepository(db);
+        const config = options.config || {};
+
+        // Validate: catch partial inputs with specific error messages
+        if (args.path && !args.headSha) {
+          return {
+            isError: true,
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ error: 'Local mode requires both "path" and "headSha". Missing: headSha' })
+            }]
+          };
+        }
+        if (!args.path && args.headSha) {
+          return {
+            isError: true,
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ error: 'Local mode requires both "path" and "headSha". Missing: path' })
+            }]
+          };
+        }
+        if (args.repo && !args.prNumber) {
+          return {
+            isError: true,
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ error: 'PR mode requires both "repo" and "prNumber". Missing: prNumber' })
+            }]
+          };
+        }
+        if (!args.repo && args.prNumber) {
+          return {
+            isError: true,
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ error: 'PR mode requires both "repo" and "prNumber". Missing: repo' })
+            }]
+          };
+        }
+
+        // Determine mode: local or PR
+        if (args.path && args.headSha) {
+          // --- LOCAL MODE ---
+          const localPath = args.path;
+          const localHeadSha = args.headSha;
+
+          // Look up or create local review record
+          // Try to get repository name from existing review, else use directory basename
+          let repository;
+          const existingReview = await reviewRepo.getLocalReview(localPath, localHeadSha);
+          if (existingReview) {
+            repository = existingReview.repository;
+          } else {
+            repository = path.basename(localPath);
+          }
+
+          const reviewId = await reviewRepo.upsertLocalReview({
+            localPath,
+            localHeadSha,
+            repository
+          });
+
+          // Concurrent analysis guard: check if one is already running
+          const reviewKey = getLocalReviewKey(reviewId);
+          const existingAnalysisId = localReviewToAnalysisId.get(reviewKey);
+          if (existingAnalysisId && activeAnalyses.get(existingAnalysisId)?.status === 'running') {
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  analysisId: existingAnalysisId,
+                  reviewId,
+                  status: 'already_running',
+                  message: 'An analysis is already running for this review'
+                }, null, 2)
+              }]
+            };
+          }
+
+          const review = await reviewRepo.getLocalReviewById(reviewId);
+
+          // Resolve provider and model
+          const repoSettings = repository ? await repoSettingsRepo.getRepoSettings(repository) : null;
+          const provider = process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
+          const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'sonnet';
+
+          // Create unified run/analysis ID and DB record immediately
+          const runId = uuidv4();
+          analysisId = runId;
+          trackingKey = reviewKey;
+          trackingMap = localReviewToAnalysisId;
+
+          const requestInstructions = args.customInstructions?.trim() || null;
+          const repoInstructions = repoSettings?.default_instructions || null;
+
+          // Set up initial status in activeAnalyses
+          const initialStatus = {
+            id: analysisId,
+            reviewId,
+            repository: review.repository,
+            reviewType: 'local',
+            status: 'running',
+            startedAt: new Date().toISOString(),
+            progress: 'Starting analysis...',
+            levels: {
+              1: { status: 'running', progress: 'Starting...' },
+              2: { status: 'running', progress: 'Starting...' },
+              3: args.skipLevel3 ? { status: 'skipped', progress: 'Skipped' } : { status: 'running', progress: 'Starting...' },
+              4: { status: 'pending', progress: 'Pending' }
+            },
+            filesAnalyzed: 0,
+            filesRemaining: 0
+          };
+          activeAnalyses.set(analysisId, initialStatus);
+
+          // Store local review to analysis ID mapping
+          localReviewToAnalysisId.set(reviewKey, analysisId);
+
+          broadcastProgress(analysisId, initialStatus);
+
+          // Create analyzer and launch asynchronously
+          const analyzer = new Analyzer(db, model, provider);
+          const localMetadata = {
+            id: reviewId,
+            repository: review.repository,
+            title: `Local changes in ${review.repository}`,
+            description: `Reviewing uncommitted changes in ${localPath}`,
+            base_sha: localHeadSha,
+            head_sha: localHeadSha,
+            reviewType: 'local'
+          };
+
+          // Get changed files for local mode
+          const changedFiles = await analyzer.getLocalChangedFiles(localPath);
+
+          // Persist custom instructions for local mode
+          if (requestInstructions) {
+            await reviewRepo.updateReview(reviewId, { customInstructions: requestInstructions });
+          }
+
+          const progressCallback = createProgressCallback(analysisId);
+          const tier = args.tier;
+
+          logger.log('MCP', `Starting local analysis: review #${reviewId}, runId=${runId}`, 'magenta');
+
+          // Create DB analysis_runs record just before launching so it's queryable for polling
+          // (placed here to avoid orphaned 'running' records if earlier operations fail)
+          const analysisRunRepo = new AnalysisRunRepository(db);
+          await analysisRunRepo.create({
+            id: runId,
+            reviewId,
+            provider,
+            model,
+            repoInstructions,
+            requestInstructions,
+            headSha: localHeadSha
+          });
+
+          // Launch analysis asynchronously (skipRunCreation since we created the record above)
+          analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: args.skipLevel3 })
+            .then(result => handleAnalysisCompletion(analysisId, runId, result, async (r) => {
+              if (r.summary) {
+                try { await reviewRepo.updateSummary(reviewId, r.summary); } catch (_) { /* ignore */ }
+              }
+            }))
+            .catch(error => handleAnalysisFailure(analysisId, error, `local review #${reviewId}`))
+            .finally(() => {
+              localReviewToAnalysisId.delete(reviewKey);
+            });
+
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                analysisId,
+                runId,
+                reviewId,
+                status: 'started',
+                message: 'AI analysis started in background'
+              }, null, 2)
+            }]
+          };
+
+        } else if (args.repo && args.prNumber) {
+          // --- PR MODE ---
+          const repoParts = args.repo.split('/');
+          if (repoParts.length !== 2 || !repoParts[0] || !repoParts[1]) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: 'repo must be in "owner/repo" format' }) }] };
+          }
+          const [owner, repo] = repoParts;
+          const prNumber = args.prNumber;
+          const repository = normalizeRepository(owner, repo);
+
+          // Concurrent analysis guard: check if one is already running
+          // Use normalized repository to ensure case-insensitive matching
+          const prKey = `${repository}/${prNumber}`;
+          const existingAnalysisId = prToAnalysisId.get(prKey);
+          if (existingAnalysisId && activeAnalyses.get(existingAnalysisId)?.status === 'running') {
+            // Look up the review to return its ID
+            const existingReview = await reviewRepo.getReviewByPR(prNumber, repository);
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  analysisId: existingAnalysisId,
+                  reviewId: existingReview?.id || null,
+                  status: 'already_running',
+                  message: 'An analysis is already running for this PR'
+                }, null, 2)
+              }]
+            };
+          }
+
+          // Check for PR metadata
+          const prMetadataRepo = new PRMetadataRepository(db);
+          const prMetadata = await prMetadataRepo.getByPR(prNumber, repository);
+          if (!prMetadata) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: `Pull request #${prNumber} not found. Please load the PR in pair-review first.` }) }] };
+          }
+
+          // Check worktree exists
+          const worktreeManager = new GitWorktreeManager(db);
+          if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+            return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: 'Worktree not found for this PR. Please reload the PR in pair-review.' }) }] };
+          }
+          const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+
+          // Get or create review record
+          const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
+          // Resolve provider and model
+          const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+          const provider = process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
+          const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'sonnet';
+
+          // Create unified run/analysis ID and DB record immediately
+          const runId = uuidv4();
+          analysisId = runId;
+          trackingKey = prKey;
+          trackingMap = prToAnalysisId;
+
+          // Save custom instructions if provided
+          const requestInstructions = args.customInstructions?.trim() || null;
+          if (requestInstructions) {
+            await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
+          }
+
+          const repoInstructions = repoSettings?.default_instructions || null;
+
+          const initialStatus = {
+            id: analysisId,
+            prNumber,
+            repository,
+            reviewType: 'pr',
+            status: 'running',
+            startedAt: new Date().toISOString(),
+            progress: 'Starting analysis...',
+            levels: {
+              1: { status: 'running', progress: 'Starting...' },
+              2: { status: 'running', progress: 'Starting...' },
+              3: args.skipLevel3 ? { status: 'skipped', progress: 'Skipped' } : { status: 'running', progress: 'Starting...' },
+              4: { status: 'pending', progress: 'Pending' }
+            },
+            filesAnalyzed: 0,
+            filesRemaining: 0
+          };
+          activeAnalyses.set(analysisId, initialStatus);
+
+          prToAnalysisId.set(prKey, analysisId);
+
+          broadcastProgress(analysisId, initialStatus);
+
+          const analyzer = new Analyzer(db, model, provider);
+          const progressCallback = createProgressCallback(analysisId);
+          const tier = args.tier;
+
+          logger.log('MCP', `Starting PR analysis: PR #${prNumber} in ${repository}, runId=${runId}`, 'magenta');
+
+          // Create DB analysis_runs record just before launching so it's queryable for polling
+          // (placed here to avoid orphaned 'running' records if earlier operations fail)
+          const analysisRunRepo = new AnalysisRunRepository(db);
+          await analysisRunRepo.create({
+            id: runId,
+            reviewId: review.id,
+            provider,
+            model,
+            repoInstructions,
+            requestInstructions,
+            headSha: prMetadata.head_sha || null
+          });
+
+          // Launch analysis asynchronously (skipRunCreation since we created the record above)
+          analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: args.skipLevel3 })
+            .then(result => handleAnalysisCompletion(analysisId, runId, result, async (r) => {
+              try { await prMetadataRepo.updateLastAiRunId(prMetadata.id, r.runId); } catch (_) { /* ignore */ }
+              if (r.summary) {
+                try { await reviewRepo.upsertSummary(prNumber, repository, r.summary); } catch (_) { /* ignore */ }
+              }
+            }))
+            .catch(error => handleAnalysisFailure(analysisId, error, `PR #${prNumber}`))
+            .finally(() => {
+              prToAnalysisId.delete(prKey);
+            });
+
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                analysisId,
+                runId,
+                reviewId: review.id,
+                status: 'started',
+                message: 'AI analysis started in background'
+              }, null, 2)
+            }]
+          };
+
+        } else {
+          return {
+            isError: true,
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: 'You must provide either (path + headSha) for local reviews or (repo + prNumber) for PR reviews'
+              })
+            }]
+          };
+        }
+      } catch (error) {
+        // Clean up stale tracking state if we set it before the error
+        if (analysisId) {
+          activeAnalyses.delete(analysisId);
+          // Mark any pre-created DB record as failed to avoid orphaned 'running' records
+          try {
+            logger.warn(`Marking pre-created analysis_runs record as failed: analysisId=${analysisId}, runId=${analysisId}`);
+            const analysisRunRepo = new AnalysisRunRepository(db);
+            await analysisRunRepo.update(analysisId, { status: 'failed' });
+          } catch (_) { /* record may not exist yet */ }
+        }
+        if (trackingKey && trackingMap) {
+          trackingMap.delete(trackingKey);
+        }
+
+        logger.error(`MCP start_analysis error: ${error.message}`);
+        return {
+          isError: true,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: `Failed to start analysis: ${error.message}` })
+          }]
+        };
+      }
+    }
+  );
+
   return server;
 }
 
@@ -333,7 +808,8 @@ function createMCPServer(db, options = {}) {
 router.post('/mcp', async (req, res) => {
   try {
     const db = req.app.get('db');
-    const server = createMCPServer(db);
+    const config = req.app.get('config') || {};
+    const server = createMCPServer(db, { config });
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createTestDatabase, closeTestDatabase } from '../utils/schema';
 
 const { ReviewRepository, CommentRepository, AnalysisRunRepository, run } = require('../../src/database.js');
 const { resolveReview, createMCPServer } = require('../../src/routes/mcp');
+const { activeAnalyses, localReviewToAnalysisId, prToAnalysisId, getLocalReviewKey, getPRKey } = require('../../src/routes/shared');
+const Analyzer = require('../../src/ai/analyzer');
+const { GitWorktreeManager } = require('../../src/git/worktree');
 
 describe('resolveReview', () => {
   let db;
@@ -169,7 +172,10 @@ describe('MCP tools via in-memory client', () => {
     expect(names).toContain('get_user_comments');
     expect(names).toContain('get_ai_analysis_runs');
     expect(names).toContain('get_ai_suggestions');
-    expect(tools).toHaveLength(4);
+    expect(names).toContain('start_analysis');
+    expect(names).not.toContain('get_analysis_status');
+    expect(names).not.toContain('get_ai_analysis_run');
+    expect(tools).toHaveLength(5);
   });
 
   describe('get_analysis_prompt', () => {
@@ -274,6 +280,39 @@ describe('MCP tools via in-memory client', () => {
       const content = JSON.parse(result.content[0].text);
 
       expect(content.error).toContain('No review found');
+    });
+
+    it('should respect limit parameter', async () => {
+      // Seed a second analysis run
+      const analysisRunRepo = new AnalysisRunRepository(db);
+      await analysisRunRepo.create({
+        id: 'run-002',
+        reviewId: 1,
+        provider: 'claude',
+        model: 'sonnet',
+      });
+      await analysisRunRepo.update('run-002', {
+        status: 'completed',
+        summary: 'Found 1 issue',
+        totalSuggestions: 1,
+        filesAnalyzed: 1,
+      });
+
+      // Without limit — should return both runs
+      const allResult = await client.callTool({
+        name: 'get_ai_analysis_runs',
+        arguments: { repo: 'test/repo', prNumber: 1 },
+      });
+      const allContent = JSON.parse(allResult.content[0].text);
+      expect(allContent.count).toBe(2);
+
+      // With limit=1 — should return only most recent run
+      const limitResult = await client.callTool({
+        name: 'get_ai_analysis_runs',
+        arguments: { repo: 'test/repo', prNumber: 1, limit: 1 },
+      });
+      const limitContent = JSON.parse(limitResult.content[0].text);
+      expect(limitContent.count).toBe(1);
     });
   });
 
@@ -479,7 +518,7 @@ describe('get_server_info tool', () => {
     if (db) closeTestDatabase(db);
   });
 
-  it('should register 5 tools when port option is provided', async () => {
+  it('should register 6 tools when port option is provided', async () => {
     const { tools } = await client.listTools();
     const names = tools.map(t => t.name);
     expect(names).toContain('get_server_info');
@@ -487,7 +526,8 @@ describe('get_server_info tool', () => {
     expect(names).toContain('get_user_comments');
     expect(names).toContain('get_ai_analysis_runs');
     expect(names).toContain('get_ai_suggestions');
-    expect(tools).toHaveLength(5);
+    expect(names).toContain('start_analysis');
+    expect(tools).toHaveLength(6);
   });
 
   it('should return JSON with url, port, and version', async () => {
@@ -515,9 +555,474 @@ describe('get_server_info tool', () => {
     const { tools } = await clientNoPort.listTools();
     const names = tools.map(t => t.name);
     expect(names).not.toContain('get_server_info');
-    expect(tools).toHaveLength(4);
+    expect(tools).toHaveLength(5);
 
     await clientNoPort.close();
     await serverNoPort.close();
   });
 });
+
+describe('start_analysis tool', () => {
+  let db;
+  let client;
+  let mcpServer;
+  let analyzeLevel1Spy;
+  let getLocalChangedFilesSpy;
+  let worktreeExistsSpy;
+  let getWorktreePathSpy;
+
+  beforeEach(async () => {
+    db = createTestDatabase();
+
+    // Mock Analyzer prototype methods
+    analyzeLevel1Spy = vi.spyOn(Analyzer.prototype, 'analyzeLevel1').mockResolvedValue({
+      runId: 'mock-run-id',
+      suggestions: [{ type: 'bug', title: 'Test bug', file: 'test.js', line_start: 1 }],
+      summary: 'Found 1 issue',
+      level2Result: null,
+    });
+    getLocalChangedFilesSpy = vi.spyOn(Analyzer.prototype, 'getLocalChangedFiles').mockResolvedValue(['test.js']);
+
+    // Mock GitWorktreeManager prototype methods
+    worktreeExistsSpy = vi.spyOn(GitWorktreeManager.prototype, 'worktreeExists').mockResolvedValue(true);
+    getWorktreePathSpy = vi.spyOn(GitWorktreeManager.prototype, 'getWorktreePath').mockResolvedValue('/tmp/worktree/test');
+
+    mcpServer = createMCPServer(db, { config: { default_provider: 'claude', default_model: 'sonnet' } });
+    client = new Client({ name: 'test-client', version: '1.0.0' });
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await mcpServer.connect(serverTransport);
+    await client.connect(clientTransport);
+  });
+
+  afterEach(async () => {
+    await client.close();
+    await mcpServer.close();
+    if (db) closeTestDatabase(db);
+    // Clean up any active analyses and tracking maps left by tests
+    activeAnalyses.clear();
+    localReviewToAnalysisId.clear();
+    prToAnalysisId.clear();
+    vi.restoreAllMocks();
+  });
+
+  it('should start analysis for a local review', async () => {
+    // Seed a local review
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/test-repo',
+      localHeadSha: 'abc123',
+      repository: 'test-repo',
+    });
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { path: '/tmp/test-repo', headSha: 'abc123' },
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.status).toBe('started');
+    expect(content.analysisId).toBeDefined();
+    expect(content.runId).toBeDefined();
+    expect(content.runId).toBe(content.analysisId);
+    expect(content.reviewId).toBeDefined();
+    expect(content.message).toContain('started');
+
+    // Verify analyzer was called
+    expect(getLocalChangedFilesSpy).toHaveBeenCalledWith('/tmp/test-repo');
+    expect(analyzeLevel1Spy).toHaveBeenCalled();
+
+    // Verify analysis is tracked in activeAnalyses
+    const status = activeAnalyses.get(content.analysisId);
+    expect(status).toBeDefined();
+    // Status may already be 'completed' since mock resolves immediately
+    expect(['running', 'completed']).toContain(status.status);
+  });
+
+  it('should create DB analysis_runs record immediately on start', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/db-record-repo',
+      localHeadSha: 'dbr123',
+      repository: 'db-record-repo',
+    });
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { path: '/tmp/db-record-repo', headSha: 'dbr123' },
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    // The analysis_runs record should exist immediately
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const run = await analysisRunRepo.getById(content.runId);
+    expect(run).not.toBeNull();
+    expect(run.id).toBe(content.runId);
+    expect(run.status).toBe('running');
+  });
+
+  it('should create a new local review if one does not exist', async () => {
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { path: '/tmp/new-repo', headSha: 'def456' },
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.status).toBe('started');
+    expect(content.reviewId).toBeDefined();
+
+    // Verify review was created
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReview('/tmp/new-repo', 'def456');
+    expect(review).not.toBeNull();
+  });
+
+  it('should start analysis for a PR review', async () => {
+    // Seed PR metadata and review
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.createReview({ prNumber: 42, repository: 'owner/repo' });
+
+    await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch)
+      VALUES (42, 'owner/repo', 'Test PR', 'Description', 'author', 'main', 'feature')
+    `);
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { repo: 'owner/repo', prNumber: 42 },
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.status).toBe('started');
+    expect(content.analysisId).toBeDefined();
+    expect(content.reviewId).toBeDefined();
+
+    // Verify analyzer was called
+    expect(analyzeLevel1Spy).toHaveBeenCalled();
+  });
+
+  it('should return error when PR metadata not found', async () => {
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { repo: 'owner/repo', prNumber: 999 },
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.error).toContain('not found');
+  });
+
+  it('should return error when worktree not found', async () => {
+    // Seed PR metadata but make worktree check fail
+    await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch)
+      VALUES (42, 'owner/repo', 'Test PR', 'Description', 'author', 'main', 'feature')
+    `);
+    worktreeExistsSpy.mockResolvedValue(false);
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { repo: 'owner/repo', prNumber: 42 },
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.error).toContain('Worktree not found');
+  });
+
+  it('should return error when no review mode specified', async () => {
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: {},
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.error).toContain('You must provide either');
+  });
+
+  it('should accept customInstructions and skipLevel3 parameters', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/test-repo',
+      localHeadSha: 'abc123',
+      repository: 'test-repo',
+    });
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: {
+        path: '/tmp/test-repo',
+        headSha: 'abc123',
+        customInstructions: 'Focus on security',
+        skipLevel3: true,
+        tier: 'fast',
+      },
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.status).toBe('started');
+
+    // Verify the analyzer was called with correct options
+    const callArgs = analyzeLevel1Spy.mock.calls[0];
+    // options is the 7th arg (index 6)
+    expect(callArgs[6]).toMatchObject({
+      tier: 'fast',
+      skipLevel3: true,
+    });
+    // instructions is the 5th arg (index 4)
+    expect(callArgs[4]).toMatchObject({
+      requestInstructions: 'Focus on security',
+    });
+  });
+
+  it('should return error for malformed repo format', async () => {
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { repo: 'invalid-format', prNumber: 1 },
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.error).toBeDefined();
+  });
+
+  it('should reject repo format with extra path segments', async () => {
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { repo: 'owner/repo/extra', prNumber: 1 },
+    });
+    const content = JSON.parse(result.content[0].text);
+
+    expect(content.error).toContain('owner/repo');
+  });
+
+  it('should return already_running for concurrent local analysis', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    const reviewId = await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/test-repo',
+      localHeadSha: 'abc123',
+      repository: 'test-repo',
+    });
+
+    // Make analyzeLevel1 hang so the first analysis stays in "running" state
+    analyzeLevel1Spy.mockReturnValue(new Promise(() => {}));
+
+    const first = await client.callTool({
+      name: 'start_analysis',
+      arguments: { path: '/tmp/test-repo', headSha: 'abc123' },
+    });
+    const firstContent = JSON.parse(first.content[0].text);
+    expect(firstContent.status).toBe('started');
+
+    // Second call should detect the running analysis
+    const second = await client.callTool({
+      name: 'start_analysis',
+      arguments: { path: '/tmp/test-repo', headSha: 'abc123' },
+    });
+    const secondContent = JSON.parse(second.content[0].text);
+
+    expect(secondContent.status).toBe('already_running');
+    expect(secondContent.analysisId).toBe(firstContent.analysisId);
+    expect(secondContent.reviewId).toBe(firstContent.reviewId);
+  });
+
+  it('should return already_running for concurrent PR analysis', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.createReview({ prNumber: 42, repository: 'owner/repo' });
+    await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch)
+      VALUES (42, 'owner/repo', 'Test PR', 'Description', 'author', 'main', 'feature')
+    `);
+
+    // Make analyzeLevel1 hang
+    analyzeLevel1Spy.mockReturnValue(new Promise(() => {}));
+
+    const first = await client.callTool({
+      name: 'start_analysis',
+      arguments: { repo: 'owner/repo', prNumber: 42 },
+    });
+    const firstContent = JSON.parse(first.content[0].text);
+    expect(firstContent.status).toBe('started');
+
+    // Second call should detect the running analysis
+    const second = await client.callTool({
+      name: 'start_analysis',
+      arguments: { repo: 'owner/repo', prNumber: 42 },
+    });
+    const secondContent = JSON.parse(second.content[0].text);
+
+    expect(secondContent.status).toBe('already_running');
+    expect(secondContent.analysisId).toBe(firstContent.analysisId);
+  });
+
+  it('should clean up tracking state when getLocalChangedFiles throws', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    const reviewId = await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/error-repo',
+      localHeadSha: 'err123',
+      repository: 'error-repo',
+    });
+
+    getLocalChangedFilesSpy.mockRejectedValue(new Error('git failed'));
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: { path: '/tmp/error-repo', headSha: 'err123' },
+    });
+
+    // The error response should contain the error message
+    const rawText = result.content[0].text;
+    expect(rawText).toContain('git failed');
+
+    // Tracking state should be cleaned up
+    const reviewKey = getLocalReviewKey(reviewId);
+    expect(localReviewToAnalysisId.has(reviewKey)).toBe(false);
+    // activeAnalyses should also be cleaned up
+    for (const [, status] of activeAnalyses) {
+      if (status.reviewId === reviewId) {
+        throw new Error('Stale activeAnalyses entry found');
+      }
+    }
+  });
+
+  it('should persist customInstructions in local mode', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    const reviewId = await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/instructions-repo',
+      localHeadSha: 'inst123',
+      repository: 'instructions-repo',
+    });
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: {
+        path: '/tmp/instructions-repo',
+        headSha: 'inst123',
+        customInstructions: 'Focus on performance',
+      },
+    });
+    const content = JSON.parse(result.content[0].text);
+    expect(content.status).toBe('started');
+
+    // Verify custom instructions were persisted
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+    expect(review.custom_instructions).toBe('Focus on performance');
+  });
+
+  it('should preserve skipped level status on completion', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/skip-repo',
+      localHeadSha: 'skip123',
+      repository: 'skip-repo',
+    });
+
+    // Mock analyzeLevel1 to return a result with level2Result indicating levels 1+2 completed
+    analyzeLevel1Spy.mockResolvedValue({
+      runId: 'mock-run-id',
+      suggestions: [{ type: 'bug', title: 'Test bug', file: 'test.js', line_start: 1 }],
+      summary: 'Found 1 issue',
+      level2Result: {
+        suggestions: [{ type: 'improvement', title: 'Improvement', file: 'test.js', line_start: 5 }],
+      },
+    });
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: {
+        path: '/tmp/skip-repo',
+        headSha: 'skip123',
+        skipLevel3: true,
+      },
+    });
+    const content = JSON.parse(result.content[0].text);
+    expect(content.status).toBe('started');
+
+    // The mock resolves immediately, so wait a tick for the async completion handler to run
+    await new Promise(r => setTimeout(r, 50));
+
+    const status = activeAnalyses.get(content.analysisId);
+    expect(status).toBeDefined();
+    expect(status.status).toBe('completed');
+    expect(status.levels[1].status).toBe('completed');
+    expect(status.levels[2].status).toBe('completed');
+    // Level 3 was skipped and should NOT be overwritten to 'completed'
+    expect(status.levels[3].status).toBe('skipped');
+    // Level 4 (orchestration) should be completed
+    expect(status.levels[4].status).toBe('completed');
+  });
+
+  it('should mark uncompleted levels as failed when analysis fails immediately', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/fail-repo',
+      localHeadSha: 'fail123',
+      repository: 'fail-repo',
+    });
+
+    // Make analyzeLevel1 reject after a short delay so initial status is set up
+    analyzeLevel1Spy.mockImplementation(() => new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('analysis failed')), 10)
+    ));
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: {
+        path: '/tmp/fail-repo',
+        headSha: 'fail123',
+        skipLevel3: true,
+      },
+    });
+    const content = JSON.parse(result.content[0].text);
+    expect(content.status).toBe('started');
+
+    // Wait for the rejection to propagate
+    await new Promise(r => setTimeout(r, 50));
+
+    const status = activeAnalyses.get(content.analysisId);
+    expect(status).toBeDefined();
+    expect(status.status).toBe('failed');
+    expect(status.error).toBe('analysis failed');
+    // Level 3 was 'skipped' and should retain that status, not be overwritten to 'failed'
+    expect(status.levels[3].status).toBe('skipped');
+    // Levels that were not yet completed should be marked as 'failed'
+    expect(status.levels[1].status).toBe('failed');
+    expect(status.levels[2].status).toBe('failed');
+    expect(status.levels[4].status).toBe('failed');
+  });
+
+  it('should not mark as failed on cancellation error', async () => {
+    const reviewRepo = new ReviewRepository(db);
+    await reviewRepo.upsertLocalReview({
+      localPath: '/tmp/cancel-repo',
+      localHeadSha: 'cancel123',
+      repository: 'cancel-repo',
+    });
+
+    // Create a mock cancellation error
+    const cancelError = new Error('cancelled');
+    cancelError.isCancellation = true;
+    analyzeLevel1Spy.mockRejectedValue(cancelError);
+
+    const result = await client.callTool({
+      name: 'start_analysis',
+      arguments: {
+        path: '/tmp/cancel-repo',
+        headSha: 'cancel123',
+      },
+    });
+    const content = JSON.parse(result.content[0].text);
+    expect(content.status).toBe('started');
+
+    // Wait for the rejection to propagate
+    await new Promise(r => setTimeout(r, 50));
+
+    const status = activeAnalyses.get(content.analysisId);
+    expect(status).toBeDefined();
+    // Cancellation errors should NOT update status to 'failed'
+    // handleAnalysisFailure returns early when error.isCancellation is true
+    expect(status.status).toBe('running');
+    // Levels should remain in their initial state, not overwritten to 'failed'
+    expect(status.levels[1].status).toBe('running');
+    expect(status.levels[2].status).toBe('running');
+    expect(status.levels[3].status).toBe('running');
+  });
+});
+
