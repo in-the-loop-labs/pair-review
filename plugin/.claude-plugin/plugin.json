@@ -1,10 +1,20 @@
 {
   "name": "pair-review",
-  "version": "1.0.0",
-  "description": "AI-assisted code review partner",
+  "version": "1.2.0",
+  "description": "AI-powered code review partner - Close the feedback loop with AI coding agents. Includes skills for reviewing PRs, local changes, running AI analysis, and addressing review feedback.",
   "author": {
-    "name": "in-the-loop-labs"
+    "name": "in-the-loop-labs",
+    "email": "pair-review@inthelooplabs.com"
   },
+  "homepage": "https://github.com/in-the-loop-labs/pair-review",
   "repository": "https://github.com/in-the-loop-labs/pair-review",
-  "license": "GPL-3.0-or-later"
+  "license": "GPL-3.0-or-later",
+  "keywords": [
+    "code-review",
+    "pull-request",
+    "ai",
+    "pair-programming",
+    "feedback-loop",
+    "mcp"
+  ]
 }

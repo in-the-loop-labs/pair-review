@@ -362,16 +362,79 @@ Perfect for:
 - Reviewing only the unstaged files that are still changing
 - Staging the files you've already reviewed and viewing the next round of changes
 
+## Claude Code Plugin
+
+pair-review is available as a [Claude Code plugin](https://code.claude.com/docs/en/plugins), providing Skills and MCP tools directly inside Claude Code.
+
+### Install via Marketplace (Recommended)
+
+Add the pair-review marketplace and install the plugin:
+
+```
+/plugin marketplace add in-the-loop-labs/pair-review
+/plugin install pair-review@pair-review          # marketplace-name@plugin-name
+```
+
+This gives you all pair-review skills (namespaced as `/pair-review:<skill>`), the MCP server for programmatic tool access, and automatic updates when new versions are published.
+
+### Available Skills
+
+Once installed, the following skills are available:
+
+| Skill | Description |
+|-------|-------------|
+| `/pair-review:pr` | Open the current branch's GitHub PR in the pair-review web UI |
+| `/pair-review:local` | Open local uncommitted changes in the pair-review web UI |
+| `/pair-review:analyze` | Run AI analysis via the pair-review MCP server (results appear in web UI) |
+| `/pair-review:agent-analyze` | Run AI analysis using Task agents directly (standalone, no server needed) |
+| `/pair-review:critic-loop` | Experimental: Implement code, review with AI, fix issues, and repeat until clean |
+| `/pair-review:user-critic` | Fetch and address human review comments from pair-review |
+| `/pair-review:ai-critic` | Fetch and address AI-generated suggestions from pair-review |
+
+### Alternative: Load Plugin Locally
+
+If you prefer not to use the marketplace, load the plugin directly from an npm-installed or cloned copy:
+
+```bash
+# From a local clone
+claude --plugin-dir ./path/to/pair-review/plugin
+
+# From a globally installed npm package
+claude --plugin-dir "$(npm root -g)/@in-the-loop-labs/pair-review/plugin"
+```
+
+### Team Setup
+
+To pre-configure pair-review for all contributors on a repository, add this to your `.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "pair-review": {
+      "source": {
+        "source": "github",
+        "repo": "in-the-loop-labs/pair-review"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "pair-review@pair-review": true
+  }
+}
+```
+
+Team members will be prompted to install the marketplace and plugin when they trust the repository folder.
+
 ## MCP Integration
 
-pair-review exposes a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) interface, allowing AI coding agents to programmatically read review feedback.
+pair-review exposes a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) interface, allowing AI coding agents to programmatically read review feedback. The MCP server is included automatically when you install the Claude Code plugin. For standalone MCP setup (without the plugin), see [Standalone MCP Setup](#standalone-mcp-setup-without-plugin) below.
 
 ### Transport Modes
 
 **stdio (recommended)** — run pair-review as a stdio MCP server. The agent communicates via stdin/stdout JSON-RPC while the web UI launches on a local port for the human reviewer:
 
 ```bash
-pair-review --mcp
+npx @in-the-loop-labs/pair-review --mcp
 ```
 
 **HTTP** — the Streamable HTTP endpoint at `http://localhost:7247/mcp` (stateless mode) is available whenever the pair-review web server is running.
@@ -380,10 +443,12 @@ pair-review --mcp
 
 | Tool | Description | Availability |
 |------|-------------|--------------|
+| `get_server_info` | Get pair-review server info including web UI URL and version | stdio only |
+| `get_analysis_prompt` | Get rendered analysis prompts for a review level and tier | stdio + HTTP |
 | `get_user_comments` | Get human-curated review comments (authored or adopted), grouped by file | stdio + HTTP |
 | `get_ai_analysis_runs` | List all AI analysis runs for a review | stdio + HTTP |
 | `get_ai_suggestions` | Get AI-generated suggestions from the latest analysis run, or from a specific run via `runId` | stdio + HTTP |
-| `get_server_info` | Get server info including web UI URL and version | stdio only |
+| `start_analysis` | Start an AI analysis in the app for local or PR changes | stdio + HTTP |
 
 All review tools accept lookup parameters:
 - **Local reviews**: `path` + `headSha`
@@ -391,7 +456,27 @@ All review tools accept lookup parameters:
 
 `get_ai_suggestions` also accepts an optional `runId` to target a specific analysis run (discovered via `get_ai_analysis_runs`), bypassing the need for review lookup parameters.
 
-### Adding to Claude Code
+### Standalone MCP Setup (Without Plugin)
+
+If you want just the MCP tools without the full plugin (no skills), you can add the MCP server directly to any coding agent that supports MCP (Claude Code, Cursor, Windsurf, etc.).
+
+#### Generic MCP Configuration
+
+**stdio transport (recommended)** — run pair-review as a child process. The agent communicates via stdin/stdout JSON-RPC:
+
+- **Command:** `npx @in-the-loop-labs/pair-review --mcp`
+- **Environment variables:** Set `GITHUB_TOKEN` if you want PR review support (not needed for local-only reviews). GitHub token will also be read from `~/.pair-review/config.json` if configured.
+
+**HTTP transport** — connect to a running pair-review instance:
+
+- **URL:** `http://localhost:7247/mcp` (stateless Streamable HTTP)
+- Start the server first with `npx @in-the-loop-labs/pair-review` or by opening a PR review, then point your agent at the HTTP endpoint.
+
+You can also copy the `plugin/.mcp.json` file from this package into your project for agents that support `.mcp.json` discovery.
+
+#### Claude Code Specific
+
+Add the MCP server via the Claude Code CLI:
 
 **stdio transport (recommended):**
 
@@ -405,7 +490,7 @@ claude mcp add pair-review -- npx @in-the-loop-labs/pair-review --mcp
 claude mcp add --transport http pair-review http://localhost:7247/mcp
 ```
 
-Or copy the `plugin/.mcp.json` file from this package into your project.
+These commands update your MCP configuration in `~/.claude/settings.json` (user-level) or your project's `.claude/settings.json` (project-level).
 
 ## Development
 
