@@ -18,6 +18,7 @@ const DEFAULT_CONFIG = {
   worktree_retention_days: 7,
   dev_mode: false,  // When true, disables static file caching for development
   debug_stream: false,  // When true, logs AI provider streaming events (equivalent to --debug-stream CLI flag)
+  yolo: false,  // When true, skips fine-grained AI provider permission setup (equivalent to --yolo CLI flag)
   providers: {}  // Custom provider configurations (overrides built-in defaults)
 };
 

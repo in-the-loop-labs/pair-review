@@ -304,6 +304,11 @@ const providerRegistry = new Map();
 const providerConfigOverrides = new Map();
 
 /**
+ * Whether yolo mode is enabled (skips fine-grained provider permissions)
+ */
+let yoloMode = false;
+
+/**
  * Prettify a model ID into a human-readable name
  * @param {string} id - Model ID (e.g., 'anthropic/claude-sonnet-4')
  * @returns {string} - Prettified name (e.g., 'Anthropic Claude Sonnet 4')
@@ -412,6 +417,14 @@ function resolveDefaultModel(models) {
 function applyConfigOverrides(config) {
   // Clear existing overrides to ensure clean state
   providerConfigOverrides.clear();
+
+  // Apply yolo mode from config or environment
+  // Also check env var: server.js reloads config from disk independently,
+  // so the env var carries the CLI --yolo flag across that boundary
+  yoloMode = !!(config.yolo || process.env.PAIR_REVIEW_YOLO === 'true');
+  if (yoloMode) {
+    logger.debug('Yolo mode enabled: skipping fine-grained provider permissions');
+  }
 
   const providersConfig = config.providers || {};
 
@@ -536,7 +549,7 @@ function createProvider(providerId, model = null) {
   }
 
   // Create provider instance with config overrides
-  return new ProviderClass(actualModel, overrides || {});
+  return new ProviderClass(actualModel, { ...(overrides || {}), yolo: yoloMode });
 }
 
 /**

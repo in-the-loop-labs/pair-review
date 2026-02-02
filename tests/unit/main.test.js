@@ -225,6 +225,20 @@ describe('main.js parseArgs', () => {
       expect(result.flags.model).toBe('haiku');
       expect(result.prArgs).toEqual(['123']);
     });
+
+    it('should parse --yolo flag', () => {
+      const result = parseArgs(['123', '--yolo']);
+      expect(result.flags.yolo).toBe(true);
+      expect(result.prArgs).toEqual(['123']);
+    });
+
+    it('should parse --yolo with other flags', () => {
+      const result = parseArgs(['123', '--yolo', '--ai', '--model', 'opus']);
+      expect(result.flags.yolo).toBe(true);
+      expect(result.flags.ai).toBe(true);
+      expect(result.flags.model).toBe('opus');
+      expect(result.prArgs).toEqual(['123']);
+    });
   });
 });
 
@@ -246,6 +260,7 @@ describe('CLI help and version', () => {
     expect(output).toContain('--ai');
     expect(output).toContain('--ai-draft');
     expect(output).toContain('--debug');
+    expect(output).toContain('--yolo');
   });
 
   it('should show help text when -h is passed', () => {

@@ -177,6 +177,32 @@ describe('CodexProvider', () => {
       expect(provider.extraEnv.VAR1).toBe('model');
       expect(provider.extraEnv.VAR2).toBe('extra');
     });
+
+    describe('yolo mode', () => {
+      it('should include sandbox restrictions by default and no dangerously-bypass flag', () => {
+        const provider = new CodexProvider('gpt-5.1-codex-mini');
+        expect(provider.args).toContain('--sandbox');
+        expect(provider.args).toContain('workspace-write');
+        expect(provider.args).toContain('--full-auto');
+        expect(provider.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+      });
+
+      it('should use --dangerously-bypass-approvals-and-sandbox when yolo is true', () => {
+        const provider = new CodexProvider('gpt-5.1-codex-mini', { yolo: true });
+        expect(provider.args).toContain('--dangerously-bypass-approvals-and-sandbox');
+        expect(provider.args).not.toContain('--sandbox');
+        expect(provider.args).not.toContain('workspace-write');
+        expect(provider.args).not.toContain('--full-auto');
+      });
+
+      it('should include sandbox restrictions when yolo is explicitly false', () => {
+        const provider = new CodexProvider('gpt-5.1-codex-mini', { yolo: false });
+        expect(provider.args).toContain('--sandbox');
+        expect(provider.args).toContain('workspace-write');
+        expect(provider.args).toContain('--full-auto');
+        expect(provider.args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
+      });
+    });
   });
 
   describe('parseCodexResponse', () => {

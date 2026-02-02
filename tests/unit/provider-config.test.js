@@ -8,7 +8,7 @@
  * - Config override application (applyConfigOverrides)
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   prettifyModelId,
   inferModelDefaults,
@@ -16,7 +16,8 @@ import {
   applyConfigOverrides,
   getProviderConfigOverrides,
   getAllProvidersInfo,
-  getRegisteredProviderIds
+  getRegisteredProviderIds,
+  createProvider
 } from '../../src/ai/index.js';
 
 describe('Provider Configuration', () => {
@@ -309,6 +310,62 @@ describe('Provider Configuration', () => {
       const opencode = providers.find(p => p.id === 'opencode');
 
       expect(opencode.installInstructions).toBe('Custom install instructions');
+    });
+  });
+
+  describe('yolo mode propagation', () => {
+    let savedYoloEnv;
+
+    beforeEach(() => {
+      savedYoloEnv = process.env.PAIR_REVIEW_YOLO;
+      delete process.env.PAIR_REVIEW_YOLO;
+      // Clear any existing overrides
+      applyConfigOverrides({ providers: {} });
+    });
+
+    afterEach(() => {
+      // Restore env var
+      if (savedYoloEnv === undefined) {
+        delete process.env.PAIR_REVIEW_YOLO;
+      } else {
+        process.env.PAIR_REVIEW_YOLO = savedYoloEnv;
+      }
+      // Reset yolo mode
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('should set yolo mode from config', () => {
+      applyConfigOverrides({ yolo: true, providers: {} });
+      const provider = createProvider('claude');
+
+      expect(provider.args).toContain('--dangerously-skip-permissions');
+      expect(provider.args).not.toContain('--allowedTools');
+    });
+
+    it('should set yolo mode from env var', () => {
+      process.env.PAIR_REVIEW_YOLO = 'true';
+      applyConfigOverrides({ providers: {} });
+      const provider = createProvider('claude');
+
+      expect(provider.args).toContain('--dangerously-skip-permissions');
+      expect(provider.args).not.toContain('--allowedTools');
+    });
+
+    it('should default yolo mode to false', () => {
+      applyConfigOverrides({ providers: {} });
+      const provider = createProvider('claude');
+
+      expect(provider.args).toContain('--allowedTools');
+      expect(provider.args).not.toContain('--dangerously-skip-permissions');
+    });
+
+    it('should not enable yolo when env var is "false"', () => {
+      process.env.PAIR_REVIEW_YOLO = 'false';
+      applyConfigOverrides({ providers: {} });
+      const provider = createProvider('claude');
+
+      expect(provider.args).toContain('--allowedTools');
+      expect(provider.args).not.toContain('--dangerously-skip-permissions');
     });
   });
 });

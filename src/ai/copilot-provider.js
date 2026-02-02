@@ -101,49 +101,53 @@ class CopilotProvider extends AIProvider {
     // For shell commands, use shell(<prefix>) syntax to match command prefixes.
     // E.g., shell(git) allows "git status", "git diff", etc.
     // ============================================================================
-    const readOnlyArgs = [
-      // Allow specific read-only git commands (not blanket 'git' to block git commit, push, etc.)
-      '--allow-tool', 'shell(git diff)',
-      '--allow-tool', 'shell(git log)',
-      '--allow-tool', 'shell(git show)',
-      '--allow-tool', 'shell(git status)',
-      '--allow-tool', 'shell(git branch)',
-      '--allow-tool', 'shell(git rev-parse)',
-      // Custom tool for annotated diff line mapping (matches both direct and path invocations)
-      '--allow-tool', 'shell(git-diff-lines)',
-      '--allow-tool', 'shell(*/git-diff-lines)',  // Absolute path invocation
-      // Allow read-only shell commands
-      '--allow-tool', 'shell(ls)',            // Directory listing
-      '--allow-tool', 'shell(cat)',           // File content viewing
-      '--allow-tool', 'shell(pwd)',           // Current directory
-      '--allow-tool', 'shell(head)',          // File head viewing
-      '--allow-tool', 'shell(tail)',          // File tail viewing
-      '--allow-tool', 'shell(wc)',            // Word/line count
-      '--allow-tool', 'shell(find)',          // File finding
-      '--allow-tool', 'shell(grep)',          // Pattern searching
-      '--allow-tool', 'shell(rg)',            // Ripgrep (fast pattern searching)
-      // Deny dangerous shell commands (takes precedence over allow)
-      '--deny-tool', 'shell(rm)',
-      '--deny-tool', 'shell(mv)',
-      '--deny-tool', 'shell(chmod)',
-      '--deny-tool', 'shell(chown)',
-      '--deny-tool', 'shell(sudo)',
-      '--deny-tool', 'shell(git commit)',
-      '--deny-tool', 'shell(git push)',
-      '--deny-tool', 'shell(git checkout)',
-      '--deny-tool', 'shell(git reset)',
-      '--deny-tool', 'shell(git rebase)',
-      '--deny-tool', 'shell(git merge)',
-      // Block file write tools
-      '--deny-tool', 'write',
-      // Auto-approve remaining tools to avoid interactive prompts
-      '--allow-all-tools',
-      // Allow access to all paths (needed for analyzing files outside cwd)
-      '--allow-all-paths',
-    ];
+
+    // In yolo mode, skip all deny rules: everything is permitted (including writes, rm, git push)
+    const permissionArgs = configOverrides.yolo
+      ? ['--allow-all-tools', '--allow-all-paths']
+      : [
+          // Allow specific read-only git commands (not blanket 'git' to block git commit, push, etc.)
+          '--allow-tool', 'shell(git diff)',
+          '--allow-tool', 'shell(git log)',
+          '--allow-tool', 'shell(git show)',
+          '--allow-tool', 'shell(git status)',
+          '--allow-tool', 'shell(git branch)',
+          '--allow-tool', 'shell(git rev-parse)',
+          // Custom tool for annotated diff line mapping (matches both direct and path invocations)
+          '--allow-tool', 'shell(git-diff-lines)',
+          '--allow-tool', 'shell(*/git-diff-lines)',  // Absolute path invocation
+          // Allow read-only shell commands
+          '--allow-tool', 'shell(ls)',            // Directory listing
+          '--allow-tool', 'shell(cat)',           // File content viewing
+          '--allow-tool', 'shell(pwd)',           // Current directory
+          '--allow-tool', 'shell(head)',          // File head viewing
+          '--allow-tool', 'shell(tail)',          // File tail viewing
+          '--allow-tool', 'shell(wc)',            // Word/line count
+          '--allow-tool', 'shell(find)',          // File finding
+          '--allow-tool', 'shell(grep)',          // Pattern searching
+          '--allow-tool', 'shell(rg)',            // Ripgrep (fast pattern searching)
+          // Deny dangerous shell commands (takes precedence over allow)
+          '--deny-tool', 'shell(rm)',
+          '--deny-tool', 'shell(mv)',
+          '--deny-tool', 'shell(chmod)',
+          '--deny-tool', 'shell(chown)',
+          '--deny-tool', 'shell(sudo)',
+          '--deny-tool', 'shell(git commit)',
+          '--deny-tool', 'shell(git push)',
+          '--deny-tool', 'shell(git checkout)',
+          '--deny-tool', 'shell(git reset)',
+          '--deny-tool', 'shell(git rebase)',
+          '--deny-tool', 'shell(git merge)',
+          // Block file write tools
+          '--deny-tool', 'write',
+          // Auto-approve remaining tools to avoid interactive prompts
+          '--allow-all-tools',
+          // Allow access to all paths (needed for analyzing files outside cwd)
+          '--allow-all-paths',
+        ];
 
     // Build args: base args + provider extra_args + model extra_args
-    const baseArgs = ['--model', model, ...readOnlyArgs, '-s'];
+    const baseArgs = ['--model', model, ...permissionArgs, '-s'];
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];

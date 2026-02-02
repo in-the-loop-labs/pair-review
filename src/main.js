@@ -7,6 +7,7 @@ const { GitHubClient } = require('./github/client');
 const { GitWorktreeManager } = require('./git/worktree');
 const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
+const { applyConfigOverrides } = require('./ai');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const logger = require('./utils/logger');
@@ -134,6 +135,8 @@ OPTIONS:
                             or use provider-specific models with Gemini/Codex
     --use-checkout          Use current directory instead of creating worktree
                             (automatic in GitHub Actions)
+    --yolo                  Allow AI providers full system access (skip read-only
+                            restrictions). Analogous to --dangerously-skip-permissions
     -v, --version           Show version number and exit
 
 EXAMPLES:
@@ -205,6 +208,7 @@ const KNOWN_FLAGS = new Set([
   '-l', '--local',
   '--model',
   '--use-checkout',
+  '--yolo',
   '-v', '--version'
 ]);
 
@@ -239,6 +243,8 @@ function parseArgs(args) {
       flags.aiReview = true;
     } else if (arg === '--use-checkout') {
       flags.useCheckout = true;
+    } else if (arg === '--yolo') {
+      flags.yolo = true;
     } else if (arg === '--model') {
       // Next argument is the model name
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
@@ -311,7 +317,8 @@ CONFIG FILE:
       "github_token": "ghp_your_token_here",
       "port": 3000,
       "theme": "light",
-      "debug_stream": true
+      "debug_stream": false,
+      "yolo": false
     }
 
 GITHUB TOKEN:
@@ -374,6 +381,20 @@ AI PROVIDERS:
       flags.debugStream = true;
       logger.setStreamDebugEnabled(true);
     }
+
+    // Apply yolo mode from CLI flag or config
+    if (flags.yolo || config.yolo) {
+      // config.yolo: used by applyConfigOverrides() for this process
+      config.yolo = true;
+      // Env var: bridges to server.js which reloads config from disk independently
+      process.env.PAIR_REVIEW_YOLO = 'true';
+    }
+
+    // Apply provider config overrides (including yolo) for all code paths
+    // (interactive, headless, local). server.js calls this independently on
+    // startup, but headless paths (--ai-draft, --ai-review) never start the
+    // server, so we must also apply here.
+    applyConfigOverrides(config);
 
     // Check for local mode (review uncommitted local changes)
     if (flags.local) {
