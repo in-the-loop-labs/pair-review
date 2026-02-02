@@ -139,8 +139,8 @@ Launch a **single Task agent** (subagent_type: "general-purpose") that performs 
 > **How to run the analysis:**
 >
 > 1. Find the analysis tools:
->    - Use Glob to find `**/agent-analyze/scripts/git-diff-lines` — this is the diff annotation script
->    - Use Glob to find `**/agent-analyze/references/` — this directory contains the analysis prompts
+>    - Use Glob to find `**/analyze/scripts/git-diff-lines` — this is the diff annotation script
+>    - Use Glob to find `**/analyze/references/` — this directory contains the analysis prompts
 >    - Resolve the absolute path to the scripts directory from the Glob result. Use this resolved path in all `PATH=` commands below and include it in each sub-task prompt.
 >    - Read the reference files for tier "{tier}" (read Level 3 only if it will be needed based on `skipLevel3` setting):
 >      - `references/level1-{tier}.md`

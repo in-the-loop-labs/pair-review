@@ -3,4 +3,4 @@
 .beads/issues.jsonl merge=beads linguist-generated=true
 
 # Auto-generated skill reference prompts (collapse in PR diffs)
-plugin/skills/agent-analyze/references/*.md linguist-generated=true
+plugin/skills/analyze/references/*.md linguist-generated=true

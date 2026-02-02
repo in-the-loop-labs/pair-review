@@ -1,20 +1,17 @@
 ---
 name: analyze
 description: >
-  Perform AI-powered code review analysis using pair-review's server-side analysis engine via MCP.
-  Requires the pair-review MCP server to be connected. For standalone analysis without MCP,
-  use the agent-analyze skill instead.
-  Starts analysis via the pair-review MCP start_analysis tool, polls for completion,
-  then fetches and presents the curated suggestions. Results are also visible in the
-  pair-review web UI alongside the diff.
-  Use when the user says "analyze using pair-review", "analyze in the UI", "run server analysis", "analyze with pair-review",
-  or wants analysis results integrated into the pair-review web UI.
-  If the user says something ambiguous like "analyze my changes" or "run analysis" without
-  specifying a method, and both the `analyze` and `agent-analyze` skills are available,
-  ask whether they want: (1) agent-based analysis (`agent-analyze` — results returned
-  directly in the conversation, no server required), or (2) server-side analysis
-  (`analyze` — results appear in the pair-review web UI, requires MCP connection).
-  If only one analysis skill is available, use it directly without asking.
+  Perform AI-powered code review analysis by spawning parallel Task agents directly within
+  the coding agent's context. Does not require the pair-review MCP server — works standalone.
+  Runs Level 1 (diff isolation), Level 2 (file context), and Level 3 (codebase context)
+  as parallel tasks, then orchestrates results into curated suggestions.
+  Results are returned directly in the conversation (not in the pair-review web UI).
+  Use when the user says "analyze", "analyze my changes", "run analysis", "analyze using tasks",
+  "analyze directly", "analyze here", or wants code review analysis of their changes.
+  This is the default analysis skill. If the user says something ambiguous like
+  "analyze my changes" or "run analysis", use this skill unless they specifically ask for
+  in-app analysis. For in-app analysis (results in the pair-review web UI), use the
+  `analyze-in-app` skill instead (requires MCP connection).
 arguments:
   tier:
     description: "Prompt tier: fast (surface/Haiku-class), balanced (standard/Sonnet-class, default), or thorough (deep/Opus-class)"
@@ -25,138 +22,82 @@ arguments:
     required: false
     default: false
   customInstructions:
-    description: "Optional repo or user-specific review instructions"
+    description: "Optional repo or user-specific review instructions (e.g., 'focus on security' or 'this repo uses X pattern')"
     required: false
 ---
 
-# Analyze Changes (Server-Side via MCP)
+# Analyze Changes
 
-Perform a three-level code review analysis using pair-review's built-in analysis engine. Unlike the `agent-analyze` skill (which spawns analysis agents directly within the coding agent's context), this skill delegates all analysis work to the pair-review server via MCP tool calls. Use this skill when the pair-review MCP server is connected; use `agent-analyze` when it is not.
+Perform a three-level code review analysis and return curated suggestions.
 
-**Prerequisites**: The pair-review MCP server must be connected with the `start_analysis`, `get_ai_analysis_runs`, and `get_ai_suggestions` tools available.
+## Tools
+
+This skill includes a `scripts/git-diff-lines` script that annotates `git diff` output with explicit OLD and NEW line numbers. Each subagent should invoke it by name (`git-diff-lines`) — the orchestrating agent must ensure the script's directory is on `PATH` (e.g., via `PATH="<skill-dir>/scripts:$PATH"`).
 
 ## 1. Gather context
 
-Determine what is being reviewed:
+Determine what's being reviewed:
 
-- **Local changes**: Run `git rev-parse HEAD` to get the HEAD SHA, and use the current working directory as the path.
-- **PR changes**: Determine the repository (`owner/repo`) and PR number. If the user provides a PR URL, extract these from it. If available, run `gh pr view --json number,headRepository` or similar.
-- If the user specifies a particular scope, use that.
+- **Local changes**: `git diff --name-only HEAD` for changed files.
+- **PR changes**: Determine the merge base (`git merge-base main HEAD`), then diff against it. Get PR title and description if available.
+- If the user specifies a different diff range, use that.
 
 Collect:
+- The list of changed files
+- PR metadata (title, description, author) if applicable
 - Whether this is local or PR mode
-- For local: the absolute path and HEAD SHA
-- For PR: the `owner/repo` string and PR number
+- Any custom review instructions the user provided
 
-## 2. Start analysis
+## 2. Get analysis prompts
 
-Call the `start_analysis` MCP tool with the appropriate parameters:
+Obtain the prompt instructions for each analysis level. Use the `tier` argument (default: `balanced`).
 
-**For local mode:**
-```json
-{
-  "path": "/absolute/path/to/repo",
-  "headSha": "abc123...",
-  "tier": "balanced",
-  "skipLevel3": false,
-  "customInstructions": "optional instructions"
-}
-```
+**If `get_analysis_prompt` is in your available tools** (i.e., the pair-review MCP server is connected):
+- Call `get_analysis_prompt` for each level you will run: `level1`, `level2`, and (unless `skipLevel3` is true) `level3`
+- Call `get_analysis_prompt` with `promptType: "orchestration"` for the orchestration step
+- Pass the user's `tier` argument to each call
+- Pass any custom review instructions (from the `customInstructions` argument, or gathered from user context in Step 1) as the `customInstructions` parameter — this injects them into the rendered prompt
+- These return the full prompt text to use as Task agent instructions
 
-**For PR mode:**
-```json
-{
-  "repo": "owner/repo",
-  "prNumber": 42,
-  "tier": "balanced",
-  "skipLevel3": false,
-  "customInstructions": "optional instructions"
-}
-```
+**Otherwise** (standalone mode — no MCP connection):
+- Read the static reference files from this skill's `references/` directory:
+  - `references/level1-{tier}.md`
+  - `references/level2-{tier}.md`
+  - `references/level3-{tier}.md` (unless `skipLevel3`)
+  - `references/orchestration-{tier}.md`
 
-Pass the `tier`, `skipLevel3`, and `customInstructions` arguments from the skill invocation.
+## 3. Run analysis levels in parallel
 
-The tool returns immediately with `{ analysisId, runId, reviewId, status: "started" }`.
+Launch **two or three Task agents simultaneously** (subagent_type: "general-purpose"), depending on `skipLevel3`. Each task must:
+1. Use the prompt obtained in Step 2 as its core instructions
+2. Use the `git-diff-lines` script to get the annotated diff
+3. Analyze the changes per its framework
+4. Return valid JSON (no markdown wrapping) with the schema defined in the prompt
 
-## 3. Poll for completion
+Pass each task the following context in its prompt:
+- The analysis prompt from Step 2
+- Review type (local or PR)
+- The list of changed files
+- PR title and description (if PR mode)
+- Instructions to invoke `git-diff-lines` (ensure the script's directory is on `PATH`)
 
-Analysis typically takes 1-5 minutes depending on the size of the changes and the tier.
+**Level 1** — Analyze changes in isolation (diff only)
+**Level 2** — Analyze changes in file context (full files)
+**Level 3** — Analyze changes in codebase context (architecture, dependencies) — **skip if `skipLevel3` is true**
 
-Poll using `get_ai_analysis_runs` with `limit: 1` and the review coordinates from step 1. Wait approximately 10 seconds between polls.
+## 4. Orchestrate results
 
-**For local mode:**
-```json
-{
-  "path": "/absolute/path/to/repo",
-  "headSha": "abc123...",
-  "limit": 1
-}
-```
-
-**For PR mode:**
-```json
-{
-  "repo": "owner/repo",
-  "prNumber": 42,
-  "limit": 1
-}
-```
-
-Verify that `runs[0].id` matches the `runId` returned from step 2 to ensure you are polling the correct analysis (another tab or user could have triggered a concurrent run).
-
-Check the `status` field in `runs[0]`:
-- `"running"`: Analysis is still in progress — keep polling
-- `"completed"`: Analysis finished — proceed to fetch results using the same `runId`
-- `"failed"`: Analysis failed — report the failure to the user
-
-Keep polling until `status` is `completed` or `failed`. Report progress to the user between polls.
-
-## Error handling
-
-- If `start_analysis` returns an error, report it to the user with the error message. Common causes: the PR has not been loaded in pair-review yet, the worktree is missing, or invalid parameters.
-- If polling shows `status: "failed"`, report the failure to the user. The `error` field in the run object contains the failure reason.
-- If `get_ai_suggestions` returns an empty list after a completed analysis, this means no issues were found -- report a clean result.
-
-## 4. Fetch results
-
-Once the analysis is complete, call `get_ai_suggestions` to retrieve the curated suggestions.
-
-Pass the `runId` from step 2's `start_analysis` response (same value used for polling):
-
-```json
-{
-  "runId": "the-runId-from-step-2"
-}
-```
-
-If `runId` is unavailable, fall back to resolving by review coordinates:
-
-**For local mode:**
-```json
-{
-  "path": "/absolute/path/to/repo",
-  "headSha": "abc123..."
-}
-```
-
-**For PR mode:**
-```json
-{
-  "repo": "owner/repo",
-  "prNumber": 42
-}
-```
-
-This returns the final orchestrated suggestions from the latest analysis run.
+Launch one more Task agent (subagent_type: "general-purpose") that:
+1. Uses the orchestration prompt from Step 2 as its core instructions
+2. Receives the JSON output from all completed levels (pass empty `[]` for Level 3 if skipped)
+3. Merges, deduplicates, and curates suggestions
+4. Returns final curated JSON
 
 ## 5. Report
 
-Present the curated suggestions to the user, organized by file. For each suggestion show:
+Present the curated suggestions to the user, organized by file. For each suggestion:
 - File and line reference
-- Type (bug, improvement, security, performance, praise, etc.)
+- Type (bug, improvement, security, etc.)
 - Title and description
+- Suggested fix (if applicable)
 - Confidence level
-
-Group suggestions by file for easy navigation. Highlight critical issues (bugs, security) prominently.
-
-If no suggestions were found, report that the analysis completed cleanly.

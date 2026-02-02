@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * Render prompts for use in the agent-analyze skill.
+ * Render prompts for use in the analyze skill.
  *
  * Provides skill-appropriate defaults for every placeholder so the
  * resulting text can be used directly as Task-agent instructions,

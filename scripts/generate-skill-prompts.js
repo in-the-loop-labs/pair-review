@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * Generate static markdown reference files for the agent-analyze skill.
+ * Generate static markdown reference files for the analyze skill.
  *
  * Renders all 12 prompt combinations (4 types × 3 tiers) from the
  * authoritative JavaScript templates in src/ai/prompts/baseline/ and
  * writes them as standalone markdown files to
- * plugin/skills/agent-analyze/references/.
+ * plugin/skills/analyze/references/.
  *
  * Usage:
  *   node scripts/generate-skill-prompts.js
@@ -20,7 +20,7 @@ const { renderPromptForSkill } = require('../src/ai/prompts/render-for-skill');
 const PROMPT_TYPES = ['level1', 'level2', 'level3', 'orchestration'];
 const TIERS = ['fast', 'balanced', 'thorough'];
 
-const OUTPUT_DIR = path.join(__dirname, '..', 'plugin', 'skills', 'agent-analyze', 'references');
+const OUTPUT_DIR = path.join(__dirname, '..', 'plugin', 'skills', 'analyze', 'references');
 
 // Ensure the output directory exists
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });

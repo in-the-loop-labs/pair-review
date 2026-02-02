@@ -385,8 +385,8 @@ Once installed, the following skills are available:
 |-------|-------------|
 | `/pair-review:pr` | Open the current branch's GitHub PR in the pair-review web UI |
 | `/pair-review:local` | Open local uncommitted changes in the pair-review web UI |
-| `/pair-review:analyze` | Run AI analysis via the pair-review MCP server (results appear in web UI) |
-| `/pair-review:agent-analyze` | Run AI analysis using Task agents directly (standalone, no server needed) |
+| `/pair-review:analyze` | Run AI analysis using Task agents directly (standalone, no server needed) |
+| `/pair-review:analyze-in-app` | Run AI analysis via the pair-review MCP server (results appear in web UI) |
 | `/pair-review:critic-loop` | Experimental: Implement code, review with AI, fix issues, and repeat until clean |
 | `/pair-review:user-critic` | Fetch and address human review comments from pair-review |
 | `/pair-review:ai-critic` | Fetch and address AI-generated suggestions from pair-review |
