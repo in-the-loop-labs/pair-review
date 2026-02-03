@@ -1,8 +1,8 @@
 ---
-"code-critic": minor
+"@in-the-loop-labs/pair-review": minor
 ---
 
-Enhance code-critic:loop with history tracking and merge readiness
+Enhance code-critic:loop skill with history tracking and merge readiness
 
 - Add directory-based history structure (.critic-loop/{id}/) with numbered analysis and implementation files that persist across iterations
 - Aggregate custom instructions into analysis with objective context, iteration tracking, and history references to prevent re-suggesting already-addressed issues
