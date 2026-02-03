@@ -11,7 +11,14 @@
 
 const express = require('express');
 const { RepoSettingsRepository, ReviewRepository } = require('../database');
-const { getAllProvidersInfo, testProviderAvailability } = require('../ai');
+const {
+  getAllProvidersInfo,
+  testProviderAvailability,
+  getCachedAvailability,
+  getAllCachedAvailability,
+  checkAllProviders,
+  isCheckInProgress
+} = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
 const { isRunningViaNpx } = require('../config');
 const logger = require('../utils/logger');
@@ -213,12 +220,23 @@ router.get('/api/pr/:owner/:repo/:number/review-settings', async (req, res) => {
 
 /**
  * Get available AI providers and their models
- * Returns provider info including available models
+ * Returns provider info including available models and cached availability status
  */
 router.get('/api/providers', (req, res) => {
   try {
     const providers = getAllProvidersInfo();
-    res.json({ providers });
+    const availability = getAllCachedAvailability();
+
+    // Enrich providers with availability status
+    const enrichedProviders = providers.map(provider => ({
+      ...provider,
+      availability: availability[provider.id] || null
+    }));
+
+    res.json({
+      providers: enrichedProviders,
+      checkInProgress: isCheckInProgress()
+    });
   } catch (error) {
     console.error('Error fetching providers:', error);
     res.status(500).json({
@@ -246,6 +264,43 @@ router.get('/api/providers/:providerId/test', async (req, res) => {
     console.error('Error testing provider:', error);
     res.status(500).json({
       error: 'Failed to test provider availability'
+    });
+  }
+});
+
+/**
+ * Refresh provider availability status
+ * Re-checks all providers and returns updated status
+ */
+router.post('/api/providers/refresh-availability', async (req, res) => {
+  try {
+    // Check if already in progress
+    if (isCheckInProgress()) {
+      return res.json({
+        success: true,
+        message: 'Availability check already in progress',
+        checkInProgress: true
+      });
+    }
+
+    // Get config for default provider priority
+    const config = req.app.get('config') || {};
+    const defaultProvider = config.default_provider || 'claude';
+
+    // Start the check (don't await - return immediately)
+    checkAllProviders(defaultProvider).catch(err => {
+      logger.warn('Provider availability refresh failed:', err.message);
+    });
+
+    res.json({
+      success: true,
+      message: 'Availability check started',
+      checkInProgress: true
+    });
+  } catch (error) {
+    console.error('Error refreshing provider availability:', error);
+    res.status(500).json({
+      error: 'Failed to refresh provider availability'
     });
   }
 });

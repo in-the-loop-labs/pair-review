@@ -4,7 +4,7 @@ const path = require('path');
 const { loadConfig, getGitHubToken } = require('./config');
 const { initializeDatabase, getDatabaseStatus, queryOne } = require('./database');
 const { normalizeRepository } = require('./utils/paths');
-const { applyConfigOverrides } = require('./ai');
+const { applyConfigOverrides, checkAllProviders } = require('./ai');
 
 let db = null;
 let server = null;
@@ -252,6 +252,13 @@ async function startServer(sharedDb = null) {
 
     server = app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
+
+      // Check provider availability in background after server is listening
+      // Use the configured default provider as priority (if set)
+      const defaultProvider = config.default_provider || 'claude';
+      checkAllProviders(defaultProvider).catch(err => {
+        console.warn('Background provider availability check failed:', err.message);
+      });
     });
 
     server.on('error', (error) => {

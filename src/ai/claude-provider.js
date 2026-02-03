@@ -645,16 +645,70 @@ class ClaudeProvider extends AIProvider {
 
   /**
    * Test if Claude CLI is available
+   * Uses fast `--version` check instead of running a prompt.
+   * Uses the command configured in the instance (respects ENV > config > default precedence)
    * @returns {Promise<boolean>}
    */
   async testAvailability() {
-    try {
-      const result = await this.execute('Respond with just: {"status": "ok"}', { timeout: 10000 });
-      return result.status === 'ok' || result.raw?.includes('ok');
-    } catch (error) {
-      logger.warn(`Claude CLI not available: ${error.message}`);
-      return false;
-    }
+    return new Promise((resolve) => {
+      // For availability test, we just need to check --version
+      // Use the already-resolved command from the constructor (this.claudeCmd)
+      // which respects: ENV > config > default precedence
+      const useShell = this.useShell;
+      const command = useShell ? `${this.claudeCmd} --version` : this.claudeCmd;
+      const args = useShell ? [] : ['--version'];
+
+      const claude = spawn(command, args, {
+        env: {
+          ...process.env,
+          PATH: `${BIN_DIR}:${process.env.PATH}`
+        },
+        shell: useShell
+      });
+
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+
+      // Timeout guard: if the CLI hangs, resolve false
+      const availabilityTimeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        logger.warn('Claude CLI availability check timed out after 10s');
+        try { claude.kill(); } catch { /* ignore */ }
+        resolve(false);
+      }, 10000);
+
+      claude.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      claude.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      claude.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(availabilityTimeout);
+        if (code === 0) {
+          logger.info(`Claude CLI available: ${stdout.trim()}`);
+          resolve(true);
+        } else {
+          const stderrMsg = stderr.trim() ? `: ${stderr.trim()}` : '';
+          logger.warn(`Claude CLI not available or returned unexpected output (exit code ${code})${stderrMsg}`);
+          resolve(false);
+        }
+      });
+
+      claude.on('error', (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(availabilityTimeout);
+        logger.warn(`Claude CLI not available: ${error.message}`);
+        resolve(false);
+      });
+    });
   }
 
   static getProviderName() {
