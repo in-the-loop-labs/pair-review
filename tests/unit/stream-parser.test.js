@@ -21,7 +21,7 @@ vi.mock('../../src/utils/logger', () => {
   };
 });
 
-const { StreamParser, truncateSnippet, stripPathPrefix, extractToolDetail, parseClaudeLine, parseCodexLine, parseGeminiLine, parseOpenCodeLine } = require('../../src/ai/stream-parser');
+const { StreamParser, truncateSnippet, stripPathPrefix, extractToolDetail, parseClaudeLine, parseCodexLine, parseGeminiLine, parseOpenCodeLine, parseCursorAgentLine } = require('../../src/ai/stream-parser');
 
 // ---------------------------------------------------------------------------
 // truncateSnippet
@@ -1534,6 +1534,317 @@ describe('parseOpenCodeLine with cwd option', () => {
   it('does not affect assistant_text events', () => {
     const line = JSON.stringify({ type: 'text', part: { text: 'Hello' } });
     const result = parseOpenCodeLine(line, { cwd: '/tmp' });
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Hello');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseCursorAgentLine
+// ---------------------------------------------------------------------------
+describe('parseCursorAgentLine', () => {
+  it('returns null for empty/null/undefined input', () => {
+    expect(parseCursorAgentLine(null)).toBeNull();
+    expect(parseCursorAgentLine(undefined)).toBeNull();
+    expect(parseCursorAgentLine('')).toBeNull();
+    expect(parseCursorAgentLine('   ')).toBeNull();
+  });
+
+  it('returns null for non-JSON lines', () => {
+    expect(parseCursorAgentLine('not json at all')).toBeNull();
+  });
+
+  it('parses assistant message with text content as assistant_text', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Analyzing the code now.' }]
+      }
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Analyzing the code now.');
+    expect(typeof result.timestamp).toBe('number');
+  });
+
+  it('parses assistant streaming delta events as assistant_text', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'partial response' }]
+      },
+      timestamp_ms: 1234567890
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('partial response');
+  });
+
+  it('returns null for assistant message with empty text', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '' }]
+      }
+    });
+    expect(parseCursorAgentLine(line)).toBeNull();
+  });
+
+  it('returns null for assistant message with whitespace-only text', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '   ' }]
+      }
+    });
+    expect(parseCursorAgentLine(line)).toBeNull();
+  });
+
+  it('returns null for assistant message with no content', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant' }
+    });
+    expect(parseCursorAgentLine(line)).toBeNull();
+  });
+
+  it('returns null for assistant message with empty content array', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [] }
+    });
+    expect(parseCursorAgentLine(line)).toBeNull();
+  });
+
+  it('parses tool_call started with shellToolCall as tool_use', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      call_id: 'tool_abc123',
+      tool_call: {
+        shellToolCall: {
+          args: { command: 'git diff HEAD~1' }
+        }
+      }
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('shell');
+    expect(result.text).toContain('git diff HEAD~1');
+  });
+
+  it('parses tool_call started with readToolCall as tool_use', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      call_id: 'tool_read123',
+      tool_call: {
+        readToolCall: {
+          args: { path: '/src/app.js' }
+        }
+      }
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('read');
+    expect(result.text).toContain('/src/app.js');
+  });
+
+  it('parses tool_call started with editToolCall as tool_use', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      call_id: 'tool_edit123',
+      tool_call: {
+        editToolCall: {
+          args: { path: '/src/config.js' }
+        }
+      }
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('edit');
+    expect(result.text).toContain('/src/config.js');
+  });
+
+  it('handles unknown tool call types', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      call_id: 'tool_custom',
+      tool_call: {
+        customToolCall: { args: {} }
+      }
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('custom');
+  });
+
+  it('handles empty tool_call object', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      call_id: 'tool_empty',
+      tool_call: {}
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('unknown');
+  });
+
+  it('returns null for tool_call completed events', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'completed',
+      call_id: 'tool_abc123',
+      tool_call: {
+        shellToolCall: {
+          result: { rejected: { command: 'echo hello' } }
+        }
+      }
+    });
+    expect(parseCursorAgentLine(line)).toBeNull();
+  });
+
+  it('returns null for system events', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'abc123',
+      model: 'Claude 4.5 Sonnet'
+    });
+    expect(parseCursorAgentLine(line)).toBeNull();
+  });
+
+  it('returns null for user events', () => {
+    const line = JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'test prompt' }]
+      }
+    });
+    expect(parseCursorAgentLine(line)).toBeNull();
+  });
+
+  it('returns null for result events', () => {
+    const line = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 5000,
+      result: 'some result'
+    });
+    expect(parseCursorAgentLine(line)).toBeNull();
+  });
+
+  it('truncates long assistant text', () => {
+    const longText = 'x'.repeat(300);
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: longText }]
+      }
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result.text.length).toBe(201); // 200 + ellipsis
+    expect(result.text.endsWith('\u2026')).toBe(true);
+  });
+
+  it('truncates long tool_use text', () => {
+    const longCmd = 'git diff ' + 'x'.repeat(300);
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      tool_call: {
+        shellToolCall: { args: { command: longCmd } }
+      }
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result.text.length).toBeLessThanOrEqual(201);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseCursorAgentLine with cwd option
+// ---------------------------------------------------------------------------
+describe('parseCursorAgentLine with cwd option', () => {
+  it('strips cwd prefix from readToolCall path', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      tool_call: {
+        readToolCall: {
+          args: { path: '/tmp/worktree-abc/src/index.js' }
+        }
+      }
+    });
+    const result = parseCursorAgentLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('src/index.js');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('strips cwd prefix from editToolCall path', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      tool_call: {
+        editToolCall: {
+          args: { path: '/tmp/worktree-abc/src/app.js' }
+        }
+      }
+    });
+    const result = parseCursorAgentLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.text).toContain('src/app.js');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('does not strip cwd from shell commands', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      tool_call: {
+        shellToolCall: {
+          args: { command: 'git diff HEAD~1' }
+        }
+      }
+    });
+    const result = parseCursorAgentLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.text).toContain('git diff HEAD~1');
+  });
+
+  it('does not strip when cwd not provided', () => {
+    const line = JSON.stringify({
+      type: 'tool_call',
+      subtype: 'started',
+      tool_call: {
+        readToolCall: {
+          args: { path: '/tmp/worktree-abc/src/index.js' }
+        }
+      }
+    });
+    const result = parseCursorAgentLine(line);
+    expect(result.text).toContain('/tmp/worktree-abc/src/index.js');
+  });
+
+  it('does not affect assistant_text events', () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Hello' }]
+      }
+    });
+    const result = parseCursorAgentLine(line, { cwd: '/tmp' });
     expect(result.type).toBe('assistant_text');
     expect(result.text).toBe('Hello');
   });

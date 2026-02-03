@@ -33,7 +33,7 @@ pair-review is a local web application that transforms how you review code, espe
 - **Local-First**: All data and processing happens on your machine - no cloud dependencies
 - **GitHub-Familiar UI**: Interface feels instantly familiar to GitHub users
 - **Human-in-the-Loop**: AI suggests, you decide
-- **Multiple AI Providers**: Support for Claude, Gemini, Codex, Copilot, and OpenCode. Use your existing subscription!
+- **Multiple AI Providers**: Support for Claude, Gemini, Codex, Copilot, OpenCode, and Cursor. Use your existing subscription!
 - **Progressive**: Start simple with manual review, add AI analysis when you need it
 
 ## Quick Start
@@ -164,6 +164,7 @@ pair-review supports several environment variables for customizing behavior:
 | `PAIR_REVIEW_CODEX_CMD` | Custom command to invoke Codex CLI | `codex` |
 | `PAIR_REVIEW_COPILOT_CMD` | Custom command to invoke Copilot CLI | `copilot` |
 | `PAIR_REVIEW_OPENCODE_CMD` | Custom command to invoke OpenCode CLI | `opencode` |
+| `PAIR_REVIEW_CURSOR_AGENT_CMD` | Custom command to invoke Cursor Agent CLI | `agent` |
 | `PAIR_REVIEW_MODEL` | Override the AI model to use (same as `--model` flag) | Provider default |
 
 **Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
@@ -216,6 +217,7 @@ pair-review integrates with AI providers via their CLI tools:
 - **Codex**: Uses Codex CLI
 - **GitHub Copilot**: Uses Copilot CLI
 - **OpenCode**: Uses OpenCode CLI (requires model configuration)
+- **Cursor**: Uses Cursor Agent CLI (streaming output with sandbox mode)
 
 You can select your preferred provider and model in the repository settings UI.
 

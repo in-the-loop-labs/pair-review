@@ -105,6 +105,7 @@ function loadProviders() {
     require('../src/ai/copilot-provider');
     require('../src/ai/codex-provider');
     require('../src/ai/gemini-provider');
+    require('../src/ai/cursor-agent-provider');
 
     // Get the provider registry
     const { getProviderClass, getRegisteredProviderIds } = require('../src/ai/provider');
@@ -200,6 +201,26 @@ const providerTestConfigs = {
     writeBlockKnownLimitation: 'Gemini CLI cannot restrict tool availability (only auto-approval). Write operations rely on prompt engineering.',
     buildTestCommands: (provider, testPrompt) => {
       // Gemini uses stdin for prompts
+      return {
+        command: provider.command,
+        args: provider.args,
+        stdin: testPrompt,
+        useShell: provider.useShell,
+      };
+    },
+  },
+
+  'cursor-agent': {
+    name: 'Cursor',
+    envVar: 'PAIR_REVIEW_CURSOR_AGENT_CMD',
+    defaultCmd: 'agent',
+    checkArgs: ['--version'],
+    // Known limitation: Cursor Agent CLI does not support fine-grained tool permission
+    // controls. Sandbox mode is enabled but its exact restrictions are undocumented.
+    // Write operations rely on prompt engineering and worktree isolation.
+    writeBlockKnownLimitation: 'Cursor Agent CLI has no fine-grained tool permissions. Write blocking relies on sandbox mode, prompt engineering, and worktree isolation.',
+    buildTestCommands: (provider, testPrompt) => {
+      // Cursor Agent uses stdin for prompts
       return {
         command: provider.command,
         args: provider.args,

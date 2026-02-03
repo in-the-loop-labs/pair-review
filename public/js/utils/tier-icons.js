@@ -13,6 +13,7 @@
   function getTierIcon(tier) {
     switch (tier) {
       case 'fast': return '\u26A1';        // Lightning bolt
+      case 'free': return '\u26A1';        // Lightning bolt (alias for fast)
       case 'balanced': return '\u2696\uFE0F'; // Balance scale
       case 'thorough': return '\uD83C\uDFAF'; // Direct hit (target)
       case 'premium': return '\uD83D\uDC8E';  // Gem stone
