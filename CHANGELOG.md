@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1
+
+### Patch Changes
+
+- 637212a: Fix Markdown syntax highlighting so underscores within words (e.g. `update_policy`) are no longer incorrectly treated as italic/bold markers. Added `fixMarkdownHighlighting()` post-processing that strips mid-word emphasis/strong spans from highlight.js output.
+- 523866a: Add hover-to-copy for branch name on the PR page toolbar, mirroring the existing hover-to-copy SHA functionality.
+
 ## 1.1.0
 
 ### Minor Changes
