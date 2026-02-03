@@ -58,7 +58,7 @@ describe('First-run welcome message', () => {
     await fs.mkdir(configDir, { recursive: true });
     await fs.writeFile(
       path.join(configDir, 'config.json'),
-      JSON.stringify({ github_token: '', port: 3000, theme: 'light' }, null, 2)
+      JSON.stringify({ github_token: '', port: 7247, theme: 'light' }, null, 2)
     );
 
     // Run with a fake PR number to trigger the workflow

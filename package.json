@@ -11,6 +11,8 @@
     "bin/",
     "src/",
     "public/",
+    "plugin/",
+    "plugin-code-critic/",
     "README.md",
     "LICENSE"
   ],
@@ -26,8 +28,9 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:debug": "playwright test --debug",
+    "generate:skill-prompts": "node scripts/generate-skill-prompts.js",
     "changeset": "changeset",
-    "version": "changeset version",
+    "version": "changeset version && node scripts/sync-plugin-versions.js && git add .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin-code-critic/.claude-plugin/plugin.json",
     "release": "npm whoami > /dev/null || { echo 'Error: Not logged in to npm. Run: npm login'; exit 1; } && npm run version && changeset tag && npm publish && git push && git push --tags"
   },
   "keywords": [
@@ -55,6 +58,7 @@
   },
   "homepage": "https://github.com/in-the-loop-labs/pair-review#readme",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.3",
     "@octokit/rest": "^19.0.11",
     "better-sqlite3": "^11.8.1",
     "express": "^4.18.2",

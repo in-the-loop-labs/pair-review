@@ -3,24 +3,39 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const updateNotifier = require('update-notifier');
 const pkg = require('../package.json');
 
-// Check for updates and notify user
-updateNotifier({ pkg }).notify();
+const args = process.argv.slice(2);
+const isMCP = args.includes('--mcp');
+
+// Check for updates and notify user (skip in MCP mode to avoid stdout pollution)
+if (!isMCP) {
+  const updateNotifier = require('update-notifier');
+  updateNotifier({ pkg }).notify();
+}
 
 async function main() {
   try {
-    // Get command line arguments (excluding 'node' and script path)
-    const args = process.argv.slice(2);
-    
     // Get the path to the main application file
     const mainPath = path.join(__dirname, '..', 'src', 'main.js');
-    
+
+    // In MCP mode, pipe stdin/stdout for JSON-RPC and inherit stderr for logs.
+    // In normal mode, inherit all stdio streams.
+    const stdioOption = isMCP
+      ? ['pipe', 'pipe', 'inherit']
+      : 'inherit';
+
     // Spawn the main process with arguments
     const app = spawn('node', [mainPath, ...args], {
-      stdio: 'inherit'
+      stdio: stdioOption
     });
+
+    // In MCP mode, bridge stdin/stdout between parent and child
+    if (isMCP) {
+      process.stdin.pipe(app.stdin);
+      app.stdout.pipe(process.stdout);
+      app.stdin.on('error', () => {}); // ignore EPIPE if child exits
+    }
 
     app.on('error', (error) => {
       console.error('Failed to start pair-review:', error.message);

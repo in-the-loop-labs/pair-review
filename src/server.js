@@ -2,7 +2,8 @@
 const express = require('express');
 const path = require('path');
 const { loadConfig, getGitHubToken } = require('./config');
-const { initializeDatabase, getDatabaseStatus } = require('./database');
+const { initializeDatabase, getDatabaseStatus, queryOne } = require('./database');
+const { normalizeRepository } = require('./utils/paths');
 const { applyConfigOverrides } = require('./ai');
 
 let db = null;
@@ -29,7 +30,7 @@ function requestLogger(req, res, next) {
  * @param {number} maxAttempts - Maximum number of ports to try
  * @returns {Promise<number>} - Available port number
  */
-function findAvailablePort(app, startPort, maxAttempts = 5) {
+function findAvailablePort(app, startPort, maxAttempts = 20) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
     let currentPort = startPort;
@@ -164,14 +165,38 @@ async function startServer(sharedDb = null) {
       res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
     });
     
-    // PR display route - serves pr.html for PR review
-    app.get('/pr/:owner/:repo/:number', (req, res) => {
-      res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
+    // PR display route - serves pr.html if review data exists, setup.html otherwise
+    app.get('/pr/:owner/:repo/:number', async (req, res) => {
+      const { owner, repo, number } = req.params;
+      const prNumber = parseInt(number, 10);
+      if (isNaN(prNumber)) {
+        return res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
+      }
+      const repository = normalizeRepository(owner, repo);
+      try {
+        const existing = await queryOne(db, 'SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+        if (existing) {
+          res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
+        } else {
+          res.sendFile(path.join(__dirname, '..', 'public', 'setup.html'));
+        }
+      } catch (error) {
+        console.error('Failed to query pr_metadata for PR route, falling back to pr.html:', error.message);
+        res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
+      }
     });
 
     // Repository settings route - serves repo-settings.html
     app.get('/settings/:owner/:repo', (req, res) => {
       res.sendFile(path.join(__dirname, '..', 'public', 'repo-settings.html'));
+    });
+
+    // Local review setup route - serves setup.html for new local reviews via query param
+    app.get('/local', (req, res) => {
+      if (!req.query.path) {
+        return res.redirect('/');
+      }
+      res.sendFile(path.join(__dirname, '..', 'public', 'setup.html'));
     });
 
     // Local review route - serves local.html for local review mode
@@ -198,6 +223,8 @@ async function startServer(sharedDb = null) {
     const configRoutes = require('./routes/config');
     const prRoutes = require('./routes/pr');
     const localRoutes = require('./routes/local');
+    const setupRoutes = require('./routes/setup');
+    const mcpRoutes = require('./routes/mcp');
 
     // Mount specific routes first to ensure they match before general PR routes
     app.use('/', analysisRoutes);
@@ -205,6 +232,8 @@ async function startServer(sharedDb = null) {
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);
     app.use('/', localRoutes);
+    app.use('/', setupRoutes);
+    app.use('/', mcpRoutes);
     app.use('/', prRoutes);
     
     // Error handling middleware

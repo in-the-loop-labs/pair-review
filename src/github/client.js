@@ -3,6 +3,23 @@ const { Octokit } = require('@octokit/rest');
 const logger = require('../utils/logger');
 
 /**
+ * Custom error class for GitHub API errors that preserves the HTTP status code.
+ * Route handlers can check `error.status` or use `instanceof GitHubApiError`
+ * instead of fragile string matching on error messages.
+ */
+class GitHubApiError extends Error {
+  /**
+   * @param {string} message - Human-readable error message
+   * @param {number} status - HTTP status code (e.g. 401, 403, 404, 429)
+   */
+  constructor(message, status) {
+    super(message);
+    this.name = 'GitHubApiError';
+    this.status = status;
+  }
+}
+
+/**
  * GitHub API client wrapper with error handling and rate limiting
  */
 class GitHubClient {
@@ -94,7 +111,7 @@ class GitHubClient {
       return true;
     } catch (error) {
       if (error.status === 401 || error.status === 403) {
-        throw new Error('GitHub authentication failed. Check your token permissions.');
+        throw new GitHubApiError('GitHub authentication failed. Check your token permissions.', error.status);
       }
       if (error.status === 404) {
         return false;
@@ -121,25 +138,25 @@ class GitHubClient {
     if (error.status === 403 && error.response?.headers?.['x-ratelimit-remaining'] === '0') {
       const resetTime = parseInt(error.response.headers['x-ratelimit-reset']) * 1000;
       const waitTime = Math.max(resetTime - Date.now(), 1000);
-      
+
       console.log(`Rate limit exceeded. Retrying in ${Math.ceil(waitTime / 1000)} seconds...`);
-      
-      throw new Error(`GitHub API rate limit exceeded. Retrying in ${Math.ceil(waitTime / 1000)} seconds...`);
+
+      throw new GitHubApiError(`GitHub API rate limit exceeded. Retrying in ${Math.ceil(waitTime / 1000)} seconds...`, 429);
     }
 
     // Handle authentication errors
     if (error.status === 401) {
-      throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
+      throw new GitHubApiError('GitHub authentication failed. Check your token in ~/.pair-review/config.json', 401);
     }
 
     // Handle not found errors
     if (error.status === 404) {
-      throw new Error(`Pull request #${pullNumber} not found in repository ${owner}/${repo}`);
+      throw new GitHubApiError(`Pull request #${pullNumber} not found in repository ${owner}/${repo}`, 404);
     }
 
     // Handle network errors
     if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-      throw new Error(`Network error: ${error.message}. Please check your internet connection.`);
+      throw new GitHubApiError(`Network error: ${error.message}. Please check your internet connection.`, 503);
     }
 
     // Generic error
@@ -546,12 +563,12 @@ class GitHubClient {
 
       // Handle authentication errors
       if (error.status === 401) {
-        throw new Error('GitHub authentication failed. Check your token in ~/.pair-review/config.json');
+        throw new GitHubApiError('GitHub authentication failed. Check your token in ~/.pair-review/config.json', 401);
       }
 
       // Handle not found errors
       if (error.status === 404 || error.errors?.some(e => e.type === 'NOT_FOUND')) {
-        throw new Error(`Pull request #${prNumber} not found in repository ${owner}/${repo}`);
+        throw new GitHubApiError(`Pull request #${prNumber} not found in repository ${owner}/${repo}`, 404);
       }
 
       // Parse GraphQL errors
@@ -983,17 +1000,17 @@ class GitHubClient {
 
     // Handle authentication errors
     if (error.status === 401) {
-      throw new Error('GitHub authentication failed. Your token may be invalid or expired. Check ~/.pair-review/config.json');
+      throw new GitHubApiError('GitHub authentication failed. Your token may be invalid or expired. Check ~/.pair-review/config.json', 401);
     }
 
     // Handle forbidden errors (insufficient permissions)
     if (error.status === 403) {
-      throw new Error(`Insufficient permissions to review PR #${pullNumber} in ${owner}/${repo}. Your GitHub token may need additional scopes.`);
+      throw new GitHubApiError(`Insufficient permissions to review PR #${pullNumber} in ${owner}/${repo}. Your GitHub token may need additional scopes.`, 403);
     }
 
     // Handle not found errors
     if (error.status === 404) {
-      throw new Error(`Pull request #${pullNumber} not found in repository ${owner}/${repo}`);
+      throw new GitHubApiError(`Pull request #${pullNumber} not found in repository ${owner}/${repo}`, 404);
     }
 
     // Handle validation errors
@@ -1019,7 +1036,7 @@ class GitHubClient {
 
     // Handle network errors
     if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
-      throw new Error(`Network error during review submission: ${error.message}. Please check your internet connection.`);
+      throw new GitHubApiError(`Network error during review submission: ${error.message}. Please check your internet connection.`, 503);
     }
 
     // Handle rate limiting
@@ -1072,4 +1089,4 @@ class GitHubClient {
   }
 }
 
-module.exports = { GitHubClient };
+module.exports = { GitHubClient, GitHubApiError };

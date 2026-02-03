@@ -37,6 +37,17 @@ const localReviewDiffs = new Map();
 // Maps analysisId -> Set of ChildProcess objects
 const activeProcesses = new Map();
 
+// Store mapping of local review key to analysis ID for tracking
+const localReviewToAnalysisId = new Map();
+
+// Store active review setup operations (concurrency guard)
+// Maps setupKey (e.g., "pr:owner/repo/123" or "local:/path") -> { setupId, promise }
+const activeSetups = new Map();
+
+// Store SSE clients for setup progress updates
+// Maps setupId -> Set of response objects
+const setupProgressClients = new Map();
+
 /**
  * Generate a consistent PR key for mapping
  * @param {string} owner - Repository owner
@@ -46,6 +57,15 @@ const activeProcesses = new Map();
  */
 function getPRKey(owner, repo, prNumber) {
   return `${owner}/${repo}/${prNumber}`;
+}
+
+/**
+ * Generate a consistent key for local review mapping
+ * @param {number} reviewId - Local review ID
+ * @returns {string} Review key
+ */
+function getLocalReviewKey(reviewId) {
+  return `local/${reviewId}`;
 }
 
 /**
@@ -208,6 +228,30 @@ function isAnalysisCancelled(analysisId) {
 }
 
 /**
+ * Broadcast setup progress to all connected SSE clients for a given setupId
+ * @param {string} setupId - Setup operation ID
+ * @param {Object} data - Progress data to broadcast
+ */
+function broadcastSetupProgress(setupId, data) {
+  const clients = setupProgressClients.get(setupId);
+  if (clients && clients.size > 0) {
+    const message = `data: ${JSON.stringify(data)}\n\n`;
+
+    clients.forEach(client => {
+      try {
+        client.write(message);
+      } catch (error) {
+        clients.delete(client);
+      }
+    });
+
+    if (clients.size === 0) {
+      setupProgressClients.delete(setupId);
+    }
+  }
+}
+
+/**
  * Create a progress callback for analysis that handles both regular status
  * updates and throttled stream events with smart filtering.
  *
@@ -292,13 +336,18 @@ module.exports = {
   CancellationError,
   activeAnalyses,
   prToAnalysisId,
+  localReviewToAnalysisId,
   progressClients,
   localReviewDiffs,
   activeProcesses,
+  activeSetups,
+  setupProgressClients,
   getPRKey,
+  getLocalReviewKey,
   getModel,
   determineCompletionInfo,
   broadcastProgress,
+  broadcastSetupProgress,
   registerProcess,
   killProcesses,
   isAnalysisCancelled,

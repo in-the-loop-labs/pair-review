@@ -11,7 +11,7 @@ const PACKAGE_ROOT = path.join(__dirname, '..');
 
 const DEFAULT_CONFIG = {
   github_token: "",
-  port: 3000,
+  port: 7247,
   theme: "light",
   default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode'
   default_model: "sonnet",     // Model within the provider (e.g., 'sonnet' for Claude, 'gemini-2.5-pro' for Gemini)

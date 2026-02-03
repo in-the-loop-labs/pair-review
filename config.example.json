@@ -2,7 +2,7 @@
   "_comment": "Example configuration file for pair-review. Copy to ~/.pair-review/config.json and modify as needed.",
 
   "github_token": "ghp_your_github_personal_access_token_here",
-  "port": 3000,
+  "port": 7247,
   "theme": "light",
   "default_provider": "claude",
   "default_model": "sonnet",

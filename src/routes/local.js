@@ -25,7 +25,9 @@ const {
   activeAnalyses,
   progressClients,
   localReviewDiffs,
+  localReviewToAnalysisId,
   getModel,
+  getLocalReviewKey,
   determineCompletionInfo,
   broadcastProgress,
   CancellationError,
@@ -33,18 +35,6 @@ const {
 } = require('./shared');
 
 const router = express.Router();
-
-// Store mapping of local review ID to analysis ID for tracking
-const localReviewToAnalysisId = new Map();
-
-/**
- * Generate a consistent key for local review mapping
- * @param {number} reviewId - Local review ID
- * @returns {string} Review key
- */
-function getLocalReviewKey(reviewId) {
-  return `local/${reviewId}`;
-}
 
 /**
  * Get local review metadata
@@ -282,6 +272,14 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       });
     }
 
+    // Validate tier
+    const VALID_TIERS = ['fast', 'balanced', 'thorough', 'free', 'standard', 'premium'];
+    if (requestTier && !VALID_TIERS.includes(requestTier)) {
+      return res.status(400).json({
+        error: `Invalid tier: "${requestTier}". Valid tiers: ${VALID_TIERS.join(', ')}`
+      });
+    }
+
     const db = req.app.get('db');
     const reviewRepo = new ReviewRepository(db);
     const review = await reviewRepo.getLocalReviewById(reviewId);
@@ -334,8 +332,26 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       });
     }
 
-    // Create analysis ID
-    const analysisId = uuidv4();
+    // Create unified run/analysis ID
+    const runId = uuidv4();
+    const analysisId = runId;
+
+    // Create DB analysis_runs record immediately so it's queryable for polling
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    try {
+      await analysisRunRepo.create({
+        id: runId,
+        reviewId,
+        provider: selectedProvider,
+        model: selectedModel,
+        repoInstructions,
+        requestInstructions,
+        headSha: review.local_head_sha || null
+      });
+    } catch (error) {
+      logger.error('Failed to create analysis run record:', error);
+      return res.status(500).json({ error: 'Failed to initialize analysis tracking' });
+    }
 
     // Store analysis status with separate tracking for each level
     const initialStatus = {
@@ -401,12 +417,8 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
 
     const progressCallback = createProgressCallback(analysisId);
 
-    // Start analysis asynchronously (pass changedFiles for local mode path validation)
-    // Pass analysisId for process tracking/cancellation
-    // Pass separate instructions for storage, analyzer will merge them for prompts
-    // Pass tier for prompt selection
-    // Pass skipLevel3 flag to skip codebase-wide analysis when requested
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, tier, skipLevel3: requestSkipLevel3 })
+    // Start analysis asynchronously (skipRunCreation since we created the record above; also passes changedFiles for local mode path validation, tier for prompt selection, and skipLevel3 flag)
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3 })
       .then(async result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);
@@ -507,9 +519,10 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
         localReviewToAnalysisId.delete(reviewKey);
       });
 
-    // Return analysis ID immediately
+    // Return analysis ID immediately (runId added for unified ID)
     res.json({
       analysisId,
+      runId,
       status: 'started',
       message: 'AI analysis started in background'
     });
@@ -1302,34 +1315,57 @@ router.get('/api/local/:reviewId/analysis-status', async (req, res) => {
     const reviewKey = getLocalReviewKey(reviewId);
     const analysisId = localReviewToAnalysisId.get(reviewKey);
 
-    if (!analysisId) {
-      return res.json({
-        running: false,
-        analysisId: null,
-        status: null
-      });
-    }
+    if (analysisId) {
+      const analysis = activeAnalyses.get(analysisId);
 
-    const analysis = activeAnalyses.get(analysisId);
+      if (analysis) {
+        return res.json({
+          running: true,
+          analysisId,
+          status: analysis
+        });
+      }
 
-    if (!analysis) {
       // Clean up stale mapping
       localReviewToAnalysisId.delete(reviewKey);
+    }
+
+    // Fall back to database — an analysis may have been started externally (e.g. via MCP)
+    const db = req.app.get('db');
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const latestRun = await analysisRunRepo.getLatestByReviewId(reviewId);
+
+    if (latestRun && latestRun.status === 'running') {
       return res.json({
-        running: false,
-        analysisId: null,
-        status: null
+        running: true,
+        analysisId: latestRun.id,
+        status: {
+          id: latestRun.id,
+          reviewId,
+          reviewType: 'local',
+          status: 'running',
+          startedAt: latestRun.started_at,
+          progress: 'Analysis in progress...',
+          levels: {
+            1: { status: 'running', progress: 'Running...' },
+            2: { status: 'running', progress: 'Running...' },
+            3: { status: 'running', progress: 'Running...' },
+            4: { status: 'pending', progress: 'Pending' }
+          },
+          filesAnalyzed: latestRun.files_analyzed || 0,
+          filesRemaining: 0
+        }
       });
     }
 
     res.json({
-      running: true,
-      analysisId,
-      status: analysis
+      running: false,
+      analysisId: null,
+      status: null
     });
 
   } catch (error) {
-    console.error('Error checking local review analysis status:', error);
+    logger.error('Error checking local review analysis status:', error);
     res.status(500).json({
       error: 'Failed to check analysis status'
     });
