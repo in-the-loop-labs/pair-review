@@ -147,18 +147,24 @@
                                 <path d="M11.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122V6A2.5 2.5 0 0110 8.5H6a1 1 0 00-1 1v1.128a2.251 2.251 0 11-1.5 0V5.372a2.25 2.25 0 111.5 0v1.836A2.492 2.492 0 016 7h4a1 1 0 001-1v-.628A2.25 2.25 0 019.5 3.25zM4.25 12a.75.75 0 100 1.5.75.75 0 000-1.5zM3.5 3.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0z"/>
                             </svg>
                             <span id="pr-branch-name">--</span>
+                            <button type="button" class="toolbar-branch-copy toolbar-copy-btn" id="pr-branch-copy" title="Copy branch name" aria-label="Copy branch name">
+                                <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
+                                    <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+                                    <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+                                </svg>
+                            </button>
                         </span>
                         <span class="toolbar-separator"></span>
                         <span class="toolbar-stat toolbar-stat-additions" id="pr-additions">+0</span>
                         <span class="toolbar-stat toolbar-stat-deletions" id="pr-deletions">-0</span>
                         <span class="toolbar-files" id="pr-files-count">0 files</span>
                         <span class="toolbar-separator"></span>
-                        <span class="toolbar-commit" id="pr-commit" title="Click to copy full SHA">
+                        <span class="toolbar-commit" id="pr-commit" title="Commit SHA">
                             <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
                                 <path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
                             </svg>
                             <span id="pr-commit-sha">--</span>
-                            <button type="button" class="toolbar-commit-copy" id="pr-commit-copy" title="Copy full SHA" aria-label="Copy full SHA">
+                            <button type="button" class="toolbar-commit-copy toolbar-copy-btn" id="pr-commit-copy" title="Copy full SHA" aria-label="Copy full SHA">
                                 <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
                                     <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
                                     <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
