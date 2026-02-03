@@ -151,6 +151,38 @@ class DiffRenderer {
   }
 
   /**
+   * Workaround for highlight.js Markdown grammar treating mid-word underscores
+   * as emphasis/strong markers.
+   *
+   * In Markdown, `_text_` is italic and `__text__` is bold, but only when the
+   * underscores are at word boundaries. highlight.js doesn't enforce this, so
+   * identifiers like `update_policy` get incorrectly highlighted:
+   *   update_policy -> update<span class="hljs-emphasis">_policy</span>
+   *   snake_case_var -> snake<span class="hljs-emphasis">_case_</span>var
+   *
+   * This method detects emphasis/strong spans that are preceded by a word
+   * character (letter, digit, or underscore) and strips the span wrapper,
+   * restoring the original text.
+   * @param {string} html - HTML output from highlight.js
+   * @returns {string} Corrected HTML
+   */
+  static fixMarkdownHighlighting(html) {
+    // Strip hljs-emphasis spans preceded by a word character (mid-word underscore)
+    // e.g., update<span class="hljs-emphasis">_policy</span> -> update_policy
+    html = html.replace(
+      /(\w)<span class="hljs-emphasis">(_[^<]*)<\/span>/g,
+      '$1$2'
+    );
+    // Strip hljs-strong spans preceded by a word character (mid-word double underscore)
+    // e.g., mid<span class="hljs-strong">__word__</span>bold -> mid__word__bold
+    html = html.replace(
+      /(\w)<span class="hljs-strong">(__[^<]*)<\/span>/g,
+      '$1$2'
+    );
+    return html;
+  }
+
+  /**
    * Escape HTML characters
    * @param {string} text - Text to escape
    * @returns {string} Escaped text
@@ -302,6 +334,11 @@ class DiffRenderer {
         // Workaround: highlight.js Ruby grammar truncates variables at end-of-line
         if (language === 'ruby' || language === 'erb') {
           html = DiffRenderer.fixRubyHighlighting(html);
+        }
+
+        // Workaround: highlight.js Markdown grammar treats mid-word underscores as emphasis
+        if (language === 'markdown') {
+          html = DiffRenderer.fixMarkdownHighlighting(html);
         }
 
         contentCell.innerHTML = html;
