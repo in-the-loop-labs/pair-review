@@ -1347,7 +1347,7 @@ class LocalManager {
       branchCopy.addEventListener('click', async (e) => {
         e.stopPropagation();
         const branch = branchName ? branchName.textContent : '';
-        if (!branch || branch === '--') return;
+        if (!branch || branch === '--' || branch === 'unknown') return;
         try {
           await navigator.clipboard.writeText(branch);
           branchCopy.classList.add('copied');
