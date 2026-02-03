@@ -5747,7 +5747,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
   padding: 2px 6px;
   background-color: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
-  cursor: pointer;
   transition: all var(--transition-fast);
 }
 
@@ -5760,8 +5759,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
   opacity: 0.7;
   flex-shrink: 0;
 }
-
-/* .toolbar-commit-copy styles consolidated into .toolbar-copy-btn above */
 
 /* Pending Draft Indicator in Toolbar */
 .pending-draft-indicator {
