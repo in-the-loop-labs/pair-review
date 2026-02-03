@@ -27,6 +27,12 @@ class AnalysisConfigModal {
     // Initialize empty, will be populated by loadProviders()
     this.providers = {};
 
+    // Track if availability check is in progress
+    this.availabilityCheckInProgress = false;
+
+    // Track pending poll timeouts for cleanup
+    this.pendingPollTimeouts = [];
+
     // Models for current provider (updated when provider changes)
     this.models = [];
 
@@ -44,10 +50,11 @@ class AnalysisConfigModal {
   /**
    * Load provider definitions from the backend API
    * This makes the backend the single source of truth for provider/model configs
+   * @param {boolean} forceRefresh - Force reload even if already loaded
    * @returns {Promise<void>}
    */
-  async loadProviders() {
-    if (this.providersLoaded) return;
+  async loadProviders(forceRefresh = false) {
+    if (this.providersLoaded && !forceRefresh) return;
 
     try {
       const response = await fetch('/api/providers');
@@ -56,6 +63,9 @@ class AnalysisConfigModal {
       }
 
       const data = await response.json();
+
+      // Track availability check status
+      this.availabilityCheckInProgress = data.checkInProgress || false;
 
       // Convert array to object keyed by provider id
       // Filter out providers with no models configured (e.g., unconfigured OpenCode)
@@ -89,6 +99,57 @@ class AnalysisConfigModal {
       };
       this.models = this.providers.claude.models;
       this.providersLoaded = true;
+    }
+  }
+
+  /**
+   * Refresh provider availability status
+   * Triggers a background check and updates the UI
+   */
+  async refreshProviderAvailability() {
+    const refreshBtn = this.modal.querySelector('#refresh-providers-btn');
+    if (!refreshBtn) return;
+
+    // Add spinning animation
+    refreshBtn.classList.add('refreshing');
+    refreshBtn.disabled = true;
+
+    try {
+      // Trigger the refresh endpoint
+      const response = await fetch('/api/providers/refresh-availability', { method: 'POST' });
+      if (!response.ok) {
+        throw new Error('Failed to refresh availability');
+      }
+
+      // Poll for completion (check every 500ms for up to 15 seconds)
+      let attempts = 0;
+      const maxAttempts = 30;
+      const pollInterval = 500;
+
+      const poll = async () => {
+        attempts++;
+        await this.loadProviders(true);
+        this.renderProviderButtons();
+
+        if (this.availabilityCheckInProgress && attempts < maxAttempts) {
+          const timeoutId = setTimeout(poll, pollInterval);
+          this.pendingPollTimeouts.push(timeoutId);
+        } else {
+          // Done - remove spinning animation
+          refreshBtn.classList.remove('refreshing');
+          refreshBtn.disabled = false;
+        }
+      };
+
+      // Start polling with a short initial delay
+      const initialTimeoutId = setTimeout(poll, 100);
+      this.pendingPollTimeouts.push(initialTimeoutId);
+    } catch (error) {
+      console.error('Error refreshing provider availability:', error);
+      this.pendingPollTimeouts.forEach(id => clearTimeout(id));
+      this.pendingPollTimeouts = [];
+      refreshBtn.classList.remove('refreshing');
+      refreshBtn.disabled = false;
     }
   }
 
@@ -137,6 +198,12 @@ class AnalysisConfigModal {
           <section class="config-section">
             <h4 class="section-title">
               AI Provider
+              <button class="provider-refresh-btn" id="refresh-providers-btn" title="Refresh provider availability">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
+                  <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
+                </svg>
+              </button>
             </h4>
             <div class="provider-toggle" id="provider-toggle-container">
               <!-- Provider buttons rendered dynamically -->
@@ -278,6 +345,10 @@ class AnalysisConfigModal {
       this.skipLevel3 = e.target.checked;
     });
 
+    // Refresh providers button
+    const refreshBtn = this.modal.querySelector('#refresh-providers-btn');
+    refreshBtn?.addEventListener('click', () => this.refreshProviderAvailability());
+
     // Custom instructions character count and validation
     const textarea = this.modal.querySelector('#custom-instructions');
     textarea?.addEventListener('input', () => {
@@ -328,17 +399,39 @@ class AnalysisConfigModal {
 
   /**
    * Render provider toggle buttons into the container
+   * Only shows available providers as clickable buttons
    */
   renderProviderButtons() {
     const container = this.modal.querySelector('#provider-toggle-container');
     if (!container) return;
 
-    const providerIds = Object.keys(this.providers);
-    container.innerHTML = providerIds.map(providerId => {
+    // Filter to only show available providers
+    const availableProviderIds = Object.keys(this.providers).filter(providerId => {
       const provider = this.providers[providerId];
+      // Show provider if no availability info (check pending) or if explicitly available
+      return !provider.availability || provider.availability.available;
+    });
+
+    // If selected provider is no longer available, select first available
+    if (availableProviderIds.length > 0 && !availableProviderIds.includes(this.selectedProvider)) {
+      this.selectProvider(availableProviderIds[0]);
+      return; // selectProvider calls renderProviderButtons
+    }
+
+    // Show message if no providers are available
+    if (availableProviderIds.length === 0) {
+      container.innerHTML = '<span class="no-providers-message">No AI providers available. Check CLI installation and authentication.</span>';
+      return;
+    }
+
+    container.innerHTML = availableProviderIds.map(providerId => {
+      const provider = this.providers[providerId];
+      // Escape provider name for use in HTML attributes and content
+      const escapedName = window.escapeHtmlAttribute(provider.name);
+
       return `
-        <button class="provider-btn ${providerId === this.selectedProvider ? 'selected' : ''}" data-provider="${providerId}">
-          ${provider.name}
+        <button class="provider-btn ${providerId === this.selectedProvider ? 'selected' : ''}" data-provider="${providerId}" title="${escapedName}">
+          ${escapedName}
         </button>
       `;
     }).join('');
@@ -735,9 +828,13 @@ class AnalysisConfigModal {
   }
 
   /**
-   * Cleanup event listeners
+   * Cleanup event listeners and pending timeouts
    */
   destroy() {
+    // Clear any pending poll timeouts
+    this.pendingPollTimeouts.forEach(id => clearTimeout(id));
+    this.pendingPollTimeouts = [];
+
     if (this.escapeHandler) {
       document.removeEventListener('keydown', this.escapeHandler);
     }

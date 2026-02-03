@@ -7847,15 +7847,20 @@ body.resizing * {
 /* Provider Toggle */
 .provider-toggle {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 4px;
   background: var(--color-bg-tertiary);
   border-radius: 8px;
-  width: fit-content;
+  width: 100%;
+  max-width: 100%;
 }
 
 .provider-btn {
-  padding: 8px 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
   border: none;
   background: transparent;
   color: var(--color-text-secondary);
@@ -7864,6 +7869,7 @@ body.resizing * {
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s ease;
+  white-space: nowrap;
 }
 
 .provider-btn:hover {
@@ -7879,6 +7885,54 @@ body.resizing * {
 
 [data-theme="dark"] .provider-btn.selected {
   background: var(--color-bg-secondary);
+}
+
+/* No providers available message */
+.no-providers-message {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--color-text-muted);
+  padding: 8px 12px;
+}
+
+/* Provider refresh button */
+.provider-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin-left: 4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.provider-refresh-btn:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+}
+
+.provider-refresh-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.provider-refresh-btn.refreshing svg {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Model Cards */

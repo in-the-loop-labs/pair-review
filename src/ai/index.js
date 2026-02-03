@@ -23,6 +23,16 @@ const {
   prettifyModelId
 } = require('./provider');
 
+// Load the availability checking module
+const {
+  getCachedAvailability,
+  getAllCachedAvailability,
+  checkProviderAvailability: checkSingleProviderAvailability,
+  checkAllProviders,
+  isCheckInProgress,
+  clearCache: clearAvailabilityCache
+} = require('./provider-availability');
+
 // Load and register all providers
 // Each provider self-registers when loaded
 require('./claude-provider');
@@ -57,5 +67,13 @@ module.exports = {
   getProviderConfigOverrides,
   inferModelDefaults,
   resolveDefaultModel,
-  prettifyModelId
+  prettifyModelId,
+
+  // Provider availability checking
+  getCachedAvailability,
+  getAllCachedAvailability,
+  checkSingleProviderAvailability,
+  checkAllProviders,
+  isCheckInProgress,
+  clearAvailabilityCache
 };
