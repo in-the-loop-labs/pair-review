@@ -373,6 +373,7 @@ function inferModelDefaults(model) {
 
   return {
     ...model,
+    tier: canonicalTier, // Normalize tier alias to canonical form
     name: model.name || prettifyModelId(model.id),
     tagline: model.tagline || '',
     description: model.description || '',

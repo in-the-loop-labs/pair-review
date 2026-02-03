@@ -142,6 +142,14 @@
       "extra_args": [],
       "env": {},
       "installInstructions": "Install Copilot CLI: npm install -g @github/copilot-cli"
+    },
+
+    "cursor-agent": {
+      "_comment": "Override Cursor Agent's built-in configuration. Uses streaming JSON output with sandbox mode enabled by default.",
+      "command": "agent",
+      "extra_args": [],
+      "env": {},
+      "installInstructions": "Install Cursor Agent CLI: https://cursor.com/docs/cli/using"
     }
   }
 }

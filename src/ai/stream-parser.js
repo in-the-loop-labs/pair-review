@@ -377,6 +377,91 @@ class StreamParser {
   }
 }
 
+/**
+ * Parse a single Cursor Agent stream-json JSONL line into a normalized event.
+ * Returns null if the line should not be emitted.
+ *
+ * Cursor Agent stream-json event types:
+ * - system (subtype: init) → filtered out
+ * - user → filtered out
+ * - assistant (content blocks with type/text) → assistant_text
+ *   With --stream-partial-output, streaming deltas have timestamp_ms;
+ *   the final complete message does not. We emit both for real-time display.
+ * - tool_call (subtype: started) → tool_use
+ * - tool_call (subtype: completed) → filtered out
+ * - result → filtered out
+ *
+ * @param {string} line - A single JSONL line from Cursor Agent stdout
+ * @param {Object} [options] - Parse options
+ * @param {string} [options.cwd] - Working directory to strip from file paths
+ * @returns {{ type: string, text: string, timestamp: number } | null}
+ */
+function parseCursorAgentLine(line, options = {}) {
+  if (!line || !line.trim()) return null;
+
+  const { cwd } = options;
+
+  try {
+    const event = JSON.parse(line);
+    const eventType = event.type;
+
+    if (eventType === 'assistant') {
+      const content = event.message?.content || [];
+      for (const block of content) {
+        if (block.type === 'text' && block.text && block.text.trim()) {
+          return {
+            type: 'assistant_text',
+            text: truncateSnippet(block.text),
+            timestamp: Date.now()
+          };
+        }
+      }
+      return null;
+    }
+
+    if (eventType === 'tool_call' && event.subtype === 'started') {
+      const toolCall = event.tool_call || {};
+
+      // Determine tool name and detail from the tool_call structure
+      let toolName = 'unknown';
+      let detail = '';
+
+      if (toolCall.shellToolCall) {
+        toolName = 'shell';
+        const cmd = toolCall.shellToolCall.args?.command;
+        if (cmd) detail = cmd;
+      } else if (toolCall.readToolCall) {
+        toolName = 'read';
+        const filePath = toolCall.readToolCall.args?.path;
+        if (filePath) detail = cwd ? stripPathPrefix(filePath, cwd) : filePath;
+      } else if (toolCall.editToolCall) {
+        toolName = 'edit';
+        const filePath = toolCall.editToolCall.args?.path;
+        if (filePath) detail = cwd ? stripPathPrefix(filePath, cwd) : filePath;
+      } else {
+        // Try to identify from keys
+        const toolKeys = Object.keys(toolCall);
+        if (toolKeys.length > 0) {
+          toolName = toolKeys[0].replace('ToolCall', '');
+        }
+      }
+
+      const text = detail ? `${toolName}: ${detail}` : toolName;
+      return {
+        type: 'tool_use',
+        text: truncateSnippet(text),
+        timestamp: Date.now()
+      };
+    }
+
+    // system, user, tool_call completed, result — never emit
+    return null;
+  } catch {
+    // Best-effort side channel — silently ignore non-JSON or malformed lines.
+    return null;
+  }
+}
+
 module.exports = {
   StreamParser,
   truncateSnippet,
@@ -385,5 +470,6 @@ module.exports = {
   parseClaudeLine,
   parseCodexLine,
   parseGeminiLine,
-  parseOpenCodeLine
+  parseOpenCodeLine,
+  parseCursorAgentLine
 };
