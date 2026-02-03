@@ -4,7 +4,7 @@
   "description": "AI-powered code review analysis — Run three-level AI analysis and implement-review-fix loops directly in your coding agent. Works standalone, no server required.",
   "author": {
     "name": "in-the-loop-labs",
-    "email": "pair-review@inthelooplabs.com"
+    "email": "tjwp@inthelooplabs.com"
   },
   "homepage": "https://github.com/in-the-loop-labs/pair-review",
   "repository": "https://github.com/in-the-loop-labs/pair-review",
