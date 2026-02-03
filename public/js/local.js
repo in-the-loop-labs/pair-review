@@ -1329,17 +1329,57 @@ class LocalManager {
       pathText.title = fullPath;
     }
 
-    // Update branch name
+    // Update branch name (header badge)
     const branchText = document.getElementById('local-branch-text');
     if (branchText) {
       branchText.textContent = reviewData.branch || 'unknown';
     }
 
-    // Update commit SHA
+    // Update branch name (toolbar) and wire up copy button
+    const branchName = document.getElementById('pr-branch-name');
+    if (branchName) {
+      branchName.textContent = reviewData.branch || 'unknown';
+    }
+
+    const branchCopy = document.getElementById('pr-branch-copy');
+    if (branchCopy && !branchCopy.hasAttribute('data-listener-added')) {
+      branchCopy.setAttribute('data-listener-added', 'true');
+      branchCopy.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const branch = branchName ? branchName.textContent : '';
+        if (!branch || branch === '--') return;
+        try {
+          await navigator.clipboard.writeText(branch);
+          branchCopy.classList.add('copied');
+          setTimeout(() => branchCopy.classList.remove('copied'), 2000);
+        } catch (err) {
+          console.error('Failed to copy branch name:', err);
+        }
+      });
+    }
+
+    // Update commit SHA and wire up copy button
     const commitSha = document.getElementById('pr-commit-sha');
     if (commitSha && reviewData.localHeadSha) {
       commitSha.textContent = reviewData.localHeadSha.substring(0, 7);
       commitSha.dataset.fullSha = reviewData.localHeadSha;
+    }
+
+    const commitCopy = document.getElementById('pr-commit-copy');
+    if (commitCopy && !commitCopy.hasAttribute('data-listener-added')) {
+      commitCopy.setAttribute('data-listener-added', 'true');
+      commitCopy.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const fullSha = commitSha ? commitSha.dataset.fullSha : '';
+        if (!fullSha) return;
+        try {
+          await navigator.clipboard.writeText(fullSha);
+          commitCopy.classList.add('copied');
+          setTimeout(() => commitCopy.classList.remove('copied'), 2000);
+        } catch (err) {
+          console.error('Failed to copy SHA:', err);
+        }
+      });
     }
 
     // Update settings link visibility and href
