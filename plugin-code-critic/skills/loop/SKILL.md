@@ -102,7 +102,7 @@ If context grows large after many iterations, you may `/compact` between iterati
 - tier: {value}
 - skipLevel3: {value}
 - customInstructions: {value or "none"}
-- iteration: 0
+- iteration: 0  # completed fix cycles (implementation.0.md is the initial build)
 ```
 
 This header block is the source of truth for the loop's state. It must survive `/compact` and be parseable on resume.
@@ -163,8 +163,8 @@ Launch a **single Task agent** (subagent_type: "general-purpose") that performs 
 
 ## History Reference
 Previous iteration files are available at:
-- `{LOOP_DIR}/analysis.{1..N-1}.json` — Prior analysis results
-- `{LOOP_DIR}/implementation.{0..N-1}.md` — What was implemented/fixed
+- `{LOOP_DIR}/analysis.*.json` — Prior analysis results (1 through current-1)
+- `{LOOP_DIR}/implementation.*.md` — What was implemented/fixed (0 = initial, 1+ = fixes)
 
 If you see a suggestion that was already made and addressed in a previous iteration,
 do NOT re-suggest it unless the fix introduced a new problem.
@@ -273,11 +273,11 @@ Iteration {N}/{max}: {line-level} line-level + {file-level} file-level suggestio
 
 Launch a **Task agent** (subagent_type: "general-purpose") to address findings and continue the objective.
 
-**Determine the current iteration number**: Read the `- iteration: {N}` line from the log file. The fix iteration is N+1 (since iteration 0 is initial implementation).
+**Determine the current fix iteration**: Read the `- iteration: {N}` line from the log file. Set `CURRENT = N + 1` (the fix iteration number, since N represents completed cycles). Use `CURRENT` for all file paths in this phase.
 
 **Before launching**, append the iteration header to the log:
 ```
-## Iteration {N+1}
+## Iteration {CURRENT}
 - Analysis summary: {the summary from the Analyze phase}
 ```
 
@@ -287,7 +287,7 @@ Launch a **Task agent** (subagent_type: "general-purpose") to address findings a
 >
 > **Original objective**: {objective}
 >
-> **Analysis file**: Read `{LOOP_DIR}/analysis.{iteration}.json` — it contains the full curated analysis JSON with `suggestions` (line-level) and `fileLevelSuggestions` (file-level) arrays.
+> **Analysis file**: Read `{LOOP_DIR}/analysis.{CURRENT}.json` — it contains the full curated analysis JSON with `suggestions` (line-level) and `fileLevelSuggestions` (file-level) arrays.
 >
 > **Iteration history**: Read `{LOG_FILE}` and the implementation files in `{LOOP_DIR}/implementation.*.md` — these show what was already tried in previous iterations. Take a different approach if an issue reappears.
 >
@@ -302,9 +302,9 @@ Launch a **Task agent** (subagent_type: "general-purpose") to address findings a
 > **Rules**:
 > - Do NOT commit changes — leave them as working tree modifications
 > - `git add -N` (intent-to-add) any newly created files
-> - Write a summary file at `{LOOP_DIR}/implementation.{iteration}.md` with this structure:
+> - Write a summary file at `{LOOP_DIR}/implementation.{CURRENT}.md` with this structure:
 >   ```markdown
->   # Iteration {iteration} Response
+>   # Iteration {CURRENT} Response
 >
 >   ## Suggestions addressed
 >   - {suggestion type}: {file:line} — {what was fixed}
