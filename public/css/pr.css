@@ -5658,7 +5658,15 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: var(--color-text-tertiary);
   font-size: 0.75rem;
   max-width: var(--toolbar-branch-max-width);
-  overflow: hidden;
+  padding: 2px 6px;
+  background-color: var(--color-bg-tertiary);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.toolbar-branch:hover {
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
 }
 
 .toolbar-branch svg {
@@ -5670,6 +5678,36 @@ body:not([data-theme="dark"]) .theme-icon-light {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Shared copy button styles for toolbar (branch + commit) */
+.toolbar-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-xs);
+  transition: all var(--transition-fast);
+  opacity: 0;
+}
+
+.toolbar-branch:hover .toolbar-copy-btn,
+.toolbar-commit:hover .toolbar-copy-btn {
+  opacity: 1;
+}
+
+.toolbar-copy-btn:hover {
+  background-color: var(--color-bg-primary);
+  color: var(--color-accent-primary);
+}
+
+.toolbar-copy-btn.copied {
+  color: var(--color-success);
+  opacity: 1;
 }
 
 .toolbar-stat {
@@ -5710,7 +5748,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
   padding: 2px 6px;
   background-color: var(--color-bg-tertiary);
   border-radius: var(--radius-sm);
-  cursor: pointer;
   transition: all var(--transition-fast);
 }
 
@@ -5722,29 +5759,6 @@ body:not([data-theme="dark"]) .theme-icon-light {
 .toolbar-commit svg {
   opacity: 0.7;
   flex-shrink: 0;
-}
-
-.toolbar-commit-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-  color: var(--color-text-tertiary);
-  border-radius: var(--radius-xs);
-  transition: all var(--transition-fast);
-  opacity: 0;
-}
-
-.toolbar-commit:hover .toolbar-commit-copy {
-  opacity: 1;
-}
-
-.toolbar-commit-copy:hover {
-  background-color: var(--color-bg-primary);
-  color: var(--color-accent-primary);
 }
 
 /* Pending Draft Indicator in Toolbar */
