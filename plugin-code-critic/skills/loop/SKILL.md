@@ -36,14 +36,26 @@ Go DIRECTLY to the Initialize phase. The Task agents will do their own explorati
 
 ## Architecture: File-Mediated Analysis
 
-All heavy work runs in Task agents. Analysis results are written to a **JSON file on disk** — the main session never sees the full analysis output. This keeps per-iteration context growth to ~300-400 tokens.
+All heavy work runs in Task agents. Analysis results are written to a **directory on disk** — the main session never sees the full analysis output. This keeps per-iteration context growth to ~300-400 tokens.
 
 ```
-Main session → Analysis Task → writes .critic-loop/{id}.analysis.json → returns 3-line summary
-Main session → reads summary, decides continue/stop
-Main session → Fix Task → reads .analysis.json from disk → returns 3-line summary
-                                                         → deletes .analysis.json
+.critic-loop/{id}/
+├── loop.log                # High-level orchestration log
+├── analysis.1.json         # Iteration 1 analysis (kept for history)
+├── analysis.2.json         # Iteration 2 analysis
+├── implementation.0.md     # What initial Implement task built
+├── implementation.1.md     # What Fix iteration 1 addressed
+└── implementation.2.md     # What Fix iteration 2 addressed
 ```
+
+```
+Main session → Implement Task → writes implementation.0.md → returns summary
+Main session → Analysis Task → writes analysis.{N}.json → returns summary
+Main session → reads summary, decides continue/stop
+Main session → Fix Task → reads analysis.{N}.json → writes implementation.{N}.md → returns summary
+```
+
+**History is preserved.** Analysis and implementation files are kept for debugging and so subsequent iterations can avoid re-suggesting already-addressed issues.
 
 ## Workflow
 
@@ -69,20 +81,23 @@ If context grows large after many iterations, you may `/compact` between iterati
 
 1. Generate a unique log ID: `date +%s`
 2. Get the project root: `git rev-parse --show-toplevel`
-3. Create the working directory: `mkdir -p {project_root}/.critic-loop`
+3. Create the loop directory: `mkdir -p {project_root}/.critic-loop/{id}`
 4. If `.critic-loop/` is not already in `.gitignore`, add it:
    ```bash
    grep -qxF '.critic-loop/' .gitignore 2>/dev/null || echo '.critic-loop/' >> .gitignore
    ```
 5. Store these values for use in subsequent phases:
-   - `LOG_FILE` = `{project_root}/.critic-loop/{id}.log`
-   - `ANALYSIS_FILE` = `{project_root}/.critic-loop/{id}.analysis.json`
+   - `LOOP_DIR` = `{project_root}/.critic-loop/{id}`
+   - `LOG_FILE` = `{LOOP_DIR}/loop.log`
+   - Analysis files are dynamic: `{LOOP_DIR}/analysis.{iteration}.json` (iteration starts at 1)
+   - Implementation files are dynamic: `{LOOP_DIR}/implementation.{iteration}.md` (iteration 0 = initial implementation)
 6. Create the log file at `{LOG_FILE}`:
 
 ```
 # Critic Loop Log
 - Objective: {the user's objective, verbatim}
 - Project root: {project_root}
+- Loop directory: {LOOP_DIR}
 - maxIterations: {value}
 - tier: {value}
 - skipLevel3: {value}
@@ -104,7 +119,20 @@ Launch a **Task agent** (subagent_type: "general-purpose") to implement the obje
 - Instructions to work autonomously and make all necessary code changes
 - **Do NOT commit changes** — leave them as working tree modifications
 - **`git add -N` (intent-to-add) any newly created files** — this makes them visible to `git diff` commands used in analysis
-- A request to return a concise summary (3-5 sentences): files modified, key decisions, any caveats
+- Write a summary file at `{LOOP_DIR}/implementation.0.md` with this structure:
+  ```markdown
+  # Initial Implementation
+
+  ## What was built
+  - {bullet points of what was created/modified}
+
+  ## Key decisions
+  - {any notable choices made}
+
+  ## Caveats
+  - {any incomplete items or known limitations}
+  ```
+- Return a concise summary (3-5 sentences) to the main session: files modified, key decisions, any caveats
 
 **Before proceeding**, verify the task succeeded and made changes:
 ```bash
@@ -120,11 +148,39 @@ All analysis throughout the loop uses `git diff HEAD` to capture the full set of
 
 Launch a **single Task agent** (subagent_type: "general-purpose") that performs the full analysis pipeline and writes results to disk. The main session does NOT see the analysis details.
 
+**Determine the analysis file path:** `{LOOP_DIR}/analysis.{iteration}.json` where iteration is 1 for the first analysis, 2 after the first fix, etc. (The iteration counter in the log file shows how many fix cycles have completed; add 1 for the current analysis.)
+
+**Build aggregate custom instructions** to pass to the analysis task. These give the analysis agent context about the loop:
+
+```markdown
+## Loop Context
+
+**Objective:** {the user's objective verbatim from the log file}
+
+**Iteration:** {current iteration} of {maxIterations}
+
+{User's customInstructions if provided, otherwise omit this section}
+
+## History Reference
+Previous iteration files are available at:
+- `{LOOP_DIR}/analysis.{1..N-1}.json` — Prior analysis results
+- `{LOOP_DIR}/implementation.{0..N-1}.md` — What was implemented/fixed
+
+If you see a suggestion that was already made and addressed in a previous iteration,
+do NOT re-suggest it unless the fix introduced a new problem.
+
+## Merge Readiness Assessment
+In addition to objective status, assess whether these changes are ready to merge:
+- `ready` = Objective complete, no blocking issues. Minor polish suggestions may exist but would not block a code review approval.
+- `needs-fixes` = Issues that should be addressed before merging (bugs, security, incomplete features).
+- `blocked` = Major issues that would definitely block merging (critical bugs, security vulnerabilities, broken functionality).
+```
+
 **Task prompt:**
 
 > You are a code review analysis agent. Your job is to run a three-level code review and write the curated results to a JSON file.
 >
-> **Output file**: Write the final curated JSON to `{ANALYSIS_FILE}`
+> **Output file**: Write the final curated JSON to `{LOOP_DIR}/analysis.{iteration}.json`
 >
 > **Return to me**: ONLY a brief summary in this exact format:
 > ```
@@ -132,6 +188,7 @@ Launch a **single Task agent** (subagent_type: "general-purpose") that performs 
 > Types: {comma-separated list of types found, e.g. "bug, improvement, praise"}
 > Level 3: {ran|skipped} — {reason if auto}
 > Objective status: complete|incomplete|partial — {brief reason}
+> Merge readiness: ready|needs-fixes|blocked — {brief reason}
 > Summary: {2 sentences describing the most significant findings}
 > ```
 > Do NOT return the full JSON. Do NOT return individual suggestions. Just the summary above.
@@ -171,13 +228,14 @@ Launch a **single Task agent** (subagent_type: "general-purpose") that performs 
 >    - Merges, deduplicates, and curates suggestions
 >    - Returns final curated JSON
 >
-> 5. Write the orchestrated JSON to `{ANALYSIS_FILE}`
+> 5. Write the orchestrated JSON to the output file path specified above.
 >
 > 6. Count suggestions and fileLevelSuggestions from the curated result and return ONLY the brief summary format specified above.
 >
-> {customInstructions if provided: "Additional review instructions: {customInstructions}"}
+> **Aggregate custom instructions:**
+> {the aggregate custom instructions block built above}
 
-The Task agent returns ~3 lines. That is all the main session sees.
+The Task agent returns ~5 lines. That is all the main session sees. **Do NOT delete analysis files** — they are kept for history.
 
 ---
 
@@ -190,18 +248,23 @@ Parse the summary returned by the Analysis Task. It contains:
 - Types of suggestions found
 - Level 3 status (ran or skipped, with reason if auto-decided)
 - Objective status (`complete`, `incomplete`, or `partial`) with a brief reason
+- Merge readiness (`ready`, `needs-fixes`, or `blocked`) with a brief reason
 - A 2-sentence summary of findings
 
 **Decision criteria** (evaluate in this order):
 
 1. **Iteration counter >= maxIterations** → Max reached. Go to **Completion** with note that issues remain.
-2. **Objective status is `incomplete` or `partial`** → Continue to the Fix phase regardless of suggestion types.
-3. **Suggestions contain `bug`, `security`, `performance`, `improvement`, or `design`** → Continue to the Fix phase.
-4. **Only `praise` and/or `code-style` suggestions and objective status is `complete`** → Go to **Completion**.
+2. **Merge readiness is `ready`** → SUCCESS. Go to **Completion**. The objective is complete and the code is clean enough to merge. Minor polish suggestions may exist but they don't block approval.
+3. **Objective status is `incomplete` or `partial`** → Continue to the Fix phase.
+4. **Merge readiness is `blocked`** → Continue to the Fix phase. Critical issues must be addressed.
+5. **Merge readiness is `needs-fixes` AND suggestions contain actionable types** (`bug`, `security`, `performance`, `improvement`, or `design`) → Continue to the Fix phase.
+6. **No actionable suggestions remaining** (only `praise` and/or `code-style`) → Go to **Completion** (clean).
+
+The key difference from simpler logic: a `ready` merge status stops the loop even if there are minor improvement suggestions. This prevents chasing perfection to max iterations when the code is already good enough.
 
 Append a decision line to the log file:
 ```
-Iteration {N}/{max}: {line-level} line-level + {file-level} file-level suggestions → {continuing|clean|max reached}
+Iteration {N}/{max}: {line-level} line-level + {file-level} file-level suggestions, merge={merge_readiness} → {continuing|clean|ready|max reached}
 ```
 
 ---
@@ -210,9 +273,11 @@ Iteration {N}/{max}: {line-level} line-level + {file-level} file-level suggestio
 
 Launch a **Task agent** (subagent_type: "general-purpose") to address findings and continue the objective.
 
+**Determine the current iteration number**: Read the `- iteration: {N}` line from the log file. The fix iteration is N+1 (since iteration 0 is initial implementation).
+
 **Before launching**, append the iteration header to the log:
 ```
-## Iteration {N}
+## Iteration {N+1}
 - Analysis summary: {the summary from the Analyze phase}
 ```
 
@@ -222,9 +287,9 @@ Launch a **Task agent** (subagent_type: "general-purpose") to address findings a
 >
 > **Original objective**: {objective}
 >
-> **Analysis file**: Read `{ANALYSIS_FILE}` — it contains the full curated analysis JSON with `suggestions` (line-level) and `fileLevelSuggestions` (file-level) arrays.
+> **Analysis file**: Read `{LOOP_DIR}/analysis.{iteration}.json` — it contains the full curated analysis JSON with `suggestions` (line-level) and `fileLevelSuggestions` (file-level) arrays.
 >
-> **Iteration history**: Read `{LOG_FILE}` — it shows what was already tried in previous iterations. Take a different approach if an issue reappears.
+> **Iteration history**: Read `{LOG_FILE}` and the implementation files in `{LOOP_DIR}/implementation.*.md` — these show what was already tried in previous iterations. Take a different approach if an issue reappears.
 >
 > **For each suggestion** (from both arrays):
 > 1. Read the referenced file and lines
@@ -237,7 +302,19 @@ Launch a **Task agent** (subagent_type: "general-purpose") to address findings a
 > **Rules**:
 > - Do NOT commit changes — leave them as working tree modifications
 > - `git add -N` (intent-to-add) any newly created files
-> - After finishing, delete `{ANALYSIS_FILE}` — it is no longer needed
+> - Write a summary file at `{LOOP_DIR}/implementation.{iteration}.md` with this structure:
+>   ```markdown
+>   # Iteration {iteration} Response
+>
+>   ## Suggestions addressed
+>   - {suggestion type}: {file:line} — {what was fixed}
+>
+>   ## Suggestions skipped
+>   - {suggestion type}: {file:line} — {reason: false positive / not worth fixing / style preference}
+>
+>   ## Objective progress
+>   - {any additional work done toward the objective}
+>   ```
 >
 > **Return to me**: ONLY a brief summary (3-5 sentences): what was fixed, what was skipped (and why), what progress was made on the objective.
 
@@ -270,7 +347,7 @@ There are NO other valid reasons to stop looping. Do not stop after one fix cycl
 Report the final status to the user:
 
 - **Iterations performed**: How many review-fix cycles ran
-- **Outcome**: Whether the objective is complete and the code is clean, or max iterations were reached
+- **Outcome**: Whether the objective is complete and the code is clean/ready, or max iterations were reached
 - **Changes summary**: What was implemented and what was fixed across all iterations
 - **Remaining issues**: If max iterations hit, list the summary from the last analysis
 - **Files modified**: Complete list (run `git diff --name-only HEAD`)
@@ -280,15 +357,17 @@ Then offer next steps (do not perform them automatically):
 - Use `pair-review:local` or `pair-review:pr` to open a human review in the pair-review web UI (requires the pair-review plugin)
 - Stage or commit the changes when satisfied
 
-Clean up:
-```bash
-rm -f {ANALYSIS_FILE}
-```
+**Clean up based on outcome:**
 
-If the outcome is clean, also remove the log and the directory (if empty):
+If the outcome is clean (merge readiness was `ready` or no actionable suggestions remained):
 ```bash
-rm -f {LOG_FILE}
+# Remove the entire loop directory
+rm -rf {LOOP_DIR}
+# Remove parent .critic-loop directory if empty
 rmdir .critic-loop 2>/dev/null
 ```
 
-If max iterations were reached with remaining issues, **leave the log in place** and mention its location in the completion report so the user can inspect it.
+If max iterations were reached with remaining issues, **leave the loop directory intact** and mention its location in the completion report so the user can inspect the history:
+- `{LOOP_DIR}/loop.log` — orchestration log with all iteration summaries
+- `{LOOP_DIR}/analysis.*.json` — analysis results from each iteration
+- `{LOOP_DIR}/implementation.*.md` — what was implemented/fixed in each iteration
