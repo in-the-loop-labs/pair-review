@@ -474,4 +474,113 @@ describe('DiffRenderer', () => {
       });
     });
   });
+
+  describe('fixMarkdownHighlighting', () => {
+    // Workaround for highlight.js Markdown grammar limitation:
+    // Mid-word underscores are incorrectly treated as emphasis/strong markers
+    // e.g., update_policy => update<span class="hljs-emphasis">_policy</span>
+
+    describe('mid-word emphasis (single underscore)', () => {
+      it('should strip emphasis when preceded by word character', () => {
+        const input = 'update<span class="hljs-emphasis">_policy</span>';
+        const expected = 'update_policy';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(expected);
+      });
+
+      it('should strip emphasis for snake_case pairs', () => {
+        const input = 'snake<span class="hljs-emphasis">_case_</span>var';
+        const expected = 'snake_case_var';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(expected);
+      });
+
+      it('should strip emphasis spanning multiple words when preceded by word char', () => {
+        const input = 'update<span class="hljs-emphasis">_policy and another_</span>var';
+        const expected = 'update_policy and another_var';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(expected);
+      });
+
+      it('should handle multiple mid-word emphasis spans on same line', () => {
+        const input = 'first<span class="hljs-emphasis">_var</span> and second<span class="hljs-emphasis">_var</span>';
+        const expected = 'first_var and second_var';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(expected);
+      });
+
+      it('should strip emphasis after digits', () => {
+        const input = 'v2<span class="hljs-emphasis">_release</span>';
+        const expected = 'v2_release';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(expected);
+      });
+    });
+
+    describe('legitimate emphasis preservation', () => {
+      it('should preserve emphasis at start of text', () => {
+        const input = '<span class="hljs-emphasis">_italic_</span> text';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(input);
+      });
+
+      it('should preserve emphasis after space', () => {
+        const input = 'this is <span class="hljs-emphasis">_italic_</span> text';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(input);
+      });
+    });
+
+    describe('mid-word strong (double underscore)', () => {
+      it('should strip strong when preceded by word character', () => {
+        const input = 'mid<span class="hljs-strong">__word__</span>bold';
+        const expected = 'mid__word__bold';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(expected);
+      });
+
+      it('should preserve strong at start of text', () => {
+        const input = '<span class="hljs-strong">__bold__</span> text';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(input);
+      });
+
+      it('should preserve strong after space', () => {
+        const input = 'this is <span class="hljs-strong">__bold__</span> text';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(input);
+      });
+    });
+
+    describe('edge cases', () => {
+      it('should handle empty input', () => {
+        expect(DiffRenderer.fixMarkdownHighlighting('')).toBe('');
+      });
+
+      it('should handle input with no emphasis spans', () => {
+        const input = 'plain text without emphasis';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(input);
+      });
+
+      it('should handle bullet list with snake_case', () => {
+        // highlight.js wraps bullet then emphasis separately
+        const input = '<span class="hljs-bullet">-</span> update<span class="hljs-emphasis">_policy: description</span>';
+        const expected = '<span class="hljs-bullet">-</span> update_policy: description';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(expected);
+      });
+
+      it('should not modify non-emphasis spans', () => {
+        const input = 'word<span class="hljs-keyword">_something</span>';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(input);
+      });
+
+      it('should not break when emphasis span contains nested markup', () => {
+        // If highlight.js nests spans (e.g., bold inside italic), the regex
+        // should leave the outer span untouched rather than producing broken HTML
+        const input = 'word<span class="hljs-emphasis">_text <span class="hljs-strong">**bold**</span> more_</span>';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(input);
+      });
+
+      it('should not break when strong span contains nested markup', () => {
+        const input = 'word<span class="hljs-strong">__text <span class="hljs-emphasis">_ital_</span> more__</span>';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(input);
+      });
+
+      it('should handle underscore after another underscore (word char)', () => {
+        const input = 'a<span class="hljs-emphasis">_b</span>';
+        const expected = 'a_b';
+        expect(DiffRenderer.fixMarkdownHighlighting(input)).toBe(expected);
+      });
+    });
+  });
 });
