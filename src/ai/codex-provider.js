@@ -599,6 +599,10 @@ class CodexProvider extends AIProvider {
       const command = useShell ? `${this.codexCmd} --version` : this.codexCmd;
       const args = useShell ? [] : ['--version'];
 
+      // Log the actual command for debugging config/override issues
+      const fullCmd = useShell ? command : `${command} ${args.join(' ')}`;
+      logger.debug(`Codex availability check: ${fullCmd}`);
+
       const codex = spawn(command, args, {
         env: {
           ...process.env,

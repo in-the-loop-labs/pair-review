@@ -386,6 +386,10 @@ class CopilotProvider extends AIProvider {
       const command = useShell ? `${this.copilotCmd} --version` : this.copilotCmd;
       const args = useShell ? [] : ['--version'];
 
+      // Log the actual command for debugging config/override issues
+      const fullCmd = useShell ? command : `${command} ${args.join(' ')}`;
+      logger.debug(`Copilot availability check: ${fullCmd}`);
+
       const copilot = spawn(command, args, {
         env: {
           ...process.env,
