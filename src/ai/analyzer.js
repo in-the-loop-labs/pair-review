@@ -20,6 +20,8 @@ const {
 const { registerProcess, isAnalysisCancelled, CancellationError } = require('../routes/shared');
 const { AnalysisRunRepository } = require('../database');
 const { mergeInstructions } = require('../utils/instructions');
+const { GitWorktreeManager } = require('../git/worktree');
+const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guidance');
 
 class Analyzer {
   /**
@@ -33,6 +35,18 @@ class Analyzer {
     this.provider = provider;
     this.db = database;
     this.testContextCache = new Map(); // Cache test detection results per worktree
+    this._worktreeManager = null; // Lazy-initialized for sparse-checkout queries
+  }
+
+  /**
+   * Get or create worktree manager instance (lazy initialization)
+   * @returns {GitWorktreeManager}
+   */
+  _getWorktreeManager() {
+    if (!this._worktreeManager) {
+      this._worktreeManager = new GitWorktreeManager();
+    }
+    return this._worktreeManager;
   }
 
   /**
@@ -460,6 +474,23 @@ class Analyzer {
     const scriptCommand = 'git-diff-lines';
     const cwdOption = worktreePath ? ` --cwd "${worktreePath}"` : '';
     return `${scriptCommand}${cwdOption}`;
+  }
+
+  /**
+   * Build sparse-checkout guidance if applicable
+   * @param {string} worktreePath - Path to the worktree
+   * @returns {Promise<string>} Guidance text or empty string
+   */
+  async buildSparseCheckoutGuidanceSection(worktreePath) {
+    const worktreeManager = this._getWorktreeManager();
+    const isEnabled = await worktreeManager.isSparseCheckoutEnabled(worktreePath);
+
+    if (!isEnabled) {
+      return '';
+    }
+
+    const patterns = await worktreeManager.getSparseCheckoutPatterns(worktreePath);
+    return buildSparseCheckoutGuidance({ patterns });
   }
 
   /**
@@ -1796,7 +1827,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Build the Level 3 prompt with test context
       updateProgress('Building prompt for AI to analyze codebase impact');
-      const prompt = this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions, validFiles, tier);
+      const prompt = await this.buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext, generatedPatterns, customInstructions, validFiles, tier);
 
       // Execute Claude CLI for Level 3 analysis
       updateProgress('Running AI to analyze codebase-wide implications');
@@ -2152,7 +2183,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     }
   }
 
-  buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null, generatedPatterns = [], customInstructions = null, changedFiles = [], tier = 'balanced') {
+  async buildLevel3Prompt(prId, worktreePath, prMetadata, testingContext = null, generatedPatterns = [], customInstructions = null, changedFiles = [], tier = 'balanced') {
     logger.debug(`[Level 3] Building prompt with tier: ${tier}`);
     // Try new prompt architecture first
     const promptBuilder = getPromptBuilder('level3', tier, this.provider);
@@ -2175,6 +2206,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         prContext: this.buildPRContextSection(prMetadata, criticalNote),
         customInstructions: this.buildCustomInstructionsSection(customInstructions),
         lineNumberGuidance: this.buildLineNumberGuidance(worktreePath),
+        sparseCheckoutGuidance: await this.buildSparseCheckoutGuidanceSection(worktreePath),
         generatedFiles: this.buildGeneratedFilesExclusionSection(generatedPatterns),
         changedFiles: formatValidFiles(changedFiles),
         testingGuidance: this.buildTestAnalysisSection(testingContext)

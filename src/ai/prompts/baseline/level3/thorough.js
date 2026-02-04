@@ -40,7 +40,7 @@ const taggedPrompt = `<section name="role" required="true" tier="thorough">
 {{prContext}}
 </section>
 
-<section name="custom-instructions" optional="true" tier="balanced,thorough">
+<section name="custom-instructions" optional="true" tier="fast,balanced,thorough">
 {{customInstructions}}
 </section>
 
@@ -75,7 +75,7 @@ Approach this analysis systematically, building understanding from specific chan
 **Calibrate your output**: Quality matters more than speed. Surface fewer high-confidence findings that genuinely require codebase-wide understanding.
 </section>
 
-<section name="generated-files" optional="true" tier="balanced,thorough">
+<section name="generated-files" optional="true" tier="fast,balanced,thorough">
 {{generatedFiles}}
 </section>
 
@@ -234,6 +234,10 @@ Note: You may optionally use parallel read-only Tasks to explore different areas
 - Analyzing test coverage in parallel with main code analysis
 </section>
 
+<section name="sparse-checkout" optional="true" tier="fast,balanced,thorough">
+{{sparseCheckoutGuidance}}
+</section>
+
 <section name="output-schema" locked="true">
 ## Output Format
 
@@ -377,16 +381,17 @@ Level 3 findings must require codebase context. If an issue could be identified 
 const sections = [
   { name: 'role', required: true, tier: ['thorough'] },
   { name: 'pr-context', locked: true },
-  { name: 'custom-instructions', optional: true, tier: ['balanced', 'thorough'] },
+  { name: 'custom-instructions', optional: true, tier: ['fast', 'balanced', 'thorough'] },
   { name: 'level-header', required: true, tier: ['thorough'] },
   { name: 'line-number-guidance', required: true, tier: ['thorough'] },
   { name: 'reasoning-encouragement', required: true, tier: ['thorough'] },
-  { name: 'generated-files', optional: true, tier: ['balanced', 'thorough'] },
+  { name: 'generated-files', optional: true, tier: ['fast', 'balanced', 'thorough'] },
   { name: 'changed-files', locked: true },
   { name: 'purpose', required: true, tier: ['thorough'] },
   { name: 'analysis-process', required: true, tier: ['thorough'] },
   { name: 'focus-areas', required: true, tier: ['thorough'] },
   { name: 'available-commands', required: true, tier: ['thorough'] },
+  { name: 'sparse-checkout', optional: true, tier: ['fast', 'balanced', 'thorough'] },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['thorough'] },
   { name: 'confidence-guidance', required: true, tier: ['thorough'] },
@@ -412,6 +417,7 @@ const defaultOrder = [
   'analysis-process',
   'focus-areas',
   'available-commands',
+  'sparse-checkout',
   'output-schema',
   'diff-instructions',
   'confidence-guidance',

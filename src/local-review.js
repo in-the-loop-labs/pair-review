@@ -57,11 +57,20 @@ async function findMainGitRoot(repoPath) {
 
     // For worktrees, commonDir is an absolute path like "/path/to/main/.git"
     // or a relative path like "../main/.git"
-    // Resolve it and go up one level to get the main repo root
     const resolvedCommonDir = path.resolve(repoPath, commonDir);
-    const mainRepoRoot = path.dirname(resolvedCommonDir);
 
-    return mainRepoRoot;
+    // Determine if this is a .git directory (regular repo) or a bare repo
+    // Regular repos: commonDir ends with ".git" (e.g., /path/to/repo/.git)
+    // Bare repos: commonDir is the repo itself (e.g., /path/to/repo.git or /path/to/git)
+    // The key difference: for regular repos, basename is exactly ".git"
+    const basename = path.basename(resolvedCommonDir);
+    if (basename === '.git') {
+      // Regular repo - go up one level to get the repo root
+      return path.dirname(resolvedCommonDir);
+    } else {
+      // Bare repo - the commonDir IS the repo
+      return resolvedCommonDir;
+    }
   } catch (error) {
     throw new Error(`Failed to find main git root: ${error.message}`);
   }

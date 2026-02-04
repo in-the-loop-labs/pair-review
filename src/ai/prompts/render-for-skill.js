@@ -13,6 +13,7 @@ const {
   buildAnalysisLineNumberGuidance,
   buildOrchestrationLineNumberGuidance,
 } = require('./line-number-guidance');
+const { buildSparseCheckoutGuidance } = require('./sparse-checkout-guidance');
 
 /**
  * Skill-appropriate default values for prompt placeholders.
@@ -49,6 +50,11 @@ const SKILL_DEFAULTS = {
   // Collapse when empty
   generatedFiles: '',
   customInstructions: '',
+
+  // For standalone skill usage, include general sparse-checkout guidance
+  // since we don't know if the review context uses sparse-checkout.
+  // Use buildSparseCheckoutGuidance with empty patterns for consistency.
+  sparseCheckoutGuidance: buildSparseCheckoutGuidance({ patterns: [] }),
 };
 
 /**

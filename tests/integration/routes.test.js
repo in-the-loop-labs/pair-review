@@ -80,9 +80,13 @@ vi.spyOn(GitWorktreeManager.prototype, 'pathExists').mockResolvedValue(true);
 // Spy on config module functions to prevent writing to user's real config
 vi.spyOn(configModule, 'saveConfig').mockResolvedValue(undefined);
 vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
-  github_token: 'test-token',
-  port: 7247,
-  theme: 'light'
+  config: {
+    github_token: 'test-token',
+    port: 7247,
+    theme: 'light',
+    monorepos: {}  // Empty monorepos config
+  },
+  isFirstRun: false
 });
 vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
 

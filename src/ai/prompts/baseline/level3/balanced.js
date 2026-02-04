@@ -35,7 +35,7 @@ const taggedPrompt = `<section name="role" required="true">
 {{prContext}}
 </section>
 
-<section name="custom-instructions" optional="true">
+<section name="custom-instructions" optional="true" tier="fast,balanced,thorough">
 {{customInstructions}}
 </section>
 
@@ -47,7 +47,7 @@ const taggedPrompt = `<section name="role" required="true">
 {{lineNumberGuidance}}
 </section>
 
-<section name="generated-files" optional="true">
+<section name="generated-files" optional="true" tier="fast,balanced,thorough">
 {{generatedFiles}}
 </section>
 
@@ -114,6 +114,10 @@ You have READ-ONLY access to the codebase:
 **>>> CRITICAL: Do NOT modify any files. Do NOT run write commands (rm, mv, git commit, etc.). <<<**
 
 You may use parallel read-only Tasks to explore different areas of the codebase if helpful.
+</section>
+
+<section name="sparse-checkout" optional="true" tier="fast,balanced,thorough">
+{{sparseCheckoutGuidance}}
 </section>
 
 <section name="output-schema" locked="true">
@@ -203,21 +207,22 @@ File-level suggestions should NOT have a line number. They apply to the entire f
  * Used for parsing and validation
  */
 const sections = [
-  { name: 'role', required: true },
+  { name: 'role', required: true, tier: ['balanced'] },
   { name: 'pr-context', locked: true },
-  { name: 'custom-instructions', optional: true },
-  { name: 'level-header', required: true },
-  { name: 'line-number-guidance', required: true },
-  { name: 'generated-files', optional: true },
+  { name: 'custom-instructions', optional: true, tier: ['fast', 'balanced', 'thorough'] },
+  { name: 'level-header', required: true, tier: ['balanced'] },
+  { name: 'line-number-guidance', required: true, tier: ['balanced'] },
+  { name: 'generated-files', optional: true, tier: ['fast', 'balanced', 'thorough'] },
   { name: 'changed-files', locked: true },
-  { name: 'purpose', required: true },
-  { name: 'analysis-process', required: true },
-  { name: 'focus-areas', required: true },
-  { name: 'available-commands', required: true },
+  { name: 'purpose', required: true, tier: ['balanced'] },
+  { name: 'analysis-process', required: true, tier: ['balanced'] },
+  { name: 'focus-areas', required: true, tier: ['balanced'] },
+  { name: 'available-commands', required: true, tier: ['balanced'] },
+  { name: 'sparse-checkout', optional: true, tier: ['fast', 'balanced', 'thorough'] },
   { name: 'output-schema', locked: true },
-  { name: 'diff-instructions', required: true },
-  { name: 'file-level-guidance', optional: true },
-  { name: 'guidelines', required: true }
+  { name: 'diff-instructions', required: true, tier: ['balanced'] },
+  { name: 'file-level-guidance', optional: true, tier: ['balanced', 'thorough'] },
+  { name: 'guidelines', required: true, tier: ['balanced'] }
 ];
 
 /**
@@ -235,6 +240,7 @@ const defaultOrder = [
   'analysis-process',
   'focus-areas',
   'available-commands',
+  'sparse-checkout',
   'output-schema',
   'diff-instructions',
   'file-level-guidance',

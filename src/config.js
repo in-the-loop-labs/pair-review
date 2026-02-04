@@ -19,7 +19,8 @@ const DEFAULT_CONFIG = {
   dev_mode: false,  // When true, disables static file caching for development
   debug_stream: false,  // When true, logs AI provider streaming events (equivalent to --debug-stream CLI flag)
   yolo: false,  // When true, skips fine-grained AI provider permission setup (equivalent to --yolo CLI flag)
-  providers: {}  // Custom provider configurations (overrides built-in defaults)
+  providers: {},  // Custom provider configurations (overrides built-in defaults)
+  monorepos: {}  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
 };
 
 /**
@@ -250,6 +251,40 @@ function showWelcomeMessage() {
 `);
 }
 
+/**
+ * Expands paths that start with ~/ to use the user's home directory.
+ *
+ * Note: Node.js does not have built-in tilde expansion. The os.homedir()
+ * function returns the home directory path but doesn't expand tildes in
+ * strings. This manual approach is the standard pattern; external packages
+ * like 'expand-tilde' exist but add unnecessary dependencies for this
+ * simple use case.
+ *
+ * @param {string} p - Path to expand
+ * @returns {string} - Expanded path
+ */
+function expandPath(p) {
+  if (!p) return p;
+  if (p.startsWith('~/')) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
+/**
+ * Gets the configured monorepo path for a repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {string|null} - Expanded path or null if not configured
+ */
+function getMonorepoPath(config, repository) {
+  const monorepoConfig = config.monorepos?.[repository];
+  if (monorepoConfig?.path) {
+    return expandPath(monorepoConfig.path);
+  }
+  return null;
+}
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -259,5 +294,7 @@ module.exports = {
   getDefaultProvider,
   getDefaultModel,
   isRunningViaNpx,
-  showWelcomeMessage
+  showWelcomeMessage,
+  expandPath,
+  getMonorepoPath
 };

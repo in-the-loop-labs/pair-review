@@ -92,6 +92,10 @@ Focus on relationships between changed code and existing patterns.
 Do NOT modify files.
 </section>
 
+<section name="sparse-checkout" optional="true" tier="fast,balanced,thorough">
+{{sparseCheckoutGuidance}}
+</section>
+
 <section name="output-schema" locked="true">
 ## Output Format
 
@@ -155,6 +159,7 @@ const sections = [
   { name: 'analysis-process', required: true, tier: ['fast'] },
   { name: 'focus-areas', required: true, tier: ['fast'] },
   { name: 'available-commands', required: true, tier: ['fast'] },
+  { name: 'sparse-checkout', optional: true, tier: ['fast', 'balanced', 'thorough'] },
   { name: 'output-schema', locked: true },
   { name: 'diff-instructions', required: true, tier: ['fast'] },
   { name: 'guidelines', required: true, tier: ['fast'] }
@@ -176,6 +181,7 @@ const defaultOrder = [
   'analysis-process',
   'focus-areas',
   'available-commands',
+  'sparse-checkout',
   'output-schema',
   'diff-instructions',
   'guidelines'

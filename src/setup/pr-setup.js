@@ -16,7 +16,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir } = require('../config');
+const { getConfigDir, loadConfig, getMonorepoPath } = require('../config');
 const logger = require('../utils/logger');
 const simpleGit = require('simple-git');
 const fs = require('fs').promises;
@@ -188,6 +188,7 @@ async function registerRepositoryLocation(db, currentDir, owner, repo) {
  * given owner/repo so that worktrees can be created from it.
  *
  * Tiers (in order of preference):
+ *  -1. Explicit monorepo configuration (highest priority)
  *   0. Known local path from repo_settings (registered by CLI or previous web UI)
  *   1. Existing worktree for this repo (derive parent git root from it)
  *   2. Cached clone at <configDir>/repos/<owner>/<repo>
@@ -200,7 +201,10 @@ async function registerRepositoryLocation(db, currentDir, owner, repo) {
  * @param {string} params.repository - Normalized "owner/repo" string
  * @param {number} params.prNumber - PR number (used for worktree lookup)
  * @param {Function} [params.onProgress] - Optional progress callback
- * @returns {Promise<{ repositoryPath: string, knownPath: string|null }>}
+ * @returns {Promise<{ repositoryPath: string, knownPath: string|null, worktreeSourcePath: string|null }>}
+ *   - repositoryPath: the main git root (bare repo or .git parent)
+ *   - knownPath: the known path from database (if any)
+ *   - worktreeSourcePath: path to use as cwd for `git worktree add` (may be a worktree with sparse-checkout)
  */
 async function findRepositoryPath({ db, owner, repo, repository, prNumber, onProgress }) {
   const worktreeManager = new GitWorktreeManager(db);
@@ -208,16 +212,71 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, onPro
   const worktreeRepo = new WorktreeRepository(db);
 
   let repositoryPath = null;
+  let worktreeSourcePath = null;  // Path to use as cwd for `git worktree add` (may differ from repositoryPath)
+
+  // ------------------------------------------------------------------
+  // Tier -1: Explicit monorepo configuration (highest priority)
+  // ------------------------------------------------------------------
+  const { config } = await loadConfig();
+  const monorepoPath = getMonorepoPath(config, repository);
+
+  if (monorepoPath) {
+    // The configured path might be a worktree or a regular/bare repo.
+    // We need the main git root for creating new worktrees, but we also want to
+    // preserve the original path if it's a worktree so sparse-checkout is inherited.
+    // Wrap in try-catch since findMainGitRoot throws if path doesn't exist or isn't a git repo
+    try {
+      const resolvedPath = await findMainGitRoot(monorepoPath);
+      logger.debug(`Monorepo path ${monorepoPath} resolved to ${resolvedPath}`);
+
+      // Check if this is a valid git directory we can create worktrees from.
+      // It could be:
+      // 1. A regular repo (has .git directory)
+      // 2. A bare repo (is itself a git directory with HEAD, objects, refs)
+      // 3. A worktree (has .git file pointing to actual git dir)
+      const gitDirPath = path.join(resolvedPath, '.git');
+      const headPath = path.join(resolvedPath, 'HEAD');
+
+      const hasGitDir = await worktreeManager.pathExists(gitDirPath);
+      const hasHead = await worktreeManager.pathExists(headPath);
+
+      if (hasGitDir || hasHead) {
+        // Verify we can actually run git commands here
+        try {
+          const git = simpleGit(resolvedPath);
+          await git.revparse(['HEAD']);
+          repositoryPath = resolvedPath;
+
+          // If the configured path differs from the resolved path, it's likely a worktree.
+          // Use the original configured path as the source for worktree creation so
+          // sparse-checkout configuration is inherited.
+          if (monorepoPath !== resolvedPath) {
+            worktreeSourcePath = monorepoPath;
+            logger.info(`Using configured monorepo path at ${repositoryPath} (worktree source: ${worktreeSourcePath})`);
+          } else {
+            logger.info(`Using configured monorepo path at ${repositoryPath}`);
+          }
+        } catch (gitError) {
+          logger.warn(`Configured monorepo path ${monorepoPath} resolved to ${resolvedPath} but git commands fail: ${gitError.message}`);
+        }
+      } else {
+        logger.warn(`Configured monorepo path ${monorepoPath} resolved to ${resolvedPath} which has no .git directory or HEAD file`);
+      }
+    } catch (resolveError) {
+      logger.warn(`Configured monorepo path ${monorepoPath} does not exist or is not a git repository: ${resolveError.message}`);
+    }
+  }
 
   // ------------------------------------------------------------------
   // Tier 0: Check known local path from repo_settings
   // ------------------------------------------------------------------
   const knownPath = await repoSettingsRepo.getLocalPath(repository);
 
-  if (knownPath && await worktreeManager.pathExists(knownPath)) {
+  if (!repositoryPath && knownPath && await worktreeManager.pathExists(knownPath)) {
     try {
       const git = simpleGit(knownPath);
-      await git.revparse(['--is-inside-work-tree']);
+      // Use --git-dir instead of --is-inside-work-tree to support bare repos
+      await git.revparse(['--git-dir']);
       repositoryPath = knownPath;
       logger.info(`Using known repository location at ${repositoryPath}`);
     } catch {
@@ -276,7 +335,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, onPro
     }
   }
 
-  return { repositoryPath, knownPath };
+  return { repositoryPath, knownPath, worktreeSourcePath };
 }
 
 /**
@@ -321,7 +380,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, onProgres
   // Step: repo - Find (or clone) a local repository
   // ------------------------------------------------------------------
   progress({ step: 'repo', status: 'running', message: 'Locating repository...' });
-  const { repositoryPath, knownPath } = await findRepositoryPath({
+  const { repositoryPath, knownPath, worktreeSourcePath } = await findRepositoryPath({
     db,
     owner,
     repo,
@@ -337,8 +396,21 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, onProgres
   progress({ step: 'worktree', status: 'running', message: 'Setting up git worktree...' });
   const worktreeManager = new GitWorktreeManager(db);
   const prInfo = { owner, repo, number: prNumber };
-  const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath);
+  // Use worktreeSourcePath as cwd for git worktree add (if available) to inherit sparse-checkout
+  const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath });
   progress({ step: 'worktree', status: 'completed', message: `Worktree created at ${worktreePath}` });
+
+  // ------------------------------------------------------------------
+  // Step: sparse - Expand sparse-checkout before generating diff
+  // ------------------------------------------------------------------
+  // Use changed_files from GitHub API (already fetched) to expand sparse-checkout
+  // BEFORE generating the diff. This ensures all needed files are checked out.
+  if (prData.changed_files && prData.changed_files.length > 0) {
+    const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(worktreePath, prData.changed_files);
+    if (addedDirs.length > 0) {
+      logger.info(`Expanded sparse-checkout for PR directories: ${addedDirs.join(', ')}`);
+    }
+  }
 
   // ------------------------------------------------------------------
   // Step: diff - Generate unified diff and changed file list

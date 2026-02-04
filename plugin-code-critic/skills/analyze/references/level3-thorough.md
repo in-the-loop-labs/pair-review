@@ -207,6 +207,23 @@ Note: You may optionally use parallel read-only Tasks to explore different areas
 - Tracing dependencies across multiple files
 - Analyzing test coverage in parallel with main code analysis
 
+## Sparse Checkout Active
+
+This repository uses sparse-checkout. Only a subset of directories are checked out:
+  (run `git sparse-checkout list` to see current patterns)
+
+**Exploring related code**: If you need to examine code outside the checked-out directories to understand dependencies, patterns, or impacts, you can expand the checkout:
+```
+git sparse-checkout add <directory>
+```
+
+For example, if you see an import from `packages/shared-utils` but that directory isn't checked out, run:
+```
+git sparse-checkout add packages/shared-utils
+```
+
+This is non-destructive and only adds to what's visible in this review worktree.
+
 ## Output Format
 
 **>>> CRITICAL: Output ONLY valid JSON. No markdown, no ```json blocks. Start with { end with }. <<<**
