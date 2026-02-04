@@ -7878,13 +7878,15 @@ body.resizing * {
 }
 
 .provider-btn.selected {
-  background: var(--color-bg-primary);
+  background: rgba(245, 158, 11, 0.15);
   color: var(--color-text-primary);
-  box-shadow: 0 1px 3px var(--color-shadow);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.4);
 }
 
 [data-theme="dark"] .provider-btn.selected {
-  background: var(--color-bg-secondary);
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.3);
 }
 
 /* No providers available message */
@@ -8009,6 +8011,11 @@ body.resizing * {
 
 .badge-premium {
   background: linear-gradient(135deg, #ec4899 0%, #db2777 100%);
+  color: white;
+}
+
+.badge-balanced {
+  background: linear-gradient(135deg, var(--color-accent-ai-dark) 0%, #d97706 100%);
   color: white;
 }
 
