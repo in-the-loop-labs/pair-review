@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.2.0
+
+### Minor Changes
+
+- 789ea9a: Add Cursor Agent CLI as a new AI provider with streaming JSON output, sandbox mode, and built-in model definitions
+- fdad840: Enhance code-critic:loop skill with history tracking and merge readiness
+
+  - Add directory-based history structure (.critic-loop/{id}/) with numbered analysis and implementation files that persist across iterations
+  - Aggregate custom instructions into analysis with objective context, iteration tracking, and history references to prevent re-suggesting already-addressed issues
+  - Add merge readiness assessment (ready/needs-fixes/blocked) to analysis output for smarter completion logic
+  - Update evaluation to stop early when merge readiness is "ready" instead of chasing perfection to max iterations
+  - Add implementation summary files documenting what was built/fixed in each iteration
+  - Fix iteration naming ambiguity: clarify that `iteration: 0` tracks completed cycles, use glob patterns instead of bash-like notation, and introduce explicit `CURRENT = N + 1` variable to eliminate off-by-one confusion
+
+- c0ee7bc: Add MCP server and Claude Code plugins for AI coding agent integration
+
+  - Expose MCP server via `--mcp` stdio transport and `/mcp` HTTP endpoint with tools for reading review comments, AI suggestions, analysis runs, and prompts, plus triggering new analyses
+  - Ship two Claude Code plugins: `code-critic` (standalone three-level analysis and critic-loop skills) and `pair-review` (app-integrated review, feedback, and analysis skills)
+  - Add setup UI with SSE progress streaming for PR and local review initialization
+  - Add external analysis results import endpoint so standalone analysis can push results into the web UI
+  - Change default port from 3000 to 7247 to avoid conflicts with common dev servers
+
+- 8785ab1: Add provider availability checking at server startup
+
+  - Check all AI providers in the background when server starts, caching availability status
+  - Default provider is checked first for faster initial availability
+  - Claude provider now uses fast `claude --version` check instead of running a prompt
+  - Analysis config modal only shows available providers (unavailable ones are hidden)
+  - Added refresh button to manually re-check provider availability
+  - Provider buttons now wrap to multiple lines when there are many providers
+  - Shows helpful message when no providers are available
+  - Auto-selects first available provider if currently selected one becomes unavailable
+
 ## 1.1.1
 
 ### Patch Changes
