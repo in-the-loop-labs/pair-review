@@ -272,10 +272,15 @@ html, body {
    Note: Provider toggle styles are inherited from pr.css
    ============================================ */
 
-/* Override provider toggle width for settings page layout */
+/* Override provider toggle for settings page layout */
 .settings-section .provider-toggle {
-  width: auto;
-  max-width: 100%;
+  width: 100%;
+  justify-content: stretch;
+}
+
+.settings-section .provider-btn {
+  flex: 1;
+  justify-content: center;
 }
 
 .model-cards {
@@ -332,6 +337,9 @@ html, body {
   letter-spacing: 0.05em;
   border-radius: 12px;
   white-space: nowrap;
+  /* Fallback for unknown badge classes */
+  background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+  color: white;
 }
 
 .badge-speed {
@@ -351,6 +359,11 @@ html, body {
 
 .badge-premium {
   background: linear-gradient(135deg, #ec4899 0%, #db2777 100%);
+  color: white;
+}
+
+.badge-balanced {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
   color: white;
 }
 

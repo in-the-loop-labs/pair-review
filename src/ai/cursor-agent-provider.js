@@ -28,11 +28,11 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 /**
  * Cursor Agent model definitions with tier mappings
  *
- * Based on PR #83 recommendations:
+ * Tier structure:
  * - free (auto): Cursor's default auto-routing model
- * - fast (gemini-3-flash): Quick analysis for simple changes
- * - balanced (sonnet-4.5): Recommended for most reviews
- * - thorough (opus-4.5-thinking): Deep analysis with thinking for complex code
+ * - fast (gpt-5.2-codex-fast): Quick code-specialized analysis
+ * - balanced (sonnet-4.5-thinking, gemini-3-pro): Recommended for most reviews
+ * - thorough (gpt-5.2-codex-high, opus-4.5-thinking): Deep analysis for complex code
  */
 const CURSOR_AGENT_MODELS = [
   {
@@ -45,23 +45,41 @@ const CURSOR_AGENT_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
-    id: 'gemini-3-flash',
-    name: 'Gemini 3 Flash',
+    id: 'gpt-5.2-codex-fast',
+    name: 'GPT-5.2 Codex Fast',
     tier: 'fast',
     tagline: 'Lightning Fast',
-    description: 'Quick analysis for simple changes',
+    description: 'Quick code-specialized analysis for simple changes',
     badge: 'Fastest',
     badgeClass: 'badge-speed'
   },
   {
-    id: 'sonnet-4.5',
-    name: 'Claude 4.5 Sonnet',
+    id: 'sonnet-4.5-thinking',
+    name: 'Claude 4.5 Sonnet (Thinking)',
     tier: 'balanced',
     tagline: 'Best Balance',
-    description: 'Recommended for most reviews',
+    description: 'Extended thinking for thorough analysis',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
+  },
+  {
+    id: 'gemini-3-pro',
+    name: 'Gemini 3 Pro',
+    tier: 'balanced',
+    tagline: 'Strong Alternative',
+    description: "Google's flagship model for code review",
+    badge: 'Balanced',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'gpt-5.2-codex-high',
+    name: 'GPT-5.2 Codex High',
+    tier: 'thorough',
+    tagline: 'Deep Code Analysis',
+    description: "OpenAI's best for complex code review",
+    badge: 'Thorough',
+    badgeClass: 'badge-power'
   },
   {
     id: 'opus-4.5-thinking',
@@ -83,7 +101,7 @@ class CursorAgentProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'sonnet-4.5', configOverrides = {}) {
+  constructor(model = 'sonnet-4.5-thinking', configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -724,7 +742,7 @@ class CursorAgentProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'sonnet-4.5';
+    return 'sonnet-4.5-thinking';
   }
 
   static getInstallInstructions() {
