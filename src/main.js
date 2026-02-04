@@ -9,7 +9,7 @@ const { startServer } = require('./server');
 const Analyzer = require('./ai/analyzer');
 const { applyConfigOverrides } = require('./ai');
 const { handleLocalReview, findMainGitRoot } = require('./local-review');
-const { storePRData, registerRepositoryLocation } = require('./setup/pr-setup');
+const { storePRData, registerRepositoryLocation, findRepositoryPath } = require('./setup/pr-setup');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('./utils/paths');
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
@@ -484,16 +484,39 @@ async function handlePullRequest(args, config, db, flags = {}) {
     console.log('Fetching pull request data from GitHub...');
     const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
 
-    // Get current repository path
+    // Determine repository path: only use cwd if it matches the target repo
     const currentDir = parser.getCurrentDirectory();
+    const isMatchingRepo = await parser.isMatchingRepository(currentDir, prInfo.owner, prInfo.repo);
 
-    // Register the known repository location for future web UI usage
-    await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+    let repositoryPath;
+    if (isMatchingRepo) {
+      // Current directory is a checkout of the target repository
+      repositoryPath = currentDir;
+      // Register the known repository location for future web UI usage
+      await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+    } else {
+      // Current directory is not the target repository - find or clone it
+      console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);
+      const repository = normalizeRepository(prInfo.owner, prInfo.repo);
+      const result = await findRepositoryPath({
+        db,
+        owner: prInfo.owner,
+        repo: prInfo.repo,
+        repository,
+        prNumber: prInfo.number,
+        onProgress: (progress) => {
+          if (progress.message) {
+            console.log(progress.message);
+          }
+        }
+      });
+      repositoryPath = result.repositoryPath;
+    }
 
     // Setup git worktree
     console.log('Setting up git worktree...');
     const worktreeManager = new GitWorktreeManager(db);
-    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
+    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath);
 
     // Generate unified diff
     console.log('Generating unified diff...');
@@ -701,7 +724,6 @@ async function performHeadlessReview(args, config, db, flags, options) {
     console.log('Fetching pull request data from GitHub...');
     const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
 
-    const repository = normalizeRepository(prInfo.owner, prInfo.repo);
     let worktreePath;
     let diff;
     let changedFiles;
@@ -709,6 +731,16 @@ async function performHeadlessReview(args, config, db, flags, options) {
     // Determine working directory: --use-checkout uses current directory
     if (flags.useCheckout) {
       worktreePath = process.cwd();
+
+      // Verify cwd matches the target repository when using --use-checkout
+      const isMatchingRepo = await parser.isMatchingRepository(worktreePath, prInfo.owner, prInfo.repo);
+      if (!isMatchingRepo) {
+        throw new Error(
+          `--use-checkout requires running from a checkout of ${prInfo.owner}/${prInfo.repo}, ` +
+          `but current directory does not match. Either cd to the correct repository or remove --use-checkout.`
+        );
+      }
+
       await registerRepositoryLocation(db, worktreePath, prInfo.owner, prInfo.repo);
       console.log(`Using current checkout at ${worktreePath}`);
 
@@ -752,13 +784,37 @@ async function performHeadlessReview(args, config, db, flags, options) {
         return result;
       });
     } else {
-      // Use worktree approach
+      // Use worktree approach - only use cwd if it matches the target repo
       const currentDir = parser.getCurrentDirectory();
-      await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+      const isMatchingRepo = await parser.isMatchingRepository(currentDir, prInfo.owner, prInfo.repo);
+
+      let repositoryPath;
+      if (isMatchingRepo) {
+        // Current directory is a checkout of the target repository
+        repositoryPath = currentDir;
+        await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+      } else {
+        // Current directory is not the target repository - find or clone it
+        console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);
+        const repository = normalizeRepository(prInfo.owner, prInfo.repo);
+        const result = await findRepositoryPath({
+          db,
+          owner: prInfo.owner,
+          repo: prInfo.repo,
+          repository,
+          prNumber: prInfo.number,
+          onProgress: (progress) => {
+            if (progress.message) {
+              console.log(progress.message);
+            }
+          }
+        });
+        repositoryPath = result.repositoryPath;
+      }
 
       console.log('Setting up git worktree...');
       const worktreeManager = new GitWorktreeManager(db);
-      worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, currentDir);
+      worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath);
 
       console.log('Generating unified diff...');
       diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);

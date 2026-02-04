@@ -232,4 +232,113 @@ describe('PRArgumentParser', () => {
       expect(() => parser.validatePRArguments({ owner: 'owner', repo: 'repo', number: -1 })).toThrow('Invalid pull request number');
     });
   });
+
+  describe('isMatchingRepository', () => {
+    let mockGit;
+
+    beforeEach(() => {
+      // Create a mock git instance for isMatchingRepository tests
+      mockGit = {
+        checkIsRepo: vi.fn(),
+        getRemotes: vi.fn()
+      };
+      // Override the method that creates git instances for specific directories
+      parser._createGitForDirectory = vi.fn().mockReturnValue(mockGit);
+    });
+
+    it('should return true when directory matches the expected owner/repo (HTTPS)', async () => {
+      mockGit.checkIsRepo.mockResolvedValue(true);
+      mockGit.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'https://github.com/my-owner/my-repo.git' } }
+      ]);
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(true);
+      expect(parser._createGitForDirectory).toHaveBeenCalledWith('/some/path');
+    });
+
+    it('should return true when directory matches the expected owner/repo (SSH)', async () => {
+      mockGit.checkIsRepo.mockResolvedValue(true);
+      mockGit.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'git@github.com:my-owner/my-repo.git' } }
+      ]);
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(true);
+    });
+
+    it('should return true with case-insensitive comparison', async () => {
+      mockGit.checkIsRepo.mockResolvedValue(true);
+      mockGit.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'https://github.com/My-Owner/My-Repo.git' } }
+      ]);
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(true);
+    });
+
+    it('should return false when owner does not match', async () => {
+      mockGit.checkIsRepo.mockResolvedValue(true);
+      mockGit.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'https://github.com/other-owner/my-repo.git' } }
+      ]);
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(false);
+    });
+
+    it('should return false when repo does not match', async () => {
+      mockGit.checkIsRepo.mockResolvedValue(true);
+      mockGit.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'https://github.com/my-owner/other-repo.git' } }
+      ]);
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(false);
+    });
+
+    it('should return false when directory is not a git repo', async () => {
+      mockGit.checkIsRepo.mockResolvedValue(false);
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(false);
+    });
+
+    it('should return false when no origin remote exists', async () => {
+      mockGit.checkIsRepo.mockResolvedValue(true);
+      mockGit.getRemotes.mockResolvedValue([
+        { name: 'upstream', refs: { fetch: 'https://github.com/my-owner/my-repo.git' } }
+      ]);
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(false);
+    });
+
+    it('should return false when remote URL is not a GitHub URL', async () => {
+      mockGit.checkIsRepo.mockResolvedValue(true);
+      mockGit.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { fetch: 'https://gitlab.com/my-owner/my-repo.git' } }
+      ]);
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(false);
+    });
+
+    it('should return false when git operations throw an error', async () => {
+      mockGit.checkIsRepo.mockRejectedValue(new Error('Not a git repository'));
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(false);
+    });
+
+    it('should use refs.push when refs.fetch is not available', async () => {
+      mockGit.checkIsRepo.mockResolvedValue(true);
+      mockGit.getRemotes.mockResolvedValue([
+        { name: 'origin', refs: { push: 'https://github.com/my-owner/my-repo.git' } }
+      ]);
+
+      const result = await parser.isMatchingRepository('/some/path', 'my-owner', 'my-repo');
+      expect(result).toBe(true);
+    });
+  });
 });
