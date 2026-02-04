@@ -56,27 +56,29 @@ describe('CursorAgentProvider', () => {
       expect(CursorAgentProvider.getProviderId()).toBe('cursor-agent');
     });
 
-    it('should return sonnet-4.5 as default model', () => {
-      expect(CursorAgentProvider.getDefaultModel()).toBe('sonnet-4.5');
+    it('should return sonnet-4.5-thinking as default model', () => {
+      expect(CursorAgentProvider.getDefaultModel()).toBe('sonnet-4.5-thinking');
     });
 
     it('should return array of models with expected structure', () => {
       const models = CursorAgentProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(4);
+      expect(models.length).toBe(6);
 
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('auto');
-      expect(modelIds).toContain('gemini-3-flash');
-      expect(modelIds).toContain('sonnet-4.5');
+      expect(modelIds).toContain('gpt-5.2-codex-fast');
+      expect(modelIds).toContain('sonnet-4.5-thinking');
+      expect(modelIds).toContain('gemini-3-pro');
+      expect(modelIds).toContain('gpt-5.2-codex-high');
       expect(modelIds).toContain('opus-4.5-thinking');
 
       // Check model structure for the default model
-      const defaultModel = models.find(m => m.id === 'sonnet-4.5');
+      const defaultModel = models.find(m => m.id === 'sonnet-4.5-thinking');
       expect(defaultModel).toMatchObject({
-        id: 'sonnet-4.5',
-        name: 'Claude 4.5 Sonnet',
+        id: 'sonnet-4.5-thinking',
+        name: 'Claude 4.5 Sonnet (Thinking)',
         tier: 'balanced',
         default: true
       });
@@ -86,8 +88,10 @@ describe('CursorAgentProvider', () => {
       const models = CursorAgentProvider.getModels();
       const tierMap = Object.fromEntries(models.map(m => [m.id, m.tier]));
       expect(tierMap['auto']).toBe('free');
-      expect(tierMap['gemini-3-flash']).toBe('fast');
-      expect(tierMap['sonnet-4.5']).toBe('balanced');
+      expect(tierMap['gpt-5.2-codex-fast']).toBe('fast');
+      expect(tierMap['sonnet-4.5-thinking']).toBe('balanced');
+      expect(tierMap['gemini-3-pro']).toBe('balanced');
+      expect(tierMap['gpt-5.2-codex-high']).toBe('thorough');
       expect(tierMap['opus-4.5-thinking']).toBe('thorough');
     });
 
@@ -101,7 +105,7 @@ describe('CursorAgentProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CursorAgentProvider();
-      expect(provider.model).toBe('sonnet-4.5');
+      expect(provider.model).toBe('sonnet-4.5-thinking');
     });
 
     it('should create instance with specified model', () => {
