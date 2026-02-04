@@ -96,22 +96,19 @@ You have READ-ONLY access to the codebase:
 
 You may use parallel read-only Tasks to explore different areas of the codebase if helpful.
 
-## Sparse Checkout Active
+## Monorepo / Sparse Checkout Considerations
 
-This repository uses sparse-checkout. Only a subset of directories are checked out:
-  (run `git sparse-checkout list` to see current patterns)
+If this repository uses sparse-checkout, only a subset of directories may be checked out. You can check by running:
+```
+git sparse-checkout list
+```
 
-**Exploring related code**: If you need to examine code outside the checked-out directories to understand dependencies, patterns, or impacts, you can expand the checkout:
+If sparse-checkout is active and you need to examine code outside the checked-out directories to understand dependencies, patterns, or impacts, you can expand the checkout:
 ```
 git sparse-checkout add <directory>
 ```
 
-For example, if you see an import from `packages/shared-utils` but that directory isn't checked out, run:
-```
-git sparse-checkout add packages/shared-utils
-```
-
-This is non-destructive and only adds to what's visible in this review worktree.
+This is non-destructive and only adds to what's visible in the worktree.
 
 ## Output Format
 

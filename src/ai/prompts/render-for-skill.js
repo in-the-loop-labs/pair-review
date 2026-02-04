@@ -51,10 +51,11 @@ const SKILL_DEFAULTS = {
   generatedFiles: '',
   customInstructions: '',
 
-  // For standalone skill usage, include general sparse-checkout guidance
+  // For standalone skill usage, include conditional sparse-checkout guidance
   // since we don't know if the review context uses sparse-checkout.
-  // Use buildSparseCheckoutGuidance with empty patterns for consistency.
-  sparseCheckoutGuidance: buildSparseCheckoutGuidance({ patterns: [] }),
+  // The conditional flag produces softer language that doesn't assert
+  // sparse-checkout is active — only advises what to do if it is.
+  sparseCheckoutGuidance: buildSparseCheckoutGuidance({ conditional: true }),
 };
 
 /**

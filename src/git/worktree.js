@@ -761,7 +761,12 @@ class GitWorktreeManager {
       }
     }
 
-    // Find directories not covered by current patterns
+    // Find directories not covered by current patterns.
+    // NOTE: This uses startsWith() for directory-based comparison, which only
+    // supports cone mode (directory path patterns). Glob-based sparse-checkout
+    // patterns (e.g., '*.js', '**/test/') would not be matched correctly.
+    // This is acceptable for now since we only support cone mode throughout
+    // the worktree implementation. See tech debt tracking for glob support.
     const missingDirs = [...neededDirs].filter(dir => {
       // Check if dir is already covered by an existing pattern
       return !currentPatterns.some(pattern => {

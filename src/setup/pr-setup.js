@@ -403,8 +403,14 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, onProgres
   // ------------------------------------------------------------------
   // Step: sparse - Expand sparse-checkout before generating diff
   // ------------------------------------------------------------------
-  // Use changed_files from GitHub API (already fetched) to expand sparse-checkout
-  // BEFORE generating the diff. This ensures all needed files are checked out.
+  // IMPORTANT: Sparse-checkout expansion MUST happen before diff generation.
+  // In monorepo worktrees that inherit a sparse-checkout from the source
+  // worktree, the checkout may not include all directories touched by the PR.
+  // If we generate the diff first, files outside the sparse cone will be missing
+  // from the worktree, producing an incomplete or empty diff. Expanding the
+  // sparse-checkout ensures every PR-changed directory is present on disk so
+  // that `git diff` can read the actual file contents.
+  //
   if (prData.changed_files && prData.changed_files.length > 0) {
     const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(worktreePath, prData.changed_files);
     if (addedDirs.length > 0) {

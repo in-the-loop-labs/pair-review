@@ -38,6 +38,24 @@ describe('sparse-checkout-guidance.js', () => {
       expect(result).toContain('(run `git sparse-checkout list` to see current patterns)');
     });
 
+    it('should return conditional guidance when conditional flag is set', () => {
+      const result = buildSparseCheckoutGuidance({ conditional: true });
+
+      expect(result).toContain('## Monorepo / Sparse Checkout Considerations');
+      expect(result).toContain('If this repository uses sparse-checkout');
+      expect(result).toContain('git sparse-checkout list');
+      expect(result).toContain('git sparse-checkout add <directory>');
+      expect(result).not.toContain('## Sparse Checkout Active');
+      expect(result).not.toContain('This repository uses sparse-checkout. Only a subset');
+    });
+
+    it('conditional mode ignores patterns', () => {
+      const withPatterns = buildSparseCheckoutGuidance({ conditional: true, patterns: ['packages/core'] });
+      const withoutPatterns = buildSparseCheckoutGuidance({ conditional: true });
+
+      expect(withPatterns).toBe(withoutPatterns);
+    });
+
     it('should include example for packages/shared-utils', () => {
       const result = buildSparseCheckoutGuidance({ patterns: ['packages/core'] });
 
