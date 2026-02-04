@@ -586,6 +586,7 @@ class CodexProvider extends AIProvider {
 
   /**
    * Test if Codex CLI is available
+   * Uses fast `--version` check instead of running a prompt.
    * Uses the command configured in the instance (respects ENV > config > default precedence)
    * @returns {Promise<boolean>}
    */
@@ -598,6 +599,10 @@ class CodexProvider extends AIProvider {
       const command = useShell ? `${this.codexCmd} --version` : this.codexCmd;
       const args = useShell ? [] : ['--version'];
 
+      // Log the actual command for debugging config/override issues
+      const fullCmd = useShell ? command : `${command} ${args.join(' ')}`;
+      logger.debug(`Codex availability check: ${fullCmd}`);
+
       const codex = spawn(command, args, {
         env: {
           ...process.env,
@@ -607,20 +612,36 @@ class CodexProvider extends AIProvider {
       });
 
       let stdout = '';
+      let stderr = '';
       let settled = false;
+
+      // Timeout guard: if the CLI hangs, resolve false
+      const availabilityTimeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        logger.warn('Codex CLI availability check timed out after 10s');
+        try { codex.kill(); } catch { /* ignore */ }
+        resolve(false);
+      }, 10000);
 
       codex.stdout.on('data', (data) => {
         stdout += data.toString();
       });
 
+      codex.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
       codex.on('close', (code) => {
         if (settled) return;
         settled = true;
-        if (code === 0 && stdout.includes('codex')) {
+        clearTimeout(availabilityTimeout);
+        if (code === 0) {
           logger.info(`Codex CLI available: ${stdout.trim()}`);
           resolve(true);
         } else {
-          logger.warn('Codex CLI not available or returned unexpected output');
+          const stderrMsg = stderr.trim() ? `: ${stderr.trim()}` : '';
+          logger.warn(`Codex CLI not available or returned unexpected output (exit code ${code})${stderrMsg}`);
           resolve(false);
         }
       });
@@ -628,6 +649,7 @@ class CodexProvider extends AIProvider {
       codex.on('error', (error) => {
         if (settled) return;
         settled = true;
+        clearTimeout(availabilityTimeout);
         logger.warn(`Codex CLI not available: ${error.message}`);
         resolve(false);
       });

@@ -636,6 +636,10 @@ class GeminiProvider extends AIProvider {
       const command = useShell ? `${this.geminiCmd} --version` : this.geminiCmd;
       const args = useShell ? [] : ['--version'];
 
+      // Log the actual command for debugging config/override issues
+      const fullCmd = useShell ? command : `${command} ${args.join(' ')}`;
+      logger.debug(`Gemini availability check: ${fullCmd}`);
+
       const gemini = spawn(command, args, {
         env: {
           ...process.env,

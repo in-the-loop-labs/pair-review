@@ -658,6 +658,10 @@ class ClaudeProvider extends AIProvider {
       const command = useShell ? `${this.claudeCmd} --version` : this.claudeCmd;
       const args = useShell ? [] : ['--version'];
 
+      // Log the actual command for debugging config/override issues
+      const fullCmd = useShell ? command : `${command} ${args.join(' ')}`;
+      logger.debug(`Claude availability check: ${fullCmd}`);
+
       const claude = spawn(command, args, {
         env: {
           ...process.env,

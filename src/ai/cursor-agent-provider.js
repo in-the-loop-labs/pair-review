@@ -682,6 +682,10 @@ class CursorAgentProvider extends AIProvider {
       const command = useShell ? `${this.agentCmd} --version` : this.agentCmd;
       const args = useShell ? [] : ['--version'];
 
+      // Log the actual command for debugging config/override issues
+      const fullCmd = useShell ? command : `${command} ${args.join(' ')}`;
+      logger.debug(`Cursor Agent availability check: ${fullCmd}`);
+
       const agent = spawn(command, args, {
         env: {
           ...process.env,

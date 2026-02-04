@@ -575,6 +575,10 @@ class OpenCodeProvider extends AIProvider {
       const command = useShell ? `${this.opencodeCmd} --version` : this.opencodeCmd;
       const args = useShell ? [] : ['--version'];
 
+      // Log the actual command for debugging config/override issues
+      const fullCmd = useShell ? command : `${command} ${args.join(' ')}`;
+      logger.debug(`OpenCode availability check: ${fullCmd}`);
+
       const opencode = spawn(command, args, {
         env: {
           ...process.env,
