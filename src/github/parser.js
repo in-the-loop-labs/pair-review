@@ -219,6 +219,62 @@ class PRArgumentParser {
   }
 
   /**
+   * Check if a directory is a git repository that matches the specified owner/repo.
+   * Compares the git remote origin URL against the expected owner/repo.
+   *
+   * @param {string} directory - Directory path to check
+   * @param {string} expectedOwner - Expected repository owner
+   * @param {string} expectedRepo - Expected repository name
+   * @returns {Promise<boolean>} True if the directory is a matching git repository
+   */
+  async isMatchingRepository(directory, expectedOwner, expectedRepo) {
+    try {
+      // Use _createGitForDirectory for testability (can be overridden in tests)
+      const git = this._createGitForDirectory(directory);
+
+      // Check if it's a git repository
+      const isRepo = await git.checkIsRepo();
+      if (!isRepo) {
+        return false;
+      }
+
+      // Get remote origin URL
+      const remotes = await git.getRemotes(true);
+      const origin = remotes.find(remote => remote.name === 'origin');
+
+      if (!origin) {
+        return false;
+      }
+
+      const remoteUrl = origin.refs.fetch || origin.refs.push;
+      if (!remoteUrl) {
+        return false;
+      }
+
+      // Parse the owner/repo from the remote URL
+      const { owner, repo } = this.parseRepositoryFromURL(remoteUrl);
+
+      // Compare case-insensitively (GitHub repos are case-insensitive)
+      return owner.toLowerCase() === expectedOwner.toLowerCase() &&
+             repo.toLowerCase() === expectedRepo.toLowerCase();
+    } catch (error) {
+      // Any error means the directory doesn't match
+      return false;
+    }
+  }
+
+  /**
+   * Create a git instance for a given directory.
+   * This method exists for testability - tests can override it.
+   * @param {string} directory - Directory path
+   * @returns {Object} simpleGit instance
+   * @private
+   */
+  _createGitForDirectory(directory) {
+    return simpleGit(directory);
+  }
+
+  /**
    * Check if current directory is a git repository
    * @returns {Promise<boolean>} Whether current directory is a git repo
    */
