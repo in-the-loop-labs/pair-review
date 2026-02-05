@@ -754,7 +754,8 @@ class GitWorktreeManager {
     for (const file of changedFiles) {
       const filename = file.filename || file.file;
       if (!filename) continue;
-      // Add only the immediate parent directory of the file
+      // Add only the immediate parent directory of the file.
+      // Root-level files (no '/') are skipped — cone mode always includes the repo root.
       const lastSlash = filename.lastIndexOf('/');
       if (lastSlash > 0) {
         neededDirs.add(filename.substring(0, lastSlash));
