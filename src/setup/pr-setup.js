@@ -411,8 +411,11 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, onProgres
   // sparse-checkout ensures every PR-changed directory is present on disk so
   // that `git diff` can read the actual file contents.
   //
-  if (prData.changed_files && prData.changed_files.length > 0) {
-    const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(worktreePath, prData.changed_files);
+  // NOTE: prData.changed_files is an INTEGER (count) from the GitHub pulls.get
+  // API, not an array. We must fetch the actual file list via pulls.listFiles.
+  if (prData.changed_files > 0) {
+    const prFiles = await githubClient.fetchPullRequestFiles(owner, repo, prNumber);
+    const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(worktreePath, prFiles);
     if (addedDirs.length > 0) {
       logger.info(`Expanded sparse-checkout for PR directories: ${addedDirs.join(', ')}`);
     }
