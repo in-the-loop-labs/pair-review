@@ -13,6 +13,7 @@ const {
   buildAnalysisLineNumberGuidance,
   buildOrchestrationLineNumberGuidance,
 } = require('./line-number-guidance');
+const { buildSparseCheckoutGuidance } = require('./sparse-checkout-guidance');
 
 /**
  * Skill-appropriate default values for prompt placeholders.
@@ -49,6 +50,12 @@ const SKILL_DEFAULTS = {
   // Collapse when empty
   generatedFiles: '',
   customInstructions: '',
+
+  // For standalone skill usage, include conditional sparse-checkout guidance
+  // since we don't know if the review context uses sparse-checkout.
+  // The conditional flag produces softer language that doesn't assert
+  // sparse-checkout is active — only advises what to do if it is.
+  sparseCheckoutGuidance: buildSparseCheckoutGuidance({ conditional: true }),
 };
 
 /**

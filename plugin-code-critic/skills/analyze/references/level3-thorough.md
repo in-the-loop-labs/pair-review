@@ -207,6 +207,20 @@ Note: You may optionally use parallel read-only Tasks to explore different areas
 - Tracing dependencies across multiple files
 - Analyzing test coverage in parallel with main code analysis
 
+## Monorepo / Sparse Checkout Considerations
+
+If this repository uses sparse-checkout, only a subset of directories may be checked out. You can check by running:
+```
+git sparse-checkout list
+```
+
+If sparse-checkout is active and you need to examine code outside the checked-out directories to understand dependencies, patterns, or impacts, you can expand the checkout:
+```
+git sparse-checkout add <directory>
+```
+
+This is non-destructive and only adds to what's visible in the worktree.
+
 ## Output Format
 
 **>>> CRITICAL: Output ONLY valid JSON. No markdown, no ```json blocks. Start with { end with }. <<<**

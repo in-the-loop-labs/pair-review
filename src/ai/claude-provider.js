@@ -104,6 +104,7 @@ class ClaudeProvider extends AIProvider {
         'Bash(git status*)',
         'Bash(git branch*)',
         'Bash(git rev-parse*)',
+        'Bash(git sparse-checkout*)',
         'Bash(*git-diff-lines*)',
         'Bash(cat *)',
         'Bash(ls *)',

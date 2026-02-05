@@ -62,6 +62,7 @@ router.post('/api/worktrees/create', async (req, res) => {
       repo,
       prNumber: parsedPrNumber,
       githubToken,
+      config,
       onProgress: (progress) => {
         logger.info(`[Setup] ${progress.step}: ${progress.message}`);
       }

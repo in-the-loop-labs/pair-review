@@ -1257,6 +1257,81 @@ describe('GitHubClient', () => {
     });
   });
 
+  describe('fetchPullRequestFiles', () => {
+    it('should return mapped file objects from paginated API response', async () => {
+      const client = new GitHubClient('test-token');
+      const mockPaginate = vi.fn().mockResolvedValue([
+        { filename: 'src/index.js', status: 'modified', additions: 10, deletions: 2, changes: 12, patch: '@@...' },
+        { filename: 'src/utils.js', status: 'added', additions: 50, deletions: 0, changes: 50, patch: '@@...' }
+      ]);
+      client.octokit.paginate = mockPaginate;
+
+      const result = await client.fetchPullRequestFiles('owner', 'repo', 42);
+
+      expect(result).toEqual([
+        { filename: 'src/index.js', status: 'modified', additions: 10, deletions: 2, changes: 12 },
+        { filename: 'src/utils.js', status: 'added', additions: 50, deletions: 0, changes: 50 }
+      ]);
+      // Verify paginate was called with correct arguments
+      expect(mockPaginate).toHaveBeenCalledWith(
+        expect.any(Function),
+        { owner: 'owner', repo: 'repo', pull_number: 42, per_page: 100 }
+      );
+    });
+
+    it('should return empty array for PR with no changed files', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.paginate = vi.fn().mockResolvedValue([]);
+
+      const result = await client.fetchPullRequestFiles('owner', 'repo', 1);
+
+      expect(result).toEqual([]);
+    });
+
+    it('should strip extra fields and only return filename, status, additions, deletions, changes', async () => {
+      const client = new GitHubClient('test-token');
+      client.octokit.paginate = vi.fn().mockResolvedValue([
+        {
+          sha: 'abc123',
+          filename: 'README.md',
+          status: 'modified',
+          additions: 1,
+          deletions: 1,
+          changes: 2,
+          blob_url: 'https://github.com/...',
+          raw_url: 'https://github.com/...',
+          contents_url: 'https://api.github.com/...',
+          patch: '@@ -1 +1 @@\n-old\n+new'
+        }
+      ]);
+
+      const result = await client.fetchPullRequestFiles('owner', 'repo', 5);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual({
+        filename: 'README.md',
+        status: 'modified',
+        additions: 1,
+        deletions: 1,
+        changes: 2
+      });
+      // Ensure extra fields are NOT present
+      expect(result[0]).not.toHaveProperty('sha');
+      expect(result[0]).not.toHaveProperty('patch');
+      expect(result[0]).not.toHaveProperty('blob_url');
+    });
+
+    it('should delegate to handleApiError on API failure', async () => {
+      const client = new GitHubClient('test-token');
+      const apiError = new Error('Not Found');
+      apiError.status = 404;
+      client.octokit.paginate = vi.fn().mockRejectedValue(apiError);
+
+      await expect(client.fetchPullRequestFiles('owner', 'repo', 999))
+        .rejects.toThrow('Pull request #999 not found');
+    });
+  });
+
   describe('GitHubApiError', () => {
     it('should be an instance of Error', () => {
       const error = new GitHubApiError('test message', 401);

@@ -84,6 +84,41 @@ class GitHubClient {
   }
 
   /**
+   * Fetch the list of files changed in a pull request.
+   *
+   * Uses the GitHub REST API `pulls.listFiles` endpoint, which returns an
+   * array of file objects (with `filename`, `status`, `additions`, etc.).
+   * This is distinct from the `changed_files` integer returned by
+   * `pulls.get`, which is only a count.
+   *
+   * Paginates automatically to handle PRs with more than 100 changed files.
+   *
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} pullNumber - Pull request number
+   * @returns {Promise<Array<{filename: string, status: string, additions: number, deletions: number, changes: number}>>}
+   */
+  async fetchPullRequestFiles(owner, repo, pullNumber) {
+    try {
+      const files = await this.octokit.paginate(this.octokit.rest.pulls.listFiles, {
+        owner,
+        repo,
+        pull_number: pullNumber,
+        per_page: 100
+      });
+      return files.map(f => ({
+        filename: f.filename,
+        status: f.status,
+        additions: f.additions,
+        deletions: f.deletions,
+        changes: f.changes
+      }));
+    } catch (error) {
+      await this.handleApiError(error, owner, repo, pullNumber);
+    }
+  }
+
+  /**
    * Validate GitHub token by making a test API call
    * @returns {Promise<boolean>} Whether the token is valid
    */

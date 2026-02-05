@@ -26,10 +26,14 @@ class GitWorktreeManager {
    * Create a git worktree for a PR and checkout to the PR head commit
    * @param {Object} prInfo - PR information { owner, repo, number }
    * @param {Object} prData - PR data from GitHub API
-   * @param {string} repositoryPath - Local repository path
+   * @param {string} repositoryPath - Local repository path (main git root)
+   * @param {Object} [options] - Optional settings
+   * @param {string} [options.worktreeSourcePath] - Path to use as cwd for git worktree add
+   *   (to inherit sparse-checkout from an existing worktree). Falls back to repositoryPath.
    * @returns {Promise<string>} Path to created worktree
    */
-  async createWorktreeForPR(prInfo, prData, repositoryPath) {
+  async createWorktreeForPR(prInfo, prData, repositoryPath, options = {}) {
+    const { worktreeSourcePath } = options;
     // Check if worktree already exists in DB
     const repository = normalizeRepository(prInfo.owner, prInfo.repo);
     let worktreePath;
@@ -130,14 +134,20 @@ class GitWorktreeManager {
       }
       
       // Create worktree and checkout to base branch
-      console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch}...`);
+      // Use worktreeSourcePath as cwd if provided (to inherit sparse-checkout from existing worktree)
+      const worktreeAddGit = worktreeSourcePath ? simpleGit(worktreeSourcePath) : git;
+      if (worktreeSourcePath) {
+        console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch} (inheriting sparse-checkout from ${worktreeSourcePath})...`);
+      } else {
+        console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch}...`);
+      }
       try {
-        await git.raw(['worktree', 'add', worktreePath, `origin/${prData.base_branch}`]);
+        await worktreeAddGit.raw(['worktree', 'add', worktreePath, `origin/${prData.base_branch}`]);
       } catch (worktreeError) {
         // If worktree creation fails due to existing registration, try with --force
         if (worktreeError.message.includes('already registered')) {
           console.log('Worktree already registered, trying with --force...');
-          await git.raw(['worktree', 'add', '--force', worktreePath, `origin/${prData.base_branch}`]);
+          await worktreeAddGit.raw(['worktree', 'add', '--force', worktreePath, `origin/${prData.base_branch}`]);
         } else {
           throw worktreeError;
         }
@@ -691,6 +701,98 @@ class GitWorktreeManager {
         error: error.message
       };
     }
+  }
+
+  /**
+   * Check if sparse-checkout is enabled for a git repository
+   * @param {string} repoPath - Path to the git repository or worktree
+   * @returns {Promise<boolean>} Whether sparse-checkout is enabled
+   */
+  async isSparseCheckoutEnabled(repoPath) {
+    try {
+      const git = simpleGit(repoPath);
+      const config = await git.raw(['config', 'core.sparseCheckout']);
+      return config.trim() === 'true';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Get current sparse-checkout patterns
+   * @param {string} repoPath - Path to the git repository or worktree
+   * @returns {Promise<string[]>} Array of sparse-checkout patterns
+   */
+  async getSparseCheckoutPatterns(repoPath) {
+    try {
+      const git = simpleGit(repoPath);
+      const output = await git.raw(['sparse-checkout', 'list']);
+      return output.trim().split('\n').filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Ensure all directories containing changed files are in sparse-checkout.
+   * Finds the minimal set of directories to add.
+   *
+   * @param {string} worktreePath - Path to the worktree
+   * @param {Array} changedFiles - Array of changed file objects with filename or file property
+   * @returns {Promise<string[]>} Directories that were added
+   */
+  async ensurePRDirectoriesInSparseCheckout(worktreePath, changedFiles) {
+    if (!await this.isSparseCheckoutEnabled(worktreePath)) {
+      return [];
+    }
+
+    const currentPatterns = await this.getSparseCheckoutPatterns(worktreePath);
+
+    // Extract unique directory paths from changed files
+    // Support both {filename} and {file} properties
+    const neededDirs = new Set();
+    for (const file of changedFiles) {
+      const filename = file.filename || file.file;
+      if (!filename) continue;
+      // Add only the immediate parent directory of the file.
+      // Root-level files (no '/') are skipped — cone mode always includes the repo root.
+      const lastSlash = filename.lastIndexOf('/');
+      if (lastSlash > 0) {
+        neededDirs.add(filename.substring(0, lastSlash));
+      }
+    }
+
+    // Find directories not covered by current patterns.
+    // NOTE: This uses startsWith() for directory-based comparison, which only
+    // supports cone mode (directory path patterns). Glob-based sparse-checkout
+    // patterns (e.g., '*.js', '**/test/') would not be matched correctly.
+    // This is acceptable for now since we only support cone mode throughout
+    // the worktree implementation. See tech debt tracking for glob support.
+    const missingDirs = [...neededDirs].filter(dir => {
+      // Check if dir is already covered by an existing pattern
+      return !currentPatterns.some(pattern => {
+        // Covered if: exact match or dir is inside pattern (pattern is parent).
+        // Note: we do NOT check pattern.startsWith(dir + '/') because a child
+        // pattern (e.g., 'packages/core') does not cover files directly under
+        // the parent directory (e.g., 'packages/package.json').
+        return dir === pattern ||
+               dir.startsWith(pattern + '/');
+      });
+    });
+
+    // Find minimal set (remove dirs whose parents are also in missingDirs)
+    const minimalDirs = missingDirs.filter(dir => {
+      return !missingDirs.some(other =>
+        other !== dir && dir.startsWith(other + '/')
+      );
+    });
+
+    if (minimalDirs.length > 0) {
+      const git = simpleGit(worktreePath);
+      await git.raw(['sparse-checkout', 'add', ...minimalDirs]);
+    }
+
+    return minimalDirs;
   }
 }
 

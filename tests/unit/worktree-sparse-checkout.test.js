@@ -1,0 +1,233 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execSync } from 'child_process';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
+
+const { GitWorktreeManager } = require('../../src/git/worktree');
+
+describe('GitWorktreeManager sparse-checkout methods', () => {
+  let testDir;
+  let worktreeManager;
+
+  beforeEach(async () => {
+    // Create a temporary directory with a git repo
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'pair-review-sparse-test-'));
+    worktreeManager = new GitWorktreeManager();
+
+    // Initialize git repo
+    execSync('git init', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: testDir, stdio: 'pipe' });
+    execSync('git config user.name "Test User"', { cwd: testDir, stdio: 'pipe' });
+
+    // Create initial file and commit
+    await fs.mkdir(path.join(testDir, 'packages', 'core'), { recursive: true });
+    await fs.writeFile(path.join(testDir, 'packages', 'core', 'index.js'), 'export default {};\n');
+    await fs.writeFile(path.join(testDir, 'README.md'), '# Test\n');
+    execSync('git add .', { cwd: testDir, stdio: 'pipe' });
+    execSync('git commit -m "Initial commit"', { cwd: testDir, stdio: 'pipe' });
+  });
+
+  afterEach(async () => {
+    // Cleanup
+    if (testDir) {
+      await fs.rm(testDir, { recursive: true, force: true });
+    }
+  });
+
+  describe('isSparseCheckoutEnabled', () => {
+    it('should return false for a normal repo without sparse-checkout', async () => {
+      const isEnabled = await worktreeManager.isSparseCheckoutEnabled(testDir);
+      expect(isEnabled).toBe(false);
+    });
+
+    it('should return true when sparse-checkout is enabled', async () => {
+      // Enable sparse-checkout
+      execSync('git config core.sparseCheckout true', { cwd: testDir, stdio: 'pipe' });
+
+      const isEnabled = await worktreeManager.isSparseCheckoutEnabled(testDir);
+      expect(isEnabled).toBe(true);
+    });
+
+    it('should return false for non-existent path', async () => {
+      const isEnabled = await worktreeManager.isSparseCheckoutEnabled('/non/existent/path');
+      expect(isEnabled).toBe(false);
+    });
+  });
+
+  describe('getSparseCheckoutPatterns', () => {
+    it('should return empty array for repo without sparse-checkout patterns', async () => {
+      const patterns = await worktreeManager.getSparseCheckoutPatterns(testDir);
+      expect(patterns).toEqual([]);
+    });
+
+    it('should return patterns when sparse-checkout is configured', async () => {
+      // Enable sparse-checkout with patterns
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages/core', { cwd: testDir, stdio: 'pipe' });
+
+      const patterns = await worktreeManager.getSparseCheckoutPatterns(testDir);
+      expect(patterns).toContain('packages/core');
+    });
+
+    it('should return multiple patterns', async () => {
+      // Create additional directory structure for testing multiple patterns
+      await fs.mkdir(path.join(testDir, 'packages', 'utils'), { recursive: true });
+      await fs.writeFile(path.join(testDir, 'packages', 'utils', 'index.js'), 'export {};\n');
+      execSync('git add .', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add utils package"', { cwd: testDir, stdio: 'pipe' });
+
+      // Enable sparse-checkout with multiple directory patterns
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages/core packages/utils', { cwd: testDir, stdio: 'pipe' });
+
+      const patterns = await worktreeManager.getSparseCheckoutPatterns(testDir);
+      expect(patterns.length).toBeGreaterThanOrEqual(2);
+      expect(patterns).toContain('packages/core');
+      expect(patterns).toContain('packages/utils');
+    });
+
+    it('should return empty array for non-existent path', async () => {
+      const patterns = await worktreeManager.getSparseCheckoutPatterns('/non/existent/path');
+      expect(patterns).toEqual([]);
+    });
+  });
+
+  describe('ensurePRDirectoriesInSparseCheckout', () => {
+    it('should return empty array when sparse-checkout is not enabled', async () => {
+      const changedFiles = [{ filename: 'packages/core/index.js' }];
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      expect(addedDirs).toEqual([]);
+    });
+
+    it('should return empty array when all directories are already covered', async () => {
+      // Enable sparse-checkout with the needed patterns
+      // Use 'packages' as parent to cover 'packages/core'
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages', { cwd: testDir, stdio: 'pipe' });
+
+      const changedFiles = [{ filename: 'packages/core/index.js' }];
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      expect(addedDirs).toEqual([]);
+    });
+
+    it('should add missing directories to sparse-checkout', async () => {
+      // Create another directory structure we want to add
+      await fs.mkdir(path.join(testDir, 'libs', 'shared'), { recursive: true });
+      await fs.writeFile(path.join(testDir, 'libs', 'shared', 'helpers.js'), 'export {};\n');
+      execSync('git add libs', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add libs package"', { cwd: testDir, stdio: 'pipe' });
+
+      // Enable sparse-checkout with only packages, not libs
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages', { cwd: testDir, stdio: 'pipe' });
+
+      const changedFiles = [{ filename: 'libs/shared/helpers.js' }];
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      // Should add minimal directory set
+      expect(addedDirs.length).toBeGreaterThan(0);
+      expect(addedDirs.some(d => d.includes('libs'))).toBe(true);
+    });
+
+    it('should handle files with "file" property instead of "filename"', async () => {
+      const changedFiles = [{ file: 'packages/core/index.js' }];
+
+      // Even without sparse-checkout enabled, it should handle the file property
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      expect(addedDirs).toEqual([]);
+    });
+
+    it('should handle empty changedFiles array', async () => {
+      // Enable sparse-checkout
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages', { cwd: testDir, stdio: 'pipe' });
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, []);
+      expect(addedDirs).toEqual([]);
+    });
+
+    it('should handle files without filename or file property', async () => {
+      // Enable sparse-checkout
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages', { cwd: testDir, stdio: 'pipe' });
+
+      const changedFiles = [{ status: 'modified' }, { other: 'data' }];
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      expect(addedDirs).toEqual([]);
+    });
+
+    it('should only extract immediate parent directories, not all ancestors', async () => {
+      // Create deeply nested structure
+      await fs.mkdir(path.join(testDir, 'packages', 'foo', 'src', 'lib'), { recursive: true });
+      await fs.writeFile(path.join(testDir, 'packages', 'foo', 'src', 'lib', 'deep.js'), 'export {};\n');
+      execSync('git add .', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add deep structure"', { cwd: testDir, stdio: 'pipe' });
+
+      // Enable sparse-checkout with a minimal pattern
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages/core', { cwd: testDir, stdio: 'pipe' });
+
+      const changedFiles = [
+        { filename: 'packages/foo/src/lib/deep.js' }
+      ];
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      // Should add only the immediate parent 'packages/foo/src/lib',
+      // NOT 'packages', 'packages/foo', or 'packages/foo/src'
+      expect(addedDirs).toEqual(['packages/foo/src/lib']);
+    });
+
+    it('should not consider parent dir covered when only a child pattern exists', async () => {
+      // Setup: sparse-checkout has 'packages/core' but a changed file is
+      // directly under 'packages/' (e.g., 'packages/package.json')
+      await fs.writeFile(path.join(testDir, 'packages', 'package.json'), '{}\n');
+      execSync('git add .', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add packages/package.json"', { cwd: testDir, stdio: 'pipe' });
+
+      // Enable sparse-checkout with only packages/core
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages/core', { cwd: testDir, stdio: 'pipe' });
+
+      const changedFiles = [
+        { filename: 'packages/package.json' }
+      ];
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      // 'packages' should NOT be considered covered by 'packages/core' —
+      // the child pattern doesn't cover files at the parent level
+      expect(addedDirs).toContain('packages');
+    });
+
+    it('should find minimal set of directories (avoid redundant parents)', async () => {
+      // Create nested structure first (before sparse-checkout)
+      await fs.mkdir(path.join(testDir, 'src', 'utils', 'deep'), { recursive: true });
+      await fs.writeFile(path.join(testDir, 'src', 'index.js'), 'export {};\n');
+      await fs.writeFile(path.join(testDir, 'src', 'utils', 'helper.js'), 'export {};\n');
+      await fs.writeFile(path.join(testDir, 'src', 'utils', 'deep', 'nested.js'), 'export {};\n');
+      execSync('git add src', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add src structure"', { cwd: testDir, stdio: 'pipe' });
+
+      // Enable sparse-checkout with only packages directory
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages', { cwd: testDir, stdio: 'pipe' });
+
+      const changedFiles = [
+        { filename: 'src/index.js' },
+        { filename: 'src/utils/helper.js' },
+        { filename: 'src/utils/deep/nested.js' }
+      ];
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      // Should add 'src' which covers all, not 'src', 'src/utils', 'src/utils/deep'
+      expect(addedDirs).toContain('src');
+      // Should not contain child directories if parent is added
+      expect(addedDirs).not.toContain('src/utils');
+      expect(addedDirs).not.toContain('src/utils/deep');
+    });
+  });
+});

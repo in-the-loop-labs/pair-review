@@ -113,6 +113,7 @@ class CopilotProvider extends AIProvider {
           '--allow-tool', 'shell(git status)',
           '--allow-tool', 'shell(git branch)',
           '--allow-tool', 'shell(git rev-parse)',
+          '--allow-tool', 'shell(git sparse-checkout)',
           // Custom tool for annotated diff line mapping (matches both direct and path invocations)
           '--allow-tool', 'shell(git-diff-lines)',
           '--allow-tool', 'shell(*/git-diff-lines)',  // Absolute path invocation
