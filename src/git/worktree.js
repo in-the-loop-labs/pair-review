@@ -754,10 +754,10 @@ class GitWorktreeManager {
     for (const file of changedFiles) {
       const filename = file.filename || file.file;
       if (!filename) continue;
-      const parts = filename.split('/');
-      // Add each directory level (packages/foo, packages/foo/src, etc.)
-      for (let i = 1; i <= parts.length - 1; i++) {
-        neededDirs.add(parts.slice(0, i).join('/'));
+      // Add only the immediate parent directory of the file
+      const lastSlash = filename.lastIndexOf('/');
+      if (lastSlash > 0) {
+        neededDirs.add(filename.substring(0, lastSlash));
       }
     }
 
@@ -770,11 +770,12 @@ class GitWorktreeManager {
     const missingDirs = [...neededDirs].filter(dir => {
       // Check if dir is already covered by an existing pattern
       return !currentPatterns.some(pattern => {
-        // Covered if: exact match, dir is inside pattern (pattern is parent),
-        // or pattern is inside dir (dir is parent of an already-checked-out area)
+        // Covered if: exact match or dir is inside pattern (pattern is parent).
+        // Note: we do NOT check pattern.startsWith(dir + '/') because a child
+        // pattern (e.g., 'packages/core') does not cover files directly under
+        // the parent directory (e.g., 'packages/package.json').
         return dir === pattern ||
-               dir.startsWith(pattern + '/') ||
-               pattern.startsWith(dir + '/');
+               dir.startsWith(pattern + '/');
       });
     });
 

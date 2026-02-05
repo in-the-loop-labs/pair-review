@@ -16,7 +16,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, loadConfig, getMonorepoPath } = require('../config');
+const { getConfigDir, getMonorepoPath } = require('../config');
 const logger = require('../utils/logger');
 const simpleGit = require('simple-git');
 const fs = require('fs').promises;
@@ -200,13 +200,14 @@ async function registerRepositoryLocation(db, currentDir, owner, repo) {
  * @param {string} params.repo - Repository name
  * @param {string} params.repository - Normalized "owner/repo" string
  * @param {number} params.prNumber - PR number (used for worktree lookup)
+ * @param {Object} [params.config] - Application config (used for monorepo path lookup)
  * @param {Function} [params.onProgress] - Optional progress callback
  * @returns {Promise<{ repositoryPath: string, knownPath: string|null, worktreeSourcePath: string|null }>}
  *   - repositoryPath: the main git root (bare repo or .git parent)
  *   - knownPath: the known path from database (if any)
  *   - worktreeSourcePath: path to use as cwd for `git worktree add` (may be a worktree with sparse-checkout)
  */
-async function findRepositoryPath({ db, owner, repo, repository, prNumber, onProgress }) {
+async function findRepositoryPath({ db, owner, repo, repository, prNumber, config, onProgress }) {
   const worktreeManager = new GitWorktreeManager(db);
   const repoSettingsRepo = new RepoSettingsRepository(db);
   const worktreeRepo = new WorktreeRepository(db);
@@ -217,8 +218,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, onPro
   // ------------------------------------------------------------------
   // Tier -1: Explicit monorepo configuration (highest priority)
   // ------------------------------------------------------------------
-  const { config } = await loadConfig();
-  const monorepoPath = getMonorepoPath(config, repository);
+  const monorepoPath = config ? getMonorepoPath(config, repository) : null;
 
   if (monorepoPath) {
     // The configured path might be a worktree or a regular/bare repo.
@@ -351,10 +351,11 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, onPro
  * @param {string} params.repo - Repository name
  * @param {number} params.prNumber - Pull request number
  * @param {string} params.githubToken - GitHub PAT
+ * @param {Object} [params.config] - Application config (for monorepo path lookup)
  * @param {Function} [params.onProgress] - Optional progress callback
  * @returns {Promise<{ reviewUrl: string, title: string }>}
  */
-async function setupPRReview({ db, owner, repo, prNumber, githubToken, onProgress }) {
+async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, onProgress }) {
   const repository = normalizeRepository(owner, repo);
   const progress = onProgress || (() => {});
 
@@ -386,6 +387,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, onProgres
     repo,
     repository,
     prNumber,
+    config,
     onProgress: progress
   });
   progress({ step: 'repo', status: 'completed', message: `Repository located at ${repositoryPath}` });
@@ -414,10 +416,20 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, onProgres
   // NOTE: prData.changed_files is an INTEGER (count) from the GitHub pulls.get
   // API, not an array. We must fetch the actual file list via pulls.listFiles.
   if (prData.changed_files > 0) {
-    const prFiles = await githubClient.fetchPullRequestFiles(owner, repo, prNumber);
-    const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(worktreePath, prFiles);
-    if (addedDirs.length > 0) {
-      logger.info(`Expanded sparse-checkout for PR directories: ${addedDirs.join(', ')}`);
+    const isSparse = await worktreeManager.isSparseCheckoutEnabled(worktreePath);
+    if (isSparse) {
+      progress({ step: 'sparse', status: 'running', message: 'Expanding sparse-checkout for PR directories...' });
+      try {
+        const prFiles = await githubClient.fetchPullRequestFiles(owner, repo, prNumber);
+        const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(worktreePath, prFiles);
+        if (addedDirs.length > 0) {
+          logger.info(`Expanded sparse-checkout for PR directories: ${addedDirs.join(', ')}`);
+        }
+        progress({ step: 'sparse', status: 'completed', message: addedDirs.length > 0 ? `Expanded: ${addedDirs.join(', ')}` : 'No expansion needed' });
+      } catch (sparseError) {
+        logger.warn(`Sparse-checkout expansion failed (non-fatal): ${sparseError.message}`);
+        progress({ step: 'sparse', status: 'completed', message: `Sparse-checkout expansion skipped: ${sparseError.message}` });
+      }
     }
   }
 

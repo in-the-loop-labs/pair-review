@@ -161,6 +161,48 @@ describe('GitWorktreeManager sparse-checkout methods', () => {
       expect(addedDirs).toEqual([]);
     });
 
+    it('should only extract immediate parent directories, not all ancestors', async () => {
+      // Create deeply nested structure
+      await fs.mkdir(path.join(testDir, 'packages', 'foo', 'src', 'lib'), { recursive: true });
+      await fs.writeFile(path.join(testDir, 'packages', 'foo', 'src', 'lib', 'deep.js'), 'export {};\n');
+      execSync('git add .', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add deep structure"', { cwd: testDir, stdio: 'pipe' });
+
+      // Enable sparse-checkout with a minimal pattern
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages/core', { cwd: testDir, stdio: 'pipe' });
+
+      const changedFiles = [
+        { filename: 'packages/foo/src/lib/deep.js' }
+      ];
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      // Should add only the immediate parent 'packages/foo/src/lib',
+      // NOT 'packages', 'packages/foo', or 'packages/foo/src'
+      expect(addedDirs).toEqual(['packages/foo/src/lib']);
+    });
+
+    it('should not consider parent dir covered when only a child pattern exists', async () => {
+      // Setup: sparse-checkout has 'packages/core' but a changed file is
+      // directly under 'packages/' (e.g., 'packages/package.json')
+      await fs.writeFile(path.join(testDir, 'packages', 'package.json'), '{}\n');
+      execSync('git add .', { cwd: testDir, stdio: 'pipe' });
+      execSync('git commit -m "Add packages/package.json"', { cwd: testDir, stdio: 'pipe' });
+
+      // Enable sparse-checkout with only packages/core
+      execSync('git sparse-checkout init', { cwd: testDir, stdio: 'pipe' });
+      execSync('git sparse-checkout set packages/core', { cwd: testDir, stdio: 'pipe' });
+
+      const changedFiles = [
+        { filename: 'packages/package.json' }
+      ];
+
+      const addedDirs = await worktreeManager.ensurePRDirectoriesInSparseCheckout(testDir, changedFiles);
+      // 'packages' should NOT be considered covered by 'packages/core' —
+      // the child pattern doesn't cover files at the parent level
+      expect(addedDirs).toContain('packages');
+    });
+
     it('should find minimal set of directories (avoid redundant parents)', async () => {
       // Create nested structure first (before sparse-checkout)
       await fs.mkdir(path.join(testDir, 'src', 'utils', 'deep'), { recursive: true });

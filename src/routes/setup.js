@@ -113,6 +113,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           repo,
           prNumber,
           githubToken,
+          config,
           onProgress: (progress) => {
             sendSetupSSE(setupId, 'step', progress);
           }

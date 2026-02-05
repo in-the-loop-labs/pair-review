@@ -7,13 +7,16 @@ import path from 'path';
 // Mocking Strategy
 // ============================================================================
 // The project uses CommonJS modules, and pr-setup.js destructures imports at
-// module load time (e.g., `const { loadConfig } = require('../config')`).
+// module load time (e.g., `const { getMonorepoPath } = require('../config')`).
 // This means the destructured variables capture whichever function is on the
 // module exports object at the time pr-setup.js is first require()'d.
 //
 // To intercept these, we must install spies BEFORE pr-setup.js is loaded.
 // We use vi.spyOn() at the top level (not in beforeEach) so the spied
 // functions are already in place when pr-setup.js destructures them.
+//
+// Note: findRepositoryPath accepts `config` as a parameter (rather than
+// calling loadConfig() internally), so we pass testConfig directly in tests.
 //
 // IMPORTANT: Do NOT call vi.restoreAllMocks() because that would replace the
 // spied functions with the originals, breaking the interception for subsequent
@@ -31,7 +34,6 @@ const { RepoSettingsRepository } = require('../../src/database');
 
 // Install spies BEFORE pr-setup.js is loaded so that its destructured
 // variables capture the spy wrappers, not the original functions.
-vi.spyOn(configModule, 'loadConfig');
 vi.spyOn(configModule, 'getConfigDir');
 vi.spyOn(configModule, 'getMonorepoPath');
 vi.spyOn(localReview, 'findMainGitRoot');
@@ -49,6 +51,7 @@ const TEST_REPO_ROOT = path.resolve(__dirname, '../..');
 
 describe('findRepositoryPath with monorepo configuration', () => {
   let db;
+  let testConfig;
 
   beforeEach(async () => {
     db = await createTestDatabase();
@@ -56,11 +59,9 @@ describe('findRepositoryPath with monorepo configuration', () => {
     // Reset mock implementations (but keep the spies installed)
     vi.clearAllMocks();
 
-    // Default mocks: empty config, no monorepo
-    configModule.loadConfig.mockResolvedValue({
-      config: { github_token: 'test-token', monorepos: {} },
-      isFirstRun: false
-    });
+    // Default config object passed directly to findRepositoryPath
+    testConfig = { github_token: 'test-token', monorepos: {} };
+
     configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
     configModule.getMonorepoPath.mockReturnValue(null);
 
@@ -103,7 +104,8 @@ describe('findRepositoryPath with monorepo configuration', () => {
       owner: 'owner',
       repo: 'repo',
       repository: 'owner/repo',
-      prNumber: 42
+      prNumber: 42,
+      config: testConfig
     });
 
     // Tier -1 (monorepo) should win over Tier 0 (known path)
@@ -126,7 +128,8 @@ describe('findRepositoryPath with monorepo configuration', () => {
       owner: 'owner',
       repo: 'repo',
       repository: 'owner/repo',
-      prNumber: 42
+      prNumber: 42,
+      config: testConfig
     });
 
     // repositoryPath should be the resolved main root
@@ -146,7 +149,8 @@ describe('findRepositoryPath with monorepo configuration', () => {
       owner: 'owner',
       repo: 'repo',
       repository: 'owner/repo',
-      prNumber: 42
+      prNumber: 42,
+      config: testConfig
     });
 
     expect(result.repositoryPath).toBe(TEST_REPO_ROOT);
@@ -171,7 +175,8 @@ describe('findRepositoryPath with monorepo configuration', () => {
       owner: 'owner',
       repo: 'repo',
       repository: 'owner/repo',
-      prNumber: 42
+      prNumber: 42,
+      config: testConfig
     });
 
     // Monorepo path failed, so Tier 0 (known path) should be used
@@ -199,7 +204,8 @@ describe('findRepositoryPath with monorepo configuration', () => {
       owner: 'owner',
       repo: 'repo',
       repository: 'owner/repo',
-      prNumber: 42
+      prNumber: 42,
+      config: testConfig
     });
 
     // Monorepo git commands failed (non-existent path), should fall back to Tier 0
@@ -224,7 +230,8 @@ describe('findRepositoryPath with monorepo configuration', () => {
       owner: 'owner',
       repo: 'repo',
       repository: 'owner/repo',
-      prNumber: 42
+      prNumber: 42,
+      config: testConfig
     });
 
     // No valid git structure at monorepo path, should fall back to Tier 0
@@ -248,7 +255,8 @@ describe('findRepositoryPath with monorepo configuration', () => {
       owner: 'owner',
       repo: 'repo',
       repository: 'owner/repo',
-      prNumber: 42
+      prNumber: 42,
+      config: testConfig
     });
 
     expect(result.repositoryPath).toBe(TEST_REPO_ROOT);
@@ -267,7 +275,8 @@ describe('findRepositoryPath with monorepo configuration', () => {
       owner: 'owner',
       repo: 'repo',
       repository: 'owner/repo',
-      prNumber: 42
+      prNumber: 42,
+      config: testConfig
     });
 
     expect(result.repositoryPath).toBe(TEST_REPO_ROOT);
