@@ -128,6 +128,7 @@ class GeminiProvider extends AIProvider {
         'run_shell_command(git status)',
         'run_shell_command(git branch)',
         'run_shell_command(git rev-parse)',
+        'run_shell_command(git sparse-checkout)',
         // Read-only shell commands
         'run_shell_command(ls)',           // Directory listing
         'run_shell_command(cat)',          // File content viewing
