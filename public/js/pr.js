@@ -3676,6 +3676,15 @@ class PRManager {
         // Reload the files/diff with fresh data
         await this.loadAndDisplayFiles(owner, repo, number);
 
+        // Re-render comments and AI suggestions on the fresh DOM
+        // (renderDiff clears the diff container, so we must re-populate)
+        const includeDismissed = window.aiPanel?.showDismissedComments || false;
+        await this.loadUserComments(includeDismissed);
+        // Note: Unlike loadPR() which skips this when analysisHistoryManager exists
+        // (because the manager triggers loadAISuggestions via onSelectionChange on init),
+        // refresh must call unconditionally since the manager won't re-fire its callback.
+        await this.loadAISuggestions(null, this.selectedRunId);
+
         // Restore expanded folders
         this.expandedFolders = expandedFolders;
 
