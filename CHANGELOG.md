@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.1
+
+### Patch Changes
+
+- db90e67: Fix clearing user comments not working after diff refresh
+
+  After refreshing the diff (in both Local and PR mode), the DOM is cleared by `renderDiff()` but comments and AI suggestions were not re-rendered. This caused `clearAllUserComments()` to find zero DOM elements and bail with "No comments to clear". Now both `refreshDiff()` and `refreshPR()` reload user comments and AI suggestions after re-rendering the diff, preserving the selected analysis run ID.
+
+- e0f7360: Add pagination to the index page worktree list with "Show more" button. Uses cursor-based pagination for stability during background stale cleanup.
+
 ## 1.3.0
 
 ### Minor Changes
