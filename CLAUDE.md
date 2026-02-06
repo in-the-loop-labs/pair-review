@@ -161,6 +161,9 @@ Test structure:
 - When modifying prompt templates or line number guidance in `src/ai/prompts/`, run `node scripts/generate-skill-prompts.js` to regenerate the static reference files in `plugin-code-critic/skills/analyze/references/`
 - These reference files are used by the `code-critic:analyze` skill when no MCP connection is available, so they must stay in sync with the source prompts
 
+### Logging Convention
+- Always use `logger` (from `src/utils/logger.js`) instead of `console.log/error/warn` in server-side code. The logger provides consistent formatting and can be configured for different output levels. This applies to all route handlers, middleware, and utility code.
+
 ### Research Before Implementation
 - **Look for official documentation before guessing at technical specs**. When integrating with external tools or APIs (Claude CLI, Gemini CLI, etc.), search for and consult official documentation rather than inferring behavior from trial and error. This prevents bugs from incorrect assumptions about data formats, message types, or API contracts.
 - Key documentation sources for AI provider CLIs:
