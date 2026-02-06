@@ -1192,6 +1192,15 @@ class LocalManager {
       // Reload the diff display
       await this.loadLocalDiff();
 
+      // Re-render comments and AI suggestions on the fresh DOM
+      // (renderDiff clears the diff container, so we must re-populate)
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await manager.loadUserComments(includeDismissed);
+      // Note: Unlike loadLocalReview() which skips this when analysisHistoryManager exists
+      // (because the manager triggers loadAISuggestions via onSelectionChange on init),
+      // refresh must call unconditionally since the manager won't re-fire its callback.
+      await manager.loadAISuggestions(null, manager.selectedRunId);
+
       // Show success toast
       if (window.toast) {
         window.toast.showSuccess('Diff refreshed successfully');
