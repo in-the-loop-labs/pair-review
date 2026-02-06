@@ -746,6 +746,57 @@
             font-size: 14px;
         }
 
+        /* Show More button for pagination */
+        .show-more-container {
+            display: flex;
+            justify-content: center;
+            padding: 16px 0 0;
+        }
+
+        .btn-show-more {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 24px;
+            font-family: var(--font-sans);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--color-text-secondary);
+            background: var(--color-bg-primary);
+            border: 1px solid var(--color-border-primary);
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .btn-show-more:hover:not(:disabled) {
+            background: var(--color-bg-secondary);
+            color: var(--color-text-primary);
+        }
+
+        .btn-show-more:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-show-more .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--color-border-primary);
+            border-top-color: var(--color-accent-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: none;
+        }
+
+        .btn-show-more.loading .spinner {
+            display: block;
+        }
+
+        .btn-show-more.loading .btn-show-more-text {
+            display: none;
+        }
+
         /* Initial loading state - hide content until JS determines what to show */
         .loading-hidden {
             display: none !important;
@@ -1081,18 +1132,36 @@
             }
         }
 
-        // Event delegation for delete buttons
+        // Event delegation for delete buttons and show-more button
         document.addEventListener('click', function(event) {
             const deleteBtn = event.target.closest('.btn-delete-worktree');
             if (deleteBtn) {
                 event.preventDefault();
                 event.stopPropagation();
                 deleteWorktree(deleteBtn);
+                return;
+            }
+
+            const showMoreBtn = event.target.closest('#btn-show-more');
+            if (showMoreBtn) {
+                event.preventDefault();
+                loadMoreReviews();
             }
         });
 
+        /** Pagination state for the recent reviews list */
+        const recentReviewsPagination = {
+            /** ISO timestamp of the last loaded item (cursor for next fetch) */
+            lastTimestamp: null,
+            /** Number of worktrees to fetch per page */
+            pageSize: 10,
+            /** Whether the server has indicated more results exist */
+            hasMore: false
+        };
+
         /**
-         * Fetch and display recent reviews
+         * Fetch and display recent reviews (initial load).
+         * Resets pagination state and renders the full table from scratch.
          */
         async function loadRecentReviews() {
             const container = document.getElementById('recent-reviews-container');
@@ -1100,8 +1169,12 @@
             const sectionHeader = document.getElementById('recent-reviews-header');
             const usageInfo = document.getElementById('usage-info');
 
+            // Reset pagination state
+            recentReviewsPagination.lastTimestamp = null;
+            recentReviewsPagination.hasMore = false;
+
             try {
-                const response = await fetch('/api/worktrees/recent?limit=10');
+                const response = await fetch(`/api/worktrees/recent?limit=${recentReviewsPagination.pageSize}`);
 
                 if (!response.ok) {
                     throw new Error('Failed to fetch recent reviews');
@@ -1123,6 +1196,10 @@
                     return;
                 }
 
+                // Update pagination state — track the cursor for the next page
+                recentReviewsPagination.lastTimestamp = data.worktrees[data.worktrees.length - 1].last_accessed_at;
+                recentReviewsPagination.hasMore = !!data.hasMore;
+
                 // Hide usage info when there are reviews (keep loading-hidden class)
                 // Show the section header
                 if (sectionHeader) sectionHeader.classList.remove('loading-hidden');
@@ -1140,10 +1217,11 @@
                                 <th>Actions</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="recent-reviews-tbody">
                             ${data.worktrees.map(renderRecentReviewRow).join('')}
                         </tbody>
                     </table>
+                    ${renderShowMoreButton(data.hasMore)}
                 `;
                 container.innerHTML = html;
                 container.classList.remove('recent-reviews-loading');
@@ -1153,6 +1231,90 @@
                 // Hide the section on error, show usage info as fallback
                 section.style.display = 'none';
                 if (usageInfo) usageInfo.classList.remove('loading-hidden');
+            }
+        }
+
+        /**
+         * Render the "Show more" button HTML.
+         * @param {boolean} hasMore - Whether more results are available
+         * @returns {string} HTML string for the show-more container
+         */
+        function renderShowMoreButton(hasMore) {
+            if (!hasMore) return '';
+            return `
+                <div class="show-more-container" id="show-more-container">
+                    <button class="btn-show-more" id="btn-show-more" type="button">
+                        <span class="btn-show-more-text">Show more</span>
+                        <span class="spinner"></span>
+                    </button>
+                </div>
+            `;
+        }
+
+        /**
+         * Load the next page of worktrees and append them to the existing table.
+         * Called when the "Show more" button is clicked.
+         */
+        async function loadMoreReviews() {
+            const btn = document.getElementById('btn-show-more');
+            const tbody = document.getElementById('recent-reviews-tbody');
+            if (!btn || !tbody) return;
+
+            // Show loading state on the button
+            btn.classList.add('loading');
+            btn.disabled = true;
+
+            try {
+                const { lastTimestamp, pageSize } = recentReviewsPagination;
+                const params = new URLSearchParams({ limit: pageSize });
+                if (lastTimestamp) params.set('before', lastTimestamp);
+                const response = await fetch(`/api/worktrees/recent?${params}`);
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch more reviews');
+                }
+
+                const data = await response.json();
+
+                // Guard against stale response if the table was refreshed (e.g. by a delete) while loading
+                if (!document.contains(btn)) return;
+
+                if (!data.success || !data.worktrees || data.worktrees.length === 0) {
+                    // No more results - remove the button
+                    const showMoreContainer = document.getElementById('show-more-container');
+                    if (showMoreContainer) showMoreContainer.remove();
+                    recentReviewsPagination.hasMore = false;
+                    return;
+                }
+
+                // Append new rows to the existing table body
+                tbody.insertAdjacentHTML('beforeend', data.worktrees.map(renderRecentReviewRow).join(''));
+
+                // Update pagination state — advance the cursor
+                recentReviewsPagination.lastTimestamp = data.worktrees[data.worktrees.length - 1].last_accessed_at;
+                recentReviewsPagination.hasMore = !!data.hasMore;
+
+                // Update or remove the "Show more" button
+                if (!data.hasMore) {
+                    const showMoreContainer = document.getElementById('show-more-container');
+                    if (showMoreContainer) showMoreContainer.remove();
+                } else {
+                    // Reset button state
+                    btn.classList.remove('loading');
+                    btn.disabled = false;
+                }
+
+            } catch (error) {
+                console.error('Error loading more reviews:', error);
+                // Reset button state and show error so the user knows what happened
+                btn.classList.remove('loading');
+                btn.disabled = false;
+                const textEl = btn.querySelector('.btn-show-more-text');
+                if (textEl) {
+                    textEl.textContent = 'Failed to load — click to retry';
+                    // Restore original text after a brief delay so the user sees the error
+                    setTimeout(() => { textEl.textContent = 'Show more'; }, 4000);
+                }
             }
         }
 

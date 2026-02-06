@@ -116,33 +116,73 @@ router.post('/api/worktrees/create', async (req, res) => {
 });
 
 /**
- * Get recently accessed worktrees
- * Returns list of recently reviewed PRs with metadata
- * Filters out stale worktrees where the directory no longer exists
+ * Get recently accessed worktrees with cursor-based pagination.
+ * Returns list of recently reviewed PRs with metadata.
+ * Filters out stale worktrees where the directory no longer exists.
+ *
+ * Query parameters:
+ *   limit  - Number of worktrees to return (default 10, max 50)
+ *   before - ISO timestamp cursor: return worktrees accessed before this time.
+ *            For subsequent pages, send the last_accessed_at of the last item
+ *            from the previous page. Omit for the initial load.
+ *
+ * Response includes:
+ *   worktrees - Array of worktree objects
+ *   hasMore   - Whether more worktrees are available beyond this page
  */
 router.get('/api/worktrees/recent', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 10, 50); // Default 10, max 50
+    const before = req.query.before || null; // ISO timestamp cursor
     const db = req.app.get('db');
 
-    // Get more worktrees than requested to account for stale ones we'll filter out
-    const enrichedWorktrees = await query(db, `
-      SELECT
-        w.id,
-        w.repository,
-        w.pr_number,
-        w.branch,
-        w.path,
-        w.last_accessed_at,
-        w.created_at,
-        pm.title as pr_title,
-        pm.author,
-        pm.head_branch
-      FROM worktrees w
-      LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository COLLATE NOCASE
-      ORDER BY w.last_accessed_at DESC
-      LIMIT ?
-    `, [limit * 2]); // Fetch extra to account for stale entries
+    // Fetch a constant overshoot per page to account for stale entries
+    // that will be filtered out, plus one extra to determine hasMore
+    const fetchCount = limit * 3 + 1;
+
+    let enrichedWorktrees;
+    if (before) {
+      // Cursor-based: fetch rows older than the cursor.
+      // Strict less-than: entries sharing the cursor timestamp may be skipped,
+      // acceptable given millisecond precision and small dataset size.
+      enrichedWorktrees = await query(db, `
+        SELECT
+          w.id,
+          w.repository,
+          w.pr_number,
+          w.branch,
+          w.path,
+          w.last_accessed_at,
+          w.created_at,
+          pm.title as pr_title,
+          pm.author,
+          pm.head_branch
+        FROM worktrees w
+        LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository COLLATE NOCASE
+        WHERE w.last_accessed_at < ?
+        ORDER BY w.last_accessed_at DESC
+        LIMIT ?
+      `, [before, fetchCount]);
+    } else {
+      // Initial load: no cursor, just fetch from the top
+      enrichedWorktrees = await query(db, `
+        SELECT
+          w.id,
+          w.repository,
+          w.pr_number,
+          w.branch,
+          w.path,
+          w.last_accessed_at,
+          w.created_at,
+          pm.title as pr_title,
+          pm.author,
+          pm.head_branch
+        FROM worktrees w
+        LEFT JOIN pr_metadata pm ON w.pr_number = pm.pr_number AND w.repository = pm.repository COLLATE NOCASE
+        ORDER BY w.last_accessed_at DESC
+        LIMIT ?
+      `, [fetchCount]);
+    }
 
     // Filter out worktrees where:
     // 1. The directory no longer exists
@@ -167,8 +207,9 @@ router.get('/api/worktrees/recent', async (req, res) => {
       }
     }
 
-    // Cleanup stale worktree records in background (don't block response)
-    if (staleIds.length > 0) {
+    // Only run stale cleanup on initial (non-paginated) requests to keep the
+    // dataset stable while the user pages through results.
+    if (staleIds.length > 0 && !before) {
       setImmediate(async () => {
         try {
           const placeholders = staleIds.map(() => '?').join(',');
@@ -180,8 +221,12 @@ router.get('/api/worktrees/recent', async (req, res) => {
       });
     }
 
-    // Format the results with fallback values, limited to requested count
-    const formattedWorktrees = validWorktrees.slice(0, limit).map(w => ({
+    // Take the first `limit` valid results; anything beyond means hasMore
+    const pageWorktrees = validWorktrees.slice(0, limit);
+    const hasMore = validWorktrees.length > limit;
+
+    // Format the results with fallback values
+    const formattedWorktrees = pageWorktrees.map(w => ({
       id: w.id,
       repository: w.repository,
       pr_number: w.pr_number,
@@ -195,12 +240,14 @@ router.get('/api/worktrees/recent', async (req, res) => {
 
     res.json({
       success: true,
-      worktrees: formattedWorktrees
+      worktrees: formattedWorktrees,
+      hasMore
     });
 
   } catch (error) {
-    console.error('Error fetching recent worktrees:', error);
+    logger.error('Error fetching recent worktrees:', error);
     res.status(500).json({
+      success: false,
       error: 'Failed to fetch recent worktrees'
     });
   }
