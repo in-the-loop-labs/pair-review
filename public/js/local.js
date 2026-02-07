@@ -363,7 +363,7 @@ class LocalManager {
         const providerStorageKey = `pair-review-provider:local-${reviewId}`;
         const rememberedModel = localStorage.getItem(modelStorageKey);
         const rememberedProvider = localStorage.getItem(providerStorageKey);
-        const currentModel = rememberedModel || repoSettings?.default_model || 'sonnet';
+        const currentModel = rememberedModel || repoSettings?.default_model || 'opus';
         const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
 
         // Show config modal
@@ -1027,7 +1027,7 @@ class LocalManager {
         },
         body: JSON.stringify({
           provider: config.provider || 'claude',
-          model: config.model || 'sonnet',
+          model: config.model || 'opus',
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
           skipLevel3: config.skipLevel3 || false

@@ -22,7 +22,7 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 const CLAUDE_MODELS = [
   {
     id: 'haiku',
-    name: 'Haiku',
+    name: 'Haiku 4.5',
     tier: 'fast',
     tagline: 'Lightning Fast',
     description: 'Quick analysis for simple changes',
@@ -31,21 +31,65 @@ const CLAUDE_MODELS = [
   },
   {
     id: 'sonnet',
-    name: 'Sonnet',
+    name: 'Sonnet 4.5',
     tier: 'balanced',
     tagline: 'Best Balance',
     description: 'Recommended for most reviews',
-    badge: 'Recommended',
-    badgeClass: 'badge-recommended',
-    default: true
+    badge: 'Standard',
+    badgeClass: 'badge-recommended'
+  },
+  {
+    id: 'opus-4.5',
+    cli_model: 'claude-opus-4-5-20251101',
+    name: 'Opus 4.5',
+    tier: 'balanced',
+    tagline: 'Deep Thinker',
+    description: 'Extended thinking for complex analysis',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'opus-4.6-low',
+    cli_model: 'opus',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'low' },
+    name: 'Opus 4.6 Low',
+    tier: 'balanced',
+    tagline: 'Fast Opus',
+    description: 'Opus 4.6 with low effort — quick and capable',
+    badge: 'Balanced',
+    badgeClass: 'badge-recommended'
+  },
+  {
+    id: 'opus-4.6-medium',
+    cli_model: 'opus',
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'medium' },
+    name: 'Opus 4.6 Medium',
+    tier: 'balanced',
+    tagline: 'Balanced Opus',
+    description: 'Opus 4.6 with medium effort — balanced depth',
+    badge: 'Thorough',
+    badgeClass: 'badge-power'
   },
   {
     id: 'opus',
-    name: 'Opus',
+    aliases: ['opus-4.6-high'],
+    env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' },
+    name: 'Opus 4.6 High',
     tier: 'thorough',
-    tagline: 'Most Capable',
-    description: 'Deep analysis for complex code',
+    tagline: 'Maximum Depth',
+    description: 'Opus 4.6 with high effort — deepest analysis',
     badge: 'Most Thorough',
+    badgeClass: 'badge-power',
+    default: true
+  },
+  {
+    id: 'opus-4.6-1m',
+    cli_model: 'opus[1m]',
+    name: 'Opus 4.6 1M',
+    tier: 'balanced',
+    tagline: 'Extended Context',
+    description: 'Opus 4.6 high effort with 1M token context window',
+    badge: 'More Context',
     badgeClass: 'badge-power'
   }
 ];
@@ -59,7 +103,7 @@ class ClaudeProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'sonnet', configOverrides = {}) {
+  constructor(model = 'opus', configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -67,7 +111,7 @@ class ClaudeProvider extends AIProvider {
     const configCmd = configOverrides.command;
     const claudeCmd = envCmd || configCmd || 'claude';
 
-    // Store for use in getExtractionConfig and testAvailability
+    // Store for use in getExtractionConfig, buildArgsForModel, and testAvailability
     this.claudeCmd = claudeCmd;
     this.configOverrides = configOverrides;
 
@@ -76,6 +120,9 @@ class ClaudeProvider extends AIProvider {
 
     // Check for budget limit environment variable
     const maxBudget = process.env.PAIR_REVIEW_MAX_BUDGET_USD;
+
+    // Resolve model config using shared helper
+    const { builtIn, configModel, cliModelArgs, extraArgs, env } = this._resolveModelConfig(model);
 
     // Build args: base args + provider extra_args + model extra_args
     // Use --output-format stream-json for JSONL streaming output (better debugging visibility)
@@ -116,41 +163,96 @@ class ClaudeProvider extends AIProvider {
       ].join(',');
       permissionArgs = ['--allowedTools', allowedTools];
     }
-    const baseArgs = ['-p', '--verbose', '--model', model, '--output-format', 'stream-json', ...permissionArgs];
+    const baseArgs = ['-p', '--verbose', ...cliModelArgs, '--output-format', 'stream-json', ...permissionArgs];
     if (maxBudget) {
       const budgetNum = parseFloat(maxBudget);
       if (isNaN(budgetNum) || budgetNum <= 0) {
-        console.warn(`Warning: PAIR_REVIEW_MAX_BUDGET_USD="${maxBudget}" is not a valid positive number, ignoring`);
+        logger.warn(`Warning: PAIR_REVIEW_MAX_BUDGET_USD="${maxBudget}" is not a valid positive number, ignoring`);
       } else {
         baseArgs.push('--max-budget-usd', String(budgetNum));
       }
     }
-    const providerArgs = configOverrides.extra_args || [];
-    const modelConfig = configOverrides.models?.find(m => m.id === model);
-    const modelArgs = modelConfig?.extra_args || [];
 
-    // Merge env: provider env + model env
-    this.extraEnv = {
-      ...(configOverrides.env || {}),
-      ...(modelConfig?.env || {})
-    };
+    // Three-way merge for env: built-in model → provider config → per-model config
+    this.extraEnv = env;
 
     if (this.useShell) {
-      // Quote the allowedTools value to prevent shell interpretation of special characters
-      // (commas, parentheses in patterns like "Bash(git diff*)")
-      const quotedBaseArgs = baseArgs.map((arg, i) => {
-        // The allowedTools value follows the --allowedTools flag
-        if (baseArgs[i - 1] === '--allowedTools') {
-          return `'${arg}'`;
-        }
-        return arg;
-      });
-      this.command = `${claudeCmd} ${[...quotedBaseArgs, ...providerArgs, ...modelArgs].join(' ')}`;
+      const allArgs = [...baseArgs, ...extraArgs];
+      this.command = `${claudeCmd} ${this._quoteShellArgs(allArgs).join(' ')}`;
       this.args = [];
     } else {
       this.command = claudeCmd;
-      this.args = [...baseArgs, ...providerArgs, ...modelArgs];
+      this.args = [...baseArgs, ...extraArgs];
     }
+  }
+
+  /**
+   * Quote shell-sensitive arguments for safe shell execution.
+   * Any arg containing characters that could be interpreted by the shell
+   * (brackets, parentheses, commas, etc.) is wrapped in single quotes
+   * with internal single quotes escaped using the POSIX pattern.
+   *
+   * @param {string[]} args - Array of CLI arguments
+   * @returns {string[]} Args with shell-sensitive values quoted
+   * @private
+   */
+  _quoteShellArgs(args) {
+    return args.map((arg, i) => {
+      const prevArg = args[i - 1];
+      if (prevArg === '--allowedTools' || prevArg === '--model') {
+        if (/[][*?(){}$!&|;<>,\s']/.test(arg)) {
+          return `'${arg.replace(/'/g, "'\\''")}'`;
+        }
+      }
+      return arg;
+    });
+  }
+
+  /**
+   * Resolve model configuration by looking up built-in and config override definitions.
+   * Consolidates the CLAUDE_MODELS.find() and configOverrides.models.find() lookups
+   * used across the constructor, buildArgsForModel(), and getExtractionConfig().
+   *
+   * @param {string} modelId - The model identifier to resolve
+   * @returns {Object} Resolved configuration
+   * @returns {Object|undefined} .builtIn - Built-in model definition from CLAUDE_MODELS
+   * @returns {Object|undefined} .configModel - Config override model definition
+   * @returns {string[]} .cliModelArgs - Args array for --model (empty if suppressed)
+   * @returns {string[]} .extraArgs - Merged extra_args from built-in, provider, and config model
+   * @returns {Object} .env - Merged env from built-in, provider, and config model
+   * @private
+   */
+  _resolveModelConfig(modelId) {
+    const configOverrides = this.configOverrides || {};
+
+    // Resolve cli_model: config model > built-in model > id
+    // cli_model decouples the app-level model ID from the CLI --model argument.
+    // - undefined: fall through the resolution chain
+    // - string: use this exact value for --model
+    // - null: explicitly suppress --model (for tools that want the model set via env instead)
+    const builtIn = CLAUDE_MODELS.find(m => m.id === modelId || (m.aliases && m.aliases.includes(modelId)));
+    const configModel = configOverrides.models?.find(m => m.id === modelId);
+    const resolvedCliModel = configModel?.cli_model !== undefined
+      ? configModel.cli_model
+      : (builtIn?.cli_model !== undefined ? builtIn.cli_model : modelId);
+
+    // Conditionally include --model in base args (null = suppress, empty string passes through to surface CLI error)
+    const cliModelArgs = resolvedCliModel !== null ? ['--model', resolvedCliModel] : [];
+
+    // Three-way merge for extra_args: built-in model → provider config → per-model config
+    const builtInArgs = builtIn?.extra_args || [];
+    const providerArgs = configOverrides.extra_args || [];
+    const configModelArgs = configModel?.extra_args || [];
+    const extraArgs = [...builtInArgs, ...providerArgs, ...configModelArgs];
+
+    // Three-way merge for env: built-in model → provider config → per-model config
+    const env = {
+      ...(builtIn?.env || {}),
+      ...(configOverrides.env || {}),
+      ...(configModel?.env || {})
+    };
+
+    return { builtIn, configModel, cliModelArgs, extraArgs, env };
   }
 
   /**
@@ -351,15 +453,12 @@ class ClaudeProvider extends AIProvider {
    * @returns {string[]} Complete args array for the CLI
    */
   buildArgsForModel(model) {
-    // Base args for extraction (simple prompt mode, no tools needed)
-    const baseArgs = ['-p', '--model', model];
-    // Provider-level extra_args (from configOverrides)
-    const providerArgs = this.configOverrides?.extra_args || [];
-    // Model-specific extra_args (from the model config for the given model)
-    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
-    const modelArgs = modelConfig?.extra_args || [];
+    const { cliModelArgs, extraArgs } = this._resolveModelConfig(model);
 
-    return [...baseArgs, ...providerArgs, ...modelArgs];
+    // Base args for extraction (simple prompt mode, no tools needed)
+    const baseArgs = ['-p', ...cliModelArgs];
+
+    return [...baseArgs, ...extraArgs];
   }
 
   /**
@@ -373,22 +472,26 @@ class ClaudeProvider extends AIProvider {
     const claudeCmd = this.claudeCmd;
     const useShell = this.useShell;
 
-    // Build args consistently using the shared method, applying provider and model extra_args
-    const args = this.buildArgsForModel(model);
+    // Single call to _resolveModelConfig for both args and env
+    const { cliModelArgs, extraArgs, env } = this._resolveModelConfig(model);
+    const args = ['-p', ...cliModelArgs, ...extraArgs];
 
     if (useShell) {
+      const quotedArgs = this._quoteShellArgs(args);
       return {
-        command: `${claudeCmd} ${args.join(' ')}`,
+        command: `${claudeCmd} ${quotedArgs.join(' ')}`,
         args: [],
         useShell: true,
-        promptViaStdin: true
+        promptViaStdin: true,
+        env
       };
     }
     return {
       command: claudeCmd,
       args,
       useShell: false,
-      promptViaStdin: true
+      promptViaStdin: true,
+      env
     };
   }
 
@@ -729,7 +832,7 @@ class ClaudeProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'sonnet';
+    return 'opus';
   }
 
   static getInstallInstructions() {

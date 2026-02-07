@@ -11,7 +11,7 @@ class AnalysisConfigModal {
     this.onCancel = null;
     this.escapeHandler = null;
     this.selectedProvider = 'claude';
-    this.selectedModel = 'sonnet';
+    this.selectedModel = 'opus';
     this.selectedPresets = new Set();
     this.rememberModel = false;
     this.repoInstructions = '';
@@ -92,9 +92,9 @@ class AnalysisConfigModal {
           id: 'claude',
           name: 'Claude',
           models: [
-            { id: 'sonnet', name: 'Sonnet', tier: 'balanced', default: true }
+            { id: 'opus', name: 'Opus 4.6 High', tier: 'thorough', default: true }
           ],
-          defaultModel: 'sonnet'
+          defaultModel: 'opus'
         }
       };
       this.models = this.providers.claude.models;

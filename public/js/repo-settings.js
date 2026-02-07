@@ -208,23 +208,11 @@ class RepoSettingsPage {
 
     } catch (error) {
       console.error('Error loading providers:', error);
-      // Last-resort degraded mode: hardcoded Claude fallback when the /api/providers
-      // endpoint is unavailable. This allows basic functionality even if the backend
-      // is partially broken. The canonical provider definitions live in
-      // src/ai/claude-provider.js - this fallback should mirror those values.
-      this.providers = {
-        claude: {
-          id: 'claude',
-          name: 'Claude',
-          models: [
-            { id: 'haiku', name: 'Haiku', tier: 'fast', badge: 'Fastest', badgeClass: 'badge-speed', tagline: 'Lightning Fast', description: 'Quick analysis for simple changes' },
-            { id: 'sonnet', name: 'Sonnet', tier: 'balanced', default: true, badge: 'Recommended', badgeClass: 'badge-recommended', tagline: 'Best Balance', description: 'Recommended for most reviews' },
-            { id: 'opus', name: 'Opus', tier: 'thorough', badge: 'Most Thorough', badgeClass: 'badge-power', tagline: 'Most Capable', description: 'Deep analysis for complex code' }
-          ],
-          defaultModel: 'sonnet'
-        }
-      };
+      // No hardcoded fallback — rely on the /api/providers endpoint as the single source of truth.
+      // If the endpoint is unavailable, show an empty state rather than stale data.
+      this.providers = {};
       this.renderProviderButtons();
+      this.showToast('error', 'Failed to load AI providers. Please refresh the page.');
     }
   }
 

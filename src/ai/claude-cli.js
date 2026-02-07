@@ -5,7 +5,7 @@ const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 
 class ClaudeCLI {
-  constructor(model = 'sonnet') {
+  constructor(model = 'opus') {
     // Check for environment variable to override default command
     // Use PAIR_REVIEW_CLAUDE_CMD environment variable if set, otherwise default to 'claude'
     const claudeCmd = process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
