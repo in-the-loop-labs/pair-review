@@ -1,0 +1,12 @@
+[
+  {
+    "file": "app/models/user.rb",
+    "line_start": 5,
+    "line_end": 5,
+    "type": "suggestion",
+    "title": "Consider adding email format validation",
+    "description": "While Devise handles email validation, adding an explicit format validation provides defense in depth.",
+    "is_file_level": false,
+    "confidence": "low"
+  }
+]

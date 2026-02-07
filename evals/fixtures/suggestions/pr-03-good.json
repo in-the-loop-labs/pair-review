@@ -1,0 +1,52 @@
+[
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 8,
+    "line_end": 8,
+    "type": "security",
+    "title": "Unsafe mass assignment — use strong parameters",
+    "description": "Using Task.new(params[:task]) allows any parameter to be set. Use strong parameters with permit to whitelist only allowed attributes.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 16,
+    "line_end": 26,
+    "type": "design",
+    "title": "Controller is doing too much — extract to service",
+    "description": "The create action contains business logic for notification sending and status calculation. Extract this to a service object per the project's CONTRIBUTING.md guidelines.",
+    "is_file_level": false,
+    "confidence": "medium"
+  },
+  {
+    "file": "app/views/tasks/index.html.erb",
+    "line_start": null,
+    "line_end": null,
+    "type": "performance",
+    "title": "N+1 query detected in view template",
+    "description": "Each iteration accesses task.project.name which triggers a separate SQL query. Add .includes(:project) to the controller query to eager load the association.",
+    "is_file_level": true,
+    "confidence": "high"
+  },
+  {
+    "file": "app/models/task.rb",
+    "line_start": 10,
+    "line_end": 14,
+    "type": "improvement",
+    "title": "Add validation for required fields",
+    "description": "The Task model lacks validations for title and other required fields. Add validates :title, presence: true.",
+    "is_file_level": false,
+    "confidence": "medium"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 45,
+    "line_end": 50,
+    "type": "suggestion",
+    "title": "Consider using Pundit for authorization",
+    "description": "The controller has inline authorization checks. The project uses Pundit for authorization per CONTRIBUTING.md.",
+    "is_file_level": false,
+    "confidence": "low"
+  }
+]

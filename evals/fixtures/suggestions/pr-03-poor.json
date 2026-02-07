@@ -1,0 +1,32 @@
+[
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 1,
+    "line_end": 3,
+    "type": "code-style",
+    "title": "Consider adding a frozen string literal comment",
+    "description": "Ruby files should include the frozen_string_literal: true magic comment for performance.",
+    "is_file_level": false,
+    "confidence": "low"
+  },
+  {
+    "file": "app/models/task.rb",
+    "line_start": 1,
+    "line_end": 1,
+    "type": "code-style",
+    "title": "Add frozen string literal pragma",
+    "description": "Add # frozen_string_literal: true at the top of the file.",
+    "is_file_level": false,
+    "confidence": "low"
+  },
+  {
+    "file": "config/routes.rb",
+    "line_start": 5,
+    "line_end": 5,
+    "type": "suggestion",
+    "title": "Consider using shallow nesting for routes",
+    "description": "Nested routes could use shallow: true for cleaner URLs.",
+    "is_file_level": false,
+    "confidence": "low"
+  }
+]

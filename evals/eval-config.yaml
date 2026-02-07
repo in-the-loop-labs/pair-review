@@ -1,0 +1,22 @@
+# Pair-Review Evaluation Configuration
+repos:
+  - name: eval-rails-app
+    github: in-the-loop-labs/eval-rails-app
+    prs: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+defaults:
+  provider: claude
+  model: sonnet
+  tier: balanced
+
+matching:
+  line_tolerance: 5
+  allow_type_mismatch: true
+  type_mismatch_penalty: 0.5
+
+scoring:
+  severity_weights:
+    critical: 4
+    high: 3
+    medium: 2
+    low: 1

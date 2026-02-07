@@ -1,0 +1,19 @@
+{
+  "name": "@in-the-loop-labs/pair-review-evals",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "main": "bin/run-eval.js",
+  "scripts": {
+    "eval": "node bin/run-eval.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}
