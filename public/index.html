@@ -474,6 +474,17 @@
             cursor: not-allowed;
         }
 
+        .btn-browse {
+            background-color: var(--ai-subtle);
+            color: var(--ai-primary);
+            border: 1px solid var(--ai-border);
+        }
+
+        .btn-browse:hover:not(:disabled) {
+            background-color: var(--ai-glow);
+            border-color: var(--ai-primary);
+        }
+
         .start-review-error {
             margin-top: 12px;
             padding: 10px 14px;
@@ -492,6 +503,17 @@
 
         .start-review-error.visible {
             display: block;
+        }
+
+        .start-review-error.info {
+            color: var(--color-fg-muted);
+            background-color: rgba(9, 105, 218, 0.08);
+            border-color: rgba(9, 105, 218, 0.3);
+        }
+
+        [data-theme="dark"] .start-review-error.info {
+            background-color: rgba(56, 139, 253, 0.1);
+            border-color: rgba(56, 139, 253, 0.3);
         }
 
         .start-review-loading {
@@ -691,6 +713,14 @@
             white-space: nowrap;
         }
 
+        .local-table .col-actions {
+            text-align: right;
+        }
+
+        .local-table .btn-repo-settings {
+            margin-right: 4px;
+        }
+
         .btn-delete-worktree,
         .btn-repo-settings {
             display: inline-flex;
@@ -797,6 +827,181 @@
             display: none;
         }
 
+        /* Tab Container Styles */
+        .tab-container {
+            width: 100%;
+        }
+
+        .tab-bar {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--color-border-secondary);
+            margin-bottom: 16px;
+        }
+
+        .tab-btn {
+            padding: 8px 16px;
+            font-family: var(--font-sans);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--color-text-secondary);
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            transition: all var(--transition-fast);
+            white-space: nowrap;
+        }
+
+        .tab-btn:hover {
+            color: var(--color-text-primary);
+        }
+
+        .tab-btn.active {
+            color: var(--ai-primary);
+            border-bottom-color: var(--ai-primary);
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        /* Local Reviews Table - tighter spacing */
+        .recent-reviews-table.local-table th,
+        .recent-reviews-table.local-table td {
+            padding: 8px 10px;
+        }
+
+        .col-local-path {
+            max-width: 260px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            /* RTL direction + LTR alignment makes ellipsis truncate from the left, showing the end of long paths */
+            direction: rtl;
+            text-align: left;
+            color: var(--color-text-tertiary);
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+
+        .col-local-name {
+            max-width: 180px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--ai-primary);
+        }
+
+        .col-local-sha {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--color-text-tertiary);
+            white-space: nowrap;
+        }
+
+        .col-local-name a {
+            color: var(--ai-primary);
+            text-decoration: none;
+            font-weight: 500;
+            font-family: var(--font-mono);
+        }
+
+        .col-local-name a:hover {
+            color: var(--ai-secondary);
+            text-decoration: underline;
+        }
+
+        .col-local-name em {
+            font-style: italic;
+        }
+
+        /* Delete session button */
+        .btn-delete-session {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: var(--radius-md);
+            color: var(--color-text-tertiary);
+            cursor: pointer;
+            transition: all var(--transition-fast);
+        }
+
+        .btn-delete-session:hover {
+            background-color: rgba(208, 36, 47, 0.08);
+            border-color: rgba(208, 36, 47, 0.3);
+            color: var(--color-danger);
+        }
+
+        [data-theme="dark"] .btn-delete-session:hover {
+            background-color: rgba(248, 81, 73, 0.1);
+            border-color: rgba(248, 81, 73, 0.3);
+        }
+
+        /* Inline delete confirmation — use higher specificity to override tbody tr:hover */
+        .recent-reviews-table tbody tr.delete-confirm-row td {
+            background-color: rgba(208, 36, 47, 0.04);
+        }
+
+        [data-theme="dark"] .recent-reviews-table tbody tr.delete-confirm-row td {
+            background-color: rgba(248, 81, 73, 0.06);
+        }
+
+        .delete-confirm-inner {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: var(--color-text-secondary);
+        }
+
+        .delete-confirm-inner .btn-confirm-yes {
+            padding: 2px 10px;
+            font-size: 12px;
+            font-weight: 500;
+            background: var(--color-danger);
+            color: #ffffff;
+            border: none;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+        }
+
+        .delete-confirm-inner .btn-confirm-yes:hover {
+            background: var(--color-danger-hover);
+        }
+
+        .delete-confirm-inner .btn-confirm-no {
+            padding: 2px 10px;
+            font-size: 12px;
+            font-weight: 500;
+            background: transparent;
+            color: var(--color-text-secondary);
+            border: 1px solid var(--color-border-primary);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+        }
+
+        .delete-confirm-inner .btn-confirm-no:hover {
+            background: var(--color-bg-secondary);
+            color: var(--color-text-primary);
+        }
+
+        /* Start review section spacing inside unified tabs */
+        .tab-pane .start-review-section {
+            max-width: 100%;
+            margin-bottom: 24px;
+            padding-top: 0;
+        }
+
         /* Initial loading state - hide content until JS determines what to show */
         .loading-hidden {
             display: none !important;
@@ -863,41 +1068,76 @@
         <!-- Main Content -->
         <main class="main-content">
             <div class="welcome-section" id="welcome-section">
-                <!-- Start Review Section -->
-                <div class="start-review-section" id="start-review-section">
-                    <form class="start-review-form" id="start-review-form">
-                        <input
-                            type="text"
-                            class="start-review-input"
-                            id="pr-url-input"
-                            placeholder="Enter GitHub or Graphite PR URL"
-                            autocomplete="off"
-                            spellcheck="false"
-                        >
-                        <button type="submit" class="start-review-btn" id="start-review-btn">
-                            Start Review
-                        </button>
-                    </form>
-                    <div class="start-review-error" id="start-review-error"></div>
-                    <div class="start-review-loading" id="start-review-loading">
-                        <div class="spinner"></div>
-                        <span id="start-review-loading-text">Creating worktree and fetching PR data...</span>
+                <!-- Unified Tab Section -->
+                <div class="recent-reviews-section" id="recent-reviews-section">
+                    <div class="section-header" id="recent-reviews-header">
+                        <div class="tab-bar" id="unified-tab-bar">
+                            <button class="tab-btn active" data-tab="pr-tab" type="button">Pull Requests</button>
+                            <button class="tab-btn" data-tab="local-tab" type="button">Local Reviews</button>
+                        </div>
+                    </div>
+
+                    <!-- Pull Requests Tab: Input + Listing -->
+                    <div class="tab-pane active" id="pr-tab">
+                        <div class="start-review-section">
+                            <form class="start-review-form" id="start-review-form">
+                                <input
+                                    type="text"
+                                    class="start-review-input"
+                                    id="pr-url-input"
+                                    placeholder="Enter GitHub or Graphite PR URL"
+                                    autocomplete="off"
+                                    spellcheck="false"
+                                >
+                                <button type="submit" class="start-review-btn" id="start-review-btn">
+                                    Start Review
+                                </button>
+                            </form>
+                            <div class="start-review-error" id="start-review-error-pr"></div>
+                            <div class="start-review-loading" id="start-review-loading-pr">
+                                <div class="spinner"></div>
+                                <span id="start-review-loading-text-pr">Creating worktree and fetching PR data...</span>
+                            </div>
+                        </div>
+                        <div id="recent-reviews-container" class="recent-reviews-loading">
+                            Loading recent reviews...
+                        </div>
+                    </div>
+
+                    <!-- Local Reviews Tab: Input + Listing -->
+                    <div class="tab-pane" id="local-tab">
+                        <div class="start-review-section">
+                            <form class="start-review-form" id="start-local-form">
+                                <input
+                                    type="text"
+                                    class="start-review-input"
+                                    id="local-path-input"
+                                    placeholder="Enter directory path (e.g. /Users/me/project)"
+                                    autocomplete="off"
+                                    spellcheck="false"
+                                >
+                                <button type="button" class="start-review-btn btn-browse" id="browse-local-btn" title="Browse for directory">
+                                    Browse
+                                </button>
+                                <button type="submit" class="start-review-btn" id="start-local-btn">
+                                    Review Local
+                                </button>
+                            </form>
+                            <div class="start-review-error" id="start-review-error-local"></div>
+                            <div class="start-review-loading" id="start-review-loading-local">
+                                <div class="spinner"></div>
+                                <span id="start-review-loading-text-local">Starting local review...</span>
+                            </div>
+                        </div>
+                        <div id="local-reviews-container" class="recent-reviews-loading">
+                            Loading local reviews...
+                        </div>
                     </div>
                 </div>
 
                 <!-- Usage Info (shown when no reviews, hidden initially during loading) -->
                 <!-- Content is populated from help modal via JS to avoid duplication -->
                 <div class="usage-info loading-hidden" id="usage-info"></div>
-
-                <!-- Recent Reviews Section -->
-                <div class="recent-reviews-section" id="recent-reviews-section">
-                    <div class="section-header loading-hidden" id="recent-reviews-header">
-                        <h3 class="section-title">Recent Reviews</h3>
-                    </div>
-                    <div id="recent-reviews-container" class="recent-reviews-loading">
-                        Loading recent reviews...
-                    </div>
-                </div>
             </div>
         </main>
     </div>
@@ -941,599 +1181,6 @@
         </div>
     </div>
 
-    <script>
-        /**
-         * Theme Management
-         */
-        function initTheme() {
-            const savedTheme = localStorage.getItem('theme');
-            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            const theme = savedTheme || (prefersDark ? 'dark' : 'light');
-            document.documentElement.setAttribute('data-theme', theme);
-        }
-
-        function toggleTheme() {
-            const currentTheme = document.documentElement.getAttribute('data-theme');
-            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-            document.documentElement.setAttribute('data-theme', newTheme);
-            localStorage.setItem('theme', newTheme);
-        }
-
-        // Initialize theme on page load
-        initTheme();
-
-        // Set up theme toggle button
-        document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
-
-        /**
-         * Help Modal Management
-         */
-        function openHelpModal() {
-            const overlay = document.getElementById('help-modal-overlay');
-            overlay.classList.add('visible');
-            document.body.style.overflow = 'hidden';
-        }
-
-        function closeHelpModal() {
-            const overlay = document.getElementById('help-modal-overlay');
-            overlay.classList.remove('visible');
-            document.body.style.overflow = '';
-        }
-
-        // Set up help button
-        document.getElementById('help-btn').addEventListener('click', openHelpModal);
-
-        // Set up close button
-        document.getElementById('help-modal-close').addEventListener('click', closeHelpModal);
-
-        // Close on overlay click (but not modal click)
-        document.getElementById('help-modal-overlay').addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeHelpModal();
-            }
-        });
-
-        // Close on Escape key
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                const overlay = document.getElementById('help-modal-overlay');
-                if (overlay.classList.contains('visible')) {
-                    closeHelpModal();
-                }
-            }
-        });
-
-        // Listen for system theme changes
-        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-            if (!localStorage.getItem('theme')) {
-                document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
-            }
-        });
-
-        /**
-         * Format a relative time string from a date
-         * @param {string} dateString - ISO date string
-         * @returns {string} Human-readable relative time
-         */
-        function formatRelativeTime(dateString) {
-            const date = new Date(dateString);
-            const now = new Date();
-            const diffMs = now - date;
-            const diffSecs = Math.floor(diffMs / 1000);
-            const diffMins = Math.floor(diffSecs / 60);
-            const diffHours = Math.floor(diffMins / 60);
-            const diffDays = Math.floor(diffHours / 24);
-
-            if (diffSecs < 60) {
-                return 'Just now';
-            } else if (diffMins < 60) {
-                return `${diffMins} minute${diffMins !== 1 ? 's' : ''} ago`;
-            } else if (diffHours < 24) {
-                return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
-            } else if (diffDays < 7) {
-                return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
-            } else if (diffDays < 30) {
-                const weeks = Math.floor(diffDays / 7);
-                return `${weeks} week${weeks !== 1 ? 's' : ''} ago`;
-            } else {
-                const months = Math.floor(diffDays / 30);
-                return `${months} month${months !== 1 ? 's' : ''} ago`;
-            }
-        }
-
-        /**
-         * Render a single recent review table row
-         * @param {Object} worktree - Worktree data
-         * @returns {string} HTML string for the table row
-         */
-        function renderRecentReviewRow(worktree) {
-            const [owner, repo] = worktree.repository.split('/');
-            const link = `/pr/${owner}/${repo}/${worktree.pr_number}`;
-            const settingsLink = `/repo-settings.html?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
-            const relativeTime = formatRelativeTime(worktree.last_accessed_at);
-
-            const authorDisplay = worktree.author
-                ? `<a href="https://github.com/${encodeURIComponent(worktree.author)}" target="_blank" rel="noopener">${escapeHtml(worktree.author)}</a>`
-                : '';
-
-            return `
-                <tr>
-                    <td class="col-repo">${worktree.repository}</td>
-                    <td class="col-pr"><a href="${link}">#${worktree.pr_number}</a></td>
-                    <td class="col-title" title="${escapeHtml(worktree.pr_title)}">${escapeHtml(worktree.pr_title)}</td>
-                    <td class="col-author">${authorDisplay}</td>
-                    <td class="col-time">${relativeTime}</td>
-                    <td class="col-actions">
-                        <a
-                            href="${settingsLink}"
-                            class="btn-repo-settings"
-                            title="Repository settings"
-                        >
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M8 0a8.2 8.2 0 0 1 .701.031C9.444.095 9.99.645 10.16 1.29l.288 1.107c.018.066.079.158.212.224.231.114.454.243.668.386.123.082.233.09.299.071l1.103-.303c.644-.176 1.392.021 1.82.63.27.385.506.792.704 1.218.315.675.111 1.422-.364 1.891l-.814.806c-.049.048-.098.147-.088.294.016.257.016.515 0 .772-.01.147.038.246.088.294l.814.806c.475.469.679 1.216.364 1.891a7.977 7.977 0 0 1-.704 1.217c-.428.61-1.176.807-1.82.63l-1.102-.302c-.067-.019-.177-.011-.3.071a5.909 5.909 0 0 1-.668.386c-.133.066-.194.158-.211.224l-.29 1.106c-.168.646-.715 1.196-1.458 1.26a8.006 8.006 0 0 1-1.402 0c-.743-.064-1.289-.614-1.458-1.26l-.289-1.106c-.018-.066-.079-.158-.212-.224a5.738 5.738 0 0 1-.668-.386c-.123-.082-.233-.09-.299-.071l-1.103.303c-.644.176-1.392-.021-1.82-.63a8.12 8.12 0 0 1-.704-1.218c-.315-.675-.111-1.422.363-1.891l.815-.806c.05-.048.098-.147.088-.294a6.214 6.214 0 0 1 0-.772c.01-.147-.038-.246-.088-.294l-.815-.806C.635 6.045.431 5.298.746 4.623a7.92 7.92 0 0 1 .704-1.217c.428-.61 1.176-.807 1.82-.63l1.102.302c.067.019.177.011.3-.071.214-.143.437-.272.668-.386.133-.066.194-.158.211-.224l.29-1.106C6.009.645 6.556.095 7.299.03 7.53.01 7.764 0 8 0Zm-.571 1.525c-.036.003-.108.036-.137.146l-.289 1.105c-.147.561-.549.967-.998 1.189-.173.086-.34.183-.5.29-.417.278-.97.423-1.529.27l-1.103-.303c-.109-.03-.175.016-.195.045-.22.312-.412.644-.573.99-.014.031-.021.11.059.19l.815.806c.411.406.562.957.53 1.456a4.709 4.709 0 0 0 0 .582c.032.499-.119 1.05-.53 1.456l-.815.806c-.081.08-.073.159-.059.19.162.346.353.677.573.989.02.03.085.076.195.046l1.102-.303c.56-.153 1.113-.008 1.53.27.161.107.328.204.501.29.447.222.85.629.997 1.189l.289 1.105c.029.109.101.143.137.146a6.6 6.6 0 0 0 1.142 0c.036-.003.108-.036.137-.146l.289-1.105c.147-.561.549-.967.998-1.189.173-.086.34-.183.5-.29.417-.278.97-.423 1.529-.27l1.103.303c.109.029.175-.016.195-.045.22-.313.411-.644.573-.99.014-.031.021-.11-.059-.19l-.815-.806c-.411-.406-.562-.957-.53-1.456a4.709 4.709 0 0 0 0-.582c-.032-.499.119-1.05.53-1.456l.815-.806c.081-.08.073-.159.059-.19a6.464 6.464 0 0 0-.573-.989c-.02-.03-.085-.076-.195-.046l-1.102.303c-.56.153-1.113.008-1.53-.27a4.44 4.44 0 0 0-.501-.29c-.447-.222-.85-.629-.997-1.189l-.289-1.105c-.029-.11-.101-.143-.137-.146a6.6 6.6 0 0 0-1.142 0ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM9.5 8a1.5 1.5 0 1 0-3.001.001A1.5 1.5 0 0 0 9.5 8Z"/>
-                            </svg>
-                        </a>
-                        <button
-                            class="btn-delete-worktree"
-                            data-worktree-id="${worktree.id}"
-                            data-repository="${escapeHtml(worktree.repository)}"
-                            data-pr-number="${worktree.pr_number}"
-                            title="Delete worktree"
-                        >
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                                <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19a1.75 1.75 0 001.741-1.575l.66-6.6a.75.75 0 00-1.492-.15l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"></path>
-                            </svg>
-                        </button>
-                    </td>
-                </tr>
-            `;
-        }
-
-        /**
-         * Escape HTML special characters
-         * @param {string} text - Text to escape
-         * @returns {string} Escaped text
-         */
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text || '';
-            return div.innerHTML;
-        }
-
-        /**
-         * Delete a worktree
-         * @param {HTMLElement} button - The delete button element
-         */
-        async function deleteWorktree(button) {
-            const worktreeId = button.dataset.worktreeId;
-            const repository = button.dataset.repository;
-            const prNumber = button.dataset.prNumber;
-
-            if (!confirm(`Delete worktree for ${repository} #${prNumber}?`)) {
-                return;
-            }
-
-            try {
-                const response = await fetch(`/api/worktrees/${worktreeId}`, {
-                    method: 'DELETE'
-                });
-
-                if (!response.ok) {
-                    const data = await response.json().catch(() => ({}));
-                    throw new Error(data.error || 'Failed to delete worktree');
-                }
-
-                // Reload the recent reviews list
-                await loadRecentReviews();
-
-            } catch (error) {
-                console.error('Error deleting worktree:', error);
-                alert('Failed to delete worktree: ' + error.message);
-            }
-        }
-
-        // Event delegation for delete buttons and show-more button
-        document.addEventListener('click', function(event) {
-            const deleteBtn = event.target.closest('.btn-delete-worktree');
-            if (deleteBtn) {
-                event.preventDefault();
-                event.stopPropagation();
-                deleteWorktree(deleteBtn);
-                return;
-            }
-
-            const showMoreBtn = event.target.closest('#btn-show-more');
-            if (showMoreBtn) {
-                event.preventDefault();
-                loadMoreReviews();
-            }
-        });
-
-        /** Pagination state for the recent reviews list */
-        const recentReviewsPagination = {
-            /** ISO timestamp of the last loaded item (cursor for next fetch) */
-            lastTimestamp: null,
-            /** Number of worktrees to fetch per page */
-            pageSize: 10,
-            /** Whether the server has indicated more results exist */
-            hasMore: false
-        };
-
-        /**
-         * Fetch and display recent reviews (initial load).
-         * Resets pagination state and renders the full table from scratch.
-         */
-        async function loadRecentReviews() {
-            const container = document.getElementById('recent-reviews-container');
-            const section = document.getElementById('recent-reviews-section');
-            const sectionHeader = document.getElementById('recent-reviews-header');
-            const usageInfo = document.getElementById('usage-info');
-
-            // Reset pagination state
-            recentReviewsPagination.lastTimestamp = null;
-            recentReviewsPagination.hasMore = false;
-
-            try {
-                const response = await fetch(`/api/worktrees/recent?limit=${recentReviewsPagination.pageSize}`);
-
-                if (!response.ok) {
-                    throw new Error('Failed to fetch recent reviews');
-                }
-
-                const data = await response.json();
-
-                if (!data.success || !data.worktrees || data.worktrees.length === 0) {
-                    // Show friendly empty state with usage info
-                    container.innerHTML = `
-                        <div class="recent-reviews-empty">
-                            <p>No reviews yet. Paste a PR URL above to get started.</p>
-                        </div>
-                    `;
-                    container.classList.remove('recent-reviews-loading');
-                    // Show usage info when no reviews exist
-                    if (usageInfo) usageInfo.classList.remove('loading-hidden');
-                    // Keep header hidden for empty state
-                    return;
-                }
-
-                // Update pagination state — track the cursor for the next page
-                recentReviewsPagination.lastTimestamp = data.worktrees[data.worktrees.length - 1].last_accessed_at;
-                recentReviewsPagination.hasMore = !!data.hasMore;
-
-                // Hide usage info when there are reviews (keep loading-hidden class)
-                // Show the section header
-                if (sectionHeader) sectionHeader.classList.remove('loading-hidden');
-
-                // Render the table of recent reviews
-                const html = `
-                    <table class="recent-reviews-table">
-                        <thead>
-                            <tr>
-                                <th>Repository</th>
-                                <th>PR</th>
-                                <th>Title</th>
-                                <th>Author</th>
-                                <th>Last Opened</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="recent-reviews-tbody">
-                            ${data.worktrees.map(renderRecentReviewRow).join('')}
-                        </tbody>
-                    </table>
-                    ${renderShowMoreButton(data.hasMore)}
-                `;
-                container.innerHTML = html;
-                container.classList.remove('recent-reviews-loading');
-
-            } catch (error) {
-                console.error('Error loading recent reviews:', error);
-                // Hide the section on error, show usage info as fallback
-                section.style.display = 'none';
-                if (usageInfo) usageInfo.classList.remove('loading-hidden');
-            }
-        }
-
-        /**
-         * Render the "Show more" button HTML.
-         * @param {boolean} hasMore - Whether more results are available
-         * @returns {string} HTML string for the show-more container
-         */
-        function renderShowMoreButton(hasMore) {
-            if (!hasMore) return '';
-            return `
-                <div class="show-more-container" id="show-more-container">
-                    <button class="btn-show-more" id="btn-show-more" type="button">
-                        <span class="btn-show-more-text">Show more</span>
-                        <span class="spinner"></span>
-                    </button>
-                </div>
-            `;
-        }
-
-        /**
-         * Load the next page of worktrees and append them to the existing table.
-         * Called when the "Show more" button is clicked.
-         */
-        async function loadMoreReviews() {
-            const btn = document.getElementById('btn-show-more');
-            const tbody = document.getElementById('recent-reviews-tbody');
-            if (!btn || !tbody) return;
-
-            // Show loading state on the button
-            btn.classList.add('loading');
-            btn.disabled = true;
-
-            try {
-                const { lastTimestamp, pageSize } = recentReviewsPagination;
-                const params = new URLSearchParams({ limit: pageSize });
-                if (lastTimestamp) params.set('before', lastTimestamp);
-                const response = await fetch(`/api/worktrees/recent?${params}`);
-
-                if (!response.ok) {
-                    throw new Error('Failed to fetch more reviews');
-                }
-
-                const data = await response.json();
-
-                // Guard against stale response if the table was refreshed (e.g. by a delete) while loading
-                if (!document.contains(btn)) return;
-
-                if (!data.success || !data.worktrees || data.worktrees.length === 0) {
-                    // No more results - remove the button
-                    const showMoreContainer = document.getElementById('show-more-container');
-                    if (showMoreContainer) showMoreContainer.remove();
-                    recentReviewsPagination.hasMore = false;
-                    return;
-                }
-
-                // Append new rows to the existing table body
-                tbody.insertAdjacentHTML('beforeend', data.worktrees.map(renderRecentReviewRow).join(''));
-
-                // Update pagination state — advance the cursor
-                recentReviewsPagination.lastTimestamp = data.worktrees[data.worktrees.length - 1].last_accessed_at;
-                recentReviewsPagination.hasMore = !!data.hasMore;
-
-                // Update or remove the "Show more" button
-                if (!data.hasMore) {
-                    const showMoreContainer = document.getElementById('show-more-container');
-                    if (showMoreContainer) showMoreContainer.remove();
-                } else {
-                    // Reset button state
-                    btn.classList.remove('loading');
-                    btn.disabled = false;
-                }
-
-            } catch (error) {
-                console.error('Error loading more reviews:', error);
-                // Reset button state and show error so the user knows what happened
-                btn.classList.remove('loading');
-                btn.disabled = false;
-                const textEl = btn.querySelector('.btn-show-more-text');
-                if (textEl) {
-                    textEl.textContent = 'Failed to load — click to retry';
-                    // Restore original text after a brief delay so the user sees the error
-                    setTimeout(() => { textEl.textContent = 'Show more'; }, 4000);
-                }
-            }
-        }
-
-        /**
-         * Parse a PR URL using the backend API
-         * Supports GitHub and Graphite URLs (with or without protocol)
-         * @param {string} url - The PR URL to parse
-         * @returns {Promise<Object|null>} { owner, repo, prNumber } or null if invalid
-         */
-        async function parsePRUrl(url) {
-            if (!url || typeof url !== 'string') {
-                return null;
-            }
-
-            try {
-                const response = await fetch('/api/parse-pr-url', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ url: url.trim() })
-                });
-
-                const data = await response.json();
-
-                if (data.valid) {
-                    return {
-                        owner: data.owner,
-                        repo: data.repo,
-                        prNumber: data.prNumber
-                    };
-                }
-
-                return null;
-            } catch (e) {
-                console.error('Error parsing PR URL:', e);
-                return null;
-            }
-        }
-
-        /**
-         * Set loading state for the start review form
-         * @param {boolean} loading - Whether to show loading state
-         * @param {string} text - Optional loading text
-         */
-        function setStartReviewLoading(loading, text = 'Creating worktree and fetching PR data...') {
-            const form = document.getElementById('start-review-form');
-            const input = document.getElementById('pr-url-input');
-            const btn = document.getElementById('start-review-btn');
-            const loadingEl = document.getElementById('start-review-loading');
-            const loadingText = document.getElementById('start-review-loading-text');
-            const errorEl = document.getElementById('start-review-error');
-
-            if (loading) {
-                input.disabled = true;
-                btn.disabled = true;
-                btn.textContent = 'Starting...';
-                loadingEl.classList.add('visible');
-                loadingText.textContent = text;
-                errorEl.classList.remove('visible');
-            } else {
-                input.disabled = false;
-                btn.disabled = false;
-                btn.textContent = 'Start Review';
-                loadingEl.classList.remove('visible');
-            }
-        }
-
-        /**
-         * Show error message for the start review form
-         * @param {string} message - Error message to display
-         */
-        function showStartReviewError(message) {
-            const errorEl = document.getElementById('start-review-error');
-            errorEl.textContent = message;
-            errorEl.classList.add('visible');
-        }
-
-        /**
-         * Handle start review form submission
-         * @param {Event} event - Form submit event
-         */
-        async function handleStartReview(event) {
-            event.preventDefault();
-
-            const input = document.getElementById('pr-url-input');
-            const url = input.value.trim();
-
-            // Clear previous errors
-            const errorEl = document.getElementById('start-review-error');
-            errorEl.classList.remove('visible');
-
-            // Validate input
-            if (!url) {
-                showStartReviewError('Please enter a GitHub PR URL');
-                input.focus();
-                return;
-            }
-
-            // Show loading state while parsing
-            setStartReviewLoading(true, 'Validating PR URL...');
-
-            // Parse the URL using the backend API
-            const parsed = await parsePRUrl(url);
-            if (!parsed) {
-                setStartReviewLoading(false);
-                showStartReviewError('Invalid PR URL. Please enter a GitHub or Graphite PR URL (e.g., https://github.com/owner/repo/pull/123)');
-                input.focus();
-                return;
-            }
-
-            // Update loading state
-            setStartReviewLoading(true, 'Fetching PR data from GitHub...');
-
-            try {
-                // Call the API to create the worktree
-                const response = await fetch('/api/worktrees/create', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        owner: parsed.owner,
-                        repo: parsed.repo,
-                        prNumber: parsed.prNumber
-                    })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.error || 'Failed to create worktree');
-                }
-
-                if (!data.success) {
-                    throw new Error(data.error || 'Failed to create worktree');
-                }
-
-                // Update loading text before redirect
-                setStartReviewLoading(true, 'Redirecting to review...');
-
-                // Redirect to the review page
-                window.location.href = data.reviewUrl;
-
-            } catch (error) {
-                console.error('Error starting review:', error);
-                setStartReviewLoading(false);
-                showStartReviewError(error.message || 'An unexpected error occurred. Please try again.');
-            }
-        }
-
-        /**
-         * Update command examples based on whether running via npx or installed
-         * @param {boolean} isNpx - True if running via npx
-         */
-        function updateCommandExamples(isNpx) {
-            const baseCmd = isNpx ? 'npx @in-the-loop-labs/pair-review' : 'pair-review';
-            const cmdExamples = document.querySelectorAll('.cmd-example');
-            cmdExamples.forEach(el => {
-                const args = el.dataset.args || '';
-                el.textContent = args ? `${baseCmd} ${args}` : baseCmd;
-            });
-        }
-
-        /**
-         * Fetch config from server and update UI accordingly
-         */
-        async function loadConfigAndUpdateUI() {
-            try {
-                const response = await fetch('/api/config');
-                if (response.ok) {
-                    const config = await response.json();
-                    updateCommandExamples(config.is_running_via_npx);
-                } else {
-                    // Fallback: assume installed (shorter command)
-                    updateCommandExamples(false);
-                }
-            } catch (error) {
-                console.error('Error loading config:', error);
-                // Fallback: assume installed (shorter command)
-                updateCommandExamples(false);
-            }
-        }
-
-        // Load recent reviews when the page loads
-        document.addEventListener('DOMContentLoaded', function() {
-            // Load config and update command examples based on npx detection
-            loadConfigAndUpdateUI().then(() => {
-                // Sync help content to usage-info section AFTER command examples are updated
-                const helpContent = document.querySelector('.help-modal-content');
-                const usageInfo = document.getElementById('usage-info');
-                if (helpContent && usageInfo) {
-                    // Clear any existing content
-                    usageInfo.innerHTML = '';
-                    // Clone the content nodes safely
-                    Array.from(helpContent.childNodes).forEach(node => {
-                        usageInfo.appendChild(node.cloneNode(true));
-                    });
-                }
-            });
-
-            loadRecentReviews();
-
-            // Set up start review form handler
-            const form = document.getElementById('start-review-form');
-            if (form) {
-                form.addEventListener('submit', handleStartReview);
-            }
-
-            // Allow Enter key to submit
-            const input = document.getElementById('pr-url-input');
-            if (input) {
-                input.addEventListener('keypress', function(e) {
-                    if (e.key === 'Enter') {
-                        form.dispatchEvent(new Event('submit'));
-                    }
-                });
-            }
-        });
-    </script>
+    <script src="/js/index.js"></script>
 </body>
 </html>

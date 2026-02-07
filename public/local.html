@@ -165,6 +165,49 @@
             unicode-bidi: bidi-override;
         }
 
+        /* Editable review name in header */
+        .local-review-name {
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--color-text-primary);
+            cursor: text;
+            padding: 2px 6px;
+            border-radius: 4px;
+            border: 1px dashed var(--color-border-primary);
+            transition: all 0.15s ease;
+            max-width: 360px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            position: relative;
+        }
+
+        .local-review-name:hover {
+            background: var(--color-bg-secondary);
+            border-color: var(--ai-primary);
+            border-style: solid;
+        }
+
+        .local-review-name.unnamed {
+            color: var(--color-text-tertiary);
+            font-style: italic;
+        }
+
+        .local-review-name-input {
+            font-family: 'DM Sans', -apple-system, sans-serif;
+            font-size: 15px;
+            font-weight: 500;
+            padding: 2px 6px;
+            border: 1px solid #d97706;
+            border-radius: 4px;
+            background: var(--color-bg-primary);
+            color: var(--color-text-primary);
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.15);
+            width: 280px;
+            max-width: 360px;
+        }
+
     </style>
 </head>
 <body>
@@ -205,8 +248,8 @@
                 </div>
             </div>
             <div class="header-center">
-                <!-- Title area intentionally left empty for local mode -->
-                <!-- The "Local Mode" badge and header info provide sufficient context -->
+                <!-- Editable review name/title -->
+                <span class="local-review-name" id="local-review-name" title="Click to rename">Untitled</span>
             </div>
             <div class="header-right">
                 <div class="header-icon-group">
