@@ -1,0 +1,42 @@
+[
+  {
+    "file": "app/controllers/projects_controller.rb",
+    "line_start": 18,
+    "line_end": 18,
+    "type": "bug",
+    "title": "Integer division truncates pagination total",
+    "description": "Using `total_count / @per_page` performs integer division which drops the remainder. With 11 records and per_page=10, this returns 1 instead of 2, hiding the last page. Use `(total_count / @per_page.to_f).ceil` instead.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/projects_controller.rb",
+    "line_start": 72,
+    "line_end": 72,
+    "type": "bug",
+    "title": "Same pagination bug in archived action",
+    "description": "The archived action has the same integer division pagination bug as the index action.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "config/routes.rb",
+    "line_start": 8,
+    "line_end": 8,
+    "type": "code-style",
+    "title": "Non-RESTful route definition",
+    "description": "The archived projects route is defined as a standalone GET outside the resources block. It should be a collection route nested within `resources :projects`.",
+    "is_file_level": false,
+    "confidence": "medium"
+  },
+  {
+    "file": "app/models/project.rb",
+    "line_start": 11,
+    "line_end": 14,
+    "type": "improvement",
+    "title": "Missing description length validation",
+    "description": "The Project model has no length validation on the description text field, allowing arbitrarily large inputs.",
+    "is_file_level": false,
+    "confidence": "medium"
+  }
+]

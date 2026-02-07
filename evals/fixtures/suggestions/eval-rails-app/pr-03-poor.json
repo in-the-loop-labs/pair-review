@@ -1,0 +1,32 @@
+[
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 23,
+    "line_end": 68,
+    "type": "improvement",
+    "title": "Consider extracting create logic",
+    "description": "The create action is quite long. Consider refactoring for readability.",
+    "is_file_level": false,
+    "confidence": "low"
+  },
+  {
+    "file": "app/models/task.rb",
+    "line_start": 9,
+    "line_end": 10,
+    "type": "suggestion",
+    "title": "Consider using string enums instead of integer enums",
+    "description": "Integer enums make the database less readable. Consider using string-backed enums for clarity.",
+    "is_file_level": false,
+    "confidence": "low"
+  },
+  {
+    "file": "app/views/tasks/show.html.erb",
+    "line_start": null,
+    "line_end": null,
+    "type": "code-style",
+    "title": "Consider using a presenter pattern for view logic",
+    "description": "The view has several conditionals. Consider using a presenter or decorator pattern.",
+    "is_file_level": true,
+    "confidence": "low"
+  }
+]

@@ -1,0 +1,52 @@
+[
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 113,
+    "line_end": 113,
+    "type": "security",
+    "title": "Overly permissive strong parameters — mass assignment risk",
+    "description": "The task_params method permits user_id, project_id, and admin. This allows malicious users to reassign tasks to other users, move tasks between projects, or set an admin flag. Only permit the fields that users should control: title, description, status, priority, due_date.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 11,
+    "line_end": 11,
+    "type": "performance",
+    "title": "N+1 query — missing eager loading of user association",
+    "description": "Tasks are loaded without .includes(:user), but the view accesses task.user&.name for each task, triggering a separate query per row. Add .includes(:user) to the query.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 23,
+    "line_end": 68,
+    "type": "design",
+    "title": "Fat controller — extract business logic to service object",
+    "description": "The create action is 46 lines with inline priority calculation, notification building, and audit logging. Per project conventions (CLAUDE.md), this should be extracted to a CreateTaskService.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/models/task.rb",
+    "line_start": 12,
+    "line_end": 15,
+    "type": "bug",
+    "title": "Missing presence validation on title",
+    "description": "The Task model validates status, priority, and description but omits title validation. Blank titles are accepted, and nil titles cause a database-level error instead of a clean validation message.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 78,
+    "line_end": 92,
+    "type": "code-style",
+    "title": "Inconsistent error handling pattern",
+    "description": "The update action uses inline begin/rescue blocks including a broad `rescue StandardError`, while the rest of the application uses rescue_from at the controller level. This is inconsistent and the StandardError rescue swallows unexpected errors.",
+    "is_file_level": false,
+    "confidence": "medium"
+  }
+]
