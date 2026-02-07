@@ -5,7 +5,7 @@
   "port": 7247,
   "theme": "light",
   "default_provider": "claude",
-  "default_model": "sonnet",
+  "default_model": "opus",
   "worktree_retention_days": 7,
   "dev_mode": false,
   "debug_stream": false,
@@ -70,41 +70,38 @@
     },
 
     "claude": {
-      "_comment": "Override Claude's built-in configuration. Useful for custom paths, wrapper scripts, or additional arguments.",
+      "_comment": "Override Claude's built-in configuration. Useful for custom paths, wrapper scripts, or additional arguments. Built-in models include haiku, sonnet, opus-4.5, opus-4.6-low, opus-4.6-medium, opus, and opus-4.6-1m. Use 'cli_model' to decouple the app-level model ID from the CLI --model argument. Use 'env' for model-specific environment variables.",
       "command": "claude",
       "extra_args": [],
       "env": {},
       "installInstructions": "Install Claude CLI: npm install -g @anthropic-ai/claude-code",
       "models": [
         {
-          "id": "haiku",
-          "tier": "fast",
-          "name": "Haiku",
-          "description": "Quick analysis for simple changes",
-          "tagline": "Lightning Fast",
-          "badge": "Fastest",
-          "badgeClass": "badge-speed"
-        },
-        {
+          "_comment": "Example: simple override — customize the display name and description of a built-in model. Note: 'tier' is required even for overrides (valid values: fast, balanced, thorough, premium).",
           "id": "sonnet",
           "tier": "balanced",
-          "default": true,
-          "name": "Sonnet",
-          "description": "Recommended for most reviews",
-          "tagline": "Best Balance",
-          "badge": "Recommended",
-          "badgeClass": "badge-recommended"
+          "name": "Sonnet (Team Default)",
+          "description": "Our team's standard model for reviews"
         },
         {
-          "id": "opus",
+          "_comment": "Example: override cli_model to use a specific version string for the CLI --model flag",
+          "id": "opus-4.5",
+          "cli_model": "claude-opus-4-5-20251101",
+          "tier": "thorough"
+        },
+        {
+          "_comment": "Example: cli_model set to null suppresses --model entirely (model set via env instead)",
+          "id": "custom-env-model",
+          "cli_model": null,
           "tier": "thorough",
-          "name": "Opus",
-          "description": "Deep analysis for complex code",
-          "tagline": "Most Capable",
-          "badge": "Most Thorough",
-          "badgeClass": "badge-power"
+          "name": "Custom Env Model",
+          "description": "Model specified entirely via environment variable",
+          "env": {
+            "ANTHROPIC_MODEL": "claude-opus-4-5-20251101"
+          }
         },
         {
+          "_comment": "Example: adding a custom model with extra arguments and env",
           "id": "custom-model",
           "tier": "premium",
           "name": "Custom Model",

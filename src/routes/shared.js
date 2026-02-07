@@ -70,7 +70,7 @@ function getLocalReviewKey(reviewId) {
 
 /**
  * Get the model to use for AI analysis
- * Priority: CLI flag (PAIR_REVIEW_MODEL env var) > config.default_model > 'sonnet' default
+ * Priority: CLI flag (PAIR_REVIEW_MODEL env var) > config.default_model > 'opus' default
  * @param {Object} req - Express request object
  * @returns {string} Model name to use
  */
@@ -93,7 +93,7 @@ function getModel(req) {
   }
 
   // Default fallback
-  return 'sonnet';
+  return 'opus';
 }
 
 /**

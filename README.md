@@ -144,7 +144,7 @@ Configuration is stored in `~/.pair-review/config.json`:
   "port": 7247,
   "theme": "light",
   "default_provider": "claude",
-  "default_model": "sonnet"
+  "default_model": "opus"
 }
 ```
 

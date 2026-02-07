@@ -527,7 +527,7 @@ function createMCPServer(db, options = {}) {
           // Resolve provider and model
           const repoSettings = repository ? await repoSettingsRepo.getRepoSettings(repository) : null;
           const provider = process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
-          const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'sonnet';
+          const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';
 
           // Create unified run/analysis ID and DB record immediately
           const runId = uuidv4();
@@ -676,7 +676,7 @@ function createMCPServer(db, options = {}) {
           // Resolve provider and model
           const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
           const provider = process.env.PAIR_REVIEW_PROVIDER || repoSettings?.default_provider || config.default_provider || config.provider || 'claude';
-          const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'sonnet';
+          const model = process.env.PAIR_REVIEW_MODEL || repoSettings?.default_model || config.default_model || config.model || 'opus';
 
           // Create unified run/analysis ID and DB record immediately
           const runId = uuidv4();

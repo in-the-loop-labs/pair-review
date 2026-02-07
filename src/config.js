@@ -14,7 +14,7 @@ const DEFAULT_CONFIG = {
   port: 7247,
   theme: "light",
   default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode'
-  default_model: "sonnet",     // Model within the provider (e.g., 'sonnet' for Claude, 'gemini-2.5-pro' for Gemini)
+  default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-2.5-pro' for Gemini)
   worktree_retention_days: 7,
   dev_mode: false,  // When true, disables static file caching for development
   debug_stream: false,  // When true, logs AI provider streaming events (equivalent to --debug-stream CLI flag)

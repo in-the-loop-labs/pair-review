@@ -734,6 +734,10 @@ class AnalysisHistoryManager {
       'haiku': 'fast',
       'sonnet': 'balanced',
       'opus': 'thorough',
+      'opus-4.5': 'balanced',
+      'opus-4.6-low': 'balanced',
+      'opus-4.6-medium': 'balanced',
+      'opus-4.6-1m': 'balanced',
       // Gemini models
       'flash': 'fast',
       'pro': 'balanced',

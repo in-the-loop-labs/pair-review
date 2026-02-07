@@ -3515,7 +3515,7 @@ class PRManager {
       const providerStorageKey = PRManager.getRepoStorageKey('pair-review-provider', owner, repo);
       const rememberedModel = localStorage.getItem(modelStorageKey);
       const rememberedProvider = localStorage.getItem(providerStorageKey);
-      const currentModel = rememberedModel || repoSettings?.default_model || 'sonnet';
+      const currentModel = rememberedModel || repoSettings?.default_model || 'opus';
       const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
 
       // Show the config modal
@@ -3593,7 +3593,7 @@ class PRManager {
         },
         body: JSON.stringify({
           provider: config.provider || 'claude',
-          model: config.model || 'sonnet',
+          model: config.model || 'opus',
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
           skipLevel3: config.skipLevel3 || false

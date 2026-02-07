@@ -192,7 +192,7 @@ class AIProvider {
       };
     }
 
-    const { command, args, useShell, promptViaStdin } = config;
+    const { command, args, useShell, promptViaStdin, env: configEnv } = config;
     const prompt = `Extract the JSON object from the following text. Return ONLY the valid JSON, nothing else. Do not include any explanation, markdown formatting, or code blocks - just the raw JSON.
 
 === BEGIN INPUT TEXT ===
@@ -209,6 +209,7 @@ ${rawResponse}
         cwd: process.cwd(),
         env: {
           ...process.env,
+          ...(configEnv || {}),
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: useShell

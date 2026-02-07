@@ -26,10 +26,10 @@ const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guida
 class Analyzer {
   /**
    * @param {Object} database - Database instance
-   * @param {string} model - Model to use (e.g., 'sonnet', 'gemini-2.5-pro')
+   * @param {string} model - Model to use (e.g., 'opus', 'gemini-2.5-pro')
    * @param {string} provider - Provider ID (e.g., 'claude', 'gemini'). Defaults to 'claude'.
    */
-  constructor(database, model = 'sonnet', provider = 'claude') {
+  constructor(database, model = 'opus', provider = 'claude') {
     // Store model and provider for creating provider instances per level
     this.model = model;
     this.provider = provider;
