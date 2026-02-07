@@ -33,7 +33,7 @@ pair-review is a local web application for keeping humans in the loop with AI co
 - **Local-First**: All data and processing happens on your machine - no cloud dependencies
 - **GitHub-Familiar UI**: Interface feels instantly familiar to GitHub users
 - **Human-in-the-Loop**: AI suggests, you decide
-- **Multiple AI Providers**: Support for Claude, Gemini, Codex, Copilot, OpenCode, and Cursor. Use your existing subscription!
+- **Multiple AI Providers**: Support for Claude, Gemini, Codex, Copilot, OpenCode, Cursor, and Pi. Use your existing subscription!
 - **Progressive**: Start simple with manual review, add AI analysis when you need it
 
 ## Workflows
@@ -214,6 +214,7 @@ pair-review supports several environment variables for customizing behavior:
 | `PAIR_REVIEW_COPILOT_CMD` | Custom command to invoke Copilot CLI | `copilot` |
 | `PAIR_REVIEW_OPENCODE_CMD` | Custom command to invoke OpenCode CLI | `opencode` |
 | `PAIR_REVIEW_CURSOR_AGENT_CMD` | Custom command to invoke Cursor Agent CLI | `agent` |
+| `PAIR_REVIEW_PI_CMD` | Custom command to invoke Pi CLI | `pi` |
 | `PAIR_REVIEW_MODEL` | Override the AI model to use (same as `--model` flag) | Provider default |
 
 **Note:** `GITHUB_TOKEN` is the standard environment variable used by many GitHub tools (gh CLI, GitHub Actions, etc.). When set, it takes precedence over the `github_token` field in the config file.
@@ -267,17 +268,18 @@ pair-review integrates with AI providers via their CLI tools:
 - **GitHub Copilot**: Uses Copilot CLI
 - **OpenCode**: Uses OpenCode CLI (requires model configuration)
 - **Cursor**: Uses Cursor Agent CLI (streaming output with sandbox mode)
+- **Pi**: Uses Pi coding agent CLI (requires model configuration)
 
 You can select your preferred provider and model in the repository settings UI.
 
 #### Built-in vs. Configurable Providers
 
-Most providers (Claude, Gemini, Codex, Copilot) come with built-in model definitions. **OpenCode is different** - it has no built-in models and requires you to configure which models to use.
+Most providers (Claude, Gemini, Codex, Copilot) come with built-in model definitions. **OpenCode and Pi are different** - they have no built-in models and require you to configure which models to use.
 
 #### Configuring Custom Models
 
 You can override provider settings and define custom models in your config file. This is useful for:
-- Adding models to OpenCode (required)
+- Adding models to OpenCode or Pi (required for these providers)
 - Overriding default commands or arguments
 - Setting provider-specific environment variables
 
@@ -632,6 +634,9 @@ A: Try refreshing your browser. Many transient issues resolve with a simple page
 
 **Q: How do I use OpenCode as my AI provider?**
 A: OpenCode has no built-in models, so you must configure them in your `~/.pair-review/config.json`. Add a `providers.opencode.models` array with at least one model definition. See the [AI Provider Configuration](#ai-provider-configuration) section for a complete example.
+
+**Q: How do I use Pi as my AI provider?**
+A: Like OpenCode, Pi has no built-in models. Configure them in your `~/.pair-review/config.json` by adding a `providers.pi.models` array with at least one model definition. Pi supports many providers (Google, Anthropic, OpenAI, etc.) via its `--provider` and `--model` flags. See the [AI Provider Configuration](#ai-provider-configuration) section and `config.example.json` for examples.
 
 ## Contributing
 

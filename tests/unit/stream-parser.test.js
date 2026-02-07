@@ -21,7 +21,7 @@ vi.mock('../../src/utils/logger', () => {
   };
 });
 
-const { StreamParser, truncateSnippet, stripPathPrefix, extractToolDetail, parseClaudeLine, parseCodexLine, parseGeminiLine, parseOpenCodeLine, parseCursorAgentLine } = require('../../src/ai/stream-parser');
+const { StreamParser, truncateSnippet, stripPathPrefix, extractToolDetail, parseClaudeLine, parseCodexLine, parseGeminiLine, parseOpenCodeLine, parseCursorAgentLine, parsePiLine, createPiLineParser } = require('../../src/ai/stream-parser');
 
 // ---------------------------------------------------------------------------
 // truncateSnippet
@@ -1847,5 +1847,484 @@ describe('parseCursorAgentLine with cwd option', () => {
     const result = parseCursorAgentLine(line, { cwd: '/tmp' });
     expect(result.type).toBe('assistant_text');
     expect(result.text).toBe('Hello');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parsePiLine
+// ---------------------------------------------------------------------------
+describe('parsePiLine', () => {
+  it('returns null for empty/null/undefined input', () => {
+    expect(parsePiLine(null)).toBeNull();
+    expect(parsePiLine(undefined)).toBeNull();
+    expect(parsePiLine('')).toBeNull();
+    expect(parsePiLine('   ')).toBeNull();
+  });
+
+  it('returns null for non-JSON lines', () => {
+    expect(parsePiLine('not json at all')).toBeNull();
+  });
+
+  it('parses message_update with text_delta as assistant_text', () => {
+    const line = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: 'text_delta',
+        delta: 'Analyzing the changes...'
+      }
+    });
+    const result = parsePiLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Analyzing the changes...');
+    expect(result.timestamp).toBeGreaterThan(0);
+  });
+
+  it('returns null for message_update with empty text_delta', () => {
+    const line = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: 'text_delta',
+        delta: ''
+      }
+    });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for message_update with whitespace-only text_delta', () => {
+    const line = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: 'text_delta',
+        delta: '   '
+      }
+    });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for message_update without assistantMessageEvent', () => {
+    const line = JSON.stringify({ type: 'message_update' });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for message_update with non-text_delta type', () => {
+    const line = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: 'tool_use_start',
+        toolCallId: 'abc'
+      }
+    });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('parses message_end with assistant content blocks as assistant_text', () => {
+    const line = JSON.stringify({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Final analysis complete.' }]
+      }
+    });
+    const result = parsePiLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Final analysis complete.');
+  });
+
+  it('parses message_end with string content', () => {
+    const line = JSON.stringify({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: 'Simple string content'
+      }
+    });
+    const result = parsePiLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Simple string content');
+  });
+
+  it('returns null for message_end from non-assistant role', () => {
+    const line = JSON.stringify({
+      type: 'message_end',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'user message' }]
+      }
+    });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for message_end with empty content array', () => {
+    const line = JSON.stringify({
+      type: 'message_end',
+      message: { role: 'assistant', content: [] }
+    });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for message_end with whitespace-only string content', () => {
+    const line = JSON.stringify({
+      type: 'message_end',
+      message: { role: 'assistant', content: '   ' }
+    });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('parses tool_execution_start with command as tool_use', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'bash',
+      toolCallId: 'call_abc123',
+      args: { command: 'git diff HEAD~1' }
+    });
+    const result = parsePiLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('bash: git diff HEAD~1');
+  });
+
+  it('parses tool_execution_start with file_path', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'read',
+      args: { file_path: '/src/app.js' }
+    });
+    const result = parsePiLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('read: /src/app.js');
+  });
+
+  it('parses tool_execution_start with path', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'glob',
+      args: { path: '/src' }
+    });
+    const result = parsePiLine(line);
+    expect(result.text).toBe('glob: /src');
+  });
+
+  it('parses tool_execution_start with no args', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'list_files'
+    });
+    const result = parsePiLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('list_files');
+  });
+
+  it('defaults toolName to unknown', () => {
+    const line = JSON.stringify({ type: 'tool_execution_start' });
+    const result = parsePiLine(line);
+    expect(result.text).toBe('unknown');
+  });
+
+  it('returns null for session events', () => {
+    const line = JSON.stringify({ type: 'session', version: 3, id: 'test-session' });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for turn_start events', () => {
+    const line = JSON.stringify({ type: 'turn_start' });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for turn_end events', () => {
+    const line = JSON.stringify({ type: 'turn_end', message: { role: 'assistant' } });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for message_start events', () => {
+    const line = JSON.stringify({ type: 'message_start', message: { role: 'assistant' } });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for tool_execution_update events', () => {
+    const line = JSON.stringify({ type: 'tool_execution_update', partialResult: 'data' });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for tool_execution_end events', () => {
+    const line = JSON.stringify({ type: 'tool_execution_end', result: 'ok', isError: false });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for agent_start events', () => {
+    const line = JSON.stringify({ type: 'agent_start' });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('returns null for agent_end events', () => {
+    const line = JSON.stringify({ type: 'agent_end' });
+    expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('truncates long assistant text', () => {
+    const longText = 'x'.repeat(300);
+    const line = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: longText }
+    });
+    const result = parsePiLine(line);
+    expect(result.text.length).toBe(201); // 200 + ellipsis
+    expect(result.text.endsWith('\u2026')).toBe(true);
+  });
+
+  it('truncates long tool_use text', () => {
+    const longCmd = 'git diff ' + 'x'.repeat(300);
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'bash',
+      args: { command: longCmd }
+    });
+    const result = parsePiLine(line);
+    expect(result.text.length).toBeLessThanOrEqual(201);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parsePiLine with cwd option
+// ---------------------------------------------------------------------------
+describe('parsePiLine with cwd option', () => {
+  it('strips cwd prefix from file_path in tool_execution_start', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'read',
+      args: { file_path: '/tmp/worktree-abc/src/index.js' }
+    });
+    const result = parsePiLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('src/index.js');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('strips cwd prefix from path in tool_execution_start', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'glob',
+      args: { path: '/tmp/worktree-abc/src' }
+    });
+    const result = parsePiLine(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.text).toContain('src');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
+  });
+
+  it('does not strip when cwd not provided', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'read',
+      args: { file_path: '/tmp/worktree-abc/src/index.js' }
+    });
+    const result = parsePiLine(line);
+    expect(result.text).toContain('/tmp/worktree-abc/src/index.js');
+  });
+
+  it('does not affect assistant_text events', () => {
+    const line = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Hello' }
+    });
+    const result = parsePiLine(line, { cwd: '/tmp' });
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Hello');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createPiLineParser (buffered/stateful Pi line parser)
+// ---------------------------------------------------------------------------
+describe('createPiLineParser', () => {
+  it('returns a function', () => {
+    const parser = createPiLineParser();
+    expect(typeof parser).toBe('function');
+  });
+
+  it('suppresses short text_delta fragments', () => {
+    const parser = createPiLineParser();
+    const line = JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'tiny' }
+    });
+    // Short fragment should be buffered, not emitted
+    const result = parser(line);
+    expect(result).toBeNull();
+  });
+
+  it('emits accumulated text_delta when buffer reaches threshold', () => {
+    const parser = createPiLineParser();
+    // Feed multiple small deltas that together exceed the 80-char threshold
+    const shortDelta = 'x'.repeat(30);
+    const makeLine = (delta) => JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta }
+    });
+
+    // First call: 30 chars accumulated, under threshold
+    expect(parser(makeLine(shortDelta))).toBeNull();
+    // Second call: 60 chars accumulated, still under
+    expect(parser(makeLine(shortDelta))).toBeNull();
+    // Third call: 90 chars accumulated, over threshold — should emit
+    const result = parser(makeLine(shortDelta));
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    // The emitted text is the accumulated content, truncated by truncateSnippet
+    expect(result.text).toContain('x');
+  });
+
+  it('clears accumulated text when non-text event arrives', () => {
+    const parser = createPiLineParser();
+    // Accumulate some text
+    parser(JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'buffered text' }
+    }));
+
+    // Now a tool event arrives - accumulated text should be discarded
+    const toolLine = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'bash',
+      args: { command: 'git diff' }
+    });
+    const result = parser(toolLine);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('bash');
+  });
+
+  it('passes through non-text events unchanged', () => {
+    const parser = createPiLineParser();
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'read',
+      args: { file_path: '/src/app.js' }
+    });
+    const result = parser(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toContain('read');
+    expect(result.text).toContain('/src/app.js');
+  });
+
+  it('passes through message_end events', () => {
+    const parser = createPiLineParser();
+    const line = JSON.stringify({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Final response text.' }]
+      }
+    });
+    const result = parser(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    expect(result.text).toBe('Final response text.');
+  });
+
+  it('returns null for empty/null input', () => {
+    const parser = createPiLineParser();
+    expect(parser('')).toBeNull();
+    expect(parser(null)).toBeNull();
+    expect(parser(undefined)).toBeNull();
+  });
+
+  it('returns null for non-JSON lines', () => {
+    const parser = createPiLineParser();
+    expect(parser('not json at all')).toBeNull();
+  });
+
+  it('accumulates whitespace-only text_delta fragments', () => {
+    const parser = createPiLineParser();
+    // Simulate: "Hello" + " " + "World" — the space must be preserved
+    const makeLine = (delta) => JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta }
+    });
+
+    // Feed "Hello" (5 chars) — buffered
+    expect(parser(makeLine('Hello'))).toBeNull();
+    // Feed " " (whitespace-only, 1 char) — must be accumulated, not dropped
+    expect(parser(makeLine(' '))).toBeNull();
+    // Feed "World" (5 chars) — still buffered (total 11 chars, under 80 threshold)
+    expect(parser(makeLine('World'))).toBeNull();
+
+    // Now feed enough to cross the 80-char threshold
+    // We have 11 chars so far, need 69 more to reach exactly 80 (which triggers >= 80)
+    const result = parser(makeLine('x'.repeat(69)));
+    // At 80 chars, the >= 80 check fires and emits
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    // The accumulated text must contain the whitespace between Hello and World
+    expect(result.text).toContain('Hello World');
+  });
+
+  it('does not drop single-space text_delta between words', () => {
+    const parser = createPiLineParser();
+    const makeLine = (delta) => JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta }
+    });
+
+    // Build up text with spaces: "a b c d e ..." pattern
+    // Each pair is "X" + " " = 2 chars, need 40 pairs to hit 80 chars
+    for (let i = 0; i < 39; i++) {
+      parser(makeLine(String.fromCharCode(65 + (i % 26))));
+      parser(makeLine(' '));
+    }
+    // 78 chars accumulated (39 letters + 39 spaces), feed 2 more to hit 80
+    parser(makeLine('Z'));
+    // 79 chars now; one more char will reach 80 and trigger emission
+    const result = parser(makeLine('!'));
+    // 80 chars accumulated, should emit
+    expect(result).not.toBeNull();
+    // The text should contain spaces (they weren't dropped)
+    expect(result.text).toContain(' ');
+  });
+
+  it('works with StreamParser for end-to-end buffered streaming', () => {
+    const onEvent = vi.fn();
+    const parser = new StreamParser(createPiLineParser(), onEvent);
+
+    // Feed many small text_delta events
+    for (let i = 0; i < 5; i++) {
+      const line = JSON.stringify({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', delta: 'x'.repeat(10) }
+      });
+      parser.feed(line + '\n');
+    }
+
+    // With buffering, not every delta triggers an event
+    // At 10 chars per delta, we need 8+ to reach 80 chars
+    // After 5 deltas (50 chars), nothing should have emitted
+    expect(onEvent).not.toHaveBeenCalled();
+
+    // Feed more to cross the threshold
+    for (let i = 0; i < 5; i++) {
+      const line = JSON.stringify({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', delta: 'y'.repeat(10) }
+      });
+      parser.feed(line + '\n');
+    }
+
+    // Now at 100 chars, should have emitted once (at the 80-char threshold)
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(onEvent.mock.calls[0][0].type).toBe('assistant_text');
+  });
+
+  it('respects cwd option for tool events', () => {
+    const parser = createPiLineParser();
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'read',
+      args: { file_path: '/tmp/worktree-abc/src/index.js' }
+    });
+    const result = parser(line, { cwd: '/tmp/worktree-abc' });
+    expect(result.text).toContain('src/index.js');
+    expect(result.text).not.toContain('/tmp/worktree-abc');
   });
 });

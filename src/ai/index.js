@@ -41,6 +41,7 @@ require('./codex-provider');
 require('./copilot-provider');
 require('./opencode-provider');
 require('./cursor-agent-provider');
+require('./pi-provider');
 
 // Export the unified API
 module.exports = {

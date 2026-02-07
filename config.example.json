@@ -12,7 +12,7 @@
   "yolo": false,
 
   "providers": {
-    "_comment": "Provider configurations override built-in defaults. Most providers have built-in models, but OpenCode requires manual configuration.",
+    "_comment": "Provider configurations override built-in defaults. Most providers have built-in models, but OpenCode and Pi require manual configuration.",
 
     "opencode": {
       "_comment": "OpenCode has NO built-in models - you MUST configure models here to use it.",
@@ -147,6 +147,44 @@
       "extra_args": [],
       "env": {},
       "installInstructions": "Install Cursor Agent CLI: https://cursor.com/docs/cli/using"
+    },
+
+    "pi": {
+      "_comment": "Pi has NO built-in models - you MUST configure models here to use it. Below is just an example of that configuration format.",
+      "command": "pi",
+      "extra_args": [],
+      "env": {},
+      "installInstructions": "Install Pi: npm install -g @mariozechner/pi-coding-agent",
+      "models": [
+        {
+          "id": "gemini-2.5-flash",
+          "tier": "fast",
+          "default": true,
+          "name": "Gemini 2.5 Flash",
+          "description": "Google's fast model (suggested default)",
+          "tagline": "Lightning Fast",
+          "badge": "Fastest",
+          "badgeClass": "badge-speed"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4",
+          "tier": "balanced",
+          "name": "Claude Sonnet 4",
+          "description": "Fast and capable for most reviews",
+          "tagline": "Best balance of speed and quality",
+          "badge": "Recommended",
+          "badgeClass": "badge-recommended"
+        },
+        {
+          "id": "anthropic/claude-opus-4",
+          "tier": "thorough",
+          "name": "Claude Opus 4",
+          "description": "Most capable model for complex reviews",
+          "tagline": "Most Capable",
+          "badge": "Most Thorough",
+          "badgeClass": "badge-power"
+        }
+      ]
     }
   }
 }
