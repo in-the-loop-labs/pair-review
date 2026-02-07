@@ -1,6 +1,6 @@
 {
   "name": "code-critic",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "AI-powered code review analysis — Run three-level AI analysis and implement-review-fix loops directly in your coding agent. Works standalone, no server required.",
   "author": {
     "name": "in-the-loop-labs",
