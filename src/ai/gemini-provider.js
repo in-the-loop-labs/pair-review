@@ -354,6 +354,11 @@ class GeminiProvider extends AIProvider {
         }
       });
 
+      // Handle stdin errors (e.g., EPIPE if process exits before write completes)
+      gemini.stdin.on('error', (err) => {
+        logger.error(`${levelPrefix} stdin error: ${err.message}`);
+      });
+
       // Send the prompt to stdin
       gemini.stdin.write(prompt, (err) => {
         if (err) {

@@ -430,6 +430,11 @@ class ClaudeProvider extends AIProvider {
         }
       });
 
+      // Handle stdin errors (e.g., EPIPE if process exits before write completes)
+      claude.stdin.on('error', (err) => {
+        logger.error(`${levelPrefix} stdin error: ${err.message}`);
+      });
+
       // Send the prompt to stdin
       claude.stdin.write(prompt, (err) => {
         if (err) {
