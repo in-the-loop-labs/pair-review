@@ -110,6 +110,7 @@ OPTIONS:
                             The web UI also starts for the human reviewer.
     --model <name>          Override the AI model. Claude Code is the default provider.
                             Available models: opus, sonnet, haiku (Claude Code);
+                            also: opus-4.5, opus-4.6-low, opus-4.6-medium, opus-4.6-1m
                             or use provider-specific models with Gemini/Codex
     --use-checkout          Use current directory instead of creating worktree
                             (automatic in GitHub Actions)
@@ -129,7 +130,7 @@ ENVIRONMENT VARIABLES:
     PAIR_REVIEW_CLAUDE_CMD  Custom command to invoke Claude CLI (default: claude)
     PAIR_REVIEW_GEMINI_CMD  Custom command to invoke Gemini CLI (default: gemini)
     PAIR_REVIEW_CODEX_CMD   Custom command to invoke Codex CLI (default: codex)
-    PAIR_REVIEW_MODEL       Override the AI model (same as --model flag)
+    PAIR_REVIEW_MODEL       Override the AI model (same as --model flag, default: opus)
 
 CONFIGURATION:
     Config file: ~/.pair-review/config.json
@@ -852,7 +853,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
 
     // Run AI analysis
     console.log('Running AI analysis (all 3 levels)...');
-    const model = flags.model || process.env.PAIR_REVIEW_MODEL || 'sonnet';
+    const model = flags.model || process.env.PAIR_REVIEW_MODEL || 'opus';
     const analyzer = new Analyzer(db, model);
 
     let analysisSummary = null;

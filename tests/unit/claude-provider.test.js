@@ -29,6 +29,7 @@ vi.mock('../../src/utils/logger', () => {
 
 // Import after mocks are set up
 const ClaudeProvider = require('../../src/ai/claude-provider');
+const logger = require('../../src/utils/logger');
 
 describe('ClaudeProvider', () => {
   const originalEnv = { ...process.env };
@@ -54,29 +55,45 @@ describe('ClaudeProvider', () => {
       expect(ClaudeProvider.getProviderId()).toBe('claude');
     });
 
-    it('should return sonnet as default model', () => {
-      expect(ClaudeProvider.getDefaultModel()).toBe('sonnet');
+    it('should return opus as default model', () => {
+      expect(ClaudeProvider.getDefaultModel()).toBe('opus');
     });
 
     it('should return array of models with expected structure', () => {
       const models = ClaudeProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(3);
+      expect(models.length).toBe(7);
 
-      // Check that we have haiku, sonnet, opus
+      // Check that we have haiku, sonnet, and opus variants
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('haiku');
       expect(modelIds).toContain('sonnet');
+      expect(modelIds).toContain('opus-4.5');
+      expect(modelIds).toContain('opus-4.6-low');
+      expect(modelIds).toContain('opus-4.6-medium');
       expect(modelIds).toContain('opus');
+      expect(modelIds).toContain('opus-4.6-1m');
 
-      // Check model structure
-      const sonnet = models.find(m => m.id === 'sonnet');
-      expect(sonnet).toMatchObject({
-        id: 'sonnet',
-        name: 'Sonnet',
-        tier: 'balanced',
+      // Check model structure - opus is now the default
+      const opus = models.find(m => m.id === 'opus');
+      expect(opus).toMatchObject({
+        id: 'opus',
+        name: 'Opus 4.6 High',
+        tier: 'thorough',
         default: true
       });
+
+      // sonnet should NOT have default: true anymore
+      const sonnet = models.find(m => m.id === 'sonnet');
+      expect(sonnet.default).toBeUndefined();
+
+      // Check opus variants have correct tiers
+      for (const id of ['opus-4.5', 'opus-4.6-low', 'opus-4.6-medium', 'opus-4.6-1m']) {
+        const model = models.find(m => m.id === id);
+        expect(model.tier).toBe('balanced');
+      }
+      // opus itself is thorough
+      expect(opus.tier).toBe('thorough');
     });
 
     it('should return install instructions', () => {
@@ -89,7 +106,7 @@ describe('ClaudeProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new ClaudeProvider();
-      expect(provider.model).toBe('sonnet');
+      expect(provider.model).toBe('opus');
     });
 
     it('should create instance with specified model', () => {
@@ -197,13 +214,162 @@ describe('ClaudeProvider', () => {
         expect(provider.args).not.toContain('--dangerously-skip-permissions');
       });
     });
+
+    describe('cli_model resolution', () => {
+      it('should resolve cli_model from built-in model definition', () => {
+        // opus-4.6-low has cli_model: 'opus' in built-in definition
+        const provider = new ClaudeProvider('opus-4.6-low');
+        const modelIdx = provider.args.indexOf('--model');
+        expect(modelIdx).not.toBe(-1);
+        expect(provider.args[modelIdx + 1]).toBe('opus');
+      });
+
+      it('should fall back to id when no cli_model is defined', () => {
+        // sonnet has no cli_model in built-in definition
+        const provider = new ClaudeProvider('sonnet');
+        const modelIdx = provider.args.indexOf('--model');
+        expect(modelIdx).not.toBe(-1);
+        expect(provider.args[modelIdx + 1]).toBe('sonnet');
+      });
+
+      it('should use config cli_model over built-in cli_model', () => {
+        const provider = new ClaudeProvider('opus-4.6-low', {
+          models: [
+            { id: 'opus-4.6-low', cli_model: 'custom-opus' }
+          ]
+        });
+        const modelIdx = provider.args.indexOf('--model');
+        expect(modelIdx).not.toBe(-1);
+        expect(provider.args[modelIdx + 1]).toBe('custom-opus');
+      });
+
+      it('should suppress --model entirely when cli_model is null', () => {
+        const provider = new ClaudeProvider('opus-4.6-low', {
+          models: [
+            { id: 'opus-4.6-low', cli_model: null }
+          ]
+        });
+        expect(provider.args).not.toContain('--model');
+      });
+
+      it('should NOT suppress --model when cli_model is empty string', () => {
+        const provider = new ClaudeProvider('opus-4.6-low', {
+          models: [
+            { id: 'opus-4.6-low', cli_model: '' }
+          ]
+        });
+        const modelIdx = provider.args.indexOf('--model');
+        expect(modelIdx).not.toBe(-1);
+        expect(provider.args[modelIdx + 1]).toBe('');
+      });
+
+      it('should resolve opus-4.5 to its full version cli_model', () => {
+        const provider = new ClaudeProvider('opus-4.5');
+        const modelIdx = provider.args.indexOf('--model');
+        expect(modelIdx).not.toBe(-1);
+        expect(provider.args[modelIdx + 1]).toBe('claude-opus-4-5-20251101');
+      });
+
+      it('should resolve opus-4.6-1m to opus[1m] cli_model', () => {
+        const provider = new ClaudeProvider('opus-4.6-1m');
+        const modelIdx = provider.args.indexOf('--model');
+        expect(modelIdx).not.toBe(-1);
+        expect(provider.args[modelIdx + 1]).toBe('opus[1m]');
+      });
+    });
+
+    describe('alias resolution', () => {
+      it('should resolve opus-4.6-high alias to opus model', () => {
+        const provider = new ClaudeProvider('opus-4.6-high');
+        expect(provider.model).toBe('opus-4.6-high');
+        expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+      });
+
+      it('should resolve opus-4.6-high alias in _resolveModelConfig', () => {
+        const provider = new ClaudeProvider('opus');
+        const resolved = provider._resolveModelConfig('opus-4.6-high');
+        expect(resolved.builtIn).toBeDefined();
+        expect(resolved.builtIn.id).toBe('opus');
+        expect(resolved.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+      });
+
+      it('should resolve opus-4.6-high alias in getExtractionConfig', () => {
+        const provider = new ClaudeProvider('sonnet');
+        const config = provider.getExtractionConfig('opus-4.6-high');
+        expect(config.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+      });
+    });
+
+    describe('built-in env', () => {
+      it('should include built-in env for opus (high effort)', () => {
+        const provider = new ClaudeProvider('opus');
+        expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+      });
+
+      it('should include built-in env for opus-4.6-low', () => {
+        const provider = new ClaudeProvider('opus-4.6-low');
+        expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'low' });
+      });
+
+      it('should include built-in env for opus-4.6-medium', () => {
+        const provider = new ClaudeProvider('opus-4.6-medium');
+        expect(provider.extraEnv).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'medium' });
+      });
+
+      it('should have empty extraEnv for models without built-in env', () => {
+        const provider = new ClaudeProvider('sonnet');
+        expect(provider.extraEnv).toEqual({});
+      });
+
+      it('should have empty extraEnv for opus-4.5 (no built-in env)', () => {
+        const provider = new ClaudeProvider('opus-4.5');
+        expect(provider.extraEnv).toEqual({});
+      });
+    });
+
+    describe('three-way env merge', () => {
+      it('should merge built-in, provider, and config model env in correct order', () => {
+        const provider = new ClaudeProvider('opus', {
+          env: { PROVIDER_VAR: 'from-provider', CLAUDE_CODE_EFFORT_LEVEL: 'provider-override' },
+          models: [
+            { id: 'opus', env: { MODEL_VAR: 'from-model', CLAUDE_CODE_EFFORT_LEVEL: 'model-override' } }
+          ]
+        });
+        // Config model env wins over provider env, which wins over built-in env
+        expect(provider.extraEnv.CLAUDE_CODE_EFFORT_LEVEL).toBe('model-override');
+        expect(provider.extraEnv.PROVIDER_VAR).toBe('from-provider');
+        expect(provider.extraEnv.MODEL_VAR).toBe('from-model');
+      });
+
+      it('should let provider env override built-in env when no config model env', () => {
+        const provider = new ClaudeProvider('opus', {
+          env: { CLAUDE_CODE_EFFORT_LEVEL: 'provider-override' }
+        });
+        expect(provider.extraEnv.CLAUDE_CODE_EFFORT_LEVEL).toBe('provider-override');
+      });
+    });
+
+    describe('three-way extra_args merge', () => {
+      it('should include built-in extra_args in the args array', () => {
+        // Models with built-in extra_args would include them in args
+        // Currently none of the built-in models have extra_args, so test with config override
+        const provider = new ClaudeProvider('sonnet', {
+          extra_args: ['--provider-arg'],
+          models: [
+            { id: 'sonnet', extra_args: ['--model-arg'] }
+          ]
+        });
+        expect(provider.args).toContain('--provider-arg');
+        expect(provider.args).toContain('--model-arg');
+      });
+    });
   });
 
   describe('PAIR_REVIEW_MAX_BUDGET_USD validation', () => {
     let warnSpy;
 
     beforeEach(() => {
-      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      warnSpy = vi.spyOn(logger, 'warn');
     });
 
     afterEach(() => {
@@ -216,7 +382,9 @@ describe('ClaudeProvider', () => {
       const budgetIdx = provider.args.indexOf('--max-budget-usd');
       expect(budgetIdx).not.toBe(-1);
       expect(provider.args[budgetIdx + 1]).toBe('2');
-      expect(warnSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('PAIR_REVIEW_MAX_BUDGET_USD')
+      );
     });
 
     it('should pass decimal budget values through to args', () => {
@@ -225,7 +393,9 @@ describe('ClaudeProvider', () => {
       const budgetIdx = provider.args.indexOf('--max-budget-usd');
       expect(budgetIdx).not.toBe(-1);
       expect(provider.args[budgetIdx + 1]).toBe('0.5');
-      expect(warnSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('PAIR_REVIEW_MAX_BUDGET_USD')
+      );
     });
 
     it('should ignore invalid string "abc" with a warning', () => {
@@ -241,7 +411,9 @@ describe('ClaudeProvider', () => {
       process.env.PAIR_REVIEW_MAX_BUDGET_USD = '';
       const provider = new ClaudeProvider('sonnet');
       expect(provider.args).not.toContain('--max-budget-usd');
-      expect(warnSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('PAIR_REVIEW_MAX_BUDGET_USD')
+      );
     });
 
     it('should ignore negative number "-1" with a warning', () => {
@@ -266,7 +438,9 @@ describe('ClaudeProvider', () => {
       delete process.env.PAIR_REVIEW_MAX_BUDGET_USD;
       const provider = new ClaudeProvider('sonnet');
       expect(provider.args).not.toContain('--max-budget-usd');
-      expect(warnSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('PAIR_REVIEW_MAX_BUDGET_USD')
+      );
     });
   });
 
@@ -678,7 +852,6 @@ describe('ClaudeProvider', () => {
 
   describe('logStreamLine', () => {
     let provider;
-    const logger = require('../../src/utils/logger');
 
     beforeEach(() => {
       provider = new ClaudeProvider('sonnet');
@@ -885,6 +1058,102 @@ describe('ClaudeProvider', () => {
         }
       });
       expect(() => provider.logStreamLine(line, '[Level 1]')).not.toThrow();
+    });
+  });
+
+  describe('buildArgsForModel', () => {
+    it('should resolve cli_model for opus-4.5', () => {
+      const provider = new ClaudeProvider('sonnet');
+      const args = provider.buildArgsForModel('opus-4.5');
+      const modelIdx = args.indexOf('--model');
+      expect(modelIdx).not.toBe(-1);
+      expect(args[modelIdx + 1]).toBe('claude-opus-4-5-20251101');
+    });
+
+    it('should resolve cli_model for opus-4.6-low', () => {
+      const provider = new ClaudeProvider('sonnet');
+      const args = provider.buildArgsForModel('opus-4.6-low');
+      const modelIdx = args.indexOf('--model');
+      expect(modelIdx).not.toBe(-1);
+      expect(args[modelIdx + 1]).toBe('opus');
+    });
+
+    it('should fall back to id when no cli_model defined', () => {
+      const provider = new ClaudeProvider('sonnet');
+      const args = provider.buildArgsForModel('haiku');
+      const modelIdx = args.indexOf('--model');
+      expect(modelIdx).not.toBe(-1);
+      expect(args[modelIdx + 1]).toBe('haiku');
+    });
+
+    it('should suppress --model when config cli_model is null', () => {
+      const provider = new ClaudeProvider('sonnet', {
+        models: [
+          { id: 'sonnet', cli_model: null }
+        ]
+      });
+      const args = provider.buildArgsForModel('sonnet');
+      expect(args).not.toContain('--model');
+    });
+
+    it('should NOT suppress --model when config cli_model is empty string', () => {
+      const provider = new ClaudeProvider('sonnet', {
+        models: [
+          { id: 'sonnet', cli_model: '' }
+        ]
+      });
+      const args = provider.buildArgsForModel('sonnet');
+      const modelIdx = args.indexOf('--model');
+      expect(modelIdx).not.toBe(-1);
+      expect(args[modelIdx + 1]).toBe('');
+    });
+
+    it('should include provider and config model extra_args', () => {
+      const provider = new ClaudeProvider('sonnet', {
+        extra_args: ['--provider-flag'],
+        models: [
+          { id: 'haiku', extra_args: ['--haiku-flag'] }
+        ]
+      });
+      const args = provider.buildArgsForModel('haiku');
+      expect(args).toContain('--provider-flag');
+      expect(args).toContain('--haiku-flag');
+    });
+  });
+
+  describe('getExtractionConfig', () => {
+    it('should return env from built-in model definition', () => {
+      const provider = new ClaudeProvider('sonnet');
+      const config = provider.getExtractionConfig('opus');
+      expect(config.env).toEqual({ CLAUDE_CODE_EFFORT_LEVEL: 'high' });
+    });
+
+    it('should return empty env for models without built-in env', () => {
+      const provider = new ClaudeProvider('sonnet');
+      const config = provider.getExtractionConfig('haiku');
+      expect(config.env).toEqual({});
+    });
+
+    it('should three-way merge env in extraction config', () => {
+      const provider = new ClaudeProvider('sonnet', {
+        env: { PROVIDER_VAR: 'yes' },
+        models: [
+          { id: 'opus', env: { MODEL_VAR: 'yes' } }
+        ]
+      });
+      const config = provider.getExtractionConfig('opus');
+      // Built-in + provider + config model
+      expect(config.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high'); // built-in, not overridden
+      expect(config.env.PROVIDER_VAR).toBe('yes');
+      expect(config.env.MODEL_VAR).toBe('yes');
+    });
+
+    it('should resolve cli_model in extraction args', () => {
+      const provider = new ClaudeProvider('sonnet');
+      const config = provider.getExtractionConfig('opus-4.5');
+      expect(config.args).toContain('--model');
+      const modelIdx = config.args.indexOf('--model');
+      expect(config.args[modelIdx + 1]).toBe('claude-opus-4-5-20251101');
     });
   });
 
