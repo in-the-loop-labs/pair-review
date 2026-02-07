@@ -571,7 +571,7 @@ function createPiLineParser() {
       // Accumulate text_delta fragments instead of emitting each one
       if (eventType === 'message_update') {
         const assistantEvent = event.assistantMessageEvent;
-        if (assistantEvent?.type === 'text_delta' && assistantEvent?.delta?.trim()) {
+        if (assistantEvent?.type === 'text_delta' && assistantEvent?.delta) {
           accumulatedDelta += assistantEvent.delta;
           // Only emit when we have accumulated a meaningful chunk
           if (accumulatedDelta.length >= 80) {

@@ -631,14 +631,16 @@ class PiProvider extends AIProvider {
         command: `${piCmd} ${args.join(' ')}`,
         args: [],
         useShell: true,
-        promptViaStdin: true
+        promptViaStdin: true,
+        env: this.extraEnv
       };
     }
     return {
       command: piCmd,
       args,
       useShell: false,
-      promptViaStdin: true
+      promptViaStdin: true,
+      env: this.extraEnv
     };
   }
 
@@ -663,6 +665,7 @@ class PiProvider extends AIProvider {
       const pi = spawn(command, args, {
         env: {
           ...process.env,
+          ...this.extraEnv,
           PATH: `${BIN_DIR}:${process.env.PATH}`
         },
         shell: useShell
@@ -671,6 +674,15 @@ class PiProvider extends AIProvider {
       let stdout = '';
       let settled = false;
 
+      // Timeout guard: if the CLI hangs, resolve false
+      const availabilityTimeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        logger.warn('Pi CLI availability check timed out after 10s');
+        try { pi.kill(); } catch { /* ignore */ }
+        resolve(false);
+      }, 10000);
+
       pi.stdout.on('data', (data) => {
         stdout += data.toString();
       });
@@ -678,6 +690,7 @@ class PiProvider extends AIProvider {
       pi.on('close', (code) => {
         if (settled) return;
         settled = true;
+        clearTimeout(availabilityTimeout);
         if (code === 0) {
           logger.info(`Pi CLI available: ${stdout.trim()}`);
           resolve(true);
@@ -690,6 +703,7 @@ class PiProvider extends AIProvider {
       pi.on('error', (error) => {
         if (settled) return;
         settled = true;
+        clearTimeout(availabilityTimeout);
         logger.warn(`Pi CLI not available: ${error.message}`);
         resolve(false);
       });

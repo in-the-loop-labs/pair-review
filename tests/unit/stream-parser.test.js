@@ -2236,13 +2236,52 @@ describe('createPiLineParser', () => {
     expect(parser('not json at all')).toBeNull();
   });
 
-  it('returns null for whitespace-only text_delta', () => {
+  it('accumulates whitespace-only text_delta fragments', () => {
     const parser = createPiLineParser();
-    const line = JSON.stringify({
+    // Simulate: "Hello" + " " + "World" — the space must be preserved
+    const makeLine = (delta) => JSON.stringify({
       type: 'message_update',
-      assistantMessageEvent: { type: 'text_delta', delta: '   ' }
+      assistantMessageEvent: { type: 'text_delta', delta }
     });
-    expect(parser(line)).toBeNull();
+
+    // Feed "Hello" (5 chars) — buffered
+    expect(parser(makeLine('Hello'))).toBeNull();
+    // Feed " " (whitespace-only, 1 char) — must be accumulated, not dropped
+    expect(parser(makeLine(' '))).toBeNull();
+    // Feed "World" (5 chars) — still buffered (total 11 chars, under 80 threshold)
+    expect(parser(makeLine('World'))).toBeNull();
+
+    // Now feed enough to cross the 80-char threshold
+    // We have 11 chars so far, need 69 more to reach exactly 80 (which triggers >= 80)
+    const result = parser(makeLine('x'.repeat(69)));
+    // At 80 chars, the >= 80 check fires and emits
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('assistant_text');
+    // The accumulated text must contain the whitespace between Hello and World
+    expect(result.text).toContain('Hello World');
+  });
+
+  it('does not drop single-space text_delta between words', () => {
+    const parser = createPiLineParser();
+    const makeLine = (delta) => JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta }
+    });
+
+    // Build up text with spaces: "a b c d e ..." pattern
+    // Each pair is "X" + " " = 2 chars, need 40 pairs to hit 80 chars
+    for (let i = 0; i < 39; i++) {
+      parser(makeLine(String.fromCharCode(65 + (i % 26))));
+      parser(makeLine(' '));
+    }
+    // 78 chars accumulated (39 letters + 39 spaces), feed 2 more to hit 80
+    parser(makeLine('Z'));
+    // 79 chars now; one more char will reach 80 and trigger emission
+    const result = parser(makeLine('!'));
+    // 80 chars accumulated, should emit
+    expect(result).not.toBeNull();
+    // The text should contain spaces (they weren't dropped)
+    expect(result.text).toContain(' ');
   });
 
   it('works with StreamParser for end-to-end buffered streaming', () => {

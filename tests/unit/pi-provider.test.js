@@ -8,6 +8,17 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
  * and streaming line logging without requiring actual CLI processes.
  */
 
+// Patch child_process.spawn with a mock that delegates to the real implementation
+// by default. This must happen BEFORE pi-provider.js is loaded (via require below),
+// because pi-provider destructures spawn at import time:
+//   const { spawn } = require('child_process');
+// vitest's vi.mock does not intercept CJS require for Node built-in modules,
+// so we patch the module object directly instead.
+const childProcess = require('child_process');
+const realSpawn = childProcess.spawn;
+const mockSpawn = vi.fn((...args) => realSpawn(...args));
+childProcess.spawn = mockSpawn;
+
 // Mock logger to suppress output during tests
 // Use actual implementation for state tracking, but mock output methods
 // Note: Logger exports directly via CommonJS (module.exports = new AILogger()),
@@ -27,12 +38,19 @@ vi.mock('../../src/utils/logger', () => {
   };
 });
 
+
+
 // Import after mocks are set up
 const PiProvider = require('../../src/ai/pi-provider');
 const { _extractAssistantText: extractAssistantText } = require('../../src/ai/pi-provider');
 
 describe('PiProvider', () => {
   const originalEnv = { ...process.env };
+
+  afterAll(() => {
+    // Restore the real spawn on child_process module
+    childProcess.spawn = realSpawn;
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -724,6 +742,48 @@ describe('PiProvider', () => {
       expect(config.command).toContain('--thinking');
       expect(config.command).toContain('fast-model');
     });
+
+    it('should include env field with extraEnv in non-shell mode', () => {
+      const provider = new PiProvider('test-model', {
+        env: { GEMINI_API_KEY: 'test-key-123' }
+      });
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config).toHaveProperty('env');
+      expect(config.env).toEqual({ GEMINI_API_KEY: 'test-key-123' });
+    });
+
+    it('should include env field with extraEnv in shell mode', () => {
+      process.env.PAIR_REVIEW_PI_CMD = 'npx pi';
+      const provider = new PiProvider('test-model', {
+        env: { API_KEY: 'shell-key' }
+      });
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config.useShell).toBe(true);
+      expect(config).toHaveProperty('env');
+      expect(config.env).toEqual({ API_KEY: 'shell-key' });
+    });
+
+    it('should include merged provider and model env in env field', () => {
+      const provider = new PiProvider('special-model', {
+        env: { VAR1: 'provider-val' },
+        models: [
+          { id: 'special-model', env: { VAR1: 'model-val', VAR2: 'extra' } }
+        ]
+      });
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config.env).toEqual({ VAR1: 'model-val', VAR2: 'extra' });
+    });
+
+    it('should include empty env when no extraEnv configured', () => {
+      const provider = new PiProvider('test-model');
+      const config = provider.getExtractionConfig('extraction-model');
+
+      expect(config).toHaveProperty('env');
+      expect(config.env).toEqual({});
+    });
   });
 
   describe('extractAssistantText', () => {
@@ -846,6 +906,116 @@ describe('PiProvider', () => {
       const result = provider.parsePiResponse(stdout, 1);
       // Both texts should be included since they are different (exact match, not substring)
       expect(result.success).toBe(true);
+    });
+  });
+
+  describe('testAvailability', () => {
+    afterEach(() => {
+      delete process.env.PAIR_REVIEW_PI_CMD;
+    });
+
+    it('should resolve true when CLI command succeeds', async () => {
+      // Use 'echo' as a fake CLI that exits with 0 and outputs a version
+      process.env.PAIR_REVIEW_PI_CMD = 'echo';
+      const provider = new PiProvider('test-model');
+      const result = await provider.testAvailability();
+      expect(result).toBe(true);
+    });
+
+    it('should resolve false when CLI command fails', async () => {
+      // Use a command that exits with non-zero (false always exits 1)
+      process.env.PAIR_REVIEW_PI_CMD = 'false';
+      const provider = new PiProvider('test-model');
+      const result = await provider.testAvailability();
+      expect(result).toBe(false);
+    });
+
+    it('should resolve false when CLI command not found', async () => {
+      // Use a non-existent command
+      process.env.PAIR_REVIEW_PI_CMD = '/nonexistent/binary/that/does/not/exist';
+      const provider = new PiProvider('test-model');
+      const result = await provider.testAvailability();
+      expect(result).toBe(false);
+    });
+
+    it('should pass extraEnv values to spawn env', async () => {
+      const { EventEmitter } = require('events');
+
+      // Create a fake child process that emits 'close' with code 0
+      const fakeChild = new EventEmitter();
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model', {
+        env: { MY_API_KEY: 'test-key-123' }
+      });
+      const resultPromise = provider.testAvailability();
+
+      // Emit close to resolve the promise
+      fakeChild.emit('close', 0);
+      await resultPromise;
+
+      // Verify spawn was called with env containing our extraEnv values
+      const spawnCalls = mockSpawn.mock.calls;
+      const lastCall = spawnCalls[spawnCalls.length - 1];
+      const spawnOpts = lastCall[2];
+      expect(spawnOpts.env).toEqual(expect.objectContaining({
+        MY_API_KEY: 'test-key-123'
+      }));
+    });
+
+    it('should resolve false and kill the process when CLI hangs past timeout', async () => {
+      vi.useFakeTimers();
+      const { EventEmitter } = require('events');
+
+      // Create a fake child process that never emits 'close'
+      const fakeChild = new EventEmitter();
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const resultPromise = provider.testAvailability();
+
+      // Advance time past the 10s timeout
+      vi.advanceTimersByTime(10000);
+
+      const result = await resultPromise;
+
+      expect(result).toBe(false);
+      expect(fakeChild.kill).toHaveBeenCalled();
+
+      vi.useRealTimers();
+    });
+
+    it('should not kill the process when CLI exits before timeout', async () => {
+      vi.useFakeTimers();
+      const { EventEmitter } = require('events');
+
+      // Create a fake child process that exits quickly
+      const fakeChild = new EventEmitter();
+      fakeChild.stdout = new EventEmitter();
+      fakeChild.kill = vi.fn();
+
+      mockSpawn.mockReturnValueOnce(fakeChild);
+
+      const provider = new PiProvider('test-model');
+      const resultPromise = provider.testAvailability();
+
+      // Process exits successfully before timeout
+      fakeChild.emit('close', 0);
+      const result = await resultPromise;
+
+      // Advance past timeout to confirm it was cleared
+      vi.advanceTimersByTime(10000);
+
+      expect(result).toBe(true);
+      expect(fakeChild.kill).not.toHaveBeenCalled();
+
+      vi.useRealTimers();
     });
   });
 
