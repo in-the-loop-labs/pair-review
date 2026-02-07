@@ -13,7 +13,7 @@ const DEFAULT_CONFIG = {
   github_token: "",
   port: 7247,
   theme: "light",
-  default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode'
+  default_provider: "claude",  // AI provider: 'claude', 'gemini', 'codex', 'copilot', 'opencode', 'cursor-agent', 'pi'
   default_model: "opus",       // Model within the provider (e.g., 'opus' for Claude, 'gemini-2.5-pro' for Gemini)
   worktree_retention_days: 7,
   dev_mode: false,  // When true, disables static file caching for development

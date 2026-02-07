@@ -462,6 +462,147 @@ function parseCursorAgentLine(line, options = {}) {
   }
 }
 
+/**
+ * Parse a single Pi JSONL line into a normalized event.
+ * Returns null if the line should not be emitted.
+ *
+ * Pi JSONL event types:
+ * - message_update (assistantMessageEvent.type === 'text_delta') → assistant_text
+ * - message_end (role: 'assistant', content blocks with text) → assistant_text
+ * - tool_execution_start (toolName, args) → tool_use
+ * - session, turn_start, turn_end, message_start, tool_execution_update,
+ *   tool_execution_end, agent_start, agent_end → filtered out
+ *
+ * @param {string} line - A single JSONL line from Pi stdout
+ * @param {Object} [options] - Parse options
+ * @param {string} [options.cwd] - Working directory to strip from file paths
+ * @returns {{ type: string, text: string, timestamp: number } | null}
+ */
+function parsePiLine(line, options = {}) {
+  if (!line || !line.trim()) return null;
+
+  const { cwd } = options;
+
+  try {
+    const event = JSON.parse(line);
+    const eventType = event.type;
+
+    // Streaming text deltas from message_update events
+    if (eventType === 'message_update') {
+      const assistantEvent = event.assistantMessageEvent;
+      if (assistantEvent?.type === 'text_delta' && assistantEvent?.delta?.trim()) {
+        return {
+          type: 'assistant_text',
+          text: truncateSnippet(assistantEvent.delta),
+          timestamp: Date.now()
+        };
+      }
+      return null;
+    }
+
+    // Complete assistant message from message_end
+    if (eventType === 'message_end' && event.message?.role === 'assistant') {
+      const content = event.message.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === 'text' && block.text?.trim()) {
+            return {
+              type: 'assistant_text',
+              text: truncateSnippet(block.text),
+              timestamp: Date.now()
+            };
+          }
+        }
+      } else if (typeof content === 'string' && content.trim()) {
+        return {
+          type: 'assistant_text',
+          text: truncateSnippet(content),
+          timestamp: Date.now()
+        };
+      }
+      return null;
+    }
+
+    // Tool execution start events
+    if (eventType === 'tool_execution_start') {
+      const toolName = event.toolName || 'unknown';
+      const detail = extractToolDetail(event.args, cwd);
+      const text = detail ? `${toolName}: ${detail}` : toolName;
+      return {
+        type: 'tool_use',
+        text: truncateSnippet(text),
+        timestamp: Date.now()
+      };
+    }
+
+    // session, turn_start, turn_end, message_start, tool_execution_update,
+    // tool_execution_end, agent_start, agent_end — never emit
+    return null;
+  } catch {
+    // Best-effort side channel — silently ignore non-JSON or malformed lines.
+    return null;
+  }
+}
+
+/**
+ * Create a stateful Pi line parser that accumulates text_delta fragments
+ * before emitting. This prevents flooding the UI with tiny text updates.
+ *
+ * Accumulates text_delta content and only emits an assistant_text event
+ * when enough text has been collected (>= 80 chars). When a non-text-delta
+ * event arrives (tool_execution_start, message_end, etc.), accumulated text
+ * is discarded in favor of the more informative event.
+ *
+ * The returned function has the same signature as parsePiLine and can be
+ * used as a drop-in replacement with StreamParser.
+ *
+ * @returns {Function} Stateful line parser with same signature as parsePiLine
+ */
+function createPiLineParser() {
+  let accumulatedDelta = '';
+
+  return function parsePiLineBuffered(line, options = {}) {
+    if (!line || !line.trim()) return null;
+
+    try {
+      const event = JSON.parse(line);
+      const eventType = event.type;
+
+      // Accumulate text_delta fragments instead of emitting each one
+      if (eventType === 'message_update') {
+        const assistantEvent = event.assistantMessageEvent;
+        if (assistantEvent?.type === 'text_delta' && assistantEvent?.delta?.trim()) {
+          accumulatedDelta += assistantEvent.delta;
+          // Only emit when we have accumulated a meaningful chunk
+          if (accumulatedDelta.length >= 80) {
+            const text = accumulatedDelta;
+            accumulatedDelta = '';
+            return {
+              type: 'assistant_text',
+              text: truncateSnippet(text),
+              timestamp: Date.now()
+            };
+          }
+          // Not enough accumulated yet — suppress this event
+          return null;
+        }
+        return null;
+      }
+
+      // Non-text-delta event: discard accumulated text (the real event is
+      // more informative) and reset the buffer. The accumulated deltas are
+      // only preview snippets; authoritative text extraction happens in
+      // parsePiResponse.
+      accumulatedDelta = '';
+
+      // Fall through to stateless parsing for non-text-delta events
+      return parsePiLine(line, options);
+    } catch {
+      return null;
+    }
+  };
+}
+
 module.exports = {
   StreamParser,
   truncateSnippet,
@@ -471,5 +612,7 @@ module.exports = {
   parseCodexLine,
   parseGeminiLine,
   parseOpenCodeLine,
-  parseCursorAgentLine
+  parseCursorAgentLine,
+  parsePiLine,
+  createPiLineParser
 };
