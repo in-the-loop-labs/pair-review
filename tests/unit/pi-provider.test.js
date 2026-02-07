@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach, afterAll } from 'vitest';
 
 /**
  * Unit tests for PiProvider
@@ -912,6 +912,7 @@ describe('PiProvider', () => {
   describe('testAvailability', () => {
     afterEach(() => {
       delete process.env.PAIR_REVIEW_PI_CMD;
+      vi.useRealTimers();
     });
 
     it('should resolve true when CLI command succeeds', async () => {
@@ -987,8 +988,6 @@ describe('PiProvider', () => {
 
       expect(result).toBe(false);
       expect(fakeChild.kill).toHaveBeenCalled();
-
-      vi.useRealTimers();
     });
 
     it('should not kill the process when CLI exits before timeout', async () => {
@@ -1014,8 +1013,6 @@ describe('PiProvider', () => {
 
       expect(result).toBe(true);
       expect(fakeChild.kill).not.toHaveBeenCalled();
-
-      vi.useRealTimers();
     });
   });
 
