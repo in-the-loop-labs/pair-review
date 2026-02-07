@@ -289,6 +289,11 @@ class OpenCodeProvider extends AIProvider {
         }
       });
 
+      // Handle stdin errors (e.g., EPIPE if process exits before write completes)
+      opencode.stdin.on('error', (err) => {
+        logger.error(`${levelPrefix} stdin error: ${err.message}`);
+      });
+
       // Send the prompt to stdin (OpenCode reads from stdin when no positional args)
       // Note on error handling: When stdin.write fails, we kill the process which
       // triggers the 'close' event handler. The `settled` guard (line 142) prevents

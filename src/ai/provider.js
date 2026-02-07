@@ -280,6 +280,11 @@ ${rawResponse}
 
       // Send prompt via stdin if configured
       if (promptViaStdin) {
+        // Handle stdin errors (e.g., EPIPE if process exits before write completes)
+        proc.stdin.on('error', (err) => {
+          logger.warn(`${levelPrefix} extraction stdin error: ${err.message}`);
+        });
+
         proc.stdin.write(prompt, (err) => {
           if (err) {
             logger.warn(`${levelPrefix} Failed to write extraction prompt: ${err}`);
