@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
 const { loadConfig, showWelcomeMessage } = require('./config');
+const logger = require('./utils/logger');
 
 const execAsync = promisify(exec);
 const { initializeDatabase, ReviewRepository, RepoSettingsRepository } = require('./database');
@@ -593,6 +594,14 @@ async function handleLocalReview(targetPath, flags = {}) {
 
     // Store diff data in module-level Map (avoids process.env size limits and security concerns)
     localReviewDiffs.set(sessionId, { diff, stats, digest });
+
+    // Persist diff to database so past sessions remain viewable without the server running
+    try {
+      const reviewRepo = new ReviewRepository(db);
+      await reviewRepo.saveLocalDiff(sessionId, { diff, stats, digest });
+    } catch (persistError) {
+      logger.warn(`Could not persist diff to database: ${persistError.message}`);
+    }
 
     // Set model override if provided
     if (flags.model) {

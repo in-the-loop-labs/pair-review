@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 13;
+const CURRENT_SCHEMA_VERSION = 14;
 
 /**
  * Database schema SQL statements
@@ -30,7 +30,8 @@ const SCHEMA_SQL = {
       review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
       local_path TEXT,
       local_head_sha TEXT,
-      summary TEXT
+      summary TEXT,
+      name TEXT
     )
   `,
 
@@ -146,6 +147,17 @@ const SCHEMA_SQL = {
     )
   `,
 
+  local_diffs: `
+    CREATE TABLE IF NOT EXISTS local_diffs (
+      review_id INTEGER PRIMARY KEY,
+      diff_text TEXT,
+      stats TEXT,
+      digest TEXT,
+      captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
+  `,
+
   github_reviews: `
     CREATE TABLE IF NOT EXISTS github_reviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,6 +224,20 @@ function columnExists(db, table, column) {
   return rows ? rows.some(row => row.name === column) : false;
 }
 
+/**
+ * Helper to check if a table exists in the database
+ * Used by migrations to safely create tables idempotently
+ * @param {Database} db - Database instance
+ * @param {string} tableName - Table name
+ * @returns {boolean} True if table exists
+ */
+function tableExists(db, tableName) {
+  const row = db.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name=?`
+  ).get(tableName);
+  return !!row;
+}
+
 const MIGRATIONS = {
   // Migration to version 1: handles all legacy column additions
   1: (db) => {
@@ -234,14 +260,6 @@ const MIGRATIONS = {
       }
     };
 
-    // Helper to check if table exists
-    const tableExists = (tableName) => {
-      const row = db.prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name=?`
-      ).get(tableName);
-      return !!row;
-    };
-
     // Add columns to comments table
     addColumnIfNotExists('comments', 'diff_position', 'INTEGER');
     addColumnIfNotExists('comments', 'side', "TEXT DEFAULT 'RIGHT'");
@@ -252,7 +270,7 @@ const MIGRATIONS = {
     addColumnIfNotExists('reviews', 'custom_instructions', 'TEXT');
 
     // Create repo_settings table if not exists
-    const hasRepoSettings = tableExists('repo_settings');
+    const hasRepoSettings = tableExists(db, 'repo_settings');
     if (!hasRepoSettings) {
       console.log('  Creating repo_settings table...');
       db.exec(SCHEMA_SQL.repo_settings);
@@ -280,16 +298,8 @@ const MIGRATIONS = {
   3: (db) => {
     console.log('Running migration to schema version 3...');
 
-    // Helper to check if table exists
-    const tableExists = (tableName) => {
-      const row = db.prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name=?`
-      ).get(tableName);
-      return !!row;
-    };
-
     // First ensure pr_metadata table exists
-    const hasPrMetadata = tableExists('pr_metadata');
+    const hasPrMetadata = tableExists(db, 'pr_metadata');
     if (!hasPrMetadata) {
       console.log('  Creating pr_metadata table...');
       db.exec(SCHEMA_SQL.pr_metadata);
@@ -451,16 +461,8 @@ const MIGRATIONS = {
   8: (db) => {
     console.log('Running migration to schema version 8...');
 
-    // Helper to check if table exists
-    const tableExists = (tableName) => {
-      const row = db.prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name=?`
-      ).get(tableName);
-      return !!row;
-    };
-
     // Create analysis_runs table if it doesn't exist
-    if (!tableExists('analysis_runs')) {
+    if (!tableExists(db, 'analysis_runs')) {
       db.exec(`
         CREATE TABLE analysis_runs (
           id TEXT PRIMARY KEY,
@@ -609,16 +611,8 @@ const MIGRATIONS = {
   13: (db) => {
     console.log('Running migration to schema version 13...');
 
-    // Helper to check if table exists
-    const tableExists = (tableName) => {
-      const row = db.prepare(
-        `SELECT name FROM sqlite_master WHERE type='table' AND name=?`
-      ).get(tableName);
-      return !!row;
-    };
-
     // Create github_reviews table if it doesn't exist
-    if (!tableExists('github_reviews')) {
+    if (!tableExists(db, 'github_reviews')) {
       db.exec(`
         CREATE TABLE github_reviews (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -644,6 +638,51 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 13 complete');
+  },
+
+  // Migration to version 14: adds name column to reviews and creates local_diffs table
+  14: (db) => {
+    console.log('Running migration to schema version 14...');
+
+    // Add name column to reviews if it doesn't exist
+    const hasName = columnExists(db, 'reviews', 'name');
+    if (!hasName) {
+      try {
+        db.prepare(`ALTER TABLE reviews ADD COLUMN name TEXT`).run();
+        console.log('  Added name column to reviews');
+      } catch (error) {
+        // Ignore duplicate column errors (race condition protection)
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column name already exists (race condition)');
+      }
+    } else {
+      console.log('  Column name already exists');
+    }
+
+    // Create local_diffs table if it doesn't exist
+    if (!tableExists(db, 'local_diffs')) {
+      db.exec(`
+        CREATE TABLE local_diffs (
+          review_id INTEGER PRIMARY KEY,
+          diff_text TEXT,
+          stats TEXT,
+          digest TEXT,
+          captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+        )
+      `);
+      console.log('  Created local_diffs table');
+    } else {
+      console.log('  Table local_diffs already exists');
+    }
+
+    // Add index for listing local sessions (WHERE review_type = 'local' ORDER BY updated_at DESC)
+    db.exec('CREATE INDEX IF NOT EXISTS idx_reviews_type_updated ON reviews(review_type, updated_at DESC)');
+    console.log('  Created index idx_reviews_type_updated');
+
+    console.log('Migration to schema version 14 complete');
   }
 };
 
@@ -1808,6 +1847,11 @@ class ReviewRepository {
       params.push(updates.summary);
     }
 
+    if (updates.name !== undefined) {
+      setClauses.push('name = ?');
+      params.push(updates.name);
+    }
+
     if (updates.submittedAt !== undefined) {
       setClauses.push('submitted_at = ?');
       const submittedAt = updates.submittedAt instanceof Date
@@ -2037,7 +2081,7 @@ class ReviewRepository {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
-             review_type, local_path, local_head_sha, summary
+             review_type, local_path, local_head_sha, summary, name
       FROM reviews
       WHERE review_type = 'local' AND local_path = ? AND local_head_sha = ?
     `, [localPath, localHeadSha]);
@@ -2059,7 +2103,7 @@ class ReviewRepository {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
              created_at, updated_at, submitted_at, review_data, custom_instructions,
-             review_type, local_path, local_head_sha, summary
+             review_type, local_path, local_head_sha, summary, name
       FROM reviews
       WHERE id = ? AND review_type = 'local'
     `, [id]);
@@ -2098,6 +2142,92 @@ class ReviewRepository {
     }
 
     return this.createReview({ prNumber, repository, summary });
+  }
+
+  /**
+   * List local review sessions with cursor-based pagination
+   * @param {Object} options - Pagination options
+   * @param {number} [options.limit=10] - Maximum number of sessions to return
+   * @param {string} [options.before] - ISO timestamp cursor (return sessions updated before this)
+   * @returns {Promise<{sessions: Array<Object>, hasMore: boolean}>}
+   */
+  async listLocalSessions({ limit = 10, before } = {}) {
+    const params = [];
+    let whereClause = "WHERE review_type = 'local'";
+
+    if (before) {
+      whereClause += ' AND updated_at < ?';
+      params.push(before);
+    }
+
+    // Fetch one extra to determine hasMore
+    params.push(limit + 1);
+
+    const rows = await query(this.db, `
+      SELECT id, name, repository, local_path, local_head_sha, created_at, updated_at
+      FROM reviews
+      ${whereClause}
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `, params);
+
+    const hasMore = rows.length > limit;
+    const sessions = hasMore ? rows.slice(0, limit) : rows;
+
+    return { sessions, hasMore };
+  }
+
+  /**
+   * Save or update a local diff snapshot in the database
+   * Uses INSERT OR REPLACE for upsert behavior
+   * @param {number} reviewId - Review ID
+   * @param {Object} diffData - Diff data to persist
+   * @param {string} diffData.diff - The diff text content
+   * @param {Object} diffData.stats - Stats object (will be JSON-stringified)
+   * @param {string} [diffData.digest] - Content digest for staleness detection
+   * @returns {Promise<void>}
+   */
+  async saveLocalDiff(reviewId, { diff, stats, digest }) {
+    await run(this.db, `
+      INSERT OR REPLACE INTO local_diffs (review_id, diff_text, stats, digest, captured_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `, [reviewId, diff || '', JSON.stringify(stats || {}), digest || null]);
+  }
+
+  /**
+   * Get a persisted local diff from the database
+   * @param {number} reviewId - Review ID
+   * @returns {Promise<{diff: string, stats: Object, digest: string|null}|null>}
+   */
+  async getLocalDiff(reviewId) {
+    const row = await queryOne(this.db, `
+      SELECT diff_text, stats, digest FROM local_diffs WHERE review_id = ?
+    `, [reviewId]);
+
+    if (!row) return null;
+
+    return {
+      diff: row.diff_text || '',
+      stats: row.stats ? JSON.parse(row.stats) : {},
+      digest: row.digest || null
+    };
+  }
+
+  /**
+   * Delete a local review session and all associated data.
+   * Only deletes DB records; does NOT remove files on disk.
+   *
+   * Because the schema uses ON DELETE CASCADE for foreign keys on local_diffs,
+   * comments, and analysis_runs, deleting the review row cascades automatically.
+   *
+   * @param {number} reviewId - Review ID
+   * @returns {Promise<boolean>} True if a record was deleted
+   */
+  async deleteLocalSession(reviewId) {
+    const result = await run(this.db, `
+      DELETE FROM reviews WHERE id = ? AND review_type = 'local'
+    `, [reviewId]);
+    return result.changes > 0;
   }
 }
 

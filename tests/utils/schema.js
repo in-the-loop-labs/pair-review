@@ -31,7 +31,8 @@ const SCHEMA_SQL = {
       review_type TEXT DEFAULT 'pr' CHECK(review_type IN ('pr', 'local')),
       local_path TEXT,
       local_head_sha TEXT,
-      summary TEXT
+      summary TEXT,
+      name TEXT
     )
   `,
 
@@ -128,6 +129,17 @@ const SCHEMA_SQL = {
     )
   `,
 
+  local_diffs: `
+    CREATE TABLE IF NOT EXISTS local_diffs (
+      review_id INTEGER PRIMARY KEY,
+      diff_text TEXT,
+      stats TEXT,
+      digest TEXT,
+      captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
+  `,
+
   github_reviews: `
     CREATE TABLE IF NOT EXISTS github_reviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -164,7 +176,9 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)',
   // GitHub reviews indexes
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
-  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)'
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)',
+  // Local sessions listing performance
+  'CREATE INDEX IF NOT EXISTS idx_reviews_type_updated ON reviews(review_type, updated_at DESC)'
 ];
 
 /**

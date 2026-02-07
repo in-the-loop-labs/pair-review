@@ -13,6 +13,8 @@
  */
 
 const express = require('express');
+const path = require('path');
+const fs = require('fs').promises;
 const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, CommentRepository, AnalysisRunRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
@@ -35,6 +37,264 @@ const {
 } = require('./shared');
 
 const router = express.Router();
+
+/**
+ * Open native OS directory picker dialog and return the selected path.
+ * Uses osascript on macOS, zenity/kdialog on Linux, PowerShell on Windows.
+ * Must be registered BEFORE /:reviewId param routes.
+ */
+router.post('/api/local/browse', async (req, res) => {
+  try {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
+
+    let selectedPath = null;
+    const platform = process.platform;
+
+    if (platform === 'darwin') {
+      // macOS: use osascript to open native folder picker
+      const { stdout } = await execFileAsync('osascript', [
+        '-e', 'set selectedFolder to POSIX path of (choose folder with prompt "Select a directory to review")',
+      ], { timeout: 120000 });
+      selectedPath = stdout.trim();
+      // osascript appends trailing slash; remove it for consistency
+      if (selectedPath.endsWith('/') && selectedPath.length > 1) {
+        selectedPath = selectedPath.slice(0, -1);
+      }
+    } else if (platform === 'win32') {
+      // Windows: use PowerShell folder browser dialog
+      const psScript = `
+        Add-Type -AssemblyName System.Windows.Forms
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = "Select a directory to review"
+        $dialog.ShowNewFolderButton = $false
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+          Write-Output $dialog.SelectedPath
+        }
+      `;
+      const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-Command', psScript], { timeout: 120000 });
+      selectedPath = stdout.trim();
+    } else {
+      // Linux: try zenity first, then kdialog
+      try {
+        const { stdout } = await execFileAsync('zenity', ['--file-selection', '--directory', '--title=Select a directory to review'], { timeout: 120000 });
+        selectedPath = stdout.trim();
+      } catch (zenityError) {
+        if (zenityError.code === 1) {
+          // Exit code 1 means user cancelled the dialog
+          return res.json({ success: true, path: null, cancelled: true });
+        }
+        // Only fall through to kdialog if zenity is not installed (code 127 or ENOENT)
+        if (zenityError.code !== 127 && zenityError.code !== 'ENOENT') {
+          return res.status(500).json({
+            error: 'Directory picker failed: ' + (zenityError.message || 'Unknown error')
+          });
+        }
+        try {
+          const { stdout } = await execFileAsync('kdialog', ['--getexistingdirectory', '.', '--title', 'Select a directory to review'], { timeout: 120000 });
+          selectedPath = stdout.trim();
+        } catch (kdialogError) {
+          if (kdialogError.code === 1) {
+            return res.json({ success: true, path: null, cancelled: true });
+          }
+          return res.status(501).json({
+            error: 'No supported file dialog found. Install zenity or kdialog, or enter the path manually.'
+          });
+        }
+      }
+    }
+
+    if (!selectedPath) {
+      // User cancelled the dialog
+      return res.json({ success: true, path: null, cancelled: true });
+    }
+
+    res.json({ success: true, path: selectedPath, cancelled: false });
+
+  } catch (error) {
+    // User cancellation on macOS throws error code -128
+    if (error.code === 1 || (error.message && error.message.includes('-128'))) {
+      return res.json({ success: true, path: null, cancelled: true });
+    }
+    // Handle timeout (process killed)
+    if (error.killed) {
+      return res.status(504).json({
+        error: 'Directory picker timed out'
+      });
+    }
+    logger.error(`Error opening directory picker: ${error.message}`);
+    res.status(500).json({
+      error: 'Failed to open directory picker'
+    });
+  }
+});
+
+/**
+ * List local review sessions with pagination
+ * Must be registered BEFORE /:reviewId param routes
+ */
+router.get('/api/local/sessions', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 100);
+    const before = req.query.before || undefined;
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const { sessions, hasMore } = await reviewRepo.listLocalSessions({ limit, before });
+
+    res.json({
+      success: true,
+      sessions,
+      hasMore
+    });
+
+  } catch (error) {
+    logger.error(`Error listing local sessions: ${error.message}`);
+    res.status(500).json({
+      error: 'Failed to list local sessions'
+    });
+  }
+});
+
+/**
+ * Delete a local review session
+ * Must be registered BEFORE /:reviewId param routes
+ * Only deletes DB records — does NOT remove files on disk.
+ */
+router.delete('/api/local/sessions/:reviewId', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const deleted = await reviewRepo.deleteLocalSession(reviewId);
+
+    if (!deleted) {
+      return res.status(404).json({
+        error: `Local review #${reviewId} not found`
+      });
+    }
+
+    // Clean up in-memory diff cache to avoid stale data
+    localReviewDiffs.delete(reviewId);
+
+    logger.success(`Deleted local review session #${reviewId}`);
+
+    res.json({
+      success: true,
+      reviewId
+    });
+
+  } catch (error) {
+    logger.error(`Error deleting local session: ${error.message}`);
+    res.status(500).json({
+      error: 'Failed to delete local session'
+    });
+  }
+});
+
+/**
+ * Start a new local review from the web UI
+ * Must be registered BEFORE /:reviewId param routes
+ */
+router.post('/api/local/start', async (req, res) => {
+  try {
+    const { path: inputPath } = req.body || {};
+
+    if (!inputPath || typeof inputPath !== 'string' || !inputPath.trim()) {
+      return res.status(400).json({
+        error: 'Missing required field: path'
+      });
+    }
+
+    // Required inline (not reusing top-level import) so that vi.spyOn()
+    // replacements on the module exports are visible at call time in integration tests.
+    const { findGitRoot, getHeadSha, getRepositoryName, getCurrentBranch } = require('../local-review');
+
+    // Resolve the path
+    const resolvedPath = path.resolve(inputPath.trim());
+
+    // Validate path exists
+    try {
+      const stat = await fs.stat(resolvedPath);
+      if (!stat.isDirectory()) {
+        return res.status(400).json({
+          error: 'Path is not a directory'
+        });
+      }
+    } catch (err) {
+      return res.status(400).json({
+        error: 'Path does not exist'
+      });
+    }
+
+    // Find git root
+    let repoPath;
+    try {
+      repoPath = await findGitRoot(resolvedPath);
+    } catch (err) {
+      return res.status(400).json({
+        error: 'Not a git repository'
+      });
+    }
+
+    // Gather git info
+    const headSha = await getHeadSha(repoPath);
+    const repository = await getRepositoryName(repoPath);
+    const branch = await getCurrentBranch(repoPath);
+
+    // Create or resume session
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const sessionId = await reviewRepo.upsertLocalReview({
+      localPath: repoPath,
+      localHeadSha: headSha,
+      repository
+    });
+
+    // Generate diff
+    logger.log('API', `Starting local review for ${repoPath}`, 'cyan');
+    const { diff, stats } = await generateLocalDiff(repoPath);
+
+    // Compute digest for staleness detection
+    const digest = await computeLocalDiffDigest(repoPath);
+
+    // Persist to in-memory Map
+    localReviewDiffs.set(sessionId, { diff, stats, digest });
+
+    // Persist to database
+    await reviewRepo.saveLocalDiff(sessionId, { diff, stats, digest });
+
+    logger.success(`Local review session #${sessionId} started for ${repository} (branch: ${branch})`);
+
+    res.json({
+      success: true,
+      reviewUrl: `/local/${sessionId}`,
+      sessionId,
+      repository,
+      branch,
+      stats: {
+        trackedChanges: stats.trackedChanges || 0,
+        untrackedFiles: stats.untrackedFiles || 0,
+        stagedChanges: stats.stagedChanges || 0,
+        unstagedChanges: stats.unstagedChanges || 0
+      }
+    });
+
+  } catch (error) {
+    logger.error(`Error starting local review: ${error.message}`);
+    res.status(500).json({
+      error: 'Failed to start local review'
+    });
+  }
+});
 
 /**
  * Get local review metadata
@@ -64,18 +324,33 @@ router.get('/api/local/:reviewId', async (req, res) => {
     // Note: GET requests are read-only - no database writes here.
     // Repository name updates happen during session creation or refresh.
     let repositoryName = review.repository;
-    if (repositoryName && !repositoryName.includes('/') && review.local_path) {
+    let branchName = 'unknown';
+    if (review.local_path) {
       try {
-        const { getRepositoryName } = require('../local-review');
-        const freshRepoName = await getRepositoryName(review.local_path);
-        if (freshRepoName && freshRepoName.includes('/')) {
-          repositoryName = freshRepoName;
-          // Just use the fresh name for this response - don't write to DB in GET
-          logger.log('API', `Using fresh repository name from git remote: ${freshRepoName}`, 'cyan');
+        const { getRepositoryName, getCurrentBranch } = require('../local-review');
+
+        // Always fetch current branch from the working directory
+        branchName = await getCurrentBranch(review.local_path);
+
+        if (repositoryName && !repositoryName.includes('/')) {
+          const freshRepoName = await getRepositoryName(review.local_path);
+          if (freshRepoName && freshRepoName.includes('/')) {
+            repositoryName = freshRepoName;
+            // Just use the fresh name for this response - don't write to DB in GET
+            logger.log('API', `Using fresh repository name from git remote: ${freshRepoName}`, 'cyan');
+          }
         }
       } catch (repoError) {
         // Keep the original name if we can't get a better one
-        logger.warn(`Could not refresh repository name: ${repoError.message}`);
+        logger.warn(`Could not refresh repository/branch info: ${repoError.message}`);
+      }
+    }
+
+    // Fall back to env var if local_path is not available (e.g. CLI-started sessions)
+    if (branchName === 'unknown') {
+      branchName = process.env.PAIR_REVIEW_BRANCH || 'unknown';
+      if (branchName !== 'unknown') {
+        logger.log('API', `Using PAIR_REVIEW_BRANCH env var for branch: ${branchName}`, 'cyan');
       }
     }
 
@@ -84,17 +359,62 @@ router.get('/api/local/:reviewId', async (req, res) => {
       localPath: review.local_path,
       localHeadSha: review.local_head_sha,
       repository: repositoryName,
-      branch: process.env.PAIR_REVIEW_BRANCH || 'unknown',
+      branch: branchName,
       reviewType: 'local',
       status: review.status,
+      name: review.name || null,
       createdAt: review.created_at,
       updatedAt: review.updated_at
     });
 
   } catch (error) {
-    console.error('Error fetching local review:', error);
+    logger.error('Error fetching local review:', error.stack || error.message);
     res.status(500).json({
       error: 'Failed to fetch local review'
+    });
+  }
+});
+
+/**
+ * Update local review session name
+ */
+router.patch('/api/local/:reviewId/name', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const review = await reviewRepo.getLocalReviewById(reviewId);
+
+    if (!review) {
+      return res.status(404).json({
+        error: `Local review #${reviewId} not found`
+      });
+    }
+
+    // Allow null to clear the name, otherwise trim and cap at 200 chars
+    let { name } = req.body;
+    if (name !== null && name !== undefined) {
+      name = String(name).trim().slice(0, 200) || null;
+    }
+
+    await reviewRepo.updateReview(reviewId, { name });
+
+    res.json({
+      success: true,
+      name
+    });
+
+  } catch (error) {
+    logger.error(`Error updating local review name: ${error.message}`);
+    res.status(500).json({
+      error: 'Failed to update review name'
     });
   }
 });
@@ -123,8 +443,22 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       });
     }
 
-    // Get diff from module-level storage
-    const diffData = localReviewDiffs.get(reviewId) || { diff: '', stats: {} };
+    // Get diff from module-level storage, falling back to database
+    let diffData = localReviewDiffs.get(reviewId);
+
+    if (!diffData) {
+      // Try loading from database
+      const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
+      if (persistedDiff) {
+        diffData = persistedDiff;
+        // Cache-warm the in-memory Map
+        localReviewDiffs.set(reviewId, diffData);
+        logger.log('API', `Loaded persisted diff from DB for review #${reviewId}`, 'cyan');
+      } else {
+        diffData = { diff: '', stats: {} };
+      }
+    }
+
     const { diff: diffContent, stats } = diffData;
 
     // Detect generated files via .gitattributes
@@ -160,7 +494,7 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching local diff:', error);
+    logger.error('Error fetching local diff:', error);
     res.status(500).json({
       error: 'Failed to fetch local diff'
     });
@@ -200,13 +534,21 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
       });
     }
 
-    // Get stored diff data
-    const storedDiffData = localReviewDiffs.get(reviewId);
+    // Get stored diff data (in-memory first, then fall back to DB)
+    let storedDiffData = localReviewDiffs.get(reviewId);
     if (!storedDiffData) {
-      return res.json({
-        isStale: null,
-        error: 'No stored diff data found'
-      });
+      const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
+      if (persistedDiff) {
+        storedDiffData = persistedDiff;
+        // Cache-warm the in-memory Map
+        localReviewDiffs.set(reviewId, storedDiffData);
+        logger.log('API', `Loaded persisted diff from DB for staleness check on review #${reviewId}`, 'cyan');
+      } else {
+        return res.json({
+          isStale: null,
+          error: 'No stored diff data found'
+        });
+      }
     }
 
     // Check if baseline digest exists (must be computed at diff-capture time)
@@ -441,7 +783,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
 
         const currentStatus = activeAnalyses.get(analysisId);
         if (!currentStatus) {
-          console.warn('Analysis already completed or removed:', analysisId);
+          logger.warn('Analysis already completed or removed:', analysisId);
           return;
         }
 
@@ -479,7 +821,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       .catch(error => {
         const currentStatus = activeAnalyses.get(analysisId);
         if (!currentStatus) {
-          console.warn('Analysis status not found during error handling:', analysisId);
+          logger.warn('Analysis status not found during error handling:', analysisId);
           return;
         }
 
@@ -528,7 +870,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error starting local AI analysis:', error);
+    logger.error('Error starting local AI analysis:', error);
     res.status(500).json({
       error: 'Failed to start AI analysis'
     });
@@ -654,7 +996,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
     res.json({ suggestions });
 
   } catch (error) {
-    console.error('Error fetching local review suggestions:', error);
+    logger.error('Error fetching local review suggestions:', error);
     res.status(500).json({
       error: 'Failed to fetch AI suggestions'
     });
@@ -702,7 +1044,7 @@ router.get('/api/local/:reviewId/user-comments', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching local review user comments:', error);
+    logger.error('Error fetching local review user comments:', error);
     res.status(500).json({
       error: 'Failed to fetch user comments'
     });
@@ -764,7 +1106,7 @@ router.post('/api/local/:reviewId/user-comments', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error creating local review user comment:', error);
+    logger.error('Error creating local review user comment:', error);
     res.status(500).json({
       error: error.message || 'Failed to create comment'
     });
@@ -831,7 +1173,7 @@ router.post('/api/local/:reviewId/file-comment', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error creating file-level comment:', error);
+    logger.error('Error creating file-level comment:', error);
     res.status(500).json({
       error: error.message || 'Failed to create file-level comment'
     });
@@ -892,7 +1234,7 @@ router.put('/api/local/:reviewId/file-comment/:commentId', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error updating file-level comment:', error);
+    logger.error('Error updating file-level comment:', error);
     res.status(500).json({
       error: 'Failed to update comment'
     });
@@ -943,7 +1285,7 @@ router.delete('/api/local/:reviewId/file-comment/:commentId', async (req, res) =
     });
 
   } catch (error) {
-    console.error('Error deleting file-level comment:', error);
+    logger.error('Error deleting file-level comment:', error);
     res.status(500).json({
       error: 'Failed to delete comment'
     });
@@ -1005,7 +1347,7 @@ router.post('/api/local/:reviewId/ai-suggestion/:suggestionId/status', async (re
     });
 
   } catch (error) {
-    console.error('Error updating AI suggestion status:', error);
+    logger.error('Error updating AI suggestion status:', error);
     res.status(500).json({
       error: error.message || 'Failed to update suggestion status'
     });
@@ -1059,7 +1401,7 @@ router.get('/api/local/:reviewId/user-comments/:commentId', async (req, res) => 
     });
 
   } catch (error) {
-    console.error('Error fetching local review user comment:', error);
+    logger.error('Error fetching local review user comment:', error);
     res.status(500).json({
       error: 'Failed to fetch comment'
     });
@@ -1120,7 +1462,7 @@ router.put('/api/local/:reviewId/user-comments/:commentId', async (req, res) => 
     });
 
   } catch (error) {
-    console.error('Error updating local review user comment:', error);
+    logger.error('Error updating local review user comment:', error);
     res.status(500).json({
       error: 'Failed to update comment'
     });
@@ -1178,7 +1520,7 @@ router.delete('/api/local/:reviewId/user-comments', async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Error deleting all local review user comments:', error);
+    logger.error('Error deleting all local review user comments:', error);
     res.status(500).json({
       error: 'Failed to delete comments'
     });
@@ -1231,7 +1573,7 @@ router.delete('/api/local/:reviewId/user-comments/:commentId', async (req, res) 
     });
 
   } catch (error) {
-    console.error('Error deleting local review user comment:', error);
+    logger.error('Error deleting local review user comment:', error);
     res.status(500).json({
       error: 'Failed to delete comment'
     });
@@ -1292,7 +1634,7 @@ router.put('/api/local/:reviewId/user-comments/:commentId/restore', async (req, 
     });
 
   } catch (error) {
-    console.error('Error restoring local review user comment:', error);
+    logger.error('Error restoring local review user comment:', error);
     res.status(500).json({
       error: error.message || 'Failed to restore comment'
     });
@@ -1439,7 +1781,7 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
         const statsResult = await query(db, statsQuery.query, statsQuery.params(reviewId));
         stats = calculateStats(statsResult);
       } catch (e) {
-        console.warn('Error fetching AI suggestion stats:', e);
+        logger.warn('Error fetching AI suggestion stats:', e);
       }
     }
 
@@ -1451,7 +1793,7 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error checking for AI suggestions:', error);
+    logger.error('Error checking for AI suggestions:', error);
     res.status(500).json({
       error: 'Failed to check for AI suggestions'
     });
@@ -1603,6 +1945,13 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     const targetSessionId = sessionChanged ? newSessionId : reviewId;
     localReviewDiffs.set(targetSessionId, { diff, stats, digest });
 
+    // Persist diff to database for future session recovery
+    try {
+      await reviewRepo.saveLocalDiff(targetSessionId, { diff, stats, digest });
+    } catch (persistError) {
+      logger.warn(`Could not persist diff to database: ${persistError.message}`);
+    }
+
     logger.success(`Diff refreshed: ${stats.unstagedChanges} unstaged, ${stats.untrackedFiles} untracked${stats.stagedChanges > 0 ? ` (${stats.stagedChanges} staged excluded)` : ''}`);
 
     res.json({
@@ -1621,7 +1970,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error refreshing local diff:', error);
+    logger.error('Error refreshing local diff:', error);
     res.status(500).json({
       error: 'Failed to refresh diff: ' + error.message
     });
@@ -1657,7 +2006,7 @@ router.get('/api/local/:reviewId/review-settings', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching local review settings:', error);
+    logger.error('Error fetching local review settings:', error);
     res.status(500).json({
       error: 'Failed to fetch review settings'
     });
@@ -1701,7 +2050,7 @@ router.post('/api/local/:reviewId/review-settings', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error saving local review settings:', error);
+    logger.error('Error saving local review settings:', error);
     res.status(500).json({
       error: 'Failed to save review settings'
     });
@@ -1725,7 +2074,7 @@ router.get('/api/local/:reviewId/analysis-runs', async (req, res) => {
 
     res.json({ runs });
   } catch (error) {
-    console.error('Error fetching analysis runs:', error);
+    logger.error('Error fetching analysis runs:', error);
     res.status(500).json({ error: 'Failed to fetch analysis runs' });
   }
 });
@@ -1751,7 +2100,7 @@ router.get('/api/local/:reviewId/analysis-runs/latest', async (req, res) => {
 
     res.json({ run });
   } catch (error) {
-    console.error('Error fetching latest analysis run:', error);
+    logger.error('Error fetching latest analysis run:', error);
     res.status(500).json({ error: 'Failed to fetch latest analysis run' });
   }
 });

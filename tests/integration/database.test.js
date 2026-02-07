@@ -139,6 +139,8 @@ describe('Database Initialization', () => {
     // Analysis runs indexes
     expect(indexNames).toContain('idx_analysis_runs_review_id');
     expect(indexNames).toContain('idx_analysis_runs_status');
+    // Local sessions listing index
+    expect(indexNames).toContain('idx_reviews_type_updated');
   });
 });
 

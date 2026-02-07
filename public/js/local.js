@@ -1362,9 +1362,89 @@ class LocalManager {
   }
 
   /**
+   * Initialize inline name editing for the review title in the header
+   */
+  initNameEditing() {
+    const nameEl = document.getElementById('local-review-name');
+    if (!nameEl || nameEl.dataset.listenerAttached) return;
+    nameEl.dataset.listenerAttached = 'true';
+
+    const reviewId = this.reviewId;
+
+    nameEl.addEventListener('click', () => {
+      if (nameEl.querySelector('input')) return; // already editing
+
+      const currentName = nameEl.dataset.currentName || '';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'local-review-name-input';
+      input.value = currentName;
+      input.placeholder = 'Untitled';
+
+      nameEl.textContent = '';
+      nameEl.appendChild(input);
+      input.focus();
+      input.select();
+
+      let saved = false;
+
+      async function save() {
+        if (saved) return;
+        saved = true;
+        const newName = input.value.trim() || null;
+        try {
+          const response = await fetch(`/api/local/${reviewId}/name`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName })
+          });
+          if (!response.ok) throw new Error('Save failed');
+          nameEl.dataset.currentName = newName || '';
+          nameEl.textContent = newName || 'Untitled';
+          nameEl.classList.toggle('unnamed', !newName);
+          nameEl.title = 'Click to rename';
+        } catch (error) {
+          // Revert the display to the previous name on failure
+          cancel();
+        }
+      }
+
+      function cancel() {
+        nameEl.textContent = currentName || 'Untitled';
+        nameEl.classList.toggle('unnamed', !currentName);
+        nameEl.title = 'Click to rename';
+      }
+
+      input.addEventListener('blur', save);
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          input.removeEventListener('blur', save);
+          save();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          input.removeEventListener('blur', save);
+          cancel();
+        }
+      });
+    });
+  }
+
+  /**
    * Update local header with review info
    */
   updateLocalHeader(reviewData) {
+    // Update review name/title in header
+    const nameEl = document.getElementById('local-review-name');
+    if (nameEl) {
+      const name = reviewData.name || '';
+      nameEl.textContent = name || 'Untitled';
+      nameEl.dataset.currentName = name;
+      nameEl.classList.toggle('unnamed', !name);
+      nameEl.title = 'Click to rename';
+      this.initNameEditing();
+    }
+
     // Update repository name
     const repoName = document.getElementById('local-repo-name');
     if (repoName) {
