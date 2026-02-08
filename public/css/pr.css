@@ -9104,6 +9104,55 @@ body.resizing * {
   cursor: not-allowed;
 }
 
+/* Info-tip toggle buttons (circled "i" icons next to section headers) */
+.info-tip-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--color-text-tertiary, #656d76);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease;
+}
+
+.info-tip-toggle:hover {
+  color: var(--color-info, #0969da);
+}
+
+.info-tip-toggle.active {
+  color: var(--color-info, #0969da);
+}
+
+.info-tip-content {
+  background: var(--color-info-subtle, #ddf4ff);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-text-secondary, #424a53);
+}
+
+[data-theme="dark"] .info-tip-toggle {
+  color: var(--color-text-tertiary, #484f58);
+}
+
+[data-theme="dark"] .info-tip-toggle:hover,
+[data-theme="dark"] .info-tip-toggle.active {
+  color: var(--color-info, #58a6ff);
+}
+
+[data-theme="dark"] .info-tip-content {
+  background: rgba(56, 139, 253, 0.1);
+  color: var(--color-text-secondary, #8b949e);
+}
+
 /* ==========================================================================
    File-Level Comments Zone
    Collapsible section between file header and diff content

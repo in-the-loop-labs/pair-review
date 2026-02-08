@@ -6,6 +6,28 @@
  * in the AnalysisConfigModal. Enables multi-voice, multi-provider analysis configuration.
  */
 class CouncilConfigTab {
+  /** Info circle SVG icon for section tooltips */
+  static INFO_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></svg>`;
+
+  /**
+   * Build an info-tip toggle button
+   * @param {string} id - Unique identifier for aria-controls linkage
+   * @returns {string} HTML string
+   */
+  static buildInfoTipButton(id) {
+    return `<button class="info-tip-toggle" aria-controls="info-tip-${id}" aria-expanded="false" title="More info">${CouncilConfigTab.INFO_ICON_SVG}</button>`;
+  }
+
+  /**
+   * Build a hidden info-tip content block
+   * @param {string} id - Unique identifier matching the toggle button
+   * @param {string} text - Explanation text (may contain HTML)
+   * @returns {string} HTML string
+   */
+  static buildInfoTipContent(id, text) {
+    return `<div class="info-tip-content" id="info-tip-${id}" style="display:none">${text}</div>`;
+  }
+
   /** Speech bubble SVG icon (outline) used for per-participant and custom instruction rows */
   static SPEECH_BUBBLE_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/></svg>`;
 
@@ -216,7 +238,8 @@ class CouncilConfigTab {
   _buildCouncilHTML() {
     return `
       <section class="config-section">
-        <h4 class="section-title">Council</h4>
+        <h4 class="section-title">Council ${CouncilConfigTab.buildInfoTipButton('council')}</h4>
+        ${CouncilConfigTab.buildInfoTipContent('council', 'A Review Council runs your code review through multiple AI models in parallel, then consolidates their findings. Different models catch different issues, giving you broader coverage than a single reviewer.')}
         <div class="council-selector-row">
           <select id="council-selector" class="council-select">
             <option value="">New Council</option>
@@ -232,7 +255,8 @@ class CouncilConfigTab {
       ${this._buildLevelSection(3, 'Codebase Context', false)}
 
       <section class="config-section">
-        <h4 class="section-title">Orchestration</h4>
+        <h4 class="section-title">Orchestration ${CouncilConfigTab.buildInfoTipButton('orchestration')}</h4>
+        ${CouncilConfigTab.buildInfoTipContent('orchestration', 'The orchestration model consolidates findings from all participants into a single coherent review. <strong>Fast</strong> tier gives concise output, <strong>Balanced</strong> is the recommended default, and <strong>Thorough</strong> produces the most detailed consolidation.')}
         <p class="section-hint-text">Model used for consolidation passes</p>
         <div class="voice-row" id="orchestration-voice">
           <select class="voice-provider" data-target="orchestration"></select>
@@ -253,6 +277,11 @@ class CouncilConfigTab {
    * Build the level section with slider toggle instead of checkbox
    */
   _buildLevelSection(level, description, enabledByDefault) {
+    const levelTips = {
+      1: 'Analyzes only the changed lines themselves. Catches bugs, typos, and logic errors in the diff without needing surrounding context.',
+      2: 'Analyzes changes within their full file context. Catches inconsistencies with nearby code, naming conventions, and patterns within the same file.',
+      3: 'Analyzes changes against the broader codebase. Catches architectural issues, duplicated logic elsewhere, and violations of project-wide conventions.'
+    };
     return `
       <section class="config-section council-level-section" data-level="${level}">
         <h4 class="section-title">
@@ -261,7 +290,9 @@ class CouncilConfigTab {
             <span class="toggle-switch"></span>
             <span class="toggle-label">Level ${level} &mdash; ${description}</span>
           </label>
+          ${CouncilConfigTab.buildInfoTipButton('level-' + level)}
         </h4>
+        ${CouncilConfigTab.buildInfoTipContent('level-' + level, levelTips[level])}
         <div class="level-voices" id="level-${level}-voices" ${!enabledByDefault ? 'style="display:none"' : ''}>
           <div class="voice-list" id="level-${level}-voice-list">
             ${enabledByDefault ? this._buildVoiceRowHTML(level, 0) : ''}
@@ -310,7 +341,9 @@ class CouncilConfigTab {
         <h4 class="section-title">
           Custom Instructions
           <span class="section-hint">(optional)</span>
+          ${CouncilConfigTab.buildInfoTipButton('custom-instructions')}
         </h4>
+        ${CouncilConfigTab.buildInfoTipContent('custom-instructions', 'Free-form guidance sent to every participant in this review. Use this to focus the review on what matters most &mdash; e.g., "Pay extra attention to error handling" or "This is a security-critical change."')}
         <div class="instructions-container">
           <div class="repo-instructions-banner" id="council-repo-instructions-banner" style="display: none;">
             <div class="banner-icon">
@@ -484,6 +517,19 @@ class CouncilConfigTab {
             const textarea = area.querySelector('.voice-instructions-input');
             if (textarea) textarea.focus();
           }
+        }
+      }
+
+      // Info-tip toggle (section help icons)
+      const infoBtn = e.target.closest('.info-tip-toggle');
+      if (infoBtn) {
+        const targetId = infoBtn.getAttribute('aria-controls');
+        const content = panel.querySelector(`#${targetId}`);
+        if (content) {
+          const isHidden = content.style.display === 'none';
+          content.style.display = isHidden ? '' : 'none';
+          infoBtn.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+          infoBtn.classList.toggle('active', isHidden);
         }
       }
     });
