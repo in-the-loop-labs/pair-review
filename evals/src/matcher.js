@@ -184,7 +184,6 @@ function scorePair(suggestion, groundTruth, config) {
     semanticText(suggestion),
     semanticText(groundTruth),
   );
-  if (semanticScore < config.semantic_threshold) return null;
 
   // 4. Type match
   const typeMatch =
@@ -193,6 +192,24 @@ function scorePair(suggestion, groundTruth, config) {
     suggestion.type === groundTruth.type;
 
   // 5. Determine quality tier and base score
+  //
+  // When file, line, AND type all match ("structural triple-match"), we relax
+  // the semantic threshold. Jaccard similarity breaks down when AI descriptions
+  // paraphrase the same issue with different vocabulary — e.g., "mass assignment
+  // vulnerability" vs "mass-assignment risk" scores only ~0.17 Jaccard despite
+  // describing the exact same issue. Structural evidence is strong enough to
+  // match without high word overlap. The semantic score still contributes to
+  // distinguishing exact from partial quality.
+  const structuralTripleMatch =
+    typeMatch && (lineResult.type === 'overlap' || lineResult.type === 'file_level');
+
+  // Apply semantic threshold — relaxed for structural triple-matches
+  const effectiveThreshold = structuralTripleMatch
+    ? Math.min(config.semantic_threshold * 0.25, 0.05)
+    : config.semantic_threshold;
+
+  if (semanticScore < effectiveThreshold) return null;
+
   let quality;
   let score;
 
@@ -200,16 +217,20 @@ function scorePair(suggestion, groundTruth, config) {
     if (typeMatch && semanticScore >= 0.3) {
       quality = 'exact';
       score = 1.0;
-    } else if (semanticScore >= 0.2) {
+    } else if (typeMatch && semanticScore >= effectiveThreshold) {
+      // Structural triple-match with low semantic — strong structural evidence
+      quality = 'partial';
+      score = 0.5 + Math.min(semanticScore, 1) * 0.25;
+    } else if (semanticScore >= config.semantic_threshold) {
       // Overlapping lines but either wrong type or semantic < 0.3
       quality = 'partial';
       // Scale partial score: 0.5 base + up to 0.25 bonus from semantic
       score = 0.5 + Math.min(semanticScore, 1) * 0.25;
     } else {
-      return null; // semantic too low (already guarded above, but defensive)
+      return null; // semantic too low and no structural triple-match
     }
   } else if (lineResult.type === 'proximity') {
-    if (semanticScore >= 0.2) {
+    if (semanticScore >= config.semantic_threshold) {
       quality = 'partial';
       score = 0.5 + Math.min(semanticScore, 1) * 0.25;
     } else {
