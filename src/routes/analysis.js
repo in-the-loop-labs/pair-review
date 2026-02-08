@@ -11,7 +11,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, withTransaction, RepoSettingsRepository, ReviewRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository } = require('../database');
+const { query, queryOne, withTransaction, RepoSettingsRepository, ReviewRepository, CommentRepository, AnalysisRunRepository, PRMetadataRepository, CouncilRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
@@ -1158,6 +1158,14 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     headSha: headSha || null
   });
 
+  // Touch council MRU timestamp (if using a saved council, not inline-config)
+  if (councilId) {
+    const councilRepo = new CouncilRepository(db);
+    councilRepo.touchLastUsedAt(councilId).catch(err => {
+      logger.warn(`Failed to update council last_used_at: ${err.message}`);
+    });
+  }
+
   // Setup progress tracking
   const initialStatus = {
     id: analysisId,
@@ -1314,7 +1322,6 @@ router.post('/api/analyze/council/:owner/:repo/:pr', async (req, res) => {
     // Resolve council config
     let councilConfig;
     if (councilId) {
-      const { CouncilRepository } = require('../database');
       const councilRepo = new CouncilRepository(db);
       const council = await councilRepo.getById(councilId);
       if (!council) {
@@ -1416,7 +1423,6 @@ router.post('/api/local/:reviewId/analyze/council', async (req, res) => {
     // Resolve council config
     let councilConfig;
     if (councilId) {
-      const { CouncilRepository } = require('../database');
       const councilRepo = new CouncilRepository(db);
       const council = await councilRepo.getById(councilId);
       if (!council) {

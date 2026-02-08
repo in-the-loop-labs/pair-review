@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 15;
+const CURRENT_SCHEMA_VERSION = 16;
 
 /**
  * Database schema SQL statements
@@ -124,6 +124,7 @@ const SCHEMA_SQL = {
       default_instructions TEXT,
       default_provider TEXT,
       default_model TEXT,
+      default_council_id TEXT,
       local_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -181,6 +182,7 @@ const SCHEMA_SQL = {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       config JSON NOT NULL,
+      last_used_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -759,6 +761,45 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 15 complete');
+  },
+
+  // Migration to version 16: Add council MRU tracking and repo default council
+  16: (db) => {
+    console.log('Running migration to schema version 16...');
+
+    // Add last_used_at column to councils for MRU ordering
+    const hasLastUsedAt = columnExists(db, 'councils', 'last_used_at');
+    if (!hasLastUsedAt) {
+      try {
+        db.prepare(`ALTER TABLE councils ADD COLUMN last_used_at DATETIME`).run();
+        console.log('  Added last_used_at column to councils');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column last_used_at already exists (race condition)');
+      }
+    } else {
+      console.log('  Column last_used_at already exists');
+    }
+
+    // Add default_council_id column to repo_settings
+    const hasDefaultCouncilId = columnExists(db, 'repo_settings', 'default_council_id');
+    if (!hasDefaultCouncilId) {
+      try {
+        db.prepare(`ALTER TABLE repo_settings ADD COLUMN default_council_id TEXT`).run();
+        console.log('  Added default_council_id column to repo_settings');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column default_council_id already exists (race condition)');
+      }
+    } else {
+      console.log('  Column default_council_id already exists');
+    }
+
+    console.log('Migration to schema version 16 complete');
   }
 };
 
@@ -1255,7 +1296,7 @@ class RepoSettingsRepository {
    */
   async getRepoSettings(repository) {
     const row = await queryOne(this.db, `
-      SELECT id, repository, default_instructions, default_provider, default_model, local_path, created_at, updated_at
+      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, local_path, created_at, updated_at
       FROM repo_settings
       WHERE repository = ? COLLATE NOCASE
     `, [repository]);
@@ -1312,7 +1353,7 @@ class RepoSettingsRepository {
    * @returns {Promise<Object>} Saved settings object
    */
   async saveRepoSettings(repository, settings) {
-    const { default_instructions, default_provider, default_model, local_path } = settings;
+    const { default_instructions, default_provider, default_model, default_council_id, local_path } = settings;
     const now = new Date().toISOString();
 
     // Check if settings already exist
@@ -1325,6 +1366,7 @@ class RepoSettingsRepository {
         SET default_instructions = ?,
             default_provider = ?,
             default_model = ?,
+            default_council_id = ?,
             local_path = ?,
             updated_at = ?
         WHERE repository = ? COLLATE NOCASE
@@ -1332,6 +1374,7 @@ class RepoSettingsRepository {
         default_instructions !== undefined ? default_instructions : existing.default_instructions,
         default_provider !== undefined ? default_provider : existing.default_provider,
         default_model !== undefined ? default_model : existing.default_model,
+        default_council_id !== undefined ? default_council_id : existing.default_council_id,
         local_path !== undefined ? local_path : existing.local_path,
         now,
         repository
@@ -1342,15 +1385,16 @@ class RepoSettingsRepository {
         default_instructions: default_instructions !== undefined ? default_instructions : existing.default_instructions,
         default_provider: default_provider !== undefined ? default_provider : existing.default_provider,
         default_model: default_model !== undefined ? default_model : existing.default_model,
+        default_council_id: default_council_id !== undefined ? default_council_id : existing.default_council_id,
         local_path: local_path !== undefined ? local_path : existing.local_path,
         updated_at: now
       };
     } else {
       // Insert new settings
       const result = await run(this.db, `
-        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, local_path, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, [repository, default_instructions || null, default_provider || null, default_model || null, local_path || null, now, now]);
+        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, local_path, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, local_path || null, now, now]);
 
       return {
         id: result.lastID,
@@ -1358,6 +1402,7 @@ class RepoSettingsRepository {
         default_instructions: default_instructions || null,
         default_provider: default_provider || null,
         default_model: default_model || null,
+        default_council_id: default_council_id || null,
         local_path: local_path || null,
         created_at: now,
         updated_at: now
@@ -2795,7 +2840,7 @@ class CouncilRepository {
    */
   async getById(id) {
     const row = await queryOne(this.db, `
-      SELECT id, name, config, created_at, updated_at
+      SELECT id, name, config, last_used_at, created_at, updated_at
       FROM councils
       WHERE id = ?
     `, [id]);
@@ -2810,12 +2855,25 @@ class CouncilRepository {
    */
   async list() {
     const rows = await query(this.db, `
-      SELECT id, name, config, created_at, updated_at
+      SELECT id, name, config, last_used_at, created_at, updated_at
       FROM councils
-      ORDER BY updated_at DESC
+      ORDER BY last_used_at DESC NULLS LAST, updated_at DESC
     `);
 
     return rows.map(row => this._parseRow(row));
+  }
+
+  /**
+   * Update the last_used_at timestamp for a council (for MRU tracking)
+   * @param {string} id - Council ID
+   * @returns {Promise<boolean>} True if record was updated (council exists)
+   */
+  async touchLastUsedAt(id) {
+    const result = await run(this.db, `
+      UPDATE councils SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
   }
 
   /**

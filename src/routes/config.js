@@ -10,7 +10,7 @@
  */
 
 const express = require('express');
-const { RepoSettingsRepository, ReviewRepository } = require('../database');
+const { RepoSettingsRepository, ReviewRepository, queryOne } = require('../database');
 const {
   getAllProvidersInfo,
   testProviderAvailability,
@@ -109,7 +109,8 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
         default_instructions: null,
         default_provider: null,
         default_model: null,
-        local_path: null
+        local_path: null,
+        default_council_id: null
       });
     }
 
@@ -119,6 +120,7 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
       default_provider: settings.default_provider,
       default_model: settings.default_model,
       local_path: settings.local_path,
+      default_council_id: settings.default_council_id,
       created_at: settings.created_at,
       updated_at: settings.updated_at
     });
@@ -138,14 +140,14 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
 router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
     const { owner, repo } = req.params;
-    const { default_instructions, default_provider, default_model, local_path } = req.body;
+    const { default_instructions, default_provider, default_model, local_path, default_council_id } = req.body;
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Validate that at least one setting is provided
-    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined) {
+    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined && default_council_id === undefined) {
       return res.status(400).json({
-        error: 'At least one setting (default_instructions, default_provider, default_model, or local_path) must be provided'
+        error: 'At least one setting (default_instructions, default_provider, default_model, local_path, or default_council_id) must be provided'
       });
     }
 
@@ -154,7 +156,8 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
       default_instructions,
       default_provider,
       default_model,
-      local_path
+      local_path,
+      default_council_id
     });
 
     logger.info(`Saved repo settings for ${repository}`);
@@ -167,6 +170,7 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
         default_provider: settings.default_provider,
         default_model: settings.default_model,
         local_path: settings.local_path,
+        default_council_id: settings.default_council_id,
         updated_at: settings.updated_at
       }
     });
@@ -202,12 +206,25 @@ router.get('/api/pr/:owner/:repo/:number/review-settings', async (req, res) => {
 
     if (!review) {
       return res.json({
-        custom_instructions: null
+        custom_instructions: null,
+        last_council_id: null
       });
     }
 
+    // Find the last council used for this review
+    let last_council_id = null;
+    const lastCouncilRun = await queryOne(db, `
+      SELECT model FROM analysis_runs
+      WHERE review_id = ? AND provider = 'council' AND model != 'inline-config'
+      ORDER BY started_at DESC LIMIT 1
+    `, [review.id]);
+    if (lastCouncilRun) {
+      last_council_id = lastCouncilRun.model;
+    }
+
     res.json({
-      custom_instructions: review.custom_instructions || null
+      custom_instructions: review.custom_instructions || null,
+      last_council_id
     });
 
   } catch (error) {

@@ -33,6 +33,9 @@ class RepoSettingsPage {
     // Load providers first (needed to render model cards)
     await this.loadProviders();
 
+    // Load councils (for default council dropdown)
+    await this.loadCouncils();
+
     // Load settings
     await this.loadSettings();
   }
@@ -144,6 +147,15 @@ class RepoSettingsPage {
       });
     }
 
+    // Council select dropdown
+    const councilSelect = document.getElementById('default-council-select');
+    if (councilSelect) {
+      councilSelect.addEventListener('change', () => {
+        this.currentSettings.default_council_id = councilSelect.value || null;
+        this.checkForChanges();
+      });
+    }
+
     // Form submission
     const form = document.getElementById('settings-form');
     if (form) {
@@ -213,6 +225,32 @@ class RepoSettingsPage {
       this.providers = {};
       this.renderProviderButtons();
       this.showToast('error', 'Failed to load AI providers. Please refresh the page.');
+    }
+  }
+
+  /**
+   * Load saved councils for the default council dropdown
+   */
+  async loadCouncils() {
+    const select = document.getElementById('default-council-select');
+    if (!select) return;
+
+    try {
+      const response = await fetch('/api/councils');
+      if (!response.ok) throw new Error('Failed to fetch councils');
+      const data = await response.json();
+      const councils = data.councils || [];
+
+      // Populate dropdown (keep the "None" option)
+      select.innerHTML = '<option value="">None</option>';
+      for (const council of councils) {
+        const opt = document.createElement('option');
+        opt.value = council.id;
+        opt.textContent = council.name;
+        select.appendChild(opt);
+      }
+    } catch (error) {
+      console.error('Error loading councils:', error);
     }
   }
 
@@ -362,6 +400,7 @@ class RepoSettingsPage {
       this.originalSettings = {
         default_provider: settings.default_provider || null,
         default_model: settings.default_model || null,
+        default_council_id: settings.default_council_id || null,
         default_instructions: settings.default_instructions || '',
         local_path: settings.local_path || null
       };
@@ -378,6 +417,7 @@ class RepoSettingsPage {
       this.originalSettings = {
         default_provider: null,
         default_model: null,
+        default_council_id: null,
         default_instructions: '',
         local_path: null
       };
@@ -404,6 +444,12 @@ class RepoSettingsPage {
     // Update model selection
     if (this.currentSettings.default_model) {
       this.selectModel(this.currentSettings.default_model, false);
+    }
+
+    // Update council dropdown
+    const councilSelect = document.getElementById('default-council-select');
+    if (councilSelect) {
+      councilSelect.value = this.currentSettings.default_council_id || '';
     }
 
     // Update instructions textarea
@@ -466,9 +512,10 @@ class RepoSettingsPage {
     // Use nullish coalescing to normalize null/undefined for consistent comparison
     const providerChanged = (this.currentSettings.default_provider ?? null) !== (this.originalSettings.default_provider ?? null);
     const modelChanged = (this.currentSettings.default_model ?? null) !== (this.originalSettings.default_model ?? null);
+    const councilChanged = (this.currentSettings.default_council_id ?? null) !== (this.originalSettings.default_council_id ?? null);
     const instructionsChanged = (this.currentSettings.default_instructions ?? '') !== (this.originalSettings.default_instructions ?? '');
 
-    this.hasUnsavedChanges = providerChanged || modelChanged || instructionsChanged;
+    this.hasUnsavedChanges = providerChanged || modelChanged || councilChanged || instructionsChanged;
 
     // Show/hide action bar
     const actionBar = document.getElementById('action-bar');
@@ -500,6 +547,7 @@ class RepoSettingsPage {
         body: JSON.stringify({
           default_provider: this.currentSettings.default_provider,
           default_model: this.currentSettings.default_model,
+          default_council_id: this.currentSettings.default_council_id,
           default_instructions: this.currentSettings.default_instructions
         })
       });
@@ -571,6 +619,7 @@ class RepoSettingsPage {
         body: JSON.stringify({
           default_provider: null,
           default_model: null,
+          default_council_id: null,
           default_instructions: '',
           local_path: null
         })
@@ -584,6 +633,7 @@ class RepoSettingsPage {
       this.originalSettings = {
         default_provider: null,
         default_model: null,
+        default_council_id: null,
         default_instructions: '',
         local_path: null
       };

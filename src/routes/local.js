@@ -1999,12 +1999,25 @@ router.get('/api/local/:reviewId/review-settings', async (req, res) => {
 
     if (!review) {
       return res.json({
-        custom_instructions: null
+        custom_instructions: null,
+        last_council_id: null
       });
     }
 
+    // Find the last council used for this review
+    let last_council_id = null;
+    const lastCouncilRun = await queryOne(db, `
+      SELECT model FROM analysis_runs
+      WHERE review_id = ? AND provider = 'council' AND model != 'inline-config'
+      ORDER BY started_at DESC LIMIT 1
+    `, [review.id]);
+    if (lastCouncilRun) {
+      last_council_id = lastCouncilRun.model;
+    }
+
     res.json({
-      custom_instructions: review.custom_instructions || null
+      custom_instructions: review.custom_instructions || null,
+      last_council_id
     });
 
   } catch (error) {

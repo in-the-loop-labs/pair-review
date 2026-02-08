@@ -725,8 +725,43 @@ class AnalysisConfigModal {
   async show(options = {}) {
     if (!this.modal) return null;
 
-    // Load providers from backend before showing modal
-    await this.loadProviders();
+    return new Promise((resolve) => {
+      // Store callbacks
+      this.onSubmit = (config) => {
+        resolve(config);
+      };
+      this.onCancel = () => {
+        resolve(null);
+      };
+
+      // Show modal immediately with loading state (providers may take a moment)
+      this._showLoading(true);
+      this.modal.style.display = 'flex';
+      requestAnimationFrame(() => {
+        this.modal.classList.add('visible');
+      });
+      this.isVisible = true;
+
+      // Add escape key listener when modal is shown
+      document.addEventListener('keydown', this.escapeHandler);
+
+      // Load providers and populate content in the background
+      this._initializeContent(options);
+    });
+  }
+
+  /**
+   * Initialize modal content after it's visible.
+   * Loads providers, renders UI, and configures options.
+   * @param {Object} options - Configuration options passed to show()
+   * @private
+   */
+  async _initializeContent(options) {
+    try {
+      await this.loadProviders();
+    } catch (error) {
+      console.error('Error loading providers:', error);
+    }
 
     // Render provider buttons and model cards now that we have provider data
     this.renderProviderButtons();
@@ -744,81 +779,102 @@ class AnalysisConfigModal {
       if (options.lastInstructions) {
         this.councilTab.setLastInstructions(options.lastInstructions);
       }
+
+      // Set council default (priority: last used > repo default)
+      const councilDefault = options.lastCouncilId || options.defaultCouncilId || null;
+      if (councilDefault) {
+        this.councilTab.setDefaultCouncilId(councilDefault);
+      }
     }
 
-    return new Promise((resolve) => {
-      // Store callbacks
-      this.onSubmit = (config) => {
-        resolve(config);
-      };
-      this.onCancel = () => {
-        resolve(null);
-      };
+    // Set initial provider and model
+    if (options.currentProvider && this.providers[options.currentProvider]) {
+      this.selectProvider(options.currentProvider);
+    } else if (Object.keys(this.providers).length > 0) {
+      // Default to first available provider
+      this.selectProvider(Object.keys(this.providers)[0]);
+    }
+    if (options.currentModel) {
+      this.selectModel(options.currentModel);
+    }
 
-      // Set initial provider and model
-      if (options.currentProvider && this.providers[options.currentProvider]) {
-        this.selectProvider(options.currentProvider);
-      } else if (Object.keys(this.providers).length > 0) {
-        // Default to first available provider
-        this.selectProvider(Object.keys(this.providers)[0]);
-      }
-      if (options.currentModel) {
-        this.selectModel(options.currentModel);
-      }
+    if (options.repoInstructions) {
+      this.repoInstructions = options.repoInstructions;
+      const repoBanner = this.modal.querySelector('#repo-instructions-banner');
+      if (repoBanner) repoBanner.style.display = 'flex';
+      const repoText = this.modal.querySelector('#repo-instructions-text');
+      if (repoText) repoText.textContent = options.repoInstructions;
+    } else {
+      const repoBanner = this.modal.querySelector('#repo-instructions-banner');
+      if (repoBanner) repoBanner.style.display = 'none';
+    }
 
-      if (options.repoInstructions) {
-        this.repoInstructions = options.repoInstructions;
-        const repoBanner = this.modal.querySelector('#repo-instructions-banner');
-        if (repoBanner) repoBanner.style.display = 'flex';
-        const repoText = this.modal.querySelector('#repo-instructions-text');
-        if (repoText) repoText.textContent = options.repoInstructions;
+    // Always get textarea reference and set its value
+    // This ensures any stale content from race conditions is cleared
+    const textarea = this.modal.querySelector('#custom-instructions');
+    if (textarea) {
+      if (options.lastInstructions) {
+        textarea.value = options.lastInstructions;
+        this.updateCharacterCount(options.lastInstructions.length);
       } else {
-        const repoBanner = this.modal.querySelector('#repo-instructions-banner');
-        if (repoBanner) repoBanner.style.display = 'none';
+        textarea.value = '';
+        this.updateCharacterCount(0);
       }
+    }
 
-      // Always get textarea reference and set its value
-      // This ensures any stale content from race conditions is cleared
+    if (options.rememberModel) {
+      this.rememberModel = true;
+      const rememberCheckbox = this.modal.querySelector('#remember-model');
+      if (rememberCheckbox) rememberCheckbox.checked = true;
+    }
+
+    // Remove loading state and reveal content
+    this._showLoading(false);
+
+    // Focus the textarea without scrolling the modal body
+    setTimeout(() => {
       const textarea = this.modal.querySelector('#custom-instructions');
+      const modalBody = this.modal.querySelector('.analysis-config-body');
       if (textarea) {
-        if (options.lastInstructions) {
-          textarea.value = options.lastInstructions;
-          this.updateCharacterCount(options.lastInstructions.length);
-        } else {
-          textarea.value = '';
-          this.updateCharacterCount(0);
+        textarea.focus({ preventScroll: true });
+        // Ensure modal body is scrolled to top
+        if (modalBody) {
+          modalBody.scrollTop = 0;
         }
       }
+    }, 50);
+  }
 
-      if (options.rememberModel) {
-        this.rememberModel = true;
-        const rememberCheckbox = this.modal.querySelector('#remember-model');
-        if (rememberCheckbox) rememberCheckbox.checked = true;
+  /**
+   * Toggle loading state overlay on the modal body
+   * @param {boolean} loading - Whether to show the loading state
+   * @private
+   */
+  _showLoading(loading) {
+    const body = this.modal.querySelector('.analysis-config-body');
+    const footer = this.modal.querySelector('.analysis-config-footer');
+    const submitBtn = this.modal.querySelector('[data-action="submit"]');
+
+    if (loading) {
+      // Add loading overlay to body
+      let overlay = this.modal.querySelector('.config-loading-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'config-loading-overlay';
+        overlay.innerHTML = `
+          <div class="config-loading-spinner"></div>
+          <span>Loading providers…</span>
+        `;
+        body.style.position = 'relative';
+        body.appendChild(overlay);
       }
-
-      // Show modal with animation
-      this.modal.style.display = 'flex';
-      requestAnimationFrame(() => {
-        this.modal.classList.add('visible');
-      });
-      this.isVisible = true;
-
-      // Add escape key listener when modal is shown
-      document.addEventListener('keydown', this.escapeHandler);
-
-      // Focus the textarea without scrolling the modal body
-      setTimeout(() => {
-        const textarea = this.modal.querySelector('#custom-instructions');
-        const modalBody = this.modal.querySelector('.analysis-config-body');
-        if (textarea) {
-          textarea.focus({ preventScroll: true });
-          // Ensure modal body is scrolled to top
-          if (modalBody) {
-            modalBody.scrollTop = 0;
-          }
-        }
-      }, 200);
-    });
+      overlay.style.display = '';
+      if (submitBtn) submitBtn.disabled = true;
+    } else {
+      const overlay = this.modal.querySelector('.config-loading-overlay');
+      if (overlay) overlay.style.display = 'none';
+      if (submitBtn) submitBtn.disabled = false;
+    }
   }
 
   /**
@@ -898,6 +954,9 @@ class AnalysisConfigModal {
         const submitBtnSpan = this.modal.querySelector('[data-action="submit"] span');
         if (submitBtnSpan) submitBtnSpan.textContent = 'Start Analysis';
       }
+      // Clear loading overlay if still present
+      const loadingOverlay = this.modal.querySelector('.config-loading-overlay');
+      if (loadingOverlay) loadingOverlay.style.display = 'none';
       // Clear callbacks
       this.onSubmit = null;
       this.onCancel = null;

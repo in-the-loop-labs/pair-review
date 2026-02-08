@@ -165,6 +165,55 @@ describe('CouncilRepository', () => {
     });
   });
 
+  describe('touchLastUsedAt', () => {
+    it('should update last_used_at and return true for existing council', async () => {
+      await repo.create({ id: 'touch-1', name: 'Touch Test', config: sampleConfig });
+
+      const result = await repo.touchLastUsedAt('touch-1');
+      expect(result).toBe(true);
+
+      const council = await repo.getById('touch-1');
+      expect(council.last_used_at).toBeDefined();
+      expect(council.last_used_at).not.toBeNull();
+    });
+
+    it('should return false for non-existent council', async () => {
+      const result = await repo.touchLastUsedAt('no-such-id');
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('list (MRU ordering)', () => {
+    it('should order councils with last_used_at before those without', async () => {
+      await repo.create({ id: 'mru-1', name: 'Never Used', config: sampleConfig });
+      await repo.create({ id: 'mru-2', name: 'Recently Used', config: sampleConfig });
+
+      // Touch the second council to give it a last_used_at timestamp
+      await repo.touchLastUsedAt('mru-2');
+
+      const councils = await repo.list();
+      expect(councils).toHaveLength(2);
+      // mru-2 (has last_used_at) should come first
+      expect(councils[0].id).toBe('mru-2');
+      expect(councils[1].id).toBe('mru-1');
+    });
+
+    it('should order most recently used councils first', async () => {
+      await repo.create({ id: 'mru-a', name: 'First Used', config: sampleConfig });
+      await repo.create({ id: 'mru-b', name: 'Second Used', config: sampleConfig });
+
+      // Set explicit timestamps to ensure ordering (CURRENT_TIMESTAMP has 1s resolution)
+      const { run: dbRun } = require('../../src/database.js');
+      await dbRun(db, `UPDATE councils SET last_used_at = '2025-01-01 00:00:01' WHERE id = ?`, ['mru-a']);
+      await dbRun(db, `UPDATE councils SET last_used_at = '2025-01-01 00:00:02' WHERE id = ?`, ['mru-b']);
+
+      const councils = await repo.list();
+      // mru-b has a later last_used_at, should come first
+      expect(councils[0].id).toBe('mru-b');
+      expect(councils[1].id).toBe('mru-a');
+    });
+  });
+
   describe('_parseRow', () => {
     it('should handle malformed JSON config gracefully', async () => {
       // Insert a row with invalid JSON directly

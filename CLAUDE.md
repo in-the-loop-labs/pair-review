@@ -169,3 +169,6 @@ Test structure:
 - Key documentation sources for AI provider CLIs:
   - Claude Code: https://code.claude.com/docs/en/cli-reference and https://platform.claude.com/docs/en/agent-sdk/typescript
   - The Agent SDK TypeScript docs define all message types (`SDKAssistantMessage`, `SDKUserMessage`, `SDKResultMessage`, `SDKSystemMessage`, etc.) and their exact field structures
+
+### Import Conventions
+- Always import dependencies at the top of the file. Never use inline `require()` calls inside functions or route handlers when the module is already imported at the top level. This keeps the dependency list visible and consistent across the codebase.

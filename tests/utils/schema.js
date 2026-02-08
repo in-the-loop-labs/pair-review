@@ -105,6 +105,7 @@ const SCHEMA_SQL = {
       default_instructions TEXT,
       default_provider TEXT,
       default_model TEXT,
+      default_council_id TEXT,
       local_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -162,6 +163,7 @@ const SCHEMA_SQL = {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       config JSON NOT NULL,
+      last_used_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )

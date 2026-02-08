@@ -368,7 +368,10 @@ class LocalManager {
 
         // Get repo settings for default instructions
         const repoSettings = await manager.fetchRepoSettings().catch(() => null);
-        const lastInstructions = await manager.fetchLastCustomInstructions().catch(() => '');
+        const reviewSettings = await manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }));
+
+        const lastInstructions = reviewSettings.custom_instructions;
+        const lastCouncilId = reviewSettings.last_council_id;
 
         // Determine model and provider
         const modelStorageKey = `pair-review-model:local-${reviewId}`;
@@ -384,6 +387,8 @@ class LocalManager {
           currentProvider,
           repoInstructions: repoSettings?.default_instructions || '',
           lastInstructions: lastInstructions,
+          lastCouncilId,
+          defaultCouncilId: repoSettings?.default_council_id || null,
           rememberModel: !!(rememberedModel || rememberedProvider)
         });
 
@@ -931,21 +936,24 @@ class LocalManager {
       }
     };
 
-    // Patch fetchLastCustomInstructions to use local API endpoint
+    // Patch fetchLastReviewSettings to use local API endpoint
     // Local mode uses a different endpoint pattern than PR mode because local reviews
     // don't have PR metadata (owner/repo/number). Instead, instructions are stored
     // directly on the review record and accessed via the review ID.
-    manager.fetchLastCustomInstructions = async function() {
+    manager.fetchLastReviewSettings = async function() {
       try {
         const response = await fetch(`/api/local/${reviewId}/review-settings`);
         if (!response.ok) {
-          return '';
+          return { custom_instructions: '', last_council_id: null };
         }
         const data = await response.json();
-        return data.custom_instructions || '';
+        return {
+          custom_instructions: data.custom_instructions || '',
+          last_council_id: data.last_council_id || null
+        };
       } catch (error) {
         console.warn('Error fetching last custom instructions:', error);
-        return '';
+        return { custom_instructions: '', last_council_id: null };
       }
     };
 

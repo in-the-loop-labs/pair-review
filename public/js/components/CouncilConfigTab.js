@@ -165,6 +165,15 @@ class CouncilConfigTab {
   }
 
   /**
+   * Set the default council ID to pre-select when councils load.
+   * Stores the ID as pending; it will be applied in _renderCouncilSelector().
+   * @param {string} councilId - Council ID to pre-select
+   */
+  setDefaultCouncilId(councilId) {
+    this._pendingDefaultCouncilId = councilId;
+  }
+
+  /**
    * Auto-save council if there are unsaved changes.
    * Called before analysis starts. Errors are caught and logged, never block analysis.
    * @returns {Promise<void>}
@@ -531,6 +540,23 @@ class CouncilConfigTab {
       opt.textContent = council.name;
       selector.appendChild(opt);
     }
+
+    // Apply pending default council ID if set (from last-used or repo default)
+    if (this._pendingDefaultCouncilId) {
+      const pendingId = this._pendingDefaultCouncilId;
+      this._pendingDefaultCouncilId = null;
+
+      // Only apply if the council exists in the loaded list (handles deleted councils gracefully)
+      const council = this.councils.find(c => c.id === pendingId);
+      if (council) {
+        selector.value = pendingId;
+        this.selectedCouncilId = pendingId;
+        this._applyConfigToUI(council.config);
+        this._markClean();
+        return;
+      }
+    }
+
     if (currentValue) selector.value = currentValue;
   }
 

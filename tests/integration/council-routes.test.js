@@ -108,6 +108,27 @@ describe('Council Routes', () => {
     });
   });
 
+  describe('GET /api/councils (MRU ordering)', () => {
+    it('should return councils in MRU order (most recently used first)', async () => {
+      // Create two councils
+      const res1 = await request(app).post('/api/councils').send({ name: 'Old', config: sampleConfig });
+      const res2 = await request(app).post('/api/councils').send({ name: 'New', config: sampleConfig });
+      const id1 = res1.body.council.id;
+      const id2 = res2.body.council.id;
+
+      // Touch the first council's last_used_at directly via DB
+      const { CouncilRepository } = require('../../src/database');
+      const councilRepo = new CouncilRepository(db);
+      await councilRepo.touchLastUsedAt(id1);
+
+      const res = await request(app).get('/api/councils');
+      expect(res.status).toBe(200);
+      expect(res.body.councils).toHaveLength(2);
+      // id1 was touched (has last_used_at), should come first
+      expect(res.body.councils[0].id).toBe(id1);
+    });
+  });
+
   describe('GET /api/councils/:id', () => {
     it('should return a specific council', async () => {
       const createRes = await request(app)

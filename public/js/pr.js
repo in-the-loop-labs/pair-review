@@ -3453,23 +3453,26 @@ class PRManager {
   }
 
   /**
-   * Fetch last used custom instructions from review record
-   * @returns {Promise<string>} Last custom instructions or empty string
+   * Fetch last review settings (custom instructions and council ID) from review record
+   * @returns {Promise<{custom_instructions: string, last_council_id: string|null}>} Last review settings
    */
-  async fetchLastCustomInstructions() {
-    if (!this.currentPR) return '';
+  async fetchLastReviewSettings() {
+    if (!this.currentPR) return { custom_instructions: '', last_council_id: null };
 
     const { owner, repo, number } = this.currentPR;
     try {
       const response = await fetch(`/api/pr/${owner}/${repo}/${number}/review-settings`);
       if (!response.ok) {
-        return '';
+        return { custom_instructions: '', last_council_id: null };
       }
       const data = await response.json();
-      return data.custom_instructions || '';
+      return {
+        custom_instructions: data.custom_instructions || '',
+        last_council_id: data.last_council_id || null
+      };
     } catch (error) {
       console.warn('Error fetching last custom instructions:', error);
-      return '';
+      return { custom_instructions: '', last_council_id: null };
     }
   }
 
@@ -3571,10 +3574,13 @@ class PRManager {
       }
 
       // Fetch repo settings and last used instructions in parallel
-      const [repoSettings, lastInstructions] = await Promise.all([
+      const [repoSettings, reviewSettings] = await Promise.all([
         this.fetchRepoSettings(),
-        this.fetchLastCustomInstructions()
+        this.fetchLastReviewSettings()
       ]);
+
+      const lastInstructions = reviewSettings.custom_instructions;
+      const lastCouncilId = reviewSettings.last_council_id;
 
       // Determine the model and provider to use (priority: remembered > repo default > defaults)
       const modelStorageKey = PRManager.getRepoStorageKey('pair-review-model', owner, repo);
@@ -3590,6 +3596,8 @@ class PRManager {
         currentProvider,
         repoInstructions: repoSettings?.default_instructions || '',
         lastInstructions: lastInstructions,
+        lastCouncilId,
+        defaultCouncilId: repoSettings?.default_council_id || null,
         rememberModel: !!(rememberedModel || rememberedProvider)
       });
 
