@@ -371,19 +371,27 @@ class CouncilConfigTab {
         const councilPanel = this.modal.querySelector('#tab-panel-council');
 
         if (tabId === 'single') {
+          // Sync: copy council instructions to single tab
+          const councilTextarea = this.modal.querySelector('#council-custom-instructions');
+          const singleTextarea = this.modal.querySelector('#custom-instructions');
+          if (councilTextarea && singleTextarea) {
+            singleTextarea.value = councilTextarea.value;
+          }
+
           if (singlePanel) singlePanel.style.display = '';
           if (councilPanel) councilPanel.style.display = 'none';
-          // Re-validate submit button for the single tab's char count
-          const singleTextarea = this.modal.querySelector('#custom-instructions');
-          const singleSubmitBtn = this.modal.querySelector('[data-action="submit"]');
-          if (singleTextarea && singleSubmitBtn) {
-            const count = singleTextarea.value.length;
-            singleSubmitBtn.disabled = count > this.CHAR_LIMIT;
-            singleSubmitBtn.title = count > this.CHAR_LIMIT
-              ? 'Custom instructions exceed 5,000 character limit'
-              : 'Start Analysis (Cmd/Ctrl+Enter)';
+          // Trigger input event to update char count display and validation via existing listener
+          if (singleTextarea) {
+            singleTextarea.dispatchEvent(new Event('input', { bubbles: true }));
           }
         } else {
+          // Sync: copy single instructions to council tab
+          const singleTextarea = this.modal.querySelector('#custom-instructions');
+          const councilTextarea = this.modal.querySelector('#council-custom-instructions');
+          if (singleTextarea && councilTextarea) {
+            councilTextarea.value = singleTextarea.value;
+          }
+
           if (singlePanel) singlePanel.style.display = 'none';
           if (councilPanel) councilPanel.style.display = '';
           // Load councils on first switch (skip if already loaded)
@@ -392,7 +400,6 @@ class CouncilConfigTab {
           }
           this._updateAllVoiceDropdowns();
           // Re-validate submit button for the council tab's char count
-          const councilTextarea = this.modal.querySelector('#council-custom-instructions');
           if (councilTextarea) {
             this._updateCouncilCharCount(councilTextarea.value.length);
           }

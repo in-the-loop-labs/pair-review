@@ -944,9 +944,8 @@ class AnalysisConfigModal {
         const councilPanel = this.modal.querySelector('#tab-panel-council');
         if (singlePanel) singlePanel.style.display = '';
         if (councilPanel) councilPanel.style.display = 'none';
-        // Reset council custom instructions
-        const councilTextarea = this.modal.querySelector('#council-custom-instructions');
-        if (councilTextarea) councilTextarea.value = '';
+        // Note: council custom instructions are NOT cleared here;
+        // they are repopulated from lastInstructions on next show()
         // Reset dirty hint
         const dirtyHint = this.modal.querySelector('#council-dirty-hint');
         if (dirtyHint) dirtyHint.style.display = 'none';
