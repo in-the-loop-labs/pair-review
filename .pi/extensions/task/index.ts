@@ -33,7 +33,8 @@ const MAX_PARALLEL = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEMS = 10;
 const EXTENSION_DIR = path.dirname(new URL(import.meta.url).pathname);
-const MAX_TASK_DEPTH = 3;
+const _parsedMaxDepth = parseInt(process.env.PI_TASK_MAX_DEPTH || "1", 10);
+const MAX_TASK_DEPTH = Number.isNaN(_parsedMaxDepth) ? 1 : _parsedMaxDepth;
 // PI_CMD allows wrappers (e.g., `devx pi`) to tell subtasks how to invoke pi.
 // Falls back to `pi` if unset. The value is propagated to child processes automatically.
 const PI_CMD = process.env.PI_CMD || "pi";
@@ -210,7 +211,15 @@ async function runTask(
 		"--no-extensions", "--no-skills", "--no-prompt-templates",
 		"-e", EXTENSION_DIR,
 	];
-	if (model) args.push("--model", model);
+	if (model) {
+		// Support provider/model format (e.g., 'anthropic/claude-haiku-4-5')
+		if (model.includes('/')) {
+			const [provider, ...rest] = model.split('/');
+			args.push('--provider', provider, '--model', rest.join('/'));
+		} else {
+			args.push('--model', model);
+		}
+	}
 	// Propagate the parent's active tool list so subtasks inherit tool restrictions
 	// (e.g., if the parent is read-only, subtasks won't get edit/write).
 	// Filter out "task" since it's loaded via -e extension, not --tools.
@@ -412,17 +421,32 @@ export default function (pi: ExtensionAPI) {
 			"'use a subagent to...', 'delegate to...', 'spawn a task for...',",
 			"'in a separate context...', 'without losing context...',",
 			"'run this in isolation', or 'in parallel, do...'.",
+			"Only use this tool when the task genuinely benefits from isolated context or a different model.",
+			"Also consider using this tool when the task would consume significant context if run directly.",
+			"",
+			"Each subtask starts fresh with no conversation history — provide detailed context in the task",
+			"description so it can work autonomously. Subtask results are returned to you but are NOT visible",
+			"to the user; you must relay or summarize findings in your own response.",
+			"When multiple independent tasks are needed, launch them concurrently via the parallel tasks array.",
+			"",
+			"IMPORTANT: Do NOT use subtasks for simple operations like reading files, running basic commands,",
+			"or gathering information that you could do directly with read, bash, or other built-in tools.",
+			"Each subtask spawns a full pi process with significant startup overhead and failure risk.",
+			"If a task is just 'read file X and summarize it' or 'run command Y and report the output',",
+			"do it yourself with the built-in tools instead. Reserve subtasks for multi-step work that",
+			"would consume substantial context (many tool calls, large outputs) or that genuinely benefits",
+			"from parallel execution of complex, independent analyses.",
 		].join(" "),
 		parameters: Type.Object({
 			task: Type.Optional(Type.String({ description: "Task to delegate (single mode)" })),
 			tasks: Type.Optional(Type.Array(
 				Type.Object({
 					task: Type.String({ description: "The task to perform" }),
-					model: Type.Optional(Type.String({ description: "Override model for this specific task" })),
+					model: Type.Optional(Type.String({ description: "Override model for this specific task (e.g., 'anthropic/claude-haiku-4-5'). Use provider/model format for cross-provider switching." })),
 				}),
 				{ description: "Multiple tasks to run in parallel, each with an optional model override" },
 			)),
-			model: Type.Optional(Type.String({ description: "Override model for the subtask (e.g. 'claude-haiku-4-5')" })),
+			model: Type.Optional(Type.String({ description: "Model to use (e.g., 'anthropic/claude-haiku-4-5'). Use provider/model format for cross-provider switching." })),
 			cwd: Type.Optional(Type.String({ description: "Working directory for the subtask" })),
 		}),
 

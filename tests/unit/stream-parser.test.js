@@ -879,6 +879,14 @@ describe('extractToolDetail', () => {
     expect(extractToolDetail({ description: 'Read config', file_path: '/src/config.js' })).toBe('Read config');
   });
 
+  it('extracts task field (Pi task extension)', () => {
+    expect(extractToolDetail({ task: 'Analyze security implications of auth changes' })).toBe('Analyze security implications of auth changes');
+  });
+
+  it('prefers description over task', () => {
+    expect(extractToolDetail({ description: 'Review code', task: 'Analyze auth' })).toBe('Review code');
+  });
+
   it('extracts file_path field', () => {
     expect(extractToolDetail({ file_path: '/src/app.js' })).toBe('/src/app.js');
   });
@@ -2007,6 +2015,17 @@ describe('parsePiLine', () => {
     expect(result.text).toBe('glob: /src');
   });
 
+  it('parses tool_execution_start for task tool with task description', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_start',
+      toolName: 'task',
+      args: { task: 'Analyze security implications of auth changes' }
+    });
+    const result = parsePiLine(line);
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('task: Analyze security implications of auth changes');
+  });
+
   it('parses tool_execution_start with no args', () => {
     const line = JSON.stringify({
       type: 'tool_execution_start',
@@ -2048,9 +2067,48 @@ describe('parsePiLine', () => {
     expect(parsePiLine(line)).toBeNull();
   });
 
-  it('returns null for tool_execution_end events', () => {
-    const line = JSON.stringify({ type: 'tool_execution_end', result: 'ok', isError: false });
+  it('returns null for non-task tool_execution_end events', () => {
+    const line = JSON.stringify({ type: 'tool_execution_end', toolName: 'bash', result: 'ok', isError: false });
     expect(parsePiLine(line)).toBeNull();
+  });
+
+  it('emits tool_use for task tool_execution_end (success)', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_end',
+      toolName: 'task',
+      result: 'Analysis found 3 issues\nDetails follow...',
+      isError: false
+    });
+    const result = parsePiLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('task ✓: Analysis found 3 issues');
+  });
+
+  it('emits tool_use for task tool_execution_end (error)', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_end',
+      toolName: 'task',
+      result: 'Subtask failed: timeout',
+      isError: true
+    });
+    const result = parsePiLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('task ✗: Subtask failed: timeout');
+  });
+
+  it('emits tool_use for task tool_execution_end with empty result', () => {
+    const line = JSON.stringify({
+      type: 'tool_execution_end',
+      toolName: 'task',
+      result: '',
+      isError: false
+    });
+    const result = parsePiLine(line);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe('tool_use');
+    expect(result.text).toBe('task ✓');
   });
 
   it('returns null for agent_start events', () => {

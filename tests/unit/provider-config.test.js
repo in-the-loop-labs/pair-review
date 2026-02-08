@@ -313,6 +313,194 @@ describe('Provider Configuration', () => {
     });
   });
 
+  describe('model merging (built-in + config)', () => {
+    // Pi has built-in models ('default', 'multi-model'), making it ideal for
+    // testing the mergeModels behavior that combines built-ins with config overrides.
+
+    beforeEach(() => {
+      applyConfigOverrides({ providers: {} });
+    });
+
+    it('should return built-in models when no config models provided', () => {
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+
+      expect(pi).toBeDefined();
+      expect(pi.models.length).toBeGreaterThanOrEqual(2);
+      expect(pi.models.find(m => m.id === 'default')).toBeDefined();
+      expect(pi.models.find(m => m.id === 'multi-model')).toBeDefined();
+    });
+
+    it('should append config models with new IDs to built-ins', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            models: [
+              { id: 'gemini-2.5-flash', tier: 'fast' }
+            ]
+          }
+        }
+      });
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+
+      // Built-ins preserved + new config model appended
+      expect(pi.models.find(m => m.id === 'default')).toBeDefined();
+      expect(pi.models.find(m => m.id === 'multi-model')).toBeDefined();
+      expect(pi.models.find(m => m.id === 'gemini-2.5-flash')).toBeDefined();
+    });
+
+    it('should replace built-in model when config model has same ID', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            models: [
+              { id: 'default', tier: 'fast', name: 'Custom Default', default: true }
+            ]
+          }
+        }
+      });
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+
+      const defaultModel = pi.models.find(m => m.id === 'default');
+      expect(defaultModel).toBeDefined();
+      expect(defaultModel.name).toBe('Custom Default');
+      expect(defaultModel.tier).toBe('fast');
+      // multi-model should still exist (not overridden)
+      expect(pi.models.find(m => m.id === 'multi-model')).toBeDefined();
+    });
+
+    it('should handle mix of overriding and new config models', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            models: [
+              { id: 'default', tier: 'thorough', name: 'Overridden Default' },
+              { id: 'gemini-2.5-pro', tier: 'thorough' }
+            ]
+          }
+        }
+      });
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+
+      // 'default' replaced, 'multi-model' retained, 'gemini-2.5-pro' added
+      const defaultModel = pi.models.find(m => m.id === 'default');
+      expect(defaultModel.name).toBe('Overridden Default');
+      expect(pi.models.find(m => m.id === 'multi-model')).toBeDefined();
+      expect(pi.models.find(m => m.id === 'gemini-2.5-pro')).toBeDefined();
+    });
+
+    it('should return built-ins unchanged when config models is empty array', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            models: []
+          }
+        }
+      });
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+
+      // Empty array is treated as "no overrides" by applyConfigOverrides
+      expect(pi.models.find(m => m.id === 'default')).toBeDefined();
+      expect(pi.models.find(m => m.id === 'multi-model')).toBeDefined();
+    });
+
+    it('should resolve default from merged models in createProvider', () => {
+      // Pi built-in 'default' model has default:true
+      // Adding a config model should not break default resolution
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            models: [
+              { id: 'gemini-2.5-flash', tier: 'fast' }
+            ]
+          }
+        }
+      });
+      const provider = createProvider('pi');
+
+      // Should still resolve to 'default' (built-in with default:true)
+      expect(provider.model).toBe('default');
+    });
+
+    it('should resolve default from config model when it has default:true', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            models: [
+              { id: 'gemini-2.5-flash', tier: 'fast', default: true }
+            ]
+          }
+        }
+      });
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+
+      // Config model with default:true AND built-in 'default' with default:true
+      // resolveDefaultModel picks the first one with default:true
+      // Built-ins come first in merged list, so built-in 'default' wins
+      expect(pi.defaultModel).toBe('default');
+    });
+
+    it('should preserve tiers for built-in models alongside config models', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            models: [
+              { id: 'gemini-2.5-flash', tier: 'fast' }
+            ]
+          }
+        }
+      });
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+
+      // Built-in model tiers should still be present
+      expect(pi.models.find(m => m.id === 'default').tier).toBe('balanced');
+      expect(pi.models.find(m => m.id === 'multi-model').tier).toBe('thorough');
+      // Config model tier should also work
+      expect(pi.models.find(m => m.id === 'gemini-2.5-flash').tier).toBe('fast');
+    });
+
+    it('should not include unknown models after merge', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            models: [
+              { id: 'gemini-2.5-flash', tier: 'fast' }
+            ]
+          }
+        }
+      });
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+
+      expect(pi.models.find(m => m.id === 'nonexistent-model')).toBeUndefined();
+    });
+
+    it('should use overridden tier when config replaces built-in model', () => {
+      applyConfigOverrides({
+        providers: {
+          pi: {
+            models: [
+              { id: 'default', tier: 'thorough' }
+            ]
+          }
+        }
+      });
+      const providers = getAllProvidersInfo();
+      const pi = providers.find(p => p.id === 'pi');
+
+      // 'default' was balanced in built-in, now overridden to thorough
+      expect(pi.models.find(m => m.id === 'default').tier).toBe('thorough');
+      // 'multi-model' should be unaffected
+      expect(pi.models.find(m => m.id === 'multi-model').tier).toBe('thorough');
+    });
+  });
+
   describe('yolo mode propagation', () => {
     let savedYoloEnv;
 

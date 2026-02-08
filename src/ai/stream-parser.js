@@ -71,8 +71,9 @@ function extractToolDetail(input, cwd) {
   // Command execution (bash, shell, etc.)
   if (parsed.command) return parsed.command;
 
-  // Task/agent description (Claude Code Task tool, etc.)
+  // Task/agent description (Claude Code Task tool, Pi task extension, etc.)
   if (parsed.description) return parsed.description;
+  if (parsed.task) return parsed.task;
 
   // File path (various field naming conventions)
   const rawPath = parsed.file_path || parsed.filePath || parsed.path;
@@ -535,8 +536,33 @@ function parsePiLine(line, options = {}) {
       };
     }
 
+    // Tool execution end — emit for task tools to show completion status
+    if (eventType === 'tool_execution_end') {
+      const toolName = event.toolName || '';
+      if (toolName === 'task') {
+        const isError = event.isError || false;
+        const result = event.result || '';
+        // Extract a short summary from the result
+        let summary = '';
+        if (typeof result === 'string') {
+          // First non-empty line as preview
+          const firstLine = result.split('\n').find(l => l.trim());
+          if (firstLine) summary = firstLine.trim();
+        }
+        const status = isError ? '✗' : '✓';
+        const text = summary
+          ? `task ${status}: ${summary}`
+          : `task ${status}`;
+        return {
+          type: 'tool_use',
+          text: truncateSnippet(text),
+          timestamp: Date.now()
+        };
+      }
+    }
+
     // session, turn_start, turn_end, message_start, tool_execution_update,
-    // tool_execution_end, agent_start, agent_end — never emit
+    // tool_execution_end (non-task), agent_start, agent_end — never emit
     return null;
   } catch {
     // Best-effort side channel — silently ignore non-JSON or malformed lines.

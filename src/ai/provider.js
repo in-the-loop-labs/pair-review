@@ -495,6 +495,28 @@ function getRegisteredProviderIds() {
 }
 
 /**
+ * Merge config-override models with a provider's built-in models.
+ * Config models with matching IDs replace built-ins; config models with new IDs
+ * are appended. If no config models exist, returns built-ins unchanged.
+ *
+ * @param {Array<Object>} builtInModels - Models from ProviderClass.getModels()
+ * @param {Array<Object>|undefined} configModels - Models from config overrides
+ * @returns {Array<Object>} Merged model list
+ */
+function mergeModels(builtInModels, configModels) {
+  if (!configModels || configModels.length === 0) {
+    return builtInModels;
+  }
+  const configById = new Map(configModels.map(m => [m.id, m]));
+  // Replace overridden built-ins in-place to preserve display order
+  const merged = builtInModels.map(m => configById.get(m.id) || m);
+  // Append config models with new IDs not present in built-ins
+  const builtInIds = new Set(builtInModels.map(m => m.id));
+  const newModels = configModels.filter(m => !builtInIds.has(m.id));
+  return [...merged, ...newModels];
+}
+
+/**
  * Get provider info for all registered providers
  * Uses config overrides for models/installInstructions if available
  * @returns {Array<Object>}
@@ -504,10 +526,10 @@ function getAllProvidersInfo() {
   for (const [id, ProviderClass] of providerRegistry) {
     const overrides = providerConfigOverrides.get(id);
 
-    // Use overridden models if available, otherwise use built-in
-    const models = overrides?.models || ProviderClass.getModels();
+    // Merge config models with built-in models (config wins on ID collision)
+    const models = mergeModels(ProviderClass.getModels(), overrides?.models);
 
-    // Resolve default model from (potentially overridden) models array
+    // Resolve default model from merged models array
     const defaultModel = resolveDefaultModel(models) || ProviderClass.getDefaultModel();
 
     // Use overridden install instructions if available
@@ -545,9 +567,11 @@ function createProvider(providerId, model = null) {
   // Determine the actual model to use
   let actualModel = model;
   if (!actualModel) {
-    // If models are overridden, resolve default from them
-    if (overrides?.models) {
-      actualModel = resolveDefaultModel(overrides.models);
+    // Resolve default from merged models (config + built-in).
+    // Checks both sources because some providers (e.g., Pi) define built-in
+    // modes with default:true that aren't in config overrides.
+    if (overrides?.models || ProviderClass.getModels().length > 0) {
+      actualModel = resolveDefaultModel(mergeModels(ProviderClass.getModels(), overrides?.models));
     }
     // Fall back to provider's built-in default
     if (!actualModel) {
@@ -572,9 +596,9 @@ function getTierForModel(providerId, modelId) {
     return null;
   }
 
-  // Use overridden models if available
+  // Merge config models with built-in models
   const overrides = providerConfigOverrides.get(providerId);
-  const models = overrides?.models || ProviderClass.getModels();
+  const models = mergeModels(ProviderClass.getModels(), overrides?.models);
 
   const model = models.find(m => m.id === modelId);
   return model?.tier || null;
