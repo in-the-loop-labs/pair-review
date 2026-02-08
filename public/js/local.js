@@ -317,6 +317,7 @@ class LocalManager {
       }
 
       // Check staleness FIRST, before showing config modal
+      const _tStale0 = performance.now();
       try {
         const staleResponse = await fetch(`/api/local/${reviewId}/check-stale`);
         if (staleResponse.ok) {
@@ -357,6 +358,7 @@ class LocalManager {
           window.toast.showWarning('Could not verify working directory is current.');
         }
       }
+      console.debug(`[Analyze] stale-check: ${Math.round(performance.now() - _tStale0)}ms`);
 
       try {
         // Show analysis config modal
@@ -367,8 +369,10 @@ class LocalManager {
         }
 
         // Get repo settings for default instructions
+        const _tSettings0 = performance.now();
         const repoSettings = await manager.fetchRepoSettings().catch(() => null);
         const reviewSettings = await manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }));
+        console.debug(`[Analyze] settings-fetch: ${Math.round(performance.now() - _tSettings0)}ms`);
 
         const lastInstructions = reviewSettings.custom_instructions;
         const lastCouncilId = reviewSettings.last_council_id;

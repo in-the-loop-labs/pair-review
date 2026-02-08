@@ -3502,6 +3502,7 @@ class PRManager {
 
     try {
       // Check if PR has new commits before analysis
+      const _tStale0 = performance.now();
       try {
         const staleResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`);
         if (!staleResponse.ok) {
@@ -3565,6 +3566,7 @@ class PRManager {
           window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
         }
       }
+      console.debug(`[Analyze] stale-check: ${Math.round(performance.now() - _tStale0)}ms`);
 
       // Show analysis config modal
       if (!this.analysisConfigModal) {
@@ -3574,10 +3576,12 @@ class PRManager {
       }
 
       // Fetch repo settings and last used instructions in parallel
+      const _tSettings0 = performance.now();
       const [repoSettings, reviewSettings] = await Promise.all([
         this.fetchRepoSettings(),
         this.fetchLastReviewSettings()
       ]);
+      console.debug(`[Analyze] settings-fetch: ${Math.round(performance.now() - _tSettings0)}ms`);
 
       const lastInstructions = reviewSettings.custom_instructions;
       const lastCouncilId = reviewSettings.last_council_id;
