@@ -35,6 +35,10 @@ const TASK_EXTENSION_DIR = path.join(__dirname, '..', '..', '.pi', 'extensions',
 // appropriate models for different review tasks (bug finding, security, etc.)
 const REVIEW_SKILL_PATH = path.join(__dirname, '..', '..', '.pi', 'skills', 'review-model-guidance', 'SKILL.md');
 
+// Path to the review roulette skill, which runs three random premium models
+// in parallel for diverse multi-perspective code review
+const ROULETTE_SKILL_PATH = path.join(__dirname, '..', '..', '.pi', 'skills', 'review-roulette', 'SKILL.md');
+
 /**
  * Pi model definitions
  *
@@ -43,6 +47,8 @@ const REVIEW_SKILL_PATH = path.join(__dirname, '..', '..', '.pi', 'skills', 'rev
  * - 'default' uses whatever model the user has configured as their Pi default
  * - 'multi-model' loads the review guidance skill, teaching Pi to autonomously
  *    switch between models for different review tasks
+ * - 'review-roulette' loads the roulette skill, running three random premium
+ *    models in parallel for diverse multi-perspective review
  *
  * Users can also add specific models via config.json providers.pi.models.
  * Use `provider/model` format in cli_model for cross-provider switching
@@ -70,6 +76,18 @@ const PI_MODELS = [
     badge: 'Smart Routing',
     badgeClass: 'badge-power',
     extra_args: ['--skill', REVIEW_SKILL_PATH]
+  },
+  {
+    id: 'review-roulette',
+    cli_model: null,
+    name: 'Review Roulette',
+    tier: 'thorough',
+    tagline: '3× Reasoning',
+    description: 'Three random premium models review your changes in parallel',
+    badge: 'Roulette',
+    badgeClass: 'badge-power',
+    extra_args: ['--skill', ROULETTE_SKILL_PATH],
+    env: { PI_TASK_MAX_DEPTH: '2' }
   }
 ];
 
@@ -195,16 +213,17 @@ class PiProvider extends AIProvider {
     const providerArgs = configOverrides.extra_args || [];
     const modelArgs = configModel?.extra_args || [];
 
-    // Merge env: provider env + model env
     // PI_CMD tells the task extension how to invoke pi for subtasks.
     // This is essential when pi is invoked through a wrapper (e.g., 'devx pi --').
+    // Merge env: defaults → built-in model → provider config → per-model config.
+    // Later entries override earlier ones, so model-specific settings (e.g.,
+    // review-roulette's PI_TASK_MAX_DEPTH=2) take precedence over defaults.
     this.extraEnv = {
+      PI_TASK_MAX_DEPTH: '1',
+      ...(builtIn?.env || {}),
       ...(configOverrides.env || {}),
       ...(configModel?.env || {}),
       PI_CMD: piCmd,
-      // Limit subtask nesting to 1 level to prevent runaway recursive spawning
-      // when the task extension delegates work to sub-agents.
-      PI_TASK_MAX_DEPTH: '1',
     };
 
     // Store base command and args (prompt added in execute)
