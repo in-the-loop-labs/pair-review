@@ -368,7 +368,7 @@ function createMCPServer(db, options = {}) {
 
       // Build parameterized WHERE conditions
       const params = [runId];
-      const conditions = ["ai_run_id = ?", "source = 'ai'", 'ai_level IS NULL'];
+      const conditions = ["ai_run_id = ?", "source = 'ai'", 'ai_level IS NULL', '(is_raw = 0 OR is_raw IS NULL)'];
 
       if (args.status) {
         conditions.push('status = ?');

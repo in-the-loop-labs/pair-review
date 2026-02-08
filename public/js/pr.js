@@ -1868,6 +1868,15 @@ class PRManager {
    * Save edited user comment
    */
   async saveEditedUserComment(commentId) {
+    // Prevent duplicate saves from rapid clicks or Cmd+Enter
+    const editForm = document.querySelector(`#edit-comment-${commentId}`)?.closest('.user-comment-edit-form');
+    const saveBtn = editForm?.querySelector('.save-edit-btn');
+    if (saveBtn?.dataset.saving === 'true') {
+      return;
+    }
+    if (saveBtn) saveBtn.dataset.saving = 'true';
+    if (saveBtn) saveBtn.disabled = true;
+
     try {
       const textarea = document.getElementById(`edit-comment-${commentId}`);
       const editedText = textarea.value.trim();
@@ -1875,6 +1884,10 @@ class PRManager {
       if (!editedText) {
         alert('Comment cannot be empty');
         textarea.focus();
+        if (saveBtn) {
+          saveBtn.dataset.saving = 'false';
+          saveBtn.disabled = false;
+        }
         return;
       }
 
@@ -1889,7 +1902,7 @@ class PRManager {
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       const commentDiv = commentRow.querySelector('.user-comment');
       let bodyDiv = commentDiv.querySelector('.user-comment-body');
-      const editForm = commentDiv.querySelector('.user-comment-edit-form');
+      const editFormEl = commentDiv.querySelector('.user-comment-edit-form');
 
       if (!bodyDiv) {
         bodyDiv = document.createElement('div');
@@ -1901,7 +1914,7 @@ class PRManager {
       bodyDiv.dataset.originalMarkdown = editedText;
       bodyDiv.style.display = '';
 
-      if (editForm) editForm.remove();
+      if (editFormEl) editFormEl.remove();
       commentDiv.classList.remove('editing-mode');
 
       const timestamp = commentDiv.querySelector('.user-comment-timestamp');
@@ -1915,6 +1928,11 @@ class PRManager {
     } catch (error) {
       console.error('Error saving comment:', error);
       alert('Failed to save comment');
+      // Re-enable save button on failure so the user can retry
+      if (saveBtn) {
+        saveBtn.dataset.saving = 'false';
+        saveBtn.disabled = false;
+      }
     }
   }
 
@@ -3377,8 +3395,11 @@ class PRManager {
         // Set button to analyzing state
         this.setButtonAnalyzing(data.analysisId);
 
-        // Show progress dialog for the running analysis
-        if (window.progressModal) {
+        // Show the appropriate progress modal
+        if (data.status?.isCouncil && window.councilProgressModal && data.status?.councilConfig) {
+          window.councilProgressModal.setPRMode();
+          window.councilProgressModal.show(data.analysisId, data.status.councilConfig);
+        } else if (window.progressModal) {
           window.progressModal.show(data.analysisId);
         } else {
           console.warn('Progress modal not yet initialized');
@@ -3394,7 +3415,15 @@ class PRManager {
    * Reopen progress modal when button is clicked during analysis
    */
   reopenProgressModal() {
-    if (this.currentAnalysisId && window.progressModal) {
+    if (!this.currentAnalysisId) return;
+
+    // If the council modal was used for this analysis, reopen it
+    if (window.councilProgressModal && window.councilProgressModal.currentAnalysisId === this.currentAnalysisId) {
+      window.councilProgressModal.reopenFromBackground();
+      return;
+    }
+
+    if (window.progressModal) {
       window.progressModal.show(this.currentAnalysisId);
     }
   }
@@ -3622,19 +3651,33 @@ class PRManager {
       // Always do manual DOM cleanup as backup
       document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
 
-      // Start AI analysis with model, tier, and instructions
-      const response = await fetch(`/api/analyze/${owner}/${repo}/${number}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      // Determine endpoint and body based on whether this is a council analysis
+      let analyzeUrl, analyzeBody;
+      if (config.isCouncil) {
+        analyzeUrl = `/api/analyze/council/${owner}/${repo}/${number}`;
+        analyzeBody = {
+          councilId: config.councilId || undefined,
+          councilConfig: config.councilConfig || undefined,
+          customInstructions: config.customInstructions || null
+        };
+      } else {
+        analyzeUrl = `/api/analyze/${owner}/${repo}/${number}`;
+        analyzeBody = {
           provider: config.provider || 'claude',
           model: config.model || 'opus',
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
           skipLevel3: config.skipLevel3 || false
-        })
+        };
+      }
+
+      // Start AI analysis
+      const response = await fetch(analyzeUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(analyzeBody)
       });
 
       if (!response.ok) {
@@ -3656,7 +3699,10 @@ class PRManager {
       // Set analyzing state and show progress modal
       this.setButtonAnalyzing(result.analysisId);
 
-      if (window.progressModal) {
+      if (config.isCouncil && window.councilProgressModal && config.councilConfig) {
+        window.councilProgressModal.setPRMode();
+        window.councilProgressModal.show(result.analysisId, config.councilConfig);
+      } else if (window.progressModal) {
         window.progressModal.show(result.analysisId);
       }
 

@@ -23,9 +23,11 @@ const { normalizeRepository } = require('../utils/paths');
 const {
   activeAnalyses,
   prToAnalysisId,
+  localReviewToAnalysisId,
   progressClients,
   localReviewDiffs,
   getPRKey,
+  getLocalReviewKey,
   getModel,
   determineCompletionInfo,
   broadcastProgress,
@@ -35,6 +37,7 @@ const {
   createProgressCallback
 } = require('./shared');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
+const { validateCouncilConfig } = require('./councils');
 
 const router = express.Router();
 
@@ -587,10 +590,11 @@ router.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', async (req, res) =
     }
 
     // Check if any AI suggestions exist for this PR using review.id
+    // Exclude raw council voice suggestions (is_raw=1) — only count final/consolidated suggestions
     const result = await queryOne(db, `
       SELECT EXISTS(
         SELECT 1 FROM comments
-        WHERE review_id = ? AND source = 'ai'
+        WHERE review_id = ? AND source = 'ai' AND (is_raw = 0 OR is_raw IS NULL)
       ) as has_suggestions
     `, [review.id]);
 
@@ -772,6 +776,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         AND source = 'ai'
         AND ${levelFilter}
         AND status IN ('active', 'dismissed', 'adopted', 'draft', 'submitted')
+        AND (is_raw = 0 OR is_raw IS NULL)
         AND ${runIdFilter}
       ORDER BY
         CASE
@@ -1084,6 +1089,413 @@ router.post('/api/analysis-results', async (req, res) => {
   } catch (error) {
     logger.error('Error importing analysis results:', error);
     res.status(500).json({ error: 'Failed to import analysis results' });
+  }
+});
+
+/**
+ * Launch a council analysis, shared by both PR and local mode.
+ *
+ * This helper encapsulates all the common logic: council config resolution/validation,
+ * analysis run record creation, progress tracking setup, async analyzer invocation,
+ * completion/failure status broadcasting, and tracking map cleanup.
+ *
+ * Mode-specific differences are injected via the `modeContext` parameter.
+ *
+ * @param {Object} db - Database handle
+ * @param {Object} modeContext - Mode-specific values:
+ *   @param {number} modeContext.reviewId - Review record ID
+ *   @param {string} modeContext.worktreePath - Path to the worktree or local directory
+ *   @param {Object} modeContext.prMetadata - PR metadata (from DB for PR mode, synthetic for local mode)
+ *   @param {Array|null} modeContext.changedFiles - Changed files list (null for PR mode)
+ *   @param {string} modeContext.repository - Repository identifier (e.g., "owner/repo")
+ *   @param {string} modeContext.headSha - HEAD SHA for the analysis run record
+ *   @param {Object} modeContext.trackingMap - Map instance for tracking (prToAnalysisId or localReviewToAnalysisId)
+ *   @param {string} modeContext.trackingKey - Key for the tracking map (getPRKey() or getLocalReviewKey())
+ *   @param {string} modeContext.logLabel - Human-readable label for logs (e.g., "PR #42" or "local review #7")
+ *   @param {Object} [modeContext.initialStatusExtra] - Extra fields merged into the initial status object
+ *   @param {Array<string>} [modeContext.extraBroadcastKeys] - Additional SSE keys to broadcast completion to
+ *   @param {Function} [modeContext.onSuccess] - Optional async callback invoked after successful completion
+ *     with signature (result, analysisRunRepo, runId). Used for mode-specific side effects like saving
+ *     summary to the review record.
+ *   @param {Object} [modeContext.runUpdateExtra] - Extra fields merged into the analysisRunRepo.update call on success
+ * @param {Object} councilConfig - Validated council configuration
+ * @param {string} councilId - Council ID (for the model field in analysis_runs), or null for inline config
+ * @param {Object} instructions - { repoInstructions, requestInstructions }
+ * @returns {{ analysisId: string, runId: string }} IDs for the caller to return in the response
+ */
+async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, instructions) {
+  const {
+    reviewId,
+    worktreePath,
+    prMetadata,
+    changedFiles,
+    repository,
+    headSha,
+    trackingMap,
+    trackingKey,
+    logLabel,
+    initialStatusExtra,
+    extraBroadcastKeys,
+    onSuccess,
+    runUpdateExtra
+  } = modeContext;
+
+  const { repoInstructions, requestInstructions } = instructions;
+
+  // Create run/analysis ID
+  const runId = uuidv4();
+  const analysisId = runId;
+
+  // Create DB analysis_runs record
+  const analysisRunRepo = new AnalysisRunRepository(db);
+  await analysisRunRepo.create({
+    id: runId,
+    reviewId,
+    provider: 'council',
+    model: councilId || 'inline-config',
+    repoInstructions,
+    requestInstructions,
+    headSha: headSha || null
+  });
+
+  // Setup progress tracking
+  const initialStatus = {
+    id: analysisId,
+    repository,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    progress: 'Starting council analysis...',
+    levels: {
+      1: councilConfig.levels?.['1']?.enabled ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+      2: councilConfig.levels?.['2']?.enabled ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+      3: councilConfig.levels?.['3']?.enabled ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+      4: { status: 'pending', progress: 'Pending' }
+    },
+    isCouncil: true,
+    councilConfig,
+    filesAnalyzed: 0,
+    filesRemaining: 0,
+    ...initialStatusExtra
+  };
+  activeAnalyses.set(analysisId, initialStatus);
+
+  // Store tracking map entry
+  trackingMap.set(trackingKey, analysisId);
+
+  broadcastProgress(analysisId, initialStatus);
+
+  // Create analyzer (provider/model don't matter for council — voices have their own)
+  const analyzer = new Analyzer(db, 'council', 'council');
+
+  logger.section(`Council Analysis Request - ${logLabel}`);
+  logger.log('API', `Repository: ${repository}`, 'magenta');
+  logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+
+  const progressCallback = createProgressCallback(analysisId);
+
+  // Start council analysis asynchronously
+  analyzer.runCouncilAnalysis(
+    {
+      reviewId,
+      worktreePath,
+      prMetadata,
+      changedFiles,
+      instructions: { repoInstructions, requestInstructions }
+    },
+    councilConfig,
+    { analysisId, runId, progressCallback }
+  )
+    .then(async result => {
+      logger.success(`Council analysis complete for ${logLabel}: ${result.suggestions.length} suggestions`);
+
+      // Update analysis run record
+      try {
+        await analysisRunRepo.update(runId, {
+          status: 'completed',
+          summary: result.summary,
+          totalSuggestions: result.suggestions.length,
+          ...runUpdateExtra
+        });
+      } catch (updateError) {
+        logger.warn(`Failed to update analysis_run: ${updateError.message}`);
+      }
+
+      // Mode-specific success callback (e.g., saving summary to review)
+      if (onSuccess) {
+        try {
+          await onSuccess(result, analysisRunRepo, runId);
+        } catch (callbackError) {
+          logger.warn(`Council onSuccess callback failed: ${callbackError.message}`);
+        }
+      }
+
+      // Use robust fallback: if activeAnalyses entry was removed (e.g. by cancel), use empty object
+      const currentStatus = activeAnalyses.get(analysisId);
+      if (!currentStatus) return;
+
+      const completedStatus = {
+        ...currentStatus,
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+        progress: `Council analysis complete — ${result.suggestions.length} suggestions`,
+        suggestionsCount: result.suggestions.length,
+        levels: {
+          ...currentStatus.levels,
+          4: { status: 'completed', progress: 'Results finalized' }
+        }
+      };
+      // Mark all enabled levels as completed
+      for (const levelKey of ['1', '2', '3']) {
+        if (currentStatus.levels?.[levelKey]?.status === 'running') {
+          completedStatus.levels[levelKey] = { status: 'completed', progress: 'Complete' };
+        }
+      }
+      activeAnalyses.set(analysisId, completedStatus);
+      broadcastProgress(analysisId, completedStatus);
+
+      // Broadcast to additional SSE keys (e.g., local mode broadcasts to `local-${reviewId}`)
+      if (extraBroadcastKeys) {
+        for (const key of extraBroadcastKeys) {
+          broadcastProgress(key, { ...completedStatus, source: 'council' });
+        }
+      }
+    })
+    .catch(error => {
+      if (error.isCancellation) {
+        logger.info(`Council analysis cancelled for ${logLabel}`);
+        return;
+      }
+      logger.error(`Council analysis failed for ${logLabel}: ${error.message}`);
+
+      // Use robust fallback: if activeAnalyses entry was removed, use empty object
+      // This prevents orphaned DB records in "running" status
+      const failedStatus = {
+        ...(activeAnalyses.get(analysisId) || {}),
+        status: 'failed',
+        completedAt: new Date().toISOString(),
+        error: error.message,
+        progress: 'Council analysis failed'
+      };
+      activeAnalyses.set(analysisId, failedStatus);
+      broadcastProgress(analysisId, failedStatus);
+
+      // Update analysis run record
+      analysisRunRepo.update(runId, { status: 'failed' }).catch(() => {});
+    })
+    .finally(() => {
+      // Clean up tracking map entry (always runs regardless of success/failure)
+      trackingMap.delete(trackingKey);
+    });
+
+  return { analysisId, runId };
+}
+
+/**
+ * Trigger council analysis for a PR
+ * Uses multiple voices/providers across configurable levels
+ */
+router.post('/api/analyze/council/:owner/:repo/:pr', async (req, res) => {
+  try {
+    const { owner, repo, pr } = req.params;
+    const prNumber = parseInt(pr);
+    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions } = req.body || {};
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ error: 'Invalid pull request number' });
+    }
+
+    if (!councilId && !inlineConfig) {
+      return res.status(400).json({ error: 'Either councilId or councilConfig is required' });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+
+    // Resolve council config
+    let councilConfig;
+    if (councilId) {
+      const { CouncilRepository } = require('../database');
+      const councilRepo = new CouncilRepository(db);
+      const council = await councilRepo.getById(councilId);
+      if (!council) {
+        return res.status(404).json({ error: 'Council not found' });
+      }
+      councilConfig = council.config;
+    } else {
+      councilConfig = inlineConfig;
+    }
+
+    // Validate council config (saved configs are validated on save; inline configs need runtime validation)
+    const configError = validateCouncilConfig(councilConfig);
+    if (configError) {
+      return res.status(400).json({ error: `Invalid council config: ${configError}` });
+    }
+
+    // Get PR metadata
+    const prMetadataRepo = new PRMetadataRepository(db);
+    const prMetadata = await prMetadataRepo.getByPR(prNumber, repository);
+    if (!prMetadata) {
+      return res.status(404).json({ error: `Pull request #${prNumber} not found. Please load the PR first.` });
+    }
+
+    // Get worktree path
+    const worktreeManager = new GitWorktreeManager(db);
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+      return res.status(404).json({ error: 'Worktree not found for this PR. Please reload the PR.' });
+    }
+
+    // Resolve instructions
+    const reviewRepo = new ReviewRepository(db);
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+    const repoInstructions = repoSettings?.default_instructions || null;
+    const requestInstructions = rawInstructions?.trim() || null;
+
+    // Get or create review record
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    const { analysisId, runId } = await launchCouncilAnalysis(
+      db,
+      {
+        reviewId: review.id,
+        worktreePath,
+        prMetadata,
+        changedFiles: null,
+        repository,
+        headSha: prMetadata.head_sha,
+        trackingMap: prToAnalysisId,
+        trackingKey: getPRKey(owner, repo, prNumber),
+        logLabel: `PR #${prNumber}`,
+        initialStatusExtra: { prNumber },
+        extraBroadcastKeys: null,
+        onSuccess: async (result) => {
+          if (result.summary) {
+            await reviewRepo.upsertSummary(prNumber, repository, result.summary);
+          }
+        }
+      },
+      councilConfig,
+      councilId,
+      { repoInstructions, requestInstructions }
+    );
+
+    res.json({
+      analysisId,
+      runId,
+      status: 'started',
+      message: 'Council analysis started in background',
+      isCouncil: true
+    });
+  } catch (error) {
+    logger.error('Error starting council analysis:', error);
+    res.status(500).json({ error: 'Failed to start council analysis' });
+  }
+});
+
+/**
+ * Trigger council analysis for a local review
+ */
+router.post('/api/local/:reviewId/analyze/council', async (req, res) => {
+  try {
+    const { reviewId } = req.params;
+    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions } = req.body || {};
+
+    if (!councilId && !inlineConfig) {
+      return res.status(400).json({ error: 'Either councilId or councilConfig is required' });
+    }
+
+    const db = req.app.get('db');
+
+    // Get review record
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ? AND review_type = ?', [reviewId, 'local']);
+    if (!review) {
+      return res.status(404).json({ error: 'Local review not found' });
+    }
+
+    // Resolve council config
+    let councilConfig;
+    if (councilId) {
+      const { CouncilRepository } = require('../database');
+      const councilRepo = new CouncilRepository(db);
+      const council = await councilRepo.getById(councilId);
+      if (!council) {
+        return res.status(404).json({ error: 'Council not found' });
+      }
+      councilConfig = council.config;
+    } else {
+      councilConfig = inlineConfig;
+    }
+
+    // Validate council config (saved configs are validated on save; inline configs need runtime validation)
+    const configError = validateCouncilConfig(councilConfig);
+    if (configError) {
+      return res.status(400).json({ error: `Invalid council config: ${configError}` });
+    }
+
+    const localPath = review.local_path;
+
+    // Build metadata for local mode
+    const prMetadata = {
+      reviewType: 'local',
+      repository: review.repository,
+      title: review.name || 'Local changes',
+      description: '',
+      head_sha: review.local_head_sha
+    };
+
+    // Get changed files
+    const analyzer = new Analyzer(db, 'council', 'council');
+    const changedFiles = await analyzer.getLocalChangedFiles(localPath);
+
+    // Generate and cache diff so the web UI can display it (same as regular analysis endpoint)
+    try {
+      const diffResult = await generateLocalDiff(localPath);
+      const digest = await computeLocalDiffDigest(localPath);
+      localReviewDiffs.set(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
+    } catch (diffError) {
+      logger.warn(`Could not generate diff for local council review ${reviewId}: ${diffError.message}`);
+    }
+
+    // Resolve instructions
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const repoSettings = await repoSettingsRepo.getRepoSettings(review.repository);
+    const repoInstructions = repoSettings?.default_instructions || null;
+    const requestInstructions = rawInstructions?.trim() || null;
+
+    const parsedReviewId = parseInt(reviewId, 10);
+
+    const { analysisId, runId } = await launchCouncilAnalysis(
+      db,
+      {
+        reviewId: parsedReviewId,
+        worktreePath: localPath,
+        prMetadata,
+        changedFiles,
+        repository: review.repository,
+        headSha: review.local_head_sha,
+        trackingMap: localReviewToAnalysisId,
+        trackingKey: getLocalReviewKey(reviewId),
+        logLabel: `local review #${reviewId}`,
+        initialStatusExtra: { reviewId: parsedReviewId, reviewType: 'local' },
+        extraBroadcastKeys: [`local-${reviewId}`],
+        runUpdateExtra: { filesAnalyzed: changedFiles.length }
+      },
+      councilConfig,
+      councilId,
+      { repoInstructions, requestInstructions }
+    );
+
+    res.json({
+      analysisId,
+      runId,
+      status: 'started',
+      message: 'Council analysis started in background',
+      isCouncil: true
+    });
+  } catch (error) {
+    logger.error('Error starting local council analysis:', error);
+    res.status(500).json({ error: 'Failed to start council analysis' });
   }
 });
 

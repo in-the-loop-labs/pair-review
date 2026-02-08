@@ -292,6 +292,10 @@ function createProgressCallback(analysisId) {
       }
 
       currentStatus.levels[levelKey].streamEvent = evt;
+      // Propagate voiceId so council progress modal can identify active voice
+      if (progressUpdate.voiceId) {
+        currentStatus.levels[levelKey].voiceId = progressUpdate.voiceId;
+      }
       activeAnalyses.set(analysisId, currentStatus);
 
       // Throttle: only broadcast if enough time has elapsed
@@ -309,7 +313,8 @@ function createProgressCallback(analysisId) {
       currentStatus.levels[level] = {
         status: progressUpdate.status || 'running',
         progress: progressUpdate.progress || 'In progress...',
-        streamEvent: undefined
+        streamEvent: undefined,
+        voiceId: progressUpdate.voiceId || undefined
       };
     }
 

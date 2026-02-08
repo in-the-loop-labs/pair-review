@@ -422,8 +422,11 @@ class LocalManager {
           manager.isAnalyzing = true;
           manager.setButtonAnalyzing(data.analysisId);
 
-          // Optionally reopen progress modal
-          if (window.progressModal) {
+          // Show the appropriate progress modal
+          if (data.status?.isCouncil && window.councilProgressModal && data.status?.councilConfig) {
+            window.councilProgressModal.setLocalMode(reviewId);
+            window.councilProgressModal.show(data.analysisId, data.status.councilConfig);
+          } else if (window.progressModal) {
             // Update the SSE endpoint for progress modal
             self.patchProgressModalForLocal();
             window.progressModal.show(data.analysisId);
@@ -452,6 +455,14 @@ class LocalManager {
         if (!content) {
           return;
         }
+
+        // Prevent duplicate saves from rapid clicks or Cmd+Enter
+        const saveBtn = formRow?.querySelector('.save-comment-btn');
+        if (saveBtn?.dataset.saving === 'true') {
+          return;
+        }
+        if (saveBtn) saveBtn.dataset.saving = 'true';
+        if (saveBtn) saveBtn.disabled = true;
 
         try {
           const response = await fetch(`/api/local/${reviewId}/user-comments`, {
@@ -514,6 +525,11 @@ class LocalManager {
         } catch (error) {
           console.error('Error saving user comment:', error);
           alert('Failed to save comment: ' + error.message);
+          // Re-enable save button on failure so the user can retry
+          if (saveBtn) {
+            saveBtn.dataset.saving = 'false';
+            saveBtn.disabled = false;
+          }
         }
       };
     }
@@ -681,6 +697,15 @@ class LocalManager {
     const originalSaveEditedUserComment = manager.saveEditedUserComment?.bind(manager);
     if (originalSaveEditedUserComment) {
       manager.saveEditedUserComment = async function(commentId) {
+        // Prevent duplicate saves from rapid clicks or Cmd+Enter
+        const editFormEl = document.querySelector(`#edit-comment-${commentId}`)?.closest('.user-comment-edit-form');
+        const saveBtnEl = editFormEl?.querySelector('.save-edit-btn');
+        if (saveBtnEl?.dataset.saving === 'true') {
+          return;
+        }
+        if (saveBtnEl) saveBtnEl.dataset.saving = 'true';
+        if (saveBtnEl) saveBtnEl.disabled = true;
+
         try {
           const textarea = document.getElementById(`edit-comment-${commentId}`);
           const editedText = textarea.value.trim();
@@ -688,6 +713,10 @@ class LocalManager {
           if (!editedText) {
             alert('Comment cannot be empty');
             textarea.focus();
+            if (saveBtnEl) {
+              saveBtnEl.dataset.saving = 'false';
+              saveBtnEl.disabled = false;
+            }
             return;
           }
 
@@ -732,6 +761,11 @@ class LocalManager {
         } catch (error) {
           console.error('Error saving comment:', error);
           alert('Failed to save comment');
+          // Re-enable save button on failure so the user can retry
+          if (saveBtnEl) {
+            saveBtnEl.dataset.saving = 'false';
+            saveBtnEl.disabled = false;
+          }
         }
       };
     }
@@ -1031,19 +1065,33 @@ class LocalManager {
 
       // Staleness is now checked in triggerAIAnalysis before showing config modal
 
-      // Start AI analysis
-      const response = await fetch(`/api/local/${this.reviewId}/analyze`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      // Determine endpoint and body based on whether this is a council analysis
+      let analyzeUrl, analyzeBody;
+      if (config.isCouncil) {
+        analyzeUrl = `/api/local/${this.reviewId}/analyze/council`;
+        analyzeBody = {
+          councilId: config.councilId || undefined,
+          councilConfig: config.councilConfig || undefined,
+          customInstructions: config.customInstructions || null
+        };
+      } else {
+        analyzeUrl = `/api/local/${this.reviewId}/analyze`;
+        analyzeBody = {
           provider: config.provider || 'claude',
           model: config.model || 'opus',
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
           skipLevel3: config.skipLevel3 || false
-        })
+        };
+      }
+
+      // Start AI analysis
+      const response = await fetch(analyzeUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(analyzeBody)
       });
 
       if (!response.ok) {
@@ -1061,12 +1109,18 @@ class LocalManager {
       // Set analyzing state
       manager.setButtonAnalyzing(result.analysisId);
 
-      // Patch progress modal for local mode
-      this.patchProgressModalForLocal();
+      // Choose council or single-model progress modal
+      if (config.isCouncil && window.councilProgressModal && config.councilConfig) {
+        window.councilProgressModal.setLocalMode(this.reviewId);
+        window.councilProgressModal.show(result.analysisId, config.councilConfig);
+      } else {
+        // Patch progress modal for local mode
+        this.patchProgressModalForLocal();
 
-      // Show progress modal
-      if (window.progressModal) {
-        window.progressModal.show(result.analysisId);
+        // Show progress modal
+        if (window.progressModal) {
+          window.progressModal.show(result.analysisId);
+        }
       }
 
     } catch (error) {

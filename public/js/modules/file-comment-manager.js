@@ -243,6 +243,15 @@ class FileCommentManager {
    * @param {string} body - The comment body
    */
   async saveFileComment(zone, fileName, body) {
+    // Prevent duplicate saves from rapid clicks or Cmd+Enter
+    const container = zone.querySelector('.file-comments-container');
+    const submitBtn = container?.querySelector('.file-comment-form .submit-btn');
+    if (submitBtn?.dataset.saving === 'true') {
+      return;
+    }
+    if (submitBtn) submitBtn.dataset.saving = 'true';
+    if (submitBtn) submitBtn.disabled = true;
+
     try {
       const { endpoint, requestBody } = this._getFileCommentEndpoint('create', {
         file: fileName,
@@ -296,6 +305,11 @@ class FileCommentManager {
       console.error('Error saving file-level comment:', error);
       if (window.toast) {
         window.toast.showError('Failed to save file-level comment');
+      }
+      // Re-enable save button on failure so the user can retry
+      if (submitBtn) {
+        submitBtn.dataset.saving = 'false';
+        submitBtn.disabled = false;
       }
     }
   }
@@ -910,6 +924,15 @@ class FileCommentManager {
    * @param {HTMLElement} bodyEl - The body element to update
    */
   async saveEditedComment(zone, commentId, newBody, bodyEl) {
+    // Prevent duplicate saves from rapid clicks or Cmd+Enter
+    const editForm = bodyEl?.closest('.file-comment-card')?.querySelector('.file-comment-edit-form');
+    const saveBtn = editForm?.querySelector('.submit-btn');
+    if (saveBtn?.dataset.saving === 'true') {
+      return;
+    }
+    if (saveBtn) saveBtn.dataset.saving = 'true';
+    if (saveBtn) saveBtn.disabled = true;
+
     try {
       const { endpoint, requestBody } = this._getFileCommentEndpoint('update', {
         commentId: commentId,
@@ -935,6 +958,11 @@ class FileCommentManager {
       console.error('Error updating comment:', error);
       if (window.toast) {
         window.toast.showError('Failed to update comment');
+      }
+      // Re-enable save button on failure so the user can retry
+      if (saveBtn) {
+        saveBtn.dataset.saving = 'false';
+        saveBtn.disabled = false;
       }
     }
   }

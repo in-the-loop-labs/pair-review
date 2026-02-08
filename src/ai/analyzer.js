@@ -23,6 +23,9 @@ const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guidance');
 
+/** Minimum total suggestion count across all voices before consolidation is applied */
+const COUNCIL_CONSOLIDATION_THRESHOLD = 8;
+
 class Analyzer {
   /**
    * @param {Object} database - Database instance
@@ -2350,7 +2353,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @returns {Promise<Array>} Curated suggestions array
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced', progressCallback } = options;
+    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride } = options;
     logger.section('[Orchestration] AI Orchestration Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
@@ -2365,8 +2368,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         throw new CancellationError('Analysis was cancelled');
       }
 
-      // Create provider instance for orchestration
-      const aiProvider = createProvider(this.provider, this.model);
+      // Create provider instance for orchestration (use overrides if provided)
+      const aiProvider = createProvider(providerOverride || this.provider, modelOverride || this.model);
 
       // Build the orchestration prompt
       const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier);
@@ -2504,6 +2507,504 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     return promptBuilder.build(context);
   }
 
+
+  /**
+   * Run a council analysis with multiple voices across configurable levels
+   *
+   * @param {Object} reviewContext - Context for the review
+   * @param {number} reviewContext.reviewId - Review ID (from reviews table)
+   * @param {string} reviewContext.worktreePath - Path to the git worktree
+   * @param {Object} reviewContext.prMetadata - PR/review metadata
+   * @param {Array<string>} [reviewContext.changedFiles] - Changed files list
+   * @param {Object} reviewContext.instructions - Instructions object { repoInstructions, requestInstructions }
+   * @param {Object} councilConfig - Council configuration
+   * @param {Object} councilConfig.levels - Level configurations keyed by '1', '2', '3'
+   * @param {Object} [councilConfig.orchestration] - Orchestration provider/model/tier
+   * @param {Object} options - Additional options
+   * @param {string} options.analysisId - Analysis ID for process tracking
+   * @param {string} [options.runId] - Pre-generated run ID
+   * @param {Function} [options.progressCallback] - Progress callback
+   * @returns {Promise<Object>} Analysis results
+   */
+  async runCouncilAnalysis(reviewContext, councilConfig, options = {}) {
+    const { reviewId, worktreePath, prMetadata, changedFiles, instructions } = reviewContext;
+    const { analysisId, progressCallback } = options;
+    const runId = options.runId || uuidv4();
+
+    logger.section('Review Council Analysis Starting');
+    logger.info(`Review ID: ${reviewId}, Run ID: ${runId}`);
+
+    // Merge instructions
+    const { mergeInstructions } = require('../utils/instructions');
+    let mergedInstructions = null;
+    if (instructions && typeof instructions === 'object') {
+      mergedInstructions = mergeInstructions(instructions.repoInstructions, instructions.requestInstructions);
+    }
+
+    // Load generated file patterns
+    const generatedPatterns = await this.loadGeneratedFilePatterns(worktreePath);
+
+    // Get changed files for validation
+    const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
+    logger.info(`[Council] Using ${validFiles.length} changed files for path validation`);
+
+    // Build file line count map for validation
+    const { buildFileLineCountMap } = require('../utils/line-validation');
+    const fileLineCountMap = await buildFileLineCountMap(worktreePath, validFiles);
+
+    // Collect all voice tasks across enabled levels
+    const voiceTasks = [];
+    const enabledLevels = [];
+
+    for (const [levelKey, levelConfig] of Object.entries(councilConfig.levels)) {
+      if (!levelConfig.enabled) continue;
+      enabledLevels.push(parseInt(levelKey));
+
+      for (const [voiceIdx, voice] of levelConfig.voices.entries()) {
+        const voiceId = `L${levelKey}-${voice.provider}-${voice.model}${voiceIdx > 0 ? `-${voiceIdx}` : ''}`;
+        const tier = voice.tier || 'balanced';
+
+        // Merge per-voice custom instructions with base instructions
+        let voiceInstructions = mergedInstructions;
+        if (voice.customInstructions) {
+          voiceInstructions = voiceInstructions
+            ? `${voiceInstructions}\n\n${voice.customInstructions}`
+            : voice.customInstructions;
+        }
+
+        voiceTasks.push({
+          voiceId,
+          level: parseInt(levelKey),
+          provider: voice.provider,
+          model: voice.model,
+          tier,
+          customInstructions: voiceInstructions
+        });
+      }
+    }
+
+    if (voiceTasks.length === 0) {
+      throw new Error('No enabled levels with voices in council config');
+    }
+
+    logger.info(`[Council] Launching ${voiceTasks.length} voice(s) across levels: ${enabledLevels.join(', ')}`);
+
+    // Execute all voices in parallel
+    const voicePromises = voiceTasks.map(task => {
+      return this._executeCouncilVoice(task, {
+        reviewId, runId, worktreePath, prMetadata,
+        generatedPatterns, validFiles, analysisId, progressCallback
+      });
+    });
+
+    const voiceResults = await Promise.allSettled(voicePromises);
+
+    // Check for cancellation
+    const hasCancellation = voiceResults.some(
+      r => r.status === 'rejected' && r.reason?.isCancellation
+    );
+    if (hasCancellation) {
+      throw new CancellationError('Council analysis cancelled by user');
+    }
+
+    // Collect results per level, including voice summaries
+    const levelSuggestions = {};
+    const voiceSummaries = [];
+    const rawSuggestions = [];
+    let voiceSuccessCount = 0;
+
+    for (let i = 0; i < voiceTasks.length; i++) {
+      const task = voiceTasks[i];
+      const result = voiceResults[i];
+
+      if (result.status === 'fulfilled' && result.value.suggestions) {
+        const suggestions = result.value.suggestions;
+        voiceSuccessCount++;
+
+        // Capture voice summary (voices may produce summaries even with 0 suggestions)
+        if (result.value.summary) {
+          voiceSummaries.push(result.value.summary);
+        }
+
+        // Tag each suggestion with voice_id, level, and mark as raw
+        const taggedSuggestions = suggestions.map(s => ({
+          ...s,
+          voice_id: task.voiceId,
+          level: task.level,
+          is_raw: 1
+        }));
+
+        rawSuggestions.push(...taggedSuggestions);
+
+        if (!levelSuggestions[task.level]) {
+          levelSuggestions[task.level] = [];
+        }
+        levelSuggestions[task.level].push(...suggestions);
+
+        logger.success(`[Council] Voice ${task.voiceId}: ${suggestions.length} suggestions`);
+      } else {
+        const reason = result.status === 'rejected' ? result.reason?.message : 'No suggestions';
+        logger.warn(`[Council] Voice ${task.voiceId} failed: ${reason}`);
+      }
+    }
+
+    if (voiceSuccessCount === 0) {
+      throw new Error('All council voices failed');
+    }
+
+    // Pick the best available voice summary for bypass paths.
+    // When consolidation/orchestration is skipped, we use the first real voice summary
+    // rather than a generic placeholder, so AI-generated summaries aren't lost.
+    const bestVoiceSummary = voiceSummaries.length > 0 ? voiceSummaries[0] : null;
+
+    // Check if we can skip ALL consolidation
+    // Use voiceSuccessCount (not just voices with >0 suggestions) so a single voice
+    // returning 0 suggestions but a summary still takes the fast path
+    const enabledLevelsWithResults = Object.keys(levelSuggestions).map(Number);
+    const successfulVoiceLevels = new Set();
+    for (let i = 0; i < voiceTasks.length; i++) {
+      if (voiceResults[i].status === 'fulfilled' && voiceResults[i].value.suggestions) {
+        successfulVoiceLevels.add(voiceTasks[i].level);
+      }
+    }
+
+    if (voiceSuccessCount === 1 && successfulVoiceLevels.size === 1) {
+      // Single voice, single level — skip all consolidation
+      logger.info('[Council] Single voice result — skipping consolidation');
+      const singleLevel = [...successfulVoiceLevels][0];
+      const singleLevelSuggestions = levelSuggestions[singleLevel] || [];
+      const finalSuggestions = this.validateAndFinalizeSuggestions(
+        singleLevelSuggestions, fileLineCountMap, validFiles
+      );
+      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles);
+
+      return {
+        runId,
+        suggestions: finalSuggestions,
+        summary: bestVoiceSummary || `Council analysis complete: ${finalSuggestions.length} suggestions from single voice`
+      };
+    }
+
+    // Check if total suggestion count is below consolidation threshold
+    const totalSuggestionCount = Object.values(levelSuggestions).reduce((sum, arr) => sum + arr.length, 0);
+    if (totalSuggestionCount < COUNCIL_CONSOLIDATION_THRESHOLD) {
+      logger.info(`[Council] ${totalSuggestionCount} total suggestions below threshold (${COUNCIL_CONSOLIDATION_THRESHOLD}) — skipping consolidation`);
+      const allSuggestions = Object.values(levelSuggestions).flat();
+      const finalSuggestions = this.validateAndFinalizeSuggestions(
+        allSuggestions, fileLineCountMap, validFiles
+      );
+      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles);
+
+      // Prefer voice summaries over generic placeholders. When multiple voices
+      // produced summaries, join them so no insight is lost.
+      const thresholdSummary = voiceSummaries.length > 1
+        ? voiceSummaries.join('\n\n')
+        : bestVoiceSummary;
+
+      return {
+        runId,
+        suggestions: finalSuggestions,
+        summary: thresholdSummary || `Council analysis complete: ${finalSuggestions.length} suggestions (consolidation skipped — below threshold)`
+      };
+    }
+
+    // Store raw per-voice suggestions (only when consolidation will occur)
+    logger.info(`[Council] Storing ${rawSuggestions.length} raw voice suggestions`);
+    await this._storeCouncilSuggestions(reviewId, runId, rawSuggestions, validFiles);
+
+    // Determine orchestration provider
+    const orchConfig = councilConfig.orchestration || this._defaultOrchestration(councilConfig);
+    const orchProvider = orchConfig.provider;
+    const orchModel = orchConfig.model;
+    const orchTier = orchConfig.tier || 'balanced';
+
+    logger.info(`[Council] Orchestration: ${orchProvider}/${orchModel} (${orchTier})`);
+
+    if (progressCallback) {
+      progressCallback({
+        status: 'running',
+        progress: 'Consolidating council results...',
+        level: 'orchestration'
+      });
+    }
+
+    // Pass 1: Intra-level consolidation (for levels with >1 voice)
+    const consolidatedPerLevel = {};
+    for (const [levelStr, suggestions] of Object.entries(levelSuggestions)) {
+      const level = parseInt(levelStr);
+      const successfulVoicesForLevel = voiceTasks
+        .map((t, idx) => ({ t, idx }))
+        .filter(({ t, idx }) =>
+          t.level === level &&
+          voiceResults[idx].status === 'fulfilled' &&
+          voiceResults[idx].value.suggestions?.length > 0
+        );
+
+      if (successfulVoicesForLevel.length <= 1) {
+        // Single voice or no results — no intra-level consolidation needed
+        consolidatedPerLevel[level] = suggestions;
+      } else {
+        // Multiple voices — run intra-level consolidation
+        logger.info(`[Council] Pass 1: Consolidating ${successfulVoicesForLevel.length} voices for Level ${level}`);
+        try {
+          const consolidated = await this._intraLevelConsolidate(
+            level, suggestions, prMetadata, mergedInstructions, worktreePath,
+            { provider: orchProvider, model: orchModel, tier: orchTier, analysisId, progressCallback }
+          );
+          consolidatedPerLevel[level] = consolidated;
+        } catch (error) {
+          logger.warn(`[Council] Intra-level consolidation failed for Level ${level}: ${error.message}`);
+          consolidatedPerLevel[level] = suggestions; // Fallback to raw
+        }
+      }
+    }
+
+    // Pass 2: Cross-level orchestration
+    logger.info('[Council] Pass 2: Cross-level orchestration');
+    try {
+      const allSuggestions = {
+        level1: consolidatedPerLevel[1] || [],
+        level2: consolidatedPerLevel[2] || [],
+        level3: consolidatedPerLevel[3] || []
+      };
+
+      const orchestrationResult = await this.orchestrateWithAI(
+        allSuggestions, prMetadata, mergedInstructions, worktreePath,
+        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel }
+      );
+
+      const finalSuggestions = this.validateAndFinalizeSuggestions(
+        orchestrationResult.suggestions, fileLineCountMap, validFiles
+      );
+
+      // Store final consolidated suggestions (is_raw=0, voice_id=null)
+      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles);
+
+      logger.success(`[Council] Analysis complete: ${finalSuggestions.length} final suggestions`);
+
+      return {
+        runId,
+        suggestions: finalSuggestions,
+        summary: orchestrationResult.summary
+      };
+    } catch (error) {
+      logger.error(`[Council] Cross-level orchestration failed: ${error.message}`);
+
+      // Fallback: combine all consolidated suggestions
+      const fallbackSuggestions = Object.values(consolidatedPerLevel).flat();
+      const finalFallback = this.validateAndFinalizeSuggestions(
+        fallbackSuggestions, fileLineCountMap, validFiles
+      );
+      await this.storeSuggestions(reviewId, runId, finalFallback, null, validFiles);
+
+      return {
+        runId,
+        suggestions: finalFallback,
+        summary: `Council analysis complete (orchestration failed): ${finalFallback.length} suggestions`,
+        orchestrationFailed: true
+      };
+    }
+  }
+
+  /**
+   * Execute a single council voice
+   * @param {Object} task - Voice task configuration
+   * @param {Object} context - Shared context
+   * @returns {Promise<Object>} Voice results { suggestions, summary }
+   * @private
+   */
+  async _executeCouncilVoice(task, context) {
+    const { voiceId, level, provider, model, tier, customInstructions } = task;
+    const { reviewId, runId, worktreePath, prMetadata, generatedPatterns, validFiles, analysisId, progressCallback } = context;
+
+    logger.info(`[Council] Starting voice ${voiceId} (Level ${level}, ${provider}/${model}, ${tier})`);
+
+    if (analysisId && isAnalysisCancelled(analysisId)) {
+      throw new CancellationError('Analysis was cancelled');
+    }
+
+    // Create provider instance for this voice
+    const aiProvider = createProvider(provider, model);
+
+    // Build prompt based on level
+    let prompt;
+    if (level === 1) {
+      prompt = this.buildLevel1Prompt(reviewId, worktreePath, prMetadata, generatedPatterns, customInstructions, validFiles, tier);
+    } else if (level === 2) {
+      prompt = this.buildLevel2Prompt(reviewId, worktreePath, prMetadata, generatedPatterns, customInstructions, validFiles, tier);
+    } else if (level === 3) {
+      // Level 3 is async and has a testingContext parameter (null for council voices)
+      prompt = await this.buildLevel3Prompt(reviewId, worktreePath, prMetadata, null, generatedPatterns, customInstructions, validFiles, tier);
+    }
+
+    // Execute
+    const response = await aiProvider.execute(prompt, {
+      cwd: worktreePath,
+      timeout: 600000,
+      level,
+      analysisId,
+      registerProcess,
+      onStreamEvent: progressCallback ? (event) => {
+        progressCallback({ level, status: 'running', streamEvent: event, voiceId });
+      } : undefined
+    });
+
+    // Parse response
+    const suggestions = this.parseResponse(response, level);
+    logger.success(`[Council] Voice ${voiceId}: parsed ${suggestions.length} suggestions`);
+
+    return {
+      suggestions,
+      summary: response.summary || `Voice ${voiceId}: ${suggestions.length} suggestions`
+    };
+  }
+
+  /**
+   * Run intra-level consolidation for a level with multiple voices
+   * @param {number} level - Analysis level
+   * @param {Array} suggestions - Combined suggestions from all voices at this level
+   * @param {Object} prMetadata - PR metadata
+   * @param {string} customInstructions - Custom instructions
+   * @param {string} worktreePath - Worktree path
+   * @param {Object} orchConfig - Orchestration config { provider, model, tier, analysisId, progressCallback }
+   * @returns {Promise<Array>} Consolidated suggestions
+   * @private
+   */
+  async _intraLevelConsolidate(level, suggestions, prMetadata, customInstructions, worktreePath, orchConfig) {
+    const { provider, model, tier, analysisId, progressCallback } = orchConfig;
+
+    const aiProvider = createProvider(provider, model);
+
+    const prompt = `You are consolidating code review suggestions from multiple AI reviewers for Level ${level} analysis.
+
+Multiple reviewers have independently analyzed the same code changes. Your job is to:
+1. **Deduplicate**: Merge suggestions that identify the same issue
+2. **Resolve conflicts**: When reviewers disagree, use your judgment to pick the better analysis
+3. **Preserve unique insights**: Keep suggestions that only one reviewer noticed
+4. **Maintain quality**: Only include suggestions with sufficient confidence
+
+## Input Suggestions (${suggestions.length} total from multiple reviewers)
+${JSON.stringify(suggestions)}
+
+## Output Format
+
+### CRITICAL OUTPUT REQUIREMENT
+Output ONLY valid JSON with no additional text, explanations, or markdown code blocks.
+
+{
+  "suggestions": [
+    {
+      "file": "path/to/file",
+      "line": 42,
+      "old_or_new": "NEW",
+      "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
+      "title": "Brief title",
+      "description": "Detailed explanation",
+      "suggestion": "How to fix/improve (omit for praise)",
+      "confidence": 0.0-1.0
+    }
+  ],
+  "summary": "Brief consolidation summary"
+}`;
+
+    const response = await aiProvider.execute(prompt, {
+      cwd: worktreePath,
+      timeout: 300000,
+      level: `consolidation-L${level}`,
+      analysisId,
+      registerProcess,
+      onStreamEvent: progressCallback ? (event) => {
+        progressCallback({ level: `consolidation-L${level}`, status: 'running', streamEvent: event });
+      } : undefined
+    });
+
+    return this.parseResponse(response, level);
+  }
+
+  /**
+   * Store council suggestions with voice_id and is_raw fields
+   * @param {number} reviewId - Review ID
+   * @param {string} runId - Analysis run ID
+   * @param {Array} suggestions - Suggestions with voice_id and is_raw fields
+   * @param {Array<string>} validFiles - Valid file paths
+   * @private
+   */
+  async _storeCouncilSuggestions(reviewId, runId, suggestions, validFiles) {
+    const { run: dbRun } = require('../database');
+
+    // FAILSAFE: Filter suggestions to only those with valid file paths (same as storeSuggestions)
+    const validPathsSet = new Set(validFiles.map(f => normalizePath(resolveRenamedFile(f))));
+    let filteredCount = 0;
+
+    for (const suggestion of suggestions) {
+      // Validate file path against changed files
+      if (!this.isValidSuggestionPath(suggestion.file, validPathsSet)) {
+        filteredCount++;
+        continue;
+      }
+
+      const body = suggestion.description +
+        (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
+
+      const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;
+      const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';
+
+      await dbRun(this.db, `
+        INSERT INTO comments (
+          review_id, source, author, ai_run_id, ai_level, ai_confidence,
+          file, line_start, line_end, side, type, title, body, status, is_file_level,
+          voice_id, is_raw
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        reviewId,
+        'ai',
+        'AI Assistant',
+        runId,
+        suggestion.level || null, // ai_level
+        suggestion.confidence,
+        suggestion.file,
+        suggestion.line_start,
+        suggestion.line_end,
+        side,
+        suggestion.type,
+        suggestion.title,
+        body,
+        'active',
+        isFileLevel,
+        suggestion.voice_id || null,
+        suggestion.is_raw || 0
+      ]);
+    }
+
+    if (filteredCount > 0) {
+      logger.warn(`[Council] Filtered ${filteredCount} raw suggestions with invalid file paths`);
+    }
+    logger.info(`[Council] Stored ${suggestions.length - filteredCount} raw voice suggestions`);
+  }
+
+  /**
+   * Derive default orchestration config from the council config
+   * @param {Object} councilConfig - Council configuration
+   * @returns {Object} Default orchestration { provider, model, tier }
+   * @private
+   */
+  _defaultOrchestration(councilConfig) {
+    // Find the first enabled level with voices
+    for (const levelKey of ['1', '2', '3']) {
+      const level = councilConfig.levels[levelKey];
+      if (level?.enabled && level.voices?.length > 0) {
+        const firstVoice = level.voices[0];
+        return {
+          provider: firstVoice.provider,
+          model: firstVoice.model,
+          tier: firstVoice.tier || 'balanced'
+        };
+      }
+    }
+
+    // Fallback to claude/sonnet
+    return { provider: 'claude', model: 'sonnet', tier: 'balanced' };
+  }
 
   /**
    * Update suggestion status (adopt, dismiss, etc)

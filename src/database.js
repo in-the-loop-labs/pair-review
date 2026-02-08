@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 14;
+const CURRENT_SCHEMA_VERSION = 15;
 
 /**
  * Database schema SQL statements
@@ -74,6 +74,9 @@ const SCHEMA_SQL = {
       adopted_as_id INTEGER,
       parent_id INTEGER,
       is_file_level INTEGER DEFAULT 0,
+
+      voice_id TEXT,
+      is_raw INTEGER DEFAULT 0,
 
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -171,6 +174,16 @@ const SCHEMA_SQL = {
       github_url TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  councils: `
+    CREATE TABLE IF NOT EXISTS councils (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      config JSON NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -195,7 +208,12 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)',
   // GitHub reviews indexes
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
-  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)'
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)',
+  // Council indexes
+  'CREATE INDEX IF NOT EXISTS idx_councils_name ON councils(name)',
+  // Voice tracking indexes
+  'CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)'
 ];
 
 /**
@@ -683,6 +701,64 @@ const MIGRATIONS = {
     console.log('  Created index idx_reviews_type_updated');
 
     console.log('Migration to schema version 14 complete');
+  },
+
+  // Migration to version 15: adds councils table and voice tracking columns to comments
+  15: (db) => {
+    console.log('Running migration to schema version 15...');
+
+    // Create councils table if it doesn't exist
+    if (!tableExists(db, 'councils')) {
+      db.exec(`
+        CREATE TABLE councils (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          config JSON NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_councils_name ON councils(name)');
+      console.log('  Created councils table');
+    } else {
+      console.log('  Table councils already exists');
+    }
+
+    // Add voice_id column to comments if it doesn't exist
+    const hasVoiceId = columnExists(db, 'comments', 'voice_id');
+    if (!hasVoiceId) {
+      try {
+        db.prepare(`ALTER TABLE comments ADD COLUMN voice_id TEXT`).run();
+        db.exec('CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)');
+        console.log('  Added voice_id column to comments');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column voice_id already exists (race condition)');
+      }
+    } else {
+      console.log('  Column voice_id already exists');
+    }
+
+    // Add is_raw column to comments if it doesn't exist
+    const hasIsRaw = columnExists(db, 'comments', 'is_raw');
+    if (!hasIsRaw) {
+      try {
+        db.prepare(`ALTER TABLE comments ADD COLUMN is_raw INTEGER DEFAULT 0`).run();
+        db.exec('CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)');
+        console.log('  Added is_raw column to comments');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column is_raw already exists (race condition)');
+      }
+    } else {
+      console.log('  Column is_raw already exists');
+    }
+
+    console.log('Migration to schema version 15 complete');
   }
 };
 
@@ -2677,6 +2753,136 @@ class GitHubReviewRepository {
   }
 }
 
+/**
+ * CouncilRepository class for managing council configurations
+ */
+class CouncilRepository {
+  /**
+   * Create a new CouncilRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a new council
+   * @param {Object} councilData - Council data
+   * @param {string} councilData.id - Unique ID (UUID)
+   * @param {string} councilData.name - Council name
+   * @param {Object} councilData.config - Council configuration JSON
+   * @returns {Promise<Object>} Created council record
+   */
+  async create({ id, name, config }) {
+    if (!id || !name || !config) {
+      throw new Error('Missing required fields: id, name, config');
+    }
+
+    const configJson = typeof config === 'string' ? config : JSON.stringify(config);
+
+    await run(this.db, `
+      INSERT INTO councils (id, name, config)
+      VALUES (?, ?, ?)
+    `, [id, name, configJson]);
+
+    return this.getById(id);
+  }
+
+  /**
+   * Get a council by ID
+   * @param {string} id - Council ID
+   * @returns {Promise<Object|null>} Council record with parsed config, or null
+   */
+  async getById(id) {
+    const row = await queryOne(this.db, `
+      SELECT id, name, config, created_at, updated_at
+      FROM councils
+      WHERE id = ?
+    `, [id]);
+
+    if (!row) return null;
+    return this._parseRow(row);
+  }
+
+  /**
+   * List all councils
+   * @returns {Promise<Array<Object>>} Array of council records with parsed configs
+   */
+  async list() {
+    const rows = await query(this.db, `
+      SELECT id, name, config, created_at, updated_at
+      FROM councils
+      ORDER BY updated_at DESC
+    `);
+
+    return rows.map(row => this._parseRow(row));
+  }
+
+  /**
+   * Update a council
+   * @param {string} id - Council ID
+   * @param {Object} updates - Fields to update
+   * @param {string} [updates.name] - New name
+   * @param {Object} [updates.config] - New configuration
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async update(id, updates) {
+    const setClauses = ['updated_at = CURRENT_TIMESTAMP'];
+    const params = [];
+
+    if (updates.name !== undefined) {
+      setClauses.push('name = ?');
+      params.push(updates.name);
+    }
+
+    if (updates.config !== undefined) {
+      setClauses.push('config = ?');
+      const configJson = typeof updates.config === 'string' ? updates.config : JSON.stringify(updates.config);
+      params.push(configJson);
+    }
+
+    params.push(id);
+
+    const result = await run(this.db, `
+      UPDATE councils
+      SET ${setClauses.join(', ')}
+      WHERE id = ?
+    `, params);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Delete a council
+   * @param {string} id - Council ID
+   * @returns {Promise<boolean>} True if record was deleted
+   */
+  async delete(id) {
+    const result = await run(this.db, `
+      DELETE FROM councils WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Parse a database row, converting JSON config string to object
+   * @param {Object} row - Raw database row
+   * @returns {Object} Row with parsed config
+   * @private
+   */
+  _parseRow(row) {
+    try {
+      return {
+        ...row,
+        config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config
+      };
+    } catch (e) {
+      return { ...row, config: {} };
+    }
+  }
+}
+
 module.exports = {
   initializeDatabase,
   closeDatabase,
@@ -2698,6 +2904,7 @@ module.exports = {
   PRMetadataRepository,
   AnalysisRunRepository,
   GitHubReviewRepository,
+  CouncilRepository,
   generateWorktreeId,
   migrateExistingWorktrees
 };

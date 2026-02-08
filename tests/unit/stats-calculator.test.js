@@ -135,5 +135,13 @@ describe('Stats Calculator', () => {
       expect(withRunId.query).toContain("source = 'ai'");
       expect(withoutRunId.query).toContain("source = 'ai'");
     });
+
+    it('should return queries that filter out raw council voice suggestions', () => {
+      const withRunId = getStatsQuery('run-abc');
+      const withoutRunId = getStatsQuery();
+
+      expect(withRunId.query).toContain('is_raw = 0 OR is_raw IS NULL');
+      expect(withoutRunId.query).toContain('is_raw = 0 OR is_raw IS NULL');
+    });
   });
 });

@@ -43,8 +43,16 @@ class AnalysisConfigModal {
       { id: 'bugs', label: 'Bug Detection', instruction: 'Focus on potential bugs, edge cases, and error handling.' }
     ];
 
+    // Council tab (lazily initialized after createModal)
+    this.councilTab = null;
+
     this.createModal();
     this.setupEventListeners();
+
+    // Initialize council tab if CouncilConfigTab is available
+    if (typeof CouncilConfigTab !== 'undefined') {
+      this.councilTab = new CouncilConfigTab(this.modal);
+    }
   }
 
   /**
@@ -308,6 +316,7 @@ class AnalysisConfigModal {
         </div>
 
         <div class="modal-footer analysis-config-footer">
+          <span class="council-dirty-hint" id="council-dirty-hint" style="display: none;">Unsaved council changes</span>
           <button class="btn btn-secondary" data-action="cancel">Cancel</button>
           <button class="btn btn-primary btn-analyze" data-action="submit" title="Start Analysis (Cmd/Ctrl+Enter)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -356,13 +365,17 @@ class AnalysisConfigModal {
     });
 
     // Keyboard shortcut: Cmd+Enter / Ctrl+Enter to start analysis
-    textarea?.addEventListener('keydown', (e) => {
+    // Listen on the entire modal so it works from both Single and Council tabs
+    this.modal.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        // Don't intercept Cmd+Enter inside comment form textareas
+        if (e.target.matches('.comment-textarea, .comment-edit-textarea')) return;
         e.preventDefault();
-        // Only submit if not over character limit (button would be disabled)
         const submitBtn = this.modal.querySelector('[data-action="submit"]');
         if (submitBtn && !submitBtn.disabled) {
-          this.handleSubmit();
+          this.handleSubmit().catch(err => {
+            console.error('Error in handleSubmit:', err);
+          });
         }
       }
     });
@@ -384,7 +397,9 @@ class AnalysisConfigModal {
       if (action === 'cancel') {
         this.hide();
       } else if (action === 'submit') {
-        this.handleSubmit();
+        this.handleSubmit().catch(err => {
+          console.error('Error in handleSubmit:', err);
+        });
       }
     });
 
@@ -647,7 +662,31 @@ class AnalysisConfigModal {
   /**
    * Handle form submission
    */
-  handleSubmit() {
+  async handleSubmit() {
+    // Check if council tab is active
+    if (this.councilTab && this.councilTab.getActiveTab() === 'council') {
+      // Auto-save council if dirty
+      await this.councilTab.autoSaveIfDirty();
+
+      const councilConfig = this.councilTab.getCouncilConfig();
+      const councilId = this.councilTab.getSelectedCouncilId();
+
+      const config = {
+        isCouncil: true,
+        councilId: councilId,
+        councilConfig: councilConfig,
+        customInstructions: this.modal.querySelector('#council-custom-instructions')?.value?.trim() || '',
+        repoInstructions: this.repoInstructions
+      };
+
+      if (this.onSubmit) {
+        this.onSubmit(config);
+      }
+
+      this.hide(true);
+      return;
+    }
+
     // Extract tier from the selected model's data-tier attribute
     const selectedModelCard = this.modal.querySelector('.model-card.selected');
     const tier = selectedModelCard?.dataset?.tier || 'balanced';
@@ -692,6 +731,20 @@ class AnalysisConfigModal {
     // Render provider buttons and model cards now that we have provider data
     this.renderProviderButtons();
     this.renderModelCards();
+
+    // Inject council tab after providers are loaded
+    if (this.councilTab) {
+      this.councilTab.inject();
+      this.councilTab.setProviders(this.providers);
+
+      // Pass repo and last instructions to council tab
+      if (options.repoInstructions) {
+        this.councilTab.setRepoInstructions(options.repoInstructions);
+      }
+      if (options.lastInstructions) {
+        this.councilTab.setLastInstructions(options.lastInstructions);
+      }
+    }
 
     return new Promise((resolve) => {
       // Store callbacks
@@ -820,6 +873,30 @@ class AnalysisConfigModal {
       const skipLevel3Info = this.modal.querySelector('#skip-level3-info');
       if (skipLevel3Info) {
         skipLevel3Info.style.display = 'none';
+      }
+      // Reset council tab to single-model view for next open
+      if (this.councilTab) {
+        this.councilTab.activeTab = 'single';
+        this.councilTab._isDirty = false;
+        const tabBar = this.modal.querySelector('.analysis-tab-bar');
+        if (tabBar) {
+          tabBar.querySelectorAll('.analysis-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.tab === 'single');
+          });
+        }
+        const singlePanel = this.modal.querySelector('#tab-panel-single');
+        const councilPanel = this.modal.querySelector('#tab-panel-council');
+        if (singlePanel) singlePanel.style.display = '';
+        if (councilPanel) councilPanel.style.display = 'none';
+        // Reset council custom instructions
+        const councilTextarea = this.modal.querySelector('#council-custom-instructions');
+        if (councilTextarea) councilTextarea.value = '';
+        // Reset dirty hint
+        const dirtyHint = this.modal.querySelector('#council-dirty-hint');
+        if (dirtyHint) dirtyHint.style.display = 'none';
+        // Reset submit button text to single-model default
+        const submitBtnSpan = this.modal.querySelector('[data-action="submit"] span');
+        if (submitBtnSpan) submitBtnSpan.textContent = 'Start Analysis';
       }
       // Clear callbacks
       this.onSubmit = null;

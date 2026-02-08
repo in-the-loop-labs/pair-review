@@ -979,6 +979,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
         AND source = 'ai'
         AND ${levelFilter}
         AND status IN ('active', 'dismissed', 'adopted', 'draft', 'submitted')
+        AND (is_raw = 0 OR is_raw IS NULL)
         AND ${runIdFilter}
       ORDER BY
         CASE
@@ -1741,10 +1742,11 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
     }
 
     // Check if any AI suggestions exist for this review
+    // Exclude raw council voice suggestions (is_raw=1) — only count final/consolidated suggestions
     const result = await queryOne(db, `
       SELECT EXISTS(
         SELECT 1 FROM comments
-        WHERE review_id = ? AND source = 'ai'
+        WHERE review_id = ? AND source = 'ai' AND (is_raw = 0 OR is_raw IS NULL)
       ) as has_suggestions
     `, [reviewId]);
 
