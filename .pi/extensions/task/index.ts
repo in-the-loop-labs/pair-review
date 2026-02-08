@@ -211,7 +211,15 @@ async function runTask(
 		"-e", EXTENSION_DIR,
 	];
 	if (model) args.push("--model", model);
-	// No --tools flag = all default tools (read, bash, edit, write, grep, find, ls)
+	// Propagate the parent's active tool list so subtasks inherit tool restrictions
+	// (e.g., if the parent is read-only, subtasks won't get edit/write).
+	// Filter out "task" since it's loaded via -e extension, not --tools.
+	if (piApi) {
+		const parentTools = piApi.getActiveTools().filter((t: string) => t !== "task");
+		if (parentTools.length > 0) {
+			args.push("--tools", parentTools.join(","));
+		}
+	}
 
 	// Validate working directory before spawning
 	if (!fs.existsSync(cwd)) {
@@ -384,9 +392,13 @@ async function mapConcurrent<T, R>(
 	return results;
 }
 
+// Module-level reference to the pi API so runTask() can access it
+let piApi: ExtensionAPI | undefined;
+
 // ── Extension entry point ────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	piApi = pi;
 	pi.registerTool({
 		name: "task",
 		label: "Task",
@@ -394,7 +406,7 @@ export default function (pi: ExtensionAPI) {
 			"Delegate a task to a subagent with an isolated context window and full tool access.",
 			"Use this to preserve your current context while performing work that requires",
 			"exploring the codebase, running commands, or making changes.",
-			"The subtask gets its own fresh context with all tools (read, write, edit, bash, grep, find, ls).",
+			"The subtask gets its own fresh context with the same tools available to the parent session.",
 			"For parallel work, pass an array of task objects, each with an optional model override.",
 			"Use when the user says things like: 'use a task to...', 'use a subtask to...',",
 			"'use a subagent to...', 'delegate to...', 'spawn a task for...',",

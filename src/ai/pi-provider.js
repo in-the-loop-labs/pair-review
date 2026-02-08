@@ -25,6 +25,10 @@ const { StreamParser, parsePiLine, createPiLineParser } = require('./stream-pars
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
+// Path to the bundled Pi task extension, which provides a generic subagent tool
+// for delegating work to isolated pi subprocesses during analysis
+const TASK_EXTENSION_DIR = path.join(__dirname, '..', '..', '.pi', 'extensions', 'task');
+
 /**
  * Pi model definitions
  *
@@ -108,6 +112,10 @@ class PiProvider extends AIProvider {
     // Enabled tools: read, bash, grep, find, ls
     // Excluded tools: edit, write (file modification)
     //
+    // Task extension: The `task` tool is loaded via `-e` as a Pi extension,
+    // not via --tools. Subtasks spawned by the extension inherit the same
+    // tool restrictions from the parent process environment.
+    //
     // LIMITATION: The `bash` tool grants arbitrary shell command execution.
     // Unlike Claude (Bash(git diff*) prefixes) or Copilot (shell(git diff) prefixes),
     // Pi does not support fine-grained bash command restrictions. The model could
@@ -127,25 +135,40 @@ class PiProvider extends AIProvider {
     // -p: Non-interactive mode (process prompt and exit)
     // --mode json: Output JSONL events
     // --model: Specify the model
-    // --tools: Enable read-only tools for Level 2/3 analysis (excludes edit,write for safety)
-    // --no-session: Don't save session (ephemeral analysis)
+    // --tools: Enable read-only tools for Level 2/3 analysis (excludes edit,write for safety).
+    //          The task extension is loaded separately via `-e` (not part of --tools).
+    // --no-session: Each pi invocation is an ephemeral analysis — there's no need to
+    //               persist session state between runs.
+    // --no-skills: Skills are disabled by default to keep runs deterministic. A skill can
+    //              still be loaded via `--skill` in model-specific `extra_args` if needed.
 
     // Build args: base args + provider extra_args + model extra_args
     // In yolo mode, omit --tools entirely to allow all tools (including edit, write)
+    // The task extension is loaded to give the model a subagent tool for delegating
+    // work to isolated subprocesses, preserving the main context window.
+    // --no-extensions prevents auto-discovery of other extensions.
+    // --no-skills and --no-prompt-templates keep the subprocess focused.
     let baseArgs;
     if (configOverrides.yolo) {
-      baseArgs = ['-p', '--mode', 'json', '--model', model, '--no-session'];
+      baseArgs = ['-p', '--mode', 'json', '--model', model, '--no-session',
+        '--no-extensions', '--no-skills', '--no-prompt-templates',
+        '-e', TASK_EXTENSION_DIR];
     } else {
-      baseArgs = ['-p', '--mode', 'json', '--model', model, '--tools', 'read,bash,grep,find,ls', '--no-session'];
+      baseArgs = ['-p', '--mode', 'json', '--model', model, '--tools', 'read,bash,grep,find,ls', '--no-session',
+        '--no-extensions', '--no-skills', '--no-prompt-templates',
+        '-e', TASK_EXTENSION_DIR];
     }
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];
 
     // Merge env: provider env + model env
+    // PI_CMD tells the task extension how to invoke pi for subtasks.
+    // This is essential when pi is invoked through a wrapper (e.g., 'devx pi --').
     this.extraEnv = {
       ...(configOverrides.env || {}),
-      ...(modelConfig?.env || {})
+      ...(modelConfig?.env || {}),
+      PI_CMD: piCmd,
     };
 
     // Store base command and args (prompt added in execute)
@@ -194,6 +217,7 @@ class PiProvider extends AIProvider {
       });
 
       const pid = pi.pid;
+      logger.debug(`${levelPrefix} Pi CLI command: ${fullCommand} ${fullArgs.join(' ')}`);
       logger.info(`${levelPrefix} Spawned Pi CLI process: PID ${pid}`);
 
       // Register process for cancellation tracking if analysisId provided
@@ -675,6 +699,8 @@ class PiProvider extends AIProvider {
         },
         shell: useShell
       });
+
+      logger.debug(`Pi CLI spawn: ${command} ${args.join(' ')}`);
 
       let stdout = '';
       let settled = false;

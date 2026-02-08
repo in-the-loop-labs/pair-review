@@ -132,6 +132,11 @@ describe('PiProvider', () => {
       expect(provider.baseArgs).toContain('--tools');
       expect(provider.baseArgs).toContain('read,bash,grep,find,ls');
       expect(provider.baseArgs).toContain('--no-session');
+      // Task extension loaded, auto-discovery disabled
+      expect(provider.baseArgs).toContain('-e');
+      expect(provider.baseArgs).toContain('--no-extensions');
+      expect(provider.baseArgs).toContain('--no-skills');
+      expect(provider.baseArgs).toContain('--no-prompt-templates');
     });
 
     it('should merge provider extra_args from config', () => {
@@ -168,11 +173,19 @@ describe('PiProvider', () => {
       expect(provider.piCmd).toBe('/env/pi');
     });
 
+    it('should set PI_CMD in extraEnv to the resolved pi command', () => {
+      process.env.PAIR_REVIEW_PI_CMD = '/custom/pi';
+      const provider = new PiProvider('test-model');
+      expect(provider.extraEnv.PI_CMD).toBe('/custom/pi');
+    });
+
     it('should merge env from provider config', () => {
       const provider = new PiProvider('test-model', {
         env: { GEMINI_API_KEY: 'test-key' }
       });
-      expect(provider.extraEnv).toEqual({ GEMINI_API_KEY: 'test-key' });
+      expect(provider.extraEnv).toMatchObject({ GEMINI_API_KEY: 'test-key' });
+      // PI_CMD is always set for the task extension
+      expect(provider.extraEnv).toHaveProperty('PI_CMD', 'pi');
     });
 
     it('should merge model-specific env over provider env', () => {
@@ -196,6 +209,10 @@ describe('PiProvider', () => {
       expect(provider.baseArgs).toContain('--no-session');
       expect(provider.baseArgs).not.toContain('--tools');
       expect(provider.baseArgs).not.toContain('read,bash,grep,find,ls');
+      expect(provider.baseArgs).toContain('-e');
+      expect(provider.baseArgs).toContain('--no-extensions');
+      expect(provider.baseArgs).toContain('--no-skills');
+      expect(provider.baseArgs).toContain('--no-prompt-templates');
     });
 
     it('should include --tools in non-yolo mode (default)', () => {
@@ -750,7 +767,7 @@ describe('PiProvider', () => {
       const config = provider.getExtractionConfig('extraction-model');
 
       expect(config).toHaveProperty('env');
-      expect(config.env).toEqual({ GEMINI_API_KEY: 'test-key-123' });
+      expect(config.env).toMatchObject({ GEMINI_API_KEY: 'test-key-123' });
     });
 
     it('should include env field with extraEnv in shell mode', () => {
@@ -762,7 +779,7 @@ describe('PiProvider', () => {
 
       expect(config.useShell).toBe(true);
       expect(config).toHaveProperty('env');
-      expect(config.env).toEqual({ API_KEY: 'shell-key' });
+      expect(config.env).toMatchObject({ API_KEY: 'shell-key' });
     });
 
     it('should include merged provider and model env in env field', () => {
@@ -774,15 +791,15 @@ describe('PiProvider', () => {
       });
       const config = provider.getExtractionConfig('extraction-model');
 
-      expect(config.env).toEqual({ VAR1: 'model-val', VAR2: 'extra' });
+      expect(config.env).toMatchObject({ VAR1: 'model-val', VAR2: 'extra' });
     });
 
-    it('should include empty env when no extraEnv configured', () => {
+    it('should include PI_CMD in env for task extension subtask support', () => {
       const provider = new PiProvider('test-model');
       const config = provider.getExtractionConfig('extraction-model');
 
       expect(config).toHaveProperty('env');
-      expect(config.env).toEqual({});
+      expect(config.env).toEqual({ PI_CMD: 'pi' });
     });
   });
 
