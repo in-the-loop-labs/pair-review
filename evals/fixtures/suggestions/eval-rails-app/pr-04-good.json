@@ -1,0 +1,65 @@
+[
+  {
+    "file": "app/controllers/api/v1/tasks_controller.rb",
+    "line_start": 49,
+    "line_end": 49,
+    "type": "bug",
+    "title": "Incorrect HTTP status code on successful create — should be 201",
+    "description": "The create action returns `status: :ok` (200) after successfully saving a task. The HTTP standard specifies 201 Created for new resources, and most API clients expect this status code to distinguish creation from a regular response. Change to `status: :created`.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/tasks_controller.rb",
+    "line_start": 8,
+    "line_end": 8,
+    "type": "security",
+    "title": "Unauthenticated access to show endpoint creates IDOR vulnerability",
+    "description": "Authentication is skipped for the show action (line 8), and the show method does not call `authorize @task`. This allows any unauthenticated user to retrieve any task by guessing or enumerating IDs. If tasks contain sensitive information, this is a data exposure risk. Either require authentication or add Pundit authorization.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/tasks_controller.rb",
+    "line_start": 38,
+    "line_end": 40,
+    "type": "security",
+    "title": "Show action missing Pundit authorize call",
+    "description": "The show action renders the task without calling `authorize @task`. Every other mutating action in this controller uses Pundit authorization. Even if authentication is intentionally skipped, the Pundit policy should still be consulted to ensure the task is accessible.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/tasks_controller.rb",
+    "line_start": 92,
+    "line_end": 95,
+    "type": "code-style",
+    "title": "Inconsistent JSON key casing — camelCase mixed with snake_case",
+    "description": "The serialize_task method outputs dueDate, createdAt, updatedAt, and assignedUser in camelCase, but project_id in snake_case. The project's CONTRIBUTING.md requires snake_case everywhere. The TaskSerializer already uses consistent snake_case — this private method diverges from the established pattern.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/tasks_controller.rb",
+    "line_start": 26,
+    "line_end": 35,
+    "type": "design",
+    "title": "Index action uses inline JSON instead of TaskSerializer",
+    "description": "The index action builds JSON with an inline map block rather than delegating to TaskSerializer. The CONTRIBUTING.md mandates using serializers for API responses. A TaskSerializer class exists but is unused anywhere in this PR.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/tasks_controller.rb",
+    "line_start": 16,
+    "line_end": 16,
+    "type": "performance",
+    "title": "N+1 query — missing eager loading on user association",
+    "description": "Tasks are loaded with `@project.tasks` without `.includes(:user)`, but the loop on line 33 accesses `t.user&.name` for each task. This triggers a separate SQL query per task. Add `.includes(:user)` to the query.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/tasks_controller.rb",
+    "line_start": 85,
+    "line_end": 102,
+    "type": "design",
+    "title": "Duplicate serialization logic — serialize_task diverges from TaskSerializer",
+    "description": "The private serialize_task method duplicates what TaskSerializer already provides, but with different key naming (camelCase vs snake_case) and structure. This violates DRY and will cause the two representations to drift apart. Use TaskSerializer consistently across all actions.",
+    "confidence": "medium"
+  }
+]

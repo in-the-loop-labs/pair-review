@@ -1,0 +1,65 @@
+[
+  {
+    "file": "app/models/task.rb",
+    "line_start": 28,
+    "line_end": 30,
+    "type": "performance",
+    "title": "ILIKE search without database index will cause full table scans",
+    "description": "The search scope uses ILIKE with leading wildcards ('%query%') on title and description, but no database index supports this pattern. Standard B-tree indexes cannot accelerate leading-wildcard LIKE queries. As the tasks table grows, every search will scan the entire table. Consider adding a GIN index with the pg_trgm extension, or switching to PostgreSQL full-text search with a tsvector column.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/models/task.rb",
+    "line_start": 28,
+    "line_end": 33,
+    "type": "improvement",
+    "title": "Consider using pg_search gem instead of hand-rolled ILIKE queries",
+    "description": "The current search implementation uses raw ILIKE queries which lack relevance ranking, stemming, and stop word handling. The pg_search gem provides proper full-text search backed by PostgreSQL's tsvector with relevance ranking out of the box. This is a well-maintained gem that solves common search problems that ILIKE cannot address.",
+    "confidence": "medium"
+  },
+  {
+    "file": "app/models/task.rb",
+    "line_start": 28,
+    "line_end": 33,
+    "type": "code-style",
+    "title": "Raw SQL in scopes violates project's Active Record convention",
+    "description": "Both the search and by_status_text scopes use raw SQL strings (ILIKE and PostgreSQL-specific ::text casting). The CONTRIBUTING.md requires 'Active Record scopes (no raw SQL)'. Use Arel for the search scope (e.g., Task.arel_table[:title].matches(...)), and replace by_status_text with the existing .by_status enum scope which handles the conversion properly.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 25,
+    "line_end": 25,
+    "type": "performance",
+    "title": "Eager loading :notifications is unnecessary for the index view",
+    "description": "The includes(:project, :user, :notifications) loads all notifications for every task in the results, but the index view never displays notification data. This generates an unnecessary SQL query and loads objects into memory for no benefit. Remove :notifications from the includes. The :project include is also redundant since @project is already loaded.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 13,
+    "line_end": 23,
+    "type": "code-style",
+    "title": "Filter parameter names use inconsistent conventions",
+    "description": "The search parameters mix naming styles: params[:q] (short name), params[:status_filter] (with _filter suffix), and params[:priority] (bare name). Pick a consistent convention for all filter parameters — either all bare names, all with a prefix, or use a nested filter hash like params[:filter][:status].",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 8,
+    "line_end": 27,
+    "type": "design",
+    "title": "Search/filter logic should be in a model scope or service object",
+    "description": "The index action contains multiple conditional .where chains to build the search query. This business logic belongs in a model scope (e.g., Task.filter_by(params)) or a service object (TaskSearchService), following the project's convention of thin controllers. The controller should only call the scope and assign the result.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/models/task.rb",
+    "line_start": 28,
+    "line_end": 30,
+    "type": "bug",
+    "title": "Search scope doesn't handle nil input",
+    "description": "If Task.search(nil) is called, the query will interpolate nil into the LIKE pattern, producing unexpected results or an error. While the controller guards with params[:q].present?, the scope itself should be defensive. Add a guard clause to return all records or raise an ArgumentError when the query is nil or blank.",
+    "confidence": "medium"
+  }
+]

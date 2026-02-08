@@ -38,5 +38,55 @@
     "description": "The Project model has no length validation on the description text field, allowing arbitrarily large inputs.",
     "is_file_level": false,
     "confidence": "medium"
+  },
+  {
+    "file": "app/controllers/projects_controller.rb",
+    "line_start": 10,
+    "line_end": 10,
+    "type": "security",
+    "title": "Unbounded per_page parameter allows denial-of-service",
+    "description": "The per_page parameter is taken directly from user input with no upper bound. A request with per_page=1000000 would load an enormous result set into memory.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/projects_controller.rb",
+    "line_start": 81,
+    "line_end": 81,
+    "type": "security",
+    "title": "Unscoped Project.find exposes all projects",
+    "description": "set_project uses Project.find(params[:id]) which loads any project regardless of ownership. Any authenticated user can view any project.",
+    "is_file_level": false,
+    "confidence": "medium"
+  },
+  {
+    "file": "app/models/project.rb",
+    "line_start": 6,
+    "line_end": 6,
+    "type": "bug",
+    "title": "has_many :tasks references non-existent Task model",
+    "description": "The model declares has_many :tasks but no Task model or migration exists yet. This will cause errors if any code touches project.tasks.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/models/project.rb",
+    "line_start": 21,
+    "line_end": 21,
+    "type": "security",
+    "title": "LIKE wildcards in user input are not escaped",
+    "description": "The search_by_name scope interpolates the query into a LIKE pattern without escaping LIKE metacharacters (%, _). Users can inject wildcards.",
+    "is_file_level": false,
+    "confidence": "medium"
+  },
+  {
+    "file": "app/models/project.rb",
+    "line_start": 17,
+    "line_end": 18,
+    "type": "code-style",
+    "title": "Redundant scopes duplicate enum-generated methods",
+    "description": "Rails enum automatically generates Project.active and Project.archived scopes. The manually defined scopes are identical and shadow the auto-generated ones.",
+    "is_file_level": false,
+    "confidence": "medium"
   }
 ]

@@ -1,0 +1,101 @@
+[
+  {
+    "file": "app/views/comments/_comment.html.erb",
+    "line_start": 17,
+    "line_end": 17,
+    "type": "security",
+    "title": "Stored XSS vulnerability: comment body rendered as raw HTML via html_safe",
+    "description": "The template calls `format_comment_body(comment.body).html_safe`, which marks the entire output as safe HTML. Since `format_comment_body` in CommentsHelper performs regex substitutions on raw user input without any HTML escaping or sanitization, a malicious user can inject arbitrary JavaScript. For example, `<script>alert(document.cookie)</script>` in a comment body would execute in every viewer's browser. Use Rails' `sanitize` helper to allow only the generated formatting tags (strong, em, code, br) while stripping everything else.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/helpers/comments_helper.rb",
+    "line_start": 6,
+    "line_end": 15,
+    "type": "security",
+    "title": "Comment formatting helper does not escape HTML before processing",
+    "description": "The format_comment_body method takes raw user text and applies regex substitutions to insert HTML tags, but never calls html_escape or sanitize on the input first. This is the root cause of the XSS vulnerability in the comment partial. The fix is to HTML-escape the text as the very first step (using ERB::Util.html_escape) before applying the markdown-like regex transformations, so user-supplied angle brackets become harmless HTML entities.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/comments_controller.rb",
+    "line_start": 9,
+    "line_end": 22,
+    "type": "design",
+    "title": "Comment creation logic duplicated between web and API controllers",
+    "description": "The CommentsController#create and Api::V1::CommentsController#create contain nearly identical logic: build comment, assign user, save, enqueue TaskNotificationJob. The update and destroy actions also mirror each other. Per the project's CONTRIBUTING.md convention of using service objects for business logic, extract a CommentService that handles creation, notification dispatch, and side effects. Both controllers would then delegate to this service, reducing duplication and ensuring consistent behavior.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/comments_controller.rb",
+    "line_start": 11,
+    "line_end": 15,
+    "type": "security",
+    "title": "API comment index has no authorization check — any user can read any task's comments",
+    "description": "The index action returns all comments for a task without verifying the current user has access to that task or its project. Combined with set_task using `Task.find(params[:task_id])` (which ignores project scope), any authenticated user can enumerate comments on any task by guessing task IDs. Add `authorize @task, :show?` to verify access, and scope the task lookup through the project.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/comments_controller.rb",
+    "line_start": 48,
+    "line_end": 50,
+    "type": "security",
+    "title": "API controller looks up tasks globally instead of scoping through project",
+    "description": "The set_task method uses `Task.find(params[:task_id])`, which finds any task regardless of project. The route includes project_id but it's never used. This allows cross-project access to tasks and their comments. The web CommentsController correctly scopes via `@project.tasks.find(params[:task_id])`. Add a set_project method and scope the task lookup through the project for consistency and security.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/comments_controller.rb",
+    "line_start": 38,
+    "line_end": 42,
+    "type": "bug",
+    "title": "Deleting a comment does not update the parent task's updated_at timestamp",
+    "description": "When a comment is destroyed, the task's updated_at is not touched. Any caching, sorting by 'recently updated', or activity feeds that rely on task.updated_at will not reflect comment deletions (or additions). Add `touch: true` to the `belongs_to :task` in the Comment model so that creating, updating, or destroying a comment automatically updates the task's timestamp.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/comments_controller.rb",
+    "line_start": 12,
+    "line_end": 15,
+    "type": "performance",
+    "title": "No pagination on comment listing — loads all comments in a single response",
+    "description": "The API index loads all comments for a task and serializes them into one JSON response. For tasks with many comments this will be slow and memory-intensive. The web view (tasks/show) has the same issue. Add pagination with Kaminari or Pagy, accepting page/per_page parameters and including pagination metadata in the response.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/comments_controller.rb",
+    "line_start": 60,
+    "line_end": 71,
+    "type": "code-style",
+    "title": "Inline serialization violates project convention requiring serializer classes",
+    "description": "The serialize_comment method defines the JSON representation inline in the controller. The project's CONTRIBUTING.md requires API responses to use serializer classes. Extract this to a CommentSerializer class for reusability and consistency with project conventions.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/api/v1/comments_controller.rb",
+    "line_start": 68,
+    "line_end": 69,
+    "type": "code-style",
+    "title": "Inconsistent key casing: createdAt/updatedAt use camelCase instead of snake_case",
+    "description": "The serialization uses camelCase for createdAt and updatedAt, which is inconsistent with Rails snake_case conventions. While the existing TasksController API also uses this pattern, the codebase should standardize on one convention. Consider using a gem like olive_branch for automatic case conversion, or pick one convention and apply it consistently.",
+    "confidence": "medium"
+  },
+  {
+    "file": "app/controllers/comments_controller.rb",
+    "line_start": 9,
+    "line_end": 11,
+    "type": "code-style",
+    "title": "Missing authorize call on comment creation",
+    "description": "The create action does not call `authorize` on the comment, unlike the edit, update, and destroy actions. While the current CommentPolicy#create? returns true, skipping the check is inconsistent with other controllers in the project (TasksController calls authorize on every action). If the policy is later changed to restrict comment creation, this controller would bypass it.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/comments_controller.rb",
+    "line_start": 9,
+    "line_end": 22,
+    "type": "improvement",
+    "title": "No rate limiting on comment creation endpoints",
+    "description": "Neither the web nor API comment controller implements rate limiting. A user could spam thousands of comments, each triggering a TaskNotificationJob. Add throttling via Rack::Attack or a custom before_action that limits comment creation frequency per user.",
+    "confidence": "medium"
+  }
+]

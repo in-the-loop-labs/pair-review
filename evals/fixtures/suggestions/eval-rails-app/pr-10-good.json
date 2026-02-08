@@ -1,0 +1,83 @@
+[
+  {
+    "file": "config/initializers/sidekiq.rb",
+    "line_start": 5,
+    "line_end": 5,
+    "type": "security",
+    "title": "Hardcoded Redis password with production credentials in source code",
+    "description": "Line 5 assigns a constant REDIS_URL containing a plaintext password 'p4ssw0rd_pr0d' and a production-like hostname. This credential is committed to version control and visible to all repository collaborators. Even though ENV.fetch provides an override mechanism on lines 8 and 12, the hardcoded fallback still exposes the secret. Use Rails encrypted credentials or environment variables exclusively — remove the constant and use ENV.fetch('REDIS_URL') with no fallback, or default to redis://localhost:6379/0 for development.",
+    "confidence": "high"
+  },
+  {
+    "file": "config/initializers/cors.rb",
+    "line_start": 7,
+    "line_end": 7,
+    "type": "security",
+    "title": "CORS wildcard origin allows any website to call the API",
+    "description": "Setting origins '*' on line 7 permits cross-origin requests from any domain. While credentials: false on line 12 prevents cookie-based auth from being sent, this still allows malicious sites to probe API endpoints, exfiltrate data from unauthenticated routes, and makes future security changes risky (if credentials are ever enabled, the wildcard would allow full cross-origin session hijacking). Restrict to known frontend domains: ENV.fetch('CORS_ORIGINS', 'http://localhost:3000').split(',').",
+    "confidence": "high"
+  },
+  {
+    "file": "config/environments/production.rb",
+    "line_start": 21,
+    "line_end": 21,
+    "type": "security",
+    "title": "Debug-level logging in production leaks verbose internal details",
+    "description": "config.log_level = :debug on line 21 enables the most verbose logging tier in the production environment. This captures SQL queries with bind parameters (potentially including passwords), full request parameters, and framework internals. The volume also creates practical problems: log storage costs increase, log search becomes harder, and there is measurable performance overhead from generating debug-level messages. Use :info for standard production logging or :warn for quieter operation.",
+    "confidence": "high"
+  },
+  {
+    "file": "db/seeds.rb",
+    "line_start": 9,
+    "line_end": 16,
+    "type": "security",
+    "title": "Seed users created with weak hardcoded passwords",
+    "description": "The admin user (line 9-10) uses 'password123' and the demo user (lines 15-16) uses 'demo1234'. These are trivially guessable passwords that appear in common password lists. If seeds are run in a staging or production environment — even accidentally — they create accounts vulnerable to brute-force attacks. Use SecureRandom.hex(16) for generated passwords and print them to stdout, or read from environment variables.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/middleware/request_logger.rb",
+    "line_start": 19,
+    "line_end": 19,
+    "type": "security",
+    "title": "Authorization header logged in plaintext, exposing bearer tokens and credentials",
+    "description": "Line 19 captures env['HTTP_AUTHORIZATION'] into the request_info hash, and line 31 writes it to the Rails log. Authorization headers contain bearer tokens, API keys, or base64-encoded basic auth credentials. These appear in log files, log aggregation systems, and potentially error tracking services. Redact or remove this header from logging entirely.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/middleware/request_logger.rb",
+    "line_start": 1,
+    "line_end": 1,
+    "type": "code-style",
+    "title": "Missing frozen_string_literal comment required by project rubocop configuration",
+    "description": "This file lacks the '# frozen_string_literal: true' magic comment that .rubocop.yml enforces via Style/FrozenStringLiteralComment with EnforcedStyle: always. Every other .rb file in the project includes this comment. Add it as the second line after the SPDX license identifier.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/middleware/request_logger.rb",
+    "line_start": 8,
+    "line_end": 34,
+    "type": "code-style",
+    "title": "call method is 27 lines, exceeding the 15-line rubocop limit",
+    "description": "The call method spans 27 lines (8-34), nearly double the project's Metrics/MethodLength max of 15. Extract the request info hash construction (lines 12-25) into a private build_request_info method and the log formatting (line 31) into a separate method to bring each under the limit.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/middleware/request_logger.rb",
+    "line_start": 31,
+    "line_end": 31,
+    "type": "code-style",
+    "title": "Line is 202 characters, exceeding the 120-character rubocop limit",
+    "description": "The log message on line 31 is 202 characters — well over the Layout/LineLength max of 120 in .rubocop.yml. Break the string interpolation across multiple lines or build the message in a local variable before passing to Rails.logger.info.",
+    "confidence": "high"
+  },
+  {
+    "file": "db/migrate/20240401000001_add_performance_indexes.rb",
+    "line_start": 7,
+    "line_end": 8,
+    "type": "improvement",
+    "title": "Missing foreign key indexes on tasks.user_id and comments.user_id",
+    "description": "The migration adds composite indexes for tasks(project_id, status) and notifications(recipient_id, read) but does not index the user_id foreign key on either the tasks or comments tables. These columns are used in belongs_to associations (Task belongs_to :user, Comment belongs_to :user) and queried via scopes like assigned_to. Without indexes, joins and lookups on these columns require full table scans as data grows.",
+    "confidence": "high"
+  }
+]

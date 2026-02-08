@@ -48,5 +48,55 @@
     "description": "The update action uses inline begin/rescue blocks including a broad `rescue StandardError`, while the rest of the application uses rescue_from at the controller level. This is inconsistent and the StandardError rescue swallows unexpected errors.",
     "is_file_level": false,
     "confidence": "medium"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 28,
+    "line_end": 28,
+    "type": "bug",
+    "title": "Auto-assigning current_user overrides the Unassigned option",
+    "description": "The line @task.user ||= current_user always replaces a nil assignee with the current user, but the form provides an explicit Unassigned option. When a user selects Unassigned, this line silently overrides that choice.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 30,
+    "line_end": 40,
+    "type": "bug",
+    "title": "Priority auto-escalation silently overrides user selection",
+    "description": "Lines 30-40 override the user-submitted priority based on due-date heuristics. If a user explicitly selects low priority for a task due tomorrow, the controller silently changes it to high.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/tasks_controller.rb",
+    "line_start": 57,
+    "line_end": 62,
+    "type": "bug",
+    "title": "Audit log fires before save — logs events that may not happen",
+    "description": "The audit logging runs before @task.save. If validation fails, the log will contain a misleading 'Task created' entry for a task that was never persisted.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/views/projects/show.html.erb",
+    "line_start": 49,
+    "line_end": 49,
+    "type": "performance",
+    "title": "N+1 query in project show view",
+    "description": "The project show view queries tasks directly in the template without eager-loading, and accesses task.user&.name for each task, triggering a separate query per task.",
+    "is_file_level": false,
+    "confidence": "high"
+  },
+  {
+    "file": "app/views/projects/show.html.erb",
+    "line_start": 57,
+    "line_end": 57,
+    "type": "bug",
+    "title": "Status badge missing cancelled state",
+    "description": "The status badge logic handles completed and in_progress but falls through to warning for cancelled tasks, creating an inconsistency with other views.",
+    "is_file_level": false,
+    "confidence": "medium"
   }
 ]

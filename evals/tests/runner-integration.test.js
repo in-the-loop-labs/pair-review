@@ -98,7 +98,7 @@ describe('PR 1: clean baseline', () => {
 // Test: PR 2 — good suggestions produce high recall/precision
 // ===========================================================================
 describe('PR 2: good suggestions', () => {
-  it('matches all 4 ground truth issues with high recall and precision', async () => {
+  it('matches all 9 ground truth issues with high recall and precision', async () => {
     const config = buildConfig([2]);
     const provider = fixtureProvider({ 2: 'pr-02-good.json' });
 
@@ -110,12 +110,12 @@ describe('PR 2: good suggestions', () => {
     const pr2 = result.repos['eval-rails-app'].prs[2];
     expect(pr2.error).toBeUndefined();
 
-    // 4 ground truth issues, 4 suggestions
-    expect(pr2.groundTruthCount).toBe(4);
-    expect(pr2.suggestionsCount).toBe(4);
+    // 9 ground truth issues, 9 suggestions
+    expect(pr2.groundTruthCount).toBe(9);
+    expect(pr2.suggestionsCount).toBe(9);
 
-    // All 4 should match
-    expect(pr2.matchResults.matches).toHaveLength(4);
+    // All 9 should match
+    expect(pr2.matchResults.matches).toHaveLength(9);
     expect(pr2.matchResults.misses).toHaveLength(0);
     expect(pr2.matchResults.falsePositives).toHaveLength(0);
 
@@ -123,7 +123,7 @@ describe('PR 2: good suggestions', () => {
     expect(pr2.scores.overall.recall).toBe(1);
     expect(pr2.scores.overall.precision).toBe(1);
     expect(pr2.scores.overall.f1).toBe(1);
-    expect(pr2.scores.overall.totalMatches).toBe(4);
+    expect(pr2.scores.overall.totalMatches).toBe(9);
     expect(pr2.scores.overall.totalMisses).toBe(0);
     expect(pr2.scores.overall.totalFalsePositives).toBe(0);
 
@@ -141,7 +141,7 @@ describe('PR 2: good suggestions', () => {
 // Test: PR 3 — good suggestions produce high recall/precision
 // ===========================================================================
 describe('PR 3: good suggestions', () => {
-  it('matches all 5 ground truth issues with high recall and precision', async () => {
+  it('matches all 10 ground truth issues with high recall and precision', async () => {
     const config = buildConfig([3]);
     const provider = fixtureProvider({ 3: 'pr-03-good.json' });
 
@@ -153,12 +153,12 @@ describe('PR 3: good suggestions', () => {
     const pr3 = result.repos['eval-rails-app'].prs[3];
     expect(pr3.error).toBeUndefined();
 
-    // 5 ground truth issues, 5 suggestions
-    expect(pr3.groundTruthCount).toBe(5);
-    expect(pr3.suggestionsCount).toBe(5);
+    // 10 ground truth issues, 10 suggestions
+    expect(pr3.groundTruthCount).toBe(10);
+    expect(pr3.suggestionsCount).toBe(10);
 
-    // All 5 should match
-    expect(pr3.matchResults.matches).toHaveLength(5);
+    // All 10 should match
+    expect(pr3.matchResults.matches).toHaveLength(10);
     expect(pr3.matchResults.misses).toHaveLength(0);
     expect(pr3.matchResults.falsePositives).toHaveLength(0);
 
@@ -166,7 +166,7 @@ describe('PR 3: good suggestions', () => {
     expect(pr3.scores.overall.recall).toBe(1);
     expect(pr3.scores.overall.precision).toBe(1);
     expect(pr3.scores.overall.f1).toBe(1);
-    expect(pr3.scores.overall.totalMatches).toBe(5);
+    expect(pr3.scores.overall.totalMatches).toBe(10);
     expect(pr3.scores.overall.totalMisses).toBe(0);
     expect(pr3.scores.overall.totalFalsePositives).toBe(0);
 
@@ -191,8 +191,8 @@ describe('PR 3: poor suggestions', () => {
     const pr3 = result.repos['eval-rails-app'].prs[3];
     expect(pr3.error).toBeUndefined();
 
-    // 5 ground truth issues, 3 poor suggestions
-    expect(pr3.groundTruthCount).toBe(5);
+    // 10 ground truth issues, 3 poor suggestions
+    expect(pr3.groundTruthCount).toBe(10);
     expect(pr3.suggestionsCount).toBe(3);
 
     // Most ground truth issues should be missed
@@ -252,12 +252,12 @@ describe('Multi-PR run (PRs 1-3)', () => {
     const repoOverall = repo.overall;
     expect(repoOverall).not.toBeNull();
 
-    // Combined ground truth: 0 + 4 + 5 = 9
-    // Combined suggestions: 0 + 4 + 5 = 9
-    // Combined matches: 0 + 4 + 5 = 9
-    expect(repoOverall.overall.totalGroundTruth).toBe(9);
-    expect(repoOverall.overall.totalSuggestions).toBe(9);
-    expect(repoOverall.overall.totalMatches).toBe(9);
+    // Combined ground truth: 0 + 9 + 10 = 19
+    // Combined suggestions: 0 + 9 + 10 = 19
+    // Combined matches: 0 + 9 + 10 = 19
+    expect(repoOverall.overall.totalGroundTruth).toBe(19);
+    expect(repoOverall.overall.totalSuggestions).toBe(19);
+    expect(repoOverall.overall.totalMatches).toBe(19);
     expect(repoOverall.overall.totalMisses).toBe(0);
     expect(repoOverall.overall.totalFalsePositives).toBe(0);
 
@@ -268,8 +268,8 @@ describe('Multi-PR run (PRs 1-3)', () => {
 
     // Top-level overall should match repo overall (only one repo)
     expect(result.overall).not.toBeNull();
-    expect(result.overall.overall.totalGroundTruth).toBe(9);
-    expect(result.overall.overall.totalMatches).toBe(9);
+    expect(result.overall.overall.totalGroundTruth).toBe(19);
+    expect(result.overall.overall.totalMatches).toBe(19);
     expect(result.overall.overall.recall).toBe(1);
     expect(result.overall.overall.precision).toBe(1);
 
@@ -297,10 +297,10 @@ describe('Multi-PR run (PRs 1-3)', () => {
     const repo = result.repos['eval-rails-app'];
     const repoOverall = repo.overall;
 
-    // PR 2 contributes 4 matches from 4 ground truth
-    // PR 3 poor contributes few matches from 5 ground truth
-    // Total ground truth: 0 + 4 + 5 = 9
-    expect(repoOverall.overall.totalGroundTruth).toBe(9);
+    // PR 2 contributes 9 matches from 9 ground truth
+    // PR 3 poor contributes few matches from 10 ground truth
+    // Total ground truth: 0 + 9 + 10 = 19
+    expect(repoOverall.overall.totalGroundTruth).toBe(19);
 
     // Overall recall should be between 0 and 1 (PR 2 is perfect, PR 3 is poor)
     expect(repoOverall.overall.recall).toBeGreaterThan(0);

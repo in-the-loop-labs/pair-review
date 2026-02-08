@@ -1,0 +1,74 @@
+[
+  {
+    "file": "app/controllers/dashboard_controller.rb",
+    "line_start": 9,
+    "line_end": 14,
+    "type": "performance",
+    "title": "Loading all tasks into memory instead of using aggregate queries",
+    "description": "flat_map(&:tasks) on line 9 loads every task record for every project into Ruby memory, then lines 11-14 iterate the full array multiple times to count by status. This is O(n*m) memory and CPU where n is projects and m is tasks per project. Use ActiveRecord aggregate queries instead: Task.where(project: @projects).group(:status).count returns a hash of counts from a single SQL GROUP BY query without instantiating any model objects.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/dashboard_controller.rb",
+    "line_start": 17,
+    "line_end": 17,
+    "type": "bug",
+    "title": "Division by zero when user has no tasks produces NaN in the view",
+    "description": "@completed_tasks.to_f / @total_tasks will produce NaN when @total_tasks is 0 (since 0.0/0 is NaN in Ruby). This happens for new users with no tasks. The same issue exists on line 56 for per-project stats. Guard with a zero check: @total_tasks.zero? ? 0.0 : (@completed_tasks.to_f / @total_tasks * 100).round(1).",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/dashboard_controller.rb",
+    "line_start": 21,
+    "line_end": 25,
+    "type": "bug",
+    "title": "Date.today ignores Rails timezone configuration",
+    "description": "Date.today (lines 21, 25, 57) uses the server's system timezone rather than Rails' configured Time.zone. If the app is configured for US Eastern but the server runs UTC, date boundaries will be wrong near midnight, causing tasks to be miscounted as overdue or not-this-week. The Task model's own scopes correctly use Date.current — this controller should do the same.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/dashboard_controller.rb",
+    "line_start": 5,
+    "line_end": 60,
+    "type": "design",
+    "title": "55-line controller action should be extracted to a presenter or service",
+    "description": "The entire index action is data aggregation, percentage computation, and statistics assembly — none of which is controller-level routing/request handling. This violates the project's convention of thin controllers with business logic in service objects. Extract a DashboardPresenter or DashboardService class that computes all stats, making the controller a 2-3 line delegation.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/dashboard_controller.rb",
+    "line_start": 37,
+    "line_end": 40,
+    "type": "performance",
+    "title": "Separate database query for recent activity when tasks are already in memory",
+    "description": "Lines 37-40 issue a new Task.where(...) query for recent activity, but all tasks are already loaded into memory from line 9's flat_map. This is a redundant round-trip to the database. Either reuse the in-memory collection (all_tasks.sort_by(&:updated_at).reverse.first(10)) or refactor the entire method to use targeted database queries throughout.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/dashboard_controller.rb",
+    "line_start": 56,
+    "line_end": 56,
+    "type": "bug",
+    "title": "Per-project completion rate also divides by zero for empty projects",
+    "description": "Same division-by-zero issue as line 17, but for individual project stats. A project with no tasks will produce NaN% in the project breakdown table. Add a zero guard: total.zero? ? 0.0 : (completed.to_f / total * 100).round(1).",
+    "confidence": "high"
+  },
+  {
+    "file": "app/controllers/dashboard_controller.rb",
+    "line_start": 44,
+    "line_end": 44,
+    "type": "code-style",
+    "title": "Magic numbers for date ranges should be named constants",
+    "description": "The literal 30.days.ago on line 44 and the 7 on line 21 are magic numbers with no named constant or configuration. Define class-level constants like WEEKLY_WINDOW = 7.days and MONTHLY_WINDOW = 30.days for discoverability and easy maintenance.",
+    "confidence": "medium"
+  },
+  {
+    "file": "app/views/dashboard/index.html.erb",
+    "line_start": 118,
+    "line_end": 118,
+    "type": "bug",
+    "title": "Timezone-unaware date conversion in recent activity display",
+    "description": "task.updated_at.to_date converts the timestamp using Ruby's system timezone, not Rails' configured Time.zone. A task updated at 11pm Eastern (4am UTC next day) will show tomorrow's date. Use task.updated_at.in_time_zone.to_date or Rails' l() helper for timezone-aware formatting.",
+    "confidence": "high"
+  }
+]

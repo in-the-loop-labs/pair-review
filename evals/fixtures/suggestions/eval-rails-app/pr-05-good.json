@@ -1,0 +1,74 @@
+[
+  {
+    "file": "app/jobs/task_notification_job.rb",
+    "line_start": 8,
+    "line_end": 9,
+    "type": "bug",
+    "title": "Task.find will raise RecordNotFound if task is deleted before job runs",
+    "description": "The job uses Task.find(task_id) without rescuing ActiveRecord::RecordNotFound. Since background jobs run asynchronously, the task may have been deleted between when the job was enqueued and when it executes. Use Task.find_by(id: task_id) with an early return, or add discard_on ActiveRecord::RecordNotFound at the class level.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/jobs/task_notification_job.rb",
+    "line_start": 4,
+    "line_end": 5,
+    "type": "improvement",
+    "title": "Job lacks retry_on and discard_on configuration",
+    "description": "There is no explicit error handling or retry strategy configured on this job. If notification creation or delivery fails, the job relies entirely on Sidekiq's default retry behavior. Add retry_on for transient failures (e.g., network errors) and discard_on for permanent failures (e.g., RecordNotFound) to make the job's behavior explicit and observable.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/jobs/task_notification_job.rb",
+    "line_start": 11,
+    "line_end": 53,
+    "type": "design",
+    "title": "Business logic belongs in a service object, not the job",
+    "description": "The job contains recipient determination, message formatting, and delivery logic — all business logic that CONTRIBUTING.md says should live in service objects. The job should be a thin orchestrator: call a NotificationService to build and deliver notifications, then handle only job-level concerns like retries and error logging.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/jobs/task_notification_job.rb",
+    "line_start": 25,
+    "line_end": 25,
+    "type": "performance",
+    "title": "User.all sends notifications to every user in the system",
+    "description": "The status_changed branch notifies User.all instead of only the project's members. This means every registered user receives a notification for every status change, regardless of whether they have any involvement with the project. Replace with a scoped query for project members.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/models/task.rb",
+    "line_start": 31,
+    "line_end": 38,
+    "type": "bug",
+    "title": "Callback can enqueue duplicate notification jobs on rapid saves",
+    "description": "The after_save callback enqueues a job on every save where user_id or status changed, with no deduplication. If a task is saved multiple times in quick succession (e.g., separate attribute updates in the same request), duplicate notification jobs are enqueued. Consider tracking enqueued events or adding idempotency checks in the job.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/jobs/task_notification_job.rb",
+    "line_start": 58,
+    "line_end": 72,
+    "type": "code-style",
+    "title": "Three identical private methods with inconsistent names",
+    "description": "deliver_message, send_notification, and notify_user all perform the exact same operation (update read: false and log). This violates DRY and uses inconsistent naming that makes it unclear they're doing the same thing. Consolidate into a single method like deliver_notification.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/jobs/due_date_reminder_job.rb",
+    "line_start": 14,
+    "line_end": 20,
+    "type": "bug",
+    "title": "Due date reminders will duplicate if the job runs more than once per day",
+    "description": "There is no check for whether a due_date_reminder notification already exists for a given task today. If the job is scheduled via cron and runs multiple times (or is manually triggered), users will receive duplicate reminders. Add an existence check before creating the notification.",
+    "confidence": "high"
+  },
+  {
+    "file": "app/models/notification.rb",
+    "line_start": 4,
+    "line_end": 8,
+    "type": "design",
+    "title": "Notification model lacks validations and scopes",
+    "description": "The model has only associations — no validations on the action field, no scopes for common queries (unread, for_user, recent). Other models in the project (Task, Project) define rich scopes. Add validates :action, inclusion: { in: [...] } and scopes like scope :unread, -> { where(read: false) }.",
+    "confidence": "medium"
+  }
+]
