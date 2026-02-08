@@ -271,24 +271,25 @@ class CodexProvider extends AIProvider {
         } else {
           // Regex extraction failed, try LLM-based extraction as fallback
           logger.warn(`${levelPrefix} Regex extraction failed: ${parsed.error}`);
-          logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
+          const llmFallbackInput = parsed.textContent || stdout;
+          logger.info(`${levelPrefix} LLM fallback input length: ${llmFallbackInput.length} characters (${parsed.textContent ? 'text content' : 'raw stdout'})`);
           logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
 
           // Use async IIFE to handle the async LLM extraction
           (async () => {
             try {
-              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess });
+              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess });
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);
               } else {
                 logger.warn(`${levelPrefix} LLM extraction fallback also failed: ${llmExtracted.error}`);
-                logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-                settle(resolve, { raw: stdout, parsed: false });
+                logger.info(`${levelPrefix} Raw response preview: ${llmFallbackInput.substring(0, 500)}...`);
+                settle(resolve, { raw: llmFallbackInput, parsed: false });
               }
             } catch (llmError) {
               logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
-              settle(resolve, { raw: stdout, parsed: false });
+              settle(resolve, { raw: llmFallbackInput, parsed: false });
             }
           })();
         }
@@ -373,9 +374,10 @@ class CodexProvider extends AIProvider {
           return extracted;
         }
 
-        // If no JSON found, return the raw message
+        // If no JSON found, return with textContent so the caller can
+        // pass it (not raw JSONL stdout) to the LLM extraction fallback
         logger.warn(`${levelPrefix} Agent message is not JSON, treating as raw text`);
-        return { success: false, error: 'Agent message is not valid JSON' };
+        return { success: false, error: 'Agent message is not valid JSON', textContent: agentMessageText };
       }
 
       // No agent message found, try extracting JSON directly from stdout
