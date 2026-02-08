@@ -10,8 +10,10 @@
  * Text content is extracted from message_end events which contain the
  * complete assistant message with content blocks.
  *
- * NOTE: Pi has no built-in models configured. Models must be
- * specified via config.providers.pi.models in ~/.pair-review/config.json
+ * Pi provides built-in analysis modes (default, multi-model) and supports
+ * additional models via config.providers.pi.models in ~/.pair-review/config.json.
+ * User-configured models can use `provider/model` format (e.g., 'google/gemini-2.5-flash')
+ * for cross-provider switching, which translates to `--provider <provider> --model <model>`.
  */
 
 const path = require('path');
@@ -25,20 +27,69 @@ const { StreamParser, parsePiLine, createPiLineParser } = require('./stream-pars
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
+// Path to the bundled Pi task extension, which provides a generic subagent tool
+// for delegating work to isolated pi subprocesses during analysis
+const TASK_EXTENSION_DIR = path.join(__dirname, '..', '..', '.pi', 'extensions', 'task');
+
+// Path to the review model guidance skill, which teaches Pi to select
+// appropriate models for different review tasks (bug finding, security, etc.)
+const REVIEW_SKILL_PATH = path.join(__dirname, '..', '..', '.pi', 'skills', 'review-model-guidance', 'SKILL.md');
+
+// Path to the review roulette skill, which runs three random premium models
+// in parallel for diverse multi-perspective code review
+const ROULETTE_SKILL_PATH = path.join(__dirname, '..', '..', '.pi', 'skills', 'review-roulette', 'SKILL.md');
+
 /**
  * Pi model definitions
  *
- * No built-in models - must be configured via config.json
- * Example config:
- *   "providers": {
- *     "pi": {
- *       "models": [
- *         { "id": "gemini-2.5-flash", "tier": "balanced", "default": true }
- *       ]
- *     }
- *   }
+ * Pi delegates model selection to the user's Pi configuration (~/.pi/).
+ * These entries define analysis modes rather than specific models:
+ * - 'default' uses whatever model the user has configured as their Pi default
+ * - 'multi-model' loads the review guidance skill, teaching Pi to autonomously
+ *    switch between models for different review tasks
+ * - 'review-roulette' loads the roulette skill, running three random premium
+ *    models in parallel for diverse multi-perspective review
+ *
+ * Users can also add specific models via config.json providers.pi.models.
+ * Use `provider/model` format in cli_model for cross-provider switching
+ * (e.g., 'google/gemini-2.5-flash' becomes --provider google --model gemini-2.5-flash).
  */
-const PI_MODELS = [];
+const PI_MODELS = [
+  {
+    id: 'default',
+    cli_model: null,
+    name: 'Default',
+    tier: 'balanced',
+    tagline: 'Your Pi Default',
+    description: 'Uses your configured Pi default model',
+    badge: 'Default',
+    badgeClass: 'badge-recommended',
+    default: true
+  },
+  {
+    id: 'multi-model',
+    cli_model: null,
+    name: 'Multi-Model',
+    tier: 'thorough',
+    tagline: 'Smart Routing',
+    description: 'Pi autonomously selects the best model for each review task',
+    badge: 'Smart Routing',
+    badgeClass: 'badge-power',
+    extra_args: ['--skill', REVIEW_SKILL_PATH]
+  },
+  {
+    id: 'review-roulette',
+    cli_model: null,
+    name: 'Review Roulette',
+    tier: 'thorough',
+    tagline: '3× Reasoning',
+    description: 'Three random premium models review your changes in parallel',
+    badge: 'Roulette',
+    badgeClass: 'badge-power',
+    extra_args: ['--skill', ROULETTE_SKILL_PATH],
+    env: { PI_TASK_MAX_DEPTH: '2' }
+  }
+];
 
 /**
  * Extract text from assistant content, handling both array-of-blocks and
@@ -70,7 +121,7 @@ function extractAssistantText(content, seenTexts) {
 
 class PiProvider extends AIProvider {
   /**
-   * @param {string} model - Model identifier (e.g., 'gemini-2.5-flash')
+   * @param {string|null} [model='default'] - Model identifier or null/undefined for default mode
    * @param {Object} configOverrides - Config overrides from providers config
    * @param {string} configOverrides.command - Custom CLI command
    * @param {string[]} configOverrides.extra_args - Additional CLI arguments
@@ -78,16 +129,18 @@ class PiProvider extends AIProvider {
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
   constructor(model, configOverrides = {}) {
-    // Pi has no built-in default model - must be configured
-    if (!model) {
-      throw new Error(
-        'Pi requires a model to be configured. ' +
-        'Add models to providers.pi.models in ~/.pair-review/config.json. ' +
-        'See config.example.json for examples.'
-      );
-    }
+    super(model || 'default');
 
-    super(model);
+    // Store config overrides early so _resolveCliModelArgs can use them
+    this.configOverrides = configOverrides;
+
+    // Resolve model configuration from built-in definitions and config overrides
+    const resolvedModel = model || 'default';
+    const builtIn = PI_MODELS.find(m => m.id === resolvedModel);
+    const configModel = configOverrides.models?.find(m => m.id === resolvedModel);
+
+    // Conditionally include --model (null = suppress, let Pi use its default)
+    const cliModelArgs = this._resolveCliModelArgs(resolvedModel);
 
     // Command precedence: ENV > config > default
     const envCmd = process.env.PAIR_REVIEW_PI_CMD;
@@ -108,6 +161,10 @@ class PiProvider extends AIProvider {
     // Enabled tools: read, bash, grep, find, ls
     // Excluded tools: edit, write (file modification)
     //
+    // Task extension: The `task` tool is loaded via `-e` as a Pi extension,
+    // not via --tools. Subtasks spawned by the extension inherit the same
+    // tool restrictions from the parent process environment.
+    //
     // LIMITATION: The `bash` tool grants arbitrary shell command execution.
     // Unlike Claude (Bash(git diff*) prefixes) or Copilot (shell(git diff) prefixes),
     // Pi does not support fine-grained bash command restrictions. The model could
@@ -126,34 +183,54 @@ class PiProvider extends AIProvider {
     // pi -p --mode json --model <model> --tools read,bash,grep,find,ls <prompt-via-stdin>
     // -p: Non-interactive mode (process prompt and exit)
     // --mode json: Output JSONL events
-    // --model: Specify the model
-    // --tools: Enable read-only tools for Level 2/3 analysis (excludes edit,write for safety)
-    // --no-session: Don't save session (ephemeral analysis)
+    // --model: Specify the model (omitted when cli_model is null to use Pi's default)
+    // --tools: Enable read-only tools for Level 2/3 analysis (excludes edit,write for safety).
+    //          The task extension is loaded separately via `-e` (not part of --tools).
+    // --no-session: Each pi invocation is an ephemeral analysis — there's no need to
+    //               persist session state between runs. Set PAIR_REVIEW_PI_SESSION=1
+    //               to enable session saving for debugging (sessions saved to ~/.pi/sessions/).
+    // --no-skills: Skills are disabled by default to keep runs deterministic. A skill can
+    //              still be loaded via `--skill` in model-specific `extra_args` if needed.
 
-    // Build args: base args + provider extra_args + model extra_args
+    // Build args: base args + built-in extra_args + provider extra_args + model extra_args
     // In yolo mode, omit --tools entirely to allow all tools (including edit, write)
+    // The task extension is loaded to give the model a subagent tool for delegating
+    // work to isolated subprocesses, preserving the main context window.
+    // --no-extensions prevents auto-discovery of other extensions.
+    // --no-skills and --no-prompt-templates keep the subprocess focused.
+    const sessionArgs = process.env.PAIR_REVIEW_PI_SESSION ? [] : ['--no-session'];
     let baseArgs;
     if (configOverrides.yolo) {
-      baseArgs = ['-p', '--mode', 'json', '--model', model, '--no-session'];
+      baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, ...sessionArgs,
+        '--no-extensions', '--no-skills', '--no-prompt-templates',
+        '-e', TASK_EXTENSION_DIR];
     } else {
-      baseArgs = ['-p', '--mode', 'json', '--model', model, '--tools', 'read,bash,grep,find,ls', '--no-session'];
+      baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, '--tools', 'read,bash,grep,find,ls', ...sessionArgs,
+        '--no-extensions', '--no-skills', '--no-prompt-templates',
+        '-e', TASK_EXTENSION_DIR];
     }
+    const builtInArgs = builtIn?.extra_args || [];
     const providerArgs = configOverrides.extra_args || [];
-    const modelConfig = configOverrides.models?.find(m => m.id === model);
-    const modelArgs = modelConfig?.extra_args || [];
+    const modelArgs = configModel?.extra_args || [];
 
-    // Merge env: provider env + model env
+    // PI_CMD tells the task extension how to invoke pi for subtasks.
+    // This is essential when pi is invoked through a wrapper (e.g., 'devx pi --').
+    // Merge env: defaults → built-in model → provider config → per-model config.
+    // Later entries override earlier ones, so model-specific settings (e.g.,
+    // review-roulette's PI_TASK_MAX_DEPTH=2) take precedence over defaults.
     this.extraEnv = {
+      PI_TASK_MAX_DEPTH: '1',
+      ...(builtIn?.env || {}),
       ...(configOverrides.env || {}),
-      ...(modelConfig?.env || {})
+      ...(configModel?.env || {}),
+      PI_CMD: piCmd,
     };
 
     // Store base command and args (prompt added in execute)
     this.piCmd = piCmd;
-    this.baseArgs = [...baseArgs, ...providerArgs, ...modelArgs];
+    this.baseArgs = [...baseArgs, ...builtInArgs, ...providerArgs, ...modelArgs];
 
-    // Store config overrides for getExtractionConfig to use
-    this.configOverrides = configOverrides;
+    // configOverrides already stored at top of constructor for _resolveCliModelArgs
   }
 
   /**
@@ -194,6 +271,7 @@ class PiProvider extends AIProvider {
       });
 
       const pid = pi.pid;
+      logger.debug(`${levelPrefix} Pi CLI command: ${fullCommand} ${fullArgs.join(' ')}`);
       logger.info(`${levelPrefix} Spawned Pi CLI process: PID ${pid}`);
 
       // Register process for cancellation tracking if analysisId provided
@@ -597,6 +675,31 @@ class PiProvider extends AIProvider {
   }
 
   /**
+   * Resolve the --model (and optionally --provider) CLI arguments for a given model ID.
+   * Checks config model overrides, then built-in definitions, then falls back to the raw ID.
+   * Returns an empty array when cli_model is null (Pi uses its configured default).
+   * Supports `provider/model` format (e.g., 'google/gemini-2.5-flash') which produces
+   * ['--provider', 'google', '--model', 'gemini-2.5-flash'] for cross-provider switching.
+   *
+   * @param {string|null} modelId - Model identifier
+   * @returns {string[]} CLI arguments (e.g., ['--model', 'x'], ['--provider', 'p', '--model', 'm'], or [])
+   */
+  _resolveCliModelArgs(modelId) {
+    const builtIn = PI_MODELS.find(m => m.id === modelId);
+    const configModel = this.configOverrides?.models?.find(m => m.id === modelId);
+    const resolvedCliModel = configModel?.cli_model !== undefined
+      ? configModel.cli_model
+      : (builtIn?.cli_model !== undefined ? builtIn.cli_model : modelId);
+    if (resolvedCliModel === null) return [];
+    // Support provider/model format (e.g., 'google/gemini-2.5-flash')
+    if (typeof resolvedCliModel === 'string' && resolvedCliModel.includes('/')) {
+      const [provider, ...rest] = resolvedCliModel.split('/');
+      return ['--provider', provider, '--model', rest.join('/')];
+    }
+    return ['--model', resolvedCliModel];
+  }
+
+  /**
    * Build args for Pi CLI execution, applying provider and model extra_args.
    * This ensures consistent arg construction for both execute() and getExtractionConfig().
    *
@@ -604,14 +707,18 @@ class PiProvider extends AIProvider {
    * @returns {string[]} Complete args array for the CLI
    */
   buildArgsForModel(model) {
-    // Base args for pi non-interactive JSON mode (extraction only -- no tools needed)
-    const baseArgs = ['-p', '--mode', 'json', '--model', model, '--no-tools', '--no-session'];
-    // Provider-level extra_args (from configOverrides)
-    const providerArgs = this.configOverrides?.extra_args || [];
-    // Model-specific extra_args (from the model config for the given model)
-    const modelConfig = this.configOverrides?.models?.find(m => m.id === model);
-    const modelArgs = modelConfig?.extra_args || [];
+    const cliModelArgs = this._resolveCliModelArgs(model);
 
+    // Note: built-in extra_args (e.g., --skill for multi-model) are intentionally
+    // excluded for extraction. Extraction is a simple JSON-parsing task that doesn't
+    // need skills or other analysis-specific configuration.
+
+    // Base args for pi non-interactive JSON mode (extraction only -- no tools needed)
+    const sessionArgs = process.env.PAIR_REVIEW_PI_SESSION ? [] : ['--no-session'];
+    const baseArgs = ['-p', '--mode', 'json', ...cliModelArgs, '--no-tools', ...sessionArgs];
+    const configModel = this.configOverrides?.models?.find(m => m.id === model);
+    const providerArgs = this.configOverrides?.extra_args || [];
+    const modelArgs = configModel?.extra_args || [];
     return [...baseArgs, ...providerArgs, ...modelArgs];
   }
 
@@ -676,6 +783,8 @@ class PiProvider extends AIProvider {
         shell: useShell
       });
 
+      logger.debug(`Pi CLI spawn: ${command} ${args.join(' ')}`);
+
       let stdout = '';
       let settled = false;
 
@@ -728,8 +837,8 @@ class PiProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    // No built-in default - must be configured via config.json
-    return null;
+    const defaultModel = PI_MODELS.find(m => m.default);
+    return defaultModel ? defaultModel.id : null;
   }
 
   static getInstallInstructions() {

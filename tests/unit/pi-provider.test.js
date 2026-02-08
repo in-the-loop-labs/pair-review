@@ -56,6 +56,7 @@ describe('PiProvider', () => {
     vi.clearAllMocks();
     // Reset environment for each test
     delete process.env.PAIR_REVIEW_PI_CMD;
+    delete process.env.PAIR_REVIEW_PI_SESSION;
   });
 
   afterEach(() => {
@@ -72,14 +73,15 @@ describe('PiProvider', () => {
       expect(PiProvider.getProviderId()).toBe('pi');
     });
 
-    it('should return null as default model (requires config)', () => {
-      expect(PiProvider.getDefaultModel()).toBe(null);
+    it('should return default as the default model', () => {
+      expect(PiProvider.getDefaultModel()).toBe('default');
     });
 
-    it('should return empty models array (requires config)', () => {
+    it('should return built-in model definitions', () => {
       const models = PiProvider.getModels();
-      expect(Array.isArray(models)).toBe(true);
-      expect(models).toHaveLength(0);
+      expect(models.length).toBeGreaterThanOrEqual(2);
+      expect(models.find(m => m.id === 'default')).toBeDefined();
+      expect(models.find(m => m.id === 'multi-model')).toBeDefined();
     });
 
     it('should return install instructions with pi-mono', () => {
@@ -90,12 +92,16 @@ describe('PiProvider', () => {
   });
 
   describe('constructor', () => {
-    it('should throw error when no model provided', () => {
-      expect(() => new PiProvider()).toThrow('Pi requires a model');
+    it('should create instance with default model when no model provided', () => {
+      const provider = new PiProvider();
+      expect(provider.model).toBe('default');
+      expect(provider.baseArgs).not.toContain('--model');
     });
 
-    it('should throw error with null model', () => {
-      expect(() => new PiProvider(null)).toThrow('Pi requires a model');
+    it('should create instance with default model when null model provided', () => {
+      const provider = new PiProvider(null);
+      expect(provider.model).toBe('default');
+      expect(provider.baseArgs).not.toContain('--model');
     });
 
     it('should create instance with specified model', () => {
@@ -132,6 +138,11 @@ describe('PiProvider', () => {
       expect(provider.baseArgs).toContain('--tools');
       expect(provider.baseArgs).toContain('read,bash,grep,find,ls');
       expect(provider.baseArgs).toContain('--no-session');
+      // Task extension loaded, auto-discovery disabled
+      expect(provider.baseArgs).toContain('-e');
+      expect(provider.baseArgs).toContain('--no-extensions');
+      expect(provider.baseArgs).toContain('--no-skills');
+      expect(provider.baseArgs).toContain('--no-prompt-templates');
     });
 
     it('should merge provider extra_args from config', () => {
@@ -168,11 +179,19 @@ describe('PiProvider', () => {
       expect(provider.piCmd).toBe('/env/pi');
     });
 
+    it('should set PI_CMD in extraEnv to the resolved pi command', () => {
+      process.env.PAIR_REVIEW_PI_CMD = '/custom/pi';
+      const provider = new PiProvider('test-model');
+      expect(provider.extraEnv.PI_CMD).toBe('/custom/pi');
+    });
+
     it('should merge env from provider config', () => {
       const provider = new PiProvider('test-model', {
         env: { GEMINI_API_KEY: 'test-key' }
       });
-      expect(provider.extraEnv).toEqual({ GEMINI_API_KEY: 'test-key' });
+      expect(provider.extraEnv).toMatchObject({ GEMINI_API_KEY: 'test-key' });
+      // PI_CMD is always set for the task extension
+      expect(provider.extraEnv).toHaveProperty('PI_CMD', 'pi');
     });
 
     it('should merge model-specific env over provider env', () => {
@@ -186,6 +205,18 @@ describe('PiProvider', () => {
       expect(provider.extraEnv.VAR2).toBe('extra');
     });
 
+    it('should omit --no-session when PAIR_REVIEW_PI_SESSION is set', () => {
+      process.env.PAIR_REVIEW_PI_SESSION = '1';
+      const provider = new PiProvider('test-model');
+      expect(provider.baseArgs).not.toContain('--no-session');
+    });
+
+    it('should include --no-session by default', () => {
+      delete process.env.PAIR_REVIEW_PI_SESSION;
+      const provider = new PiProvider('test-model');
+      expect(provider.baseArgs).toContain('--no-session');
+    });
+
     it('should omit --tools in yolo mode (all tools permitted)', () => {
       const provider = new PiProvider('test-model', { yolo: true });
       expect(provider.baseArgs).toContain('-p');
@@ -196,6 +227,10 @@ describe('PiProvider', () => {
       expect(provider.baseArgs).toContain('--no-session');
       expect(provider.baseArgs).not.toContain('--tools');
       expect(provider.baseArgs).not.toContain('read,bash,grep,find,ls');
+      expect(provider.baseArgs).toContain('-e');
+      expect(provider.baseArgs).toContain('--no-extensions');
+      expect(provider.baseArgs).toContain('--no-skills');
+      expect(provider.baseArgs).toContain('--no-prompt-templates');
     });
 
     it('should include --tools in non-yolo mode (default)', () => {
@@ -217,6 +252,60 @@ describe('PiProvider', () => {
       });
       expect(provider.baseArgs).not.toContain('--tools');
       expect(provider.baseArgs).toContain('--verbose');
+    });
+
+    it('should suppress --model flag when cli_model is null (default mode)', () => {
+      const provider = new PiProvider('default');
+      expect(provider.baseArgs).not.toContain('--model');
+      expect(provider.model).toBe('default');
+    });
+
+    it('should suppress --model flag for multi-model mode', () => {
+      const provider = new PiProvider('multi-model');
+      expect(provider.baseArgs).not.toContain('--model');
+    });
+
+    it('should include review skill in multi-model mode', () => {
+      const provider = new PiProvider('multi-model');
+      expect(provider.baseArgs).toContain('--skill');
+      // Verify the skill path is included (it follows --skill)
+      const skillIdx = provider.baseArgs.indexOf('--skill');
+      expect(provider.baseArgs[skillIdx + 1]).toContain('review-model-guidance');
+    });
+
+    it('should fall back to default when no model provided', () => {
+      const provider = new PiProvider(null);
+      expect(provider.model).toBe('default');
+      expect(provider.baseArgs).not.toContain('--model');
+    });
+
+    it('should use model id as --model value for non-built-in models', () => {
+      const provider = new PiProvider('gemini-2.5-flash');
+      expect(provider.baseArgs).toContain('--model');
+      expect(provider.baseArgs).toContain('gemini-2.5-flash');
+    });
+
+    it('should parse provider/model format into --provider and --model args', () => {
+      const provider = new PiProvider('google/gemini-2.5-flash');
+      expect(provider.baseArgs).toContain('--provider');
+      expect(provider.baseArgs).toContain('google');
+      expect(provider.baseArgs).toContain('--model');
+      expect(provider.baseArgs).toContain('gemini-2.5-flash');
+    });
+
+    it('should handle model without provider prefix', () => {
+      const provider = new PiProvider('claude-haiku-4-5');
+      expect(provider.baseArgs).toContain('--model');
+      expect(provider.baseArgs).toContain('claude-haiku-4-5');
+      expect(provider.baseArgs).not.toContain('--provider');
+    });
+
+    it('should handle provider/model with slashes in model name', () => {
+      const provider = new PiProvider('groq/meta-llama/llama-4-scout-17b-16e-instruct');
+      expect(provider.baseArgs).toContain('--provider');
+      expect(provider.baseArgs).toContain('groq');
+      expect(provider.baseArgs).toContain('--model');
+      expect(provider.baseArgs).toContain('meta-llama/llama-4-scout-17b-16e-instruct');
     });
   });
 
@@ -656,6 +745,7 @@ describe('PiProvider', () => {
   describe('getExtractionConfig', () => {
     afterEach(() => {
       delete process.env.PAIR_REVIEW_PI_CMD;
+      delete process.env.PAIR_REVIEW_PI_SESSION;
     });
 
     it('should return correct structure for non-shell mode', () => {
@@ -750,7 +840,7 @@ describe('PiProvider', () => {
       const config = provider.getExtractionConfig('extraction-model');
 
       expect(config).toHaveProperty('env');
-      expect(config.env).toEqual({ GEMINI_API_KEY: 'test-key-123' });
+      expect(config.env).toMatchObject({ GEMINI_API_KEY: 'test-key-123' });
     });
 
     it('should include env field with extraEnv in shell mode', () => {
@@ -762,7 +852,7 @@ describe('PiProvider', () => {
 
       expect(config.useShell).toBe(true);
       expect(config).toHaveProperty('env');
-      expect(config.env).toEqual({ API_KEY: 'shell-key' });
+      expect(config.env).toMatchObject({ API_KEY: 'shell-key' });
     });
 
     it('should include merged provider and model env in env field', () => {
@@ -774,15 +864,26 @@ describe('PiProvider', () => {
       });
       const config = provider.getExtractionConfig('extraction-model');
 
-      expect(config.env).toEqual({ VAR1: 'model-val', VAR2: 'extra' });
+      expect(config.env).toMatchObject({ VAR1: 'model-val', VAR2: 'extra' });
     });
 
-    it('should include empty env when no extraEnv configured', () => {
+    it('should omit --no-session in extraction config when PAIR_REVIEW_PI_SESSION is set', () => {
+      process.env.PAIR_REVIEW_PI_SESSION = '1';
+      const provider = new PiProvider('test-model');
+      const config = provider.getExtractionConfig('extraction-model');
+      if (config.useShell) {
+        expect(config.command).not.toContain('--no-session');
+      } else {
+        expect(config.args).not.toContain('--no-session');
+      }
+    });
+
+    it('should include task extension env vars for subtask support', () => {
       const provider = new PiProvider('test-model');
       const config = provider.getExtractionConfig('extraction-model');
 
       expect(config).toHaveProperty('env');
-      expect(config.env).toEqual({});
+      expect(config.env).toEqual({ PI_CMD: 'pi', PI_TASK_MAX_DEPTH: '1' });
     });
   });
 
@@ -912,6 +1013,7 @@ describe('PiProvider', () => {
   describe('testAvailability', () => {
     afterEach(() => {
       delete process.env.PAIR_REVIEW_PI_CMD;
+      delete process.env.PAIR_REVIEW_PI_SESSION;
       vi.useRealTimers();
     });
 
