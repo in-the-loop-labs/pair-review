@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.4.0
+
+### Minor Changes
+
+- 00f4cb8: Add Pi coding agent as a new AI provider with full feature parity
+- b8f3d99: Add local reviews list to index page with browse, inline delete, and session management
+- 1b50085: Add Pi task extension and review model guidance skill
+
+  - Task extension (`.pi/extensions/task/`) provides a generic subagent tool for Pi that spawns isolated `pi` subprocess with full tool access, supporting single and parallel execution with per-task model selection
+  - Review model guidance skill (`.pi/skills/review-model-guidance/`) teaches Pi when and how to switch models during code review, with model-specific recommendations for different review tasks
+
+- eaad08a: Integrate Pi task extension into pi-provider
+
+  - Pi provider now loads the task extension via `-e`, giving the model a subagent tool for delegating work to isolated subprocesses during analysis
+  - Task extension propagates parent's active tool list to subtasks, preserving read-only security restrictions
+  - PI_CMD environment variable propagated to subtasks for wrapper compatibility (e.g., `devx pi --`)
+  - Auto-discovery disabled (`--no-extensions`, `--no-skills`, `--no-prompt-templates`) for deterministic runs
+  - Full CLI command logged at debug level on every pi spawn
+
+- 6ad494c: Add Review Roulette mode for Pi provider
+
+  - New 'review-roulette' analysis mode dispatches reviews to 3 randomly-selected reasoning models in parallel for diverse perspectives
+  - Skill instructs Pi to discover available thinking-capable models, pick 3 from different providers, forward the full review prompt, and merge all suggestions with model-attributed summaries
+  - PI_TASK_MAX_DEPTH set to 2 for roulette mode so review subtasks can use their own subtasks for large PRs
+  - Env merge ordering fixed: PI_TASK_MAX_DEPTH is an overridable default, PI_CMD always wins from the resolved command
+
 ## 1.3.3
 
 ### Patch Changes
