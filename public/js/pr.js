@@ -3512,17 +3512,18 @@ class PRManager {
       }
 
       // Run stale check and settings fetch in parallel to minimize dialog delay
-      // Stale check has a 2s timeout — git commands can hang for minutes on some machines
+      // Use AbortController so the fetch is truly cancelled on timeout,
+      // freeing the HTTP connection for subsequent requests.
       const _tParallel0 = performance.now();
-      const staleCheckWithTimeout = Promise.race([
-        fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`)
-          .then(r => r.ok ? r.json() : null)
-          .catch(() => null),
-        new Promise(resolve => setTimeout(() => {
-          console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, skipping`);
-          resolve(null);
-        }, STALE_TIMEOUT))
-      ]);
+      const staleAbort = new AbortController();
+      const staleTimer = setTimeout(() => {
+        console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
+        staleAbort.abort();
+      }, STALE_TIMEOUT);
+      const staleCheckWithTimeout = fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`, { signal: staleAbort.signal })
+        .then(r => r.ok ? r.json() : null)
+        .then(result => { clearTimeout(staleTimer); return result; })
+        .catch(() => { clearTimeout(staleTimer); return null; });
 
       const [staleResult, repoSettings, reviewSettings] = await Promise.all([
         staleCheckWithTimeout,
