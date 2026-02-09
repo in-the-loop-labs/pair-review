@@ -304,14 +304,62 @@ class LocalManager {
         return;
       }
 
-      // Check staleness FIRST, before showing config modal
-      try {
-        const staleResponse = await fetch(`/api/local/${reviewId}/check-stale`);
-        if (staleResponse.ok) {
-          const staleData = await staleResponse.json();
+      // Run stale check and settings fetch in parallel to minimize dialog delay.
+      // Use AbortController so the fetch is truly cancelled on timeout,
+      // freeing the HTTP connection for subsequent requests.
+      const STALE_TIMEOUT = 2000;
+      const staleAbort = new AbortController();
+      const staleTimer = setTimeout(() => {
+        console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
+        staleAbort.abort();
+      }, STALE_TIMEOUT);
+      const staleCheckPromise = fetch(`/api/local/${reviewId}/check-stale`, { signal: staleAbort.signal })
+        .then(r => {
+          clearTimeout(staleTimer);
+          if (!r.ok) {
+            console.warn(`Stale check failed with status ${r.status}`);
+            return { _fetchError: true, status: r.status };
+          }
+          return r.json();
+        })
+        .catch(err => {
+          clearTimeout(staleTimer);
+          if (err.name === 'AbortError') {
+            console.debug('[Analyze] stale-check aborted (timeout)');
+          } else {
+            console.warn('[Analyze] stale-check fetch error:', err);
+          }
+          return null;
+        });
 
-          if (staleData.isStale === true) {
-            // Working directory has changed - show dialog with options
+      try {
+        // Show analysis config modal
+        if (!manager.analysisConfigModal) {
+          clearTimeout(staleTimer);
+          console.warn('AnalysisConfigModal not initialized, proceeding without config');
+          await self.startLocalAnalysis(btn, {});
+          return;
+        }
+
+        // Fetch stale check, repo settings, and last instructions in parallel
+        const [staleResult, repoSettings, lastInstructions] = await Promise.all([
+          staleCheckPromise,
+          manager.fetchRepoSettings().catch(() => null),
+          manager.fetchLastCustomInstructions().catch(() => '')
+        ]);
+
+        // Process stale check result
+        try {
+          if (staleResult === null) {
+            // Timed out or network error — fail open
+            if (window.toast) {
+              window.toast.showWarning('Could not verify working directory is current.');
+            }
+          } else if (staleResult._fetchError) {
+            if (window.toast) {
+              window.toast.showWarning(`Could not verify working directory is current (${staleResult.status}).`);
+            }
+          } else if (staleResult.isStale === true) {
             if (window.confirmDialog) {
               const choice = await window.confirmDialog.show({
                 title: 'Files Have Changed',
@@ -323,40 +371,22 @@ class LocalManager {
               });
 
               if (choice === 'confirm') {
-                // User wants to refresh first, then continue to analysis
                 await self.refreshDiff();
-                // Continue to config modal after refresh (don't return)
               } else if (choice !== 'secondary') {
-                // User cancelled
                 return;
               }
-              // Both 'confirm' (after refresh) and 'secondary' continue to config modal
             }
-          } else if (staleData.isStale === null && staleData.error) {
-            // Couldn't verify - show toast warning
+          } else if (staleResult.isStale === null && staleResult.error) {
             if (window.toast) {
               window.toast.showWarning('Could not verify working directory is current.');
             }
           }
+        } catch (staleError) {
+          console.warn('[Local] Error processing staleness:', staleError);
+          if (window.toast) {
+            window.toast.showWarning('Could not verify working directory is current.');
+          }
         }
-      } catch (staleError) {
-        console.warn('[Local] Error checking staleness:', staleError);
-        if (window.toast) {
-          window.toast.showWarning('Could not verify working directory is current.');
-        }
-      }
-
-      try {
-        // Show analysis config modal
-        if (!manager.analysisConfigModal) {
-          console.warn('AnalysisConfigModal not initialized, proceeding without config');
-          await self.startLocalAnalysis(btn, {});
-          return;
-        }
-
-        // Get repo settings for default instructions
-        const repoSettings = await manager.fetchRepoSettings().catch(() => null);
-        const lastInstructions = await manager.fetchLastCustomInstructions().catch(() => '');
 
         // Determine model and provider
         const modelStorageKey = `pair-review-model:local-${reviewId}`;
