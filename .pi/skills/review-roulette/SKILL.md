@@ -1,8 +1,9 @@
-<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 ---
 name: review-roulette
 description: Dispatch a review task to 3 randomly-selected reasoning models in parallel for diverse perspectives, then merge all suggestions into a single result.
 ---
+
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 
 # Review Roulette
 
