@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.3
+
+### Patch Changes
+
+- 894d8f0: Fix JSON extraction from LLM responses that contain preamble text before JSON output
+
 ## 1.3.2
 
 ### Patch Changes
