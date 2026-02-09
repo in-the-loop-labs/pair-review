@@ -187,6 +187,17 @@ class CouncilConfigTab {
   }
 
   /**
+   * Set default orchestration provider/model for new councils.
+   * Falls back to 'claude'/'sonnet' if not provided.
+   * @param {string} provider - Default provider ID (e.g., 'claude', 'gemini')
+   * @param {string} model - Default model ID (e.g., 'sonnet', 'opus')
+   */
+  setDefaultOrchestration(provider, model) {
+    this._defaultProvider = provider || 'claude';
+    this._defaultModel = model || 'sonnet';
+  }
+
+  /**
    * Set the default council ID to pre-select when councils load.
    * Stores the ID as pending; it will be applied in _renderCouncilSelector().
    * @param {string} councilId - Council ID to pre-select
@@ -196,24 +207,60 @@ class CouncilConfigTab {
   }
 
   /**
+   * Validate council config. At least one level must be enabled.
+   * @param {Object} config - Council config to validate
+   * @returns {{ valid: boolean, error: string|null }}
+   */
+  _validateConfig(config) {
+    const hasEnabledLevel = Object.values(config.levels).some(l => l.enabled);
+    if (!hasEnabledLevel) {
+      return { valid: false, error: 'At least one review level must be enabled.' };
+    }
+    return { valid: true, error: null };
+  }
+
+  /**
+   * Validate the current council configuration.
+   * Shows a warning toast if invalid.
+   * @returns {boolean} true if valid
+   */
+  validate() {
+    const config = this._readConfigFromUI();
+    const result = this._validateConfig(config);
+    if (!result.valid && window.toast) {
+      window.toast.showWarning(result.error);
+    }
+    return result.valid;
+  }
+
+  /**
    * Auto-save council if there are unsaved changes.
    * Called before analysis starts. Errors are caught and logged, never block analysis.
+   * Always saves unsaved councils so the config is persisted for history/reuse.
    * @returns {Promise<void>}
    */
   async autoSaveIfDirty() {
-    if (!this._isDirty) return;
+    // Skip saving when the council is clean AND already persisted (has an ID).
+    // Unsaved councils (no selectedCouncilId) always proceed so the config is persisted.
+    if (!this._isDirty && this.selectedCouncilId) return;
 
     const config = this._readConfigFromUI();
+    const { valid } = this._validateConfig(config);
+    if (!valid) return; // Don't auto-save invalid configs
 
     try {
+      const timestamp = this._formatTimestamp(new Date());
+
+      let name;
       if (this.selectedCouncilId) {
-        await this._putCouncil(this.selectedCouncilId, config);
+        // Fork: create new council based on existing, don't mutate the original
+        const existing = this.councils.find(c => c.id === this.selectedCouncilId);
+        const baseName = (existing?.name || 'Council').replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/, '').trim();
+        name = `${baseName} ${timestamp}`;
       } else {
-        const now = new Date();
-        const pad = (n) => String(n).padStart(2, '0');
-        const name = `Council ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-        await this._postCouncil(name, config);
+        name = `Council ${timestamp}`;
       }
+      await this._postCouncil(name, config);
     } catch (error) {
       console.error('Auto-save council failed (non-blocking):', error);
       if (window.toast) {
@@ -224,14 +271,24 @@ class CouncilConfigTab {
 
   // --- Private methods ---
 
+  /**
+   * Format a Date as "YYYY-MM-DD HH:MM" for council naming.
+   * @param {Date} date
+   * @returns {string}
+   */
+  _formatTimestamp(date) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
   _defaultConfig() {
     return {
       levels: {
-        '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet', tier: 'balanced' }] },
+        '1': { enabled: false, voices: [] },
         '2': { enabled: false, voices: [] },
         '3': { enabled: false, voices: [] }
       },
-      orchestration: { provider: 'claude', model: 'sonnet', tier: 'balanced' }
+      orchestration: { provider: this._defaultProvider || 'claude', model: this._defaultModel || 'sonnet', tier: 'balanced' }
     };
   }
 
@@ -460,6 +517,10 @@ class CouncilConfigTab {
           this._applyConfigToUI(council.config);
           this._markClean();
         }
+      } else {
+        // "New Council" selected — reset UI to blank defaults
+        this._applyConfigToUI(this._defaultConfig());
+        this._markDirty();
       }
       this._updateSaveButtonStates();
     });
@@ -999,6 +1060,11 @@ class CouncilConfigTab {
 
   async _saveCouncil() {
     const config = this._readConfigFromUI();
+    const { valid } = this._validateConfig(config);
+    if (!valid) {
+      if (window.toast) window.toast.showWarning('At least one review level must be enabled.');
+      return;
+    }
     if (this.selectedCouncilId) {
       try {
         await this._putCouncil(this.selectedCouncilId, config);
@@ -1014,10 +1080,15 @@ class CouncilConfigTab {
   }
 
   async _saveCouncilAs() {
+    const config = this._readConfigFromUI();
+    const { valid } = this._validateConfig(config);
+    if (!valid) {
+      if (window.toast) window.toast.showWarning('At least one review level must be enabled.');
+      return;
+    }
+
     const name = prompt('Council name:');
     if (!name?.trim()) return;
-
-    const config = this._readConfigFromUI();
     try {
       await this._postCouncil(name.trim(), config);
     } catch (error) {

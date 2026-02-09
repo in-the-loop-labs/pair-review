@@ -39,7 +39,7 @@ class CouncilProgressModal {
    * @param {string} analysisId - Analysis ID to track
    * @param {Object} councilConfig - Council configuration (levels + orchestration)
    */
-  show(analysisId, councilConfig) {
+  show(analysisId, councilConfig, councilName) {
     this.currentAnalysisId = analysisId;
     this.councilConfig = councilConfig;
     this.isVisible = true;
@@ -47,6 +47,14 @@ class CouncilProgressModal {
 
     // Rebuild DOM for this config
     this._rebuildBody(councilConfig);
+
+    // Update the header with the council name if provided
+    const titleEl = this.modal.querySelector('#council-progress-title');
+    if (titleEl) {
+      titleEl.textContent = councilName
+        ? `Review Council Analysis \u00b7 ${councilName}`
+        : 'Review Council Analysis';
+    }
 
     this.modal.style.display = 'flex';
     this._resetFooter();
@@ -329,20 +337,17 @@ class CouncilProgressModal {
 
     const iconEl = el.querySelector('.council-voice-icon');
     const statusEl = el.querySelector('.council-voice-status');
-    const barEl = el.querySelector('.progress-bar-container');
     const snippetEl = el.querySelector('.council-voice-snippet');
 
     this._renderState(iconEl, statusEl, state, 'council-voice');
 
     // State-specific detail visibility
     if (state === 'running') {
-      if (barEl) barEl.style.display = 'block';
       if (snippetEl && levelStatus?.streamEvent?.text) {
         snippetEl.textContent = levelStatus.streamEvent.text;
         snippetEl.style.display = 'block';
       }
     } else {
-      if (barEl) barEl.style.display = 'none';
       if (snippetEl) snippetEl.style.display = 'none';
     }
   }
@@ -588,7 +593,7 @@ class CouncilProgressModal {
       <div class="modal-backdrop" data-action="close"></div>
       <div class="modal-container council-progress-modal">
         <div class="modal-header">
-          <h3>Review Council Analysis</h3>
+          <h3 id="council-progress-title">Review Council Analysis</h3>
           <button class="modal-close-btn" data-action="close" title="Close">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
@@ -743,11 +748,6 @@ class CouncilProgressModal {
         <span class="council-voice-label">${label}</span>
         <span class="council-voice-status running">Running...</span>
         <div class="council-voice-detail">
-          <div class="progress-bar-container" style="display: block;">
-            <div class="barbershop-progress-bar council-barbershop">
-              <div class="barbershop-stripes"></div>
-            </div>
-          </div>
           <div class="council-voice-snippet" style="display: none;"></div>
         </div>
       </div>

@@ -665,15 +665,20 @@ class AnalysisConfigModal {
   async handleSubmit() {
     // Check if council tab is active
     if (this.councilTab && this.councilTab.getActiveTab() === 'council') {
+      // Validate council config before proceeding
+      if (!this.councilTab.validate()) return;
+
       // Auto-save council if dirty
       await this.councilTab.autoSaveIfDirty();
 
       const councilConfig = this.councilTab.getCouncilConfig();
       const councilId = this.councilTab.getSelectedCouncilId();
+      const selectedCouncil = this.councilTab.councils.find(c => c.id === councilId);
 
       const config = {
         isCouncil: true,
         councilId: councilId,
+        councilName: selectedCouncil?.name || null,
         councilConfig: councilConfig,
         customInstructions: this.modal.querySelector('#council-custom-instructions')?.value?.trim() || '',
         repoInstructions: this.repoInstructions
@@ -779,6 +784,9 @@ class AnalysisConfigModal {
       if (options.lastInstructions) {
         this.councilTab.setLastInstructions(options.lastInstructions);
       }
+
+      // Pass resolved provider/model so new councils inherit the user's default
+      this.councilTab.setDefaultOrchestration(options.currentProvider, options.currentModel);
 
       // Set council default (priority: last used > repo default)
       const councilDefault = options.lastCouncilId || options.defaultCouncilId || null;

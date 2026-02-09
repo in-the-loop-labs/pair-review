@@ -8,6 +8,9 @@
  * - CommentManager: Comment forms and editing
  * - SuggestionManager: AI suggestion handling
  */
+// Timeout (ms) for stale check — git commands can hang on locked repos
+const STALE_TIMEOUT = 2000;
+
 class PRManager {
   // Forward static constants from modules for backward compatibility
   static get CATEGORY_EMOJI_MAP() {
@@ -3501,73 +3504,6 @@ class PRManager {
     }
 
     try {
-      // Check if PR has new commits before analysis
-      const _tStale0 = performance.now();
-      try {
-        const staleResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`);
-        if (!staleResponse.ok) {
-          // Handle non-OK responses (401/403/500 etc)
-          const errorText = await staleResponse.text().catch(() => 'Unknown error');
-          console.warn(`Stale check failed with status ${staleResponse.status}:`, errorText);
-          if (window.toast) {
-            window.toast.showWarning(`Could not verify PR is current (${staleResponse.status}). Proceeding with analysis.`);
-          }
-          // Fall through to continue with analysis
-        } else {
-          const staleData = await staleResponse.json();
-
-          // Handle PR state - show info for closed/merged PRs but still allow analysis
-          if (staleData.prState && (staleData.prState !== 'open' || staleData.merged)) {
-            const stateLabel = staleData.merged ? 'merged' : 'closed';
-            if (window.toast) {
-              window.toast.showWarning(`This PR is ${stateLabel}. Analysis will proceed on the existing data.`);
-            }
-          }
-
-          // Handle isStale === null (unknown - couldn't check)
-          if (staleData.isStale === null) {
-            // Couldn't verify - show toast and proceed
-            if (window.toast) {
-              window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
-            }
-            // Continue with analysis
-          } else if (staleData.isStale === true) {
-            // PR is stale - show single dialog with 3 options
-            if (!window.confirmDialog) {
-              console.warn('ConfirmDialog not available for stale PR check');
-            } else {
-              const choice = await window.confirmDialog.show({
-                title: 'PR Has New Commits',
-                message: 'This pull request has new commits since you last loaded it. What would you like to do?',
-                confirmText: 'Refresh & Analyze',
-                confirmClass: 'btn-primary',
-                secondaryText: 'Analyze Anyway',
-                secondaryClass: 'btn-warning'
-              });
-
-              if (choice === 'confirm') {
-                // User wants to refresh first
-                await this.refreshPR();
-                // After refresh, continue with analysis
-              } else if (choice === 'secondary') {
-                // User chose to analyze anyway - continue with stale data
-              } else {
-                // User cancelled
-                return;
-              }
-            }
-          }
-          // If isStale === false, PR is up-to-date, just continue
-        }
-      } catch (staleError) {
-        // Fail-open: show toast warning and continue with analysis
-        console.warn('Error checking PR staleness:', staleError);
-        if (window.toast) {
-          window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
-        }
-      }
-      console.debug(`[Analyze] stale-check: ${Math.round(performance.now() - _tStale0)}ms`);
-
       // Show analysis config modal
       if (!this.analysisConfigModal) {
         console.warn('AnalysisConfigModal not initialized, proceeding without config');
@@ -3575,13 +3511,65 @@ class PRManager {
         return;
       }
 
-      // Fetch repo settings and last used instructions in parallel
-      const _tSettings0 = performance.now();
-      const [repoSettings, reviewSettings] = await Promise.all([
+      // Run stale check and settings fetch in parallel to minimize dialog delay
+      // Stale check has a 2s timeout — git commands can hang for minutes on some machines
+      const _tParallel0 = performance.now();
+      const staleCheckWithTimeout = Promise.race([
+        fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`)
+          .then(r => r.ok ? r.json() : null)
+          .catch(() => null),
+        new Promise(resolve => setTimeout(() => {
+          console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, skipping`);
+          resolve(null);
+        }, STALE_TIMEOUT))
+      ]);
+
+      const [staleResult, repoSettings, reviewSettings] = await Promise.all([
+        staleCheckWithTimeout,
         this.fetchRepoSettings(),
         this.fetchLastReviewSettings()
       ]);
-      console.debug(`[Analyze] settings-fetch: ${Math.round(performance.now() - _tSettings0)}ms`);
+      console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
+
+      // Handle staleness result — check for expected properties to distinguish
+      // a valid response from a failed/timed-out fetch (which resolves to null)
+      if (staleResult && 'isStale' in staleResult) {
+        // Handle PR state - show info for closed/merged PRs
+        if (staleResult.prState && (staleResult.prState !== 'open' || staleResult.merged)) {
+          const stateLabel = staleResult.merged ? 'merged' : 'closed';
+          if (window.toast) {
+            window.toast.showWarning(`This PR is ${stateLabel}. Analysis will proceed on the existing data.`);
+          }
+        }
+
+        if (staleResult.isStale === null) {
+          if (window.toast) {
+            window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
+          }
+        } else if (staleResult.isStale === true) {
+          if (window.confirmDialog) {
+            const choice = await window.confirmDialog.show({
+              title: 'PR Has New Commits',
+              message: 'This pull request has new commits since you last loaded it. What would you like to do?',
+              confirmText: 'Refresh & Analyze',
+              confirmClass: 'btn-primary',
+              secondaryText: 'Analyze Anyway',
+              secondaryClass: 'btn-warning'
+            });
+
+            if (choice === 'confirm') {
+              await this.refreshPR();
+            } else if (choice !== 'secondary') {
+              return;
+            }
+          }
+        }
+      } else if (!staleResult) {
+        // Network error, HTTP error, or timeout — fail open with warning
+        if (window.toast) {
+          window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
+        }
+      }
 
       const lastInstructions = reviewSettings.custom_instructions;
       const lastCouncilId = reviewSettings.last_council_id;
@@ -3713,7 +3701,7 @@ class PRManager {
 
       if (config.isCouncil && window.councilProgressModal && config.councilConfig) {
         window.councilProgressModal.setPRMode();
-        window.councilProgressModal.show(result.analysisId, config.councilConfig);
+        window.councilProgressModal.show(result.analysisId, config.councilConfig, config.councilName);
       } else if (window.progressModal) {
         window.progressModal.show(result.analysisId);
       }

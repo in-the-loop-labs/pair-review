@@ -2849,17 +2849,6 @@ tr.newly-expanded .d2h-code-line-ctn {
   min-width: 0;
 }
 
-.council-voice-detail .progress-bar-container {
-  margin: 2px 0 0 0;
-}
-
-.council-voice-detail .barbershop-progress-bar.council-barbershop {
-  width: 100%;
-  max-width: 280px;
-  height: 16px;
-  margin-bottom: 2px;
-}
-
 .council-voice-snippet {
   font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 11px;

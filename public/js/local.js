@@ -7,6 +7,8 @@
  * - Hiding GitHub-specific UI elements
  * - Adapting the UI for local uncommitted changes review
  */
+// STALE_TIMEOUT is declared in pr.js (shared global scope via script tags)
+
 class LocalManager {
   /**
    * Create LocalManager instance.
@@ -316,15 +318,40 @@ class LocalManager {
         return;
       }
 
-      // Check staleness FIRST, before showing config modal
-      const _tStale0 = performance.now();
       try {
-        const staleResponse = await fetch(`/api/local/${reviewId}/check-stale`);
-        if (staleResponse.ok) {
-          const staleData = await staleResponse.json();
+        // Show analysis config modal
+        if (!manager.analysisConfigModal) {
+          console.warn('AnalysisConfigModal not initialized, proceeding without config');
+          await self.startLocalAnalysis(btn, {});
+          return;
+        }
 
-          if (staleData.isStale === true) {
-            // Working directory has changed - show dialog with options
+        // Run stale check and settings fetch in parallel to minimize dialog delay
+        const _tParallel0 = performance.now();
+        const staleCheckWithTimeout = Promise.race([
+          fetch(`/api/local/${reviewId}/check-stale`)
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null),
+          new Promise(resolve => setTimeout(() => {
+            console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, skipping`);
+            resolve(null);
+          }, STALE_TIMEOUT))
+        ]);
+        const [staleResult, repoSettings, reviewSettings] = await Promise.all([
+          staleCheckWithTimeout,
+          manager.fetchRepoSettings().catch(() => null),
+          manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
+        ]);
+        console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
+
+        // Handle staleness result — check for expected properties to distinguish
+        // a valid response from a failed/timed-out fetch (which resolves to null)
+        if (staleResult && 'isStale' in staleResult) {
+          if (staleResult.isStale === null && staleResult.error) {
+            if (window.toast) {
+              window.toast.showWarning('Could not verify working directory is current.');
+            }
+          } else if (staleResult.isStale === true) {
             if (window.confirmDialog) {
               const choice = await window.confirmDialog.show({
                 title: 'Files Have Changed',
@@ -336,43 +363,18 @@ class LocalManager {
               });
 
               if (choice === 'confirm') {
-                // User wants to refresh first, then continue to analysis
                 await self.refreshDiff();
-                // Continue to config modal after refresh (don't return)
               } else if (choice !== 'secondary') {
-                // User cancelled
                 return;
               }
-              // Both 'confirm' (after refresh) and 'secondary' continue to config modal
-            }
-          } else if (staleData.isStale === null && staleData.error) {
-            // Couldn't verify - show toast warning
-            if (window.toast) {
-              window.toast.showWarning('Could not verify working directory is current.');
             }
           }
+        } else {
+          // Network error, HTTP error, or timeout — fail open with warning
+          if (window.toast) {
+            window.toast.showWarning('Could not verify working directory is current.');
+          }
         }
-      } catch (staleError) {
-        console.warn('[Local] Error checking staleness:', staleError);
-        if (window.toast) {
-          window.toast.showWarning('Could not verify working directory is current.');
-        }
-      }
-      console.debug(`[Analyze] stale-check: ${Math.round(performance.now() - _tStale0)}ms`);
-
-      try {
-        // Show analysis config modal
-        if (!manager.analysisConfigModal) {
-          console.warn('AnalysisConfigModal not initialized, proceeding without config');
-          await self.startLocalAnalysis(btn, {});
-          return;
-        }
-
-        // Get repo settings for default instructions
-        const _tSettings0 = performance.now();
-        const repoSettings = await manager.fetchRepoSettings().catch(() => null);
-        const reviewSettings = await manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }));
-        console.debug(`[Analyze] settings-fetch: ${Math.round(performance.now() - _tSettings0)}ms`);
 
         const lastInstructions = reviewSettings.custom_instructions;
         const lastCouncilId = reviewSettings.last_council_id;
@@ -1124,7 +1126,7 @@ class LocalManager {
       // Choose council or single-model progress modal
       if (config.isCouncil && window.councilProgressModal && config.councilConfig) {
         window.councilProgressModal.setLocalMode(this.reviewId);
-        window.councilProgressModal.show(result.analysisId, config.councilConfig);
+        window.councilProgressModal.show(result.analysisId, config.councilConfig, config.councilName);
       } else {
         // Patch progress modal for local mode
         this.patchProgressModalForLocal();
