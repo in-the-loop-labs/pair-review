@@ -405,7 +405,11 @@ class PiProvider extends AIProvider {
         } else {
           // Regex extraction failed, try LLM-based extraction as fallback
           logger.warn(`${levelPrefix} Regex extraction failed: ${parsed.error}`);
-          logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
+          // Pass extracted text content to LLM fallback (not raw JSONL stdout).
+          // The text content is the actual LLM response text extracted from JSONL
+          // events and is much smaller and more relevant than the full JSONL stream.
+          const llmFallbackInput = parsed.textContent || stdout;
+          logger.info(`${levelPrefix} LLM fallback input length: ${llmFallbackInput.length} characters (${parsed.textContent ? 'text content' : 'raw stdout'})`);
           logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
 
           // Use async IIFE to handle the async LLM extraction
@@ -415,18 +419,18 @@ class PiProvider extends AIProvider {
             if (settled) return;
 
             try {
-              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess });
+              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess });
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);
               } else {
                 logger.warn(`${levelPrefix} LLM extraction fallback also failed: ${llmExtracted.error}`);
-                logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-                settle(resolve, { raw: stdout, parsed: false });
+                logger.info(`${levelPrefix} Raw response preview: ${llmFallbackInput.substring(0, 500)}...`);
+                settle(resolve, { raw: llmFallbackInput, parsed: false });
               }
             } catch (llmError) {
               logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
-              settle(resolve, { raw: stdout, parsed: false });
+              settle(resolve, { raw: llmFallbackInput, parsed: false });
             }
           })();
         }
@@ -654,9 +658,10 @@ class PiProvider extends AIProvider {
           return extracted;
         }
 
-        // If no JSON found, return the raw text
+        // If no JSON found, return with textContent so the caller can
+        // pass it (not raw JSONL stdout) to the LLM extraction fallback
         logger.warn(`${levelPrefix} Text content is not JSON, treating as raw text`);
-        return { success: false, error: 'Text content is not valid JSON' };
+        return { success: false, error: 'Text content is not valid JSON', textContent };
       }
 
       // No text content found, try extracting JSON directly from stdout

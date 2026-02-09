@@ -649,7 +649,7 @@ describe('ClaudeProvider', () => {
         expect(result.data).toEqual({ key: 'value' });
       });
 
-      it('should extract first JSON object from array-like text content', () => {
+      it('should extract full JSON array from array-like text content', () => {
         const stdout = JSON.stringify({
           type: 'result',
           result: {
@@ -659,11 +659,11 @@ describe('ClaudeProvider', () => {
           }
         });
 
-        // extractJSON strategy 2 extracts from first { to last }, so from an array
-        // it will extract only the first object. This documents current behavior.
+        // extractJSON parses the full valid JSON — when the text IS a JSON array,
+        // the direct-parse strategy succeeds and returns the complete array.
         const result = provider.parseClaudeResponse(stdout, 1);
         expect(result.success).toBe(true);
-        expect(result.data).toEqual({ id: 1 });
+        expect(result.data).toEqual([{ id: 1 }, { id: 2 }]);
       });
 
       it('should handle text with no JSON', () => {
