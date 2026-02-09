@@ -275,10 +275,21 @@ class CouncilProgressModal {
    * Given a level's status (which may include a voiceId), update the right voice row.
    */
   _updateVoiceFromLevelStatus(level, levelStatus) {
+    // Per-voice statuses map: tracks all voices, prevents clobbering when
+    // multiple voices on the same level complete concurrently
+    if (levelStatus.voices) {
+      for (const [vid, vStatus] of Object.entries(levelStatus.voices)) {
+        this._setVoiceState(vid, vStatus.status || 'running', vStatus);
+      }
+      // Don't fall through to bulk completion — individual voice states are
+      // authoritative. Overall completion is handled by _handleCompletion().
+      return;
+    }
+
     const voiceId = levelStatus.voiceId;
 
     if (voiceId) {
-      // Update specific voice
+      // Single voiceId without voices map (stream events or legacy path)
       this._setVoiceState(voiceId, levelStatus.status || 'running', levelStatus);
     } else if (levelStatus.status === 'completed') {
       // Level completed without a voiceId — mark all pending/running voices as complete

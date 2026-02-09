@@ -310,12 +310,30 @@ function createProgressCallback(analysisId) {
     // Regular status update (not a stream event)
     // Update the specific level's status, clearing any stale streamEvent
     if (level && level >= 1 && level <= 3) {
-      currentStatus.levels[level] = {
-        status: progressUpdate.status || 'running',
-        progress: progressUpdate.progress || 'In progress...',
-        streamEvent: undefined,
-        voiceId: progressUpdate.voiceId || undefined
-      };
+      if (progressUpdate.voiceId) {
+        // Per-voice update (council mode): track in voices map so concurrent
+        // completions on the same level don't clobber each other
+        if (!currentStatus.levels[level].voices) {
+          currentStatus.levels[level].voices = {};
+        }
+        currentStatus.levels[level].voices[progressUpdate.voiceId] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'In progress...'
+        };
+        // Also set the top-level voiceId for backward compat with frontend routing
+        currentStatus.levels[level].voiceId = progressUpdate.voiceId;
+        currentStatus.levels[level].status = progressUpdate.status || 'running';
+        currentStatus.levels[level].progress = progressUpdate.progress || 'In progress...';
+        currentStatus.levels[level].streamEvent = undefined;
+      } else {
+        // Non-voice update (single-model mode)
+        currentStatus.levels[level] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'In progress...',
+          streamEvent: undefined,
+          voiceId: undefined
+        };
+      }
     }
 
     // Handle orchestration as level 4

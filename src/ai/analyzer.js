@@ -2838,25 +2838,53 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     }
 
     // Execute
-    const response = await aiProvider.execute(prompt, {
-      cwd: worktreePath,
-      timeout: 600000,
-      level,
-      analysisId,
-      registerProcess,
-      onStreamEvent: progressCallback ? (event) => {
-        progressCallback({ level, status: 'running', streamEvent: event, voiceId });
-      } : undefined
-    });
+    try {
+      const response = await aiProvider.execute(prompt, {
+        cwd: worktreePath,
+        timeout: 600000,
+        level,
+        analysisId,
+        registerProcess,
+        onStreamEvent: progressCallback ? (event) => {
+          progressCallback({ level, status: 'running', streamEvent: event, voiceId });
+        } : undefined
+      });
 
-    // Parse response
-    const suggestions = this.parseResponse(response, level);
-    logger.success(`[Council] Voice ${voiceId}: parsed ${suggestions.length} suggestions`);
+      // Parse response
+      const suggestions = this.parseResponse(response, level);
+      logger.success(`[Council] Voice ${voiceId}: parsed ${suggestions.length} suggestions`);
 
-    return {
-      suggestions,
-      summary: response.summary || `Voice ${voiceId}: ${suggestions.length} suggestions`
-    };
+      // Report per-voice completion to progress callback
+      if (progressCallback) {
+        progressCallback({
+          status: 'completed',
+          progress: `${suggestions.length} suggestions`,
+          level,
+          voiceId
+        });
+      }
+
+      return {
+        suggestions,
+        summary: response.summary || `Voice ${voiceId}: ${suggestions.length} suggestions`
+      };
+    } catch (error) {
+      if (!error.isCancellation) {
+        logger.error(`[Council] Voice ${voiceId} failed: ${error.message}`);
+      }
+
+      // Report per-voice failure to progress callback (unless cancelled)
+      if (progressCallback && !error.isCancellation) {
+        progressCallback({
+          status: 'failed',
+          progress: `Failed: ${error.message}`,
+          level,
+          voiceId
+        });
+      }
+
+      throw error;
+    }
   }
 
   /**
