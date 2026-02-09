@@ -2,9 +2,18 @@
 const logger = require('./logger');
 
 /**
- * Extract JSON from text responses using multiple strategies
- * This is a shared utility to ensure consistent JSON extraction across the application
- * @param {string} response - Raw response text
+ * Extract JSON from text responses using multiple strategies.
+ * This is a shared utility to ensure consistent JSON extraction across the application.
+ *
+ * Strategies are tried in order:
+ *   1. Markdown code blocks (```json ... ```)
+ *   2. Direct JSON.parse of the trimmed response
+ *   3. First { to last } substring
+ *   4. Known JSON key anchors (e.g. {"level", {"suggestions")
+ *   5. Forward scan: try JSON.parse from every top-level { in the text
+ *   6. Bracket-matched substring from the first {
+ *
+ * @param {string} response - Raw response text (may include preamble/postamble prose)
  * @param {string|number} level - Level identifier for logging (e.g., 1, 2, 3, 'orchestration', 'unknown')
  * @returns {Object} Extraction result with success flag and data/error
  */
@@ -35,51 +44,132 @@ function extractJSON(response, level = 'unknown') {
       }
       throw new Error('No JSON code block found');
     },
-    
-    // Strategy 2: Look for JSON between first { and last }
+
+    // Strategy 2: Try the entire response as JSON (fast path for clean responses)
+    () => {
+      return JSON.parse(response.trim());
+    },
+
+    // Strategy 3: Look for JSON between first { and last }
+    // Works when the response is just JSON or has minimal wrapping
     () => {
       const firstBrace = response.indexOf('{');
       const lastBrace = response.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
         return JSON.parse(response.substring(firstBrace, lastBrace + 1));
       }
       throw new Error('No valid JSON braces found');
     },
-    
-    // Strategy 3: Try to find JSON-like structure with bracket matching
+
+    // Strategy 4: Anchor-based extraction — look for known JSON key patterns
+    // that mark the start of our expected response structures.
+    // This handles the common case where preamble text contains { characters
+    // (e.g. LLM discussing code: "the function handleEvent(event) { ... }")
+    // which would cause Strategy 3 to grab the wrong first brace.
     () => {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        // Try to find the complete JSON by matching brackets
-        const jsonStr = jsonMatch[0];
-        let braceCount = 0;
-        let endIndex = -1;
-        const maxIterations = Math.min(jsonStr.length, 100000); // Prevent infinite loops
-        
-        for (let i = 0; i < maxIterations; i++) {
-          if (jsonStr[i] === '{') braceCount++;
-          else if (jsonStr[i] === '}') {
-            braceCount--;
-            if (braceCount === 0) {
-              endIndex = i;
-              break;
-            }
+      // Look for patterns that start our expected JSON structures
+      const anchors = [
+        /\{"level"\s*:/,
+        /\{"suggestions"\s*:/,
+        /\{"fileLevelSuggestions"\s*:/,
+        /\{"summary"\s*:/,
+        /\{"overview"\s*:/,
+      ];
+
+      for (const anchor of anchors) {
+        const match = response.match(anchor);
+        if (match) {
+          const startIdx = match.index;
+          // Find the matching closing brace from the end
+          const lastBrace = response.lastIndexOf('}');
+          if (lastBrace > startIdx) {
+            const candidate = response.substring(startIdx, lastBrace + 1);
+            return JSON.parse(candidate);
           }
         }
-        
-        if (endIndex > -1) {
-          return JSON.parse(jsonStr.substring(0, endIndex + 1));
+      }
+      throw new Error('No known JSON anchor found');
+    },
+
+    // Strategy 5: Forward scan — try JSON.parse starting from each { in the text.
+    // Handles arbitrary preamble text with braces by trying every { as a potential
+    // JSON start. Stops at the first successful parse.
+    () => {
+      let searchFrom = 0;
+      // Limit attempts to avoid excessive parsing on very large non-JSON text
+      const maxAttempts = 20;
+      let attempts = 0;
+      const lastBrace = response.lastIndexOf('}');
+
+      while (searchFrom < response.length && attempts < maxAttempts) {
+        const braceIdx = response.indexOf('{', searchFrom);
+        if (braceIdx === -1) break;
+
+        attempts++;
+        try {
+          // Try parsing from this brace to the end of the response.
+          // JSON.parse is lenient about trailing content only if we trim to the
+          // right boundary, so use lastIndexOf('}') from the end.
+          if (lastBrace > braceIdx) {
+            const candidate = response.substring(braceIdx, lastBrace + 1);
+            const parsed = JSON.parse(candidate);
+            if (parsed && typeof parsed === 'object') {
+              return parsed;
+            }
+          }
+        } catch {
+          // This { wasn't the start of valid JSON, try the next one
+        }
+        searchFrom = braceIdx + 1;
+      }
+      throw new Error('Forward scan found no valid JSON');
+    },
+
+    // Strategy 6: Bracket-matched substring from the first {.
+    // Counts balanced braces (ignoring those inside JSON strings) to find
+    // the end of the first top-level object. No iteration cap — the loop
+    // runs for the full length of the matched region.
+    () => {
+      const firstBrace = response.indexOf('{');
+      if (firstBrace === -1) throw new Error('No opening brace found');
+
+      let braceCount = 0;
+      let inString = false;
+      let escaped = false;
+
+      for (let i = firstBrace; i < response.length; i++) {
+        const ch = response[i];
+
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+
+        if (ch === '\\' && inString) {
+          escaped = true;
+          continue;
+        }
+
+        if (ch === '"') {
+          inString = !inString;
+          continue;
+        }
+
+        if (inString) continue;
+
+        if (ch === '{') braceCount++;
+        else if (ch === '}') {
+          braceCount--;
+          if (braceCount === 0) {
+            return JSON.parse(response.substring(firstBrace, i + 1));
+          }
         }
       }
       throw new Error('No balanced JSON structure found');
     },
-    
-    // Strategy 4: Try the entire response as JSON (for simple cases)
-    () => {
-      return JSON.parse(response.trim());
-    }
   ];
 
+  const strategyErrors = [];
   for (let i = 0; i < strategies.length; i++) {
     try {
       const data = strategies[i]();
@@ -88,17 +178,17 @@ function extractJSON(response, level = 'unknown') {
         return { success: true, data };
       }
     } catch (error) {
-      // Continue to next strategy
-      if (i === strategies.length - 1) {
-        // Last strategy failed, log the error
-        logger.warn(`${levelPrefix} All JSON extraction strategies failed`);
-        logger.warn(`${levelPrefix} Response preview: ${response.substring(0, 200)}...`);
-      }
+      strategyErrors.push(`S${i + 1}: ${error.message}`);
     }
   }
 
-  return { 
-    success: false, 
+  // All strategies failed — log details for debugging
+  logger.warn(`${levelPrefix} All JSON extraction strategies failed`);
+  logger.warn(`${levelPrefix} Strategy errors: ${strategyErrors.join('; ')}`);
+  logger.warn(`${levelPrefix} Response length: ${response.length} chars, preview: ${response.substring(0, 200)}...`);
+
+  return {
+    success: false,
     error: 'Failed to extract JSON from response',
     response: response.substring(0, 500) // Include preview for debugging
   };

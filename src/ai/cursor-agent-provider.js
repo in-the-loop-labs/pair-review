@@ -314,7 +314,8 @@ class CursorAgentProvider extends AIProvider {
         } else {
           // Regex extraction failed, try LLM-based extraction as fallback
           logger.warn(`${levelPrefix} Regex extraction failed: ${parsed.error}`);
-          logger.info(`${levelPrefix} Raw response length: ${stdout.length} characters`);
+          const llmFallbackInput = parsed.textContent || stdout;
+          logger.info(`${levelPrefix} LLM fallback input length: ${llmFallbackInput.length} characters (${parsed.textContent ? 'text content' : 'raw stdout'})`);
           logger.info(`${levelPrefix} Attempting LLM-based JSON extraction fallback...`);
 
           // Use async IIFE to handle the async LLM extraction
@@ -324,18 +325,18 @@ class CursorAgentProvider extends AIProvider {
               // orphan processes if timeout fired between close-handler entry
               // and reaching this point.
               if (settled) return;
-              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess });
+              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess });
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);
               } else {
                 logger.warn(`${levelPrefix} LLM extraction fallback also failed: ${llmExtracted.error}`);
-                logger.info(`${levelPrefix} Raw response preview: ${stdout.substring(0, 500)}...`);
-                settle(resolve, { raw: stdout, parsed: false });
+                logger.info(`${levelPrefix} Raw response preview: ${llmFallbackInput.substring(0, 500)}...`);
+                settle(resolve, { raw: llmFallbackInput, parsed: false });
               }
             } catch (llmError) {
               logger.warn(`${levelPrefix} LLM extraction fallback error: ${llmError.message}`);
-              settle(resolve, { raw: stdout, parsed: false });
+              settle(resolve, { raw: llmFallbackInput, parsed: false });
             }
           })();
         }
@@ -466,7 +467,9 @@ class CursorAgentProvider extends AIProvider {
         return extracted;
       }
 
-      return { success: false, error: 'No valid JSON found in assistant or result text' };
+      // Include textContent so the caller can pass it to LLM extraction fallback
+      const textContent = assistantText || resultText || null;
+      return { success: false, error: 'No valid JSON found in assistant or result text', textContent };
 
     } catch (parseError) {
       // stdout might not be valid JSONL at all, try extracting JSON from it
