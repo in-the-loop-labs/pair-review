@@ -868,4 +868,11 @@ class CouncilProgressModal {
 }
 
 // Initialize global instance
-window.councilProgressModal = new CouncilProgressModal();
+if (typeof window !== 'undefined' && !window.councilProgressModal) {
+  window.councilProgressModal = new CouncilProgressModal();
+}
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { CouncilProgressModal };
+}
