@@ -99,6 +99,7 @@ function extractJSON(response, level = 'unknown') {
       // Limit attempts to avoid excessive parsing on very large non-JSON text
       const maxAttempts = 20;
       let attempts = 0;
+      const lastBrace = response.lastIndexOf('}');
 
       while (searchFrom < response.length && attempts < maxAttempts) {
         const braceIdx = response.indexOf('{', searchFrom);
@@ -109,7 +110,6 @@ function extractJSON(response, level = 'unknown') {
           // Try parsing from this brace to the end of the response.
           // JSON.parse is lenient about trailing content only if we trim to the
           // right boundary, so use lastIndexOf('}') from the end.
-          const lastBrace = response.lastIndexOf('}');
           if (lastBrace > braceIdx) {
             const candidate = response.substring(braceIdx, lastBrace + 1);
             const parsed = JSON.parse(candidate);
