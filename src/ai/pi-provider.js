@@ -75,7 +75,7 @@ const PI_MODELS = [
     description: 'Pi autonomously selects the best model for each review task',
     badge: 'Smart Routing',
     badgeClass: 'badge-power',
-    extra_args: ['--skill', REVIEW_SKILL_PATH]
+    extra_args: ['--thinking', 'high', '--skill', REVIEW_SKILL_PATH]
   },
   {
     id: 'review-roulette',
@@ -86,7 +86,7 @@ const PI_MODELS = [
     description: 'Three random premium models review your changes in parallel',
     badge: 'Surprise',
     badgeClass: 'badge-power',
-    extra_args: ['--skill', ROULETTE_SKILL_PATH],
+    extra_args: ['--thinking', 'high', '--skill', ROULETTE_SKILL_PATH],
     env: { PI_TASK_MAX_DEPTH: '2' }
   }
 ];
