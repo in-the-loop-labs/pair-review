@@ -3432,37 +3432,74 @@ class PRManager {
     }
 
     try {
-      // Check if PR has new commits before analysis
-      try {
-        const staleResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`);
-        if (!staleResponse.ok) {
-          // Handle non-OK responses (401/403/500 etc)
-          const errorText = await staleResponse.text().catch(() => 'Unknown error');
-          console.warn(`Stale check failed with status ${staleResponse.status}:`, errorText);
-          if (window.toast) {
-            window.toast.showWarning(`Could not verify PR is current (${staleResponse.status}). Proceeding with analysis.`);
+      // Run stale check and settings fetch in parallel to minimize dialog delay.
+      // Use AbortController so the fetch is truly cancelled on timeout,
+      // freeing the HTTP connection for subsequent requests.
+      const STALE_TIMEOUT = 2000;
+      const staleAbort = new AbortController();
+      const staleTimer = setTimeout(() => {
+        console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
+        staleAbort.abort();
+      }, STALE_TIMEOUT);
+      const staleCheckPromise = fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`, { signal: staleAbort.signal })
+        .then(r => {
+          clearTimeout(staleTimer);
+          if (!r.ok) {
+            console.warn(`Stale check failed with status ${r.status}`);
+            return { _fetchError: true, status: r.status };
           }
-          // Fall through to continue with analysis
-        } else {
-          const staleData = await staleResponse.json();
+          return r.json();
+        })
+        .catch(err => {
+          clearTimeout(staleTimer);
+          if (err.name === 'AbortError') {
+            console.debug('[Analyze] stale-check aborted (timeout)');
+          } else {
+            console.warn('[Analyze] stale-check fetch error:', err);
+          }
+          return null;
+        });
 
+      // Show analysis config modal
+      if (!this.analysisConfigModal) {
+        clearTimeout(staleTimer);
+        console.warn('AnalysisConfigModal not initialized, proceeding without config');
+        await this.startAnalysis(owner, repo, number, btn, {});
+        return;
+      }
+
+      // Fetch stale check, repo settings, and last instructions in parallel
+      const [staleResult, repoSettings, lastInstructions] = await Promise.all([
+        staleCheckPromise,
+        this.fetchRepoSettings().catch(() => null),
+        this.fetchLastCustomInstructions().catch(() => '')
+      ]);
+
+      // Process stale check result
+      try {
+        if (staleResult === null) {
+          // Timed out or network error — fail open
+          if (window.toast) {
+            window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
+          }
+        } else if (staleResult._fetchError) {
+          if (window.toast) {
+            window.toast.showWarning(`Could not verify PR is current (${staleResult.status}). Proceeding with analysis.`);
+          }
+        } else {
           // Handle PR state - show info for closed/merged PRs but still allow analysis
-          if (staleData.prState && (staleData.prState !== 'open' || staleData.merged)) {
-            const stateLabel = staleData.merged ? 'merged' : 'closed';
+          if (staleResult.prState && (staleResult.prState !== 'open' || staleResult.merged)) {
+            const stateLabel = staleResult.merged ? 'merged' : 'closed';
             if (window.toast) {
               window.toast.showWarning(`This PR is ${stateLabel}. Analysis will proceed on the existing data.`);
             }
           }
 
-          // Handle isStale === null (unknown - couldn't check)
-          if (staleData.isStale === null) {
-            // Couldn't verify - show toast and proceed
+          if (staleResult.isStale === null) {
             if (window.toast) {
               window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
             }
-            // Continue with analysis
-          } else if (staleData.isStale === true) {
-            // PR is stale - show single dialog with 3 options
+          } else if (staleResult.isStale === true) {
             if (!window.confirmDialog) {
               console.warn('ConfirmDialog not available for stale PR check');
             } else {
@@ -3476,39 +3513,21 @@ class PRManager {
               });
 
               if (choice === 'confirm') {
-                // User wants to refresh first
                 await this.refreshPR();
-                // After refresh, continue with analysis
               } else if (choice === 'secondary') {
-                // User chose to analyze anyway - continue with stale data
+                // User chose to analyze anyway
               } else {
-                // User cancelled
                 return;
               }
             }
           }
-          // If isStale === false, PR is up-to-date, just continue
         }
       } catch (staleError) {
-        // Fail-open: show toast warning and continue with analysis
-        console.warn('Error checking PR staleness:', staleError);
+        console.warn('Error processing PR staleness:', staleError);
         if (window.toast) {
           window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
         }
       }
-
-      // Show analysis config modal
-      if (!this.analysisConfigModal) {
-        console.warn('AnalysisConfigModal not initialized, proceeding without config');
-        await this.startAnalysis(owner, repo, number, btn, {});
-        return;
-      }
-
-      // Fetch repo settings and last used instructions in parallel
-      const [repoSettings, lastInstructions] = await Promise.all([
-        this.fetchRepoSettings(),
-        this.fetchLastCustomInstructions()
-      ]);
 
       // Determine the model and provider to use (priority: remembered > repo default > defaults)
       const modelStorageKey = PRManager.getRepoStorageKey('pair-review-model', owner, repo);
