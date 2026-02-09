@@ -2507,6 +2507,41 @@ tr.newly-expanded .d2h-code-line-ctn {
   justify-content: center;
 }
 
+/* Dialogs spawned from within other modals need higher z-index */
+#text-input-dialog,
+#confirm-dialog {
+  z-index: 10000; /* Must stack above analysis-config-overlay (1100) */
+}
+
+.text-input-dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.text-input-dialog-field label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-fg-default, #1f2328);
+}
+
+.text-input-dialog-field input {
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--color-border-default, #d1d9e0);
+  border-radius: 6px;
+  background: var(--color-bg-primary, #ffffff);
+  color: var(--color-fg-default, #1f2328);
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.text-input-dialog-field input:focus {
+  border-color: var(--color-accent-fg, #0969da);
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.3);
+}
+
 /* Status Indicator Styles */
 .status-indicator {
   display: none;
@@ -2604,6 +2639,21 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 [data-theme="dark"] .modal-body {
   color: var(--color-text-primary); /* Better contrast for dark mode */
+}
+
+[data-theme="dark"] .text-input-dialog-field label {
+  color: var(--color-fg-default, #f0f6fc);
+}
+
+[data-theme="dark"] .text-input-dialog-field input {
+  background: var(--color-bg-tertiary, #161b22);
+  border-color: var(--color-border-default, #30363d);
+  color: var(--color-fg-default, #f0f6fc);
+}
+
+[data-theme="dark"] .text-input-dialog-field input:focus {
+  border-color: var(--color-accent-fg, #58a6ff);
+  box-shadow: 0 0 0 3px rgba(56, 139, 253, 0.3);
 }
 
 [data-theme="dark"] .status-indicator {
@@ -8642,9 +8692,15 @@ body.resizing * {
   border-top: 1px solid var(--color-border-primary);
 }
 
-/* Unsaved council changes hint */
-.council-dirty-hint {
+/* Unsaved council changes hint + footer save button container */
+.council-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-right: auto;
+}
+
+.council-dirty-hint {
   font-size: 12px;
   color: var(--color-accent-primary, #0969da);
   font-style: italic;
@@ -8830,6 +8886,18 @@ body.resizing * {
   background: var(--bg-subtle, #161b22);
   color: var(--fg-default, #e6edf3);
   border-color: var(--border-color, #30363d);
+}
+
+/* "New Council" option in council selector */
+.council-option-new {
+  font-style: italic;
+  color: var(--fg-muted, #656d76);
+}
+
+/* Style the select itself when "New Council" is the active selection */
+.council-select.new-council-selected {
+  font-style: italic;
+  color: var(--fg-muted, #656d76);
 }
 
 /* Council review divider - separates council config from per-review settings */
@@ -9091,6 +9159,39 @@ body.resizing * {
 .council-selector-row .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Icon-only danger button (e.g. delete council) */
+.btn-icon-danger {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--fg-muted, #656d76);
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.btn-icon-danger:hover:not(:disabled) {
+  color: var(--danger-fg, #d1242f);
+  background: var(--color-danger-subtle, rgba(255, 129, 130, 0.1));
+}
+
+.btn-icon-danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+[data-theme="dark"] .btn-icon-danger {
+  color: var(--color-text-secondary, #8b949e);
+}
+
+[data-theme="dark"] .btn-icon-danger:hover:not(:disabled) {
+  color: var(--color-danger, #f85149);
+  background: rgba(248, 81, 73, 0.1);
 }
 
 /* Info-tip toggle buttons (circled "i" icons next to section headers) */

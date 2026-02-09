@@ -298,12 +298,17 @@ class CouncilConfigTab {
         <h4 class="section-title">Council ${CouncilConfigTab.buildInfoTipButton('council')}</h4>
         ${CouncilConfigTab.buildInfoTipContent('council', 'A Review Council runs your code review through multiple AI models in parallel, then consolidates their findings. Different models catch different issues, giving you broader coverage than a single reviewer.')}
         <div class="council-selector-row">
-          <select id="council-selector" class="council-select">
-            <option value="">New Council</option>
+          <select id="council-selector" class="council-select new-council-selected">
+            <option value="" class="council-option-new">+ New Council</option>
           </select>
           <button class="btn btn-sm btn-secondary" id="council-save-btn" title="Save" disabled>Save</button>
           <button class="btn btn-sm btn-secondary" id="council-save-as-btn" title="Save As" disabled>Save As</button>
-          <button class="btn btn-sm btn-secondary" id="council-export-btn" title="Export JSON">Export</button>
+          <button class="btn btn-sm btn-secondary" id="council-export-btn" title="Copy config JSON to clipboard">Export</button>
+          <button class="btn btn-sm btn-icon-danger" id="council-delete-btn" title="Delete council" disabled>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zM4.496 6.675l.66 6.6a.25.25 0 00.249.225h5.19a.25.25 0 00.249-.225l.66-6.6a.75.75 0 011.492.149l-.66 6.6A1.748 1.748 0 0110.595 15h-5.19a1.75 1.75 0 01-1.741-1.575l-.66-6.6a.75.75 0 111.492-.15z"/>
+            </svg>
+          </button>
         </div>
       </section>
 
@@ -511,6 +516,7 @@ class CouncilConfigTab {
     // Council selector
     panel.querySelector('#council-selector')?.addEventListener('change', (e) => {
       this.selectedCouncilId = e.target.value || null;
+      e.target.classList.toggle('new-council-selected', !this.selectedCouncilId);
       if (this.selectedCouncilId) {
         const council = this.councils.find(c => c.id === this.selectedCouncilId);
         if (council) {
@@ -533,6 +539,18 @@ class CouncilConfigTab {
 
     // Export button
     panel.querySelector('#council-export-btn')?.addEventListener('click', () => this._exportCouncil());
+
+    // Delete button
+    panel.querySelector('#council-delete-btn')?.addEventListener('click', () => this._deleteCouncil());
+
+    // Footer save button (lives in modal footer, not council panel)
+    this.modal.querySelector('#council-footer-save-btn')?.addEventListener('click', () => {
+      if (this.selectedCouncilId) {
+        this._saveCouncil();
+      } else {
+        this._saveCouncilAs();
+      }
+    });
 
     // Level toggles (slider toggles that still use .level-checkbox class)
     panel.querySelectorAll('.level-checkbox').forEach(checkbox => {
@@ -647,7 +665,7 @@ class CouncilConfigTab {
     if (!selector) return;
 
     const currentValue = selector.value;
-    selector.innerHTML = '<option value="">New Council</option>';
+    selector.innerHTML = '<option value="" class="council-option-new">+ New Council</option>';
     for (const council of this.councils) {
       const opt = document.createElement('option');
       opt.value = council.id;
@@ -665,6 +683,7 @@ class CouncilConfigTab {
       if (council) {
         selector.value = pendingId;
         this.selectedCouncilId = pendingId;
+        selector.classList.remove('new-council-selected');
         this._applyConfigToUI(council.config);
         this._markClean();
         return;
@@ -672,6 +691,7 @@ class CouncilConfigTab {
     }
 
     if (currentValue) selector.value = currentValue;
+    selector.classList.toggle('new-council-selected', !selector.value);
   }
 
   _updateAllVoiceDropdowns() {
@@ -870,12 +890,20 @@ class CouncilConfigTab {
 
     const saveBtn = panel.querySelector('#council-save-btn');
     const saveAsBtn = panel.querySelector('#council-save-as-btn');
+    const deleteBtn = panel.querySelector('#council-delete-btn');
 
     if (saveBtn) {
       saveBtn.disabled = !this._isDirty || !this.selectedCouncilId;
     }
     if (saveAsBtn) {
-      saveAsBtn.disabled = !this._isDirty;
+      // Reuse _validateConfig to keep enablement in sync with actual save validation
+      const config = this._readConfigFromUI();
+      const { valid } = this._validateConfig(config);
+      saveAsBtn.disabled = !valid;
+    }
+    if (deleteBtn) {
+      // Delete is only available when viewing a saved council
+      deleteBtn.disabled = !this.selectedCouncilId;
     }
 
     // Toggle the "unsaved changes" hint in the modal footer
@@ -883,13 +911,13 @@ class CouncilConfigTab {
   }
 
   /**
-   * Toggle the "unsaved changes" hint in the modal footer.
+   * Toggle the "unsaved changes" hint + save button container in the modal footer.
    * Visible only when council tab is active AND config is dirty.
    */
   _updateDirtyHint() {
-    const hint = this.modal.querySelector('#council-dirty-hint');
-    if (!hint) return;
-    hint.style.display = (this.activeTab === 'council' && this._isDirty) ? '' : 'none';
+    const container = this.modal.querySelector('#council-footer-left');
+    if (!container) return;
+    container.style.display = (this.activeTab === 'council' && this._isDirty) ? '' : 'none';
   }
 
   /**
@@ -1087,10 +1115,28 @@ class CouncilConfigTab {
       return;
     }
 
-    const name = prompt('Council name:');
-    if (!name?.trim()) return;
+    const dialog = window.textInputDialog;
+    if (!dialog) return;
+    const currentCouncil = this.selectedCouncilId
+      ? this.councils.find(c => c.id === this.selectedCouncilId)
+      : null;
+    let name;
+    while (true) {
+      name = await dialog.show({
+        title: 'Save Council As',
+        label: 'Council name',
+        placeholder: 'Enter a name for this council',
+        value: name || currentCouncil?.name || '',
+        confirmText: 'Save',
+        confirmClass: 'btn-primary'
+      });
+      if (!name) return;
+      const duplicate = this.councils.find(c => c.name.toLowerCase() === name.toLowerCase());
+      if (!duplicate) break;
+      if (window.toast) window.toast.showWarning('A council with that name already exists.');
+    }
     try {
-      await this._postCouncil(name.trim(), config);
+      await this._postCouncil(name, config);
     } catch (error) {
       console.error('Error saving council:', error);
       if (window.toast) {
@@ -1138,18 +1184,65 @@ class CouncilConfigTab {
     this._markClean();
     await this.loadCouncils();
     const selector = this.modal.querySelector('#council-selector');
-    if (selector) selector.value = this.selectedCouncilId;
+    if (selector) {
+      selector.value = this.selectedCouncilId;
+      selector.classList.remove('new-council-selected');
+    }
   }
 
-  _exportCouncil() {
+  async _exportCouncil() {
     const config = this._readConfigFromUI();
-    const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'council-config.json';
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
+      if (window.toast) window.toast.showSuccess('Council config copied to clipboard');
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      if (window.toast) window.toast.showError('Failed to copy to clipboard');
+    }
+  }
+
+  async _deleteCouncil() {
+    if (!this.selectedCouncilId) return;
+
+    const council = this.councils.find(c => c.id === this.selectedCouncilId);
+    const councilName = council?.name || 'this council';
+
+    const confirmDlg = window.confirmDialog;
+    if (!confirmDlg) return;
+    const result = await confirmDlg.show({
+      title: 'Delete Council',
+      message: `Are you sure you want to delete "${councilName}"?`,
+      confirmText: 'Delete',
+      confirmClass: 'btn-danger'
+    });
+    if (result !== 'confirm') return;
+
+    try {
+      const response = await fetch(`/api/councils/${this.selectedCouncilId}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) {
+        throw new Error(`DELETE /api/councils/${this.selectedCouncilId} failed: ${response.status}`);
+      }
+
+      // Reset to "+ New Council" state
+      this.selectedCouncilId = null;
+      this._applyConfigToUI(this._defaultConfig());
+      this._markClean();
+      await this.loadCouncils();
+
+      const selector = this.modal.querySelector('#council-selector');
+      if (selector) {
+        selector.value = '';
+        selector.classList.add('new-council-selected');
+      }
+      this._updateSaveButtonStates();
+
+      if (window.toast) window.toast.showSuccess('Council deleted');
+    } catch (error) {
+      console.error('Error deleting council:', error);
+      if (window.toast) window.toast.showError('Failed to delete council');
+    }
   }
 }
 

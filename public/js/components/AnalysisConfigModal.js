@@ -316,7 +316,11 @@ class AnalysisConfigModal {
         </div>
 
         <div class="modal-footer analysis-config-footer">
-          <span class="council-dirty-hint" id="council-dirty-hint" style="display: none;">Unsaved council changes</span>
+          <div class="council-footer-left" id="council-footer-left" style="display: none;">
+            <span class="council-dirty-hint" id="council-dirty-hint">Unsaved council changes</span>
+            <button class="btn btn-sm btn-secondary" id="council-footer-save-btn"
+              title="Save council changes. Unsaved changes will be auto-saved as a new council when you analyze.">Save Council</button>
+          </div>
           <button class="btn btn-secondary" data-action="cancel">Cancel</button>
           <button class="btn btn-primary btn-analyze" data-action="submit" title="Start Analysis (Cmd/Ctrl+Enter)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -954,9 +958,9 @@ class AnalysisConfigModal {
         if (councilPanel) councilPanel.style.display = 'none';
         // Note: council custom instructions are NOT cleared here;
         // they are repopulated from lastInstructions on next show()
-        // Reset dirty hint
-        const dirtyHint = this.modal.querySelector('#council-dirty-hint');
-        if (dirtyHint) dirtyHint.style.display = 'none';
+        // Reset dirty hint container (includes hint text + save button)
+        const dirtyHintContainer = this.modal.querySelector('#council-footer-left');
+        if (dirtyHintContainer) dirtyHintContainer.style.display = 'none';
         // Reset submit button text to single-model default
         const submitBtnSpan = this.modal.querySelector('[data-action="submit"] span');
         if (submitBtnSpan) submitBtnSpan.textContent = 'Start Analysis';
