@@ -1176,7 +1176,12 @@
   "port": 7247,
   "theme": "light"
 }</code></pre>
-                <p>Generate a token at <a href="https://github.com/settings/tokens" target="_blank" rel="noopener" style="color: var(--color-text-link);">GitHub Settings &rarr; Developer settings &rarr; Personal access tokens</a>.</p>
+                <p>Create a <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener" style="color: var(--color-text-link);">GitHub Personal Access Token</a> with the following scopes:</p>
+                <ul style="margin: 0.5em 0; padding-left: 1.5em;">
+                    <li><code>repo</code> &mdash; required for private repositories</li>
+                    <li><code>public_repo</code> &mdash; sufficient for public repositories only</li>
+                </ul>
+                <p style="margin-top: 0.5em;">You can also provide the token via the <code>GITHUB_TOKEN</code> environment variable, which takes precedence over the config file.</p>
             </div>
         </div>
     </div>
