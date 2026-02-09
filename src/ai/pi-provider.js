@@ -84,7 +84,7 @@ const PI_MODELS = [
     tier: 'thorough',
     tagline: '3× Reasoning',
     description: 'Three random premium models review your changes in parallel',
-    badge: 'Roulette',
+    badge: 'Surprise',
     badgeClass: 'badge-power',
     extra_args: ['--skill', ROULETTE_SKILL_PATH],
     env: { PI_TASK_MAX_DEPTH: '2' }

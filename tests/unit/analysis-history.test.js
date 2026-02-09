@@ -780,6 +780,7 @@ describe('AnalysisHistoryManager', () => {
       expect(manager.getTierForModel('gpt-4o')).toBe('balanced');
       expect(manager.getTierForModel('gpt-4')).toBe('balanced');
       expect(manager.getTierForModel('o1-mini')).toBe('balanced');
+      expect(manager.getTierForModel('default')).toBe('balanced');
     });
 
     it('should return thorough tier for thorough models', () => {
@@ -792,6 +793,8 @@ describe('AnalysisHistoryManager', () => {
       expect(manager.getTierForModel('opus')).toBe('thorough');
       expect(manager.getTierForModel('ultra')).toBe('thorough');
       expect(manager.getTierForModel('o1')).toBe('thorough');
+      expect(manager.getTierForModel('multi-model')).toBe('thorough');
+      expect(manager.getTierForModel('review-roulette')).toBe('thorough');
     });
 
     it('should return null for unknown models', () => {

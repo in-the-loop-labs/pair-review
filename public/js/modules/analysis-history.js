@@ -748,7 +748,11 @@ class AnalysisHistoryManager {
       'o1': 'thorough',
       'o1-mini': 'balanced',
       // Copilot models
-      'gpt-4': 'balanced'
+      'gpt-4': 'balanced',
+      // Pi models
+      'default': 'balanced',
+      'multi-model': 'thorough',
+      'review-roulette': 'thorough'
     };
 
     return modelTiers[modelId] || null;
