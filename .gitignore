@@ -16,3 +16,4 @@ analyze_*.js
 .playwright-mcp/*
 test-results/
 .critic-loop/
+examples/

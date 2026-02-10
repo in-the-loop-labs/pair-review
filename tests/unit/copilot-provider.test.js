@@ -48,7 +48,7 @@ describe('CopilotProvider', () => {
     });
 
     it('should return default model', () => {
-      expect(CopilotProvider.getDefaultModel()).toBe('gemini-3-pro-preview');
+      expect(CopilotProvider.getDefaultModel()).toBe('claude-sonnet-4.5');
     });
 
     it('should return array of models', () => {
@@ -74,7 +74,7 @@ describe('CopilotProvider', () => {
       const models = CopilotProvider.getModels();
       const defaultModels = models.filter(m => m.default);
       expect(defaultModels).toHaveLength(1);
-      expect(defaultModels[0].id).toBe('gemini-3-pro-preview');
+      expect(defaultModels[0].id).toBe('claude-sonnet-4.5');
     });
 
     it('should return install instructions with correct GitHub Copilot package', () => {
@@ -96,51 +96,46 @@ describe('CopilotProvider', () => {
       const models = CopilotProvider.getModels();
       const fastModels = models.filter(m => m.tier === 'fast');
       expect(fastModels.length).toBeGreaterThan(0);
-      expect(fastModels[0].id).toBe('gpt-5.1-codex-mini');
+      expect(fastModels[0].id).toBe('claude-haiku-4.5');
     });
 
-    it('should have balanced tier model', () => {
+    it('should have balanced tier models', () => {
       const models = CopilotProvider.getModels();
       const balancedModels = models.filter(m => m.tier === 'balanced');
       expect(balancedModels.length).toBeGreaterThan(0);
-      expect(balancedModels[0].id).toBe('gemini-3-pro-preview');
+      expect(balancedModels[0].id).toBe('claude-sonnet-4.5');
     });
 
-    it('should have thorough tier model', () => {
+    it('should have thorough tier models', () => {
       const models = CopilotProvider.getModels();
       const thoroughModels = models.filter(m => m.tier === 'thorough');
-      expect(thoroughModels.length).toBeGreaterThan(0);
-      expect(thoroughModels[0].id).toBe('gpt-5.1-codex-max');
+      expect(thoroughModels.length).toBe(3);
+      const thoroughIds = thoroughModels.map(m => m.id);
+      expect(thoroughIds).toContain('gpt-5.3-codex');
+      expect(thoroughIds).toContain('claude-opus-4.5');
+      expect(thoroughIds).toContain('claude-opus-4.6');
     });
 
-    it('should have premium tier model', () => {
+    it('should have exactly 7 models covering tiers', () => {
       const models = CopilotProvider.getModels();
-      const premiumModels = models.filter(m => m.tier === 'premium');
-      expect(premiumModels.length).toBeGreaterThan(0);
-      expect(premiumModels[0].id).toBe('claude-opus-4.5');
-    });
-
-    it('should have exactly 4 models covering all tiers', () => {
-      const models = CopilotProvider.getModels();
-      expect(models).toHaveLength(4);
+      expect(models).toHaveLength(7);
 
       const tiers = models.map(m => m.tier);
       expect(tiers).toContain('fast');
       expect(tiers).toContain('balanced');
       expect(tiers).toContain('thorough');
-      expect(tiers).toContain('premium');
     });
   });
 
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CopilotProvider();
-      expect(provider.model).toBe('gemini-3-pro-preview');
+      expect(provider.model).toBe('claude-sonnet-4.5');
     });
 
     it('should create instance with custom model', () => {
-      const provider = new CopilotProvider('claude-opus-4.5');
-      expect(provider.model).toBe('claude-opus-4.5');
+      const provider = new CopilotProvider('claude-opus-4.6');
+      expect(provider.model).toBe('claude-opus-4.6');
     });
 
     it('should use default copilot command', () => {
@@ -163,9 +158,9 @@ describe('CopilotProvider', () => {
     });
 
     it('should configure base args correctly', () => {
-      const provider = new CopilotProvider('gpt-5.1-codex-max');
+      const provider = new CopilotProvider('claude-opus-4.6');
       expect(provider.baseArgs).toContain('--model');
-      expect(provider.baseArgs).toContain('gpt-5.1-codex-max');
+      expect(provider.baseArgs).toContain('claude-opus-4.6');
       expect(provider.baseArgs).toContain('-s');
     });
 
@@ -208,7 +203,7 @@ describe('CopilotProvider', () => {
 
     describe('yolo mode', () => {
       it('should include deny rules and per-command allow rules by default', () => {
-        const provider = new CopilotProvider('gemini-3-pro-preview', {});
+        const provider = new CopilotProvider('claude-sonnet-4.5', {});
         const args = provider.baseArgs;
 
         // Default mode enforces read-only restrictions
@@ -220,7 +215,7 @@ describe('CopilotProvider', () => {
       });
 
       it('should skip deny rules and per-command allow rules when yolo is true', () => {
-        const provider = new CopilotProvider('gemini-3-pro-preview', { yolo: true });
+        const provider = new CopilotProvider('claude-sonnet-4.5', { yolo: true });
         const args = provider.baseArgs;
 
         // Yolo mode: broad permissions only, no fine-grained rules
@@ -236,7 +231,7 @@ describe('CopilotProvider', () => {
       });
 
       it('should use deny rules when yolo is explicitly false', () => {
-        const provider = new CopilotProvider('gemini-3-pro-preview', { yolo: false });
+        const provider = new CopilotProvider('claude-sonnet-4.5', { yolo: false });
         const args = provider.baseArgs;
 
         // Explicit false behaves the same as default — restrictions apply
@@ -256,14 +251,11 @@ describe('CopilotProvider', () => {
       const fastModel = models.find(m => m.tier === 'fast');
       expect(fastModel.badgeClass).toBe('badge-speed');
 
-      const balancedModel = models.find(m => m.tier === 'balanced');
+      const balancedModel = models.find(m => m.tier === 'balanced' && m.default);
       expect(balancedModel.badgeClass).toBe('badge-recommended');
 
-      const thoroughModel = models.find(m => m.tier === 'thorough');
-      expect(thoroughModel.badgeClass).toBe('badge-power');
-
-      const premiumModel = models.find(m => m.tier === 'premium');
-      expect(premiumModel.badgeClass).toBe('badge-premium');
+      const thoroughModels = models.filter(m => m.tier === 'thorough');
+      expect(thoroughModels.length).toBe(3);
     });
 
     it('should have meaningful taglines for each model', () => {

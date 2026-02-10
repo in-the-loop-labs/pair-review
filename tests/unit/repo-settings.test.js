@@ -214,12 +214,15 @@ const TEST_PROVIDERS = {
     id: 'copilot',
     name: 'Copilot',
     models: [
-      { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Mini', tier: 'fast' },
-      { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro', tier: 'balanced', default: true },
-      { id: 'gpt-5.1-codex-max', name: 'GPT-5.1 Max', tier: 'thorough' },
-      { id: 'claude-opus-4.5', name: 'Claude Opus 4.5', tier: 'premium' }
+      { id: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', tier: 'fast' },
+      { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', tier: 'balanced', default: true },
+      { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro', tier: 'balanced' },
+      { id: 'gpt-5.2-codex', name: 'GPT-5.2 Codex', tier: 'balanced' },
+      { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', tier: 'thorough' },
+      { id: 'claude-opus-4.5', name: 'Claude Opus 4.5', tier: 'thorough' },
+      { id: 'claude-opus-4.6', name: 'Claude Opus 4.6', tier: 'thorough' }
     ],
-    defaultModel: 'gemini-3-pro-preview'
+    defaultModel: 'claude-sonnet-4.5'
   }
 };
 
@@ -626,28 +629,28 @@ describe('RepoSettingsPage', () => {
         providers: { copilot: TEST_PROVIDERS.copilot },
         currentSettings: {
           default_provider: 'copilot',
-          default_model: 'claude-opus-4.5',
+          default_model: 'claude-opus-4.6',
           default_instructions: ''
         },
         originalSettings: {
           default_provider: 'copilot',
-          default_model: 'claude-opus-4.5',
+          default_model: 'claude-opus-4.6',
           default_instructions: ''
         },
         selectedProvider: 'copilot'
       });
 
       // Verify premium model is selected
-      expect(instance.currentSettings.default_model).toBe('claude-opus-4.5');
+      expect(instance.currentSettings.default_model).toBe('claude-opus-4.6');
       expect(instance.selectedProvider).toBe('copilot');
 
       // Verify payload includes premium model
       const payload = instance.getSavePayload();
       expect(payload.default_provider).toBe('copilot');
-      expect(payload.default_model).toBe('claude-opus-4.5');
+      expect(payload.default_model).toBe('claude-opus-4.6');
     });
 
-    it('should map premium tier when switching between providers with premium support', () => {
+    it('should map thorough tier when switching between providers', () => {
       // Create a second provider with premium tier for testing tier mapping
       const premiumProvider = {
         id: 'premium-test',
@@ -665,45 +668,45 @@ describe('RepoSettingsPage', () => {
         providers: { copilot: TEST_PROVIDERS.copilot, 'premium-test': premiumProvider },
         currentSettings: {
           default_provider: 'copilot',
-          default_model: 'claude-opus-4.5', // premium tier
+          default_model: 'claude-opus-4.6', // thorough tier
           default_instructions: ''
         },
         originalSettings: {
           default_provider: 'copilot',
-          default_model: 'claude-opus-4.5',
+          default_model: 'claude-opus-4.6',
           default_instructions: ''
         },
         selectedProvider: 'copilot'
       });
 
-      // Switch to provider with premium tier support
+      // Switch to provider with thorough tier support
       instance.selectProvider('premium-test', true);
 
-      // Should map to premium-test's premium tier model (ultimate)
-      expect(instance.currentSettings.default_model).toBe('ultimate');
+      // Should map to premium-test's thorough tier model (advanced)
+      expect(instance.currentSettings.default_model).toBe('advanced');
     });
 
-    it('should fall back to default when switching from premium tier to provider without premium', () => {
+    it('should map thorough tier when switching from copilot to claude', () => {
       const instance = createRepoSettingsInstance({
         providers: { copilot: TEST_PROVIDERS.copilot, claude: TEST_PROVIDERS.claude },
         currentSettings: {
           default_provider: 'copilot',
-          default_model: 'claude-opus-4.5', // premium tier
+          default_model: 'claude-opus-4.6', // thorough tier
           default_instructions: ''
         },
         originalSettings: {
           default_provider: 'copilot',
-          default_model: 'claude-opus-4.5',
+          default_model: 'claude-opus-4.6',
           default_instructions: ''
         },
         selectedProvider: 'copilot'
       });
 
-      // Switch to claude which has no premium tier
+      // Switch to claude which has a thorough tier
       instance.selectProvider('claude', true);
 
-      // Should fall back to claude's default model (sonnet) since no premium tier exists
-      expect(instance.currentSettings.default_model).toBe('sonnet');
+      // Should map to claude's thorough tier model (opus)
+      expect(instance.currentSettings.default_model).toBe('opus');
     });
 
     it('should detect changes when premium model is selected', () => {
@@ -711,12 +714,12 @@ describe('RepoSettingsPage', () => {
         providers: { copilot: TEST_PROVIDERS.copilot },
         currentSettings: {
           default_provider: 'copilot',
-          default_model: 'claude-opus-4.5', // changed to premium
+          default_model: 'claude-opus-4.6', // changed to thorough
           default_instructions: ''
         },
         originalSettings: {
           default_provider: 'copilot',
-          default_model: 'gemini-3-pro-preview', // was balanced tier
+          default_model: 'claude-sonnet-4.5', // was balanced tier
           default_instructions: ''
         },
         selectedProvider: 'copilot'
@@ -731,12 +734,12 @@ describe('RepoSettingsPage', () => {
         providers: { copilot: TEST_PROVIDERS.copilot },
         currentSettings: {
           default_provider: 'copilot',
-          default_model: 'claude-opus-4.5',
+          default_model: 'claude-opus-4.6',
           default_instructions: ''
         },
         originalSettings: {
           default_provider: 'copilot',
-          default_model: 'claude-opus-4.5',
+          default_model: 'claude-opus-4.6',
           default_instructions: ''
         },
         selectedProvider: 'copilot'
