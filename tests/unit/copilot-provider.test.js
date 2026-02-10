@@ -109,16 +109,15 @@ describe('CopilotProvider', () => {
     it('should have thorough tier models', () => {
       const models = CopilotProvider.getModels();
       const thoroughModels = models.filter(m => m.tier === 'thorough');
-      expect(thoroughModels.length).toBe(3);
+      expect(thoroughModels.length).toBe(2);
       const thoroughIds = thoroughModels.map(m => m.id);
-      expect(thoroughIds).toContain('gpt-5.3-codex');
       expect(thoroughIds).toContain('claude-opus-4.5');
       expect(thoroughIds).toContain('claude-opus-4.6');
     });
 
     it('should have exactly 7 models covering tiers', () => {
       const models = CopilotProvider.getModels();
-      expect(models).toHaveLength(7);
+      expect(models).toHaveLength(6);
 
       const tiers = models.map(m => m.tier);
       expect(tiers).toContain('fast');
@@ -267,7 +266,7 @@ describe('CopilotProvider', () => {
       expect(balancedModel.badgeClass).toBe('badge-recommended');
 
       const thoroughModels = models.filter(m => m.tier === 'thorough');
-      expect(thoroughModels.length).toBe(3);
+      expect(thoroughModels.length).toBe(2);
     });
 
     it('should have meaningful taglines for each model', () => {
