@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.2
+
+### Patch Changes
+
+- cd4c3ba: Fix shell quoting across all AI providers when using multi-word CLI commands (e.g. `devx claude --`). The original regex in Claude's `_quoteShellArgs()` used `[]` which JavaScript treats as an empty character class matching nothing, so arguments with shell metacharacters like `Bash(git diff*)` were never quoted. Extracted a shared `quoteShellArgs()` utility into the base provider module and applied it to all 7 providers: Claude, Gemini, Copilot, Codex, Pi, OpenCode, and Cursor Agent.
+- 83d7c3b: Route index page review starts through the setup page to show step-by-step progress matching the MCP/CLI flow, and fix bfcache form state bug
+- 4157d8b: Update AI provider model configurations for Codex, Copilot, Cursor Agent, and Gemini providers
+
 ## 1.4.1
 
 ### Patch Changes
