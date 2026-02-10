@@ -389,7 +389,7 @@ class CopilotProvider extends AIProvider {
     // Use stdin for prompt - safer than command args for arbitrary content
     if (useShell) {
       return {
-        command: `${copilotCmd} ${args.join(' ')}`,
+        command: `${copilotCmd} ${quoteShellArgs(args).join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true
