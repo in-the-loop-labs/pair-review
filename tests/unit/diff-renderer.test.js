@@ -184,6 +184,171 @@ describe('DiffRenderer', () => {
     });
   });
 
+  describe('removeStrandedHunkHeaders', () => {
+    // NOTE: The mock wires up static previousElementSibling pointers once at
+    // creation time. This is sufficient for single-mutation scenarios (one
+    // header relocated or removed per test), but sibling pointers are NOT
+    // updated after DOM mutations (remove/insertAdjacentElement). For tests
+    // that verify multi-mutation interactions, either enhance the mock with
+    // a linked-list that re-wires on mutation, or use jsdom.
+    function createMockRow(type, options = {}) {
+      const classList = new Set();
+      if (type === 'header') classList.add('d2h-info');
+      if (type === 'gap') classList.add('context-expand-row');
+
+      return {
+        classList: {
+          contains: (className) => classList.has(className),
+          add: (className) => classList.add(className)
+        },
+        dataset: options.dataset || {},
+        previousElementSibling: null,
+        remove: vi.fn(),
+        insertAdjacentElement: vi.fn()
+      };
+    }
+
+    function createMockTbody(rows) {
+      // Wire up previousElementSibling for each row
+      for (let i = 0; i < rows.length; i++) {
+        rows[i].previousElementSibling = i > 0 ? rows[i - 1] : null;
+      }
+      return {
+        querySelectorAll: vi.fn().mockReturnValue(
+          rows.filter(r => r.classList.contains('d2h-info'))
+        )
+      };
+    }
+
+    it('should not throw on null tbody', () => {
+      expect(() => DiffRenderer.removeStrandedHunkHeaders(null)).not.toThrow();
+    });
+
+    it('should keep header that is the first row in the tbody', () => {
+      const header = createMockRow('header');
+      const tbody = createMockTbody([header]);
+
+      DiffRenderer.removeStrandedHunkHeaders(tbody);
+      expect(header.remove).not.toHaveBeenCalled();
+    });
+
+    it('should keep header preceded by a gap row', () => {
+      const gap = createMockRow('gap');
+      const header = createMockRow('header');
+      const tbody = createMockTbody([gap, header]);
+
+      DiffRenderer.removeStrandedHunkHeaders(tbody);
+      expect(header.remove).not.toHaveBeenCalled();
+    });
+
+    it('should remove header preceded by a content row (stranded, no function context)', () => {
+      const content = createMockRow('content');
+      const header = createMockRow('header');
+      const tbody = createMockTbody([content, header]);
+
+      DiffRenderer.removeStrandedHunkHeaders(tbody);
+      expect(header.remove).toHaveBeenCalled();
+    });
+
+    it('should handle mix of stranded and boundary headers', () => {
+      const gap = createMockRow('gap');
+      const header1 = createMockRow('header'); // preceded by gap → keep
+      const content = createMockRow('content');
+      const header2 = createMockRow('header'); // preceded by content → remove
+      const tbody = createMockTbody([gap, header1, content, header2]);
+
+      DiffRenderer.removeStrandedHunkHeaders(tbody);
+      expect(header1.remove).not.toHaveBeenCalled();
+      expect(header2.remove).toHaveBeenCalled();
+    });
+
+    it('should remove header preceded by another header (no gap between)', () => {
+      const gap = createMockRow('gap');
+      const header1 = createMockRow('header');
+      const header2 = createMockRow('header'); // preceded by header → remove
+      const tbody = createMockTbody([gap, header1, header2]);
+
+      DiffRenderer.removeStrandedHunkHeaders(tbody);
+      expect(header1.remove).not.toHaveBeenCalled();
+      expect(header2.remove).toHaveBeenCalled();
+    });
+
+    describe('function context relocation', () => {
+      it('should relocate stranded header with function context to nearest gap above', () => {
+        // Scenario: expand up created [gap] [code...] [_f_ header] [code...]
+        const gap = createMockRow('gap');
+        const code1 = createMockRow('content');
+        const code2 = createMockRow('content');
+        const header = createMockRow('header', {
+          dataset: { functionContext: 'function foo()' }
+        });
+        const tbody = createMockTbody([gap, code1, code2, header]);
+
+        DiffRenderer.removeStrandedHunkHeaders(tbody);
+        // Should relocate, not remove
+        expect(header.remove).not.toHaveBeenCalled();
+        expect(gap.insertAdjacentElement).toHaveBeenCalledWith('afterend', header);
+      });
+
+      it('should remove stranded header with function context when no gap above', () => {
+        // Scenario: expand all removed the entire gap, no gap remains
+        const code = createMockRow('content');
+        const header = createMockRow('header', {
+          dataset: { functionContext: 'function foo()' }
+        });
+        const tbody = createMockTbody([code, header]);
+
+        DiffRenderer.removeStrandedHunkHeaders(tbody);
+        expect(header.remove).toHaveBeenCalled();
+      });
+
+      it('should not cross hunk header boundaries when searching for gap', () => {
+        // [gap] [otherHeader] [code] [header with functionContext]
+        // Search from header should stop at otherHeader, not find the gap
+        const gap = createMockRow('gap');
+        const otherHeader = createMockRow('header');
+        const code = createMockRow('content');
+        const header = createMockRow('header', {
+          dataset: { functionContext: 'function foo()' }
+        });
+        const tbody = createMockTbody([gap, otherHeader, code, header]);
+
+        DiffRenderer.removeStrandedHunkHeaders(tbody);
+        // otherHeader is kept (preceded by gap)
+        expect(otherHeader.remove).not.toHaveBeenCalled();
+        // header can't reach the gap (blocked by otherHeader) → removed
+        expect(header.remove).toHaveBeenCalled();
+        expect(gap.insertAdjacentElement).not.toHaveBeenCalled();
+      });
+
+      it('should still remove stranded ... dividers even when gap exists above', () => {
+        // A header without function context (... divider) should be removed, not relocated
+        const gap = createMockRow('gap');
+        const code = createMockRow('content');
+        const header = createMockRow('header'); // no functionContext in dataset
+        const tbody = createMockTbody([gap, code, header]);
+
+        DiffRenderer.removeStrandedHunkHeaders(tbody);
+        expect(header.remove).toHaveBeenCalled();
+        expect(gap.insertAdjacentElement).not.toHaveBeenCalled();
+      });
+
+      it('should relocate to immediately preceding gap (single code row between)', () => {
+        // [gap] [code] [header with functionContext]
+        const gap = createMockRow('gap');
+        const code = createMockRow('content');
+        const header = createMockRow('header', {
+          dataset: { functionContext: 'class MyClass' }
+        });
+        const tbody = createMockTbody([gap, code, header]);
+
+        DiffRenderer.removeStrandedHunkHeaders(tbody);
+        expect(header.remove).not.toHaveBeenCalled();
+        expect(gap.insertAdjacentElement).toHaveBeenCalledWith('afterend', header);
+      });
+    });
+  });
+
   describe('updateFunctionContextVisibility', () => {
     // Helper to create mock DOM structure
     function createMockTbody(rows) {

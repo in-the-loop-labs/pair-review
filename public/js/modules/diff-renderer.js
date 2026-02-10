@@ -517,6 +517,8 @@ class DiffRenderer {
 
     const headerContent = functionContext
       ? `<span class="hunk-context-icon" aria-label="Function context">f</span><span class="hunk-context-text">${DiffRenderer.escapeHtml(functionContext)}</span>`
+      // "..." dividers act as visual separators between non-contiguous code
+      // sections when git couldn't identify a surrounding function/class scope.
       : '<span class="hunk-divider" aria-label="Code section divider">...</span>';
 
     headerRow.innerHTML = `<td colspan="2" class="d2h-info">${headerContent}</td>`;
@@ -552,6 +554,62 @@ class DiffRenderer {
     return trimmedLine.startsWith(trimmedContext) ||
            trimmedLine.includes(trimmedContext + '(') ||
            trimmedLine.includes(trimmedContext + ' ');
+  }
+
+  /**
+   * Handle hunk header rows that are no longer at a gap boundary.
+   * A hunk header (d2h-info row) should only be visible when:
+   *   1. It is the first row in the tbody (file-level context), OR
+   *   2. Its immediately preceding sibling is a gap row (context-expand-row)
+   *
+   * When a header with function context (_f_ marker) becomes stranded after
+   * upward expansion, it is relocated to the nearest gap row above within the
+   * same hunk section. This preserves the function context indicator for the
+   * remaining gap, whether or not the function definition is now visible below.
+   *
+   * Headers without function context (... dividers) or those with no reachable
+   * gap above are removed.
+   * @param {HTMLElement} tbody - The table body containing the diff
+   */
+  static removeStrandedHunkHeaders(tbody) {
+    if (!tbody) return;
+
+    const infoRows = tbody.querySelectorAll('tr.d2h-info');
+    for (const row of infoRows) {
+      const prev = row.previousElementSibling;
+      // Keep if this is the first row in the tbody (provides file-level context)
+      if (!prev) continue;
+      // Keep if preceded by a gap row (the header marks the boundary)
+      if (prev.classList.contains('context-expand-row')) continue;
+
+      // Header is stranded between visible code lines.
+      // If it has function context, try to relocate it to the nearest gap above
+      // so the gap retains its function context indicator.
+      if (row.dataset.functionContext) {
+        let sibling = row.previousElementSibling;
+        let nearestGap = null;
+        while (sibling) {
+          if (sibling.classList.contains('context-expand-row')) {
+            nearestGap = sibling;
+            break;
+          }
+          // Stop at another hunk header - don't cross hunk boundaries.
+          // (This also means only the nearest stranded header in DOM order
+          // gets relocated to a given gap; subsequent ones are removed.)
+          if (sibling.classList.contains('d2h-info')) break;
+          sibling = sibling.previousElementSibling;
+        }
+
+        if (nearestGap) {
+          // Relocate: move the header to right after the gap row
+          nearestGap.insertAdjacentElement('afterend', row);
+          continue;
+        }
+      }
+
+      // No gap found above or no function context - remove the stranded header
+      row.remove();
+    }
   }
 
   /**

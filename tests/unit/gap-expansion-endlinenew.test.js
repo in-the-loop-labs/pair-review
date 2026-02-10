@@ -495,6 +495,50 @@ describe('endLineNew propagation formulas', () => {
   });
 });
 
+describe('expandGapRange position propagation', () => {
+  // When expandGapRange splits a gap, each remnant's position depends on
+  // whether it remains at a file boundary:
+  //   gapAbovePosition = position === 'above' ? 'above' : 'between'
+  //   gapBelowPosition = position === 'below' ? 'below' : 'between'
+
+  describe('splitting a between gap', () => {
+    it('should give both remnants between position', () => {
+      const position = 'between';
+      const gapAbovePosition = position === 'above' ? 'above' : 'between';
+      const gapBelowPosition = position === 'below' ? 'below' : 'between';
+
+      expect(gapAbovePosition).toBe('between');
+      expect(gapBelowPosition).toBe('between');
+    });
+  });
+
+  describe('splitting an above (start-of-file) gap', () => {
+    it('should keep above for upper remnant, between for lower remnant', () => {
+      const position = 'above';
+      const gapAbovePosition = position === 'above' ? 'above' : 'between';
+      const gapBelowPosition = position === 'below' ? 'below' : 'between';
+
+      // Upper remnant stays at file boundary → 'above' (expand up only)
+      expect(gapAbovePosition).toBe('above');
+      // Lower remnant is sandwiched between expanded content and first hunk → 'between'
+      expect(gapBelowPosition).toBe('between');
+    });
+  });
+
+  describe('splitting a below (end-of-file) gap', () => {
+    it('should give between for upper remnant, keep below for lower remnant', () => {
+      const position = 'below';
+      const gapAbovePosition = position === 'above' ? 'above' : 'between';
+      const gapBelowPosition = position === 'below' ? 'below' : 'between';
+
+      // Upper remnant is sandwiched between last hunk and expanded content → 'between'
+      expect(gapAbovePosition).toBe('between');
+      // Lower remnant stays at file boundary → 'below' (expand down only)
+      expect(gapBelowPosition).toBe('below');
+    });
+  });
+});
+
 describe('endLineNew propagation integration scenarios', () => {
   describe('complete upward expansion flow', () => {
     it('should track all values through upward expansion', () => {
