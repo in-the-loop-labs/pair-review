@@ -115,6 +115,15 @@ describe('GeminiProvider', () => {
       expect(provider.command).toContain('devx gemini');
     });
 
+    it('should single-quote --allowed-tools value in shell mode command', () => {
+      process.env.PAIR_REVIEW_GEMINI_CMD = 'devx gemini --';
+      const provider = new GeminiProvider('gemini-2.5-pro');
+      // The allowed-tools value contains shell metacharacters (parentheses, commas)
+      // and must be single-quoted to prevent shell interpretation
+      expect(provider.command).toMatch(/--allowed-tools '[^']+'/);
+      expect(provider.command).toContain("'list_directory,read_file,glob,search_file_content,run_shell_command(git diff)");
+    });
+
     it('should configure base args correctly with stream-json output', () => {
       const provider = new GeminiProvider('gemini-3-flash-preview');
       expect(provider.args).toContain('-m');

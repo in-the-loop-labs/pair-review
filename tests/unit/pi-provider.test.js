@@ -128,6 +128,18 @@ describe('PiProvider', () => {
       expect(provider.useShell).toBe(true);
     });
 
+    it('should quote shell-sensitive extra_args in getExtractionConfig shell mode command', () => {
+      process.env.PAIR_REVIEW_PI_CMD = 'devx pi --';
+      const provider = new PiProvider('test-model', {
+        extra_args: ['--flag', 'value(test)']
+      });
+      // Pi builds the full command in getExtractionConfig(), so test via that method
+      const config = provider.getExtractionConfig('test-model');
+      expect(config.useShell).toBe(true);
+      // The extra arg with parentheses should be single-quoted
+      expect(config.command).toContain("'value(test)'");
+    });
+
     it('should configure base args correctly', () => {
       const provider = new PiProvider('gemini-2.5-flash');
       expect(provider.baseArgs).toContain('-p');
