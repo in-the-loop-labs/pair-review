@@ -22,8 +22,8 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  *
  * Based on OpenAI Codex Models guide (developers.openai.com/codex/models)
  * - gpt-5.1-codex-mini: Smaller, cost-effective variant for quick scans
- * - gpt-5.1-codex-max: Optimized for long-horizon agentic coding tasks
- * - gpt-5.2-codex: Most advanced agentic coding model for real-world engineering
+ * - gpt-5.2-codex: Advanced coding model for everyday reviews, good reasoning/cost balance
+ * - gpt-5.3-codex: Most capable agentic coding model with frontier performance and reasoning
  */
 const CODEX_MODELS = [
   {
@@ -36,21 +36,21 @@ const CODEX_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
-    id: 'gpt-5.1-codex-max',
-    name: 'GPT-5.1 Max',
+    id: 'gpt-5.2-codex',
+    name: 'GPT-5.2 Codex',
     tier: 'balanced',
     tagline: 'Best Balance',
-    description: 'Strong everyday reviewer—quality + speed for PR-sized changes and practical suggestions.',
+    description: 'Strong everyday reviewer—good reasoning and code understanding for PR-sized changes without top-tier cost.',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
   },
   {
-    id: 'gpt-5.2-codex',
-    name: 'GPT-5.2',
+    id: 'gpt-5.3-codex',
+    name: 'GPT-5.3 Codex',
     tier: 'thorough',
     tagline: 'Deep Review',
-    description: 'Most capable for complex diffs—finds subtle issues, reasons across files, and proposes step-by-step fixes.',
+    description: 'Most capable agentic coding model—combines frontier coding performance with stronger reasoning for deep cross-file analysis.',
     badge: 'Most Thorough',
     badgeClass: 'badge-power'
   }
@@ -65,7 +65,7 @@ class CodexProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'gpt-5.1-codex-max', configOverrides = {}) {
+  constructor(model = 'gpt-5.2-codex', configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -676,7 +676,7 @@ class CodexProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'gpt-5.1-codex-max';
+    return 'gpt-5.2-codex';
   }
 
   static getInstallInstructions() {

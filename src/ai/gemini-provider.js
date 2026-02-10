@@ -25,7 +25,7 @@ const GEMINI_MODELS = [
     name: '3.0 Flash',
     tier: 'fast',
     tagline: 'Rapid Sanity Check',
-    description: 'Best for catching syntax, typos, and simple logic errors',
+    description: 'Fast and capable at a fraction of the cost of larger models',
     badge: 'Quick Look',
     badgeClass: 'badge-speed'
   },
@@ -34,7 +34,7 @@ const GEMINI_MODELS = [
     name: '2.5 Pro',
     tier: 'balanced',
     tagline: 'Standard PR Review',
-    description: 'Reliable feedback on code style, features, and refactoring',
+    description: 'Strong reasoning with large context window—reliable for everyday code reviews',
     badge: 'Daily Driver',
     badgeClass: 'badge-recommended',
     default: true
@@ -44,7 +44,7 @@ const GEMINI_MODELS = [
     name: '3.0 Pro',
     tier: 'thorough',
     tagline: 'Architectural Audit',
-    description: 'Deep analysis for race conditions, security, and edge cases',
+    description: 'Most intelligent Gemini model—advanced reasoning for deep architectural analysis',
     badge: 'Deep Dive',
     badgeClass: 'badge-power'
   }

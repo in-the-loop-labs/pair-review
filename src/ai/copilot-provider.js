@@ -21,42 +21,72 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  *
  * GitHub Copilot CLI supports multiple AI models including OpenAI,
  * Anthropic, and Google models via the --model flag.
+ * Available models (as of Feb 2026): claude-haiku-4.5, claude-sonnet-4.5,
+ * gemini-3-pro-preview, gpt-5.2-codex, gpt-5.3-codex, claude-opus-4.5,
+ * claude-opus-4.6. Default is claude-sonnet-4.5.
  */
 const COPILOT_MODELS = [
   {
-    id: 'gpt-5.1-codex-mini',
-    name: 'GPT-5.1 Mini',
+    id: 'claude-haiku-4.5',
+    name: 'Claude Haiku 4.5',
     tier: 'fast',
     tagline: 'Quick Scan',
-    description: 'Rapid feedback for obvious issues and style checks',
+    description: 'Rapid feedback for obvious issues, style checks, and simple logic errors',
     badge: 'Speedy',
     badgeClass: 'badge-speed'
   },
   {
-    id: 'gemini-3-pro-preview',
-    name: 'Gemini 3 Pro',
+    id: 'claude-sonnet-4.5',
+    name: 'Claude Sonnet 4.5',
     tier: 'balanced',
     tagline: 'Reliable Review',
-    description: 'Solid everyday reviews with good coverage',
+    description: 'Copilot default—strong code understanding with excellent quality-to-cost ratio',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
   },
   {
-    id: 'gpt-5.1-codex-max',
-    name: 'GPT-5.1 Max',
+    id: 'gemini-3-pro-preview',
+    name: 'Gemini 3 Pro',
+    tier: 'balanced',
+    tagline: 'Strong Alternative',
+    description: "Google's most capable model—strong reasoning for cross-file analysis",
+    badge: 'Balanced',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'gpt-5.2-codex',
+    name: 'GPT-5.2 Codex',
+    tier: 'balanced',
+    tagline: 'Alternative View',
+    description: 'OpenAI code-specialized model—different perspective for cross-file analysis',
+    badge: 'Balanced',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'gpt-5.3-codex',
+    name: 'GPT-5.3 Codex',
     tier: 'thorough',
-    tagline: 'Deep Analysis',
-    description: 'Comprehensive reviews for complex changes',
+    tagline: 'Deep Code Analysis',
+    description: 'Latest OpenAI code-specialized model with deep reasoning for complex reviews',
     badge: 'Thorough',
     badgeClass: 'badge-power'
   },
   {
     id: 'claude-opus-4.5',
     name: 'Claude Opus 4.5',
-    tier: 'premium',
-    tagline: 'Ultimate Review',
-    description: 'The most capable model for critical code reviews',
+    tier: 'thorough',
+    tagline: 'Deep Analysis',
+    description: 'Highly capable model for critical code reviews—strong reasoning for security and architecture',
+    badge: 'Premium',
+    badgeClass: 'badge-premium'
+  },
+  {
+    id: 'claude-opus-4.6',
+    name: 'Claude Opus 4.6',
+    tier: 'thorough',
+    tagline: 'Most Capable',
+    description: 'Most capable model for critical code reviews—deep reasoning for security and architecture',
     badge: 'Premium',
     badgeClass: 'badge-premium'
   }
@@ -71,7 +101,7 @@ class CopilotProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'gemini-3-pro-preview', configOverrides = {}) {
+  constructor(model = 'claude-sonnet-4.5', configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -441,7 +471,7 @@ class CopilotProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'gemini-3-pro-preview';
+    return 'claude-sonnet-4.5';
   }
 
   static getInstallInstructions() {
