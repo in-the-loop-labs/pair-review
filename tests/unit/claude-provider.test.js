@@ -133,6 +133,15 @@ describe('ClaudeProvider', () => {
       expect(provider.command).toContain('devx claude');
     });
 
+    it('should single-quote --allowedTools value in shell mode', () => {
+      process.env.PAIR_REVIEW_CLAUDE_CMD = 'devx claude --';
+      const provider = new ClaudeProvider('sonnet');
+      // The allowedTools value contains shell metacharacters (parentheses, asterisks, spaces)
+      // and must be single-quoted to prevent shell interpretation
+      expect(provider.command).toMatch(/--allowedTools '[^']+'/);
+      expect(provider.command).toContain("'Read,Bash(git diff*)");
+    });
+
     it('should configure base args correctly', () => {
       const provider = new ClaudeProvider('haiku');
       expect(provider.args).toContain('-p');
@@ -362,6 +371,50 @@ describe('ClaudeProvider', () => {
         expect(provider.args).toContain('--provider-arg');
         expect(provider.args).toContain('--model-arg');
       });
+    });
+  });
+
+  describe('_quoteShellArgs', () => {
+    let provider;
+
+    beforeEach(() => {
+      provider = new ClaudeProvider('sonnet');
+    });
+
+    it('should single-quote args containing parentheses', () => {
+      const args = ['--allowedTools', 'Read,Bash(git diff*)'];
+      const result = provider._quoteShellArgs(args);
+      expect(result[1]).toBe("'Read,Bash(git diff*)'");
+    });
+
+    it('should single-quote args containing spaces', () => {
+      const result = provider._quoteShellArgs(['--flag', 'hello world']);
+      expect(result[1]).toBe("'hello world'");
+    });
+
+    it('should not quote args without shell metacharacters', () => {
+      const result = provider._quoteShellArgs(['--verbose', '-p', 'opus', 'stream-json']);
+      expect(result).toEqual(['--verbose', '-p', 'opus', 'stream-json']);
+    });
+
+    it('should escape single quotes within the value using POSIX pattern', () => {
+      const result = provider._quoteShellArgs(["it's a test"]);
+      expect(result[0]).toBe("'it'\\''s a test'");
+    });
+
+    it('should quote args containing asterisks', () => {
+      const result = provider._quoteShellArgs(['Bash(git diff*)']);
+      expect(result[0]).toBe("'Bash(git diff*)'");
+    });
+
+    it('should quote args containing brackets', () => {
+      const result = provider._quoteShellArgs(['foo[0]']);
+      expect(result[0]).toBe("'foo[0]'");
+    });
+
+    it('should quote args containing semicolons', () => {
+      const result = provider._quoteShellArgs(['cmd;rm -rf /']);
+      expect(result[0]).toBe("'cmd;rm -rf /'");
     });
   });
 

@@ -197,12 +197,9 @@ class ClaudeProvider extends AIProvider {
    * @private
    */
   _quoteShellArgs(args) {
-    return args.map((arg, i) => {
-      const prevArg = args[i - 1];
-      if (prevArg === '--allowedTools' || prevArg === '--model') {
-        if (/[][*?(){}$!&|;<>,\s']/.test(arg)) {
-          return `'${arg.replace(/'/g, "'\\''")}'`;
-        }
+    return args.map(arg => {
+      if (/[[\]*?(){}$!&|;<>,\s']/.test(arg)) {
+        return `'${arg.replace(/'/g, "'\\''")}'`;
       }
       return arg;
     });
