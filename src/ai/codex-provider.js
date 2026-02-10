@@ -8,7 +8,7 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -116,7 +116,7 @@ class CodexProvider extends AIProvider {
 
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${codexCmd} ${[...baseArgs, ...providerArgs, ...modelArgs].join(' ')}`;
+      this.command = `${codexCmd} ${quoteShellArgs([...baseArgs, ...providerArgs, ...modelArgs]).join(' ')}`;
       this.args = [];
     } else {
       this.command = codexCmd;
@@ -577,7 +577,7 @@ class CodexProvider extends AIProvider {
 
     if (useShell) {
       return {
-        command: `${codexCmd} ${args.join(' ')}`,
+        command: `${codexCmd} ${quoteShellArgs(args).join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true

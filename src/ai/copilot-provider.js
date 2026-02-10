@@ -8,7 +8,7 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -221,7 +221,7 @@ class CopilotProvider extends AIProvider {
         // Escape the prompt for shell
         const escapedPrompt = prompt.replace(/'/g, "'\\''");
         // Build: copilot --model X --deny-tool ... -s -p 'prompt'
-        fullCommand = `${this.command} ${this.baseArgs.join(' ')} -p '${escapedPrompt}'`;
+        fullCommand = `${this.command} ${quoteShellArgs(this.baseArgs).join(' ')} -p '${escapedPrompt}'`;
         fullArgs = [];
       } else {
         // Build args array: --model X --deny-tool ... -s -p <prompt>

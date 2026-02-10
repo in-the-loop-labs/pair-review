@@ -7,7 +7,7 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -178,31 +178,12 @@ class ClaudeProvider extends AIProvider {
 
     if (this.useShell) {
       const allArgs = [...baseArgs, ...extraArgs];
-      this.command = `${claudeCmd} ${this._quoteShellArgs(allArgs).join(' ')}`;
+      this.command = `${claudeCmd} ${quoteShellArgs(allArgs).join(' ')}`;
       this.args = [];
     } else {
       this.command = claudeCmd;
       this.args = [...baseArgs, ...extraArgs];
     }
-  }
-
-  /**
-   * Quote shell-sensitive arguments for safe shell execution.
-   * Any arg containing characters that could be interpreted by the shell
-   * (brackets, parentheses, commas, etc.) is wrapped in single quotes
-   * with internal single quotes escaped using the POSIX pattern.
-   *
-   * @param {string[]} args - Array of CLI arguments
-   * @returns {string[]} Args with shell-sensitive values quoted
-   * @private
-   */
-  _quoteShellArgs(args) {
-    return args.map(arg => {
-      if (/[[\]*?(){}$!&|;<>,\s']/.test(arg)) {
-        return `'${arg.replace(/'/g, "'\\''")}'`;
-      }
-      return arg;
-    });
   }
 
   /**
@@ -483,7 +464,7 @@ class ClaudeProvider extends AIProvider {
     const args = ['-p', ...cliModelArgs, ...extraArgs];
 
     if (useShell) {
-      const quotedArgs = this._quoteShellArgs(args);
+      const quotedArgs = quoteShellArgs(args);
       return {
         command: `${claudeCmd} ${quotedArgs.join(' ')}`,
         args: [],

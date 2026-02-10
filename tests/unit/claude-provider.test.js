@@ -29,6 +29,7 @@ vi.mock('../../src/utils/logger', () => {
 
 // Import after mocks are set up
 const ClaudeProvider = require('../../src/ai/claude-provider');
+const { quoteShellArgs } = require('../../src/ai/provider');
 const logger = require('../../src/utils/logger');
 
 describe('ClaudeProvider', () => {
@@ -374,46 +375,40 @@ describe('ClaudeProvider', () => {
     });
   });
 
-  describe('_quoteShellArgs', () => {
-    let provider;
-
-    beforeEach(() => {
-      provider = new ClaudeProvider('sonnet');
-    });
-
+  describe('quoteShellArgs (shared utility)', () => {
     it('should single-quote args containing parentheses', () => {
       const args = ['--allowedTools', 'Read,Bash(git diff*)'];
-      const result = provider._quoteShellArgs(args);
+      const result = quoteShellArgs(args);
       expect(result[1]).toBe("'Read,Bash(git diff*)'");
     });
 
     it('should single-quote args containing spaces', () => {
-      const result = provider._quoteShellArgs(['--flag', 'hello world']);
+      const result = quoteShellArgs(['--flag', 'hello world']);
       expect(result[1]).toBe("'hello world'");
     });
 
     it('should not quote args without shell metacharacters', () => {
-      const result = provider._quoteShellArgs(['--verbose', '-p', 'opus', 'stream-json']);
+      const result = quoteShellArgs(['--verbose', '-p', 'opus', 'stream-json']);
       expect(result).toEqual(['--verbose', '-p', 'opus', 'stream-json']);
     });
 
     it('should escape single quotes within the value using POSIX pattern', () => {
-      const result = provider._quoteShellArgs(["it's a test"]);
+      const result = quoteShellArgs(["it's a test"]);
       expect(result[0]).toBe("'it'\\''s a test'");
     });
 
     it('should quote args containing asterisks', () => {
-      const result = provider._quoteShellArgs(['Bash(git diff*)']);
+      const result = quoteShellArgs(['Bash(git diff*)']);
       expect(result[0]).toBe("'Bash(git diff*)'");
     });
 
     it('should quote args containing brackets', () => {
-      const result = provider._quoteShellArgs(['foo[0]']);
+      const result = quoteShellArgs(['foo[0]']);
       expect(result[0]).toBe("'foo[0]'");
     });
 
     it('should quote args containing semicolons', () => {
-      const result = provider._quoteShellArgs(['cmd;rm -rf /']);
+      const result = quoteShellArgs(['cmd;rm -rf /']);
       expect(result[0]).toBe("'cmd;rm -rf /'");
     });
   });

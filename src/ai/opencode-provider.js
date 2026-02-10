@@ -13,7 +13,7 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -114,7 +114,7 @@ class OpenCodeProvider extends AIProvider {
       let fullArgs;
 
       if (this.useShell) {
-        fullCommand = `${this.opencodeCmd} ${this.baseArgs.join(' ')}`;
+        fullCommand = `${this.opencodeCmd} ${quoteShellArgs(this.baseArgs).join(' ')}`;
         fullArgs = [];
       } else {
         fullCommand = this.opencodeCmd;
@@ -554,7 +554,7 @@ class OpenCodeProvider extends AIProvider {
     // OpenCode reads from stdin when no positional message arguments are provided
     if (useShell) {
       return {
-        command: `${opencodeCmd} ${args.join(' ')}`,
+        command: `${opencodeCmd} ${quoteShellArgs(args).join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true

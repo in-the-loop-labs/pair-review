@@ -15,6 +15,24 @@ const { extractJSON } = require('../utils/json-extractor');
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
 
 /**
+ * Quote shell-sensitive arguments for safe shell execution.
+ * Any arg containing characters that could be interpreted by the shell
+ * (brackets, parentheses, commas, etc.) is wrapped in single quotes
+ * with internal single quotes escaped using the POSIX pattern.
+ *
+ * @param {string[]} args - Array of CLI arguments
+ * @returns {string[]} Args with shell-sensitive values quoted
+ */
+function quoteShellArgs(args) {
+  return args.map(arg => {
+    if (/[[\]*?(){}$!&|;<>,\s']/.test(arg)) {
+      return `'${arg.replace(/'/g, "'\\''")}'`;
+    }
+    return arg;
+  });
+}
+
+/**
  * Model tier definitions - provider-agnostic tiers that map to specific models
  */
 const MODEL_TIERS = {
@@ -639,6 +657,7 @@ async function testProviderAvailability(providerId, timeout = 10000) {
 module.exports = {
   AIProvider,
   MODEL_TIERS,
+  quoteShellArgs,
   registerProvider,
   getProviderClass,
   getRegisteredProviderIds,

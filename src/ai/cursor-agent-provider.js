@@ -16,7 +16,7 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -195,7 +195,7 @@ class CursorAgentProvider extends AIProvider {
 
     if (this.useShell) {
       // In shell mode, build full command string with args
-      this.command = `${agentCmd} ${[...baseArgs, ...providerArgs, ...modelArgs].join(' ')}`;
+      this.command = `${agentCmd} ${quoteShellArgs([...baseArgs, ...providerArgs, ...modelArgs]).join(' ')}`;
       this.args = [];
     } else {
       this.command = agentCmd;
@@ -698,7 +698,7 @@ class CursorAgentProvider extends AIProvider {
     // For extraction, we pass the prompt via stdin
     if (useShell) {
       return {
-        command: `${agentCmd} ${args.join(' ')}`,
+        command: `${agentCmd} ${quoteShellArgs(args).join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true
