@@ -460,7 +460,9 @@
   // ─── Local Review Start ─────────────────────────────────────────────────────
 
   /**
-   * Handle start local review form submission
+   * Handle start local review form submission.
+   * Navigates to the setup page which shows step-by-step progress,
+   * matching the flow used when reviews are started from the MCP/CLI.
    * @param {Event} event - Form submit event
    */
   async function handleStartLocal(event) {
@@ -479,29 +481,9 @@
       return;
     }
 
-    setFormLoading('local', true, 'Starting local review...');
-
-    try {
-      const response = await fetch('/api/local/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: pathValue })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to start local review');
-      }
-
-      setFormLoading('local', true, 'Redirecting to review...');
-      window.location.href = data.reviewUrl;
-
-    } catch (error) {
-      console.error('Error starting local review:', error);
-      setFormLoading('local', false);
-      showError('local', error.message || 'An unexpected error occurred. Please try again.');
-    }
+    // Navigate to the setup page which shows step-by-step progress
+    // The /local?path= route serves setup.html which handles the full setup flow
+    window.location.href = '/local?path=' + encodeURIComponent(pathValue);
   }
 
   // ─── Browse Directory ──────────────────────────────────────────────────────
@@ -849,7 +831,10 @@
   }
 
   /**
-   * Handle start review form submission
+   * Handle start review form submission.
+   * Parses the PR URL, then navigates to the PR route which serves the
+   * setup page with step-by-step progress for new PRs, or the review page
+   * directly for PRs that already exist in the database.
    * @param {Event} event - Form submit event
    */
   async function handleStartReview(event) {
@@ -881,44 +866,9 @@
       return;
     }
 
-    // Update loading state
-    setFormLoading('pr', true, 'Fetching PR data from GitHub...');
-
-    try {
-      // Call the API to create the worktree
-      const response = await fetch('/api/worktrees/create', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          owner: parsed.owner,
-          repo: parsed.repo,
-          prNumber: parsed.prNumber
-        })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to create worktree');
-      }
-
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to create worktree');
-      }
-
-      // Update loading text before redirect
-      setFormLoading('pr', true, 'Redirecting to review...');
-
-      // Redirect to the review page
-      window.location.href = data.reviewUrl;
-
-    } catch (error) {
-      console.error('Error starting review:', error);
-      setFormLoading('pr', false);
-      showError('pr', error.message || 'An unexpected error occurred. Please try again.');
-    }
+    // Navigate to the PR route which serves setup.html (with step-by-step progress)
+    // for new PRs, or pr.html directly for PRs already in the database
+    window.location.href = '/pr/' + encodeURIComponent(parsed.owner) + '/' + encodeURIComponent(parsed.repo) + '/' + encodeURIComponent(parsed.prNumber);
   }
 
   // ─── Config & Command Examples ──────────────────────────────────────────────
@@ -1066,6 +1016,19 @@
     // Note: No explicit Enter keypress handlers are needed here.
     // Both inputs are inside <form> elements, so pressing Enter
     // natively triggers form submission.
+  });
+
+  // ─── bfcache Restoration ───────────────────────────────────────────────────
+
+  // When the browser restores this page from bfcache (e.g. user hits the back
+  // button after navigating away), any in-progress loading state on the forms
+  // will still be visible because the DOM snapshot is preserved as-is.  Reset
+  // both forms so the user is not stuck with a disabled input and spinner.
+  window.addEventListener('pageshow', function (event) {
+    if (event.persisted) {
+      setFormLoading('pr', false);
+      setFormLoading('local', false);
+    }
   });
 
 })();
