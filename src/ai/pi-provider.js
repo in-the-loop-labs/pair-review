@@ -18,7 +18,7 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -253,7 +253,7 @@ class PiProvider extends AIProvider {
       let fullArgs;
 
       if (this.useShell) {
-        fullCommand = `${this.piCmd} ${this.baseArgs.join(' ')}`;
+        fullCommand = `${this.piCmd} ${quoteShellArgs(this.baseArgs).join(' ')}`;
         fullArgs = [];
       } else {
         fullCommand = this.piCmd;
@@ -745,7 +745,7 @@ class PiProvider extends AIProvider {
     // Pi reads from stdin when using -p with no positional message arguments
     if (useShell) {
       return {
-        command: `${piCmd} ${args.join(' ')}`,
+        command: `${piCmd} ${quoteShellArgs(args).join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true,

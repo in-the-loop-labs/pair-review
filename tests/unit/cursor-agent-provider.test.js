@@ -140,6 +140,16 @@ describe('CursorAgentProvider', () => {
       expect(provider.command).toContain('devx agent');
     });
 
+    it('should quote shell-sensitive extra_args in shell mode command', () => {
+      process.env.PAIR_REVIEW_CURSOR_AGENT_CMD = 'devx agent --';
+      const provider = new CursorAgentProvider('sonnet-4.5-thinking', {
+        extra_args: ['--flag', 'value(test)']
+      });
+      // In shell mode, the command string should have parentheses-containing args quoted
+      expect(provider.useShell).toBe(true);
+      expect(provider.command).toContain("'value(test)'");
+    });
+
     it('should configure base args correctly', () => {
       const provider = new CursorAgentProvider('gemini-3-flash');
       expect(provider.args).toContain('-p');

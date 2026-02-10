@@ -7,7 +7,7 @@
 
 const path = require('path');
 const { spawn } = require('child_process');
-const { AIProvider, registerProvider } = require('./provider');
+const { AIProvider, registerProvider, quoteShellArgs } = require('./provider');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
 const { CancellationError, isAnalysisCancelled } = require('../routes/shared');
@@ -156,16 +156,9 @@ class GeminiProvider extends AIProvider {
 
     if (this.useShell) {
       // In shell mode, build full command string with args
-      // Quote the allowed-tools value to prevent shell interpretation of special characters
+      // Quote all args to prevent shell interpretation of special characters
       // (commas, parentheses in patterns like "run_shell_command(git diff)")
-      const quotedBaseArgs = baseArgs.map((arg, i) => {
-        // The allowed-tools value follows the --allowed-tools flag
-        if (baseArgs[i - 1] === '--allowed-tools') {
-          return `'${arg}'`;
-        }
-        return arg;
-      });
-      this.command = `${geminiCmd} ${[...quotedBaseArgs, ...providerArgs, ...modelArgs].join(' ')}`;
+      this.command = `${geminiCmd} ${quoteShellArgs([...baseArgs, ...providerArgs, ...modelArgs]).join(' ')}`;
       this.args = [];
     } else {
       this.command = geminiCmd;
@@ -616,7 +609,7 @@ class GeminiProvider extends AIProvider {
     // For extraction, we pass the prompt via stdin
     if (useShell) {
       return {
-        command: `${geminiCmd} ${args.join(' ')}`,
+        command: `${geminiCmd} ${quoteShellArgs(args).join(' ')}`,
         args: [],
         useShell: true,
         promptViaStdin: true

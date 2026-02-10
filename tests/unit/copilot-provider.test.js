@@ -157,6 +157,18 @@ describe('CopilotProvider', () => {
       expect(provider.useShell).toBe(true);
     });
 
+    it('should quote shell-sensitive args in getExtractionConfig shell mode command', () => {
+      process.env.PAIR_REVIEW_COPILOT_CMD = 'devx copilot --';
+      const provider = new CopilotProvider('claude-sonnet-4.5', {
+        extra_args: ['--flag', 'value(test)']
+      });
+      // Copilot builds the full command in execute()/getExtractionConfig(), not the constructor
+      const config = provider.getExtractionConfig('claude-sonnet-4.5');
+      // The extra arg with parentheses should be single-quoted
+      expect(config.command).toContain("'value(test)'");
+      expect(config.useShell).toBe(true);
+    });
+
     it('should configure base args correctly', () => {
       const provider = new CopilotProvider('claude-opus-4.6');
       expect(provider.baseArgs).toContain('--model');
