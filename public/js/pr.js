@@ -1455,9 +1455,10 @@ class PRManager {
       gapRow.parentNode.insertBefore(fragment, gapRow);
       gapRow.remove();
 
-      // Check all function context markers in this file and remove any whose
-      // function definitions are now visible
+      // Remove hunk headers that are no longer at a gap boundary,
+      // then check remaining headers for visible function definitions
       if (window.DiffRenderer) {
+        window.DiffRenderer.removeStrandedHunkHeaders(tbody);
         window.DiffRenderer.updateFunctionContextVisibility(tbody);
       }
 
@@ -1478,6 +1479,7 @@ class PRManager {
     const hasExplicitEndLineNew = !isNaN(parseInt(controls.dataset.endLineNew));
 
     const fileName = controls.dataset.fileName;
+    const position = controls.dataset.position || 'between';
     const tbody = gapRow.closest('tbody');
 
     if (!tbody) return;
@@ -1488,6 +1490,13 @@ class PRManager {
 
       const fragment = document.createDocumentFragment();
 
+      // Compute positions for each remnant based on file boundary proximity.
+      // The upper remnant keeps 'above' only if the original gap was at the file start;
+      // the lower remnant keeps 'below' only if the original gap was at the file end.
+      // Inner remnants become 'between' since they're sandwiched between visible content.
+      const gapAbovePosition = position === 'above' ? 'above' : 'between';
+      const gapBelowPosition = position === 'below' ? 'below' : 'between';
+
       // Create gap above if needed
       const gapAboveSize = expandStart - gapStart;
       if (gapAboveSize > 0) {
@@ -1496,7 +1505,7 @@ class PRManager {
           gapStart,
           expandStart - 1,
           gapAboveSize,
-          'above',
+          gapAbovePosition,
           (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
           gapStartNew  // Preserve the NEW line number offset
         );
@@ -1537,7 +1546,7 @@ class PRManager {
           expandEnd + 1,
           gapEnd,
           gapBelowSize,
-          'below',
+          gapBelowPosition,
           (controls, dir, cnt) => this.expandGapContext(controls, dir, cnt),
           belowGapStartNew  // Updated NEW line number for gap below
         );
@@ -1553,9 +1562,10 @@ class PRManager {
       gapRow.parentNode.insertBefore(fragment, gapRow);
       gapRow.remove();
 
-      // Check all function context markers in this file and remove any whose
-      // function definitions are now visible
+      // Remove hunk headers that are no longer at a gap boundary,
+      // then check remaining headers for visible function definitions
       if (window.DiffRenderer) {
+        window.DiffRenderer.removeStrandedHunkHeaders(tbody);
         window.DiffRenderer.updateFunctionContextVisibility(tbody);
       }
 
