@@ -53,8 +53,8 @@ describe('CodexProvider', () => {
       expect(CodexProvider.getProviderId()).toBe('codex');
     });
 
-    it('should return gpt-5.1-codex-max as default model', () => {
-      expect(CodexProvider.getDefaultModel()).toBe('gpt-5.1-codex-max');
+    it('should return gpt-5.2-codex as default model', () => {
+      expect(CodexProvider.getDefaultModel()).toBe('gpt-5.2-codex');
     });
 
     it('should return array of models with expected structure', () => {
@@ -65,14 +65,14 @@ describe('CodexProvider', () => {
       // Check that we have the expected model IDs
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('gpt-5.1-codex-mini');
-      expect(modelIds).toContain('gpt-5.1-codex-max');
       expect(modelIds).toContain('gpt-5.2-codex');
+      expect(modelIds).toContain('gpt-5.3-codex');
 
       // Check model structure
-      const defaultModel = models.find(m => m.id === 'gpt-5.1-codex-max');
+      const defaultModel = models.find(m => m.id === 'gpt-5.2-codex');
       expect(defaultModel).toMatchObject({
-        id: 'gpt-5.1-codex-max',
-        name: 'GPT-5.1 Max',
+        id: 'gpt-5.2-codex',
+        name: 'GPT-5.2 Codex',
         tier: 'balanced',
         default: true
       });
@@ -88,7 +88,7 @@ describe('CodexProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CodexProvider();
-      expect(provider.model).toBe('gpt-5.1-codex-max');
+      expect(provider.model).toBe('gpt-5.2-codex');
     });
 
     it('should create instance with specified model', () => {
@@ -97,20 +97,20 @@ describe('CodexProvider', () => {
     });
 
     it('should use default codex command', () => {
-      const provider = new CodexProvider('gpt-5.1-codex-max');
+      const provider = new CodexProvider('gpt-5.2-codex');
       expect(provider.command).toBe('codex');
       expect(provider.useShell).toBe(false);
     });
 
     it('should respect PAIR_REVIEW_CODEX_CMD environment variable', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = '/custom/codex';
-      const provider = new CodexProvider('gpt-5.1-codex-max');
+      const provider = new CodexProvider('gpt-5.2-codex');
       expect(provider.command).toBe('/custom/codex');
     });
 
     it('should use shell mode for multi-word commands', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = 'devx codex';
-      const provider = new CodexProvider('gpt-5.1-codex-max');
+      const provider = new CodexProvider('gpt-5.2-codex');
       expect(provider.useShell).toBe(true);
       expect(provider.command).toContain('devx codex');
     });
@@ -128,7 +128,7 @@ describe('CodexProvider', () => {
     });
 
     it('should merge provider extra_args from config', () => {
-      const provider = new CodexProvider('gpt-5.1-codex-max', {
+      const provider = new CodexProvider('gpt-5.2-codex', {
         extra_args: ['--custom-flag', '--timeout', '60']
       });
       expect(provider.args).toContain('--custom-flag');
@@ -146,7 +146,7 @@ describe('CodexProvider', () => {
     });
 
     it('should use config command over default', () => {
-      const provider = new CodexProvider('gpt-5.1-codex-max', {
+      const provider = new CodexProvider('gpt-5.2-codex', {
         command: '/path/to/codex'
       });
       expect(provider.command).toBe('/path/to/codex');
@@ -154,14 +154,14 @@ describe('CodexProvider', () => {
 
     it('should prefer ENV command over config command', () => {
       process.env.PAIR_REVIEW_CODEX_CMD = '/env/codex';
-      const provider = new CodexProvider('gpt-5.1-codex-max', {
+      const provider = new CodexProvider('gpt-5.2-codex', {
         command: '/config/codex'
       });
       expect(provider.command).toBe('/env/codex');
     });
 
     it('should merge env from provider config', () => {
-      const provider = new CodexProvider('gpt-5.1-codex-max', {
+      const provider = new CodexProvider('gpt-5.2-codex', {
         env: { CUSTOM_VAR: 'value' }
       });
       expect(provider.extraEnv).toEqual({ CUSTOM_VAR: 'value' });
@@ -209,7 +209,7 @@ describe('CodexProvider', () => {
     let provider;
 
     beforeEach(() => {
-      provider = new CodexProvider('gpt-5.1-codex-max');
+      provider = new CodexProvider('gpt-5.2-codex');
     });
 
     describe('single agent_message extraction', () => {
@@ -456,7 +456,7 @@ describe('CodexProvider', () => {
     const logger = require('../../src/utils/logger');
 
     beforeEach(() => {
-      provider = new CodexProvider('gpt-5.1-codex-max');
+      provider = new CodexProvider('gpt-5.2-codex');
       vi.clearAllMocks();
     });
 

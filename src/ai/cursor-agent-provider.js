@@ -30,9 +30,9 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  *
  * Tier structure:
  * - free (auto): Cursor's default auto-routing model
- * - fast (gpt-5.2-codex-fast): Quick code-specialized analysis
- * - balanced (sonnet-4.5-thinking, gemini-3-pro): Recommended for most reviews
- * - thorough (gpt-5.2-codex-high, opus-4.5-thinking): Deep analysis for complex code
+ * - fast (composer-1, gpt-5.3-codex-fast, gemini-3-flash): Quick analysis
+ * - balanced (composer-1.5, sonnet-4.5-thinking, gemini-3-pro): Recommended for most reviews
+ * - thorough (gpt-5.3-codex-high, opus-4.5-thinking, opus-4.6-thinking): Deep analysis for complex code
  */
 const CURSOR_AGENT_MODELS = [
   {
@@ -45,12 +45,39 @@ const CURSOR_AGENT_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
-    id: 'gpt-5.2-codex-fast',
-    name: 'GPT-5.2 Codex Fast',
+    id: 'composer-1.5',
+    name: 'Composer 1.5',
+    tier: 'balanced',
+    tagline: 'Latest Composer',
+    description: 'Cursor Composer model—positioned between Sonnet and Opus for multi-file edits',
+    badge: 'Balanced',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'composer-1',
+    name: 'Composer 1',
+    tier: 'fast',
+    tagline: 'Original Composer',
+    description: 'Cursor Composer model—good for quick multi-file editing workflows',
+    badge: 'Fast',
+    badgeClass: 'badge-speed'
+  },
+  {
+    id: 'gpt-5.3-codex-fast',
+    name: 'GPT-5.3 Codex Fast',
     tier: 'fast',
     tagline: 'Lightning Fast',
-    description: 'Quick code-specialized analysis for simple changes',
+    description: 'Latest code-specialized model optimized for speed—quick scans for obvious issues',
     badge: 'Fastest',
+    badgeClass: 'badge-speed'
+  },
+  {
+    id: 'gemini-3-flash',
+    name: 'Gemini 3 Flash',
+    tier: 'fast',
+    tagline: 'Fast & Capable',
+    description: 'High SWE-bench scores at a fraction of the cost—great for quick reviews',
+    badge: 'Fast',
     badgeClass: 'badge-speed'
   },
   {
@@ -58,7 +85,7 @@ const CURSOR_AGENT_MODELS = [
     name: 'Claude 4.5 Sonnet (Thinking)',
     tier: 'balanced',
     tagline: 'Best Balance',
-    description: 'Extended thinking for thorough analysis',
+    description: 'Extended thinking for thorough analysis with excellent quality-to-cost ratio',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
@@ -68,16 +95,16 @@ const CURSOR_AGENT_MODELS = [
     name: 'Gemini 3 Pro',
     tier: 'balanced',
     tagline: 'Strong Alternative',
-    description: "Google's flagship model for code review",
+    description: "Google's flagship model for code review—strong agentic and vibe coding capabilities",
     badge: 'Balanced',
     badgeClass: 'badge-balanced'
   },
   {
-    id: 'gpt-5.2-codex-high',
-    name: 'GPT-5.2 Codex High',
+    id: 'gpt-5.3-codex-high',
+    name: 'GPT-5.3 Codex High',
     tier: 'thorough',
     tagline: 'Deep Code Analysis',
-    description: "OpenAI's best for complex code review",
+    description: "OpenAI's latest and most capable for complex code review with deep reasoning",
     badge: 'Thorough',
     badgeClass: 'badge-power'
   },
@@ -85,8 +112,17 @@ const CURSOR_AGENT_MODELS = [
     id: 'opus-4.5-thinking',
     name: 'Claude 4.5 Opus (Thinking)',
     tier: 'thorough',
+    tagline: 'Deep Analysis',
+    description: 'Deep analysis with extended thinking for complex code reviews',
+    badge: 'Thorough',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'opus-4.6-thinking',
+    name: 'Claude 4.6 Opus (Thinking)',
+    tier: 'thorough',
     tagline: 'Most Capable',
-    description: 'Deep analysis with extended thinking for complex code',
+    description: 'Deep analysis with extended thinking—Cursor default for maximum review quality',
     badge: 'Most Thorough',
     badgeClass: 'badge-power'
   }
