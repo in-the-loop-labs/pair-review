@@ -411,6 +411,31 @@ describe('ClaudeProvider', () => {
       const result = quoteShellArgs(['cmd;rm -rf /']);
       expect(result[0]).toBe("'cmd;rm -rf /'");
     });
+
+    it('should quote args containing backticks', () => {
+      const result = quoteShellArgs(['echo `whoami`']);
+      expect(result[0]).toBe("'echo `whoami`'");
+    });
+
+    it('should quote args containing backslashes', () => {
+      const result = quoteShellArgs(['path\\to\\file']);
+      expect(result[0]).toBe("'path\\to\\file'");
+    });
+
+    it('should quote args containing double quotes', () => {
+      const result = quoteShellArgs(['say "hello"']);
+      expect(result[0]).toBe("'say \"hello\"'");
+    });
+
+    it('should quote args containing hash', () => {
+      const result = quoteShellArgs(['color #fff']);
+      expect(result[0]).toBe("'color #fff'");
+    });
+
+    it('should quote args containing tilde', () => {
+      const result = quoteShellArgs(['~/secret']);
+      expect(result[0]).toBe("'~/secret'");
+    });
   });
 
   describe('PAIR_REVIEW_MAX_BUDGET_USD validation', () => {

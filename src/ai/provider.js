@@ -25,7 +25,7 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  */
 function quoteShellArgs(args) {
   return args.map(arg => {
-    if (/[[\]*?(){}$!&|;<>,\s']/.test(arg)) {
+    if (/[[\]*?(){}$!&|;<>,\s'"\\`#~]/.test(arg)) {
       return `'${arg.replace(/'/g, "'\\''")}'`;
     }
     return arg;
