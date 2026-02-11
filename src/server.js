@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 const express = require('express');
 const path = require('path');
-const { loadConfig, getGitHubToken, resolveDbName, warnIfDevModeWithoutDbName } = require('./config');
+const { loadConfig, getGitHubToken } = require('./config');
 const { initializeDatabase, getDatabaseStatus, queryOne, run } = require('./database');
 const { normalizeRepository } = require('./utils/paths');
 const { applyConfigOverrides, checkAllProviders } = require('./ai');
-const { checkAllChatProviders } = require('./chat/chat-providers');
 const logger = require('./utils/logger');
-const { attachWebSocket, closeAll: closeAllWS } = require('./ws');
 
 let db = null;
 let server = null;
-let chatSessionManager = null;
 
 /**
  * Request logging middleware (disabled for cleaner output)
@@ -95,9 +92,6 @@ async function startServer(sharedDb = null) {
     // Apply provider configuration overrides (custom models, commands, etc.)
     applyConfigOverrides(config);
 
-    // Warn if dev mode is on without a custom database name
-    warnIfDevModeWithoutDbName(config);
-
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
 
@@ -112,7 +106,7 @@ async function startServer(sharedDb = null) {
       db = sharedDb;
     } else {
       console.log('Connecting to database...');
-      db = await initializeDatabase(resolveDbName(config));
+      db = await initializeDatabase();
     }
     
     // Log database status
@@ -162,25 +156,6 @@ async function startServer(sharedDb = null) {
     // Middleware
     app.use(requestLogger);
     app.use(express.json());
-
-    // CORS middleware for share endpoints
-    // Allows configured external origins to fetch share data
-    const shareAllowedOrigins = config.share?.allowed_origins || [];
-    if (shareAllowedOrigins.length > 0) {
-      app.use('/api/pr/:owner/:repo/:number/share', (req, res, next) => {
-        const origin = req.headers.origin;
-        if (origin && shareAllowedOrigins.includes(origin)) {
-          res.setHeader('Access-Control-Allow-Origin', origin);
-          res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-          res.setHeader('Vary', 'Origin');
-        }
-        if (req.method === 'OPTIONS') {
-          return res.sendStatus(204);
-        }
-        next();
-      });
-    }
     
     // Static files with cache control headers
     // In dev_mode, all caching is disabled to avoid stale resources during development
@@ -270,36 +245,23 @@ async function startServer(sharedDb = null) {
     // API routes - split into focused modules
     // Order matters: more specific routes must be mounted before general ones
     // to ensure proper route matching
-    const analysisRoutes = require('./routes/analyses');
+    const analysisRoutes = require('./routes/analysis');
     const worktreesRoutes = require('./routes/worktrees');
-    const reviewsRoutes = require('./routes/reviews');
+    const commentsRoutes = require('./routes/comments');
     const configRoutes = require('./routes/config');
     const prRoutes = require('./routes/pr');
     const localRoutes = require('./routes/local');
     const setupRoutes = require('./routes/setup');
     const mcpRoutes = require('./routes/mcp');
-    const councilRoutes = require('./routes/councils');
-    const chatRoutes = require('./routes/chat');
-    const contextFilesRoutes = require('./routes/context-files');
-    const githubCollectionsRoutes = require('./routes/github-collections');
-
-    // Initialize chat session manager
-    const ChatSessionManager = require('./chat/session-manager');
-    chatSessionManager = new ChatSessionManager(db, config.chat_providers || {});
-    app.chatSessionManager = chatSessionManager;
 
     // Mount specific routes first to ensure they match before general PR routes
-    app.use('/', chatRoutes);
     app.use('/', analysisRoutes);
-    app.use('/', councilRoutes);
-    app.use('/', reviewsRoutes);
-    app.use('/', contextFilesRoutes);
+    app.use('/', commentsRoutes);
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);
     app.use('/', localRoutes);
     app.use('/', setupRoutes);
     app.use('/', mcpRoutes);
-    app.use('/', githubCollectionsRoutes);
     app.use('/', prRoutes);
     
     // Error handling middleware
@@ -316,23 +278,15 @@ async function startServer(sharedDb = null) {
     // Find available port and start server
     const port = await findAvailablePort(app, config.port);
 
-    // Check provider availability before accepting requests so /api/config
-    // returns accurate pi_available on the very first request (avoids race
-    // condition where the frontend fetches config before the cache is populated)
-    const defaultProvider = config.default_provider || 'claude';
-    try {
-      // Sequential: checkAllProviders must finish first because it populates
-      // the AI provider availability cache that checkAllChatProviders reads
-      // (e.g. the pi chat provider calls getCachedAvailability('pi')).
-      await checkAllProviders(defaultProvider);
-      await checkAllChatProviders();
-    } catch (err) {
-      console.warn('Provider availability check failed:', err.message);
-    }
-
     server = app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
-      attachWebSocket(server);
+
+      // Check provider availability in background after server is listening
+      // Use the configured default provider as priority (if set)
+      const defaultProvider = config.default_provider || 'claude';
+      checkAllProviders(defaultProvider).catch(err => {
+        console.warn('Background provider availability check failed:', err.message);
+      });
     });
 
     server.on('error', (error) => {
@@ -359,20 +313,9 @@ async function startServer(sharedDb = null) {
 /**
  * Graceful shutdown handler
  */
-async function gracefulShutdown(signal) {
+function gracefulShutdown(signal) {
   console.log('\nServer shutting down...');
-
-  // Close all active chat sessions
-  if (chatSessionManager) {
-    try {
-      await chatSessionManager.closeAll();
-    } catch (error) {
-      console.error('Error closing chat sessions:', error.message);
-    }
-  }
-
-  closeAllWS();
-
+  
   if (server) {
     server.close(() => {
       if (db) {

@@ -8,11 +8,21 @@
  * - CommentManager: Comment forms and editing
  * - SuggestionManager: AI suggestion handling
  */
-// Timeout (ms) for stale check — git commands can hang on locked repos
-const STALE_TIMEOUT = 2000;
-
 class PRManager {
   // Forward static constants from modules for backward compatibility
+  static get CATEGORY_EMOJI_MAP() {
+    return window.SuggestionManager?.CATEGORY_EMOJI_MAP || {
+      'bug': '\u{1F41B}',
+      'performance': '\u{26A1}',
+      'design': '\u{1F4D0}',
+      'code-style': '\u{1F9F9}',
+      'improvement': '\u{1F4A1}',
+      'praise': '\u{2B50}',
+      'security': '\u{1F512}',
+      'suggestion': '\u{1F4AC}'
+    };
+  }
+
   static get FOLD_UP_ICON() {
     return window.HunkParser?.FOLD_UP_ICON || '';
   }
@@ -118,29 +128,14 @@ class PRManager {
     this.collapsedFiles = new Set();
     // File viewed state - tracks which files are marked as viewed
     this.viewedFiles = new Set();
-    // Context files - pinned non-diff file ranges
-    this.contextFiles = [];
     // Canonical file order - sorted file paths for consistent ordering across components
     this.canonicalFileOrder = new Map();
-    // Raw per-file patch text for chat context enrichment
-    this.filePatches = new Map();
     // Analysis history manager - for switching between analysis runs
     this.analysisHistoryManager = null;
     // Currently selected analysis run ID (null = latest)
     this.selectedRunId = null;
     // Keyboard shortcuts manager
     this.keyboardShortcuts = null;
-    // Hide whitespace toggle state — must be set before DiffOptionsDropdown
-    // is constructed because it fires the callback synchronously on init
-    // when localStorage has a persisted `true` value.
-    this.hideWhitespace = false;
-    // Diff options dropdown (gear icon popover)
-    this.diffOptionsDropdown = null;
-    // Unique client ID for self-echo suppression on WebSocket review events.
-    // Sent as X-Client-Id header on mutation requests; the server echoes
-    // it back in the WebSocket broadcast so this tab can skip its own events.
-    this._clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    this._installFetchInterceptor();
 
     // Initialize modules
     this.lineTracker = new window.LineTracker();
@@ -180,62 +175,10 @@ class PRManager {
     this.initAnalysisConfigModal();
     this.initKeyboardShortcuts();
 
-    // Initialize diff options dropdown (gear icon for whitespace toggle).
-    // Must happen before init() so the persisted hideWhitespace state is
-    // applied before the first loadAndDisplayFiles() call.
-    const diffOptionsBtn = document.getElementById('diff-options-btn');
-    if (diffOptionsBtn && window.DiffOptionsDropdown) {
-      this.diffOptionsDropdown = new window.DiffOptionsDropdown(diffOptionsBtn, {
-        onToggleWhitespace: (hide) => this.handleWhitespaceToggle(hide),
-      });
-    }
-
     // In local mode, LocalManager handles init instead
     if (!window.PAIR_REVIEW_LOCAL_MODE) {
       this.init();
     }
-  }
-
-  /**
-   * Install a global fetch interceptor that adds X-Client-Id to all
-   * mutation requests (POST/PUT/DELETE) targeting the review API.
-   * This is the SINGLE SOURCE of X-Client-Id injection — no individual
-   * fetch call site should manually set this header.
-   * This ensures that even direct fetch() calls (e.g. from page.evaluate
-   * in tests, or any code that bypasses PRManager methods) carry the
-   * client ID so the server can tag the WebSocket broadcast for self-echo
-   * suppression.
-   */
-  _installFetchInterceptor() {
-    if (window._prFetchIntercepted) return;
-    window._prFetchIntercepted = true;
-
-    const originalFetch = window.fetch;
-    const prManager = this;
-
-    window.fetch = function(input, init) {
-      const url = typeof input === 'string' ? input : input?.url || '';
-      const method = (init?.method || 'GET').toUpperCase();
-
-      // Only intercept mutations to the reviews API
-      if ((method === 'POST' || method === 'PUT' || method === 'DELETE') &&
-          url.includes('/api/reviews/') && prManager._clientId) {
-        init = init || {};
-        // Merge X-Client-Id into existing headers
-        if (init.headers instanceof Headers) {
-          if (!init.headers.has('X-Client-Id')) {
-            init.headers.set('X-Client-Id', prManager._clientId);
-          }
-        } else if (typeof init.headers === 'object' && init.headers !== null) {
-          if (!init.headers['X-Client-Id']) {
-            init.headers['X-Client-Id'] = prManager._clientId;
-          }
-        } else {
-          init.headers = { 'X-Client-Id': prManager._clientId };
-        }
-      }
-      return originalFetch.call(this, input, init);
-    };
   }
 
   /**
@@ -259,9 +202,6 @@ class PRManager {
     if (refreshBtn) {
       refreshBtn.addEventListener('click', () => this.refreshPR());
     }
-
-    // PR description popover
-    this.setupPRDescriptionPopover();
 
     // Setup comment form keyboard shortcut delegation
     this.setupCommentFormDelegation();
@@ -371,9 +311,6 @@ class PRManager {
 
   /**
    * Auto-trigger analysis if ?analyze=true is present in the URL.
-   * Skips refresh if data was just loaded fresh by loadPR (to avoid redundant fetches).
-   * Otherwise, refreshes PR data first to ensure we analyze the latest code.
-   * If refresh fails, proceeds with existing data rather than failing entirely.
    * Cleans up the query parameter afterwards regardless of success or failure.
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
@@ -384,21 +321,6 @@ class PRManager {
     if (autoAnalyze === 'true' && !this.isAnalyzing) {
       this._autoAnalyzeRequested = true;
       try {
-        // Skip refresh if we just loaded fresh data (loadPR sets _justLoaded = true).
-        // Otherwise, refresh to ensure we have the latest PR data in case the worktree
-        // already existed but the PR has new commits since last load.
-        if (this._justLoaded) {
-          this._justLoaded = false;
-        } else {
-          try {
-            await this.refreshPR();
-          } catch (e) {
-            // If refresh fails, proceed with existing data - this is intentional.
-            // We'd rather analyze stale data than fail entirely.
-            console.warn('Pre-analysis refresh failed, proceeding with existing data', e);
-          }
-        }
-
         await this.startAnalysis(owner, repo, prNumber, null, {});
       } finally {
         this._autoAnalyzeRequested = false;
@@ -447,12 +369,11 @@ class PRManager {
         window.aiPanel = new window.AIPanel();
       }
 
-      // Set PR context for AI Panel and Panel Group (for per-review localStorage keys)
-      // This restores the filter state and chat visibility from localStorage
+      // Set PR context for AI Panel (for PR-specific localStorage keys)
+      // This restores the filter state from localStorage
       if (window.aiPanel?.setPR) {
         window.aiPanel.setPR(owner, repo, number);
       }
-      window.panelGroup?.setPR(`${owner}/${repo}#${number}`);
 
       // Load saved comments using the restored filter state from AI Panel
       // If AI Panel has showDismissedComments=true (restored from localStorage), use that
@@ -484,139 +405,51 @@ class PRManager {
       // Check if AI analysis is currently running
       await this.checkRunningAnalysis();
 
-      // Listen for review mutation events via WebSocket pub/sub
-      this._initReviewEventListeners();
+      // Listen for externally-imported analysis results via SSE
+      this.startExternalResultsListener();
 
     } catch (error) {
       console.error('Error loading PR:', error);
       this.showError(error.message);
     } finally {
       this.setLoading(false);
-      // Mark that we just loaded fresh data - used by _maybeAutoAnalyze to skip redundant refresh
-      this._justLoaded = true;
     }
   }
 
   /**
-   * Reload AI suggestions and user comments after an analysis completes.
-   * Shared by the foreground `analysis_completed` handler and the deferred
-   * `_dirtyAnalysis` branch in the visibilitychange listener.
+   * Listen for externally-imported analysis results via SSE.
+   * When POST /api/analysis-results stores new suggestions for this review,
+   * it broadcasts on `review-${reviewId}`. This listener picks that up
+   * and refreshes suggestions automatically.
    */
-  _reloadAfterAnalysis() {
-    const includeDismissed = window.aiPanel?.showDismissedComments ?? false;
-    return Promise.all([
-      this.loadAISuggestions(),
-      this.loadUserComments(includeDismissed)
-    ]);
-  }
+  startExternalResultsListener() {
+    if (this._externalResultsSource) return;
+    const reviewId = this.currentPR?.id;
+    if (!reviewId) return;
 
-  /**
-   * Listen for review-scoped CustomEvents dispatched by ChatPanel's
-   * WebSocket pub/sub connection.
-   */
-  _initReviewEventListeners() {
-    if (this._reviewEventsBound) return;
-    this._reviewEventsBound = true;
+    this._externalResultsSource = new EventSource(
+      `/api/pr/review-${reviewId}/ai-suggestions/status`
+    );
 
-    // Eagerly connect WebSocket subscriptions so review events flow even before chat opens
-    window.chatPanel?._ensureSubscriptions();
-
-    // Late-bind reviewId to ChatPanel if it was auto-opened by PanelGroup
-    // before prManager was ready (DOMContentLoaded race condition)
-    if (this.currentPR?.id) {
-      window.chatPanel?._lateBindReview(this.currentPR.id).catch(err => console.warn('[ChatPanel] Late-bind failed:', err));
-    }
-
-    // Dirty flags for stale-tab recovery
-    this._dirtyComments = false;
-    this._dirtySuggestions = false;
-    this._dirtyAnalysis = false;
-    this._dirtyAnalysisStarted = false;
-    this._dirtyContextFiles = false;
-
-    // Simple debounce helper
-    const timers = {};
-    const debounced = (key, fn, ms = 300) => {
-      clearTimeout(timers[key]);
-      timers[key] = setTimeout(fn, ms);
+    this._externalResultsSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'progress' && data.status === 'completed' && data.source === 'external') {
+          console.log('External analysis results detected, refreshing suggestions');
+          if (this.analysisHistoryManager) {
+            this.analysisHistoryManager.refresh({ switchToNew: true })
+              .then(() => this.loadAISuggestions());
+          } else {
+            this.loadAISuggestions();
+          }
+        }
+      } catch (e) { /* ignore parse errors */ }
     };
 
-    const reviewId = () => this.currentPR?.id;
-
-    document.addEventListener('review:comments_changed', (e) => {
-      if (e.detail?.reviewId !== reviewId()) return;
-      // Suppress self-echo: if this tab originated the mutation, skip reload
-      if (e.detail?.sourceClientId === this._clientId) return;
-      if (document.hidden) { this._dirtyComments = true; return; }
-      debounced('comments', () => this.loadUserComments());
-    });
-
-    document.addEventListener('review:suggestions_changed', (e) => {
-      if (e.detail?.reviewId !== reviewId()) return;
-      // Suppress self-echo for suggestion mutations too
-      if (e.detail?.sourceClientId === this._clientId) return;
-      if (document.hidden) { this._dirtySuggestions = true; return; }
-      debounced('suggestions', () => this.loadAISuggestions());
-    });
-
-    document.addEventListener('review:analysis_started', (e) => {
-      if (e.detail?.reviewId !== reviewId()) return;
-      if (document.hidden) { this._dirtyAnalysisStarted = true; return; }
-      debounced('analysisStarted', () => this.checkRunningAnalysis());
-    });
-
-    document.addEventListener('review:analysis_completed', (e) => {
-      if (e.detail?.reviewId !== reviewId()) return;
-      if (document.hidden) { this._dirtyAnalysis = true; return; }
-      debounced('analysis', () => {
-        if (this.analysisHistoryManager) {
-          this.analysisHistoryManager.refresh({ switchToNew: true })
-            .then(() => this._reloadAfterAnalysis());
-        } else {
-          this._reloadAfterAnalysis();
-        }
-      });
-    });
-
-    document.addEventListener('review:context_files_changed', (e) => {
-      if (e.detail?.reviewId !== reviewId()) return;
-      if (e.detail?.sourceClientId === this._clientId) return;
-      if (document.hidden) { this._dirtyContextFiles = true; return; }
-      debounced('contextFiles', () => this.loadContextFiles());
-    });
-
-    document.addEventListener('review:expand_hunk', async (e) => {
-      if (e.detail?.reviewId !== reviewId()) return;
-      const { file, line_start, line_end, side } = e.detail;
-      await this.ensureLinesVisible([{ file, line_start, line_end, side: side || 'right' }]);
-    });
-
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) return;
-      if (this._dirtyComments) { this._dirtyComments = false; this.loadUserComments(); }
-      if (this._dirtyAnalysisStarted) {
-        this._dirtyAnalysisStarted = false;
-        // Skip if analysis already completed while hidden — the completed handler below will refresh everything
-        if (!this._dirtyAnalysis) {
-          this.checkRunningAnalysis();
-        }
-      }
-      if (this._dirtyAnalysis) {
-        this._dirtyAnalysis = false;
-        this._dirtySuggestions = false; // analysis refresh includes suggestion reload
-        if (this.analysisHistoryManager) {
-          this.analysisHistoryManager.refresh({ switchToNew: true })
-            .then(() => this._reloadAfterAnalysis());
-        } else {
-          this._reloadAfterAnalysis();
-        }
-      } else if (this._dirtySuggestions) {
-        this._dirtySuggestions = false;
-        this.loadAISuggestions();
-      }
-      if (this._dirtyContextFiles) {
-        this._dirtyContextFiles = false;
-        this.loadContextFiles();
+    window.addEventListener('beforeunload', () => {
+      if (this._externalResultsSource) {
+        this._externalResultsSource.close();
+        this._externalResultsSource = null;
       }
     });
   }
@@ -629,11 +462,7 @@ class PRManager {
    */
   async loadAndDisplayFiles(owner, repo, number) {
     try {
-      let diffUrl = `/api/pr/${owner}/${repo}/${number}/diff`;
-      if (this.hideWhitespace) {
-        diffUrl += '?w=1';
-      }
-      const response = await fetch(diffUrl);
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/diff`);
 
       if (response.ok) {
         const data = await response.json();
@@ -653,7 +482,6 @@ class PRManager {
 
         // Parse the unified diff to extract per-file patches
         const filePatchMap = this.parseUnifiedDiff(fullDiff);
-        this.filePatches = filePatchMap;
 
         // Merge patch data into file objects
         const filesWithPatches = files.map(file => ({
@@ -697,35 +525,6 @@ class PRManager {
         diffContainer.innerHTML = '<div class="no-diff">Error loading changes</div>';
       }
     }
-  }
-
-  /**
-   * Handle the whitespace visibility toggle from DiffOptionsDropdown.
-   * Re-fetches the diff (with or without ?w=1), re-renders it, and
-   * re-anchors user comments and AI suggestions on the fresh DOM.
-   * @param {boolean} hide - Whether to hide whitespace-only changes
-   */
-  async handleWhitespaceToggle(hide) {
-    this.hideWhitespace = hide;
-
-    // Nothing to reload if we haven't loaded a PR yet
-    if (!this.currentPR) return;
-
-    const { owner, repo, number } = this.currentPR;
-    const scrollY = window.scrollY;
-
-    // Re-fetch and re-render the diff
-    await this.loadAndDisplayFiles(owner, repo, number);
-
-    // Re-anchor comments and suggestions on the fresh DOM
-    const includeDismissed = window.aiPanel?.showDismissedComments || false;
-    await this.loadUserComments(includeDismissed);
-    await this.loadAISuggestions(null, this.selectedRunId);
-
-    // Restore scroll position after the DOM settles
-    requestAnimationFrame(() => {
-      window.scrollTo(0, scrollY);
-    });
   }
 
   /**
@@ -788,18 +587,6 @@ class PRManager {
     const titleElement = document.getElementById('pr-title-text');
     if (titleElement) {
       titleElement.textContent = pr.title;
-    }
-
-    // Show/hide PR description info button
-    const descToggle = document.getElementById('pr-description-toggle');
-    if (descToggle) {
-      if (pr.body) {
-        descToggle.style.display = '';
-        this._prBody = pr.body;
-      } else {
-        descToggle.style.display = 'none';
-        this._prBody = null;
-      }
     }
 
     // Update meta info - show only head branch, full info in tooltip
@@ -904,81 +691,6 @@ class PRManager {
   }
 
   /**
-   * Set up the PR description popover toggle (called once during init).
-   */
-  setupPRDescriptionPopover() {
-    const toggle = document.getElementById('pr-description-toggle');
-    if (!toggle) return;
-
-    const wrapper = toggle.closest('.pr-title-wrapper');
-    if (!wrapper) return;
-
-    const closePopover = () => {
-      const existing = wrapper.querySelector('.pr-description-popover');
-      if (existing) existing.remove();
-      toggle.classList.remove('active');
-      toggle.setAttribute('aria-expanded', 'false');
-    };
-
-    toggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const existing = wrapper.querySelector('.pr-description-popover');
-      if (existing) {
-        closePopover();
-        return;
-      }
-
-      const body = this._prBody || '';
-      const rendered = window.renderMarkdown ? window.renderMarkdown(body) : this.escapeHtml(body);
-
-      const popover = document.createElement('div');
-      popover.className = 'pr-description-popover';
-
-      const arrow = document.createElement('div');
-      arrow.className = 'pr-description-popover-arrow';
-
-      const header = document.createElement('div');
-      header.className = 'pr-description-popover-header';
-
-      const title = document.createElement('span');
-      title.className = 'pr-description-popover-title';
-      title.textContent = 'PR Description';
-
-      const closeBtn = document.createElement('button');
-      closeBtn.className = 'pr-description-popover-close';
-      closeBtn.title = 'Close';
-      closeBtn.innerHTML = '&times;';
-
-      header.append(title, closeBtn);
-
-      const content = document.createElement('div');
-      content.className = 'pr-description-popover-content';
-      content.innerHTML = rendered;
-
-      popover.append(arrow, header, content);
-
-      wrapper.appendChild(popover);
-      toggle.classList.add('active');
-      toggle.setAttribute('aria-expanded', 'true');
-
-      closeBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        closePopover();
-      });
-
-      popover.addEventListener('click', (ev) => ev.stopPropagation());
-    });
-
-    document.addEventListener('click', () => {
-      if (toggle.classList.contains('active')) closePopover();
-    });
-
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && toggle.classList.contains('active')) closePopover();
-    });
-  }
-
-  /**
    * Update the pending draft indicator in the toolbar
    * @param {Object|null} pendingDraft - Pending draft data or null if no draft
    */
@@ -1064,10 +776,6 @@ class PRManager {
     } else {
       diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
     }
-
-    // Load context files after diff is rendered
-    this.contextFiles = [];
-    this.loadContextFiles();
   }
 
   /**
@@ -1144,26 +852,6 @@ class PRManager {
 
       // Store reference for updating icon state later
       fileCommentsZone.headerButton = fileCommentBtn;
-
-      // Add file chat button to header
-      const fileChatBtn = document.createElement('button');
-      fileChatBtn.className = 'file-header-chat-btn';
-      fileChatBtn.title = 'Chat about file';
-      fileChatBtn.dataset.file = file.file;
-      fileChatBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
-        </svg>
-      `;
-      fileChatBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (window.chatPanel) {
-          window.chatPanel.open({
-            fileContext: { file: file.file }
-          });
-        }
-      });
-      header.appendChild(fileChatBtn);
     }
 
     // Create diff table
@@ -1386,30 +1074,6 @@ class PRManager {
           this.showCommentForm(row, lineNumber, file, diffPosition, null, side);
         }
       },
-      onChatButtonClick: (_e, row, lineNumber, file, lineData) => {
-        if (!window.chatPanel) return;
-        let startLine = lineNumber;
-        let endLine = null;
-
-        if (this.lineTracker.hasActiveSelection() &&
-            this.lineTracker.rangeSelectionStart.fileName === file) {
-          const range = this.lineTracker.getSelectionRange();
-          startLine = range.start;
-          endLine = range.end;
-          this.lineTracker.clearRangeSelection();
-        }
-
-        window.chatPanel.open({
-          commentContext: {
-            type: 'line',
-            body: null,
-            file: file || '',
-            line_start: startLine,
-            line_end: endLine || startLine,
-            source: 'user'
-          }
-        });
-      },
       onMouseOver: (_e, row, lineNumber, file) => {
         // Check if we have a potential drag start and convert it to an actual drag
         if (this.lineTracker.potentialDragStart && !this.lineTracker.isDraggingRange) {
@@ -1424,7 +1088,6 @@ class PRManager {
       onMouseUp: (_e, row, lineNumber, file) => {
         if (this.lineTracker.potentialDragStart) {
           const start = this.lineTracker.potentialDragStart;
-          const isChat = start.isChat;
           this.lineTracker.potentialDragStart = null;
 
           if (start.lineNumber !== lineNumber || start.fileName !== file) {
@@ -1434,24 +1097,6 @@ class PRManager {
               this.lineTracker.startDragSelection(start.row, start.lineNumber, start.fileName, start.side);
             }
             this.lineTracker.completeDragSelection(row, lineNumber, file);
-
-            // For chat drags, immediately open chat with the selected range
-            if (isChat && this.lineTracker.hasActiveSelection()) {
-              const range = this.lineTracker.getSelectionRange();
-              this.lineTracker.clearRangeSelection();
-              if (window.chatPanel) {
-                window.chatPanel.open({
-                  commentContext: {
-                    type: 'line',
-                    body: null,
-                    file: file || '',
-                    line_start: range.start,
-                    line_end: range.end,
-                    source: 'user'
-                  }
-                });
-              }
-            }
           }
         } else if (this.lineTracker.isDraggingRange) {
           this.lineTracker.completeDragSelection(row, lineNumber, file);
@@ -1524,15 +1169,6 @@ class PRManager {
       }
     } else {
       this.viewedFiles.delete(filePath);
-      // Auto-expand when unchecking viewed (match GitHub behavior)
-      if (wrapper && wrapper.classList.contains('collapsed')) {
-        wrapper.classList.remove('collapsed');
-        this.collapsedFiles.delete(filePath);
-        const header = wrapper.querySelector('.d2h-file-header');
-        if (header) {
-          window.DiffRenderer.updateFileHeaderState(header, true);
-        }
-      }
     }
 
     // Persist viewed state
@@ -1610,11 +1246,11 @@ class PRManager {
    * @returns {Promise<{lines: string[]}|null>} File content with lines array, or null on error
    */
   async fetchFileContent(fileName) {
-    const reviewId = this.currentPR?.id;
-    if (!reviewId) return null;
+    if (!this.currentPR) return null;
 
+    const { owner, repo, number } = this.currentPR;
     const response = await fetch(
-      `/api/reviews/${reviewId}/file-content/${encodeURIComponent(fileName)}`
+      `/api/file-content-original/${encodeURIComponent(fileName)}?owner=${owner}&repo=${repo}&number=${number}`
     );
     const data = await response.json();
 
@@ -2068,40 +1704,6 @@ class PRManager {
   }
 
   /**
-   * Ensure that the given line ranges are visible in the diff view.
-   * For each item, checks if the target line rows exist in the DOM; if not,
-   * calls expandForSuggestion() to expand the gap containing those lines.
-   * @param {Array<{file: string, line_start: number, line_end: number, side: string}>} items
-   */
-  async ensureLinesVisible(items) {
-    for (const item of items) {
-      const { file, line_start, line_end, side } = item;
-      const resolvedSide = (side || 'right').toUpperCase();
-
-      const fileElement = this.findFileElement(file);
-      if (!fileElement) continue;
-
-      // Check if any line in the range is already visible
-      let anyLineVisible = false;
-      const lineRows = fileElement.querySelectorAll('tr');
-      for (let checkLine = line_start; checkLine <= (line_end || line_start); checkLine++) {
-        for (const row of lineRows) {
-          const lineNum = this.getLineNumber(row, resolvedSide);
-          if (lineNum === checkLine) {
-            anyLineVisible = true;
-            break;
-          }
-        }
-        if (anyLineVisible) break;
-      }
-
-      if (!anyLineVisible) {
-        await this.expandForSuggestion(file, line_start, line_end || line_start, resolvedSide);
-      }
-    }
-  }
-
-  /**
    * Line range selection methods - delegate to LineTracker
    */
   startRangeSelection(row, lineNumber, fileName, side = 'RIGHT') {
@@ -2157,6 +1759,10 @@ class PRManager {
     this.commentManager.updateSuggestionButtonState(textarea, button);
   }
 
+  getCodeFromLines(fileName, startLine, endLine) {
+    return this.commentManager.getCodeFromLines(fileName, startLine, endLine);
+  }
+
   insertSuggestionBlock(textarea, button) {
     this.commentManager.insertSuggestionBlock(textarea, button);
   }
@@ -2186,7 +1792,7 @@ class PRManager {
       let currentText = bodyDiv.dataset.originalMarkdown || '';
 
       if (!currentText) {
-        const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`);
+        const response = await fetch(`/api/user-comment/${commentId}`);
         if (response.ok) {
           const data = await response.json();
           currentText = data.body || bodyDiv.textContent.trim();
@@ -2218,7 +1824,7 @@ class PRManager {
             data-file="${fileName}"
             data-line="${lineStart}"
             data-line-end="${lineEnd}"
-            data-side="${side || 'RIGHT'}"
+            ${side ? `data-side="${side}"` : ''}
           >${this.escapeHtml(currentText)}</textarea>
           <div class="comment-edit-actions">
             <button class="btn btn-sm btn-primary save-edit-btn">Save</button>
@@ -2266,15 +1872,6 @@ class PRManager {
    * Save edited user comment
    */
   async saveEditedUserComment(commentId) {
-    // Prevent duplicate saves from rapid clicks or Cmd+Enter
-    const editForm = document.querySelector(`#edit-comment-${commentId}`)?.closest('.user-comment-edit-form');
-    const saveBtn = editForm?.querySelector('.save-edit-btn');
-    if (saveBtn?.dataset.saving === 'true') {
-      return;
-    }
-    if (saveBtn) saveBtn.dataset.saving = 'true';
-    if (saveBtn) saveBtn.disabled = true;
-
     try {
       const textarea = document.getElementById(`edit-comment-${commentId}`);
       const editedText = textarea.value.trim();
@@ -2282,14 +1879,10 @@ class PRManager {
       if (!editedText) {
         alert('Comment cannot be empty');
         textarea.focus();
-        if (saveBtn) {
-          saveBtn.dataset.saving = 'false';
-          saveBtn.disabled = false;
-        }
         return;
       }
 
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, {
+      const response = await fetch(`/api/user-comment/${commentId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body: editedText })
@@ -2300,7 +1893,7 @@ class PRManager {
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       const commentDiv = commentRow.querySelector('.user-comment');
       let bodyDiv = commentDiv.querySelector('.user-comment-body');
-      const editFormEl = commentDiv.querySelector('.user-comment-edit-form');
+      const editForm = commentDiv.querySelector('.user-comment-edit-form');
 
       if (!bodyDiv) {
         bodyDiv = document.createElement('div');
@@ -2312,8 +1905,11 @@ class PRManager {
       bodyDiv.dataset.originalMarkdown = editedText;
       bodyDiv.style.display = '';
 
-      if (editFormEl) editFormEl.remove();
+      if (editForm) editForm.remove();
       commentDiv.classList.remove('editing-mode');
+
+      const timestamp = commentDiv.querySelector('.user-comment-timestamp');
+      if (timestamp) timestamp.textContent = new Date().toLocaleString();
 
       // Notify AI Panel about the updated comment body
       if (window.aiPanel?.updateComment) {
@@ -2323,11 +1919,6 @@ class PRManager {
     } catch (error) {
       console.error('Error saving comment:', error);
       alert('Failed to save comment');
-      // Re-enable save button on failure so the user can retry
-      if (saveBtn) {
-        saveBtn.dataset.saving = 'false';
-        saveBtn.disabled = false;
-      }
     }
   }
 
@@ -2345,6 +1936,11 @@ class PRManager {
     bodyDiv.style.display = '';
     if (editForm) editForm.remove();
     commentDiv.classList.remove('editing-mode');
+
+    const timestamp = commentDiv.querySelector('.user-comment-timestamp');
+    if (timestamp && timestamp.textContent === 'Editing comment...') {
+      timestamp.textContent = 'Draft';
+    }
   }
 
   /**
@@ -2357,9 +1953,7 @@ class PRManager {
    */
   async deleteUserComment(commentId) {
     try {
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, {
-        method: 'DELETE'
-      });
+      const response = await fetch(`/api/user-comment/${commentId}`, { method: 'DELETE' });
       if (!response.ok) throw new Error('Failed to delete comment');
 
       const apiResult = await response.json();
@@ -2396,17 +1990,8 @@ class PRManager {
       // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
       // Update AIPanel to show the suggestion as 'dismissed' (matching its visual state).
       // User can click "Show" to restore it to active state if they want to re-adopt.
-      if (apiResult.dismissedSuggestionId) {
-        if (window.aiPanel?.updateFindingStatus) {
-          window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
-        }
-        // Clear hiddenForAdoption so that restoring the suggestion takes the API code path
-        // instead of the toggle-only shortcut. Without this, restoring a previously-adopted
-        // suggestion would only toggle visibility without updating its status.
-        const suggestionDiv = document.querySelector(`[data-suggestion-id="${apiResult.dismissedSuggestionId}"]`);
-        if (suggestionDiv) {
-          delete suggestionDiv.dataset.hiddenForAdoption;
-        }
+      if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
+        window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
       }
 
       // Show success toast
@@ -2427,9 +2012,7 @@ class PRManager {
    */
   async restoreUserComment(commentId) {
     try {
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}/restore`, {
-        method: 'PUT'
-      });
+      const response = await fetch(`/api/user-comment/${commentId}/restore`, { method: 'PUT' });
       if (!response.ok) throw new Error('Failed to restore comment');
 
       // Reload comments to update both the diff view and AI panel
@@ -2491,7 +2074,7 @@ class PRManager {
     if (dialogResult !== 'confirm') return;
 
     try {
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments`, {
+      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`, {
         method: 'DELETE'
       });
 
@@ -2556,7 +2139,7 @@ class PRManager {
 
     try {
       const queryParam = includeDismissed ? '?includeDismissed=true' : '';
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments${queryParam}`);
+      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments${queryParam}`);
       if (!response.ok) return;
 
       const data = await response.json();
@@ -2584,16 +2167,6 @@ class PRManager {
 
       // Clear existing comment rows before re-rendering
       document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
-
-      // Before rendering, ensure all comment target lines are visible
-      // (expand hidden hunks so the line rows exist in the DOM)
-      const lineItems = lineLevelComments.map(c => ({
-        file: c.file,
-        line_start: c.line_start,
-        line_end: c.line_start,
-        side: c.side || 'RIGHT'
-      }));
-      await this.ensureLinesVisible(lineItems);
 
       // Display line-level comments inline with diff (only active comments reach here)
       lineLevelComments.forEach(comment => {
@@ -2653,8 +2226,7 @@ class PRManager {
       // First, check if analysis has been run for this PR and get summary for the selected run
       let analysisHasRun = false;
       try {
-        const id = this.currentPR.id;
-        let checkUrl = `/api/reviews/${id}/suggestions/check`;
+        let checkUrl = `/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`;
         if (filterRunId) {
           checkUrl += `?runId=${filterRunId}`;
         }
@@ -2681,7 +2253,7 @@ class PRManager {
         window.aiPanel.setAnalysisState(analysisHasRun ? 'complete' : 'unknown');
       }
 
-      let url = `/api/reviews/${this.currentPR.id}/suggestions?levels=${filterLevel}`;
+      let url = `/api/pr/${owner}/${repo}/${number}/ai-suggestions?levels=${filterLevel}`;
       if (filterRunId) {
         url += `&runId=${filterRunId}`;
       }
@@ -2724,105 +2296,24 @@ class PRManager {
     return this.suggestionManager.getFileAndLineInfo(suggestionDiv);
   }
 
+  async collapseAISuggestion(suggestionId, suggestionRow, collapsedText, status) {
+    return this.suggestionManager.collapseAISuggestion(suggestionId, suggestionRow, collapsedText, status);
+  }
+
   getCategoryEmoji(category) {
     return this.suggestionManager.getCategoryEmoji(category);
   }
 
+  formatAdoptedComment(text, category) {
+    return this.suggestionManager.formatAdoptedComment(text, category);
+  }
+
+  async createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side) {
+    return this.suggestionManager.createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side);
+  }
+
   getTypeDescription(type) {
     return this.suggestionManager.getTypeDescription(type);
-  }
-
-  /**
-   * Collapse a suggestion div in the UI after adoption.
-   * Handles adding collapsed class, updating text to 'Suggestion adopted',
-   * updating the restore button, and setting hiddenForAdoption flag.
-   * @param {HTMLElement} suggestionRow - The suggestion row element
-   * @param {number|string} suggestionId - Suggestion ID
-   */
-  collapseSuggestionForAdoption(suggestionRow, suggestionId) {
-    if (!suggestionRow) return;
-    const targetDiv = suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-    if (!targetDiv) return;
-    targetDiv.classList.add('collapsed');
-    const collapsedContent = targetDiv.querySelector('.collapsed-text');
-    if (collapsedContent) collapsedContent.textContent = 'Suggestion adopted';
-    const restoreButton = targetDiv.querySelector('.btn-restore');
-    if (restoreButton) {
-      restoreButton.title = 'Show suggestion';
-      const btnText = restoreButton.querySelector('.btn-text');
-      if (btnText) btnText.textContent = 'Show';
-    }
-    targetDiv.dataset.hiddenForAdoption = 'true';
-  }
-
-  /**
-   * Shared helper for adoptAndEditSuggestion and adoptSuggestion.
-   * Performs the /adopt fetch, collapses the suggestion, formats the comment,
-   * and builds the newComment object. Returns { newComment, suggestionRow }
-   * or null on failure. Throws on errors so the caller can handle them.
-   */
-  async _adoptAndBuildComment(suggestionId, suggestionDiv) {
-    const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
-    const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
-
-    // File-level suggestions are handled by FileCommentManager; signal the caller
-    if (isFileLevel) {
-      return { isFileLevel: true, suggestionText, suggestionType, suggestionTitle, fileName, suggestionRow };
-    }
-
-    // Use the atomic /adopt endpoint which creates the user comment, sets parent_id
-    // linkage, and updates suggestion status to 'adopted' in a single request
-    const reviewId = this.currentPR?.id;
-    const adoptResponse = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    });
-
-    if (!adoptResponse.ok) throw new Error('Failed to adopt suggestion');
-
-    const adoptResult = await adoptResponse.json();
-
-    // Collapse the suggestion in the UI
-    this.collapseSuggestionForAdoption(suggestionRow, suggestionId);
-
-    // Use the server-formatted body — server is the single source of truth
-    const formattedText = adoptResult.formattedBody;
-    const newComment = {
-      id: adoptResult.userCommentId,
-      file: fileName,
-      line_start: parseInt(lineNumber),
-      body: formattedText,
-      type: suggestionType,
-      title: suggestionTitle,
-      parent_id: suggestionId,
-      diff_position: diffPosition ? parseInt(diffPosition) : null,
-      side: side || 'RIGHT',
-      created_at: new Date().toISOString()
-    };
-
-    return { isFileLevel: false, newComment, suggestionRow };
-  }
-
-  /**
-   * Notify panels and navigator after a successful adoption
-   */
-  _notifyAdoption(suggestionId, newComment) {
-    if (window.aiPanel?.addComment) {
-      window.aiPanel.addComment(newComment);
-    }
-
-    if (this.suggestionNavigator?.suggestions) {
-      const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
-        s.id === suggestionId ? { ...s, status: 'adopted' } : s
-      );
-      this.suggestionNavigator.updateSuggestions(updatedSuggestions);
-    }
-
-    if (window.aiPanel) {
-      window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
-    }
-
-    this.updateCommentCount();
   }
 
   /**
@@ -2833,27 +2324,54 @@ class PRManager {
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (!suggestionDiv) throw new Error('Suggestion element not found');
 
-      const result = await this._adoptAndBuildComment(suggestionId, suggestionDiv);
+      const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
+      const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
 
-      if (result.isFileLevel) {
+      // File-level suggestions use FileCommentManager for edit-and-adopt
+      if (isFileLevel) {
         if (!this.fileCommentManager) throw new Error('FileCommentManager not initialized');
-        const zone = this.fileCommentManager.findZoneForFile(result.fileName);
-        if (!zone) throw new Error(`Could not find file comments zone for ${result.fileName}`);
+        const zone = this.fileCommentManager.findZoneForFile(fileName);
+        if (!zone) throw new Error(`Could not find file comments zone for ${fileName}`);
 
+        // Build suggestion object for FileCommentManager
         const suggestion = {
           id: suggestionId,
-          file: result.fileName,
-          body: result.suggestionText,
-          type: result.suggestionType,
-          title: result.suggestionTitle
+          file: fileName,
+          body: suggestionText,
+          type: suggestionType,
+          title: suggestionTitle
         };
 
+        // Use editAndAdoptAISuggestion which opens an edit form
         this.fileCommentManager.editAndAdoptAISuggestion(zone, suggestion);
         return;
       }
 
-      this.displayUserCommentInEditMode(result.newComment, result.suggestionRow);
-      this._notifyAdoption(suggestionId, result.newComment);
+      await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
+
+      const newComment = await this.createUserCommentFromSuggestion(
+        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side
+      );
+
+      this.displayUserCommentInEditMode(newComment, suggestionRow);
+
+      // Notify AI Panel about the new adopted comment
+      if (window.aiPanel?.addComment) {
+        window.aiPanel.addComment(newComment);
+      }
+
+      if (this.suggestionNavigator?.suggestions) {
+        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
+          s.id === suggestionId ? { ...s, status: 'adopted' } : s
+        );
+        this.suggestionNavigator.updateSuggestions(updatedSuggestions);
+      }
+
+      if (window.aiPanel) {
+        window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
+      }
+
+      this.updateCommentCount();
     } catch (error) {
       console.error('Error adopting and editing suggestion:', error);
       alert(`Failed to adopt suggestion: ${error.message}`);
@@ -2868,27 +2386,53 @@ class PRManager {
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (!suggestionDiv) throw new Error('Suggestion element not found');
 
-      const result = await this._adoptAndBuildComment(suggestionId, suggestionDiv);
+      const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
+      const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
 
-      if (result.isFileLevel) {
+      // File-level suggestions use FileCommentManager for adoption
+      if (isFileLevel) {
         if (!this.fileCommentManager) throw new Error('FileCommentManager not initialized');
-        const zone = this.fileCommentManager.findZoneForFile(result.fileName);
-        if (!zone) throw new Error(`Could not find file comments zone for ${result.fileName}`);
+        const zone = this.fileCommentManager.findZoneForFile(fileName);
+        if (!zone) throw new Error(`Could not find file comments zone for ${fileName}`);
 
+        // Build suggestion object for FileCommentManager
         const suggestion = {
           id: suggestionId,
-          file: result.fileName,
-          body: result.suggestionText,
-          type: result.suggestionType,
-          title: result.suggestionTitle
+          file: fileName,
+          body: suggestionText,
+          type: suggestionType,
+          title: suggestionTitle
         };
 
         await this.fileCommentManager.adoptAISuggestion(zone, suggestion);
         return;
       }
 
-      this.displayUserComment(result.newComment, result.suggestionRow);
-      this._notifyAdoption(suggestionId, result.newComment);
+      await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
+
+      const newComment = await this.createUserCommentFromSuggestion(
+        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side
+      );
+
+      this.displayUserComment(newComment, suggestionRow);
+
+      // Notify AI Panel about the new adopted comment
+      if (window.aiPanel?.addComment) {
+        window.aiPanel.addComment(newComment);
+      }
+
+      if (this.suggestionNavigator?.suggestions) {
+        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
+          s.id === suggestionId ? { ...s, status: 'adopted' } : s
+        );
+        this.suggestionNavigator.updateSuggestions(updatedSuggestions);
+      }
+
+      if (window.aiPanel) {
+        window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
+      }
+
+      this.updateCommentCount();
     } catch (error) {
       console.error('Error adopting suggestion:', error);
       alert(`Failed to adopt suggestion: ${error.message}`);
@@ -2919,7 +2463,7 @@ class PRManager {
         return;
       }
 
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/suggestions/${suggestionId}/status`, {
+      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'dismissed' })
@@ -2975,7 +2519,7 @@ class PRManager {
         return;
       }
 
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/suggestions/${suggestionId}/status`, {
+      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'active' })
@@ -3043,37 +2587,14 @@ class PRManager {
         // Clear placeholder in case of any orphaned elements
         placeholder.innerHTML = '';
 
-        const shareConfig = window.__pairReview?.share;
-        let validatedShareUrl = null;
-        if (shareConfig?.url) {
-          try {
-            new URL(shareConfig.url);
-            validatedShareUrl = shareConfig.url;
-          } catch {
-            // Invalid share URL in config — don't render share button
-          }
-        }
         this.splitButton = new window.SplitButton({
           onSubmit: () => this.openReviewModal(),
           onPreview: () => this.openPreviewModal(),
-          onClear: () => this.clearAllUserComments(),
-          onShare: () => this.openSharePage(),
-          shareUrl: validatedShareUrl,
-          shareIcon: shareConfig?.icon || null,
-          shareLabel: shareConfig?.label || 'Share',
-          shareDescription: shareConfig?.description || null
+          onClear: () => this.clearAllUserComments()
         });
         const buttonElement = this.splitButton.render();
         placeholder.appendChild(buttonElement);
         this.updateCommentCount();
-
-        // Handle late config arrival — update share config when config fetch resolves
-        window.addEventListener('chat-state-changed', () => {
-          const lateCfg = window.__pairReview?.share;
-          if (this.splitButton) {
-            this.splitButton.setShareConfig(lateCfg || null);
-          }
-        }, { once: true });
       }
     }
   }
@@ -3096,69 +2617,6 @@ class PRManager {
       this.previewModal = new PreviewModal();
     }
     this.previewModal.show();
-  }
-
-  /**
-   * Open share page in a new tab
-   * Builds the share URL with a callback_url pointing to this PR's share endpoint
-   * Validates that there is analysis data to share before opening.
-   */
-  async openSharePage() {
-    const shareConfig = window.__pairReview?.share;
-    if (!shareConfig?.url) return;
-
-    const pr = this.currentPR;
-    if (!pr) return;
-
-    // Validate the share URL before attempting to use it
-    let shareUrl;
-    try {
-      shareUrl = new URL(shareConfig.url);
-    } catch {
-      console.error('Invalid share URL in configuration:', shareConfig.url);
-      return;
-    }
-
-    // Build the callback URL for the share endpoint
-    let callbackUrl = `${window.location.origin}/api/pr/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/${pr.number}/share`;
-
-    // Include selected run ID if one is explicitly selected
-    if (this.selectedRunId) {
-      callbackUrl += `?runId=${encodeURIComponent(this.selectedRunId)}`;
-    }
-
-    // Check that there is analysis data to share before opening the page
-    try {
-      const response = await fetch(callbackUrl);
-      if (!response.ok) {
-        if (window.toast) {
-          window.toast.showError('Unable to share: could not load review data');
-        }
-        return;
-      }
-      const data = await response.json().catch(() => null);
-      if (!data) {
-        if (window.toast) {
-          window.toast.showError('Unable to share: unexpected response from server');
-        }
-        return;
-      }
-      if (!data.run) {
-        if (window.toast) {
-          window.toast.showError('Nothing to share: no completed analysis found. Run an AI analysis first.');
-        }
-        return;
-      }
-    } catch (error) {
-      console.error('Error checking share data:', error);
-      if (window.toast) {
-        window.toast.showError('Unable to share: ' + error.message);
-      }
-      return;
-    }
-
-    shareUrl.searchParams.set('callback_url', callbackUrl);
-    window.open(shareUrl.toString(), '_blank');
   }
 
   /**
@@ -3340,10 +2798,15 @@ class PRManager {
         return;
       }
 
-      // Use unified review comments API (works for both PR and local mode)
-      const reviewId = pr.id;
+      // Determine the correct API endpoint based on mode
       let response;
-      response = await fetch(`/api/reviews/${reviewId}/comments`);
+      if (window.PAIR_REVIEW_LOCAL_MODE && window.localManager?.reviewId) {
+        // Local mode - use local API endpoint
+        response = await fetch(`/api/local/${window.localManager.reviewId}/user-comments`);
+      } else {
+        // PR mode - use PR API endpoint
+        response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/user-comments`);
+      }
 
       if (!response.ok) {
         throw new Error('Failed to load comments');
@@ -3444,11 +2907,6 @@ class PRManager {
         generated: file.generated || false,
         renamed: file.renamed || false,
         renamedFrom: file.renamedFrom || null,
-        contextFile: file.contextFile || false,
-        contextId: file.contextId || null,
-        label: file.label || null,
-        lineStart: file.lineStart || null,
-        lineEnd: file.lineEnd || null,
       });
     });
 
@@ -3462,9 +2920,6 @@ class PRManager {
   updateFileList(files) {
     const fileListContainer = document.getElementById('file-list');
     if (!fileListContainer) return;
-
-    // Store diff-only files for merging with context files later
-    this.diffFiles = files.filter(f => !f.contextFile);
 
     // Update sidebar file count badge
     const fileCountEl = document.getElementById('sidebar-file-count');
@@ -3536,7 +2991,6 @@ class PRManager {
     item.dataset.status = file.status;
 
     if (file.generated) item.classList.add('generated');
-    if (file.contextFile) item.classList.add('context-file-item');
     if (file.renamed && file.renamedFrom) {
       item.title = `Renamed from: ${file.renamedFrom}`;
       const renameIcon = document.createElement('span');
@@ -3552,13 +3006,7 @@ class PRManager {
     const changes = document.createElement('span');
     changes.className = 'file-changes';
 
-    if (file.contextFile) {
-      const badge = document.createElement('span');
-      badge.className = 'context-badge';
-      badge.textContent = 'CONTEXT';
-      if (file.label) badge.title = file.label;
-      changes.appendChild(badge);
-    } else if (file.binary) {
+    if (file.binary) {
       changes.textContent = 'BIN';
     } else {
       if (file.additions > 0) {
@@ -3580,11 +3028,7 @@ class PRManager {
 
     item.addEventListener('click', (e) => {
       e.preventDefault();
-      if (file.contextFile) {
-        this.scrollToContextFile(file.fullPath, file.lineStart, file.contextId);
-      } else {
-        this.scrollToFile(file.fullPath);
-      }
+      this.scrollToFile(file.fullPath);
       this.setActiveFileItem(file.fullPath);
     });
 
@@ -3870,7 +3314,7 @@ class PRManager {
 
     // Map levels to dot phases
     const phaseMap = {
-      4: 'orchestration', // Orchestration/finalization is level 4 in progress modal
+      4: 'orchestration', // Orchestration/finalization is level 4 in ProgressModal
       1: 'level1',
       2: 'level2',
       3: 'level3'
@@ -3916,9 +3360,8 @@ class PRManager {
     if (!this.currentPR) return;
 
     try {
-      const reviewId = this.currentPR.id;
-      if (!reviewId) return;
-      const response = await fetch(`/api/reviews/${reviewId}/analyses/status`);
+      const { owner, repo, number } = this.currentPR;
+      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/analysis-status`);
 
       if (!response.ok) {
         console.warn('Could not check analysis status:', response.statusText);
@@ -3938,18 +3381,11 @@ class PRManager {
         // Set button to analyzing state
         this.setButtonAnalyzing(data.analysisId);
 
-        // Show the appropriate progress modal
-        if (window.councilProgressModal) {
-          window.councilProgressModal.setPRMode();
-          window.councilProgressModal.show(
-            data.analysisId,
-            data.status?.isCouncil ? data.status.councilConfig : null,
-            null,
-            {
-              configType: data.status?.isCouncil ? (data.status.configType || 'advanced') : 'single',
-              enabledLevels: data.status?.enabledLevels || [1, 2, 3]
-            }
-          );
+        // Show progress dialog for the running analysis
+        if (window.progressModal) {
+          window.progressModal.show(data.analysisId);
+        } else {
+          console.warn('Progress modal not yet initialized');
         }
       }
     } catch (error) {
@@ -3961,12 +3397,9 @@ class PRManager {
   /**
    * Reopen progress modal when button is clicked during analysis
    */
-  reopenModal() {
-    if (!this.currentAnalysisId) return;
-
-    // Reopen the progress modal if it was tracking this analysis
-    if (window.councilProgressModal && window.councilProgressModal.currentAnalysisId === this.currentAnalysisId) {
-      window.councilProgressModal.reopenFromBackground();
+  reopenProgressModal() {
+    if (this.currentAnalysisId && window.progressModal) {
+      window.progressModal.show(this.currentAnalysisId);
     }
   }
 
@@ -3995,26 +3428,23 @@ class PRManager {
   }
 
   /**
-   * Fetch last review settings (custom instructions and council ID) from review record
-   * @returns {Promise<{custom_instructions: string, last_council_id: string|null}>} Last review settings
+   * Fetch last used custom instructions from review record
+   * @returns {Promise<string>} Last custom instructions or empty string
    */
-  async fetchLastReviewSettings() {
-    if (!this.currentPR) return { custom_instructions: '', last_council_id: null };
+  async fetchLastCustomInstructions() {
+    if (!this.currentPR) return '';
 
     const { owner, repo, number } = this.currentPR;
     try {
       const response = await fetch(`/api/pr/${owner}/${repo}/${number}/review-settings`);
       if (!response.ok) {
-        return { custom_instructions: '', last_council_id: null };
+        return '';
       }
       const data = await response.json();
-      return {
-        custom_instructions: data.custom_instructions || '',
-        last_council_id: data.last_council_id || null
-      };
+      return data.custom_instructions || '';
     } catch (error) {
       console.warn('Error fetching last custom instructions:', error);
-      return { custom_instructions: '', last_council_id: null };
+      return '';
     }
   }
 
@@ -4024,7 +3454,7 @@ class PRManager {
   async triggerAIAnalysis() {
     // If analysis is already running, just reopen the progress modal
     if (this.isAnalyzing) {
-      this.reopenModal();
+      this.reopenProgressModal();
       return;
     }
 
@@ -4043,6 +3473,71 @@ class PRManager {
     }
 
     try {
+      // Check if PR has new commits before analysis
+      try {
+        const staleResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`);
+        if (!staleResponse.ok) {
+          // Handle non-OK responses (401/403/500 etc)
+          const errorText = await staleResponse.text().catch(() => 'Unknown error');
+          console.warn(`Stale check failed with status ${staleResponse.status}:`, errorText);
+          if (window.toast) {
+            window.toast.showWarning(`Could not verify PR is current (${staleResponse.status}). Proceeding with analysis.`);
+          }
+          // Fall through to continue with analysis
+        } else {
+          const staleData = await staleResponse.json();
+
+          // Handle PR state - show info for closed/merged PRs but still allow analysis
+          if (staleData.prState && (staleData.prState !== 'open' || staleData.merged)) {
+            const stateLabel = staleData.merged ? 'merged' : 'closed';
+            if (window.toast) {
+              window.toast.showWarning(`This PR is ${stateLabel}. Analysis will proceed on the existing data.`);
+            }
+          }
+
+          // Handle isStale === null (unknown - couldn't check)
+          if (staleData.isStale === null) {
+            // Couldn't verify - show toast and proceed
+            if (window.toast) {
+              window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
+            }
+            // Continue with analysis
+          } else if (staleData.isStale === true) {
+            // PR is stale - show single dialog with 3 options
+            if (!window.confirmDialog) {
+              console.warn('ConfirmDialog not available for stale PR check');
+            } else {
+              const choice = await window.confirmDialog.show({
+                title: 'PR Has New Commits',
+                message: 'This pull request has new commits since you last loaded it. What would you like to do?',
+                confirmText: 'Refresh & Analyze',
+                confirmClass: 'btn-primary',
+                secondaryText: 'Analyze Anyway',
+                secondaryClass: 'btn-warning'
+              });
+
+              if (choice === 'confirm') {
+                // User wants to refresh first
+                await this.refreshPR();
+                // After refresh, continue with analysis
+              } else if (choice === 'secondary') {
+                // User chose to analyze anyway - continue with stale data
+              } else {
+                // User cancelled
+                return;
+              }
+            }
+          }
+          // If isStale === false, PR is up-to-date, just continue
+        }
+      } catch (staleError) {
+        // Fail-open: show toast warning and continue with analysis
+        console.warn('Error checking PR staleness:', staleError);
+        if (window.toast) {
+          window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
+        }
+      }
+
       // Show analysis config modal
       if (!this.analysisConfigModal) {
         console.warn('AnalysisConfigModal not initialized, proceeding without config');
@@ -4050,98 +3545,27 @@ class PRManager {
         return;
       }
 
-      // Run stale check and settings fetch in parallel to minimize dialog delay
-      // Use AbortController so the fetch is truly cancelled on timeout,
-      // freeing the HTTP connection for subsequent requests.
-      const _tParallel0 = performance.now();
-      const staleAbort = new AbortController();
-      const staleTimer = setTimeout(() => {
-        console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
-        staleAbort.abort();
-      }, STALE_TIMEOUT);
-      const staleCheckWithTimeout = fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`, { signal: staleAbort.signal })
-        .then(r => r.ok ? r.json() : null)
-        .then(result => { clearTimeout(staleTimer); return result; })
-        .catch(() => { clearTimeout(staleTimer); return null; });
-
-      const [staleResult, repoSettings, reviewSettings] = await Promise.all([
-        staleCheckWithTimeout,
+      // Fetch repo settings and last used instructions in parallel
+      const [repoSettings, lastInstructions] = await Promise.all([
         this.fetchRepoSettings(),
-        this.fetchLastReviewSettings()
+        this.fetchLastCustomInstructions()
       ]);
-      console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
 
-      // Handle staleness result — check for expected properties to distinguish
-      // a valid response from a failed/timed-out fetch (which resolves to null)
-      if (staleResult && 'isStale' in staleResult) {
-        // Handle PR state - show info for closed/merged PRs
-        if (staleResult.prState && (staleResult.prState !== 'open' || staleResult.merged)) {
-          const stateLabel = staleResult.merged ? 'merged' : 'closed';
-          if (window.toast) {
-            window.toast.showWarning(`This PR is ${stateLabel}. Analysis will proceed on the existing data.`);
-          }
-        }
-
-        if (staleResult.isStale === null) {
-          if (window.toast) {
-            window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
-          }
-        } else if (staleResult.isStale === true) {
-          if (window.confirmDialog) {
-            const choice = await window.confirmDialog.show({
-              title: 'PR Has New Commits',
-              message: 'This pull request has new commits since you last loaded it. What would you like to do?',
-              confirmText: 'Refresh & Analyze',
-              confirmClass: 'btn-primary',
-              secondaryText: 'Analyze Anyway',
-              secondaryClass: 'btn-warning'
-            });
-
-            if (choice === 'confirm') {
-              await this.refreshPR();
-            } else if (choice !== 'secondary') {
-              return;
-            }
-          }
-        }
-      } else if (!staleResult) {
-        // Network error, HTTP error, or timeout — fail open with warning
-        if (window.toast) {
-          window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
-        }
-      }
-
-      const lastCouncilId = reviewSettings.last_council_id;
-
-      // Determine the model and provider to use (priority: repo default > defaults)
-      const currentModel = repoSettings?.default_model || 'opus';
-      const currentProvider = repoSettings?.default_provider || 'claude';
-
-      // Determine default tab (priority: localStorage > repo settings > 'single')
-      const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
-      const rememberedTab = localStorage.getItem(tabStorageKey);
-      const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
-
-      // Restore custom instructions (priority: database > localStorage)
-      const instructionsStorageKey = PRManager.getRepoStorageKey('pair-review-instructions', owner, repo);
-      const lastInstructions = reviewSettings.custom_instructions
-        ?? localStorage.getItem(instructionsStorageKey)
-        ?? '';
-
-      // Save tab selection to localStorage when user switches tabs
-      this.analysisConfigModal.onTabChange = (tabId) => {
-        localStorage.setItem(tabStorageKey, tabId);
-      };
+      // Determine the model and provider to use (priority: remembered > repo default > defaults)
+      const modelStorageKey = PRManager.getRepoStorageKey('pair-review-model', owner, repo);
+      const providerStorageKey = PRManager.getRepoStorageKey('pair-review-provider', owner, repo);
+      const rememberedModel = localStorage.getItem(modelStorageKey);
+      const rememberedProvider = localStorage.getItem(providerStorageKey);
+      const currentModel = rememberedModel || repoSettings?.default_model || 'opus';
+      const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
 
       // Show the config modal
       const config = await this.analysisConfigModal.show({
         currentModel,
         currentProvider,
-        defaultTab,
         repoInstructions: repoSettings?.default_instructions || '',
         lastInstructions: lastInstructions,
-        lastCouncilId,
-        defaultCouncilId: repoSettings?.default_council_id || null
+        rememberModel: !!(rememberedModel || rememberedProvider)
       });
 
       // If user cancelled, do nothing
@@ -4149,12 +3573,13 @@ class PRManager {
         return;
       }
 
-      // Persist custom instructions to localStorage for immediate recall on next dialog open
-      const submittedInstructions = config.customInstructions || '';
-      if (submittedInstructions) {
-        localStorage.setItem(instructionsStorageKey, submittedInstructions);
+      // Save remembered model and provider preferences if requested
+      if (config.rememberModel) {
+        localStorage.setItem(modelStorageKey, config.model);
+        localStorage.setItem(providerStorageKey, config.provider);
       } else {
-        localStorage.removeItem(instructionsStorageKey);
+        localStorage.removeItem(modelStorageKey);
+        localStorage.removeItem(providerStorageKey);
       }
 
       // Start the analysis with the selected config
@@ -4201,35 +3626,19 @@ class PRManager {
       // Always do manual DOM cleanup as backup
       document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
 
-      // Determine endpoint and body based on whether this is a council analysis
-      let analyzeUrl, analyzeBody;
-      if (config.isCouncil) {
-        analyzeUrl = `/api/pr/${owner}/${repo}/${number}/analyses/council`;
-        analyzeBody = {
-          councilId: config.councilId || undefined,
-          councilConfig: config.councilConfig || undefined,
-          configType: config.configType || 'advanced',
-          customInstructions: config.customInstructions || null
-        };
-      } else {
-        analyzeUrl = `/api/pr/${owner}/${repo}/${number}/analyses`;
-        analyzeBody = {
-          provider: config.provider || 'claude',
-          model: config.model || 'opus',
-          tier: config.tier || 'balanced',
-          customInstructions: config.customInstructions || null,
-          enabledLevels: config.enabledLevels || [1, 2, 3],
-          skipLevel3: config.skipLevel3 || false
-        };
-      }
-
-      // Start AI analysis
-      const response = await fetch(analyzeUrl, {
+      // Start AI analysis with model, tier, and instructions
+      const response = await fetch(`/api/analyze/${owner}/${repo}/${number}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(analyzeBody)
+        body: JSON.stringify({
+          provider: config.provider || 'claude',
+          model: config.model || 'opus',
+          tier: config.tier || 'balanced',
+          customInstructions: config.customInstructions || null,
+          skipLevel3: config.skipLevel3 || false
+        })
       });
 
       if (!response.ok) {
@@ -4251,18 +3660,8 @@ class PRManager {
       // Set analyzing state and show progress modal
       this.setButtonAnalyzing(result.analysisId);
 
-      // Always use the unified progress modal
-      if (window.councilProgressModal) {
-        window.councilProgressModal.setPRMode();
-        window.councilProgressModal.show(
-          result.analysisId,
-          config.isCouncil ? config.councilConfig : null,
-          config.isCouncil ? config.councilName : null,
-          {
-            configType: config.isCouncil ? (config.configType || 'advanced') : 'single',
-            enabledLevels: config.enabledLevels || [1, 2, 3]
-          }
-        );
+      if (window.progressModal) {
+        window.progressModal.show(result.analysisId);
       }
 
     } catch (error) {
@@ -4379,595 +3778,6 @@ class PRManager {
       }
     }
   }
-
-  // ─── Context Files ──────────────────────────────────────────────
-
-  /**
-   * Load context files for the current review and render them in the diff panel.
-   * Called after renderDiff() and on WebSocket context_files_changed events.
-   */
-  async loadContextFiles() {
-    const reviewId = this.currentPR?.id;
-    if (!reviewId) return;
-
-    try {
-      const response = await fetch(`/api/reviews/${reviewId}/context-files`);
-      if (!response.ok) return;
-
-      const data = await response.json();
-      const newFiles = data.contextFiles || [];
-
-      const oldIds = new Set((this.contextFiles || []).map(f => f.id));
-      const newIds = new Set(newFiles.map(f => f.id));
-
-      // Remove only deleted context files (handles both standalone and merged wrappers)
-      for (const old of this.contextFiles || []) {
-        if (!newIds.has(old.id)) {
-          const el = document.querySelector(`[data-context-id="${old.id}"]`);
-          if (!el) continue;
-          if (el.classList.contains('context-file')) {
-            // Standalone wrapper (legacy) — remove entirely
-            el.remove();
-          } else {
-            // Chunk tbody within a merged wrapper
-            const wrapper = el.closest('.context-file');
-            // Also remove adjacent separator tbody if present
-            const prevSib = el.previousElementSibling;
-            const nextSib = el.nextElementSibling;
-            if (prevSib && prevSib.classList.contains('context-chunk-separator')) {
-              prevSib.remove();
-            } else if (nextSib && nextSib.classList.contains('context-chunk-separator')) {
-              nextSib.remove();
-            }
-            el.remove();
-            // If no more chunks remain, remove the wrapper too
-            if (wrapper && !wrapper.querySelector('.context-chunk')) {
-              wrapper.remove();
-            }
-          }
-        }
-      }
-
-      // Add only new context files
-      let newFilesRendered = false;
-      for (const cf of newFiles) {
-        if (!oldIds.has(cf.id)) {
-          await this.renderContextFile(cf);
-          newFilesRendered = true;
-        }
-      }
-
-      this.contextFiles = newFiles;
-
-      // Rebuild sidebar with context files interleaved in natural path order
-      this.rebuildFileListWithContext();
-
-      // Re-anchor comments after new context files are rendered so that
-      // comments targeting lines in these files find their DOM targets.
-      // loadUserComments() is idempotent (clears existing comment rows first).
-      if (newFilesRendered) {
-        const includeDismissed = window.aiPanel?.showDismissedComments || false;
-        await this.loadUserComments(includeDismissed);
-      }
-    } catch (error) {
-      console.error('Error loading context files:', error);
-    }
-  }
-
-  /**
-   * Rebuild the sidebar file list with context files interleaved in natural path order.
-   * Merges stored diff files with current context files and re-renders the sidebar.
-   * Delegates to the shared FileListMerger module for the merge/sort logic.
-   */
-  rebuildFileListWithContext() {
-    const { mergeFileListWithContext } = window.FileListMerger || {};
-    if (!mergeFileListWithContext) {
-      console.warn('FileListMerger not loaded - cannot rebuild file list with context');
-      return;
-    }
-    const merged = mergeFileListWithContext(this.diffFiles, this.contextFiles);
-    this.updateFileList(merged);
-  }
-
-  /**
-   * Build a context chunk tbody with line rows for a context file range.
-   * @param {Object} data - { lines: string[] } from fetchFileContent
-   * @param {Object} contextFile - { id, file, line_start, line_end }
-   * @returns {HTMLElement} tbody element with class context-chunk
-   * @private
-   */
-  _buildContextChunkTbody(data, contextFile) {
-    const tbody = document.createElement('tbody');
-    tbody.className = 'd2h-diff-tbody context-chunk';
-    tbody.dataset.contextId = contextFile.id;
-
-    // Compute effective display range, shifting for end-of-file
-    const clampedEnd = Math.min(contextFile.line_end, data.lines.length);
-    const intendedSize = contextFile.line_end - contextFile.line_start + 1;
-    let effectiveStart = contextFile.line_start;
-    const actualSize = clampedEnd - effectiveStart + 1;
-    if (actualSize < intendedSize && effectiveStart > 1) {
-      effectiveStart = Math.max(1, effectiveStart - (intendedSize - actualSize));
-    }
-    tbody.dataset.lineStart = effectiveStart;
-
-    // Chunk header row with range label and per-chunk dismiss button
-    const headerRow = document.createElement('tr');
-    headerRow.className = 'context-chunk-header';
-    const lineNumTd = document.createElement('td');
-    lineNumTd.className = 'd2h-code-linenumber';
-    headerRow.appendChild(lineNumTd);
-    const contentTd = document.createElement('td');
-    contentTd.className = 'd2h-code-side-line';
-    contentTd.colSpan = 3;
-    const rangeLabel = document.createElement('span');
-    rangeLabel.className = 'context-range-label';
-    rangeLabel.textContent = `Lines ${effectiveStart}\u2013${clampedEnd}`;
-    contentTd.appendChild(rangeLabel);
-    const chunkDismiss = document.createElement('button');
-    chunkDismiss.className = 'context-chunk-dismiss';
-    chunkDismiss.title = 'Remove this range';
-    chunkDismiss.innerHTML = '\u00d7';
-    chunkDismiss.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.removeContextFile(contextFile.id);
-    });
-    contentTd.appendChild(chunkDismiss);
-    headerRow.appendChild(contentTd);
-    tbody.appendChild(headerRow);
-
-    // Add expand-up gap row if there are lines above the context range
-    if (effectiveStart > 1) {
-      const gapAboveSize = effectiveStart - 1;
-      const gapAbove = window.HunkParser.createGapRowElement(
-        contextFile.file,
-        1,                  // startLine (old coords)
-        effectiveStart - 1, // endLine (old coords)
-        gapAboveSize,
-        'above',
-        this.expandGapContext.bind(this),
-        1                   // startLineNew (same as old for context files — no diff offset)
-      );
-      tbody.appendChild(gapAbove);
-    }
-
-    for (let i = effectiveStart; i <= clampedEnd; i++) {
-      const lineData = {
-        type: 'context',
-        oldNumber: i,
-        newNumber: i,
-        content: ' ' + (data.lines[i - 1] || '')
-      };
-      this.renderDiffLine(tbody, lineData, contextFile.file, null);
-    }
-
-    // Add expand-down gap row if there are lines below the context range
-    const totalLines = data.lines.length;
-    if (clampedEnd < totalLines) {
-      const gapBelowSize = totalLines - clampedEnd;
-      const gapBelow = window.HunkParser.createGapRowElement(
-        contextFile.file,
-        clampedEnd + 1, // startLine (old coords)
-        totalLines,     // endLine (old coords)
-        gapBelowSize,
-        'below',
-        this.expandGapContext.bind(this),
-        clampedEnd + 1  // startLineNew (same as old)
-      );
-      tbody.appendChild(gapBelow);
-    }
-
-    return tbody;
-  }
-
-  /**
-   * Insert a chunk tbody into an existing table in sorted position by line_start.
-   * Adds a visual separator tbody between non-contiguous ranges.
-   * @param {HTMLElement} table - the d2h-diff-table
-   * @param {HTMLElement} newTbody - the context-chunk tbody to insert
-   * @private
-   */
-  _insertChunkSorted(table, newTbody) {
-    const newStart = parseInt(newTbody.dataset.lineStart, 10);
-    const existingChunks = [...table.querySelectorAll('tbody.context-chunk')];
-
-    // Find insertion point
-    let insertBeforeChunk = null;
-    for (const chunk of existingChunks) {
-      const chunkStart = parseInt(chunk.dataset.lineStart, 10);
-      if (chunkStart > newStart) {
-        insertBeforeChunk = chunk;
-        break;
-      }
-    }
-
-    // Determine the element to insert before (including any separator before it)
-    if (insertBeforeChunk) {
-      const prevSibling = insertBeforeChunk.previousElementSibling;
-      const hasSepBefore = prevSibling && prevSibling.classList.contains('context-chunk-separator');
-      if (hasSepBefore) {
-        table.insertBefore(newTbody, prevSibling);
-        const sep = this._createChunkSeparator();
-        table.insertBefore(sep, newTbody);
-      } else {
-        table.insertBefore(newTbody, insertBeforeChunk);
-        const sep = this._createChunkSeparator();
-        table.insertBefore(sep, insertBeforeChunk);
-      }
-    } else {
-      // Append after the last chunk — add separator before if there are existing chunks
-      if (existingChunks.length > 0) {
-        const sep = this._createChunkSeparator();
-        table.appendChild(sep);
-      }
-      table.appendChild(newTbody);
-    }
-  }
-
-  /**
-   * Create a visual separator tbody between context chunks.
-   * @returns {HTMLElement} tbody with a single separator row
-   * @private
-   */
-  _createChunkSeparator() {
-    const sep = document.createElement('tbody');
-    sep.className = 'context-chunk-separator';
-    const row = document.createElement('tr');
-    row.className = 'context-chunk-separator-row';
-    const td = document.createElement('td');
-    td.colSpan = 4;
-    td.className = 'd2h-code-side-line context-chunk-separator-cell';
-    row.appendChild(td);
-    sep.appendChild(row);
-    return sep;
-  }
-
-  /**
-   * Render a single context file range in the diff panel.
-   * Merges ranges for the same file into a single wrapper with multiple chunk tbodies.
-   * @param {Object} contextFile - { id, review_id, file, line_start, line_end, label }
-   */
-  async renderContextFile(contextFile) {
-    const diffContainer = document.getElementById('diff-container');
-    if (!diffContainer) return;
-
-    // Fetch file content
-    const data = await this.fetchFileContent(contextFile.file);
-    if (!data || !data.lines) return;
-
-    // Check if a wrapper already exists for this file
-    const existing = diffContainer.querySelector(
-      `.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(contextFile.file)}"]`
-    );
-
-    if (existing) {
-      // Merge into existing wrapper — add a new chunk tbody
-      const table = existing.querySelector('.d2h-diff-table');
-      if (!table) return;
-      const newTbody = this._buildContextChunkTbody(data, contextFile);
-      this._insertChunkSorted(table, newTbody);
-      return;
-    }
-
-    // No existing wrapper — create a new one
-    const wrapper = document.createElement('div');
-    wrapper.className = 'd2h-file-wrapper context-file';
-    wrapper.dataset.fileName = contextFile.file;
-
-    // Build file header — matches regular diff headers (chevron, viewed, comment btn, chat btn)
-    const header = document.createElement('div');
-    header.className = 'd2h-file-header context-file-header';
-
-    // Chevron toggle for expand/collapse
-    const chevronBtn = document.createElement('button');
-    chevronBtn.className = 'file-collapse-toggle';
-    chevronBtn.title = 'Collapse file';
-    chevronBtn.innerHTML = window.DiffRenderer.CHEVRON_DOWN_ICON;
-    chevronBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.toggleFileCollapse(contextFile.file);
-    });
-    header.appendChild(chevronBtn);
-
-    const fileName = document.createElement('span');
-    fileName.className = 'd2h-file-name';
-    fileName.textContent = contextFile.file;
-    header.appendChild(fileName);
-
-    const contextLabel = document.createElement('span');
-    contextLabel.className = 'context-badge';
-    contextLabel.textContent = 'CONTEXT';
-    if (contextFile.label) contextLabel.title = contextFile.label;
-    header.appendChild(contextLabel);
-
-    // Viewed checkbox (right-aligned group start)
-    const viewedLabel = document.createElement('label');
-    viewedLabel.className = 'file-viewed-label';
-    viewedLabel.title = 'Mark file as viewed';
-    const viewedCheckbox = document.createElement('input');
-    viewedCheckbox.type = 'checkbox';
-    viewedCheckbox.className = 'file-viewed-checkbox';
-    viewedCheckbox.checked = this.viewedFiles.has(contextFile.file);
-    viewedCheckbox.addEventListener('change', (e) => {
-      e.stopPropagation();
-      this.toggleFileViewed(contextFile.file, viewedCheckbox.checked);
-    });
-    viewedLabel.appendChild(viewedCheckbox);
-    viewedLabel.appendChild(document.createTextNode('Viewed'));
-    header.appendChild(viewedLabel);
-
-    // File comment button
-    if (this.fileCommentManager) {
-      const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(contextFile.file);
-      wrapper._fileCommentsZone = fileCommentsZone;
-
-      const fileCommentBtn = document.createElement('button');
-      fileCommentBtn.className = 'file-header-comment-btn';
-      fileCommentBtn.title = 'Add file comment';
-      fileCommentBtn.dataset.file = contextFile.file;
-      fileCommentBtn.innerHTML = `
-        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
-        </svg>
-        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
-        </svg>
-      `;
-      fileCommentBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.fileCommentManager.showCommentForm(fileCommentsZone, contextFile.file);
-      });
-      header.appendChild(fileCommentBtn);
-      fileCommentsZone.headerButton = fileCommentBtn;
-    }
-
-    // Chat/discussion button
-    const fileChatBtn = document.createElement('button');
-    fileChatBtn.className = 'file-header-chat-btn';
-    fileChatBtn.title = 'Chat about file';
-    fileChatBtn.dataset.file = contextFile.file;
-    fileChatBtn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
-      </svg>
-    `;
-    fileChatBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (window.chatPanel) {
-        window.chatPanel.open({ fileContext: { file: contextFile.file } });
-      }
-    });
-    header.appendChild(fileChatBtn);
-
-    // Dismiss button — removes ALL context ranges for this file
-    const dismissBtn = document.createElement('button');
-    dismissBtn.className = 'context-file-dismiss';
-    dismissBtn.title = 'Remove context file';
-    dismissBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
-    dismissBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      // Remove all context ranges for this file
-      const fileWrapper = e.target.closest('.context-file');
-      if (!fileWrapper) return;
-      const chunkIds = [...fileWrapper.querySelectorAll('tbody.context-chunk[data-context-id]')]
-        .map(tb => tb.dataset.contextId);
-      if (chunkIds.length === 0) return;
-      // Remove all ranges — fire sequentially to avoid race conditions
-      const removeAll = async () => {
-        for (const cid of chunkIds) {
-          await this.removeContextFile(cid);
-        }
-      };
-      removeAll();
-    });
-    header.appendChild(dismissBtn);
-
-    // Click anywhere on header to toggle collapse (except interactive controls)
-    header.addEventListener('click', (e) => {
-      if (e.target.closest('.file-viewed-label') || e.target.closest('.file-collapse-toggle') ||
-          e.target.closest('.file-header-comment-btn') || e.target.closest('.file-header-chat-btn') ||
-          e.target.closest('.context-file-dismiss')) {
-        return;
-      }
-      this.toggleFileCollapse(contextFile.file);
-    });
-
-    wrapper.appendChild(header);
-
-    // Insert file comments zone between header and diff content
-    if (wrapper._fileCommentsZone) {
-      wrapper.appendChild(wrapper._fileCommentsZone);
-    }
-
-    // Build code table with the first chunk
-    const table = document.createElement('table');
-    table.className = 'd2h-diff-table';
-    const tbody = this._buildContextChunkTbody(data, contextFile);
-    table.appendChild(tbody);
-    wrapper.appendChild(table);
-
-    // Insert in sorted path order among existing file wrappers
-    const allWrappers = [...diffContainer.querySelectorAll('.d2h-file-wrapper')];
-    const insertBefore = allWrappers.find(w => w.dataset.fileName > contextFile.file);
-    if (insertBefore) {
-      diffContainer.insertBefore(wrapper, insertBefore);
-    } else {
-      diffContainer.appendChild(wrapper);
-    }
-  }
-
-  /**
-   * Remove a context file by ID.
-   * @param {number} contextFileId
-   */
-  async removeContextFile(contextFileId) {
-    const reviewId = this.currentPR?.id;
-    if (!reviewId) return;
-
-    try {
-      const resp = await fetch(`/api/reviews/${reviewId}/context-files/${contextFileId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      if (!resp.ok) {
-        console.error('Failed to remove context file:', resp.status);
-        return;
-      }
-      // Refresh immediately — WebSocket self-echo is suppressed by the client ID filter
-      await this.loadContextFiles();
-    } catch (error) {
-      console.error('Error removing context file:', error);
-    }
-  }
-
-  /**
-   * Scroll to a context file (or diff file) in the diff panel.
-   * @param {string} file - File path
-   * @param {number} [lineStart] - Optional line number to highlight
-   */
-  scrollToContextFile(file, lineStart, contextId) {
-    // Use contextId to find a specific chunk tbody within a merged wrapper,
-    // or fall back to a standalone wrapper or the file-level wrapper.
-    let target;
-    if (contextId) {
-      // First try finding a specific chunk tbody (merged wrapper case)
-      const chunk = document.querySelector(`.context-chunk[data-context-id="${CSS.escape(contextId)}"]`);
-      if (chunk) {
-        target = chunk;
-      } else {
-        // Fallback: legacy standalone wrapper with data-context-id on the wrapper itself
-        target = document.querySelector(`.d2h-file-wrapper.context-file[data-context-id="${CSS.escape(contextId)}"]`);
-      }
-    }
-    if (!target) {
-      target = document.querySelector(`.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(file)}"]`);
-    }
-    if (!target) return;
-
-    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-    if (lineStart) {
-      // Search for the line row within the wrapper (not just the target chunk)
-      const wrapper = target.closest('.d2h-file-wrapper') || target;
-      // Brief delay to let scroll settle, then highlight the target line
-      setTimeout(() => {
-        const row = wrapper.querySelector(`tr[data-line-number="${lineStart}"]`);
-        if (row) {
-          row.classList.remove('chat-line-highlight');
-          void row.offsetWidth;
-          row.classList.add('chat-line-highlight');
-          row.addEventListener('animationend', () => {
-            row.classList.remove('chat-line-highlight');
-          }, { once: true });
-        }
-      }, 400);
-    }
-  }
-
-  async ensureContextFile(file, lineStart = null, lineEnd = null) {
-    // 1. Guard: no review loaded
-    if (!this.currentPR?.id) return null;
-
-    // 2. Check diff files
-    if (this.diffFiles?.some(f => f.file === file)) {
-      return { type: 'diff' };
-    }
-
-    // 3. Compute line range values up front (used by both existing-check and POST)
-    let lineStartVal, lineEndVal;
-    if (lineStart == null && lineEnd == null) {
-      lineStartVal = 1;
-      lineEndVal = 100;
-    } else if (lineEnd == null) {
-      // Center a ~21-line window around the target line (±10 lines)
-      lineStartVal = Math.max(1, lineStart - 10);
-      lineEndVal = lineStartVal + 20;
-    } else {
-      lineStartVal = lineStart;
-      lineEndVal = Math.min(lineEnd, lineStart + 499);
-    }
-
-    // 4. Check existing context files — expand range if needed
-    const existingEntries = this.contextFiles?.filter(cf => cf.file === file) || [];
-    if (existingEntries.length > 0 && lineStart != null) {
-      const covering = existingEntries.find(cf =>
-        cf.line_start <= lineStartVal && cf.line_end >= lineEndVal
-      );
-      if (covering) {
-        return { type: 'context', contextFile: covering };
-      }
-
-      const overlapping = existingEntries.find(cf =>
-        cf.line_start <= lineEndVal && cf.line_end >= lineStartVal
-      );
-      if (overlapping) {
-        const newStart = Math.min(overlapping.line_start, lineStartVal);
-        let newEnd = Math.max(overlapping.line_end, lineEndVal);
-        if (newEnd - newStart + 1 > 500) {
-          newEnd = newStart + 499;
-        }
-        const reviewId = this.currentPR.id;
-        try {
-          const resp = await fetch(`/api/reviews/${reviewId}/context-files/${overlapping.id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ line_start: newStart, line_end: newEnd })
-          });
-          if (resp.ok) {
-            // Evict stale entries for this file so loadContextFiles sees
-            // them as new IDs and triggers a fresh render.
-            const staleFile = overlapping.file;
-            this.contextFiles = (this.contextFiles || []).filter(cf => cf.file !== staleFile);
-            // Remove the file wrapper from the DOM so chunks are re-created
-            const staleWrapper = document.querySelector(
-              `.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(staleFile)}"]`
-            );
-            if (staleWrapper) staleWrapper.remove();
-
-            await this.loadContextFiles();
-            const updated = this.contextFiles?.find(cf => cf.id === overlapping.id);
-            return { type: 'context', contextFile: updated || overlapping, expanded: true };
-          }
-        } catch (err) {
-          console.error('Error expanding context file range:', err);
-        }
-      }
-    } else if (existingEntries.length > 0) {
-      return { type: 'context', contextFile: existingEntries[0] };
-    }
-
-    // 5. POST to add context file
-    const reviewId = this.currentPR.id;
-    try {
-      const resp = await fetch(`/api/reviews/${reviewId}/context-files`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file, line_start: lineStartVal, line_end: lineEndVal })
-      });
-
-      if (resp.status === 201) {
-        // 6. Reload context files to render
-        await this.loadContextFiles();
-        const added = this.contextFiles?.find(cf => cf.file === file);
-        return { type: 'context', contextFile: added || null };
-      }
-
-      if (resp.status === 400) {
-        const data = await resp.json().catch(() => ({}));
-        if (data.error?.includes('already part of the diff')) {
-          return { type: 'diff' };
-        }
-      }
-
-      // 7. Other errors
-      console.error('Failed to add context file:', resp.status);
-      return null;
-    } catch (err) {
-      console.error('Error adding context file:', err);
-      return null;
-    }
-  }
-
 }
 
 // Initialize PR manager when DOM is loaded (browser environment only)
