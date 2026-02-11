@@ -1728,10 +1728,6 @@ class PRManager {
     this.commentManager.updateSuggestionButtonState(textarea, button);
   }
 
-  getCodeFromLines(fileName, startLine, endLine) {
-    return this.commentManager.getCodeFromLines(fileName, startLine, endLine);
-  }
-
   insertSuggestionBlock(textarea, button) {
     this.commentManager.insertSuggestionBlock(textarea, button);
   }
@@ -1793,7 +1789,7 @@ class PRManager {
             data-file="${fileName}"
             data-line="${lineStart}"
             data-line-end="${lineEnd}"
-            ${side ? `data-side="${side}"` : ''}
+            data-side="${side || 'RIGHT'}"
           >${this.escapeHtml(currentText)}</textarea>
           <div class="comment-edit-actions">
             <button class="btn btn-sm btn-primary save-edit-btn">Save</button>

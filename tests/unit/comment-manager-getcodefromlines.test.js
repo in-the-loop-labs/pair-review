@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * Unit tests for CommentManager.getCodeFromLines()
+ * Unit tests for CommentManager.getCodeFromLines() and insertSuggestionBlock()
  *
  * Tests the extraction of code content from diff rows, particularly
  * the side filtering that prevents including both OLD and NEW versions
@@ -9,6 +9,10 @@
  * Regression test for pair_review-4gbg: When inserting suggestions on modified
  * lines (deletion + addition pair), the suggestion should only include text
  * from the requested side (typically RIGHT/NEW), not both OLD and NEW.
+ *
+ * The definitive fix: getCodeFromLines always filters by side, defaulting to
+ * 'RIGHT' when side is not provided. This prevents the bug regardless of
+ * whether callers correctly propagate the side parameter.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -93,10 +97,8 @@ describe('CommentManager.getCodeFromLines', () => {
     };
   }
 
-  describe('side filtering', () => {
+  describe('side filtering - explicit side', () => {
     it('should return only RIGHT side content when side="RIGHT"', () => {
-      // Setup: A modified line appears as both a deletion (LEFT) and addition (RIGHT)
-      // with the same line number
       const rows = [
         createMockRow(10, 'test.js', 'LEFT', 'const oldValue = 1;'),
         createMockRow(10, 'test.js', 'RIGHT', 'const newValue = 2;')
@@ -120,24 +122,6 @@ describe('CommentManager.getCodeFromLines', () => {
       const result = commentManager.getCodeFromLines('test.js', 10, 10, 'LEFT');
 
       expect(result).toBe('const oldValue = 1;');
-    });
-
-    it('should return BOTH sides when side is undefined (documents bug behavior)', () => {
-      // This test documents the behavior when side is undefined.
-      // When side is not provided, BOTH lines are included (which was the bug).
-      // The fix ensures side is always propagated so this case shouldn't occur in practice.
-      const rows = [
-        createMockRow(10, 'test.js', 'LEFT', 'const oldValue = 1;'),
-        createMockRow(10, 'test.js', 'RIGHT', 'const newValue = 2;')
-      ];
-      const wrapper = createMockWrapper('test.js', rows);
-      setupDocumentMock([wrapper]);
-
-      const result = commentManager.getCodeFromLines('test.js', 10, 10, undefined);
-
-      // When side is undefined, both lines are returned (joined with newline)
-      // This is the BUG CASE that the fix prevents by always propagating side
-      expect(result).toBe('const oldValue = 1;\nconst newValue = 2;');
     });
 
     it('should handle multi-line ranges with side filtering', () => {
@@ -170,13 +154,76 @@ describe('CommentManager.getCodeFromLines', () => {
     });
   });
 
+  describe('side defaulting - the definitive fix', () => {
+    // These tests verify the core fix: when side is not provided (undefined/null/empty),
+    // getCodeFromLines defaults to 'RIGHT' instead of including both sides.
+    // This prevents the bug where suggestions on modified lines include both old and new content.
+
+    it('should default to RIGHT when side is undefined (prevents both-sides bug)', () => {
+      const rows = [
+        createMockRow(10, 'test.js', 'LEFT', 'const oldValue = 1;'),
+        createMockRow(10, 'test.js', 'RIGHT', 'const newValue = 2;')
+      ];
+      const wrapper = createMockWrapper('test.js', rows);
+      setupDocumentMock([wrapper]);
+
+      const result = commentManager.getCodeFromLines('test.js', 10, 10, undefined);
+
+      // Previously this returned BOTH lines (the bug). Now defaults to RIGHT only.
+      expect(result).toBe('const newValue = 2;');
+    });
+
+    it('should default to RIGHT when side is null (prevents both-sides bug)', () => {
+      const rows = [
+        createMockRow(10, 'test.js', 'LEFT', 'old code'),
+        createMockRow(10, 'test.js', 'RIGHT', 'new code')
+      ];
+      const wrapper = createMockWrapper('test.js', rows);
+      setupDocumentMock([wrapper]);
+
+      const result = commentManager.getCodeFromLines('test.js', 10, 10, null);
+
+      // Previously this returned BOTH lines (the bug). Now defaults to RIGHT only.
+      expect(result).toBe('new code');
+    });
+
+    it('should default to RIGHT when side is empty string (prevents both-sides bug)', () => {
+      const rows = [
+        createMockRow(10, 'test.js', 'LEFT', 'removed line'),
+        createMockRow(10, 'test.js', 'RIGHT', 'added line')
+      ];
+      const wrapper = createMockWrapper('test.js', rows);
+      setupDocumentMock([wrapper]);
+
+      const result = commentManager.getCodeFromLines('test.js', 10, 10, '');
+
+      // Empty string is falsy, so defaults to RIGHT
+      expect(result).toBe('added line');
+    });
+
+    it('should default to RIGHT for multi-line range when side is not provided', () => {
+      const rows = [
+        createMockRow(5, 'test.js', 'LEFT', 'old A'),
+        createMockRow(5, 'test.js', 'RIGHT', 'new A'),
+        createMockRow(6, 'test.js', 'LEFT', 'old B'),
+        createMockRow(6, 'test.js', 'RIGHT', 'new B'),
+        createMockRow(7, 'test.js', 'RIGHT', 'context line')
+      ];
+      const wrapper = createMockWrapper('test.js', rows);
+      setupDocumentMock([wrapper]);
+
+      const result = commentManager.getCodeFromLines('test.js', 5, 7);
+
+      expect(result).toBe('new A\nnew B\ncontext line');
+    });
+  });
+
   describe('basic functionality', () => {
     it('should return empty string when file wrapper not found', () => {
       const rows = [createMockRow(10, 'other.js', 'RIGHT', 'some code')];
       const wrapper = createMockWrapper('other.js', rows);
       setupDocumentMock([wrapper]);
 
-      // Suppress console.warn for this test
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const result = commentManager.getCodeFromLines('test.js', 10, 10, 'RIGHT');
@@ -225,7 +272,6 @@ describe('CommentManager.getCodeFromLines', () => {
 
   describe('edge cases', () => {
     it('should handle rows from different files', () => {
-      // File wrapper for test.js only matches test.js rows
       const rows = [
         createMockRow(10, 'test.js', 'RIGHT', 'test.js content'),
         createMockRow(10, 'other.js', 'RIGHT', 'other.js content')
@@ -235,37 +281,119 @@ describe('CommentManager.getCodeFromLines', () => {
 
       const result = commentManager.getCodeFromLines('test.js', 10, 10, 'RIGHT');
 
-      // Only returns content where row.dataset.fileName matches
       expect(result).toBe('test.js content');
     });
 
-    it('should handle empty side (context lines)', () => {
-      // Context lines may have empty side
+    it('should handle context lines (RIGHT side) correctly', () => {
+      // Context lines always have side='RIGHT' in the diff renderer
       const rows = [
-        createMockRow(9, 'test.js', '', 'context line'),
-        createMockRow(10, 'test.js', 'RIGHT', 'added line')
+        createMockRow(9, 'test.js', 'RIGHT', 'context before'),
+        createMockRow(10, 'test.js', 'RIGHT', 'modified line'),
+        createMockRow(11, 'test.js', 'RIGHT', 'context after')
       ];
       const wrapper = createMockWrapper('test.js', rows);
       setupDocumentMock([wrapper]);
 
-      // When requesting RIGHT, empty-side rows don't match
-      const result = commentManager.getCodeFromLines('test.js', 9, 10, 'RIGHT');
+      const result = commentManager.getCodeFromLines('test.js', 9, 11, 'RIGHT');
 
-      expect(result).toBe('added line');
+      expect(result).toBe('context before\nmodified line\ncontext after');
     });
+  });
+});
 
-    it('should include all lines when side is null', () => {
-      const rows = [
-        createMockRow(10, 'test.js', 'LEFT', 'left'),
-        createMockRow(10, 'test.js', 'RIGHT', 'right')
-      ];
-      const wrapper = createMockWrapper('test.js', rows);
-      setupDocumentMock([wrapper]);
+describe('CommentManager.insertSuggestionBlock', () => {
+  let commentManager;
 
-      const result = commentManager.getCodeFromLines('test.js', 10, 10, null);
+  beforeEach(() => {
+    commentManager = createTestCommentManager();
+  });
 
-      // null is falsy so !side is true, includes all
-      expect(result).toBe('left\nright');
-    });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Create a mock textarea element
+   */
+  function createMockTextarea(attrs = {}) {
+    const textarea = {
+      dataset: {
+        file: attrs.file || 'test.js',
+        line: String(attrs.line || 10),
+        lineEnd: String(attrs.lineEnd || attrs.line || 10),
+        side: attrs.side
+      },
+      value: attrs.value || '',
+      selectionStart: attrs.selectionStart || 0,
+      selectionEnd: attrs.selectionEnd || 0,
+      setSelectionRange: vi.fn(),
+      focus: vi.fn(),
+      style: {}
+    };
+    return textarea;
+  }
+
+  it('should read side from textarea dataset and pass to getCodeFromLines', () => {
+    const textarea = createMockTextarea({ side: 'RIGHT', line: 10 });
+    const getCodeSpy = vi.spyOn(commentManager, 'getCodeFromLines').mockReturnValue('new code');
+    vi.spyOn(commentManager, 'hasSuggestionBlock').mockReturnValue(false);
+    vi.spyOn(commentManager, 'autoResizeTextarea').mockImplementation(() => {});
+    vi.spyOn(commentManager, 'updateSuggestionButtonState').mockImplementation(() => {});
+
+    commentManager.insertSuggestionBlock(textarea, null);
+
+    expect(getCodeSpy).toHaveBeenCalledWith('test.js', 10, 10, 'RIGHT');
+  });
+
+  it('should read LEFT side from textarea dataset for delete lines', () => {
+    const textarea = createMockTextarea({ side: 'LEFT', line: 10 });
+    const getCodeSpy = vi.spyOn(commentManager, 'getCodeFromLines').mockReturnValue('old code');
+    vi.spyOn(commentManager, 'hasSuggestionBlock').mockReturnValue(false);
+    vi.spyOn(commentManager, 'autoResizeTextarea').mockImplementation(() => {});
+    vi.spyOn(commentManager, 'updateSuggestionButtonState').mockImplementation(() => {});
+
+    commentManager.insertSuggestionBlock(textarea, null);
+
+    expect(getCodeSpy).toHaveBeenCalledWith('test.js', 10, 10, 'LEFT');
+  });
+
+  it('should warn and pass undefined when side is missing from textarea', () => {
+    const textarea = createMockTextarea({ line: 10 });
+    // Explicitly remove side to simulate missing attribute
+    delete textarea.dataset.side;
+
+    const getCodeSpy = vi.spyOn(commentManager, 'getCodeFromLines').mockReturnValue('code');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(commentManager, 'hasSuggestionBlock').mockReturnValue(false);
+    vi.spyOn(commentManager, 'autoResizeTextarea').mockImplementation(() => {});
+    vi.spyOn(commentManager, 'updateSuggestionButtonState').mockImplementation(() => {});
+
+    commentManager.insertSuggestionBlock(textarea, null);
+
+    expect(warnSpy).toHaveBeenCalledWith('[Suggestion] textarea missing data-side attribute, defaulting to RIGHT');
+    // side is undefined — defaulting to RIGHT is tested separately in 'side defaulting' tests
+    expect(getCodeSpy).toHaveBeenCalledWith('test.js', 10, 10, undefined);
+  });
+
+  it('should not insert suggestion when one already exists', () => {
+    const textarea = createMockTextarea({ side: 'RIGHT', value: '```suggestion\ncode\n```' });
+    vi.spyOn(commentManager, 'hasSuggestionBlock').mockReturnValue(true);
+    const getCodeSpy = vi.spyOn(commentManager, 'getCodeFromLines');
+
+    commentManager.insertSuggestionBlock(textarea, null);
+
+    expect(getCodeSpy).not.toHaveBeenCalled();
+  });
+
+  it('should insert suggestion block with code from getCodeFromLines', () => {
+    const textarea = createMockTextarea({ side: 'RIGHT', line: 10 });
+    vi.spyOn(commentManager, 'getCodeFromLines').mockReturnValue('  const x = 1;');
+    vi.spyOn(commentManager, 'hasSuggestionBlock').mockReturnValue(false);
+    vi.spyOn(commentManager, 'autoResizeTextarea').mockImplementation(() => {});
+    vi.spyOn(commentManager, 'updateSuggestionButtonState').mockImplementation(() => {});
+
+    commentManager.insertSuggestionBlock(textarea, null);
+
+    expect(textarea.value).toBe('```suggestion\n  const x = 1;\n```');
   });
 });
