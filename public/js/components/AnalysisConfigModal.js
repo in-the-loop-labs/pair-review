@@ -149,6 +149,14 @@ class AnalysisConfigModal {
         await this.loadProviders(true);
         this.renderProviderButtons();
 
+        // Propagate refreshed providers to council and advanced tabs
+        if (this.councilTab) {
+          this.councilTab.setProviders(this.providers);
+        }
+        if (this.advancedTab) {
+          this.advancedTab.setProviders(this.providers);
+        }
+
         if (this.availabilityCheckInProgress && attempts < maxAttempts) {
           const timeoutId = setTimeout(poll, pollInterval);
           this.pendingPollTimeouts.push(timeoutId);
@@ -339,9 +347,9 @@ class AnalysisConfigModal {
 
         <div class="modal-footer analysis-config-footer">
           <div class="council-footer-left" id="council-footer-left" style="display: none;">
-            <span class="council-dirty-hint" id="council-dirty-hint">Unsaved council changes</span>
+            <span class="council-dirty-hint" id="council-dirty-hint">Unsaved changes</span>
             <button class="btn btn-sm btn-secondary" id="council-footer-save-btn"
-              title="Save council changes. Unsaved changes will be auto-saved as a new council when you analyze.">Save Council</button>
+              title="Save configuration changes. Unsaved changes will be auto-saved as a new configuration when you analyze.">Save</button>
           </div>
           <button class="btn btn-secondary" data-action="cancel">Cancel</button>
           <button class="btn btn-primary btn-analyze" data-action="submit" title="Start Analysis (Cmd/Ctrl+Enter)">
@@ -954,7 +962,7 @@ class AnalysisConfigModal {
     tabBar.innerHTML = `
       <button class="analysis-tab active" data-tab="single">Single Model</button>
       <button class="analysis-tab" data-tab="council">Council <span class="beta-badge">BETA</span></button>
-      <button class="analysis-tab" data-tab="advanced">Advanced <span class="beta-badge">BETA</span></button>
+      <button class="analysis-tab" data-tab="advanced">Custom <span class="beta-badge">BETA</span></button>
     `;
 
     // Assemble
@@ -1054,7 +1062,7 @@ class AnalysisConfigModal {
     // Update submit button text
     const submitBtnSpan = this.modal.querySelector('[data-action="submit"] span');
     if (submitBtnSpan) {
-      if (tabId === 'council' || tabId === 'advanced') {
+      if (tabId === 'council') {
         submitBtnSpan.textContent = 'Analyze with Council';
       } else {
         submitBtnSpan.textContent = 'Start Analysis';

@@ -13,7 +13,8 @@ import {
   activeAnalyses,
   createProgressCallback,
   broadcastProgress,
-  progressClients
+  progressClients,
+  parseEnabledLevels
 } from '../../src/routes/shared.js';
 
 /**
@@ -523,6 +524,284 @@ describe('createProgressCallback', () => {
     });
   });
 
+  describe('Consolidation level updates (consolidation-L*)', () => {
+    it('should map level="consolidation-L1" to levels[4]', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        status: 'running',
+        progress: 'Consolidating Level 1...'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].status).toBe('running');
+      expect(status.levels[4].progress).toBe('Consolidating Level 1...');
+      expect(status.levels[4].consolidationStep).toBe('L1');
+    });
+
+    it('should map level="consolidation-L2" to levels[4] with step L2', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L2',
+        status: 'running',
+        progress: 'Consolidating Level 2...'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].status).toBe('running');
+      expect(status.levels[4].consolidationStep).toBe('L2');
+    });
+
+    it('should map level="consolidation-L3" to levels[4] with step L3', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L3',
+        status: 'running'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].status).toBe('running');
+      expect(status.levels[4].consolidationStep).toBe('L3');
+    });
+
+    it('should default consolidation progress to "Consolidating..."', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({ level: 'consolidation-L1' });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].progress).toBe('Consolidating...');
+    });
+
+    it('should track per-step status in steps map', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        status: 'running',
+        progress: 'Consolidating L1...'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].steps).toBeDefined();
+      expect(status.levels[4].steps.L1).toEqual({
+        status: 'running',
+        progress: 'Consolidating L1...'
+      });
+    });
+
+    it('should preserve steps from different consolidation levels', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        status: 'completed',
+        progress: 'L1 done'
+      });
+
+      callback({
+        level: 'consolidation-L2',
+        status: 'running',
+        progress: 'L2 in progress'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].steps.L1).toEqual({
+        status: 'completed',
+        progress: 'L1 done'
+      });
+      expect(status.levels[4].steps.L2).toEqual({
+        status: 'running',
+        progress: 'L2 in progress'
+      });
+    });
+
+    it('should derive levels[4].status as running when one step completed and another running', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        status: 'completed',
+        progress: 'L1 done'
+      });
+
+      callback({
+        level: 'consolidation-L2',
+        status: 'running',
+        progress: 'L2 in progress'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      // Parent status should be 'running' because L2 is still running,
+      // even though L1 already completed
+      expect(status.levels[4].status).toBe('running');
+    });
+
+    it('should derive levels[4].status as completed only when all steps completed', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        status: 'completed',
+        progress: 'L1 done'
+      });
+
+      callback({
+        level: 'consolidation-L2',
+        status: 'completed',
+        progress: 'L2 done'
+      });
+
+      callback({
+        level: 'orchestration',
+        status: 'completed',
+        progress: 'All done'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].status).toBe('completed');
+    });
+
+    it('should derive levels[4].status as failed when any step failed', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        status: 'completed',
+        progress: 'L1 done'
+      });
+
+      callback({
+        level: 'consolidation-L2',
+        status: 'failed',
+        progress: 'L2 failed'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].status).toBe('failed');
+    });
+
+    it('should derive levels[4].status as failed even when mixed with running', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        status: 'running',
+        progress: 'L1 in progress'
+      });
+
+      callback({
+        level: 'consolidation-L2',
+        status: 'failed',
+        progress: 'L2 failed'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      // Failed takes precedence over running
+      expect(status.levels[4].status).toBe('failed');
+    });
+
+    it('should derive levels[4].status as running for single running step', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        status: 'running',
+        progress: 'L1 in progress'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].status).toBe('running');
+    });
+
+    it('should derive levels[4].status as completed for single completed step', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'orchestration',
+        status: 'completed',
+        progress: 'All done'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].status).toBe('completed');
+    });
+
+    it('should preserve consolidation steps when orchestration updates', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        status: 'completed',
+        progress: 'L1 done'
+      });
+
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'Orchestrating...'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].steps.L1).toEqual({
+        status: 'completed',
+        progress: 'L1 done'
+      });
+      expect(status.levels[4].steps.orchestration).toEqual({
+        status: 'running',
+        progress: 'Orchestrating...'
+      });
+      expect(status.levels[4].consolidationStep).toBe('orchestration');
+    });
+
+    it('should store stream events for consolidation-L* under levels[4]', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        streamEvent: { type: 'assistant_text', text: 'Consolidating...' }
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].streamEvent).toEqual({
+        type: 'assistant_text',
+        text: 'Consolidating...'
+      });
+      expect(status.levels[4].consolidationStep).toBe('L1');
+    });
+
+    it('should broadcast stream events for consolidation-L* levels', () => {
+      const mockClient = { write: vi.fn() };
+      progressClients.set(analysisId, new Set([mockClient]));
+
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'consolidation-L1',
+        streamEvent: { type: 'assistant_text', text: 'Working...' }
+      });
+
+      expect(mockClient.write).toHaveBeenCalledTimes(1);
+      const written = mockClient.write.mock.calls[0][0];
+      expect(written).toContain('"type":"progress"');
+    });
+
+    it('should set orchestration consolidationStep on stream events', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'orchestration',
+        streamEvent: { type: 'assistant_text', text: 'Orchestrating...' }
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].consolidationStep).toBe('orchestration');
+    });
+  });
+
   describe('Overall progress updates', () => {
     it('should update overall progress when level is not provided', () => {
       const callback = createProgressCallback(analysisId);
@@ -907,6 +1186,85 @@ describe('createProgressCallback', () => {
       // Regular update: should broadcast immediately even within throttle window
       callback({ level: 1, status: 'completed', progress: 'Done' });
       expect(mockClient.write).toHaveBeenCalledTimes(3);
+    });
+  });
+});
+
+describe('parseEnabledLevels', () => {
+  describe('array format', () => {
+    it('should convert array of enabled levels to config object', () => {
+      const result = parseEnabledLevels([1, 3]);
+      expect(result).toEqual({ 1: true, 2: false, 3: true });
+    });
+
+    it('should handle all levels enabled', () => {
+      const result = parseEnabledLevels([1, 2, 3]);
+      expect(result).toEqual({ 1: true, 2: true, 3: true });
+    });
+
+    it('should handle empty array (no levels enabled)', () => {
+      const result = parseEnabledLevels([]);
+      expect(result).toEqual({ 1: false, 2: false, 3: false });
+    });
+
+    it('should ignore unknown level numbers in array', () => {
+      const result = parseEnabledLevels([1, 4, 5, 99]);
+      expect(result).toEqual({ 1: true, 2: false, 3: false });
+      // Keys 4, 5, 99 should NOT appear
+      expect(result[4]).toBeUndefined();
+      expect(result[5]).toBeUndefined();
+      expect(result[99]).toBeUndefined();
+    });
+  });
+
+  describe('object format', () => {
+    it('should filter object to only known keys [1, 2, 3]', () => {
+      const result = parseEnabledLevels({ 1: true, 2: false, 3: true });
+      expect(result).toEqual({ 1: true, 2: false, 3: true });
+    });
+
+    it('should coerce truthy/falsy values to booleans', () => {
+      const result = parseEnabledLevels({ 1: 1, 2: 0, 3: 'yes' });
+      expect(result).toEqual({ 1: true, 2: false, 3: true });
+    });
+
+    it('should not copy unknown keys from the object', () => {
+      const result = parseEnabledLevels({ 1: true, 2: true, 3: true, 4: true, __proto__: true, foo: 'bar' });
+      expect(Object.keys(result).map(Number).sort()).toEqual([1, 2, 3]);
+      expect(result[4]).toBeUndefined();
+      expect(result.foo).toBeUndefined();
+    });
+
+    it('should handle missing keys as false', () => {
+      const result = parseEnabledLevels({ 1: true });
+      expect(result).toEqual({ 1: true, 2: false, 3: false });
+    });
+  });
+
+  describe('null/undefined fallback', () => {
+    it('should default to all levels enabled when no input provided', () => {
+      const result = parseEnabledLevels(null);
+      expect(result).toEqual({ 1: true, 2: true, 3: true });
+    });
+
+    it('should default to all levels enabled when undefined', () => {
+      const result = parseEnabledLevels(undefined);
+      expect(result).toEqual({ 1: true, 2: true, 3: true });
+    });
+
+    it('should respect skipLevel3 flag when no enabledLevels provided', () => {
+      const result = parseEnabledLevels(null, true);
+      expect(result).toEqual({ 1: true, 2: true, 3: false });
+    });
+
+    it('should ignore skipLevel3 when array format is provided', () => {
+      const result = parseEnabledLevels([1, 2, 3], true);
+      expect(result).toEqual({ 1: true, 2: true, 3: true });
+    });
+
+    it('should ignore skipLevel3 when object format is provided', () => {
+      const result = parseEnabledLevels({ 1: true, 2: true, 3: true }, true);
+      expect(result).toEqual({ 1: true, 2: true, 3: true });
     });
   });
 });

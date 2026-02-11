@@ -74,6 +74,8 @@ class Analyzer {
   async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
     const runId = options.runId || uuidv4();
     const { analysisId, skipRunCreation, skipLevel3 } = options;
+    const logPrefix = options.logPrefix || '';
+    const executionTimeout = options.timeout || 600000; // Default 10 minutes
 
     // Resolve enabledLevels: prefer explicit option, fall back to skipLevel3 compat
     const enabledLevels = options.enabledLevels
@@ -99,19 +101,19 @@ class Analyzer {
     }
 
     logger.section('Multi-Level AI Analysis Starting (Parallel Execution)');
-    logger.info(`PR ID: ${prId}`);
-    logger.info(`Analysis run ID: ${runId}`);
+    logger.info(`${logPrefix}PR ID: ${prId}`);
+    logger.info(`${logPrefix}Analysis run ID: ${runId}`);
     if (analysisId) {
-      logger.info(`Analysis ID (for cancellation): ${analysisId}`);
+      logger.info(`${logPrefix}Analysis ID (for cancellation): ${analysisId}`);
     }
-    logger.info(`Worktree path: ${worktreePath}`);
+    logger.info(`${logPrefix}Worktree path: ${worktreePath}`);
 
     // Extract head_sha from prMetadata for traceability
     // PR mode: prMetadata.head_sha is the PR head commit
     // Local mode: prMetadata.head_sha is the local HEAD commit
     const headSha = prMetadata?.head_sha || null;
     if (headSha) {
-      logger.info(`HEAD SHA: ${headSha}`);
+      logger.info(`${logPrefix}HEAD SHA: ${headSha}`);
     }
 
     // Create analysis run record in database (skip when caller already created it)
@@ -128,9 +130,9 @@ class Analyzer {
           requestInstructions,
           headSha
         });
-        logger.info(`Created analysis_run record: ${runId}`);
+        logger.info(`${logPrefix}Created analysis_run record: ${runId}`);
       } catch (createError) {
-        logger.warn(`Failed to create analysis_run record: ${createError.message}`);
+        logger.warn(`${logPrefix}Failed to create analysis_run record: ${createError.message}`);
         // Continue with analysis even if record creation fails
       }
     }
@@ -138,16 +140,16 @@ class Analyzer {
     // Load generated file patterns to skip during analysis
     const generatedPatterns = await this.loadGeneratedFilePatterns(worktreePath);
     if (generatedPatterns.length > 0) {
-      logger.info(`Found ${generatedPatterns.length} generated file patterns to skip: ${generatedPatterns.join(', ')}`);
+      logger.info(`${logPrefix}Found ${generatedPatterns.length} generated file patterns to skip: ${generatedPatterns.join(', ')}`);
     }
 
     // Get changed files for validation (use provided list for local mode, or compute for PR mode)
     const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
-    logger.info(`[Orchestration] Using ${validFiles.length} changed files for path validation`);
+    logger.info(`${logPrefix}[Orchestration] Using ${validFiles.length} changed files for path validation`);
 
     // Build file line count map for line number validation
     const fileLineCountMap = await buildFileLineCountMap(worktreePath, validFiles);
-    logger.info(`[Line Validation] Built line count map for ${fileLineCountMap.size} files`);
+    logger.info(`${logPrefix}[Line Validation] Built line count map for ${fileLineCountMap.size} files`);
 
     try {
       // Note: We no longer delete old AI suggestions to preserve analysis history.
@@ -156,17 +158,17 @@ class Analyzer {
       // Run analysis levels in parallel based on enabledLevels
       const enabledCount = [1, 2, 3].filter(l => enabledLevels[l]).length;
       const skippedNames = [1, 2, 3].filter(l => !enabledLevels[l]).map(l => `L${l}`);
-      logger.info(`Starting ${enabledCount} analysis levels in parallel${skippedNames.length ? ` (${skippedNames.join(', ')} skipped)` : ''}...`);
+      logger.info(`${logPrefix}Starting ${enabledCount} analysis levels in parallel${skippedNames.length ? ` (${skippedNames.join(', ')} skipped)` : ''}...`);
       if (mergedInstructions) {
-        logger.info(`Custom instructions provided: ${mergedInstructions.length} chars`);
+        logger.info(`${logPrefix}Custom instructions provided: ${mergedInstructions.length} chars`);
       }
       const tier = options.tier || 'balanced';
 
       // Build the promises array for each level based on enabledLevels
       const levelAnalyzers = [
-        () => this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier }),
-        () => this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier }),
-        () => this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier })
+        () => this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix }),
+        () => this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix }),
+        () => this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix })
       ];
 
       const analysisPromises = [1, 2, 3].map((level, idx) => {
@@ -193,7 +195,7 @@ class Analyzer {
         r => r.status === 'rejected' && r.reason?.isCancellation
       );
       if (hasCancellation) {
-        logger.info('Analysis cancelled by user');
+        logger.info(`${logPrefix}Analysis cancelled by user`);
         throw new CancellationError('Analysis cancelled by user');
       }
 
@@ -206,19 +208,19 @@ class Analyzer {
               suggestions: [],
               status: 'skipped'
             };
-            logger.info(`Level ${index + 1} skipped`);
+            logger.info(`${logPrefix}Level ${index + 1} skipped`);
           } else {
             levelResults[levelName] = {
               suggestions: result.value.suggestions || [],
               status: 'success',
               summary: result.value.summary
             };
-            logger.success(`Level ${index + 1} completed: ${levelResults[levelName].suggestions.length} suggestions`);
+            logger.success(`${logPrefix}Level ${index + 1} completed: ${levelResults[levelName].suggestions.length} suggestions`);
           }
         } else {
           // Don't log cancellation as a warning - it's expected
           if (!result.reason?.isCancellation) {
-            logger.warn(`Level ${index + 1} failed: ${result.reason?.message || 'Unknown error'}`);
+            logger.warn(`${logPrefix}Level ${index + 1} failed: ${result.reason?.message || 'Unknown error'}`);
           }
         }
       });
@@ -233,7 +235,7 @@ class Analyzer {
       }
 
       // Step 4: Orchestrate all suggestions
-      logger.info('All levels complete. Starting orchestration...');
+      logger.info(`${logPrefix}All levels complete. Starting orchestration...`);
       if (progressCallback) {
         progressCallback({
           status: 'running',
@@ -249,7 +251,7 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback });
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout });
 
         // Validate and finalize suggestions
         const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -259,7 +261,7 @@ class Analyzer {
         );
 
         // Store orchestrated results with ai_level = NULL (final suggestions)
-        logger.info('Storing orchestrated suggestions in database...');
+        logger.info(`${logPrefix}Storing orchestrated suggestions in database...`);
         await this.storeSuggestions(prId, runId, finalSuggestions, null, validFiles);
 
         // Update analysis_run record with completion data
@@ -270,12 +272,12 @@ class Analyzer {
             totalSuggestions: finalSuggestions.length,
             filesAnalyzed: validFiles.length
           });
-          logger.info(`Updated analysis_run record to completed: ${finalSuggestions.length} suggestions, ${validFiles.length} files`);
+          logger.info(`${logPrefix}Updated analysis_run record to completed: ${finalSuggestions.length} suggestions, ${validFiles.length} files`);
         } catch (updateError) {
-          logger.warn(`Failed to update analysis_run record: ${updateError.message}`);
+          logger.warn(`${logPrefix}Failed to update analysis_run record: ${updateError.message}`);
         }
 
-        logger.success(`Analysis complete: ${finalSuggestions.length} final suggestions`);
+        logger.success(`${logPrefix}Analysis complete: ${finalSuggestions.length} final suggestions`);
 
         return {
           runId,
@@ -285,8 +287,8 @@ class Analyzer {
         };
 
       } catch (orchestrationError) {
-        logger.error(`Orchestration failed: ${orchestrationError.message}`);
-        logger.warn('Falling back to storing all level suggestions without orchestration');
+        logger.error(`${logPrefix}Orchestration failed: ${orchestrationError.message}`);
+        logger.warn(`${logPrefix}Falling back to storing all level suggestions without orchestration`);
 
         // Fallback: store all suggestions as final without orchestration
         const fallbackSuggestions = [
@@ -313,9 +315,9 @@ class Analyzer {
             totalSuggestions: finalFallbackSuggestions.length,
             filesAnalyzed: validFiles.length
           });
-          logger.info(`Updated analysis_run record to completed (fallback): ${finalFallbackSuggestions.length} suggestions`);
+          logger.info(`${logPrefix}Updated analysis_run record to completed (fallback): ${finalFallbackSuggestions.length} suggestions`);
         } catch (updateError) {
-          logger.warn(`Failed to update analysis_run record: ${updateError.message}`);
+          logger.warn(`${logPrefix}Failed to update analysis_run record: ${updateError.message}`);
         }
 
         return {
@@ -332,21 +334,21 @@ class Analyzer {
       try {
         if (error.isCancellation) {
           await analysisRunRepo.update(runId, { status: 'cancelled' });
-          logger.info(`Updated analysis_run record to cancelled`);
+          logger.info(`${logPrefix}Updated analysis_run record to cancelled`);
         } else {
           await analysisRunRepo.update(runId, { status: 'failed' });
-          logger.info(`Updated analysis_run record to failed`);
+          logger.info(`${logPrefix}Updated analysis_run record to failed`);
         }
       } catch (updateError) {
-        logger.warn(`Failed to update analysis_run record on error: ${updateError.message}`);
+        logger.warn(`${logPrefix}Failed to update analysis_run record on error: ${updateError.message}`);
       }
 
       // Don't log cancellation as an error - it's expected user behavior
       if (error.isCancellation) {
         throw error;
       }
-      logger.error(`Analysis failed: ${error.message}`);
-      logger.error(`Error stack: ${error.stack}`);
+      logger.error(`${logPrefix}Analysis failed: ${error.message}`);
+      logger.error(`${logPrefix}Error stack: ${error.stack}`);
       throw error;
     }
   }
@@ -698,8 +700,8 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId, tier = 'balanced' } = options;
-    logger.info('[Level 1] Analysis Starting');
+    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '' } = options;
+    logger.info(`${lp}[Level 1] Analysis Starting`);
 
     try {
       // Check if analysis was cancelled before starting
@@ -711,7 +713,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `[Level 1] ${step}...`;
+        const progress = `${lp}[Level 1] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -731,7 +733,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       updateProgress('Running AI to analyze changes in isolation');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000, // 10 minutes for Level 1
+        timeout,
         level: 1,
         analysisId,
         registerProcess,
@@ -743,20 +745,20 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       // Parse and validate the response
       updateProgress('Processing AI results');
       const parsedSuggestions = this.parseResponse(response, 1);
-      logger.success(`Parsed ${parsedSuggestions.length} valid Level 1 suggestions`);
+      logger.success(`${lp}Parsed ${parsedSuggestions.length} valid Level 1 suggestions`);
 
       // Validate suggestion file paths if changedFiles provided
       const suggestions = (changedFiles && changedFiles.length > 0)
         ? this.validateSuggestionFilePaths(parsedSuggestions, changedFiles)
         : parsedSuggestions;
       if (changedFiles && changedFiles.length > 0) {
-        logger.success(`After path validation: ${suggestions.length} suggestions`);
+        logger.success(`${lp}After path validation: ${suggestions.length} suggestions`);
       }
 
       // Store Level 1 suggestions
       updateProgress('Storing Level 1 suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 1, changedFiles);
-      logger.success(`Level 1 complete: ${suggestions.length} suggestions`);
+      logger.success(`${lp}Level 1 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
       if (progressCallback) {
@@ -775,7 +777,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
     } catch (error) {
       // Don't log cancellation as an error - it's expected user behavior
       if (!error.isCancellation) {
-        logger.error(`Level 1 analysis failed: ${error.message}`);
+        logger.error(`${lp}Level 1 analysis failed: ${error.message}`);
       }
 
       // Report failure to progress callback (unless cancelled)
@@ -1687,8 +1689,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId, tier = 'balanced' } = options;
-    logger.info('[Level 2] Analysis Starting');
+    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '' } = options;
+    logger.info(`${lp}[Level 2] Analysis Starting`);
 
     try {
       // Check if analysis was cancelled before starting
@@ -1700,7 +1702,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `[Level 2] ${step}...`;
+        const progress = `${lp}[Level 2] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -1714,7 +1716,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Get list of changed files for grounding (use provided list for local mode, or compute for PR mode)
       const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
-      logger.info(`[Level 2] Changed files for grounding: ${validFiles.length} files`);
+      logger.info(`${lp}[Level 2] Changed files for grounding: ${validFiles.length} files`);
 
       // Build the Level 2 prompt
       updateProgress('Building prompt for AI to analyze file context');
@@ -1724,7 +1726,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       updateProgress('Running AI to analyze files in context');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000, // 10 minutes for Level 2
+        timeout,
         level: 2,
         analysisId,
         registerProcess,
@@ -1736,16 +1738,16 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       // Parse and validate the response
       updateProgress('Processing AI results');
       let suggestions = this.parseResponse(response, 2);
-      logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
+      logger.success(`${lp}Parsed ${suggestions.length} valid Level 2 suggestions`);
 
       // Validate suggestion file paths against changed files
       suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
-      logger.success(`After path validation: ${suggestions.length} suggestions`);
+      logger.success(`${lp}After path validation: ${suggestions.length} suggestions`);
 
       // Store Level 2 suggestions
       updateProgress('Storing Level 2 suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 2, validFiles);
-      logger.success(`Level 2 complete: ${suggestions.length} suggestions`);
+      logger.success(`${lp}Level 2 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
       if (progressCallback) {
@@ -1764,7 +1766,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     } catch (error) {
       // Don't log cancellation as an error - it's expected user behavior
       if (!error.isCancellation) {
-        logger.error(`Level 2 analysis failed: ${error.message}`);
+        logger.error(`${lp}Level 2 analysis failed: ${error.message}`);
       }
 
       // Report failure to progress callback (unless cancelled)
@@ -1795,8 +1797,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId, tier = 'balanced' } = options;
-    logger.info('[Level 3] Analysis Starting');
+    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '' } = options;
+    logger.info(`${lp}[Level 3] Analysis Starting`);
 
     try {
       // Check if analysis was cancelled before starting
@@ -1808,7 +1810,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `[Level 3] ${step}...`;
+        const progress = `${lp}[Level 3] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -1826,7 +1828,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Get list of changed files for grounding (use provided list for local mode, or compute for PR mode)
       const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
-      logger.info(`[Level 3] Changed files for grounding: ${validFiles.length} files`);
+      logger.info(`${lp}[Level 3] Changed files for grounding: ${validFiles.length} files`);
 
       // Build the Level 3 prompt with test context
       updateProgress('Building prompt for AI to analyze codebase impact');
@@ -1836,7 +1838,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       updateProgress('Running AI to analyze codebase-wide implications');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000, // 10 minutes for Level 3
+        timeout,
         level: 3,
         analysisId,
         registerProcess,
@@ -1848,16 +1850,16 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       // Parse and validate the response
       updateProgress('Processing codebase context results');
       let suggestions = this.parseResponse(response, 3);
-      logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
+      logger.success(`${lp}Parsed ${suggestions.length} valid Level 3 suggestions`);
 
       // Validate suggestion file paths against changed files
       suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
-      logger.success(`After path validation: ${suggestions.length} suggestions`);
+      logger.success(`${lp}After path validation: ${suggestions.length} suggestions`);
 
       // Store Level 3 suggestions
       updateProgress('Storing Level 3 suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 3, validFiles);
-      logger.success(`Level 3 complete: ${suggestions.length} suggestions`);
+      logger.success(`${lp}Level 3 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
       if (progressCallback) {
@@ -1876,7 +1878,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     } catch (error) {
       // Don't log cancellation as an error - it's expected user behavior
       if (!error.isCancellation) {
-        logger.error(`Level 3 analysis failed: ${error.message}`);
+        logger.error(`${lp}Level 3 analysis failed: ${error.message}`);
       }
 
       // Report failure to progress callback (unless cancelled)
@@ -2353,7 +2355,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @returns {Promise<Array>} Curated suggestions array
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride } = options;
+    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000 } = options;
     logger.section('[Orchestration] AI Orchestration Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
@@ -2377,7 +2379,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       // Execute Claude CLI for orchestration
       logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
       const response = await aiProvider.execute(prompt, {
-        timeout: 600000, // 10 minutes for orchestration
+        timeout,
         level: 'orchestration',
         analysisId,
         registerProcess,
@@ -2536,6 +2538,34 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     logger.section('Voice-Centric Council Analysis Starting');
     logger.info(`Review ID: ${reviewId}, Parent Run ID: ${parentRunId}`);
 
+    // Normalize config: detect levels-format from frontend and extract voices + boolean levels
+    if (!councilConfig.voices && councilConfig.levels) {
+      // Frontend sends levels-format: { levels: { "1": { enabled, voices }, ... }, orchestration }
+      // Convert to voice-centric format expected by this method
+      const normalizedVoices = [];
+      const seenVoices = new Set();
+      const normalizedLevels = {};
+      for (const [key, levelConfig] of Object.entries(councilConfig.levels)) {
+        if (typeof levelConfig === 'object' && levelConfig !== null) {
+          normalizedLevels[key] = levelConfig.enabled !== false;
+          if (levelConfig.enabled !== false && Array.isArray(levelConfig.voices)) {
+            for (const v of levelConfig.voices) {
+              const voiceSig = `${v.provider}|${v.model}|${v.tier || 'balanced'}|${v.customInstructions || ''}`;
+              if (!seenVoices.has(voiceSig)) {
+                seenVoices.add(voiceSig);
+                normalizedVoices.push(v);
+              }
+            }
+          }
+        } else {
+          // Already boolean format
+          normalizedLevels[key] = levelConfig !== false;
+        }
+      }
+      councilConfig = { ...councilConfig, voices: normalizedVoices, levels: normalizedLevels };
+      logger.info(`[VoiceCouncil] Normalized levels-format config: ${normalizedVoices.length} unique voices, levels: ${JSON.stringify(normalizedLevels)}`);
+    }
+
     // Merge instructions
     let mergedInstructions = null;
     if (instructions && typeof instructions === 'object') {
@@ -2545,7 +2575,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     // Resolve enabledLevels from council config
     const enabledLevels = {};
     for (const key of ['1', '2', '3']) {
-      enabledLevels[parseInt(key)] = councilConfig.levels?.[key] !== false;
+      const levelVal = councilConfig.levels?.[key];
+      enabledLevels[parseInt(key)] = typeof levelVal === 'object' ? levelVal?.enabled !== false : levelVal !== false;
     }
     const enabledLevelsList = Object.entries(enabledLevels).filter(([, v]) => v).map(([k]) => parseInt(k));
     logger.info(`[VoiceCouncil] Enabled levels: ${enabledLevelsList.join(', ')}`);
@@ -2595,8 +2626,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         voiceCentric: true,
         level: 'voice-init',
         status: 'running',
-        voices: Object.fromEntries(voices.map(v => {
-          const voiceKey = `${v.provider}-${v.model}`;
+        voices: Object.fromEntries(voices.map((v, idx) => {
+          const voiceKey = `${v.provider}-${v.model}${idx > 0 ? `-${idx}` : ''}`;
           return [voiceKey, {
             status: 'pending',
             provider: v.provider,
@@ -2632,11 +2663,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         logger.warn(`[VoiceCouncil] Failed to create child run record: ${err.message}`);
       }
 
-      // Merge per-voice custom instructions
-      let voiceInstructions = mergedInstructions;
+      // Build per-voice request instructions (appending voice custom instructions to request)
+      let voiceRequestInstructions = instructions?.requestInstructions || null;
       if (voice.customInstructions) {
-        voiceInstructions = voiceInstructions
-          ? `${voiceInstructions}\n\n${voice.customInstructions}`
+        voiceRequestInstructions = voiceRequestInstructions
+          ? `${voiceRequestInstructions}\n\n${voice.customInstructions}`
           : voice.customInstructions;
       }
 
@@ -2661,7 +2692,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           worktreePath,
           prMetadata,
           voiceProgressCallback,
-          { repoInstructions: instructions?.repoInstructions, requestInstructions: voiceInstructions },
+          { repoInstructions: instructions?.repoInstructions, requestInstructions: voiceRequestInstructions },
           changedFiles,
           {
             analysisId,
@@ -2669,7 +2700,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             skipRunCreation: true,
             enabledLevels,
             tier: voiceTier,
-            timeout: voiceTimeout
+            timeout: voiceTimeout,
+            logPrefix: `[${voice.provider}/${voice.model}] `
           }
         );
 
@@ -2685,7 +2717,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           logger.warn(`[VoiceCouncil] Failed to update child run ${childRunId}: ${err.message}`);
         }
 
-        return { voiceKey, childRunId, result };
+        return { voiceKey, childRunId, result, provider: voice.provider, model: voice.model };
       } catch (error) {
         // Update child run to failed/cancelled
         try {
@@ -2730,7 +2762,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         logger.success(`[VoiceCouncil] Voice ${settled.value.voiceKey}: ${settled.value.result.suggestions.length} suggestions`);
       } else {
         const reason = settled.status === 'rejected' ? settled.reason?.message : 'No suggestions';
-        const voiceKey = voices[i] ? `${voices[i].provider}-${voices[i].model}` : `voice-${i}`;
+        const voiceKey = voices[i] ? `${voices[i].provider}-${voices[i].model}${i > 0 ? `-${i}` : ''}` : `voice-${i}`;
         logger.warn(`[VoiceCouncil] Voice ${voiceKey} failed: ${reason}`);
       }
     }
@@ -2814,8 +2846,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       // Build per-voice review summaries for the consolidation prompt
       const voiceReviews = successfulVoices.map(v => ({
         voiceKey: v.voiceKey,
-        provider: voices.find(vv => `${vv.provider}-${vv.model}` === v.voiceKey.replace(/-\d+$/, ''))?.provider || 'unknown',
-        model: voices.find(vv => `${vv.provider}-${vv.model}` === v.voiceKey.replace(/-\d+$/, ''))?.model || 'unknown',
+        provider: v.provider,
+        model: v.model,
         suggestionCount: v.result.suggestions.length,
         suggestions: v.result.suggestions,
         summary: v.result.summary
@@ -2953,6 +2985,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           provider: voice.provider,
           model: voice.model,
           tier,
+          timeout: voice.timeout || 600000,
           customInstructions: voiceInstructions
         });
       }
@@ -3145,7 +3178,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       const orchestrationResult = await this.orchestrateWithAI(
         allSuggestions, prMetadata, mergedInstructions, worktreePath,
-        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel }
+        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout || 600000 }
       );
 
       const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -3189,7 +3222,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @private
    */
   async _executeCouncilVoice(task, context) {
-    const { voiceId, level, provider, model, tier, customInstructions } = task;
+    const { voiceId, level, provider, model, tier, timeout = 600000, customInstructions } = task;
     const { reviewId, runId, worktreePath, prMetadata, generatedPatterns, validFiles, analysisId, progressCallback } = context;
 
     logger.info(`[Council] Starting voice ${voiceId} (Level ${level}, ${provider}/${model}, ${tier})`);
@@ -3216,7 +3249,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     try {
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000,
+        timeout,
         level,
         analysisId,
         registerProcess,

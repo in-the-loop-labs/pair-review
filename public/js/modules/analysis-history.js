@@ -250,7 +250,6 @@ class AnalysisHistoryManager {
 
     this.listElement.innerHTML = runs.map((run) => {
       const isSelected = String(run.id) === String(this.selectedRunId);
-      const isNewRun = String(run.id) === String(this.newRunId);
       const timeAgo = this.formatRelativeTime(run.completed_at || run.started_at);
 
       const isCouncil = run.provider === 'council';
@@ -260,37 +259,14 @@ class AnalysisHistoryManager {
         ? 'council'
         : `${this.formatProviderName(run.provider)} - ${run.model || 'Unknown'}`;
 
-      const newBadge = isNewRun ? '<span class="analysis-history-new-badge">LATEST</span>' : '';
-
-      // Config type badge
-      const configBadge = this.renderConfigTypeBadge(run);
-
-      // Level indicators
-      const levelIndicators = this.renderLevelIndicators(run);
-
-      // Status indicator for non-completed runs
-      const statusIndicator = (run.status && run.status !== 'completed')
-        ? `<span class="analysis-history-status analysis-history-status-${this.escapeHtml(run.status)}">${this.escapeHtml(run.status)}</span>`
-        : '';
-
-      // Suggestion count
-      const suggestionCount = (run.total_suggestions != null && run.status === 'completed')
-        ? `<span class="analysis-history-suggestions">${run.total_suggestions} suggestion${run.total_suggestions !== 1 ? 's' : ''}</span>`
-        : '';
-
       return `
-        <button class="analysis-history-item ${isSelected ? 'selected' : ''} ${isNewRun ? 'is-new' : ''}" data-run-id="${run.id}">
+        <button class="analysis-history-item ${isSelected ? 'selected' : ''}" data-run-id="${run.id}">
           <div class="analysis-history-item-main" title="${this.escapeHtml(fullTitle)}">
             <span class="analysis-history-item-provider">${providerName}</span>
             <span class="analysis-history-item-model" ${isCouncil ? `data-council-id="${this.escapeHtml(run.model)}"` : ''}>&middot; ${modelName}</span>
-            ${configBadge}
-            ${newBadge}
           </div>
           <div class="analysis-history-item-meta">
             <span>${timeAgo}</span>
-            ${levelIndicators}
-            ${suggestionCount}
-            ${statusIndicator}
           </div>
         </button>
       `;

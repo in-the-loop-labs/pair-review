@@ -62,6 +62,8 @@ class CouncilProgressModal {
     if (configType === 'single') {
       const enabledLevels = options.enabledLevels || [1, 2, 3];
       this._rebuildBodySingleModel(enabledLevels);
+    } else if (configType === 'council') {
+      this._rebuildBodyVoiceCentric(councilConfig);
     } else {
       this._rebuildBody(councilConfig);
     }
@@ -70,11 +72,11 @@ class CouncilProgressModal {
     const titleEl = this.modal.querySelector('#council-progress-title');
     if (titleEl) {
       if (configType === 'single') {
-        titleEl.textContent = 'AI Review Analysis';
+        titleEl.textContent = 'Review progress';
       } else if (councilName) {
-        titleEl.textContent = `Review Council Analysis \u00b7 ${councilName}`;
+        titleEl.textContent = `Review progress \u00b7 ${councilName}`;
       } else {
-        titleEl.textContent = 'Review Council Analysis';
+        titleEl.textContent = 'Review progress';
       }
     }
 
@@ -266,8 +268,11 @@ class CouncilProgressModal {
       if (level4) {
         this._updateConsolidation(level4);
       }
+    } else if (this._renderMode === 'council') {
+      // Voice-centric council: transpose level-first SSE data to voice-first DOM
+      this._updateVoiceCentric(status);
     } else {
-      // Council modes: update voices within levels
+      // Advanced (level-centric): update voices within levels
       for (let level = 1; level <= 3; level++) {
         const levelStatus = status.levels[level];
         if (!levelStatus) continue;
@@ -318,6 +323,18 @@ class CouncilProgressModal {
 
     const state = levelStatus.status || 'pending';
     this._renderState(iconEl, statusEl, state, 'council-level');
+
+    // Show stream event text in the snippet element (mirrors _setVoiceState logic)
+    const levelEl = header.closest('.council-level');
+    const snippetEl = levelEl?.querySelector('.council-level-snippet');
+    if (snippetEl) {
+      if (state === 'running' && levelStatus.streamEvent?.text) {
+        snippetEl.textContent = levelStatus.streamEvent.text;
+        snippetEl.style.display = 'block';
+      } else if (state !== 'running') {
+        snippetEl.style.display = 'none';
+      }
+    }
   }
 
   /**
@@ -475,7 +492,7 @@ class CouncilProgressModal {
       derivedState = 'completed';
     } else if (allCancelled) {
       derivedState = 'cancelled';
-    } else if (anyFailed && !anyRunning) {
+    } else if (anyFailed) {
       derivedState = 'failed';
     } else if (anyRunning) {
       derivedState = 'running';
@@ -484,6 +501,135 @@ class CouncilProgressModal {
     }
 
     this._renderState(iconEl, statusEl, derivedState, 'council-level');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Voice-centric progress updates
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Update voice-centric DOM from level-first SSE data.
+   * Transposes levels -> voices: for each level in SSE data, update the
+   * corresponding level-child under each voice parent.
+   * @param {Object} status - SSE status object with levels map
+   */
+  _updateVoiceCentric(status) {
+    for (let level = 1; level <= 3; level++) {
+      const levelStatus = status.levels[level];
+      if (!levelStatus) continue;
+
+      if (levelStatus.voices) {
+        // Update each voice's level child
+        for (const [voiceId, vStatus] of Object.entries(levelStatus.voices)) {
+          this._setVoiceCentricLevelState(voiceId, level, vStatus.status || 'running', vStatus);
+        }
+      }
+
+      // Update stream event text for the currently active voice
+      if (levelStatus.streamEvent?.text && levelStatus.voiceId) {
+        this._setVoiceCentricStreamText(levelStatus.voiceId, level, levelStatus.streamEvent.text);
+      }
+    }
+
+    // Refresh all voice headers based on their children states
+    this._refreshAllVoiceHeaders();
+
+    // Handle consolidation (level 4)
+    const level4 = status.levels[4];
+    if (level4) {
+      this._updateConsolidation(level4);
+    }
+  }
+
+  /**
+   * Set the state of a level-child element within a voice-centric parent.
+   * @param {string} voiceId - Voice key (e.g. 'claude-opus')
+   * @param {number} level - Level number (1-4)
+   * @param {string} state - State string
+   * @param {Object} levelStatus - Level status data (may contain streamEvent)
+   */
+  _setVoiceCentricLevelState(voiceId, level, state, levelStatus) {
+    const el = this.modal.querySelector(`[data-vc-voice="${voiceId}"][data-vc-level="${level}"]`);
+    if (!el) return;
+
+    // Track state
+    const stateKey = `${voiceId}:${level}`;
+    this._voiceStates[stateKey] = state;
+
+    const iconEl = el.querySelector('.council-voice-icon');
+    const statusEl = el.querySelector('.council-voice-status');
+    this._renderState(iconEl, statusEl, state, 'council-voice');
+
+    // Show/hide snippet
+    const snippetEl = el.querySelector('.council-voice-snippet');
+    if (snippetEl) {
+      if (state === 'running' && levelStatus?.streamEvent?.text) {
+        snippetEl.textContent = levelStatus.streamEvent.text;
+        snippetEl.style.display = 'block';
+      } else if (state !== 'running') {
+        snippetEl.style.display = 'none';
+      }
+    }
+  }
+
+  /**
+   * Update the stream text snippet for a voice-centric level child.
+   * @param {string} voiceId - Voice key
+   * @param {number} level - Level number
+   * @param {string} text - Stream event text
+   */
+  _setVoiceCentricStreamText(voiceId, level, text) {
+    const el = this.modal.querySelector(`[data-vc-voice="${voiceId}"][data-vc-level="${level}"]`);
+    if (!el) return;
+    const snippetEl = el.querySelector('.council-voice-snippet');
+    if (snippetEl) {
+      snippetEl.textContent = text;
+      snippetEl.style.display = 'block';
+    }
+  }
+
+  /**
+   * Refresh all voice parent headers based on the aggregate state
+   * of their level children.
+   */
+  _refreshAllVoiceHeaders() {
+    const voiceContainers = this.modal.querySelectorAll('[data-voice-key]');
+    voiceContainers.forEach(container => {
+      const voiceKey = container.dataset.voiceKey;
+      const header = container.querySelector('.council-level-header');
+      if (!header) return;
+
+      const iconEl = header.querySelector('.council-level-icon');
+      const statusEl = header.querySelector('.council-level-status');
+      if (!iconEl || !statusEl) return;
+
+      // Collect states for all level children of this voice
+      const levelEls = container.querySelectorAll('[data-vc-level]');
+      const states = Array.from(levelEls).map(el => {
+        const key = `${voiceKey}:${el.dataset.vcLevel}`;
+        return this._voiceStates[key] || 'pending';
+      });
+
+      const allComplete = states.every(s => s === 'completed');
+      const anyRunning = states.some(s => s === 'running');
+      const anyFailed = states.some(s => s === 'failed');
+      const allCancelled = states.every(s => s === 'cancelled');
+
+      let derivedState;
+      if (allComplete) {
+        derivedState = 'completed';
+      } else if (allCancelled) {
+        derivedState = 'cancelled';
+      } else if (anyFailed) {
+        derivedState = 'failed';
+      } else if (anyRunning) {
+        derivedState = 'running';
+      } else {
+        derivedState = states.some(s => s !== 'pending') ? 'running' : 'pending';
+      }
+
+      this._renderState(iconEl, statusEl, derivedState, 'council-level');
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -500,11 +646,53 @@ class CouncilProgressModal {
     const state = level4Status.status;
     if (state === 'pending') return; // default DOM state
 
-    this._renderState(iconEl, statusEl, state, 'council-level');
-    this._updateConsolidationChildren(state);
+    // Per-step updates: update individual consolidation children based on
+    // the steps map or consolidationStep identifier
+    if (level4Status.steps) {
+      this._updateConsolidationChildrenFromSteps(level4Status.steps);
+    } else if (level4Status.consolidationStep) {
+      this._updateConsolidationChild(level4Status.consolidationStep, state);
+    } else {
+      // Terminal states (completed/failed/cancelled): bulk-update all children
+      this._updateConsolidationChildrenBulk(state);
+    }
+
+    // Derive the parent header state from children
+    this._refreshConsolidationHeader(iconEl, statusEl, state);
   }
 
-  _updateConsolidationChildren(state) {
+  /**
+   * Update individual consolidation children based on per-step status map.
+   * @param {Object} steps - Map of step ID (e.g. 'L1', 'orchestration') to { status, progress }
+   */
+  _updateConsolidationChildrenFromSteps(steps) {
+    for (const [stepId, stepStatus] of Object.entries(steps)) {
+      this._updateConsolidationChild(stepId, stepStatus.status || 'running');
+    }
+  }
+
+  /**
+   * Update a single consolidation child by its step ID.
+   * @param {string} stepId - 'L1', 'L2', 'L3', or 'orchestration'
+   * @param {string} state - 'running', 'completed', 'failed', etc.
+   */
+  _updateConsolidationChild(stepId, state) {
+    const child = this.modal.querySelector(`.council-consolidation-child[data-consolidation="${stepId}"]`);
+    if (!child) return;
+
+    const iconEl = child.querySelector('.council-voice-icon');
+    const statusEl = child.querySelector('.council-voice-status');
+    if (!iconEl || !statusEl) return;
+
+    this._renderState(iconEl, statusEl, state, 'council-voice');
+  }
+
+  /**
+   * Bulk-update all consolidation children with the same state.
+   * Used for terminal states (completed, failed, cancelled).
+   * @param {string} state
+   */
+  _updateConsolidationChildrenBulk(state) {
     const children = this.modal.querySelectorAll('.council-consolidation-child');
     children.forEach(child => {
       const iconEl = child.querySelector('.council-voice-icon');
@@ -515,15 +703,81 @@ class CouncilProgressModal {
     });
   }
 
+  /**
+   * Refresh the consolidation header state based on children states.
+   * @param {HTMLElement} iconEl - Header icon element
+   * @param {HTMLElement} statusEl - Header status element
+   * @param {string} fallbackState - State to use if no children exist
+   */
+  _refreshConsolidationHeader(iconEl, statusEl, fallbackState) {
+    if (!iconEl || !statusEl) return;
+
+    const children = this.modal.querySelectorAll('.council-consolidation-child');
+    if (children.length === 0) {
+      // No children (simple consolidation) — use the state directly
+      this._renderState(iconEl, statusEl, fallbackState, 'council-level');
+      return;
+    }
+
+    // Derive state from children via CSS classes (set by _renderState)
+    const childStates = Array.from(children).map(child => {
+      const childStatusEl = child.querySelector('.council-voice-status');
+      if (!childStatusEl) return 'pending';
+      if (childStatusEl.classList.contains('completed')) return 'completed';
+      if (childStatusEl.classList.contains('running')) return 'running';
+      if (childStatusEl.classList.contains('failed')) return 'failed';
+      if (childStatusEl.classList.contains('cancelled')) return 'cancelled';
+      if (childStatusEl.classList.contains('skipped')) return 'skipped';
+      return 'pending';
+    });
+
+    const allComplete = childStates.every(s => s === 'completed');
+    const anyRunning = childStates.some(s => s === 'running');
+    const anyFailed = childStates.some(s => s === 'failed');
+    const allCancelled = childStates.every(s => s === 'cancelled');
+
+    let derivedState;
+    if (allComplete) {
+      derivedState = 'completed';
+    } else if (allCancelled) {
+      derivedState = 'cancelled';
+    } else if (anyFailed) {
+      derivedState = 'failed';
+    } else if (anyRunning) {
+      derivedState = 'running';
+    } else {
+      derivedState = childStates.some(s => s !== 'pending') ? 'running' : 'pending';
+    }
+
+    this._renderState(iconEl, statusEl, derivedState, 'council-level');
+  }
+
   // ---------------------------------------------------------------------------
   // Terminal state handlers
   // ---------------------------------------------------------------------------
 
   _handleCompletion(status) {
-    // Mark all remaining voices/levels as complete
-    for (let level = 1; level <= 3; level++) {
-      this._completeAllVoicesForLevel(level);
-      this._refreshLevelHeader(level);
+    if (this._renderMode === 'council') {
+      // Voice-centric: mark all voice-level children as complete
+      const vcEls = this.modal.querySelectorAll('[data-vc-voice][data-vc-level]');
+      vcEls.forEach(el => {
+        const key = `${el.dataset.vcVoice}:${el.dataset.vcLevel}`;
+        if (this._voiceStates[key] !== 'completed' && this._voiceStates[key] !== 'failed') {
+          this._voiceStates[key] = 'completed';
+          const iconEl = el.querySelector('.council-voice-icon');
+          const statusEl = el.querySelector('.council-voice-status');
+          this._renderState(iconEl, statusEl, 'completed', 'council-voice');
+          const snippetEl = el.querySelector('.council-voice-snippet');
+          if (snippetEl) snippetEl.style.display = 'none';
+        }
+      });
+      this._refreshAllVoiceHeaders();
+    } else {
+      // Level-centric / single: mark all remaining voices/levels as complete
+      for (let level = 1; level <= 3; level++) {
+        this._completeAllVoicesForLevel(level);
+        this._refreshLevelHeader(level);
+      }
     }
     this._updateConsolidation({ status: 'completed' });
 
@@ -584,10 +838,27 @@ class CouncilProgressModal {
   }
 
   _handleFailure(_status) {
-    // Clean up any remaining running voices
-    for (let level = 1; level <= 3; level++) {
-      this._failAllVoicesForLevel(level);
-      this._refreshLevelHeader(level);
+    if (this._renderMode === 'council') {
+      // Voice-centric: mark all non-completed voice-level children as failed
+      const vcEls = this.modal.querySelectorAll('[data-vc-voice][data-vc-level]');
+      vcEls.forEach(el => {
+        const key = `${el.dataset.vcVoice}:${el.dataset.vcLevel}`;
+        if (this._voiceStates[key] !== 'completed') {
+          this._voiceStates[key] = 'failed';
+          const iconEl = el.querySelector('.council-voice-icon');
+          const statusEl = el.querySelector('.council-voice-status');
+          this._renderState(iconEl, statusEl, 'failed', 'council-voice');
+          const snippetEl = el.querySelector('.council-voice-snippet');
+          if (snippetEl) snippetEl.style.display = 'none';
+        }
+      });
+      this._refreshAllVoiceHeaders();
+    } else {
+      // Level-centric / single: clean up any remaining running voices
+      for (let level = 1; level <= 3; level++) {
+        this._failAllVoicesForLevel(level);
+        this._refreshLevelHeader(level);
+      }
     }
     this._updateConsolidation({ status: 'failed' });
 
@@ -607,10 +878,27 @@ class CouncilProgressModal {
   }
 
   _handleCancellation(_status) {
-    // Clean up any remaining running voices
-    for (let level = 1; level <= 3; level++) {
-      this._cancelAllVoicesForLevel(level);
-      this._refreshLevelHeader(level);
+    if (this._renderMode === 'council') {
+      // Voice-centric: mark all non-completed voice-level children as cancelled
+      const vcEls = this.modal.querySelectorAll('[data-vc-voice][data-vc-level]');
+      vcEls.forEach(el => {
+        const key = `${el.dataset.vcVoice}:${el.dataset.vcLevel}`;
+        if (this._voiceStates[key] !== 'completed') {
+          this._voiceStates[key] = 'cancelled';
+          const iconEl = el.querySelector('.council-voice-icon');
+          const statusEl = el.querySelector('.council-voice-status');
+          this._renderState(iconEl, statusEl, 'cancelled', 'council-voice');
+          const snippetEl = el.querySelector('.council-voice-snippet');
+          if (snippetEl) snippetEl.style.display = 'none';
+        }
+      });
+      this._refreshAllVoiceHeaders();
+    } else {
+      // Level-centric / single: clean up any remaining running voices
+      for (let level = 1; level <= 3; level++) {
+        this._cancelAllVoicesForLevel(level);
+        this._refreshLevelHeader(level);
+      }
     }
     this._updateConsolidation({ status: 'cancelled' });
 
@@ -653,7 +941,7 @@ class CouncilProgressModal {
       <div class="modal-backdrop" data-action="close"></div>
       <div class="modal-container council-progress-modal">
         <div class="modal-header">
-          <h3 id="council-progress-title">Review Council Analysis</h3>
+          <h3 id="council-progress-title">Review progress</h3>
           <button class="modal-close-btn" data-action="close" title="Close">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
@@ -715,6 +1003,116 @@ class CouncilProgressModal {
   }
 
   /**
+   * Rebuild the modal body for voice-centric council mode.
+   * Transposes the level-first config into a voice-first tree:
+   *   - Unique voices as parent rows
+   *   - Enabled levels (+ orchestration) as child rows under each voice
+   *   - Cross-Voice Consolidation section at the bottom
+   *
+   * @param {Object} config - Council config in levels-format
+   */
+  _rebuildBodyVoiceCentric(config) {
+    const body = this.modal.querySelector('.council-progress-body');
+    if (!body) return;
+
+    const levelNames = {
+      1: 'Changes in Isolation',
+      2: 'File Context',
+      3: 'Codebase Context'
+    };
+
+    // Deduplicate voices across enabled levels using the same signature-based
+    // approach as the backend (runVoiceCentricCouncil in analyzer.js).
+    // The backend deduplicates by provider|model|tier|customInstructions, then
+    // generates keys from the index into the global deduplicated array.
+    // We must mirror this exactly so voice keys match SSE progress events.
+    const uniqueVoices = [];
+    const seenSignatures = new Set();
+    const enabledLevelNums = [];
+    for (const levelKey of ['1', '2', '3']) {
+      const levelConfig = config.levels?.[levelKey];
+      if (!levelConfig?.enabled) continue;
+      enabledLevelNums.push(parseInt(levelKey));
+      for (const voice of (levelConfig.voices || [])) {
+        const sig = `${voice.provider}|${voice.model}|${voice.tier || 'balanced'}|${voice.customInstructions || ''}`;
+        if (!seenSignatures.has(sig)) {
+          seenSignatures.add(sig);
+          uniqueVoices.push(voice);
+        }
+      }
+    }
+
+    // Build voiceMap: voiceKey -> { voice, levels } using deduplicated array indices
+    const voiceMap = new Map();
+    uniqueVoices.forEach((voice, idx) => {
+      const voiceKey = `${voice.provider}-${voice.model}${idx > 0 ? `-${idx}` : ''}`;
+      voiceMap.set(voiceKey, { voice, levels: enabledLevelNums });
+    });
+
+    let html = '<div class="council-progress-tree">';
+
+    // Build a parent row for each unique voice
+    for (const [voiceKey, { voice, levels }] of voiceMap) {
+      const label = this._formatVoiceLabel(voice);
+
+      html += `
+        <div class="council-level" data-voice-key="${voiceKey}">
+          <div class="council-level-header">
+            <span class="council-level-icon running"><span class="council-spinner"></span></span>
+            <span class="council-level-title">${label}</span>
+            <span class="council-level-status running"></span>
+          </div>
+          <div class="council-level-children">
+      `;
+
+      // Level children (orchestration row is always last, added separately below)
+      levels.forEach((levelNum) => {
+        const connectorClass = 'connector-mid';
+        html += `
+          <div class="council-voice ${connectorClass}" data-vc-voice="${voiceKey}" data-vc-level="${levelNum}">
+            <span class="council-voice-connector ${connectorClass}"></span>
+            <span class="council-voice-icon running"><span class="council-spinner"></span></span>
+            <span class="council-voice-label">Level ${levelNum} \u2014 ${levelNames[levelNum]}</span>
+            <span class="council-voice-status running">Running...</span>
+            <div class="council-voice-detail">
+              <div class="council-voice-snippet" style="display: none;"></div>
+            </div>
+          </div>
+        `;
+      });
+
+      // Orchestration child (always last)
+      html += `
+          <div class="council-voice connector-last" data-vc-voice="${voiceKey}" data-vc-level="4">
+            <span class="council-voice-connector connector-last"></span>
+            <span class="council-voice-icon pending">\u25CB</span>
+            <span class="council-voice-label">Orchestration</span>
+            <span class="council-voice-status pending">Pending</span>
+          </div>
+      `;
+
+      html += `
+          </div>
+        </div>
+      `;
+    }
+
+    // Cross-Voice Consolidation section (simple, no per-level children)
+    html += `
+      <div class="council-consolidation council-level">
+        <div class="council-level-header">
+          <span class="council-level-icon pending">\u25CB</span>
+          <span class="council-level-title">Cross-Voice Consolidation</span>
+          <span class="council-level-status pending">Pending</span>
+        </div>
+      </div>
+    `;
+
+    html += '</div>';
+    body.innerHTML = html;
+  }
+
+  /**
    * Rebuild the modal body for single-model analysis.
    * Shows a simple level list without voice nesting.
    * @param {Array<number>} enabledLevels - Which levels are enabled, e.g. [1, 2, 3]
@@ -753,6 +1151,7 @@ class CouncilProgressModal {
               <span class="council-level-title">${title}</span>
               <span class="council-level-status pending">Pending</span>
             </div>
+            <div class="council-level-snippet" style="display: none;"></div>
           </div>
         `;
       }

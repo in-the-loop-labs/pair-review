@@ -2913,6 +2913,23 @@ tr.newly-expanded .d2h-code-line-ctn {
   text-overflow: ellipsis;
 }
 
+/* Snippet for single-model level rows (mirrors .council-voice-snippet) */
+.council-level-snippet {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--color-text-tertiary, #8b949e);
+  background: var(--color-bg-subtle, #f6f8fa);
+  border-radius: 3px;
+  padding: 2px 6px;
+  margin-left: 28px; /* align with title text: 18px icon + 10px gap */
+  margin-top: 0;
+  margin-bottom: 2px;
+  max-width: calc(100% - 28px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* --- Consolidation section ----------------------------------------------- */
 
 .council-consolidation {
@@ -6632,23 +6649,6 @@ body.resizing * {
   color: var(--color-text-muted);
 }
 
-/* NEW badge for new analysis runs */
-.analysis-history-new-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 5px;
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--color-text-on-emphasis);
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-  border-radius: 3px;
-  margin-left: auto;
-  flex-shrink: 0;
-  animation: badge-glow 2s ease-in-out infinite;
-}
-
 /* Config type badges */
 .analysis-history-config-badge {
   display: inline-flex;
@@ -6699,47 +6699,6 @@ body.resizing * {
 .analysis-history-level.level-off {
   color: var(--color-text-muted);
   opacity: 0.5;
-}
-
-/* Status indicators in history items */
-.analysis-history-status {
-  font-size: 10px;
-  font-weight: 500;
-}
-
-.analysis-history-status-failed {
-  color: var(--color-danger, #ef4444);
-}
-
-.analysis-history-status-cancelled {
-  color: var(--color-warning, #f59e0b);
-}
-
-.analysis-history-status-running {
-  color: var(--color-accent, #3b82f6);
-}
-
-/* Suggestion count in history items */
-.analysis-history-suggestions {
-  color: var(--color-text-muted);
-}
-
-@keyframes badge-glow {
-  0%, 100% {
-    box-shadow: 0 0 2px rgba(245, 158, 11, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
-  }
-}
-
-/* Highlight new run item in list */
-.analysis-run-list .analysis-history-item.is-new {
-  background: rgba(245, 158, 11, 0.08);
-}
-
-.analysis-run-list .analysis-history-item.is-new:hover {
-  background: rgba(245, 158, 11, 0.12);
 }
 
 /* Right panel: Preview */
@@ -7140,20 +7099,6 @@ body.resizing * {
   border-color: rgba(52, 211, 153, 0.25);
 }
 
-/* Dark theme: NEW badge */
-[data-theme="dark"] .analysis-history-new-badge {
-  background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
-  color: #1f2937;
-}
-
-/* Dark theme: highlight new run item */
-[data-theme="dark"] .analysis-run-list .analysis-history-item.is-new {
-  background: rgba(251, 191, 36, 0.12);
-}
-
-[data-theme="dark"] .analysis-run-list .analysis-history-item.is-new:hover {
-  background: rgba(251, 191, 36, 0.18);
-}
 
 /* Tier-specific colors */
 .analysis-tier-fast {
@@ -9188,6 +9133,62 @@ body.resizing * {
 
 [data-theme="dark"] .toggle-instructions-icon.has-instructions {
   color: var(--color-accent-primary, #58a6ff);
+}
+
+/* Icon-only toggle for per-voice timeout (clock icon) */
+.toggle-timeout-icon {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--color-text-tertiary, #6e7681);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.toggle-timeout-icon:hover {
+  color: var(--color-accent-primary, #0969da);
+  border-color: var(--color-border-secondary, #d0d7de);
+}
+
+.toggle-timeout-icon.has-custom-timeout {
+  color: var(--color-attention-fg, #9a6700);
+}
+
+[data-theme="dark"] .toggle-timeout-icon {
+  color: var(--color-text-tertiary, #484f58);
+}
+
+[data-theme="dark"] .toggle-timeout-icon:hover {
+  color: var(--color-accent-primary, #58a6ff);
+  border-color: var(--color-border-primary, #30363d);
+}
+
+[data-theme="dark"] .toggle-timeout-icon.has-custom-timeout {
+  color: var(--color-attention-fg, #d29922);
+}
+
+/* Inline timeout dropdown (hidden by default, revealed by clock icon) */
+.adv-timeout {
+  padding: 5px 8px;
+  border: 1px solid var(--border-color, #d0d7de);
+  border-radius: 6px;
+  background: var(--bg-default, #fff);
+  color: var(--fg-default, #1f2328);
+  font-size: 12px;
+  min-width: 60px;
+}
+
+[data-theme="dark"] .adv-timeout {
+  background: var(--bg-subtle, #161b22);
+  color: var(--fg-default, #e6edf3);
+  border-color: var(--border-color, #30363d);
 }
 
 /* Participant card layout (item 4) */

@@ -34,7 +34,8 @@ const {
   killProcesses,
   isAnalysisCancelled,
   CancellationError,
-  createProgressCallback
+  createProgressCallback,
+  parseEnabledLevels
 } = require('./shared');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 const { validateCouncilConfig } = require('./councils');
@@ -50,7 +51,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     const prNumber = parseInt(pr);
 
     // Extract optional provider, model, tier, customInstructions and skipLevel3 from request body
-    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3 } = req.body || {};
+    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3, enabledLevels: requestEnabledLevels } = req.body || {};
 
     // Trim and validate custom instructions
     const MAX_INSTRUCTIONS_LENGTH = 5000;
@@ -159,7 +160,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Create DB analysis_runs record immediately so it's queryable for polling
     const analysisRunRepo = new AnalysisRunRepository(db);
-    const levelsConfig = { 1: true, 2: true, 3: !requestSkipLevel3 };
+    const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);
     await analysisRunRepo.create({
       id: runId,
       reviewId: review.id,
@@ -182,9 +183,9 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       progress: 'Starting analysis...',
       // Track each level separately for parallel execution
       levels: {
-        1: { status: 'running', progress: 'Starting...' },
-        2: { status: 'running', progress: 'Starting...' },
-        3: requestSkipLevel3 ? { status: 'skipped', progress: 'Skipped' } : { status: 'running', progress: 'Starting...' },
+        1: levelsConfig[1] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+        2: levelsConfig[2] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+        3: levelsConfig[3] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
         4: { status: 'pending', progress: 'Pending' }
       },
       filesAnalyzed: 0,
@@ -220,7 +221,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     const progressCallback = createProgressCallback(analysisId);
 
     // Start analysis asynchronously (skipRunCreation since we created the record above; tier for prompt selection, skipLevel3 flag)
-    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3 })
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
       .then(async result => {
         logger.section('Analysis Results');
         logger.success(`Analysis complete for PR #${prNumber}`);

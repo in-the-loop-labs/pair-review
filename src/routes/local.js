@@ -33,7 +33,8 @@ const {
   determineCompletionInfo,
   broadcastProgress,
   CancellationError,
-  createProgressCallback
+  createProgressCallback,
+  parseEnabledLevels
 } = require('./shared');
 
 const router = express.Router();
@@ -603,7 +604,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     }
 
     // Extract optional provider, model, tier, customInstructions and skipLevel3 from request body
-    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3 } = req.body || {};
+    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3, enabledLevels: requestEnabledLevels } = req.body || {};
 
     // Trim and validate custom instructions
     const MAX_INSTRUCTIONS_LENGTH = 5000;
@@ -680,7 +681,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
 
     // Create DB analysis_runs record immediately so it's queryable for polling
     const analysisRunRepo = new AnalysisRunRepository(db);
-    const levelsConfig = { 1: true, 2: true, 3: !requestSkipLevel3 };
+    const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);
     try {
       await analysisRunRepo.create({
         id: runId,
@@ -708,9 +709,9 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       startedAt: new Date().toISOString(),
       progress: 'Starting analysis...',
       levels: {
-        1: { status: 'running', progress: 'Starting...' },
-        2: { status: 'running', progress: 'Starting...' },
-        3: requestSkipLevel3 ? { status: 'skipped', progress: 'Skipped' } : { status: 'running', progress: 'Starting...' },
+        1: levelsConfig[1] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+        2: levelsConfig[2] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+        3: levelsConfig[3] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
         4: { status: 'pending', progress: 'Pending' }
       },
       filesAnalyzed: 0,
@@ -763,7 +764,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     const progressCallback = createProgressCallback(analysisId);
 
     // Start analysis asynchronously (skipRunCreation since we created the record above; also passes changedFiles for local mode path validation, tier for prompt selection, and skipLevel3 flag)
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3 })
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
       .then(async result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);

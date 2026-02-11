@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * Advanced (Level-Centric) Council Configuration Tab
+ * Custom (Level-Centric) Configuration Tab
  *
- * Provides the "Advanced" tab in the AnalysisConfigModal. Enables per-level,
+ * Provides the "Custom" tab in the AnalysisConfigModal. Enables per-level,
  * multi-voice, multi-provider analysis configuration where each review level
  * can have different participants.
  *
@@ -37,6 +37,12 @@ class AdvancedConfigTab {
 
   /** Speech bubble SVG icon (solid/filled) — indicates instructions are present */
   static SPEECH_BUBBLE_SVG_SOLID = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 1C1.784 1 1 1.784 1 2.75v7.5c0 .966.784 1.75 1.75 1.75H4v1.543a1.458 1.458 0 0 0 2.487 1.03L9.06 12h4.19A1.75 1.75 0 0 0 15 10.25v-7.5A1.75 1.75 0 0 0 13.25 1H2.75Z"/></svg>`;
+
+  /** Clock SVG icon for per-voice timeout toggle */
+  static CLOCK_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm7-3.25v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.751.751 0 0 1 7 8.25v-3.5a.75.75 0 0 1 1.5 0Z"/></svg>`;
+
+  /** Default timeout in milliseconds (10 minutes) */
+  static DEFAULT_TIMEOUT = 600000;
 
   constructor(modal) {
     this.modal = modal;
@@ -98,7 +104,7 @@ class AdvancedConfigTab {
       console.error('Error loading councils:', error);
       this.councils = [];
       if (window.toast) {
-        window.toast.showError('Failed to load saved councils');
+        window.toast.showError('Failed to load saved configurations');
       }
     }
   }
@@ -222,16 +228,16 @@ class AdvancedConfigTab {
       if (this.selectedCouncilId) {
         // Fork: create new council based on existing, don't mutate the original
         const existing = this.councils.find(c => c.id === this.selectedCouncilId);
-        const baseName = (existing?.name || 'Council').replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/, '').trim();
+        const baseName = (existing?.name || 'Config').replace(/\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/, '').trim();
         name = `${baseName} ${timestamp}`;
       } else {
-        name = `Council ${timestamp}`;
+        name = `Config ${timestamp}`;
       }
       await this._postCouncil(name, config);
     } catch (error) {
       console.error('Auto-save council failed (non-blocking):', error);
       if (window.toast) {
-        window.toast.showWarning('Council auto-save failed');
+        window.toast.showWarning('Configuration auto-save failed');
       }
     }
   }
@@ -262,16 +268,16 @@ class AdvancedConfigTab {
   _buildCouncilHTML() {
     return `
       <section class="config-section">
-        <h4 class="section-title">Council ${AdvancedConfigTab.buildInfoTipButton('council')}</h4>
-        ${AdvancedConfigTab.buildInfoTipContent('council', 'A Review Council runs your code review through multiple AI models in parallel, then consolidates their findings. Different models catch different issues, giving you broader coverage than a single reviewer.')}
+        <h4 class="section-title">Configuration ${AdvancedConfigTab.buildInfoTipButton('council')}</h4>
+        ${AdvancedConfigTab.buildInfoTipContent('council', 'A custom configuration runs your code review through multiple AI models in parallel, then consolidates their findings. Different models catch different issues, giving you broader coverage than a single reviewer.')}
         <div class="council-selector-row">
           <select id="council-selector" class="council-select new-council-selected">
-            <option value="" class="council-option-new">+ New Council</option>
+            <option value="" class="council-option-new">+ New Configuration</option>
           </select>
           <button class="btn btn-sm btn-secondary" id="council-save-btn" title="Save" disabled>Save</button>
           <button class="btn btn-sm btn-secondary" id="council-save-as-btn" title="Save As" disabled>Save As</button>
           <button class="btn btn-sm btn-secondary" id="council-export-btn" title="Copy config JSON to clipboard">Export</button>
-          <button class="btn btn-sm btn-icon-danger" id="council-delete-btn" title="Delete council" disabled>
+          <button class="btn btn-sm btn-icon-danger" id="council-delete-btn" title="Delete configuration" disabled>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zM4.496 6.675l.66 6.6a.25.25 0 00.249.225h5.19a.25.25 0 00.249-.225l.66-6.6a.75.75 0 011.492.149l-.66 6.6A1.748 1.748 0 0110.595 15h-5.19a1.75 1.75 0 01-1.741-1.575l-.66-6.6a.75.75 0 111.492-.15z"/>
             </svg>
@@ -333,7 +339,8 @@ class AdvancedConfigTab {
   }
 
   /**
-   * Build a single participant row with card container layout
+   * Build a single participant row with card container layout.
+   * Includes a clock icon that toggles an inline timeout dropdown.
    */
   _buildVoiceRowHTML(level, index) {
     return `
@@ -347,6 +354,13 @@ class AdvancedConfigTab {
               <option value="balanced" selected>Balanced</option>
               <option value="thorough">Thorough</option>
             </select>
+            <select class="adv-timeout" data-level="${level}" data-index="${index}" title="Per-voice timeout" style="display:none">
+              <option value="300000">5m</option>
+              <option value="600000" selected>10m</option>
+              <option value="900000">15m</option>
+              <option value="1800000">30m</option>
+            </select>
+            <button class="toggle-timeout-icon" data-level="${level}" data-index="${index}" title="Per-voice timeout">${AdvancedConfigTab.CLOCK_SVG}</button>
             <button class="toggle-instructions-icon" data-level="${level}" data-index="${index}" title="Per-participant instructions">${AdvancedConfigTab.SPEECH_BUBBLE_SVG}</button>
           </div>
           <div class="voice-instructions-area" data-level="${level}" data-index="${index}" style="display:none">
@@ -430,7 +444,7 @@ class AdvancedConfigTab {
           this._markClean();
         }
       } else {
-        // "New Council" selected — reset UI to blank defaults
+        // "New Configuration" selected — reset UI to blank defaults
         this._applyConfigToUI(this._defaultConfig());
         this._markDirty();
       }
@@ -482,7 +496,7 @@ class AdvancedConfigTab {
       btn.addEventListener('click', () => this._addVoice(btn.dataset.level));
     });
 
-    // Delegate remove voice and toggle instructions icon
+    // Delegate remove voice, toggle instructions icon, and toggle timeout icon
     panel.addEventListener('click', (e) => {
       const removeBtn = e.target.closest('.remove-voice-btn');
       if (removeBtn) {
@@ -502,6 +516,18 @@ class AdvancedConfigTab {
             const textarea = area.querySelector('.voice-instructions-input');
             if (textarea) textarea.focus();
           }
+        }
+      }
+
+      // Toggle timeout dropdown via clock icon
+      const clockBtn = e.target.closest('.toggle-timeout-icon');
+      if (clockBtn) {
+        const { level, index } = clockBtn.dataset;
+        const wrapper = panel.querySelector(`.participant-wrapper[data-level="${level}"][data-index="${index}"]`);
+        const timeoutSelect = wrapper?.querySelector(`.adv-timeout[data-level="${level}"][data-index="${index}"]`);
+        if (timeoutSelect) {
+          const isHidden = timeoutSelect.style.display === 'none';
+          timeoutSelect.style.display = isHidden ? '' : 'none';
         }
       }
 
@@ -531,6 +557,15 @@ class AdvancedConfigTab {
     panel.addEventListener('change', (e) => {
       if (e.target.classList.contains('voice-provider')) {
         this._updateModelDropdown(e.target);
+      }
+      // Model change -> update tier to match model's recommended tier
+      if (e.target.classList.contains('voice-model')) {
+        this._syncTierToModel(e.target);
+      }
+      // Timeout change -> update clock icon styling
+      if (e.target.classList.contains('adv-timeout')) {
+        const { level, index } = e.target.dataset;
+        this._updateTimeoutIcon(panel, level, index, e.target.value);
       }
     });
 
@@ -571,7 +606,7 @@ class AdvancedConfigTab {
     if (!selector) return;
 
     const currentValue = selector.value;
-    selector.innerHTML = '<option value="" class="council-option-new">+ New Council</option>';
+    selector.innerHTML = '<option value="" class="council-option-new">+ New Configuration</option>';
     for (const council of this.councils) {
       const opt = document.createElement('option');
       opt.value = council.id;
@@ -667,6 +702,23 @@ class AdvancedConfigTab {
     if (tierSelect) {
       const selectedModel = models.find(m => m.id === modelSelect.value);
       if (selectedModel) tierSelect.value = selectedModel.tier || 'balanced';
+    }
+  }
+
+  /**
+   * Sync the tier dropdown to the selected model's recommended tier.
+   * Called when the user manually changes the model dropdown.
+   * @param {HTMLSelectElement} modelSelect - The model dropdown that changed
+   */
+  _syncTierToModel(modelSelect) {
+    const container = modelSelect.closest('.voice-row');
+    const tierSelect = container?.querySelector('.voice-tier');
+    if (!tierSelect) return;
+
+    const selectedOption = modelSelect.options[modelSelect.selectedIndex];
+    const tier = selectedOption?.dataset?.tier;
+    if (tier) {
+      tierSelect.value = tier;
     }
   }
 
@@ -776,6 +828,22 @@ class AdvancedConfigTab {
       ? AdvancedConfigTab.SPEECH_BUBBLE_SVG_SOLID
       : AdvancedConfigTab.SPEECH_BUBBLE_SVG;
     iconBtn.classList.toggle('has-instructions', hasContent);
+  }
+
+  /**
+   * Update the clock/timeout icon styling to indicate non-default timeout.
+   * @param {Element} panel - The council panel element
+   * @param {string} level - Level number
+   * @param {string} index - Voice index
+   * @param {string} value - Current timeout value (as string of ms)
+   */
+  _updateTimeoutIcon(panel, level, index, value) {
+    const wrapper = panel.querySelector(`.participant-wrapper[data-level="${level}"][data-index="${index}"]`);
+    const iconBtn = wrapper?.querySelector(`.toggle-timeout-icon[data-level="${level}"][data-index="${index}"]`);
+    if (!iconBtn) return;
+
+    const isNonDefault = parseInt(value, 10) !== AdvancedConfigTab.DEFAULT_TIMEOUT;
+    iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
   }
 
   // --- Dirty state tracking ---
@@ -892,12 +960,14 @@ class AdvancedConfigTab {
           const provider = row?.querySelector('.voice-provider')?.value;
           const model = row?.querySelector('.voice-model')?.value;
           const tier = row?.querySelector('.voice-tier')?.value;
+          const timeoutSelect = row?.querySelector('.adv-timeout');
+          const timeout = timeoutSelect ? parseInt(timeoutSelect.value, 10) : AdvancedConfigTab.DEFAULT_TIMEOUT;
           const idx = wrapper.dataset.index;
           const instructionsArea = wrapper.querySelector(`.voice-instructions-input[data-level="${level}"][data-index="${idx}"]`);
           const customInstructions = instructionsArea?.value?.trim() || undefined;
 
           if (provider && model) {
-            const voice = { provider, model, tier };
+            const voice = { provider, model, tier, timeout };
             if (customInstructions) voice.customInstructions = customInstructions;
             voices.push(voice);
           }
@@ -956,6 +1026,17 @@ class AdvancedConfigTab {
             if (tierSelect) tierSelect.value = voice.tier || 'balanced';
           }
 
+          // Restore timeout value
+          const timeoutSelect = row?.querySelector('.adv-timeout');
+          if (timeoutSelect && voice.timeout) {
+            timeoutSelect.value = String(voice.timeout);
+            // Show the dropdown if non-default
+            if (voice.timeout !== AdvancedConfigTab.DEFAULT_TIMEOUT) {
+              timeoutSelect.style.display = '';
+            }
+            this._updateTimeoutIcon(panel, String(level), String(i), String(voice.timeout));
+          }
+
           if (voice.customInstructions) {
             const instrInput = participantWrapper?.querySelector(`.voice-instructions-input[data-level="${level}"][data-index="${i}"]`);
             if (instrInput) instrInput.value = voice.customInstructions;
@@ -1002,9 +1083,9 @@ class AdvancedConfigTab {
       try {
         await this._putCouncil(this.selectedCouncilId, config);
       } catch (error) {
-        console.error('Error saving council:', error);
+        console.error('Error saving configuration:', error);
         if (window.toast) {
-          window.toast.showError('Failed to save council');
+          window.toast.showError('Failed to save configuration');
         }
       }
     } else {
@@ -1028,9 +1109,9 @@ class AdvancedConfigTab {
     let name;
     while (true) {
       name = await dialog.show({
-        title: 'Save Council As',
-        label: 'Council name',
-        placeholder: 'Enter a name for this council',
+        title: 'Save Configuration As',
+        label: 'Configuration name',
+        placeholder: 'Enter a name for this configuration',
         value: name || currentCouncil?.name || '',
         confirmText: 'Save',
         confirmClass: 'btn-primary'
@@ -1038,14 +1119,14 @@ class AdvancedConfigTab {
       if (!name) return;
       const duplicate = this.councils.find(c => c.name.toLowerCase() === name.toLowerCase());
       if (!duplicate) break;
-      if (window.toast) window.toast.showWarning('A council with that name already exists.');
+      if (window.toast) window.toast.showWarning('A configuration with that name already exists.');
     }
     try {
       await this._postCouncil(name, config);
     } catch (error) {
-      console.error('Error saving council:', error);
+      console.error('Error saving configuration:', error);
       if (window.toast) {
-        window.toast.showError('Failed to save council');
+        window.toast.showError('Failed to save configuration');
       }
     }
   }
@@ -1099,7 +1180,7 @@ class AdvancedConfigTab {
     const config = this._readConfigFromUI();
     try {
       await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
-      if (window.toast) window.toast.showSuccess('Council config copied to clipboard');
+      if (window.toast) window.toast.showSuccess('Configuration copied to clipboard');
     } catch (error) {
       console.error('Failed to copy to clipboard:', error);
       if (window.toast) window.toast.showError('Failed to copy to clipboard');
@@ -1110,12 +1191,12 @@ class AdvancedConfigTab {
     if (!this.selectedCouncilId) return;
 
     const council = this.councils.find(c => c.id === this.selectedCouncilId);
-    const councilName = council?.name || 'this council';
+    const councilName = council?.name || 'this configuration';
 
     const confirmDlg = window.confirmDialog;
     if (!confirmDlg) return;
     const result = await confirmDlg.show({
-      title: 'Delete Council',
+      title: 'Delete Configuration',
       message: `Are you sure you want to delete "${councilName}"?`,
       confirmText: 'Delete',
       confirmClass: 'btn-danger'
@@ -1130,7 +1211,7 @@ class AdvancedConfigTab {
         throw new Error(`DELETE /api/councils/${this.selectedCouncilId} failed: ${response.status}`);
       }
 
-      // Reset to "+ New Council" state
+      // Reset to "+ New Configuration" state
       this.selectedCouncilId = null;
       this._applyConfigToUI(this._defaultConfig());
       this._markClean();
@@ -1143,10 +1224,10 @@ class AdvancedConfigTab {
       }
       this._updateSaveButtonStates();
 
-      if (window.toast) window.toast.showSuccess('Council deleted');
+      if (window.toast) window.toast.showSuccess('Configuration deleted');
     } catch (error) {
-      console.error('Error deleting council:', error);
-      if (window.toast) window.toast.showError('Failed to delete council');
+      console.error('Error deleting configuration:', error);
+      if (window.toast) window.toast.showError('Failed to delete configuration');
     }
   }
 }

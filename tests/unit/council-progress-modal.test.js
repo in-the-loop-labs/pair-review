@@ -296,4 +296,371 @@ describe('CouncilProgressModal', () => {
       );
     });
   });
+
+  describe('_updateSingleModelLevel', () => {
+    it('displays stream event text in snippet element when running', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      // Build mock DOM: header with icon+status, sibling snippet element
+      const snippetEl = { textContent: '', style: { display: 'none' } };
+      const iconEl = { className: '', textContent: '', innerHTML: '' };
+      const statusEl = { className: '', textContent: '' };
+      const levelContainer = {
+        querySelector: vi.fn((sel) => {
+          if (sel === '.council-level-snippet') return snippetEl;
+          return null;
+        })
+      };
+      const headerEl = {
+        dataset: {},
+        closest: vi.fn(() => levelContainer),
+        querySelector: vi.fn((sel) => {
+          if (sel === '.council-level-icon') return iconEl;
+          if (sel === '.council-level-status') return statusEl;
+          return null;
+        })
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-level-header[data-level="1"]') return headerEl;
+        return null;
+      });
+
+      modal._updateSingleModelLevel(1, {
+        status: 'running',
+        streamEvent: { text: 'Analyzing file foo.js...' }
+      });
+
+      expect(snippetEl.textContent).toBe('Analyzing file foo.js...');
+      expect(snippetEl.style.display).toBe('block');
+    });
+
+    it('hides snippet element when state is not running', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      const snippetEl = { textContent: 'old text', style: { display: 'block' } };
+      const iconEl = { className: '', textContent: '', innerHTML: '' };
+      const statusEl = { className: '', textContent: '' };
+      const levelContainer = {
+        querySelector: vi.fn((sel) => {
+          if (sel === '.council-level-snippet') return snippetEl;
+          return null;
+        })
+      };
+      const headerEl = {
+        dataset: {},
+        closest: vi.fn(() => levelContainer),
+        querySelector: vi.fn((sel) => {
+          if (sel === '.council-level-icon') return iconEl;
+          if (sel === '.council-level-status') return statusEl;
+          return null;
+        })
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-level-header[data-level="2"]') return headerEl;
+        return null;
+      });
+
+      modal._updateSingleModelLevel(2, { status: 'completed' });
+
+      expect(snippetEl.style.display).toBe('none');
+    });
+
+    it('does not show snippet when running but no streamEvent text', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      const snippetEl = { textContent: '', style: { display: 'none' } };
+      const iconEl = { className: '', textContent: '', innerHTML: '' };
+      const statusEl = { className: '', textContent: '' };
+      const levelContainer = {
+        querySelector: vi.fn((sel) => {
+          if (sel === '.council-level-snippet') return snippetEl;
+          return null;
+        })
+      };
+      const headerEl = {
+        dataset: {},
+        closest: vi.fn(() => levelContainer),
+        querySelector: vi.fn((sel) => {
+          if (sel === '.council-level-icon') return iconEl;
+          if (sel === '.council-level-status') return statusEl;
+          return null;
+        })
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-level-header[data-level="1"]') return headerEl;
+        return null;
+      });
+
+      modal._updateSingleModelLevel(1, { status: 'running' });
+
+      // Snippet should remain hidden when there is no stream text
+      expect(snippetEl.style.display).toBe('none');
+    });
+
+    it('skips update when header has data-skipped=true', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      const headerEl = {
+        dataset: { skipped: 'true' },
+        closest: vi.fn(),
+        querySelector: vi.fn()
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-level-header[data-level="1"]') return headerEl;
+        return null;
+      });
+
+      // Should return early without trying to query icon/status
+      modal._updateSingleModelLevel(1, { status: 'running' });
+
+      expect(headerEl.querySelector).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('show() title', () => {
+    it('sets title to "Review progress" for single model mode', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      const titleEl = { textContent: '' };
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '#council-progress-title') return titleEl;
+        if (sel === '.council-progress-body') return { innerHTML: '' };
+        if (sel === '.council-bg-btn') return { textContent: '', disabled: false };
+        if (sel === '.council-cancel-btn') return { textContent: '' };
+        return null;
+      });
+
+      // Stub monitoring
+      vi.spyOn(modal, 'startProgressMonitoring').mockImplementation(() => {});
+
+      modal.show('test-id', null, null, { configType: 'single', enabledLevels: [1, 2, 3] });
+
+      expect(titleEl.textContent).toBe('Review progress');
+    });
+
+    it('sets title to "Review progress" with council name for council mode', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      const titleEl = { textContent: '' };
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '#council-progress-title') return titleEl;
+        if (sel === '.council-progress-body') return { innerHTML: '' };
+        if (sel === '.council-bg-btn') return { textContent: '', disabled: false };
+        if (sel === '.council-cancel-btn') return { textContent: '' };
+        return null;
+      });
+
+      vi.spyOn(modal, 'startProgressMonitoring').mockImplementation(() => {});
+
+      const config = { levels: { '1': { enabled: true, voices: [] } } };
+      modal.show('test-id', config, 'My Council', { configType: 'council' });
+
+      expect(titleEl.textContent).toBe('Review progress \u00b7 My Council');
+    });
+
+    it('sets title to "Review progress" for council mode without name', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      const titleEl = { textContent: '' };
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '#council-progress-title') return titleEl;
+        if (sel === '.council-progress-body') return { innerHTML: '' };
+        if (sel === '.council-bg-btn') return { textContent: '', disabled: false };
+        if (sel === '.council-cancel-btn') return { textContent: '' };
+        return null;
+      });
+
+      vi.spyOn(modal, 'startProgressMonitoring').mockImplementation(() => {});
+
+      const config = { levels: { '1': { enabled: true, voices: [] } } };
+      modal.show('test-id', config, null, { configType: 'advanced' });
+
+      expect(titleEl.textContent).toBe('Review progress');
+    });
+  });
+
+  describe('_refreshConsolidationHeader', () => {
+    /**
+     * Helper: create a mock consolidation child element whose statusEl
+     * reports the given state via classList.contains (matching _renderState behaviour).
+     */
+    function mockChild(state) {
+      const statusEl = {
+        className: `council-voice-status ${state}`,
+        textContent: 'Irrelevant Label',
+        classList: {
+          contains: (cls) => cls === state
+        }
+      };
+      return {
+        querySelector: vi.fn((sel) => {
+          if (sel === '.council-voice-status') return statusEl;
+          return null;
+        })
+      };
+    }
+
+    it('derives "completed" when all children are completed', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      modalContainer.querySelectorAll = vi.fn(() => [mockChild('completed'), mockChild('completed')]);
+
+      const iconEl = {};
+      const statusEl = {};
+      modal._refreshConsolidationHeader(iconEl, statusEl, 'pending');
+
+      expect(renderSpy).toHaveBeenCalledWith(iconEl, statusEl, 'completed', 'council-level');
+    });
+
+    it('derives "running" when any child is running', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      modalContainer.querySelectorAll = vi.fn(() => [mockChild('completed'), mockChild('running')]);
+
+      modal._refreshConsolidationHeader({}, {}, 'pending');
+
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'running', 'council-level');
+    });
+
+    it('derives "failed" when a child has failed and none are running', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      modalContainer.querySelectorAll = vi.fn(() => [mockChild('completed'), mockChild('failed')]);
+
+      modal._refreshConsolidationHeader({}, {}, 'pending');
+
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'failed', 'council-level');
+    });
+
+    it('derives "failed" when mixed failed and running (failed takes precedence)', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      modalContainer.querySelectorAll = vi.fn(() => [mockChild('failed'), mockChild('running')]);
+
+      modal._refreshConsolidationHeader({}, {}, 'pending');
+
+      // failed takes unconditional precedence over running, matching backend behaviour
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'failed', 'council-level');
+    });
+
+    it('derives "cancelled" when all children are cancelled', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      modalContainer.querySelectorAll = vi.fn(() => [mockChild('cancelled'), mockChild('cancelled')]);
+
+      modal._refreshConsolidationHeader({}, {}, 'pending');
+
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'cancelled', 'council-level');
+    });
+
+    it('derives "pending" when all children are pending', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      modalContainer.querySelectorAll = vi.fn(() => [mockChild('pending'), mockChild('pending')]);
+
+      modal._refreshConsolidationHeader({}, {}, 'pending');
+
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'pending', 'council-level');
+    });
+
+    it('derives "running" when mix of completed and pending (partial progress)', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      modalContainer.querySelectorAll = vi.fn(() => [mockChild('completed'), mockChild('pending')]);
+
+      modal._refreshConsolidationHeader({}, {}, 'pending');
+
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'running', 'council-level');
+    });
+
+    it('uses fallback state when no children exist', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      modalContainer.querySelectorAll = vi.fn(() => []);
+
+      modal._refreshConsolidationHeader({}, {}, 'running');
+
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'running', 'council-level');
+    });
+
+    it('returns early when iconEl or statusEl is null', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      modal._refreshConsolidationHeader(null, {}, 'running');
+      modal._refreshConsolidationHeader({}, null, 'running');
+
+      expect(renderSpy).not.toHaveBeenCalled();
+    });
+
+    it('reads state from CSS classes, not textContent', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      // Child whose textContent says "Complete" but CSS class says "running"
+      // This verifies we read the CSS class, not the label text
+      const trickChild = {
+        querySelector: vi.fn((sel) => {
+          if (sel === '.council-voice-status') {
+            return {
+              className: 'council-voice-status running',
+              textContent: 'Complete',   // misleading label
+              classList: { contains: (cls) => cls === 'running' }
+            };
+          }
+          return null;
+        })
+      };
+
+      modalContainer.querySelectorAll = vi.fn(() => [trickChild]);
+
+      modal._refreshConsolidationHeader({}, {}, 'pending');
+
+      // Should derive "running" from the CSS class, NOT "completed" from textContent
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'running', 'council-level');
+    });
+
+    it('treats child with no statusEl as pending', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      const childNoStatus = {
+        querySelector: vi.fn(() => null)
+      };
+
+      modalContainer.querySelectorAll = vi.fn(() => [childNoStatus, mockChild('completed')]);
+
+      modal._refreshConsolidationHeader({}, {}, 'pending');
+
+      // One pending + one completed => partial progress => "running"
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'running', 'council-level');
+    });
+
+    it('derives "skipped" state from CSS class on children', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+      const renderSpy = vi.spyOn(modal, '_renderState').mockImplementation(() => {});
+
+      // Mix of skipped and completed — skipped is not completed/running/failed/cancelled
+      // so it falls through to the partial progress branch
+      modalContainer.querySelectorAll = vi.fn(() => [mockChild('skipped'), mockChild('completed')]);
+
+      modal._refreshConsolidationHeader({}, {}, 'pending');
+
+      // skipped + completed: not allComplete, not anyRunning, not anyFailed, not allCancelled
+      // => falls to else: some !== pending => 'running'
+      expect(renderSpy).toHaveBeenCalledWith({}, {}, 'running', 'council-level');
+    });
+  });
 });

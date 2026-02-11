@@ -485,6 +485,10 @@ class VoiceCentricConfigTab {
       if (e.target.classList.contains('voice-provider')) {
         this._updateModelDropdown(e.target);
       }
+      // Model change -> update tier to match model's recommended tier
+      if (e.target.classList.contains('voice-model')) {
+        this._syncTierToModel(e.target);
+      }
     });
 
     // Dirty state tracking
@@ -660,6 +664,23 @@ class VoiceCentricConfigTab {
     if (tierSelect) {
       const selectedModel = models.find(m => m.id === modelSelect.value);
       if (selectedModel) tierSelect.value = selectedModel.tier || 'balanced';
+    }
+  }
+
+  /**
+   * Sync the tier dropdown to the selected model's recommended tier.
+   * Called when the user manually changes the model dropdown.
+   * @param {HTMLSelectElement} modelSelect - The model dropdown that changed
+   */
+  _syncTierToModel(modelSelect) {
+    const container = modelSelect.closest('.voice-row');
+    const tierSelect = container?.querySelector('.voice-tier');
+    if (!tierSelect) return;
+
+    const selectedOption = modelSelect.options[modelSelect.selectedIndex];
+    const tier = selectedOption?.dataset?.tier;
+    if (tier) {
+      tierSelect.value = tier;
     }
   }
 

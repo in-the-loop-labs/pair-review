@@ -272,7 +272,11 @@ function createProgressCallback(analysisId) {
     if (!currentStatus) return;
 
     const level = progressUpdate.level;
-    const levelKey = level === 'orchestration' ? 4 : level;
+    // Map consolidation-L* and orchestration to level 4 (consolidation phase)
+    const consolidationMatch = typeof level === 'string' && level.match(/^consolidation-L(\d+)$/);
+    const levelKey = level === 'orchestration' ? 4
+      : consolidationMatch ? 4
+      : level;
 
     // Stream event: store latest and throttle broadcasts
     if (progressUpdate.streamEvent && levelKey) {
@@ -295,6 +299,12 @@ function createProgressCallback(analysisId) {
       // Propagate voiceId so council progress modal can identify active voice
       if (progressUpdate.voiceId) {
         currentStatus.levels[levelKey].voiceId = progressUpdate.voiceId;
+      }
+      // Propagate consolidation step so frontend can identify active consolidation child
+      if (consolidationMatch) {
+        currentStatus.levels[levelKey].consolidationStep = `L${consolidationMatch[1]}`;
+      } else if (level === 'orchestration') {
+        currentStatus.levels[levelKey].consolidationStep = 'orchestration';
       }
       activeAnalyses.set(analysisId, currentStatus);
 
@@ -336,12 +346,29 @@ function createProgressCallback(analysisId) {
       }
     }
 
-    // Handle orchestration as level 4
-    if (level === 'orchestration') {
-      currentStatus.levels[4] = {
+    // Handle orchestration and consolidation as level 4
+    if (level === 'orchestration' || consolidationMatch) {
+      const step = consolidationMatch ? `L${consolidationMatch[1]}` : 'orchestration';
+      // Preserve existing consolidation steps when updating level 4
+      const existing = currentStatus.levels[4] || {};
+      const steps = { ...(existing.steps || {}) };
+      steps[step] = {
         status: progressUpdate.status || 'running',
-        progress: progressUpdate.progress || 'Finalizing results...',
-        streamEvent: undefined
+        progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...')
+      };
+      // Derive the top-level consolidation status from the aggregate of step statuses
+      // so that a single step completing doesn't mark the whole phase as completed
+      const stepStatuses = Object.values(steps).map(s => s.status);
+      const derivedStatus = stepStatuses.every(s => s === 'completed') ? 'completed'
+        : stepStatuses.some(s => s === 'failed') ? 'failed'
+        : stepStatuses.some(s => s === 'running') ? 'running'
+        : progressUpdate.status || 'running';
+      currentStatus.levels[4] = {
+        status: derivedStatus,
+        progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...'),
+        streamEvent: undefined,
+        consolidationStep: step,
+        steps
       };
     }
 
@@ -353,6 +380,36 @@ function createProgressCallback(analysisId) {
     activeAnalyses.set(analysisId, currentStatus);
     broadcastProgress(analysisId, currentStatus);
   };
+}
+
+/**
+ * Parse enabledLevels from a request body into a normalized { 1: bool, 2: bool, 3: bool } object.
+ *
+ * Accepts three formats:
+ *   - Array: e.g. [1, 3]  -> { 1: true, 2: false, 3: true }
+ *   - Object: e.g. { 1: true, 2: false, 3: true } -> filtered to known keys only
+ *   - Null/undefined: falls back to skipLevel3 flag -> { 1: true, 2: true, 3: !skipLevel3 }
+ *
+ * @param {Array|Object|null} requestEnabledLevels - Raw enabledLevels from request body
+ * @param {boolean} [skipLevel3=false] - Fallback flag when enabledLevels is not provided
+ * @returns {Object} Normalized levels config { 1: boolean, 2: boolean, 3: boolean }
+ */
+function parseEnabledLevels(requestEnabledLevels, skipLevel3 = false) {
+  const levelsConfig = {};
+  if (Array.isArray(requestEnabledLevels)) {
+    for (const key of [1, 2, 3]) {
+      levelsConfig[key] = requestEnabledLevels.includes(key);
+    }
+  } else if (requestEnabledLevels && typeof requestEnabledLevels === 'object') {
+    for (const key of [1, 2, 3]) {
+      levelsConfig[key] = !!requestEnabledLevels[key];
+    }
+  } else {
+    levelsConfig[1] = true;
+    levelsConfig[2] = true;
+    levelsConfig[3] = !skipLevel3;
+  }
+  return levelsConfig;
 }
 
 module.exports = {
@@ -374,5 +431,6 @@ module.exports = {
   registerProcess,
   killProcesses,
   isAnalysisCancelled,
-  createProgressCallback
+  createProgressCallback,
+  parseEnabledLevels
 };
