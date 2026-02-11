@@ -650,7 +650,7 @@ class LocalManager {
                 data-file="${fileName}"
                 data-line="${lineStart}"
                 data-line-end="${lineEnd}"
-                ${side ? `data-side="${side}"` : ''}
+                data-side="${side || 'RIGHT'}"
               >${manager.escapeHtml(currentText)}</textarea>
               <div class="comment-edit-actions">
                 <button class="btn btn-sm btn-primary save-edit-btn">Save</button>
