@@ -15,17 +15,88 @@ const { CouncilRepository } = require('../database');
 const router = express.Router();
 
 /**
+ * Normalize a council config to match the expected shape for its type.
+ *
+ * When type is 'council' (voice-centric) but the config is in the levels-based
+ * (advanced) format — e.g. from a previously saved council or a migration — this
+ * extracts the voices and converts the levels to booleans so it passes validation.
+ *
+ * When type is anything else, or the config already matches, returns the config
+ * as-is.
+ *
+ * @param {Object} config - Council configuration
+ * @param {string} [type] - The council type ('council' or 'advanced')
+ * @returns {Object} Normalized config (may be the original object if no changes needed)
+ */
+function normalizeCouncilConfig(config, type) {
+  if (!config || typeof config !== 'object' || type !== 'council') {
+    return config;
+  }
+
+  // If it already has a voices array, it's already in voice-centric format
+  if (Array.isArray(config.voices) && config.voices.length > 0) {
+    return config;
+  }
+
+  // Check if levels are in the advanced format (objects with enabled/voices)
+  if (!config.levels || typeof config.levels !== 'object') {
+    return config;
+  }
+
+  const hasAdvancedLevels = Object.values(config.levels).some(
+    val => typeof val === 'object' && val !== null && 'enabled' in val
+  );
+
+  if (!hasAdvancedLevels) {
+    return config;
+  }
+
+  // Convert from advanced (levels-based) to voice-centric format
+  const normalizedVoices = [];
+  const seenVoices = new Set();
+  const normalizedLevels = {};
+
+  for (const [key, levelConfig] of Object.entries(config.levels)) {
+    if (typeof levelConfig === 'object' && levelConfig !== null) {
+      normalizedLevels[key] = levelConfig.enabled !== false;
+      if (levelConfig.enabled !== false && Array.isArray(levelConfig.voices)) {
+        for (const v of levelConfig.voices) {
+          const voiceSig = JSON.stringify(v, Object.keys(v).sort());
+          if (!seenVoices.has(voiceSig)) {
+            seenVoices.add(voiceSig);
+            normalizedVoices.push(v);
+          }
+        }
+      }
+    } else {
+      // Already boolean — keep as-is
+      normalizedLevels[key] = levelConfig !== false;
+    }
+  }
+
+  // Destructure out orchestration so it does not leak into the normalized output
+  const { orchestration, ...rest } = config;
+  return {
+    ...rest,
+    voices: normalizedVoices,
+    levels: normalizedLevels,
+    consolidation: config.consolidation || orchestration || undefined
+  };
+}
+
+/**
  * Validate a council config object
  * @param {Object} config - Council configuration
+ * @param {string} [type] - The council type ('council' or 'advanced'), provided as a sibling field from req.body
  * @returns {string|null} Error message or null if valid
  */
-function validateCouncilConfig(config) {
+function validateCouncilConfig(config, type) {
   if (!config || typeof config !== 'object') {
     return 'config must be an object';
   }
 
-  // Dispatch based on config type
-  if (config.type === 'council') {
+  // Dispatch based on explicit type parameter (from req.body.type, not config.type)
+  if (type === 'council') {
     return validateCouncilFormat(config);
   }
 
@@ -171,7 +242,7 @@ router.get('/api/councils/:id', async (req, res) => {
  */
 router.post('/api/councils', async (req, res) => {
   try {
-    const { name, config } = req.body || {};
+    const { name, config, type } = req.body || {};
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'name is required' });
@@ -181,7 +252,8 @@ router.post('/api/councils', async (req, res) => {
       return res.status(400).json({ error: 'config is required' });
     }
 
-    const validationError = validateCouncilConfig(config);
+    const effectiveType = type || 'advanced';
+    const validationError = validateCouncilConfig(config, effectiveType);
     if (validationError) {
       return res.status(400).json({ error: validationError });
     }
@@ -189,7 +261,7 @@ router.post('/api/councils', async (req, res) => {
     const db = req.app.get('db');
     const councilRepo = new CouncilRepository(db);
     const id = uuidv4();
-    const council = await councilRepo.create({ id, name: name.trim(), config });
+    const council = await councilRepo.create({ id, name: name.trim(), config, type: effectiveType });
 
     res.status(201).json({ council });
   } catch (error) {
@@ -204,7 +276,7 @@ router.post('/api/councils', async (req, res) => {
 router.put('/api/councils/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, config } = req.body || {};
+    const { name, config, type } = req.body || {};
 
     const db = req.app.get('db');
     const councilRepo = new CouncilRepository(db);
@@ -217,9 +289,18 @@ router.put('/api/councils/:id', async (req, res) => {
 
     // Validate config if provided
     if (config) {
-      const validationError = validateCouncilConfig(config);
+      // A PUT might update config without changing type, so use the effective type:
+      // prefer the explicitly provided type, fall back to the existing record's type
+      const effectiveType = type !== undefined ? type : existing.type;
+      const validationError = validateCouncilConfig(config, effectiveType);
       if (validationError) {
         return res.status(400).json({ error: validationError });
+      }
+    } else if (type !== undefined && type !== existing.type) {
+      // Type is changing without a new config — validate existing config against the new type
+      const validationError = validateCouncilConfig(existing.config, type);
+      if (validationError) {
+        return res.status(400).json({ error: `Existing config is incompatible with type '${type}': ${validationError}` });
       }
     }
 
@@ -232,6 +313,7 @@ router.put('/api/councils/:id', async (req, res) => {
       updates.name = trimmed;
     }
     if (config !== undefined) updates.config = config;
+    if (type !== undefined) updates.type = type;
 
     await councilRepo.update(id, updates);
     const updated = await councilRepo.getById(id);
@@ -266,3 +348,4 @@ router.delete('/api/councils/:id', async (req, res) => {
 
 module.exports = router;
 module.exports.validateCouncilConfig = validateCouncilConfig;
+module.exports.normalizeCouncilConfig = normalizeCouncilConfig;

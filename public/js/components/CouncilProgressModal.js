@@ -1022,18 +1022,27 @@ class CouncilProgressModal {
     };
 
     // Deduplicate voices across enabled levels using the same signature-based
-    // approach as the backend (runVoiceCentricCouncil in analyzer.js).
+    // approach as the backend (runReviewerCentricCouncil in analyzer.js).
     // The backend deduplicates by provider|model|tier|customInstructions, then
     // generates keys from the index into the global deduplicated array.
     // We must mirror this exactly so voice keys match SSE progress events.
+    //
+    // Voice-centric format: levels are booleans (e.g. { '1': true }), voices
+    // are a top-level array (config.voices). Advanced format: levels are objects
+    // with .enabled and .voices properties.
     const uniqueVoices = [];
     const seenSignatures = new Set();
     const enabledLevelNums = [];
     for (const levelKey of ['1', '2', '3']) {
       const levelConfig = config.levels?.[levelKey];
-      if (!levelConfig?.enabled) continue;
+      // Support both voice-centric (boolean) and advanced (object with .enabled)
+      const isEnabled = typeof levelConfig === 'boolean' ? levelConfig : levelConfig?.enabled;
+      if (!isEnabled) continue;
       enabledLevelNums.push(parseInt(levelKey));
-      for (const voice of (levelConfig.voices || [])) {
+      // Voice-centric: voices are at config.voices (shared across all levels)
+      // Advanced: voices are per-level at levelConfig.voices
+      const voices = (typeof levelConfig === 'object' && levelConfig?.voices) || config.voices || [];
+      for (const voice of voices) {
         const sig = `${voice.provider}|${voice.model}|${voice.tier || 'balanced'}|${voice.customInstructions || ''}`;
         if (!seenSignatures.has(sig)) {
           seenSignatures.add(sig);
@@ -1201,14 +1210,18 @@ class CouncilProgressModal {
     // Levels 1-3
     for (const levelKey of ['1', '2', '3']) {
       const levelConfig = config.levels?.[levelKey];
-      const enabled = levelConfig?.enabled;
+      // Support both advanced format (object with .enabled) and voice-centric format (boolean)
+      const enabled = typeof levelConfig === 'boolean' ? levelConfig : levelConfig?.enabled;
       const levelNum = parseInt(levelKey);
       const title = `Level ${levelKey} \u2014 ${levelNames[levelNum]}`;
 
       if (!enabled) {
         html += this._buildSkippedLevel(levelNum, title);
       } else {
-        html += this._buildActiveLevel(levelNum, title, levelConfig.voices || []);
+        // In advanced format, voices are per-level; in voice-centric format (boolean levels),
+        // voices are at config.voices (shared across all enabled levels)
+        const voices = (typeof levelConfig === 'object' && levelConfig?.voices) || config.voices || [];
+        html += this._buildActiveLevel(levelNum, title, voices);
       }
     }
 
@@ -1277,9 +1290,12 @@ class CouncilProgressModal {
     const levelsNeedingConsolidation = [];
     const enabledLevels = [];
     for (const [levelKey, levelConfig] of Object.entries(config.levels || {})) {
-      if (!levelConfig.enabled) continue;
+      // Support both advanced format (object with .enabled) and voice-centric format (boolean)
+      const isEnabled = typeof levelConfig === 'boolean' ? levelConfig : levelConfig?.enabled;
+      if (!isEnabled) continue;
       enabledLevels.push(parseInt(levelKey));
-      if ((levelConfig.voices || []).length > 1) {
+      const voices = (typeof levelConfig === 'object' && levelConfig?.voices) || config.voices || [];
+      if (voices.length > 1) {
         levelsNeedingConsolidation.push(parseInt(levelKey));
       }
     }
@@ -1317,7 +1333,8 @@ class CouncilProgressModal {
     // Intra-level consolidation items
     for (const levelNum of levelsNeedingConsolidation) {
       childIdx++;
-      const voiceCount = config.levels[String(levelNum)].voices.length;
+      const levelCfg = config.levels[String(levelNum)];
+      const voiceCount = (typeof levelCfg === 'object' && levelCfg?.voices?.length) || (config.voices?.length) || 0;
       const isLast = childIdx === totalChildren;
       const connectorClass = isLast ? 'connector-last' : 'connector-mid';
       html += `

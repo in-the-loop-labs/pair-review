@@ -663,4 +663,175 @@ describe('CouncilProgressModal', () => {
       expect(renderSpy).toHaveBeenCalledWith({}, {}, 'running', 'council-level');
     });
   });
+
+  describe('_rebuildBodyVoiceCentric', () => {
+    it('renders reviewer sections for voice-centric config with boolean levels', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      // Create a real body element that captures innerHTML
+      let capturedHTML = '';
+      const bodyEl = {
+        get innerHTML() { return capturedHTML; },
+        set innerHTML(val) { capturedHTML = val; }
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-progress-body') return bodyEl;
+        return null;
+      });
+
+      // Voice-centric config: levels are booleans, voices at top level
+      const config = {
+        voices: [
+          { provider: 'claude', model: 'opus', tier: 'thorough' },
+          { provider: 'codex', model: 'codex-mini', tier: 'fast' }
+        ],
+        levels: { '1': true, '2': true, '3': true },
+        consolidation: { provider: 'claude', model: 'sonnet', tier: 'balanced' }
+      };
+
+      modal._rebuildBodyVoiceCentric(config);
+
+      // Should contain voice parent sections for both reviewers
+      expect(capturedHTML).toContain('data-voice-key="claude-opus"');
+      expect(capturedHTML).toContain('data-voice-key="codex-codex-mini-1"');
+
+      // Should contain level children under each voice
+      expect(capturedHTML).toContain('data-vc-voice="claude-opus"');
+      expect(capturedHTML).toContain('data-vc-level="1"');
+      expect(capturedHTML).toContain('data-vc-level="2"');
+      expect(capturedHTML).toContain('data-vc-level="3"');
+
+      // Should contain the Cross-Reviewer Consolidation section
+      expect(capturedHTML).toContain('Cross-Reviewer Consolidation');
+    });
+
+    it('skips disabled levels in voice-centric config', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      let capturedHTML = '';
+      const bodyEl = {
+        get innerHTML() { return capturedHTML; },
+        set innerHTML(val) { capturedHTML = val; }
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-progress-body') return bodyEl;
+        return null;
+      });
+
+      // Level 3 disabled
+      const config = {
+        voices: [
+          { provider: 'claude', model: 'opus', tier: 'thorough' }
+        ],
+        levels: { '1': true, '2': true, '3': false },
+        consolidation: { provider: 'claude', model: 'sonnet', tier: 'balanced' }
+      };
+
+      modal._rebuildBodyVoiceCentric(config);
+
+      // Should have voice section
+      expect(capturedHTML).toContain('data-voice-key="claude-opus"');
+
+      // Should have levels 1 and 2 but NOT 3
+      expect(capturedHTML).toContain('data-vc-level="1"');
+      expect(capturedHTML).toContain('data-vc-level="2"');
+      expect(capturedHTML).not.toContain('data-vc-level="3"');
+    });
+
+    it('renders nothing but consolidation when no levels are enabled', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      let capturedHTML = '';
+      const bodyEl = {
+        get innerHTML() { return capturedHTML; },
+        set innerHTML(val) { capturedHTML = val; }
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-progress-body') return bodyEl;
+        return null;
+      });
+
+      const config = {
+        voices: [
+          { provider: 'claude', model: 'opus', tier: 'thorough' }
+        ],
+        levels: { '1': false, '2': false, '3': false },
+        consolidation: { provider: 'claude', model: 'sonnet', tier: 'balanced' }
+      };
+
+      modal._rebuildBodyVoiceCentric(config);
+
+      // No voice sections (no enabled levels means no voices collected)
+      expect(capturedHTML).not.toContain('data-voice-key=');
+
+      // Consolidation section still present
+      expect(capturedHTML).toContain('Cross-Reviewer Consolidation');
+    });
+
+    it('also handles advanced-format levels (object with .enabled) passed to voice-centric rebuild', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      let capturedHTML = '';
+      const bodyEl = {
+        get innerHTML() { return capturedHTML; },
+        set innerHTML(val) { capturedHTML = val; }
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-progress-body') return bodyEl;
+        return null;
+      });
+
+      // Advanced format with .enabled and .voices per level
+      const config = {
+        levels: {
+          '1': { enabled: true, voices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }] },
+          '2': { enabled: true, voices: [{ provider: 'gemini', model: 'pro', tier: 'balanced' }] },
+          '3': { enabled: false }
+        }
+      };
+
+      modal._rebuildBodyVoiceCentric(config);
+
+      // Should still render — falls back to per-level voices
+      expect(capturedHTML).toContain('data-voice-key="gemini-pro"');
+      expect(capturedHTML).toContain('data-vc-level="1"');
+      expect(capturedHTML).toContain('data-vc-level="2"');
+      expect(capturedHTML).not.toContain('data-vc-level="3"');
+    });
+
+    it('deduplicates voices across levels', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      let capturedHTML = '';
+      const bodyEl = {
+        get innerHTML() { return capturedHTML; },
+        set innerHTML(val) { capturedHTML = val; }
+      };
+
+      modalContainer.querySelector = vi.fn((sel) => {
+        if (sel === '.council-progress-body') return bodyEl;
+        return null;
+      });
+
+      // Same voice repeated across levels via top-level voices array
+      const config = {
+        voices: [
+          { provider: 'claude', model: 'opus', tier: 'thorough' },
+          { provider: 'claude', model: 'opus', tier: 'thorough' }
+        ],
+        levels: { '1': true, '2': true, '3': true },
+        consolidation: { provider: 'claude', model: 'sonnet', tier: 'balanced' }
+      };
+
+      modal._rebuildBodyVoiceCentric(config);
+
+      // Should only have one voice section (deduplicated by signature)
+      const voiceKeyMatches = capturedHTML.match(/data-voice-key="/g);
+      expect(voiceKeyMatches).toHaveLength(1);
+    });
+  });
 });

@@ -166,6 +166,7 @@ const SCHEMA_SQL = {
     CREATE TABLE IF NOT EXISTS councils (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      type TEXT DEFAULT 'advanced',
       config JSON NOT NULL,
       last_used_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

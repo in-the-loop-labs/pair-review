@@ -38,7 +38,7 @@ const {
   parseEnabledLevels
 } = require('./shared');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
-const { validateCouncilConfig } = require('./councils');
+const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 
 const router = express.Router();
 
@@ -1130,6 +1130,17 @@ router.post('/api/analysis-results', async (req, res) => {
  * @param {Object} instructions - { repoInstructions, requestInstructions }
  * @returns {{ analysisId: string, runId: string }} IDs for the caller to return in the response
  */
+/**
+ * Check if a level is enabled in a council config, handling both formats:
+ * - Voice-centric: levels values are booleans (e.g. { '1': true })
+ * - Advanced: levels values are objects (e.g. { '1': { enabled: true, voices: [...] } })
+ */
+function isLevelEnabled(councilConfig, levelKey) {
+  const val = councilConfig.levels?.[levelKey];
+  if (typeof val === 'boolean') return val;
+  return val?.enabled === true;
+}
+
 async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, instructions, configType = 'advanced') {
   const {
     reviewId,
@@ -1197,13 +1208,14 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     startedAt: new Date().toISOString(),
     progress: 'Starting council analysis...',
     levels: {
-      1: councilConfig.levels?.['1']?.enabled ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
-      2: councilConfig.levels?.['2']?.enabled ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
-      3: councilConfig.levels?.['3']?.enabled ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+      1: isLevelEnabled(councilConfig, '1') ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+      2: isLevelEnabled(councilConfig, '2') ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+      3: isLevelEnabled(councilConfig, '3') ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
       4: { status: 'pending', progress: 'Pending' }
     },
     isCouncil: true,
     councilConfig,
+    configType,
     filesAnalyzed: 0,
     filesRemaining: 0,
     ...initialStatusExtra
@@ -1235,7 +1247,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
   };
 
   const analysisPromise = isVoiceCentric
-    ? analyzer.runVoiceCentricCouncil(reviewContext, councilConfig, { analysisId, runId, progressCallback })
+    ? analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, { analysisId, runId, progressCallback })
     : analyzer.runCouncilAnalysis(reviewContext, councilConfig, { analysisId, runId, progressCallback });
 
   analysisPromise
@@ -1342,14 +1354,13 @@ router.post('/api/analyze/council/:owner/:repo/:pr', async (req, res) => {
       return res.status(400).json({ error: 'Either councilId or councilConfig is required' });
     }
 
-    // Determine config type: 'council' (voice-centric) or 'advanced' (level-centric)
-    const configType = requestConfigType || 'advanced';
-
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
-    // Resolve council config
+    // Resolve council config and determine config type
+    // Priority: request body configType > saved council type > default 'advanced'
     let councilConfig;
+    let configType;
     if (councilId) {
       const councilRepo = new CouncilRepository(db);
       const council = await councilRepo.getById(councilId);
@@ -1357,12 +1368,17 @@ router.post('/api/analyze/council/:owner/:repo/:pr', async (req, res) => {
         return res.status(404).json({ error: 'Council not found' });
       }
       councilConfig = council.config;
+      configType = requestConfigType || council.type || 'advanced';
     } else {
       councilConfig = inlineConfig;
+      configType = requestConfigType || 'advanced';
     }
 
+    // Normalize config to voice-centric format if needed (handles DB-stored legacy formats)
+    councilConfig = normalizeCouncilConfig(councilConfig, configType);
+
     // Validate council config (saved configs are validated on save; inline configs need runtime validation)
-    const configError = validateCouncilConfig(councilConfig);
+    const configError = validateCouncilConfig(councilConfig, configType);
     if (configError) {
       return res.status(400).json({ error: `Invalid council config: ${configError}` });
     }
@@ -1442,9 +1458,6 @@ router.post('/api/local/:reviewId/analyze/council', async (req, res) => {
       return res.status(400).json({ error: 'Either councilId or councilConfig is required' });
     }
 
-    // Determine config type: 'council' (voice-centric) or 'advanced' (level-centric)
-    const configType = requestConfigType || 'advanced';
-
     const db = req.app.get('db');
 
     // Get review record
@@ -1453,8 +1466,10 @@ router.post('/api/local/:reviewId/analyze/council', async (req, res) => {
       return res.status(404).json({ error: 'Local review not found' });
     }
 
-    // Resolve council config
+    // Resolve council config and determine config type
+    // Priority: request body configType > saved council type > default 'advanced'
     let councilConfig;
+    let configType;
     if (councilId) {
       const councilRepo = new CouncilRepository(db);
       const council = await councilRepo.getById(councilId);
@@ -1462,12 +1477,17 @@ router.post('/api/local/:reviewId/analyze/council', async (req, res) => {
         return res.status(404).json({ error: 'Council not found' });
       }
       councilConfig = council.config;
+      configType = requestConfigType || council.type || 'advanced';
     } else {
       councilConfig = inlineConfig;
+      configType = requestConfigType || 'advanced';
     }
 
+    // Normalize config to voice-centric format if needed (handles DB-stored legacy formats)
+    councilConfig = normalizeCouncilConfig(councilConfig, configType);
+
     // Validate council config (saved configs are validated on save; inline configs need runtime validation)
-    const configError = validateCouncilConfig(councilConfig);
+    const configError = validateCouncilConfig(councilConfig, configType);
     if (configError) {
       return res.status(400).json({ error: `Invalid council config: ${configError}` });
     }

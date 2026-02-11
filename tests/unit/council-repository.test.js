@@ -44,8 +44,30 @@ describe('CouncilRepository', () => {
       expect(council.id).toBe('council-1');
       expect(council.name).toBe('Test Council');
       expect(council.config).toEqual(sampleConfig);
+      expect(council.type).toBe('advanced'); // default type
       expect(council.created_at).toBeDefined();
       expect(council.updated_at).toBeDefined();
+    });
+
+    it('should store and return the type field when set to council', async () => {
+      const council = await repo.create({
+        id: 'council-typed',
+        name: 'Voice-Centric Council',
+        config: sampleConfig,
+        type: 'council'
+      });
+
+      expect(council.type).toBe('council');
+    });
+
+    it('should default type to advanced when not specified', async () => {
+      const council = await repo.create({
+        id: 'council-default-type',
+        name: 'Default Type',
+        config: sampleConfig
+      });
+
+      expect(council.type).toBe('advanced');
     });
 
     it('should accept config as a JSON string', async () => {
@@ -108,6 +130,17 @@ describe('CouncilRepository', () => {
       const councils = await repo.list();
       expect(councils).toEqual([]);
     });
+
+    it('should include type in listed councils', async () => {
+      await repo.create({ id: 'list-vc', name: 'Voice-Centric', config: sampleConfig, type: 'council' });
+      await repo.create({ id: 'list-adv', name: 'Advanced', config: sampleConfig, type: 'advanced' });
+
+      const councils = await repo.list();
+      const vcCouncil = councils.find(c => c.id === 'list-vc');
+      const advCouncil = councils.find(c => c.id === 'list-adv');
+      expect(vcCouncil.type).toBe('council');
+      expect(advCouncil.type).toBe('advanced');
+    });
   });
 
   describe('update', () => {
@@ -128,6 +161,13 @@ describe('CouncilRepository', () => {
       const council = await repo.getById('upd-2');
       expect(council.config.levels['2'].enabled).toBe(true);
       expect(council.config.levels['2'].voices[0].provider).toBe('gemini');
+    });
+
+    it('should update type', async () => {
+      await repo.create({ id: 'upd-type', name: 'Type Test', config: sampleConfig, type: 'advanced' });
+      await repo.update('upd-type', { type: 'council' });
+      const council = await repo.getById('upd-type');
+      expect(council.type).toBe('council');
     });
 
     it('should return false for non-existent id', async () => {

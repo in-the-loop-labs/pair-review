@@ -453,7 +453,12 @@ class LocalManager {
           // Show the appropriate progress modal
           if (data.status?.isCouncil && window.councilProgressModal && data.status?.councilConfig) {
             window.councilProgressModal.setLocalMode(reviewId);
-            window.councilProgressModal.show(data.analysisId, data.status.councilConfig);
+            window.councilProgressModal.show(
+              data.analysisId,
+              data.status.councilConfig,
+              null,
+              { configType: data.status.configType || 'advanced' }
+            );
           } else if (window.progressModal) {
             // Update the SSE endpoint for progress modal
             self.patchProgressModalForLocal();

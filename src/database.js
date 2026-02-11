@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 17;
+const CURRENT_SCHEMA_VERSION = 18;
 
 /**
  * Database schema SQL statements
@@ -185,6 +185,7 @@ const SCHEMA_SQL = {
     CREATE TABLE IF NOT EXISTS councils (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      type TEXT DEFAULT 'advanced',
       config JSON NOT NULL,
       last_used_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -884,6 +885,29 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 17 complete');
+  },
+
+  // Migration to version 18: Add type column to councils table
+  18: (db) => {
+    console.log('Running migration to schema version 18...');
+
+    // Add type column to councils for distinguishing 'council' (voice-centric) from 'advanced' (level-centric)
+    const hasType = columnExists(db, 'councils', 'type');
+    if (!hasType) {
+      try {
+        db.prepare(`ALTER TABLE councils ADD COLUMN type TEXT DEFAULT 'advanced'`).run();
+        console.log('  Added type column to councils');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column type already exists (race condition)');
+      }
+    } else {
+      console.log('  Column type already exists');
+    }
+
+    console.log('Migration to schema version 18 complete');
   }
 };
 
@@ -2666,7 +2690,7 @@ class AnalysisRunRepository {
              parent_run_id, config_type, levels_config
       FROM analysis_runs
       WHERE review_id = ?
-      ORDER BY started_at DESC, id DESC`;
+      ORDER BY COALESCE(completed_at, started_at) DESC, CASE WHEN parent_run_id IS NULL THEN 0 ELSE 1 END, started_at DESC, id DESC`;
     if (limit) {
       sql += `\n      LIMIT ?`;
       params.push(limit);
@@ -2923,9 +2947,10 @@ class CouncilRepository {
    * @param {string} councilData.id - Unique ID (UUID)
    * @param {string} councilData.name - Council name
    * @param {Object} councilData.config - Council configuration JSON
+   * @param {string} [councilData.type='advanced'] - Council type ('council' for voice-centric, 'advanced' for level-centric)
    * @returns {Promise<Object>} Created council record
    */
-  async create({ id, name, config }) {
+  async create({ id, name, config, type = 'advanced' }) {
     if (!id || !name || !config) {
       throw new Error('Missing required fields: id, name, config');
     }
@@ -2933,9 +2958,9 @@ class CouncilRepository {
     const configJson = typeof config === 'string' ? config : JSON.stringify(config);
 
     await run(this.db, `
-      INSERT INTO councils (id, name, config)
-      VALUES (?, ?, ?)
-    `, [id, name, configJson]);
+      INSERT INTO councils (id, name, type, config)
+      VALUES (?, ?, ?, ?)
+    `, [id, name, type, configJson]);
 
     return this.getById(id);
   }
@@ -2947,7 +2972,7 @@ class CouncilRepository {
    */
   async getById(id) {
     const row = await queryOne(this.db, `
-      SELECT id, name, config, last_used_at, created_at, updated_at
+      SELECT id, name, type, config, last_used_at, created_at, updated_at
       FROM councils
       WHERE id = ?
     `, [id]);
@@ -2962,7 +2987,7 @@ class CouncilRepository {
    */
   async list() {
     const rows = await query(this.db, `
-      SELECT id, name, config, last_used_at, created_at, updated_at
+      SELECT id, name, type, config, last_used_at, created_at, updated_at
       FROM councils
       ORDER BY last_used_at DESC NULLS LAST, updated_at DESC
     `);
@@ -2989,6 +3014,7 @@ class CouncilRepository {
    * @param {Object} updates - Fields to update
    * @param {string} [updates.name] - New name
    * @param {Object} [updates.config] - New configuration
+   * @param {string} [updates.type] - New type ('council' or 'advanced')
    * @returns {Promise<boolean>} True if record was updated
    */
   async update(id, updates) {
@@ -2998,6 +3024,11 @@ class CouncilRepository {
     if (updates.name !== undefined) {
       setClauses.push('name = ?');
       params.push(updates.name);
+    }
+
+    if (updates.type !== undefined) {
+      setClauses.push('type = ?');
+      params.push(updates.type);
     }
 
     if (updates.config !== undefined) {

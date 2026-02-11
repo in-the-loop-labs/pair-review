@@ -3401,7 +3401,12 @@ class PRManager {
         // Show the appropriate progress modal
         if (data.status?.isCouncil && window.councilProgressModal && data.status?.councilConfig) {
           window.councilProgressModal.setPRMode();
-          window.councilProgressModal.show(data.analysisId, data.status.councilConfig);
+          window.councilProgressModal.show(
+            data.analysisId,
+            data.status.councilConfig,
+            null,
+            { configType: data.status.configType || 'advanced' }
+          );
         } else if (window.progressModal) {
           window.progressModal.show(data.analysisId);
         } else {

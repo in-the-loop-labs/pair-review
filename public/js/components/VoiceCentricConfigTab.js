@@ -110,9 +110,8 @@ class VoiceCentricConfigTab {
 
   /**
    * Get the current council config for submission.
-   * Converts voice-centric flat list + global levels into the levels format
-   * the backend expects: { levels: { '1': { enabled, voices }, ... }, consolidation }
-   * @returns {Object} Council config in levels format
+   * Returns voice-centric format: { voices: [...], levels: { '1': true, ... }, consolidation: {...} }
+   * @returns {Object} Council config in voice-centric format
    */
   getCouncilConfig() {
     return this._readConfigFromUI();
@@ -145,7 +144,10 @@ class VoiceCentricConfigTab {
    */
   _validateConfig(config) {
     // At least one level must be enabled
-    const hasEnabledLevel = Object.values(config.levels).some(l => l.enabled);
+    // Voice-centric format: levels values are booleans (true/false)
+    const hasEnabledLevel = Object.values(config.levels).some(l =>
+      typeof l === 'boolean' ? l : l?.enabled
+    );
     if (!hasEnabledLevel) {
       return { valid: false, error: 'At least one review level must be enabled.' };
     }
@@ -798,13 +800,13 @@ class VoiceCentricConfigTab {
   }
 
   /**
-   * Read voice-centric config from UI and convert to the levels format the backend expects.
-   * Voice-centric config stores: { voices: [...], enabledLevels: [1,2,3], orchestration: {...} }
-   * Backend expects: { levels: { '1': { enabled, voices }, ... }, consolidation: {...} }
+   * Read voice-centric config from UI.
+   * Returns the voice-centric API format:
+   *   { voices: [...], levels: { '1': true/false, ... }, consolidation: {...} }
    */
   _readConfigFromUI() {
     const panel = this.modal.querySelector('#tab-panel-council');
-    if (!panel) return this._convertToLevelsFormat(this._defaultConfig());
+    if (!panel) return this._toVoiceCentricAPIFormat(this._defaultConfig());
 
     // Read reviewers
     const voices = [];
@@ -827,19 +829,20 @@ class VoiceCentricConfigTab {
       }
     });
 
-    // Read enabled levels
-    const enabledLevels = [];
-    panel.querySelectorAll('.vc-level-checkbox:checked').forEach(cb => {
-      enabledLevels.push(parseInt(cb.dataset.level, 10));
-    });
+    // Read enabled levels as boolean map
+    const levels = {};
+    for (const level of [1, 2, 3]) {
+      const checkbox = panel.querySelector(`.vc-level-checkbox[data-level="${level}"]`);
+      levels[String(level)] = checkbox ? checkbox.checked : false;
+    }
 
-    // Read orchestration
+    // Read consolidation (orchestration)
     const orchRow = panel.querySelector('#vc-orchestration-voice');
     const orchTimeoutSelect = panel.querySelector('#vc-orchestration-timeout');
     const orchInstrInput = panel.querySelector('#vc-orchestration-instructions');
     const orchTimeout = orchTimeoutSelect ? parseInt(orchTimeoutSelect.value, 10) : VoiceCentricConfigTab.DEFAULT_TIMEOUT;
     const orchCustomInstructions = orchInstrInput?.value?.trim() || undefined;
-    const orchestration = orchRow ? {
+    const consolidation = orchRow ? {
       provider: orchRow.querySelector('.voice-provider')?.value || 'claude',
       model: orchRow.querySelector('.voice-model')?.value || 'sonnet',
       tier: orchRow.querySelector('.voice-tier')?.value || 'balanced',
@@ -847,29 +850,50 @@ class VoiceCentricConfigTab {
       ...(orchCustomInstructions ? { customInstructions: orchCustomInstructions } : {})
     } : { provider: 'claude', model: 'sonnet', tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT };
 
-    return this._convertToLevelsFormat({ voices, enabledLevels, orchestration });
+    return { voices, levels, consolidation };
   }
 
   /**
-   * Convert voice-centric format to levels format for the backend.
-   * Every enabled level gets the same set of voices.
+   * Convert internal default config format to voice-centric API format.
+   * Internal: { voices, enabledLevels: [1,2,3], orchestration }
+   * API:      { voices, levels: { '1': true, ... }, consolidation }
    */
-  _convertToLevelsFormat(vcConfig) {
+  _toVoiceCentricAPIFormat(vcConfig) {
     const levels = {};
     for (const level of [1, 2, 3]) {
-      const enabled = (vcConfig.enabledLevels || []).includes(level);
-      levels[String(level)] = {
-        enabled,
-        voices: enabled ? (vcConfig.voices || []).map(v => ({
-          provider: v.provider,
-          model: v.model,
-          tier: v.tier,
-          timeout: v.timeout,
-          ...(v.customInstructions ? { customInstructions: v.customInstructions } : {})
-        })) : []
-      };
+      levels[String(level)] = (vcConfig.enabledLevels || []).includes(level);
     }
-    return { levels, consolidation: vcConfig.orchestration || {} };
+    return {
+      voices: vcConfig.voices || [],
+      levels,
+      consolidation: vcConfig.orchestration || {}
+    };
+  }
+
+  /**
+   * Normalize a voice-centric config to internal format for UI rendering.
+   * Handles both API format (levels as boolean map, consolidation) and
+   * internal format (enabledLevels array, orchestration).
+   */
+  _normalizeVoiceCentricConfig(config) {
+    // If it already has enabledLevels, it's the internal format
+    if (Array.isArray(config.enabledLevels)) {
+      return config;
+    }
+
+    // Convert API format (levels boolean map) to internal format (enabledLevels array)
+    const enabledLevels = [];
+    if (config.levels && typeof config.levels === 'object') {
+      for (const [key, val] of Object.entries(config.levels)) {
+        if (val === true) enabledLevels.push(parseInt(key, 10));
+      }
+    }
+
+    return {
+      voices: config.voices || [],
+      enabledLevels,
+      orchestration: config.consolidation || config.orchestration || {}
+    };
   }
 
   /**
@@ -879,12 +903,15 @@ class VoiceCentricConfigTab {
     const panel = this.modal.querySelector('#tab-panel-council');
     if (!panel) return;
 
-    // Detect format: voice-centric has 'voices' array, levels-format has 'levels' object
+    // Detect format and normalize to internal voice-centric format
+    // Internal format: { voices, enabledLevels: [1,2,3], orchestration }
     let vcConfig;
     if (config.voices && Array.isArray(config.voices)) {
-      vcConfig = config;
+      // Voice-centric format — may be API format (levels as boolean map, consolidation)
+      // or internal format (enabledLevels array, orchestration). Normalize to internal.
+      vcConfig = this._normalizeVoiceCentricConfig(config);
     } else if (config.levels) {
-      // Convert levels format back to voice-centric
+      // Level-centric (advanced) format — convert back to voice-centric
       vcConfig = this._convertFromLevelsFormat(config);
     } else {
       vcConfig = this._defaultConfig();

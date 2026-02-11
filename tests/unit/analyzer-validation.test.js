@@ -1912,7 +1912,7 @@ describe('Analyzer timeout threading (source verification)', () => {
   });
 
   it('voice-centric council should pass voice.timeout to analyzeAllLevels', () => {
-    // Check that runVoiceCentricCouncil reads voice.timeout
+    // Check that runReviewerCentricCouncil reads voice.timeout
     expect(analyzerSource).toMatch(/voiceTimeout\s*=\s*voice\.timeout\s*\|\|\s*600000/);
     // Check it passes voiceTimeout in options
     expect(analyzerSource).toContain('timeout: voiceTimeout');
