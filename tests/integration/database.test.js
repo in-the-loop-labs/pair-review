@@ -1398,6 +1398,47 @@ describe('RepoSettingsRepository', () => {
       expect(settings.default_instructions).toBeNull();
       expect(settings.default_model).toBeNull();
     });
+
+    it('should save and retrieve default_tab', async () => {
+      const settings = await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_tab: 'council'
+      });
+
+      expect(settings.default_tab).toBe('council');
+
+      const retrieved = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(retrieved.default_tab).toBe('council');
+    });
+
+    it('should update default_tab on existing settings', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_tab: 'single'
+      });
+
+      const updated = await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_tab: 'advanced'
+      });
+
+      expect(updated.default_tab).toBe('advanced');
+    });
+
+    it('should preserve default_tab when not specified in update', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_tab: 'council'
+      });
+
+      const updated = await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_instructions: 'Updated instructions'
+      });
+
+      expect(updated.default_tab).toBe('council');
+      expect(updated.default_instructions).toBe('Updated instructions');
+    });
+
+    it('should default default_tab to null', async () => {
+      const settings = await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+      expect(settings.default_tab).toBeNull();
+    });
   });
 
   describe('deleteRepoSettings()', () => {
@@ -2101,6 +2142,152 @@ describe('AnalysisRunRepository', () => {
     it('should return 0 when no runs exist for review', async () => {
       const deleted = await analysisRunRepo.deleteByReviewId(9999);
       expect(deleted).toBe(0);
+    });
+  });
+
+  describe('create() with voice-centric council columns', () => {
+    it('should create a run with parentRunId, configType, and levelsConfig', async () => {
+      // Create a parent council run first
+      const parentRun = await analysisRunRepo.create({
+        id: 'parent-council-run',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+
+      expect(parentRun.config_type).toBe('council');
+      expect(parentRun.parent_run_id).toBeNull();
+
+      // Create a child voice run
+      const childRun = await analysisRunRepo.create({
+        id: 'child-voice-run',
+        reviewId: testReview.id,
+        parentRunId: 'parent-council-run',
+        configType: 'council',
+        levelsConfig: { 1: true, 2: true, 3: false }
+      });
+
+      expect(childRun.parent_run_id).toBe('parent-council-run');
+      expect(childRun.config_type).toBe('council');
+      expect(childRun.levels_config).toBe('{"1":true,"2":true,"3":false}');
+    });
+
+    it('should default config_type to single', async () => {
+      const result = await analysisRunRepo.create({
+        id: 'default-config-run',
+        reviewId: testReview.id
+      });
+
+      expect(result.config_type).toBe('single');
+      expect(result.parent_run_id).toBeNull();
+      expect(result.levels_config).toBeNull();
+    });
+
+    it('should store levelsConfig as JSON string', async () => {
+      const levels = { 1: true, 2: false, 3: true };
+      const result = await analysisRunRepo.create({
+        id: 'levels-run',
+        reviewId: testReview.id,
+        levelsConfig: levels
+      });
+
+      expect(result.levels_config).toBe(JSON.stringify(levels));
+    });
+
+    it('should handle null levelsConfig', async () => {
+      const result = await analysisRunRepo.create({
+        id: 'null-levels-run',
+        reviewId: testReview.id,
+        levelsConfig: null
+      });
+
+      expect(result.levels_config).toBeNull();
+    });
+  });
+
+  describe('getChildRuns()', () => {
+    it('should return child runs for a parent council run ordered by started_at ASC', async () => {
+      // Create parent run
+      await analysisRunRepo.create({
+        id: 'council-parent',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+
+      // Create child voice runs
+      await analysisRunRepo.create({
+        id: 'voice-1',
+        reviewId: testReview.id,
+        parentRunId: 'council-parent',
+        configType: 'council'
+      });
+      await analysisRunRepo.create({
+        id: 'voice-2',
+        reviewId: testReview.id,
+        parentRunId: 'council-parent',
+        configType: 'council'
+      });
+
+      const children = await analysisRunRepo.getChildRuns('council-parent');
+      expect(children).toHaveLength(2);
+      expect(children[0].id).toBe('voice-1');
+      expect(children[1].id).toBe('voice-2');
+      expect(children[0].parent_run_id).toBe('council-parent');
+      expect(children[1].parent_run_id).toBe('council-parent');
+    });
+
+    it('should return empty array when no child runs exist', async () => {
+      const children = await analysisRunRepo.getChildRuns('non-existent-parent');
+      expect(children).toEqual([]);
+    });
+
+    it('should not include runs from other parents', async () => {
+      await analysisRunRepo.create({
+        id: 'parent-a',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+      await analysisRunRepo.create({
+        id: 'parent-b',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+
+      await analysisRunRepo.create({
+        id: 'child-of-a',
+        reviewId: testReview.id,
+        parentRunId: 'parent-a'
+      });
+      await analysisRunRepo.create({
+        id: 'child-of-b',
+        reviewId: testReview.id,
+        parentRunId: 'parent-b'
+      });
+
+      const childrenA = await analysisRunRepo.getChildRuns('parent-a');
+      expect(childrenA).toHaveLength(1);
+      expect(childrenA[0].id).toBe('child-of-a');
+    });
+
+    it('should include new columns in child run results', async () => {
+      await analysisRunRepo.create({
+        id: 'parent-run',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+
+      await analysisRunRepo.create({
+        id: 'child-run',
+        reviewId: testReview.id,
+        parentRunId: 'parent-run',
+        configType: 'council',
+        levelsConfig: { 1: true, 2: true, 3: false }
+      });
+
+      const children = await analysisRunRepo.getChildRuns('parent-run');
+      expect(children).toHaveLength(1);
+      expect(children[0].config_type).toBe('council');
+      expect(children[0].levels_config).toBe('{"1":true,"2":true,"3":false}');
+      expect(children[0].parent_run_id).toBe('parent-run');
     });
   });
 });

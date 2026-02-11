@@ -147,6 +147,15 @@ class RepoSettingsPage {
       });
     }
 
+    // Default tab selector
+    const tabSelect = document.getElementById('default-tab-select');
+    if (tabSelect) {
+      tabSelect.addEventListener('change', () => {
+        this.currentSettings.default_tab = tabSelect.value || 'single';
+        this.checkForChanges();
+      });
+    }
+
     // Council select dropdown
     const councilSelect = document.getElementById('default-council-select');
     if (councilSelect) {
@@ -400,6 +409,7 @@ class RepoSettingsPage {
       this.originalSettings = {
         default_provider: settings.default_provider || null,
         default_model: settings.default_model || null,
+        default_tab: settings.default_tab || 'single',
         default_council_id: settings.default_council_id || null,
         default_instructions: settings.default_instructions || '',
         local_path: settings.local_path || null
@@ -417,6 +427,7 @@ class RepoSettingsPage {
       this.originalSettings = {
         default_provider: null,
         default_model: null,
+        default_tab: 'single',
         default_council_id: null,
         default_instructions: '',
         local_path: null
@@ -444,6 +455,12 @@ class RepoSettingsPage {
     // Update model selection
     if (this.currentSettings.default_model) {
       this.selectModel(this.currentSettings.default_model, false);
+    }
+
+    // Update tab dropdown
+    const tabSelect = document.getElementById('default-tab-select');
+    if (tabSelect) {
+      tabSelect.value = this.currentSettings.default_tab || 'single';
     }
 
     // Update council dropdown
@@ -512,10 +529,11 @@ class RepoSettingsPage {
     // Use nullish coalescing to normalize null/undefined for consistent comparison
     const providerChanged = (this.currentSettings.default_provider ?? null) !== (this.originalSettings.default_provider ?? null);
     const modelChanged = (this.currentSettings.default_model ?? null) !== (this.originalSettings.default_model ?? null);
+    const tabChanged = (this.currentSettings.default_tab ?? 'single') !== (this.originalSettings.default_tab ?? 'single');
     const councilChanged = (this.currentSettings.default_council_id ?? null) !== (this.originalSettings.default_council_id ?? null);
     const instructionsChanged = (this.currentSettings.default_instructions ?? '') !== (this.originalSettings.default_instructions ?? '');
 
-    this.hasUnsavedChanges = providerChanged || modelChanged || councilChanged || instructionsChanged;
+    this.hasUnsavedChanges = providerChanged || modelChanged || tabChanged || councilChanged || instructionsChanged;
 
     // Show/hide action bar
     const actionBar = document.getElementById('action-bar');
@@ -547,6 +565,7 @@ class RepoSettingsPage {
         body: JSON.stringify({
           default_provider: this.currentSettings.default_provider,
           default_model: this.currentSettings.default_model,
+          default_tab: this.currentSettings.default_tab,
           default_council_id: this.currentSettings.default_council_id,
           default_instructions: this.currentSettings.default_instructions
         })
@@ -619,6 +638,7 @@ class RepoSettingsPage {
         body: JSON.stringify({
           default_provider: null,
           default_model: null,
+          default_tab: null,
           default_council_id: null,
           default_instructions: '',
           local_path: null
@@ -633,6 +653,7 @@ class RepoSettingsPage {
       this.originalSettings = {
         default_provider: null,
         default_model: null,
+        default_tab: 'single',
         default_council_id: null,
         default_instructions: '',
         local_path: null

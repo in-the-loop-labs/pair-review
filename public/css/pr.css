@@ -6649,6 +6649,81 @@ body.resizing * {
   animation: badge-glow 2s ease-in-out infinite;
 }
 
+/* Config type badges */
+.analysis-history-config-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.analysis-history-config-council {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.1);
+  border: 1px solid rgba(124, 58, 237, 0.2);
+}
+
+.analysis-history-config-council-voice {
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.analysis-history-config-advanced {
+  color: #059669;
+  background: rgba(5, 150, 105, 0.1);
+  border: 1px solid rgba(5, 150, 105, 0.2);
+}
+
+/* Level indicators */
+.analysis-history-levels {
+  display: inline-flex;
+  gap: 2px;
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+}
+
+.analysis-history-level {
+  padding: 0 2px;
+}
+
+.analysis-history-level.level-on {
+  color: var(--color-success, #22c55e);
+}
+
+.analysis-history-level.level-off {
+  color: var(--color-text-muted);
+  opacity: 0.5;
+}
+
+/* Status indicators in history items */
+.analysis-history-status {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.analysis-history-status-failed {
+  color: var(--color-danger, #ef4444);
+}
+
+.analysis-history-status-cancelled {
+  color: var(--color-warning, #f59e0b);
+}
+
+.analysis-history-status-running {
+  color: var(--color-accent, #3b82f6);
+}
+
+/* Suggestion count in history items */
+.analysis-history-suggestions {
+  color: var(--color-text-muted);
+}
+
 @keyframes badge-glow {
   0%, 100% {
     box-shadow: 0 0 2px rgba(245, 158, 11, 0.4);
@@ -7044,6 +7119,25 @@ body.resizing * {
   animation: none;
   border-color: rgba(251, 191, 36, 0.9);
   box-shadow: 0 0 10px 3px rgba(251, 191, 36, 0.6);
+}
+
+/* Dark theme: config type badges */
+[data-theme="dark"] .analysis-history-config-council {
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.12);
+  border-color: rgba(167, 139, 250, 0.25);
+}
+
+[data-theme="dark"] .analysis-history-config-council-voice {
+  color: #818cf8;
+  background: rgba(129, 140, 248, 0.12);
+  border-color: rgba(129, 140, 248, 0.25);
+}
+
+[data-theme="dark"] .analysis-history-config-advanced {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.25);
 }
 
 /* Dark theme: NEW badge */
@@ -7990,10 +8084,10 @@ body.resizing * {
 }
 
 .analysis-config-container {
-  width: 580px;
-  max-width: calc(100vw - 32px);
+  width: 90vw;
+  max-width: min(900px, calc(100vw - 32px));
   height: auto; /* Override fixed height from .modal-container */
-  max-height: min(720px, calc(100vh - 32px));
+  max-height: min(90vh, calc(100vh - 32px));
   display: flex;
   flex-direction: column;
   transform: translateY(8px) scale(0.98);

@@ -389,10 +389,21 @@ class LocalManager {
         const currentModel = rememberedModel || repoSettings?.default_model || 'opus';
         const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
 
+        // Determine default tab (priority: localStorage > repo settings > 'single')
+        const tabStorageKey = `pair-review-tab:local-${reviewId}`;
+        const rememberedTab = localStorage.getItem(tabStorageKey);
+        const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
+
+        // Save tab selection to localStorage when user switches tabs
+        manager.analysisConfigModal.onTabChange = (tabId) => {
+          localStorage.setItem(tabStorageKey, tabId);
+        };
+
         // Show config modal
         const config = await manager.analysisConfigModal.show({
           currentModel,
           currentProvider,
+          defaultTab,
           repoInstructions: repoSettings?.default_instructions || '',
           lastInstructions: lastInstructions,
           lastCouncilId,
@@ -1088,6 +1099,7 @@ class LocalManager {
         analyzeBody = {
           councilId: config.councilId || undefined,
           councilConfig: config.councilConfig || undefined,
+          configType: config.configType || 'advanced',
           customInstructions: config.customInstructions || null
         };
       } else {
@@ -1097,6 +1109,7 @@ class LocalManager {
           model: config.model || 'opus',
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
+          enabledLevels: config.enabledLevels || [1, 2, 3],
           skipLevel3: config.skipLevel3 || false
         };
       }
@@ -1125,15 +1138,21 @@ class LocalManager {
       // Set analyzing state
       manager.setButtonAnalyzing(result.analysisId);
 
-      // Choose council or single-model progress modal
-      if (config.isCouncil && window.councilProgressModal && config.councilConfig) {
+      // Always use the unified progress modal
+      if (window.councilProgressModal) {
         window.councilProgressModal.setLocalMode(this.reviewId);
-        window.councilProgressModal.show(result.analysisId, config.councilConfig, config.councilName);
+        window.councilProgressModal.show(
+          result.analysisId,
+          config.isCouncil ? config.councilConfig : null,
+          config.isCouncil ? config.councilName : null,
+          {
+            configType: config.isCouncil ? (config.configType || 'advanced') : 'single',
+            enabledLevels: config.enabledLevels || [1, 2, 3]
+          }
+        );
       } else {
-        // Patch progress modal for local mode
+        // Fallback to old progress modal if unified modal not available
         this.patchProgressModalForLocal();
-
-        // Show progress modal
         if (window.progressModal) {
           window.progressModal.show(result.analysisId);
         }

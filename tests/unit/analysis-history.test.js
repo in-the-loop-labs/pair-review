@@ -1483,4 +1483,129 @@ describe('AnalysisHistoryManager', () => {
       expect(result).toEqual({ runs: [], error: 'Network failure' });
     });
   });
+
+  describe('getConfigTypeLabel', () => {
+    let manager;
+
+    beforeEach(() => {
+      manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+    });
+
+    it('should return "single" for single config type', () => {
+      expect(manager.getConfigTypeLabel({ config_type: 'single' })).toBe('single');
+    });
+
+    it('should return "single" when config_type is missing', () => {
+      expect(manager.getConfigTypeLabel({})).toBe('single');
+    });
+
+    it('should return "council" for council parent run', () => {
+      expect(manager.getConfigTypeLabel({ config_type: 'council' })).toBe('council');
+    });
+
+    it('should return "council-voice" for council child run with parent_run_id', () => {
+      expect(manager.getConfigTypeLabel({
+        config_type: 'council',
+        parent_run_id: 'parent-123'
+      })).toBe('council-voice');
+    });
+
+    it('should return "advanced" for advanced config type', () => {
+      expect(manager.getConfigTypeLabel({ config_type: 'advanced' })).toBe('advanced');
+    });
+  });
+
+  describe('renderConfigTypeBadge', () => {
+    let manager;
+
+    beforeEach(() => {
+      manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+    });
+
+    it('should return empty string for single config type', () => {
+      expect(manager.renderConfigTypeBadge({ config_type: 'single' })).toBe('');
+    });
+
+    it('should return Council badge for council parent run', () => {
+      const badge = manager.renderConfigTypeBadge({ config_type: 'council' });
+      expect(badge).toContain('Council');
+      expect(badge).toContain('analysis-history-config-council');
+    });
+
+    it('should return Voice badge for council child run', () => {
+      const badge = manager.renderConfigTypeBadge({
+        config_type: 'council',
+        parent_run_id: 'parent-123'
+      });
+      expect(badge).toContain('Voice');
+      expect(badge).toContain('analysis-history-config-council-voice');
+    });
+
+    it('should return Advanced badge for advanced config type', () => {
+      const badge = manager.renderConfigTypeBadge({ config_type: 'advanced' });
+      expect(badge).toContain('Advanced');
+      expect(badge).toContain('analysis-history-config-advanced');
+    });
+  });
+
+  describe('renderLevelIndicators', () => {
+    let manager;
+
+    beforeEach(() => {
+      manager = new AnalysisHistoryManager({
+        reviewId: 1,
+        mode: 'pr',
+        onSelectionChange: vi.fn()
+      });
+    });
+
+    it('should return empty string when no levels_config', () => {
+      expect(manager.renderLevelIndicators({})).toBe('');
+      expect(manager.renderLevelIndicators({ levels_config: null })).toBe('');
+    });
+
+    it('should render all levels enabled from array format', () => {
+      const html = manager.renderLevelIndicators({ levels_config: [1, 2, 3] });
+      expect(html).toContain('L1\u2713');
+      expect(html).toContain('L2\u2713');
+      expect(html).toContain('L3\u2713');
+      // All should have level-on class
+      expect(html).not.toContain('level-off');
+    });
+
+    it('should render partial levels from array format', () => {
+      const html = manager.renderLevelIndicators({ levels_config: [1, 2] });
+      expect(html).toContain('level-on');
+      expect(html).toContain('level-off');
+      // L3 should be off
+      expect(html).toContain('L3\u2717');
+    });
+
+    it('should render levels from object format', () => {
+      const html = manager.renderLevelIndicators({
+        levels_config: { level1: true, level2: true, level3: false }
+      });
+      expect(html).toContain('L1\u2713');
+      expect(html).toContain('L2\u2713');
+      expect(html).toContain('L3\u2717');
+    });
+
+    it('should treat missing keys in object format as enabled', () => {
+      const html = manager.renderLevelIndicators({
+        levels_config: { level1: true }
+      });
+      // level2 and level3 keys are missing, so treated as enabled (not false)
+      expect(html).toContain('L1\u2713');
+      expect(html).toContain('L2\u2713');
+      expect(html).toContain('L3\u2713');
+    });
+  });
 });

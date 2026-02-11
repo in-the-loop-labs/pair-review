@@ -110,7 +110,8 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
         default_provider: null,
         default_model: null,
         local_path: null,
-        default_council_id: null
+        default_council_id: null,
+        default_tab: null
       });
     }
 
@@ -121,6 +122,7 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
       default_model: settings.default_model,
       local_path: settings.local_path,
       default_council_id: settings.default_council_id,
+      default_tab: settings.default_tab,
       created_at: settings.created_at,
       updated_at: settings.updated_at
     });
@@ -140,14 +142,14 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
 router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
     const { owner, repo } = req.params;
-    const { default_instructions, default_provider, default_model, local_path, default_council_id } = req.body;
+    const { default_instructions, default_provider, default_model, local_path, default_council_id, default_tab } = req.body;
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Validate that at least one setting is provided
-    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined && default_council_id === undefined) {
+    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined && default_council_id === undefined && default_tab === undefined) {
       return res.status(400).json({
-        error: 'At least one setting (default_instructions, default_provider, default_model, local_path, or default_council_id) must be provided'
+        error: 'At least one setting (default_instructions, default_provider, default_model, local_path, default_council_id, or default_tab) must be provided'
       });
     }
 
@@ -157,7 +159,8 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
       default_provider,
       default_model,
       local_path,
-      default_council_id
+      default_council_id,
+      default_tab
     });
 
     logger.info(`Saved repo settings for ${repository}`);
@@ -171,6 +174,7 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
         default_model: settings.default_model,
         local_path: settings.local_path,
         default_council_id: settings.default_council_id,
+        default_tab: settings.default_tab,
         updated_at: settings.updated_at
       }
     });

@@ -35,25 +35,47 @@ class CouncilProgressModal {
   // ---------------------------------------------------------------------------
 
   /**
-   * Show the modal for a council analysis.
+   * Show the modal for an analysis.
+   * Supports three rendering modes:
+   * - Single model: pass null/undefined for councilConfig
+   * - Voice-centric council: pass councilConfig with configType 'council'
+   * - Level-centric (advanced) council: pass councilConfig with configType 'advanced' (or no configType)
+   *
    * @param {string} analysisId - Analysis ID to track
-   * @param {Object} councilConfig - Council configuration (levels + orchestration)
+   * @param {Object} [councilConfig] - Council configuration (levels + orchestration), or null for single model
+   * @param {string} [councilName] - Display name for the council
+   * @param {Object} [options] - Additional options
+   * @param {string} [options.configType] - 'single', 'council', or 'advanced'
+   * @param {Array} [options.enabledLevels] - For single model: which levels are enabled [1,2,3]
    */
-  show(analysisId, councilConfig, councilName) {
+  show(analysisId, councilConfig, councilName, options = {}) {
     this.currentAnalysisId = analysisId;
     this.councilConfig = councilConfig;
     this.isVisible = true;
     this._voiceStates = {};
 
-    // Rebuild DOM for this config
-    this._rebuildBody(councilConfig);
+    // Detect rendering mode
+    const configType = options.configType || (councilConfig ? 'advanced' : 'single');
+    this._renderMode = configType;
 
-    // Update the header with the council name if provided
+    // Rebuild DOM based on mode
+    if (configType === 'single') {
+      const enabledLevels = options.enabledLevels || [1, 2, 3];
+      this._rebuildBodySingleModel(enabledLevels);
+    } else {
+      this._rebuildBody(councilConfig);
+    }
+
+    // Update the header
     const titleEl = this.modal.querySelector('#council-progress-title');
     if (titleEl) {
-      titleEl.textContent = councilName
-        ? `Review Council Analysis \u00b7 ${councilName}`
-        : 'Review Council Analysis';
+      if (configType === 'single') {
+        titleEl.textContent = 'AI Review Analysis';
+      } else if (councilName) {
+        titleEl.textContent = `Review Council Analysis \u00b7 ${councilName}`;
+      } else {
+        titleEl.textContent = 'Review Council Analysis';
+      }
     }
 
     this.modal.style.display = 'flex';
@@ -233,18 +255,29 @@ class CouncilProgressModal {
       return;
     }
 
-    // Update each level and its voices
-    for (let level = 1; level <= 3; level++) {
-      const levelStatus = status.levels[level];
-      if (!levelStatus) continue;
-      this._updateVoiceFromLevelStatus(level, levelStatus);
-      this._refreshLevelHeader(level);
-    }
-
-    // Update consolidation / orchestration (level 4)
-    const level4 = status.levels[4];
-    if (level4) {
-      this._updateConsolidation(level4);
+    if (this._renderMode === 'single') {
+      // Single-model: update level headers directly
+      for (let level = 1; level <= 3; level++) {
+        const levelStatus = status.levels[level];
+        if (!levelStatus) continue;
+        this._updateSingleModelLevel(level, levelStatus);
+      }
+      const level4 = status.levels[4];
+      if (level4) {
+        this._updateConsolidation(level4);
+      }
+    } else {
+      // Council modes: update voices within levels
+      for (let level = 1; level <= 3; level++) {
+        const levelStatus = status.levels[level];
+        if (!levelStatus) continue;
+        this._updateVoiceFromLevelStatus(level, levelStatus);
+        this._refreshLevelHeader(level);
+      }
+      const level4 = status.levels[4];
+      if (level4) {
+        this._updateConsolidation(level4);
+      }
     }
 
     // Update toolbar progress dots
@@ -270,6 +303,22 @@ class CouncilProgressModal {
   // ---------------------------------------------------------------------------
   // Per-voice progress
   // ---------------------------------------------------------------------------
+
+  /**
+   * Update a level header directly for single-model mode (no voice children).
+   */
+  _updateSingleModelLevel(level, levelStatus) {
+    const header = this.modal.querySelector(`.council-level-header[data-level="${level}"]`);
+    if (!header) return;
+    if (header.dataset.skipped === 'true') return;
+
+    const iconEl = header.querySelector('.council-level-icon');
+    const statusEl = header.querySelector('.council-level-status');
+    if (!iconEl || !statusEl) return;
+
+    const state = levelStatus.status || 'pending';
+    this._renderState(iconEl, statusEl, state, 'council-level');
+  }
 
   /**
    * Given a level's status (which may include a voiceId), update the right voice row.
@@ -663,6 +712,65 @@ class CouncilProgressModal {
     if (!body) return;
 
     body.innerHTML = this._buildTreeHTML(config);
+  }
+
+  /**
+   * Rebuild the modal body for single-model analysis.
+   * Shows a simple level list without voice nesting.
+   * @param {Array<number>} enabledLevels - Which levels are enabled, e.g. [1, 2, 3]
+   */
+  _rebuildBodySingleModel(enabledLevels) {
+    const body = this.modal.querySelector('.council-progress-body');
+    if (!body) return;
+
+    const levelNames = {
+      1: 'Changes in Isolation',
+      2: 'File Context',
+      3: 'Codebase Context'
+    };
+
+    let html = '<div class="council-progress-tree">';
+
+    for (const level of [1, 2, 3]) {
+      const enabled = enabledLevels.includes(level);
+      const title = `Level ${level} \u2014 ${levelNames[level]}`;
+
+      if (!enabled) {
+        html += `
+          <div class="council-level" data-level="${level}">
+            <div class="council-level-header" data-level="${level}" data-skipped="true">
+              <span class="council-level-icon skipped">\u2014</span>
+              <span class="council-level-title">${title}</span>
+              <span class="council-level-status skipped">Skipped</span>
+            </div>
+          </div>
+        `;
+      } else {
+        html += `
+          <div class="council-level" data-level="${level}">
+            <div class="council-level-header" data-level="${level}">
+              <span class="council-level-icon pending">\u25CB</span>
+              <span class="council-level-title">${title}</span>
+              <span class="council-level-status pending">Pending</span>
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    // Orchestration row
+    html += `
+      <div class="council-consolidation council-level">
+        <div class="council-level-header">
+          <span class="council-level-icon pending">\u25CB</span>
+          <span class="council-level-title">Orchestration</span>
+          <span class="council-level-status pending">Pending</span>
+        </div>
+      </div>
+    `;
+
+    html += '</div>';
+    body.innerHTML = html;
   }
 
   _resetFooter() {

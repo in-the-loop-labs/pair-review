@@ -159,6 +159,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
 
     // Create DB analysis_runs record immediately so it's queryable for polling
     const analysisRunRepo = new AnalysisRunRepository(db);
+    const levelsConfig = { 1: true, 2: true, 3: !requestSkipLevel3 };
     await analysisRunRepo.create({
       id: runId,
       reviewId: review.id,
@@ -166,7 +167,9 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
       model,
       repoInstructions,
       requestInstructions,
-      headSha: prMetadata.head_sha || null
+      headSha: prMetadata.head_sha || null,
+      configType: 'single',
+      levelsConfig
     });
 
     // Store analysis status with separate tracking for each level
@@ -868,7 +871,10 @@ router.get('/api/analysis-runs/:reviewId', async (req, res) => {
     const analysisRunRepo = new AnalysisRunRepository(db);
     const runs = await analysisRunRepo.getByReviewId(parseInt(reviewId, 10));
 
-    res.json({ runs });
+    res.json({ runs: runs.map(r => ({
+      ...r,
+      levels_config: r.levels_config ? JSON.parse(r.levels_config) : null
+    })) });
   } catch (error) {
     logger.error('Error fetching analysis runs:', error);
     res.status(500).json({ error: 'Failed to fetch analysis runs' });
@@ -1123,7 +1129,7 @@ router.post('/api/analysis-results', async (req, res) => {
  * @param {Object} instructions - { repoInstructions, requestInstructions }
  * @returns {{ analysisId: string, runId: string }} IDs for the caller to return in the response
  */
-async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, instructions) {
+async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, instructions, configType = 'advanced') {
   const {
     reviewId,
     worktreePath,
@@ -1142,9 +1148,23 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
 
   const { repoInstructions, requestInstructions } = instructions;
 
+  // Determine if voice-centric mode
+  const isVoiceCentric = configType === 'council';
+
   // Create run/analysis ID
   const runId = uuidv4();
   const analysisId = runId;
+
+  // Compute levelsConfig for the run record
+  let levelsConfig = null;
+  if (isVoiceCentric && councilConfig.levels) {
+    levelsConfig = councilConfig.levels;
+  } else if (councilConfig.levels) {
+    levelsConfig = {};
+    for (const [key, val] of Object.entries(councilConfig.levels)) {
+      levelsConfig[key] = val?.enabled !== false;
+    }
+  }
 
   // Create DB analysis_runs record
   const analysisRunRepo = new AnalysisRunRepository(db);
@@ -1155,7 +1175,9 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     model: councilId || 'inline-config',
     repoInstructions,
     requestInstructions,
-    headSha: headSha || null
+    headSha: headSha || null,
+    configType,
+    levelsConfig
   });
 
   // Touch council MRU timestamp (if using a saved council, not inline-config)
@@ -1195,24 +1217,27 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
   // Create analyzer (provider/model don't matter for council — voices have their own)
   const analyzer = new Analyzer(db, 'council', 'council');
 
-  logger.section(`Council Analysis Request - ${logLabel}`);
+  logger.section(`Council Analysis Request (${configType}) - ${logLabel}`);
   logger.log('API', `Repository: ${repository}`, 'magenta');
   logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+  logger.log('API', `Config type: ${configType}`, 'magenta');
 
   const progressCallback = createProgressCallback(analysisId);
 
-  // Start council analysis asynchronously
-  analyzer.runCouncilAnalysis(
-    {
-      reviewId,
-      worktreePath,
-      prMetadata,
-      changedFiles,
-      instructions: { repoInstructions, requestInstructions }
-    },
-    councilConfig,
-    { analysisId, runId, progressCallback }
-  )
+  // Route to voice-centric or level-centric council based on configType
+  const reviewContext = {
+    reviewId,
+    worktreePath,
+    prMetadata,
+    changedFiles,
+    instructions: { repoInstructions, requestInstructions }
+  };
+
+  const analysisPromise = isVoiceCentric
+    ? analyzer.runVoiceCentricCouncil(reviewContext, councilConfig, { analysisId, runId, progressCallback })
+    : analyzer.runCouncilAnalysis(reviewContext, councilConfig, { analysisId, runId, progressCallback });
+
+  analysisPromise
     .then(async result => {
       logger.success(`Council analysis complete for ${logLabel}: ${result.suggestions.length} suggestions`);
 
@@ -1306,7 +1331,7 @@ router.post('/api/analyze/council/:owner/:repo/:pr', async (req, res) => {
   try {
     const { owner, repo, pr } = req.params;
     const prNumber = parseInt(pr);
-    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions } = req.body || {};
+    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions, configType: requestConfigType } = req.body || {};
 
     if (isNaN(prNumber) || prNumber <= 0) {
       return res.status(400).json({ error: 'Invalid pull request number' });
@@ -1315,6 +1340,9 @@ router.post('/api/analyze/council/:owner/:repo/:pr', async (req, res) => {
     if (!councilId && !inlineConfig) {
       return res.status(400).json({ error: 'Either councilId or councilConfig is required' });
     }
+
+    // Determine config type: 'council' (voice-centric) or 'advanced' (level-centric)
+    const configType = requestConfigType || 'advanced';
 
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
@@ -1384,7 +1412,8 @@ router.post('/api/analyze/council/:owner/:repo/:pr', async (req, res) => {
       },
       councilConfig,
       councilId,
-      { repoInstructions, requestInstructions }
+      { repoInstructions, requestInstructions },
+      configType
     );
 
     res.json({
@@ -1406,11 +1435,14 @@ router.post('/api/analyze/council/:owner/:repo/:pr', async (req, res) => {
 router.post('/api/local/:reviewId/analyze/council', async (req, res) => {
   try {
     const { reviewId } = req.params;
-    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions } = req.body || {};
+    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions, configType: requestConfigType } = req.body || {};
 
     if (!councilId && !inlineConfig) {
       return res.status(400).json({ error: 'Either councilId or councilConfig is required' });
     }
+
+    // Determine config type: 'council' (voice-centric) or 'advanced' (level-centric)
+    const configType = requestConfigType || 'advanced';
 
     const db = req.app.get('db');
 
@@ -1489,7 +1521,8 @@ router.post('/api/local/:reviewId/analyze/council', async (req, res) => {
       },
       councilConfig,
       councilId,
-      { repoInstructions, requestInstructions }
+      { repoInstructions, requestInstructions },
+      configType
     );
 
     res.json({

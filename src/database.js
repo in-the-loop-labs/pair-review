@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 16;
+const CURRENT_SCHEMA_VERSION = 17;
 
 /**
  * Database schema SQL statements
@@ -800,6 +800,85 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 16 complete');
+  },
+
+  // Migration to version 17: Add voice-centric council columns and repo default_tab
+  17: (db) => {
+    console.log('Running migration to schema version 17...');
+
+    // Add parent_run_id to analysis_runs for child voice runs
+    const hasParentRunId = columnExists(db, 'analysis_runs', 'parent_run_id');
+    if (!hasParentRunId) {
+      try {
+        db.prepare(`ALTER TABLE analysis_runs ADD COLUMN parent_run_id TEXT`).run();
+        console.log('  Added parent_run_id column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column parent_run_id already exists (race condition)');
+      }
+    } else {
+      console.log('  Column parent_run_id already exists');
+    }
+
+    // Add config_type to analysis_runs
+    const hasConfigType = columnExists(db, 'analysis_runs', 'config_type');
+    if (!hasConfigType) {
+      try {
+        db.prepare(`ALTER TABLE analysis_runs ADD COLUMN config_type TEXT DEFAULT 'single'`).run();
+        console.log('  Added config_type column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column config_type already exists (race condition)');
+      }
+    } else {
+      console.log('  Column config_type already exists');
+    }
+
+    // Add levels_config to analysis_runs
+    const hasLevelsConfig = columnExists(db, 'analysis_runs', 'levels_config');
+    if (!hasLevelsConfig) {
+      try {
+        db.prepare(`ALTER TABLE analysis_runs ADD COLUMN levels_config TEXT`).run();
+        console.log('  Added levels_config column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column levels_config already exists (race condition)');
+      }
+    } else {
+      console.log('  Column levels_config already exists');
+    }
+
+    // Add default_tab to repo_settings
+    const hasDefaultTab = columnExists(db, 'repo_settings', 'default_tab');
+    if (!hasDefaultTab) {
+      try {
+        db.prepare(`ALTER TABLE repo_settings ADD COLUMN default_tab TEXT`).run();
+        console.log('  Added default_tab column to repo_settings');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column default_tab already exists (race condition)');
+      }
+    } else {
+      console.log('  Column default_tab already exists');
+    }
+
+    // Add index for parent_run_id lookups
+    try {
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_analysis_runs_parent ON analysis_runs(parent_run_id)`).run();
+      console.log('  Created idx_analysis_runs_parent index');
+    } catch (error) {
+      console.log('  Index idx_analysis_runs_parent already exists');
+    }
+
+    console.log('Migration to schema version 17 complete');
   }
 };
 
@@ -1296,7 +1375,7 @@ class RepoSettingsRepository {
    */
   async getRepoSettings(repository) {
     const row = await queryOne(this.db, `
-      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, local_path, created_at, updated_at
+      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, local_path, created_at, updated_at
       FROM repo_settings
       WHERE repository = ? COLLATE NOCASE
     `, [repository]);
@@ -1353,7 +1432,7 @@ class RepoSettingsRepository {
    * @returns {Promise<Object>} Saved settings object
    */
   async saveRepoSettings(repository, settings) {
-    const { default_instructions, default_provider, default_model, default_council_id, local_path } = settings;
+    const { default_instructions, default_provider, default_model, default_council_id, default_tab, local_path } = settings;
     const now = new Date().toISOString();
 
     // Check if settings already exist
@@ -1367,6 +1446,7 @@ class RepoSettingsRepository {
             default_provider = ?,
             default_model = ?,
             default_council_id = ?,
+            default_tab = ?,
             local_path = ?,
             updated_at = ?
         WHERE repository = ? COLLATE NOCASE
@@ -1375,6 +1455,7 @@ class RepoSettingsRepository {
         default_provider !== undefined ? default_provider : existing.default_provider,
         default_model !== undefined ? default_model : existing.default_model,
         default_council_id !== undefined ? default_council_id : existing.default_council_id,
+        default_tab !== undefined ? default_tab : existing.default_tab,
         local_path !== undefined ? local_path : existing.local_path,
         now,
         repository
@@ -1386,15 +1467,16 @@ class RepoSettingsRepository {
         default_provider: default_provider !== undefined ? default_provider : existing.default_provider,
         default_model: default_model !== undefined ? default_model : existing.default_model,
         default_council_id: default_council_id !== undefined ? default_council_id : existing.default_council_id,
+        default_tab: default_tab !== undefined ? default_tab : existing.default_tab,
         local_path: local_path !== undefined ? local_path : existing.local_path,
         updated_at: now
       };
     } else {
       // Insert new settings
       const result = await run(this.db, `
-        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, local_path, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, local_path || null, now, now]);
+        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, default_tab, local_path, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, default_tab || null, local_path || null, now, now]);
 
       return {
         id: result.lastID,
@@ -1403,6 +1485,7 @@ class RepoSettingsRepository {
         default_provider: default_provider || null,
         default_model: default_model || null,
         default_council_id: default_council_id || null,
+        default_tab: default_tab || null,
         local_path: local_path || null,
         created_at: now,
         updated_at: now
@@ -2478,13 +2561,14 @@ class AnalysisRunRepository {
    * @param {string} [runInfo.status='running'] - Initial status (default 'running'; pass 'completed' for externally-produced results)
    * @returns {Promise<Object>} Created analysis run record
    */
-  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, status = 'running' }) {
+  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, status = 'running', parentRunId = null, configType = 'single', levelsConfig = null }) {
     const isTerminal = ['completed', 'failed', 'cancelled'].includes(status);
     const completedAt = isTerminal ? 'CURRENT_TIMESTAMP' : 'NULL';
+    const levelsConfigJson = levelsConfig ? JSON.stringify(levelsConfig) : null;
     await run(this.db, `
-      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, head_sha, status, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt})
-    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions, headSha, status]);
+      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, head_sha, status, completed_at, parent_run_id, config_type, levels_config)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt}, ?, ?, ?)
+    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions, headSha, status, parentRunId, configType, levelsConfigJson]);
 
     // Query back the inserted row to return actual database values (including timestamps)
     return await this.getById(id);
@@ -2552,7 +2636,8 @@ class AnalysisRunRepository {
   async getById(id) {
     const row = await queryOne(this.db, `
       SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at
+             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
+             parent_run_id, config_type, levels_config
       FROM analysis_runs
       WHERE id = ?
     `, [id]);
@@ -2572,7 +2657,8 @@ class AnalysisRunRepository {
     const params = [reviewId];
     let sql = `
       SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at
+             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
+             parent_run_id, config_type, levels_config
       FROM analysis_runs
       WHERE review_id = ?
       ORDER BY started_at DESC, id DESC`;
@@ -2591,6 +2677,22 @@ class AnalysisRunRepository {
   async getLatestByReviewId(reviewId) {
     const rows = await this.getByReviewId(reviewId, { limit: 1 });
     return rows.length > 0 ? rows[0] : null;
+  }
+
+  /**
+   * Get child runs for a parent council run, ordered by start time ascending
+   * @param {string} parentRunId - Parent analysis run ID
+   * @returns {Promise<Array<Object>>} Array of child analysis run records
+   */
+  async getChildRuns(parentRunId) {
+    return query(this.db, `
+      SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
+             parent_run_id, config_type, levels_config
+      FROM analysis_runs
+      WHERE parent_run_id = ?
+      ORDER BY started_at ASC
+    `, [parentRunId]);
   }
 
   /**

@@ -273,6 +273,8 @@ function createMCPServer(db, options = {}) {
       ...reviewLookupSchema,
       limit: z.number().int().positive().optional()
         .describe('Maximum number of runs to return (most recent first). Use limit=1 to poll for the latest run.'),
+      includeChildRuns: z.boolean().optional()
+        .describe('Include child voice runs from council analyses. Defaults to false (only top-level runs).'),
     },
     async (args) => {
       const { review, error } = await resolveReview(args, db);
@@ -281,7 +283,12 @@ function createMCPServer(db, options = {}) {
       }
 
       const runRepo = new AnalysisRunRepository(db);
-      const runs = await runRepo.getByReviewId(review.id, { limit: args.limit });
+      let runs = await runRepo.getByReviewId(review.id, { limit: args.limit });
+
+      // By default, exclude child runs (they're an internal implementation detail)
+      if (!args.includeChildRuns) {
+        runs = runs.filter(r => !r.parent_run_id);
+      }
 
       return {
         content: [{

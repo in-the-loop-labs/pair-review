@@ -106,6 +106,7 @@ const SCHEMA_SQL = {
       default_provider TEXT,
       default_model TEXT,
       default_council_id TEXT,
+      default_tab TEXT,
       local_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -128,6 +129,9 @@ const SCHEMA_SQL = {
       files_analyzed INTEGER DEFAULT 0,
       started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       completed_at TIMESTAMP,
+      parent_run_id TEXT,
+      config_type TEXT DEFAULT 'single',
+      levels_config TEXT,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
   `,
@@ -197,7 +201,9 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_councils_name ON councils(name)',
   // Voice tracking indexes
   'CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)',
-  'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)'
+  'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)',
+  // Voice-centric council indexes
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_parent ON analysis_runs(parent_run_id)'
 ];
 
 /**

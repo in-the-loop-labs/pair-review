@@ -24,6 +24,64 @@ function validateCouncilConfig(config) {
     return 'config must be an object';
   }
 
+  // Dispatch based on config type
+  if (config.type === 'council') {
+    return validateCouncilFormat(config);
+  }
+
+  // Legacy configs (no type) and type === 'advanced' use level-centric format
+  return validateAdvancedFormat(config);
+}
+
+/**
+ * Validate the voice-centric council format (type: 'council')
+ * @param {Object} config
+ * @returns {string|null} Error message or null if valid
+ */
+function validateCouncilFormat(config) {
+  // Validate voices array
+  if (!Array.isArray(config.voices) || config.voices.length === 0) {
+    return 'config.voices must be a non-empty array';
+  }
+
+  for (const [i, voice] of config.voices.entries()) {
+    if (!voice.provider) {
+      return `voices[${i}].provider is required`;
+    }
+    if (!voice.model) {
+      return `voices[${i}].model is required`;
+    }
+  }
+
+  // Validate levels
+  if (!config.levels || typeof config.levels !== 'object') {
+    return 'config.levels is required and must be an object';
+  }
+
+  const validLevels = ['1', '2', '3'];
+  const hasEnabled = Object.entries(config.levels).some(([key, val]) =>
+    validLevels.includes(key) && val === true
+  );
+  if (!hasEnabled) {
+    return 'At least one level (1, 2, or 3) must be enabled';
+  }
+
+  // Validate consolidation (optional)
+  if (config.consolidation) {
+    if (!config.consolidation.provider || !config.consolidation.model) {
+      return 'consolidation.provider and consolidation.model are required when consolidation is specified';
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Validate the level-centric advanced format (type: 'advanced' or legacy no-type)
+ * @param {Object} config
+ * @returns {string|null} Error message or null if valid
+ */
+function validateAdvancedFormat(config) {
   // Validate levels
   if (!config.levels || typeof config.levels !== 'object') {
     return 'config.levels is required and must be an object';

@@ -680,6 +680,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
 
     // Create DB analysis_runs record immediately so it's queryable for polling
     const analysisRunRepo = new AnalysisRunRepository(db);
+    const levelsConfig = { 1: true, 2: true, 3: !requestSkipLevel3 };
     try {
       await analysisRunRepo.create({
         id: runId,
@@ -688,7 +689,9 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
         model: selectedModel,
         repoInstructions,
         requestInstructions,
-        headSha: review.local_head_sha || null
+        headSha: review.local_head_sha || null,
+        configType: 'single',
+        levelsConfig
       });
     } catch (error) {
       logger.error('Failed to create analysis run record:', error);
@@ -2087,7 +2090,10 @@ router.get('/api/local/:reviewId/analysis-runs', async (req, res) => {
     const analysisRunRepo = new AnalysisRunRepository(db);
     const runs = await analysisRunRepo.getByReviewId(reviewId);
 
-    res.json({ runs });
+    res.json({ runs: runs.map(r => ({
+      ...r,
+      levels_config: r.levels_config ? JSON.parse(r.levels_config) : null
+    })) });
   } catch (error) {
     logger.error('Error fetching analysis runs:', error);
     res.status(500).json({ error: 'Failed to fetch analysis runs' });

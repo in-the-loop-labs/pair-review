@@ -61,6 +61,161 @@ describe('validateCouncilConfig', () => {
     expect(validateCouncilConfig(config)).toBeNull();
   });
 
+  // Voice-centric council format (type: 'council')
+  describe('council format (type: council)', () => {
+    const validCouncilConfig = {
+      type: 'council',
+      voices: [
+        { provider: 'claude', model: 'opus', tier: 'thorough' }
+      ],
+      levels: { '1': true, '2': true, '3': true },
+      consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
+    };
+
+    it('should return null for a valid council config', () => {
+      expect(validateCouncilConfig(validCouncilConfig)).toBeNull();
+    });
+
+    it('should return null for council config without consolidation', () => {
+      const config = {
+        type: 'council',
+        voices: [{ provider: 'claude', model: 'opus' }],
+        levels: { '1': true, '2': false, '3': false }
+      };
+      expect(validateCouncilConfig(config)).toBeNull();
+    });
+
+    it('should return null for council config with multiple voices', () => {
+      const config = {
+        type: 'council',
+        voices: [
+          { provider: 'claude', model: 'opus', tier: 'thorough' },
+          { provider: 'gemini', model: 'pro', tier: 'balanced' }
+        ],
+        levels: { '1': true, '2': true, '3': false }
+      };
+      expect(validateCouncilConfig(config)).toBeNull();
+    });
+
+    it('should return null for voice with optional fields (customInstructions, timeout)', () => {
+      const config = {
+        type: 'council',
+        voices: [
+          { provider: 'claude', model: 'opus', tier: 'thorough',
+            customInstructions: 'Focus on security', timeout: 600000 }
+        ],
+        levels: { '1': true, '2': true, '3': true }
+      };
+      expect(validateCouncilConfig(config)).toBeNull();
+    });
+
+    it('should reject council config without voices', () => {
+      const config = {
+        type: 'council',
+        levels: { '1': true }
+      };
+      expect(validateCouncilConfig(config)).toBe('config.voices must be a non-empty array');
+    });
+
+    it('should reject council config with empty voices array', () => {
+      const config = {
+        type: 'council',
+        voices: [],
+        levels: { '1': true }
+      };
+      expect(validateCouncilConfig(config)).toBe('config.voices must be a non-empty array');
+    });
+
+    it('should reject council voice without provider', () => {
+      const config = {
+        type: 'council',
+        voices: [{ model: 'opus' }],
+        levels: { '1': true }
+      };
+      expect(validateCouncilConfig(config)).toContain('voices[0].provider is required');
+    });
+
+    it('should reject council voice without model', () => {
+      const config = {
+        type: 'council',
+        voices: [{ provider: 'claude' }],
+        levels: { '1': true }
+      };
+      expect(validateCouncilConfig(config)).toContain('voices[0].model is required');
+    });
+
+    it('should identify the specific voice index in error', () => {
+      const config = {
+        type: 'council',
+        voices: [
+          { provider: 'claude', model: 'opus' },
+          { provider: 'gemini' } // Missing model at index 1
+        ],
+        levels: { '1': true }
+      };
+      expect(validateCouncilConfig(config)).toContain('voices[1].model is required');
+    });
+
+    it('should reject council config without levels', () => {
+      const config = {
+        type: 'council',
+        voices: [{ provider: 'claude', model: 'opus' }]
+      };
+      expect(validateCouncilConfig(config)).toBe('config.levels is required and must be an object');
+    });
+
+    it('should reject council config with no enabled levels', () => {
+      const config = {
+        type: 'council',
+        voices: [{ provider: 'claude', model: 'opus' }],
+        levels: { '1': false, '2': false, '3': false }
+      };
+      expect(validateCouncilConfig(config)).toBe('At least one level (1, 2, or 3) must be enabled');
+    });
+
+    it('should reject council config with empty levels', () => {
+      const config = {
+        type: 'council',
+        voices: [{ provider: 'claude', model: 'opus' }],
+        levels: {}
+      };
+      expect(validateCouncilConfig(config)).toBe('At least one level (1, 2, or 3) must be enabled');
+    });
+
+    it('should reject consolidation without provider', () => {
+      const config = {
+        type: 'council',
+        voices: [{ provider: 'claude', model: 'opus' }],
+        levels: { '1': true },
+        consolidation: { model: 'opus' }
+      };
+      expect(validateCouncilConfig(config)).toContain('consolidation.provider and consolidation.model');
+    });
+
+    it('should reject consolidation without model', () => {
+      const config = {
+        type: 'council',
+        voices: [{ provider: 'claude', model: 'opus' }],
+        levels: { '1': true },
+        consolidation: { provider: 'claude' }
+      };
+      expect(validateCouncilConfig(config)).toContain('consolidation.provider and consolidation.model');
+    });
+  });
+
+  // Explicit type: 'advanced' should use the level-centric validation
+  describe('explicit type: advanced', () => {
+    it('should accept valid advanced config with explicit type', () => {
+      const config = {
+        type: 'advanced',
+        levels: {
+          '1': { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] }
+        }
+      };
+      expect(validateCouncilConfig(config)).toBeNull();
+    });
+  });
+
   // Error cases
   describe('error cases', () => {
     it('should reject null config', () => {

@@ -262,15 +262,35 @@ class AnalysisHistoryManager {
 
       const newBadge = isNewRun ? '<span class="analysis-history-new-badge">LATEST</span>' : '';
 
+      // Config type badge
+      const configBadge = this.renderConfigTypeBadge(run);
+
+      // Level indicators
+      const levelIndicators = this.renderLevelIndicators(run);
+
+      // Status indicator for non-completed runs
+      const statusIndicator = (run.status && run.status !== 'completed')
+        ? `<span class="analysis-history-status analysis-history-status-${this.escapeHtml(run.status)}">${this.escapeHtml(run.status)}</span>`
+        : '';
+
+      // Suggestion count
+      const suggestionCount = (run.total_suggestions != null && run.status === 'completed')
+        ? `<span class="analysis-history-suggestions">${run.total_suggestions} suggestion${run.total_suggestions !== 1 ? 's' : ''}</span>`
+        : '';
+
       return `
         <button class="analysis-history-item ${isSelected ? 'selected' : ''} ${isNewRun ? 'is-new' : ''}" data-run-id="${run.id}">
           <div class="analysis-history-item-main" title="${this.escapeHtml(fullTitle)}">
             <span class="analysis-history-item-provider">${providerName}</span>
             <span class="analysis-history-item-model" ${isCouncil ? `data-council-id="${this.escapeHtml(run.model)}"` : ''}>&middot; ${modelName}</span>
+            ${configBadge}
             ${newBadge}
           </div>
           <div class="analysis-history-item-meta">
             <span>${timeAgo}</span>
+            ${levelIndicators}
+            ${suggestionCount}
+            ${statusIndicator}
           </div>
         </button>
       `;
@@ -448,7 +468,21 @@ class AnalysisHistoryManager {
       </div>`;
     }
 
+    // Config type row
+    const configLabel = this.getConfigTypeLabel(run);
+    const configDisplayMap = {
+      'single': 'Single Model',
+      'council': 'Council',
+      'council-voice': 'Council Voice',
+      'advanced': 'Advanced'
+    };
+    const configDisplay = configDisplayMap[configLabel] || configLabel;
+
     html += `
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Config</span>
+        <span class="analysis-preview-value">${this.escapeHtml(configDisplay)}</span>
+      </div>
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Status</span>
         <span class="analysis-preview-value analysis-preview-status-badge ${statusInfo.cssClass}">${this.escapeHtml(statusInfo.text)}</span>
@@ -472,6 +506,16 @@ class AnalysisHistoryManager {
       </div>
       ` : ''}
     `;
+
+    // Level indicators in preview
+    if (run.levels_config) {
+      html += `
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Levels</span>
+        <span class="analysis-preview-value">${this.renderLevelIndicators(run)}</span>
+      </div>
+      `;
+    }
 
     // Add collapsible summary section if present
     const hasSummary = run.summary && run.summary.trim();
@@ -871,6 +915,65 @@ class AnalysisHistoryManager {
   formatTierDisplayName(tier) {
     if (!tier) return '';
     return tier.charAt(0).toUpperCase() + tier.slice(1).toLowerCase();
+  }
+
+  /**
+   * Determine the display config type for a run.
+   * @param {Object} run - Analysis run object
+   * @returns {string} One of 'single', 'council', 'council-voice', 'advanced'
+   */
+  getConfigTypeLabel(run) {
+    const configType = run.config_type || 'single';
+    if (configType === 'council' && run.parent_run_id) {
+      return 'council-voice';
+    }
+    return configType;
+  }
+
+  /**
+   * Render a config type badge for a run.
+   * @param {Object} run - Analysis run object
+   * @returns {string} HTML string for the badge
+   */
+  renderConfigTypeBadge(run) {
+    const label = this.getConfigTypeLabel(run);
+    const displayMap = {
+      'single': 'Single',
+      'council': 'Council',
+      'council-voice': 'Voice',
+      'advanced': 'Advanced'
+    };
+    const display = displayMap[label] || label;
+    if (label === 'single') return '';
+    return `<span class="analysis-history-config-badge analysis-history-config-${this.escapeHtml(label)}">${this.escapeHtml(display)}</span>`;
+  }
+
+  /**
+   * Render level indicators (L1/L2/L3) based on levels_config.
+   * @param {Object} run - Analysis run object with optional levels_config
+   * @returns {string} HTML string for level indicators
+   */
+  renderLevelIndicators(run) {
+    const levelsConfig = run.levels_config;
+    if (!levelsConfig) return '';
+
+    // levels_config can be:
+    // - An array like [1, 2] (voice-centric: enabled levels)
+    // - An object like { level1: true, level2: true, level3: false } (advanced)
+    const levels = [1, 2, 3];
+    const indicators = levels.map(level => {
+      let enabled;
+      if (Array.isArray(levelsConfig)) {
+        enabled = levelsConfig.includes(level);
+      } else {
+        const key = `level${level}`;
+        enabled = levelsConfig[key] !== false;
+      }
+      const cls = enabled ? 'level-on' : 'level-off';
+      const icon = enabled ? '\u2713' : '\u2717';
+      return `<span class="analysis-history-level ${cls}">L${level}${icon}</span>`;
+    });
+    return `<span class="analysis-history-levels">${indicators.join('')}</span>`;
   }
 
   /**

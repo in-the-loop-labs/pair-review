@@ -3583,10 +3583,21 @@ class PRManager {
       const currentModel = rememberedModel || repoSettings?.default_model || 'opus';
       const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
 
+      // Determine default tab (priority: localStorage > repo settings > 'single')
+      const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
+      const rememberedTab = localStorage.getItem(tabStorageKey);
+      const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
+
+      // Save tab selection to localStorage when user switches tabs
+      this.analysisConfigModal.onTabChange = (tabId) => {
+        localStorage.setItem(tabStorageKey, tabId);
+      };
+
       // Show the config modal
       const config = await this.analysisConfigModal.show({
         currentModel,
         currentProvider,
+        defaultTab,
         repoInstructions: repoSettings?.default_instructions || '',
         lastInstructions: lastInstructions,
         lastCouncilId,
@@ -3659,6 +3670,7 @@ class PRManager {
         analyzeBody = {
           councilId: config.councilId || undefined,
           councilConfig: config.councilConfig || undefined,
+          configType: config.configType || 'advanced',
           customInstructions: config.customInstructions || null
         };
       } else {
@@ -3668,6 +3680,7 @@ class PRManager {
           model: config.model || 'opus',
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
+          enabledLevels: config.enabledLevels || [1, 2, 3],
           skipLevel3: config.skipLevel3 || false
         };
       }
@@ -3700,10 +3713,20 @@ class PRManager {
       // Set analyzing state and show progress modal
       this.setButtonAnalyzing(result.analysisId);
 
-      if (config.isCouncil && window.councilProgressModal && config.councilConfig) {
+      // Always use the unified progress modal
+      if (window.councilProgressModal) {
         window.councilProgressModal.setPRMode();
-        window.councilProgressModal.show(result.analysisId, config.councilConfig, config.councilName);
+        window.councilProgressModal.show(
+          result.analysisId,
+          config.isCouncil ? config.councilConfig : null,
+          config.isCouncil ? config.councilName : null,
+          {
+            configType: config.isCouncil ? (config.configType || 'advanced') : 'single',
+            enabledLevels: config.enabledLevels || [1, 2, 3]
+          }
+        );
       } else if (window.progressModal) {
+        // Fallback to old progress modal if unified modal not available
         window.progressModal.show(result.analysisId);
       }
 

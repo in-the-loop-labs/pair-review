@@ -152,7 +152,7 @@ test.describe('Analysis Config Modal', () => {
 
     // Config modal should close and progress modal should appear
     await configModal.waitFor({ state: 'hidden', timeout: 3000 });
-    const progressModal = page.locator('#progress-modal');
+    const progressModal = page.locator('#council-progress-modal');
     await expect(progressModal).toBeVisible({ timeout: 5000 });
   });
 });
@@ -182,8 +182,8 @@ test.describe('Progress Modal', () => {
       }
     }
 
-    // Progress modal should appear (use specific #progress-modal selector)
-    const progressModal = page.locator('#progress-modal');
+    // Progress modal should appear (unified council-progress-modal is used for all analysis types)
+    const progressModal = page.locator('#council-progress-modal');
     await expect(progressModal).toBeVisible({ timeout: 5000 });
   });
 
@@ -209,11 +209,12 @@ test.describe('Progress Modal', () => {
       }
     }
 
-    // Wait for progress modal
-    await page.locator('#progress-modal').waitFor({ state: 'visible', timeout: 5000 });
+    // Wait for unified progress modal
+    const progressModal = page.locator('#council-progress-modal');
+    await progressModal.waitFor({ state: 'visible', timeout: 5000 });
 
     // Should show level indicators (Level 1, Level 2, Level 3)
-    const progressContent = await page.locator('#progress-modal').textContent();
+    const progressContent = await progressModal.textContent();
     expect(progressContent).toContain('Level 1');
     expect(progressContent).toContain('Level 2');
     expect(progressContent).toContain('Level 3');
@@ -240,15 +241,16 @@ test.describe('Progress Modal', () => {
       }
     }
 
-    // Wait for progress modal
-    await page.locator('#progress-modal').waitFor({ state: 'visible', timeout: 5000 });
+    // Wait for unified progress modal
+    const progressModal = page.locator('#council-progress-modal');
+    await progressModal.waitFor({ state: 'visible', timeout: 5000 });
 
     // Should have Run in Background button
-    const backgroundBtn = page.locator('#progress-modal #run-background-btn, #progress-modal button:has-text("Background")');
+    const backgroundBtn = progressModal.locator('.council-bg-btn, button:has-text("Background")');
     await expect(backgroundBtn.first()).toBeVisible();
 
     // Should have Cancel button
-    const cancelBtn = page.locator('#progress-modal #cancel-btn, #progress-modal button:has-text("Cancel")');
+    const cancelBtn = progressModal.locator('.council-cancel-btn, button:has-text("Cancel")');
     await expect(cancelBtn.first()).toBeVisible();
   });
 });
