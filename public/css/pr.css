@@ -8269,8 +8269,9 @@ body.resizing * {
 /* Model Cards */
 .model-cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 220px));
   gap: 12px;
+  justify-content: center;
 }
 
 .model-card {
@@ -8278,13 +8279,16 @@ body.resizing * {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 16px 12px;
+  padding: 14px 10px;
   background: var(--color-bg-secondary);
   border: 2px solid var(--color-border-primary);
   border-radius: 10px;
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   text-align: center;
+  aspect-ratio: 1.618 / 1;
+  overflow: hidden;
+  justify-content: center;
 }
 
 .model-card:hover {
@@ -8348,14 +8352,20 @@ body.resizing * {
   color: white;
 }
 
+.model-icon {
+  font-size: 28px;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+
 .model-info {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .model-name {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--color-text-primary);
 }
@@ -8366,10 +8376,10 @@ body.resizing * {
 }
 
 .model-description {
-  margin: 8px 0 0;
-  font-size: 11px;
+  margin: 4px 0 0;
+  font-size: 10px;
   color: var(--color-text-tertiary);
-  line-height: 1.4;
+  line-height: 1.3;
 }
 
 .model-selected-indicator {
@@ -8803,6 +8813,9 @@ body.resizing * {
     text-align: left;
     padding: 12px 16px;
     gap: 12px;
+    aspect-ratio: auto;
+    overflow: visible;
+    justify-content: flex-start;
   }
 
   .model-icon {
@@ -9066,6 +9079,11 @@ body.resizing * {
   margin-top: 6px;
 }
 
+.add-voice-btn:hover {
+  color: var(--color-accent-primary, #0969da);
+  border-color: var(--color-accent-primary, #0969da);
+}
+
 .section-hint-text {
   font-size: 12px;
   color: var(--fg-muted, #656d76);
@@ -9223,6 +9241,30 @@ body.resizing * {
   margin: 0;
 }
 
+/* Orchestration/consolidation card — same styling as participant-card */
+.orchestration-card {
+  border: 1px solid var(--border-color, #d0d7de);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg-default, #fff);
+}
+
+[data-theme="dark"] .orchestration-card {
+  border-color: var(--border-color, #30363d);
+  background: var(--bg-subtle, #161b22);
+}
+
+.orchestration-card .voice-row {
+  margin: 0;
+}
+
+.orchestration-card .voice-instructions-area {
+  margin: 0;
+}
+
 .participant-wrapper > .remove-voice-btn {
   flex-shrink: 0;
   margin-top: 10px;
@@ -9246,8 +9288,8 @@ body.resizing * {
 }
 
 [data-theme="dark"] .add-voice-btn:hover {
-  color: var(--color-text-primary, #c9d1d9);
-  border-color: var(--color-text-secondary, #8b949e);
+  color: var(--color-accent-primary, #58a6ff);
+  border-color: var(--color-accent-primary, #58a6ff);
 }
 
 /* Disabled button styles for council selector row (item 6) */

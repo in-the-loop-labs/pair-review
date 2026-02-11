@@ -26,6 +26,17 @@ const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guida
 /** Minimum total suggestion count across all voices before consolidation is applied */
 const COUNCIL_CONSOLIDATION_THRESHOLD = 8;
 
+/**
+ * Build a human-readable display label for a council voice/reviewer.
+ * Uses 1-based index so logs read "Reviewer 1", "Reviewer 2", etc.
+ * @param {number} idx - 0-based array index
+ * @param {Object} voice - Voice config with provider, model, tier
+ * @returns {string} e.g. "Reviewer 1 (claude/sonnet-4-5)"
+ */
+function buildReviewerLabel(idx, voice) {
+  return `Reviewer ${idx + 1} (${voice.provider}/${voice.model})`;
+}
+
 class Analyzer {
   /**
    * @param {Object} database - Database instance
@@ -145,7 +156,7 @@ class Analyzer {
 
     // Get changed files for validation (use provided list for local mode, or compute for PR mode)
     const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
-    logger.info(`${logPrefix}[Orchestration] Using ${validFiles.length} changed files for path validation`);
+    logger.info(`${logPrefix}Using ${validFiles.length} changed files for path validation`);
 
     // Build file line count map for line number validation
     const fileLineCountMap = await buildFileLineCountMap(worktreePath, validFiles);
@@ -235,11 +246,11 @@ class Analyzer {
       }
 
       // Step 4: Orchestrate all suggestions
-      logger.info(`${logPrefix}All levels complete. Starting orchestration...`);
+      logger.info(`${logPrefix}All levels complete. Starting cross-level consolidation...`);
       if (progressCallback) {
         progressCallback({
           status: 'running',
-          progress: 'Orchestrating AI suggestions for intelligent curation...',
+          progress: 'Consolidating suggestions across analysis levels...',
           level: 'orchestration'
         });
       }
@@ -261,7 +272,7 @@ class Analyzer {
         );
 
         // Store orchestrated results with ai_level = NULL (final suggestions)
-        logger.info(`${logPrefix}Storing orchestrated suggestions in database...`);
+        logger.info(`${logPrefix}Storing consolidated suggestions in database...`);
         await this.storeSuggestions(prId, runId, finalSuggestions, null, validFiles);
 
         // Update analysis_run record with completion data
@@ -287,8 +298,8 @@ class Analyzer {
         };
 
       } catch (orchestrationError) {
-        logger.error(`${logPrefix}Orchestration failed: ${orchestrationError.message}`);
-        logger.warn(`${logPrefix}Falling back to storing all level suggestions without orchestration`);
+        logger.error(`${logPrefix}Cross-level consolidation failed: ${orchestrationError.message}`);
+        logger.warn(`${logPrefix}Falling back to storing all level suggestions without consolidation`);
 
         // Fallback: store all suggestions as final without orchestration
         const fallbackSuggestions = [
@@ -307,7 +318,7 @@ class Analyzer {
         await this.storeSuggestions(prId, runId, finalFallbackSuggestions, null, validFiles);
 
         // Update analysis_run record with completion data (even though orchestration failed)
-        const fallbackSummary = `Analysis complete (orchestration failed): ${finalFallbackSuggestions.length} suggestions`;
+        const fallbackSummary = `Analysis complete (consolidation failed): ${finalFallbackSuggestions.length} suggestions`;
         try {
           await analysisRunRepo.update(runId, {
             status: 'completed',
@@ -606,7 +617,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
     }
 
     if (!validPaths || validPaths.length === 0) {
-      logger.warn('[Orchestration] No valid paths provided for validation, skipping path filtering');
+      logger.warn('[Validation] No valid paths provided for validation, skipping path filtering');
       return suggestions;
     }
 
@@ -635,11 +646,11 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
 
     // Log discarded suggestions for debugging
     if (discardedSuggestions.length > 0) {
-      logger.warn(`[Orchestration] Discarded ${discardedSuggestions.length} suggestion(s) with invalid file paths:`);
+      logger.warn(`[Validation] Discarded ${discardedSuggestions.length} suggestion(s) with invalid file paths:`);
       for (const discarded of discardedSuggestions) {
         logger.warn(`  - "${discarded.file}" (normalized: "${discarded.normalizedPath}"): ${discarded.type} - ${discarded.title}`);
       }
-      logger.info(`[Orchestration] Valid paths in PR diff: ${Array.from(normalizedValidPaths).slice(0, 10).join(', ')}${normalizedValidPaths.size > 10 ? '...' : ''}`);
+      logger.info(`[Validation] Valid paths in PR diff: ${Array.from(normalizedValidPaths).slice(0, 10).join(', ')}${normalizedValidPaths.size > 10 ? '...' : ''}`);
     }
 
     return validSuggestions;
@@ -2356,13 +2367,13 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
     const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000 } = options;
-    logger.section('[Orchestration] AI Orchestration Starting');
+    logger.section('[Consolidation] Cross-Level Consolidation Starting');
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
                            (allSuggestions.level2?.length || 0) +
                            (allSuggestions.level3?.length || 0);
 
-    logger.info(`[Orchestration] Orchestrating ${totalSuggestions} total suggestions across all levels`);
+    logger.info(`[Consolidation] Consolidating ${totalSuggestions} total suggestions across all levels`);
 
     try {
       // Check if analysis was cancelled before starting
@@ -2370,14 +2381,14 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         throw new CancellationError('Analysis was cancelled');
       }
 
-      // Create provider instance for orchestration (use overrides if provided)
+      // Create provider instance for consolidation (use overrides if provided)
       const aiProvider = createProvider(providerOverride || this.provider, modelOverride || this.model);
 
-      // Build the orchestration prompt
+      // Build the consolidation prompt
       const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier);
 
-      // Execute Claude CLI for orchestration
-      logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
+      // Execute AI for cross-level consolidation
+      logger.info('[Consolidation] Running AI consolidation to curate and merge suggestions...');
       const response = await aiProvider.execute(prompt, {
         timeout,
         level: 'orchestration',
@@ -2391,25 +2402,25 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       // Parse the orchestrated response
       const orchestratedSuggestions = this.parseResponse(response, 'orchestration');
 
-      // Debug: If orchestration returned 0 suggestions but there was input, log for investigation
+      // Debug: If consolidation returned 0 suggestions but there was input, log for investigation
       const inputLevel1Count = allSuggestions.level1?.length || 0;
       const inputLevel2Count = allSuggestions.level2?.length || 0;
       const inputLevel3Count = allSuggestions.level3?.length || 0;
       const hadInputSuggestions = inputLevel1Count > 0 || inputLevel2Count > 0 || inputLevel3Count > 0;
 
       if (orchestratedSuggestions.length === 0 && hadInputSuggestions) {
-        logger.warn('[Orchestration] WARNING: Orchestration returned 0 suggestions despite input');
-        logger.warn(`[Orchestration] Input suggestion counts: Level1=${inputLevel1Count}, Level2=${inputLevel2Count}, Level3=${inputLevel3Count}`);
+        logger.warn('[Consolidation] WARNING: Consolidation returned 0 suggestions despite input');
+        logger.warn(`[Consolidation] Input suggestion counts: Level1=${inputLevel1Count}, Level2=${inputLevel2Count}, Level3=${inputLevel3Count}`);
         if (response.raw) {
-          logger.warn('[Orchestration] Raw AI response for debugging:');
-          logger.warn('--- BEGIN RAW ORCHESTRATION RESPONSE ---');
+          logger.warn('[Consolidation] Raw AI response for debugging:');
+          logger.warn('--- BEGIN RAW CONSOLIDATION RESPONSE ---');
           logger.warn(response.raw);
-          logger.warn('--- END RAW ORCHESTRATION RESPONSE ---');
+          logger.warn('--- END RAW CONSOLIDATION RESPONSE ---');
         } else if (response.suggestions) {
-          logger.warn('[Orchestration] Response had suggestions array but parsing returned 0. Response.suggestions:');
+          logger.warn('[Consolidation] Response had suggestions array but parsing returned 0. Response.suggestions:');
           logger.warn(JSON.stringify(response.suggestions, null, 2));
         } else {
-          logger.warn('[Orchestration] Response object keys: ' + Object.keys(response).join(', '));
+          logger.warn('[Consolidation] Response object keys: ' + Object.keys(response).join(', '));
         }
       }
 
@@ -2424,7 +2435,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         }
       }
 
-      logger.success(`[Orchestration] AI orchestration complete: ${orchestratedSuggestions.length} curated suggestions`);
+      logger.success(`[Consolidation] Cross-level consolidation complete: ${orchestratedSuggestions.length} curated suggestions`);
 
       return {
         suggestions: orchestratedSuggestions,
@@ -2432,7 +2443,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       };
       
     } catch (error) {
-      logger.warn(`AI orchestration failed: ${error.message}`);
+      logger.warn(`Cross-level consolidation failed: ${error.message}`);
       logger.warn('Falling back to storing all original suggestions');
 
       // Fallback: combine all suggestions with level labels
@@ -2458,7 +2469,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       return {
         suggestions: fallbackSuggestions,
-        summary: `Analysis complete (orchestration failed): ${fallbackSuggestions.length} suggestions from all analysis levels`
+        summary: `Analysis complete (consolidation failed): ${fallbackSuggestions.length} suggestions from all analysis levels`
       };
     }
   }
@@ -2485,7 +2496,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @returns {string} Orchestration prompt
    */
   buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, tier = 'balanced') {
-    logger.debug(`[Orchestration] Building prompt with tier: ${tier}`);
+    logger.debug(`[Consolidation] Building consolidation prompt with tier: ${tier}`);
     const promptBuilder = getPromptBuilder('orchestration', tier, this.provider);
 
     // Build context for the tagged prompt system
@@ -2535,7 +2546,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const { analysisId, progressCallback } = options;
     const parentRunId = options.runId || uuidv4();
 
-    logger.section('Voice-Centric Council Analysis Starting');
+    logger.section('Review Council Analysis Starting (Voice-Centric)');
     logger.info(`Review ID: ${reviewId}, Parent Run ID: ${parentRunId}`);
 
     // Normalize config: detect levels-format from frontend and extract voices + boolean levels
@@ -2563,7 +2574,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         }
       }
       councilConfig = { ...councilConfig, voices: normalizedVoices, levels: normalizedLevels };
-      logger.info(`[VoiceCouncil] Normalized levels-format config: ${normalizedVoices.length} unique voices, levels: ${JSON.stringify(normalizedLevels)}`);
+      logger.info(`[VoiceCouncil] Normalized levels-format config: ${normalizedVoices.length} unique reviewer(s), levels: ${JSON.stringify(normalizedLevels)}`);
     }
 
     // Merge instructions
@@ -2618,7 +2629,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       throw new Error('No voices configured in council');
     }
 
-    logger.info(`[VoiceCouncil] Launching ${voices.length} voice(s), each running levels: ${enabledLevelsList.join(', ')}`);
+    logger.info(`[VoiceCouncil] Launching ${voices.length} reviewer(s), each running levels: ${enabledLevelsList.join(', ')}`);
 
     // Report voice-centric progress structure
     if (progressCallback) {
@@ -2641,6 +2652,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     // For each voice, create a child run and launch analyzeAllLevels
     const voicePromises = voices.map(async (voice, idx) => {
       const voiceKey = `${voice.provider}-${voice.model}${idx > 0 ? `-${idx}` : ''}`;
+      const reviewerLabel = buildReviewerLabel(idx, voice);
       const childRunId = uuidv4();
 
       // Create child analysis run record
@@ -2658,7 +2670,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           configType: 'council',
           levelsConfig: enabledLevels
         });
-        logger.info(`[VoiceCouncil] Created child run ${childRunId} for voice ${voiceKey}`);
+        logger.info(`[VoiceCouncil] Created child run ${childRunId} for ${reviewerLabel}`);
       } catch (err) {
         logger.warn(`[VoiceCouncil] Failed to create child run record: ${err.message}`);
       }
@@ -2701,7 +2713,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             enabledLevels,
             tier: voiceTier,
             timeout: voiceTimeout,
-            logPrefix: `[${voice.provider}/${voice.model}] `
+            logPrefix: `[${reviewerLabel}] `
           }
         );
 
@@ -2717,7 +2729,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           logger.warn(`[VoiceCouncil] Failed to update child run ${childRunId}: ${err.message}`);
         }
 
-        return { voiceKey, childRunId, result, provider: voice.provider, model: voice.model };
+        return { voiceKey, reviewerLabel, childRunId, result, provider: voice.provider, model: voice.model };
       } catch (error) {
         // Update child run to failed/cancelled
         try {
@@ -2759,11 +2771,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         if (settled.value.result.summary) {
           voiceSummaries.push(settled.value.result.summary);
         }
-        logger.success(`[VoiceCouncil] Voice ${settled.value.voiceKey}: ${settled.value.result.suggestions.length} suggestions`);
+        logger.success(`[VoiceCouncil] ${settled.value.reviewerLabel}: ${settled.value.result.suggestions.length} suggestions`);
       } else {
         const reason = settled.status === 'rejected' ? settled.reason?.message : 'No suggestions';
-        const voiceKey = voices[i] ? `${voices[i].provider}-${voices[i].model}${i > 0 ? `-${i}` : ''}` : `voice-${i}`;
-        logger.warn(`[VoiceCouncil] Voice ${voiceKey} failed: ${reason}`);
+        const label = voices[i] ? buildReviewerLabel(i, voices[i]) : `Reviewer ${i + 1}`;
+        logger.warn(`[VoiceCouncil] ${label} failed: ${reason}`);
       }
     }
 
@@ -2778,7 +2790,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     // Single voice: use directly, no consolidation
     if (successfulVoices.length === 1) {
-      logger.info('[VoiceCouncil] Single voice result — skipping consolidation');
+      logger.info('[VoiceCouncil] Single reviewer result — skipping consolidation');
       const singleResult = successfulVoices[0].result;
 
       try {
@@ -2825,13 +2837,13 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       };
     }
 
-    // Run cross-voice consolidation
-    logger.info(`[VoiceCouncil] Starting cross-voice consolidation of ${successfulVoices.length} voices (${totalSuggestionCount} total suggestions)`);
+    // Run cross-reviewer consolidation
+    logger.info(`[VoiceCouncil] Starting cross-reviewer consolidation of ${successfulVoices.length} reviewers (${totalSuggestionCount} total suggestions)`);
 
     if (progressCallback) {
       progressCallback({
         status: 'running',
-        progress: 'Consolidating results across voices...',
+        progress: 'Consolidating results across reviewers...',
         level: 'orchestration',
         voiceCentric: true
       });
@@ -2841,6 +2853,14 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const consolProvider = consolConfig.provider;
     const consolModel = consolConfig.model;
     const consolTier = consolConfig.tier || 'balanced';
+
+    // Merge consolidation-specific custom instructions with global instructions
+    let consolInstructions = mergedInstructions;
+    if (consolConfig.customInstructions) {
+      consolInstructions = consolInstructions
+        ? `${consolInstructions}\n\n## Orchestration-Specific Instructions\n${consolConfig.customInstructions}`
+        : consolConfig.customInstructions;
+    }
 
     try {
       // Build per-voice review summaries for the consolidation prompt
@@ -2854,8 +2874,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       }));
 
       const consolidated = await this._crossVoiceConsolidate(
-        voiceReviews, prMetadata, mergedInstructions, worktreePath,
-        { provider: consolProvider, model: consolModel, tier: consolTier, analysisId, progressCallback }
+        voiceReviews, prMetadata, consolInstructions, worktreePath,
+        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback }
       );
 
       const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -2885,7 +2905,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         summary
       };
     } catch (error) {
-      logger.error(`[VoiceCouncil] Cross-voice consolidation failed: ${error.message}`);
+      logger.error(`[VoiceCouncil] Cross-reviewer consolidation failed: ${error.message}`);
 
       // Fallback: use all voice suggestions combined
       const fallbackSuggestions = this.validateAndFinalizeSuggestions(
@@ -2926,7 +2946,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} reviewContext.instructions - Instructions object { repoInstructions, requestInstructions }
    * @param {Object} councilConfig - Council configuration
    * @param {Object} councilConfig.levels - Level configurations keyed by '1', '2', '3'
-   * @param {Object} [councilConfig.orchestration] - Orchestration provider/model/tier
+   * @param {Object} [councilConfig.consolidation] - Consolidation provider/model/tier
    * @param {Object} options - Additional options
    * @param {string} options.analysisId - Analysis ID for process tracking
    * @param {string} [options.runId] - Pre-generated run ID
@@ -2969,6 +2989,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       for (const [voiceIdx, voice] of levelConfig.voices.entries()) {
         const voiceId = `L${levelKey}-${voice.provider}-${voice.model}${voiceIdx > 0 ? `-${voiceIdx}` : ''}`;
+        const reviewerLabel = `L${levelKey} ${buildReviewerLabel(voiceIdx, voice)}`;
         const tier = voice.tier || 'balanced';
 
         // Merge per-voice custom instructions with base instructions
@@ -2981,6 +3002,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
         voiceTasks.push({
           voiceId,
+          reviewerLabel,
           level: parseInt(levelKey),
           provider: voice.provider,
           model: voice.model,
@@ -2995,7 +3017,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       throw new Error('No enabled levels with voices in council config');
     }
 
-    logger.info(`[Council] Launching ${voiceTasks.length} voice(s) across levels: ${enabledLevels.join(', ')}`);
+    logger.info(`[Council] Launching ${voiceTasks.length} reviewer(s) across levels: ${enabledLevels.join(', ')}`);
 
     // Execute all voices in parallel
     const voicePromises = voiceTasks.map(task => {
@@ -3049,10 +3071,10 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         }
         levelSuggestions[task.level].push(...suggestions);
 
-        logger.success(`[Council] Voice ${task.voiceId}: ${suggestions.length} suggestions`);
+        logger.success(`[Council] ${task.reviewerLabel}: ${suggestions.length} suggestions`);
       } else {
         const reason = result.status === 'rejected' ? result.reason?.message : 'No suggestions';
-        logger.warn(`[Council] Voice ${task.voiceId} failed: ${reason}`);
+        logger.warn(`[Council] ${task.reviewerLabel} failed: ${reason}`);
       }
     }
 
@@ -3078,7 +3100,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     if (voiceSuccessCount === 1 && successfulVoiceLevels.size === 1) {
       // Single voice, single level — skip all consolidation
-      logger.info('[Council] Single voice result — skipping consolidation');
+      logger.info('[Council] Single reviewer result — skipping consolidation');
       const singleLevel = [...successfulVoiceLevels][0];
       const singleLevelSuggestions = levelSuggestions[singleLevel] || [];
       const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -3116,17 +3138,25 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       };
     }
 
-    // Store raw per-voice suggestions (only when consolidation will occur)
-    logger.info(`[Council] Storing ${rawSuggestions.length} raw voice suggestions`);
+    // Store raw per-reviewer suggestions (only when consolidation will occur)
+    logger.info(`[Council] Storing ${rawSuggestions.length} raw reviewer suggestions`);
     await this._storeCouncilSuggestions(reviewId, runId, rawSuggestions, validFiles);
 
     // Determine orchestration provider
-    const orchConfig = councilConfig.orchestration || this._defaultOrchestration(councilConfig);
+    const orchConfig = councilConfig.consolidation || councilConfig.orchestration || this._defaultOrchestration(councilConfig);
     const orchProvider = orchConfig.provider;
     const orchModel = orchConfig.model;
     const orchTier = orchConfig.tier || 'balanced';
 
-    logger.info(`[Council] Orchestration: ${orchProvider}/${orchModel} (${orchTier})`);
+    // Merge orchestration-specific custom instructions with global instructions
+    let orchInstructions = mergedInstructions;
+    if (orchConfig.customInstructions) {
+      orchInstructions = orchInstructions
+        ? `${orchInstructions}\n\n## Orchestration-Specific Instructions\n${orchConfig.customInstructions}`
+        : orchConfig.customInstructions;
+    }
+
+    logger.info(`[Council] Consolidation: ${orchProvider}/${orchModel} (${orchTier})`);
 
     if (progressCallback) {
       progressCallback({
@@ -3136,7 +3166,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       });
     }
 
-    // Pass 1: Intra-level consolidation (for levels with >1 voice)
+    // Pass 1: Intra-level consolidation (for levels with >1 reviewer)
     const consolidatedPerLevel = {};
     for (const [levelStr, suggestions] of Object.entries(levelSuggestions)) {
       const level = parseInt(levelStr);
@@ -3149,15 +3179,15 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         );
 
       if (successfulVoicesForLevel.length <= 1) {
-        // Single voice or no results — no intra-level consolidation needed
+        // Single reviewer or no results — no intra-level consolidation needed
         consolidatedPerLevel[level] = suggestions;
       } else {
-        // Multiple voices — run intra-level consolidation
-        logger.info(`[Council] Pass 1: Consolidating ${successfulVoicesForLevel.length} voices for Level ${level}`);
+        // Multiple reviewers — run intra-level consolidation
+        logger.info(`[Council] Pass 1: Consolidating ${successfulVoicesForLevel.length} reviewers for Level ${level}`);
         try {
           const consolidated = await this._intraLevelConsolidate(
-            level, suggestions, prMetadata, mergedInstructions, worktreePath,
-            { provider: orchProvider, model: orchModel, tier: orchTier, analysisId, progressCallback }
+            level, suggestions, prMetadata, orchInstructions, worktreePath,
+            { provider: orchProvider, model: orchModel, tier: orchTier, timeout: orchConfig.timeout, analysisId, progressCallback }
           );
           consolidatedPerLevel[level] = consolidated;
         } catch (error) {
@@ -3168,7 +3198,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     }
 
     // Pass 2: Cross-level orchestration
-    logger.info('[Council] Pass 2: Cross-level orchestration');
+    logger.info('[Council] Pass 2: Cross-level consolidation');
     try {
       const allSuggestions = {
         level1: consolidatedPerLevel[1] || [],
@@ -3177,7 +3207,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       };
 
       const orchestrationResult = await this.orchestrateWithAI(
-        allSuggestions, prMetadata, mergedInstructions, worktreePath,
+        allSuggestions, prMetadata, orchInstructions, worktreePath,
         { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout || 600000 }
       );
 
@@ -3196,7 +3226,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         summary: orchestrationResult.summary
       };
     } catch (error) {
-      logger.error(`[Council] Cross-level orchestration failed: ${error.message}`);
+      logger.error(`[Council] Cross-level consolidation failed: ${error.message}`);
 
       // Fallback: combine all consolidated suggestions
       const fallbackSuggestions = Object.values(consolidatedPerLevel).flat();
@@ -3208,7 +3238,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       return {
         runId,
         suggestions: finalFallback,
-        summary: `Council analysis complete (orchestration failed): ${finalFallback.length} suggestions`,
+        summary: `Council analysis complete (consolidation failed): ${finalFallback.length} suggestions`,
         orchestrationFailed: true
       };
     }
@@ -3222,10 +3252,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @private
    */
   async _executeCouncilVoice(task, context) {
-    const { voiceId, level, provider, model, tier, timeout = 600000, customInstructions } = task;
+    const { voiceId, reviewerLabel, level, provider, model, tier, timeout = 600000, customInstructions } = task;
     const { reviewId, runId, worktreePath, prMetadata, generatedPatterns, validFiles, analysisId, progressCallback } = context;
+    const displayLabel = reviewerLabel || voiceId;
 
-    logger.info(`[Council] Starting voice ${voiceId} (Level ${level}, ${provider}/${model}, ${tier})`);
+    logger.info(`[Council] Starting ${displayLabel} (${tier})`);
 
     if (analysisId && isAnalysisCancelled(analysisId)) {
       throw new CancellationError('Analysis was cancelled');
@@ -3260,7 +3291,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       // Parse response
       const suggestions = this.parseResponse(response, level);
-      logger.success(`[Council] Voice ${voiceId}: parsed ${suggestions.length} suggestions`);
+      logger.success(`[Council] ${displayLabel}: parsed ${suggestions.length} suggestions`);
 
       // Report per-voice completion to progress callback
       if (progressCallback) {
@@ -3274,11 +3305,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       return {
         suggestions,
-        summary: response.summary || `Voice ${voiceId}: ${suggestions.length} suggestions`
+        summary: response.summary || `${displayLabel}: ${suggestions.length} suggestions`
       };
     } catch (error) {
       if (!error.isCancellation) {
-        logger.error(`[Council] Voice ${voiceId} failed: ${error.message}`);
+        logger.error(`[Council] ${displayLabel} failed: ${error.message}`);
       }
 
       // Report per-voice failure to progress callback (unless cancelled)
@@ -3302,12 +3333,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {Object} prMetadata - PR metadata
    * @param {string} customInstructions - Custom instructions
    * @param {string} worktreePath - Worktree path
-   * @param {Object} orchConfig - Orchestration config { provider, model, tier, analysisId, progressCallback }
+   * @param {Object} orchConfig - Orchestration config { provider, model, tier, timeout, analysisId, progressCallback }
    * @returns {Promise<Array>} Consolidated suggestions
    * @private
    */
   async _intraLevelConsolidate(level, suggestions, prMetadata, customInstructions, worktreePath, orchConfig) {
-    const { provider, model, tier, analysisId, progressCallback } = orchConfig;
+    const { provider, model, tier, timeout, analysisId, progressCallback } = orchConfig;
 
     const aiProvider = createProvider(provider, model);
 
@@ -3345,7 +3376,7 @@ Output ONLY valid JSON with no additional text, explanations, or markdown code b
 
     const response = await aiProvider.execute(prompt, {
       cwd: worktreePath,
-      timeout: 300000,
+      timeout: timeout || 300000,
       level: `consolidation-L${level}`,
       analysisId,
       registerProcess,
@@ -3415,7 +3446,7 @@ Output ONLY valid JSON with no additional text, explanations, or markdown code b
     if (filteredCount > 0) {
       logger.warn(`[Council] Filtered ${filteredCount} raw suggestions with invalid file paths`);
     }
-    logger.info(`[Council] Stored ${suggestions.length - filteredCount} raw voice suggestions`);
+    logger.info(`[Council] Stored ${suggestions.length - filteredCount} raw reviewer suggestions`);
   }
 
   /**
@@ -3470,12 +3501,12 @@ Output ONLY valid JSON with no additional text, explanations, or markdown code b
    * @param {Object} prMetadata - PR metadata
    * @param {string} customInstructions - Merged custom instructions
    * @param {string} worktreePath - Worktree path
-   * @param {Object} config - { provider, model, tier, analysisId, progressCallback }
+   * @param {Object} config - { provider, model, tier, timeout, analysisId, progressCallback }
    * @returns {Promise<Object>} { suggestions, summary }
    * @private
    */
   async _crossVoiceConsolidate(voiceReviews, prMetadata, customInstructions, worktreePath, config) {
-    const { provider, model, tier, analysisId, progressCallback } = config;
+    const { provider, model, tier, timeout, analysisId, progressCallback } = config;
 
     const aiProvider = createProvider(provider, model);
 
@@ -3527,7 +3558,7 @@ Output ONLY valid JSON with no additional text, explanations, or markdown code b
 
     const response = await aiProvider.execute(prompt, {
       cwd: worktreePath,
-      timeout: 300000,
+      timeout: timeout || 300000,
       level: 'cross-voice-consolidation',
       analysisId,
       registerProcess,

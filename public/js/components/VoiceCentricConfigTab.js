@@ -35,6 +35,12 @@ class VoiceCentricConfigTab {
   /** Speech bubble SVG icon (solid/filled) */
   static SPEECH_BUBBLE_SVG_SOLID = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 1C1.784 1 1 1.784 1 2.75v7.5c0 .966.784 1.75 1.75 1.75H4v1.543a1.458 1.458 0 0 0 2.487 1.03L9.06 12h4.19A1.75 1.75 0 0 0 15 10.25v-7.5A1.75 1.75 0 0 0 13.25 1H2.75Z"/></svg>`;
 
+  /** Clock SVG icon for per-voice timeout toggle */
+  static CLOCK_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm7-3.25v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.751.751 0 0 1 7 8.25v-3.5a.75.75 0 0 1 1.5 0Z"/></svg>`;
+
+  /** Default timeout in milliseconds (10 minutes) */
+  static DEFAULT_TIMEOUT = 600000;
+
   constructor(modal) {
     this.modal = modal;
     this.councils = [];
@@ -105,7 +111,7 @@ class VoiceCentricConfigTab {
   /**
    * Get the current council config for submission.
    * Converts voice-centric flat list + global levels into the levels format
-   * the backend expects: { levels: { '1': { enabled, voices }, ... }, orchestration }
+   * the backend expects: { levels: { '1': { enabled, voices }, ... }, consolidation }
    * @returns {Object} Council config in levels format
    */
   getCouncilConfig() {
@@ -280,12 +286,12 @@ class VoiceCentricConfigTab {
             <span class="toggle-label">Level 1 &mdash; Changes in Isolation</span>
           </label>
           <label class="remember-toggle vc-level-toggle">
-            <input type="checkbox" class="vc-level-checkbox" data-level="2" />
+            <input type="checkbox" class="vc-level-checkbox" data-level="2" checked />
             <span class="toggle-switch"></span>
             <span class="toggle-label">Level 2 &mdash; File Context</span>
           </label>
           <label class="remember-toggle vc-level-toggle">
-            <input type="checkbox" class="vc-level-checkbox" data-level="3" />
+            <input type="checkbox" class="vc-level-checkbox" data-level="3" checked />
             <span class="toggle-switch"></span>
             <span class="toggle-label">Level 3 &mdash; Codebase Context</span>
           </label>
@@ -295,15 +301,28 @@ class VoiceCentricConfigTab {
       <section class="config-section">
         <h4 class="section-title">Consolidation ${VoiceCentricConfigTab.buildInfoTipButton('consolidation')}</h4>
         ${VoiceCentricConfigTab.buildInfoTipContent('consolidation', 'The consolidation model merges findings from all reviewers into a single coherent review. <strong>Fast</strong> tier gives concise output, <strong>Balanced</strong> is the recommended default, and <strong>Thorough</strong> produces the most detailed consolidation.')}
-        <p class="section-hint-text">Model used for cross-voice consolidation</p>
-        <div class="voice-row" id="vc-orchestration-voice">
-          <select class="voice-provider" data-target="orchestration"></select>
-          <select class="voice-model" data-target="orchestration"></select>
-          <select class="voice-tier" data-target="orchestration">
-            <option value="fast">Fast</option>
-            <option value="balanced" selected>Balanced</option>
-            <option value="thorough">Thorough</option>
-          </select>
+        <p class="section-hint-text">Model used for cross-reviewer consolidation</p>
+        <div class="orchestration-card" id="vc-orchestration-card">
+          <div class="voice-row" id="vc-orchestration-voice">
+            <select class="voice-provider" data-target="orchestration"></select>
+            <select class="voice-model" data-target="orchestration"></select>
+            <select class="voice-tier" data-target="orchestration">
+              <option value="fast">Fast</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="thorough">Thorough</option>
+            </select>
+            <select class="vc-timeout" id="vc-orchestration-timeout" title="Consolidation timeout" style="display:none">
+              <option value="300000">5m</option>
+              <option value="600000" selected>10m</option>
+              <option value="900000">15m</option>
+              <option value="1800000">30m</option>
+            </select>
+            <button class="toggle-timeout-icon" id="vc-orchestration-timeout-toggle" title="Consolidation timeout">${VoiceCentricConfigTab.CLOCK_SVG}</button>
+            <button class="toggle-instructions-icon" id="vc-orchestration-instructions-toggle" title="Consolidation instructions">${VoiceCentricConfigTab.SPEECH_BUBBLE_SVG}</button>
+          </div>
+          <div class="voice-instructions-area" id="vc-orchestration-instructions-area" style="display:none">
+            <textarea class="voice-instructions-input" id="vc-orchestration-instructions" placeholder="Consolidation instructions (e.g., Prefer security findings over style nits)" rows="2"></textarea>
+          </div>
         </div>
       </section>
 
@@ -323,12 +342,13 @@ class VoiceCentricConfigTab {
               <option value="balanced" selected>Balanced</option>
               <option value="thorough">Thorough</option>
             </select>
-            <select class="vc-timeout" data-index="${index}" title="Per-voice timeout">
+            <select class="vc-timeout" data-index="${index}" title="Per-reviewer timeout" style="display:none">
               <option value="300000">5m</option>
               <option value="600000" selected>10m</option>
               <option value="900000">15m</option>
               <option value="1800000">30m</option>
             </select>
+            <button class="toggle-timeout-icon" data-index="${index}" title="Per-reviewer timeout">${VoiceCentricConfigTab.CLOCK_SVG}</button>
             <button class="toggle-instructions-icon" data-index="${index}" title="Per-reviewer instructions">${VoiceCentricConfigTab.SPEECH_BUBBLE_SVG}</button>
           </div>
           <div class="voice-instructions-area" data-index="${index}" style="display:none">
@@ -445,15 +465,50 @@ class VoiceCentricConfigTab {
 
       const toggleBtn = e.target.closest('.toggle-instructions-icon');
       if (toggleBtn) {
-        const idx = toggleBtn.dataset.index;
-        const wrapper = panel.querySelector(`.vc-reviewer[data-index="${idx}"]`);
-        const area = wrapper?.querySelector(`.voice-instructions-area[data-index="${idx}"]`);
-        if (area) {
-          const isHidden = area.style.display === 'none';
-          area.style.display = isHidden ? '' : 'none';
-          if (isHidden) {
-            const textarea = area.querySelector('.voice-instructions-input');
-            if (textarea) textarea.focus();
+        // Orchestration instructions toggle (no data-index)
+        if (toggleBtn.id === 'vc-orchestration-instructions-toggle') {
+          const area = panel.querySelector('#vc-orchestration-instructions-area');
+          if (area) {
+            const isHidden = area.style.display === 'none';
+            area.style.display = isHidden ? '' : 'none';
+            if (isHidden) {
+              const textarea = area.querySelector('#vc-orchestration-instructions');
+              if (textarea) textarea.focus();
+            }
+          }
+        } else {
+          // Per-reviewer instructions toggle
+          const idx = toggleBtn.dataset.index;
+          const wrapper = panel.querySelector(`.vc-reviewer[data-index="${idx}"]`);
+          const area = wrapper?.querySelector(`.voice-instructions-area[data-index="${idx}"]`);
+          if (area) {
+            const isHidden = area.style.display === 'none';
+            area.style.display = isHidden ? '' : 'none';
+            if (isHidden) {
+              const textarea = area.querySelector('.voice-instructions-input');
+              if (textarea) textarea.focus();
+            }
+          }
+        }
+      }
+
+      // Toggle timeout dropdown via clock icon
+      const clockBtn = e.target.closest('.toggle-timeout-icon');
+      if (clockBtn) {
+        // Orchestration timeout toggle
+        if (clockBtn.id === 'vc-orchestration-timeout-toggle') {
+          const timeoutSelect = panel.querySelector('#vc-orchestration-timeout');
+          if (timeoutSelect) {
+            const isHidden = timeoutSelect.style.display === 'none';
+            timeoutSelect.style.display = isHidden ? '' : 'none';
+          }
+        } else {
+          const idx = clockBtn.dataset.index;
+          const wrapper = panel.querySelector(`.vc-reviewer[data-index="${idx}"]`);
+          const timeoutSelect = wrapper?.querySelector(`.vc-timeout[data-index="${idx}"]`);
+          if (timeoutSelect) {
+            const isHidden = timeoutSelect.style.display === 'none';
+            timeoutSelect.style.display = isHidden ? '' : 'none';
           }
         }
       }
@@ -475,8 +530,13 @@ class VoiceCentricConfigTab {
     // Update speech bubble icon based on textarea content
     panel.addEventListener('input', (e) => {
       if (e.target.classList.contains('voice-instructions-input')) {
-        const idx = e.target.dataset.index;
-        this._updateInstructionsIcon(panel, idx, e.target.value);
+        // Orchestration instructions textarea
+        if (e.target.id === 'vc-orchestration-instructions') {
+          this._updateOrchestrationInstructionsIcon(panel, e.target.value);
+        } else {
+          const idx = e.target.dataset.index;
+          this._updateInstructionsIcon(panel, idx, e.target.value);
+        }
       }
     });
 
@@ -488,6 +548,15 @@ class VoiceCentricConfigTab {
       // Model change -> update tier to match model's recommended tier
       if (e.target.classList.contains('voice-model')) {
         this._syncTierToModel(e.target);
+      }
+      // Timeout change -> update clock icon styling
+      if (e.target.classList.contains('vc-timeout')) {
+        if (e.target.id === 'vc-orchestration-timeout') {
+          this._updateOrchestrationTimeoutIcon(panel, e.target.value);
+        } else {
+          const idx = e.target.dataset.index;
+          this._updateTimeoutIcon(panel, idx, e.target.value);
+        }
       }
     });
 
@@ -597,6 +666,40 @@ class VoiceCentricConfigTab {
     iconBtn.classList.toggle('has-instructions', hasContent);
   }
 
+  _updateOrchestrationInstructionsIcon(panel, value) {
+    const iconBtn = panel.querySelector('#vc-orchestration-instructions-toggle');
+    if (!iconBtn) return;
+
+    const hasContent = value.trim().length > 0;
+    iconBtn.innerHTML = hasContent
+      ? VoiceCentricConfigTab.SPEECH_BUBBLE_SVG_SOLID
+      : VoiceCentricConfigTab.SPEECH_BUBBLE_SVG;
+    iconBtn.classList.toggle('has-instructions', hasContent);
+  }
+
+  /**
+   * Update the clock/timeout icon styling to indicate non-default timeout.
+   * @param {Element} panel - The council panel element
+   * @param {string} index - Reviewer index
+   * @param {string} value - Current timeout value (as string of ms)
+   */
+  _updateTimeoutIcon(panel, index, value) {
+    const wrapper = panel.querySelector(`.vc-reviewer[data-index="${index}"]`);
+    const iconBtn = wrapper?.querySelector(`.toggle-timeout-icon[data-index="${index}"]`);
+    if (!iconBtn) return;
+
+    const isNonDefault = parseInt(value, 10) !== VoiceCentricConfigTab.DEFAULT_TIMEOUT;
+    iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
+  }
+
+  _updateOrchestrationTimeoutIcon(panel, value) {
+    const iconBtn = panel.querySelector('#vc-orchestration-timeout-toggle');
+    if (!iconBtn) return;
+
+    const isNonDefault = parseInt(value, 10) !== VoiceCentricConfigTab.DEFAULT_TIMEOUT;
+    iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
+  }
+
   // --- Dropdown / model management ---
 
   _updateAllVoiceDropdowns() {
@@ -688,16 +791,16 @@ class VoiceCentricConfigTab {
 
   _defaultConfig() {
     return {
-      voices: [{ provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: 600000 }],
-      enabledLevels: [1],
-      orchestration: { provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced' }
+      voices: [{ provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT }],
+      enabledLevels: [1, 2, 3],
+      orchestration: { provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT }
     };
   }
 
   /**
    * Read voice-centric config from UI and convert to the levels format the backend expects.
    * Voice-centric config stores: { voices: [...], enabledLevels: [1,2,3], orchestration: {...} }
-   * Backend expects: { levels: { '1': { enabled, voices }, ... }, orchestration: {...} }
+   * Backend expects: { levels: { '1': { enabled, voices }, ... }, consolidation: {...} }
    */
   _readConfigFromUI() {
     const panel = this.modal.querySelector('#tab-panel-council');
@@ -712,7 +815,7 @@ class VoiceCentricConfigTab {
       const model = row?.querySelector('.voice-model')?.value;
       const tier = row?.querySelector('.voice-tier')?.value;
       const timeoutSelect = row?.querySelector('.vc-timeout');
-      const timeout = timeoutSelect ? parseInt(timeoutSelect.value, 10) : 600000;
+      const timeout = timeoutSelect ? parseInt(timeoutSelect.value, 10) : VoiceCentricConfigTab.DEFAULT_TIMEOUT;
       const idx = wrapper.dataset.index;
       const instrInput = wrapper.querySelector(`.voice-instructions-input[data-index="${idx}"]`);
       const customInstructions = instrInput?.value?.trim() || undefined;
@@ -732,11 +835,17 @@ class VoiceCentricConfigTab {
 
     // Read orchestration
     const orchRow = panel.querySelector('#vc-orchestration-voice');
+    const orchTimeoutSelect = panel.querySelector('#vc-orchestration-timeout');
+    const orchInstrInput = panel.querySelector('#vc-orchestration-instructions');
+    const orchTimeout = orchTimeoutSelect ? parseInt(orchTimeoutSelect.value, 10) : VoiceCentricConfigTab.DEFAULT_TIMEOUT;
+    const orchCustomInstructions = orchInstrInput?.value?.trim() || undefined;
     const orchestration = orchRow ? {
       provider: orchRow.querySelector('.voice-provider')?.value || 'claude',
       model: orchRow.querySelector('.voice-model')?.value || 'sonnet',
-      tier: orchRow.querySelector('.voice-tier')?.value || 'balanced'
-    } : { provider: 'claude', model: 'sonnet', tier: 'balanced' };
+      tier: orchRow.querySelector('.voice-tier')?.value || 'balanced',
+      timeout: orchTimeout,
+      ...(orchCustomInstructions ? { customInstructions: orchCustomInstructions } : {})
+    } : { provider: 'claude', model: 'sonnet', tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT };
 
     return this._convertToLevelsFormat({ voices, enabledLevels, orchestration });
   }
@@ -760,7 +869,7 @@ class VoiceCentricConfigTab {
         })) : []
       };
     }
-    return { levels, orchestration: vcConfig.orchestration || {} };
+    return { levels, consolidation: vcConfig.orchestration || {} };
   }
 
   /**
@@ -787,7 +896,7 @@ class VoiceCentricConfigTab {
       list.innerHTML = '';
       const voices = vcConfig.voices || [];
       if (voices.length === 0) {
-        voices.push({ provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: 600000 });
+        voices.push({ provider: this._defaultProvider, model: this._defaultModel, tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT });
       }
       voices.forEach((voice, i) => {
         const wrapper = document.createElement('div');
@@ -808,7 +917,14 @@ class VoiceCentricConfigTab {
           const tierSelect = row.querySelector('.voice-tier');
           if (tierSelect) tierSelect.value = voice.tier || 'balanced';
           const timeoutSelect = row.querySelector('.vc-timeout');
-          if (timeoutSelect && voice.timeout) timeoutSelect.value = String(voice.timeout);
+          if (timeoutSelect && voice.timeout) {
+            timeoutSelect.value = String(voice.timeout);
+            // Show the dropdown if non-default
+            if (voice.timeout !== VoiceCentricConfigTab.DEFAULT_TIMEOUT) {
+              timeoutSelect.style.display = '';
+            }
+            this._updateTimeoutIcon(panel, String(i), String(voice.timeout));
+          }
         }
 
         if (voice.customInstructions) {
@@ -845,6 +961,30 @@ class VoiceCentricConfigTab {
           if (tierSelect) tierSelect.value = vcConfig.orchestration.tier || 'balanced';
         }
       }
+
+      // Restore orchestration timeout
+      const orchTimeoutSelect = panel.querySelector('#vc-orchestration-timeout');
+      if (orchTimeoutSelect && vcConfig.orchestration.timeout) {
+        orchTimeoutSelect.value = String(vcConfig.orchestration.timeout);
+        // Show the dropdown if non-default
+        if (vcConfig.orchestration.timeout !== VoiceCentricConfigTab.DEFAULT_TIMEOUT) {
+          orchTimeoutSelect.style.display = '';
+        }
+        this._updateOrchestrationTimeoutIcon(panel, String(vcConfig.orchestration.timeout));
+      }
+
+      // Restore orchestration custom instructions
+      const orchInstrInput = panel.querySelector('#vc-orchestration-instructions');
+      const orchInstrArea = panel.querySelector('#vc-orchestration-instructions-area');
+      if (vcConfig.orchestration.customInstructions) {
+        if (orchInstrInput) orchInstrInput.value = vcConfig.orchestration.customInstructions;
+        if (orchInstrArea) orchInstrArea.style.display = '';
+        this._updateOrchestrationInstructionsIcon(panel, vcConfig.orchestration.customInstructions);
+      } else {
+        if (orchInstrInput) orchInstrInput.value = '';
+        if (orchInstrArea) orchInstrArea.style.display = 'none';
+        this._updateOrchestrationInstructionsIcon(panel, '');
+      }
     }
   }
 
@@ -870,7 +1010,7 @@ class VoiceCentricConfigTab {
     return {
       voices,
       enabledLevels,
-      orchestration: config.orchestration || {}
+      orchestration: config.consolidation || config.orchestration || {}
     };
   }
 

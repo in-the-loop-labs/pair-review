@@ -113,7 +113,7 @@ function determineCompletionInfo(result) {
     // We have orchestrated suggestions - use those as the final count
     totalSuggestions = result.level2Result.orchestratedSuggestions.length;
     progressMessage = `Analysis complete: ${totalSuggestions} orchestrated suggestions stored`;
-    logger.success(`Orchestration successful: ${totalSuggestions} curated suggestions from all levels`);
+    logger.success(`Consolidation successful: ${totalSuggestions} curated suggestions from all levels`);
   } else {
     // Fall back to individual level counts
     const level1Count = result.suggestions.length;

@@ -257,11 +257,11 @@ class AdvancedConfigTab {
   _defaultConfig() {
     return {
       levels: {
-        '1': { enabled: false, voices: [] },
-        '2': { enabled: false, voices: [] },
-        '3': { enabled: false, voices: [] }
+        '1': { enabled: true, voices: [] },
+        '2': { enabled: true, voices: [] },
+        '3': { enabled: true, voices: [] }
       },
-      orchestration: { provider: this._defaultProvider || 'claude', model: this._defaultModel || 'sonnet', tier: 'balanced' }
+      consolidation: { provider: this._defaultProvider || 'claude', model: this._defaultModel || 'sonnet', tier: 'balanced', timeout: AdvancedConfigTab.DEFAULT_TIMEOUT }
     };
   }
 
@@ -286,21 +286,34 @@ class AdvancedConfigTab {
       </section>
 
       ${this._buildLevelSection(1, 'Changes in Isolation', true)}
-      ${this._buildLevelSection(2, 'File Context', false)}
-      ${this._buildLevelSection(3, 'Codebase Context', false)}
+      ${this._buildLevelSection(2, 'File Context', true)}
+      ${this._buildLevelSection(3, 'Codebase Context', true)}
 
       <section class="config-section">
-        <h4 class="section-title">Orchestration ${AdvancedConfigTab.buildInfoTipButton('orchestration')}</h4>
-        ${AdvancedConfigTab.buildInfoTipContent('orchestration', 'The orchestration model consolidates findings from all participants into a single coherent review. <strong>Fast</strong> tier gives concise output, <strong>Balanced</strong> is the recommended default, and <strong>Thorough</strong> produces the most detailed consolidation.')}
+        <h4 class="section-title">Consolidation ${AdvancedConfigTab.buildInfoTipButton('orchestration')}</h4>
+        ${AdvancedConfigTab.buildInfoTipContent('orchestration', 'The consolidation model merges findings from all reviewers into a single coherent review. <strong>Fast</strong> tier gives concise output, <strong>Balanced</strong> is the recommended default, and <strong>Thorough</strong> produces the most detailed consolidation.')}
         <p class="section-hint-text">Model used for consolidation passes</p>
-        <div class="voice-row" id="orchestration-voice">
-          <select class="voice-provider" data-target="orchestration"></select>
-          <select class="voice-model" data-target="orchestration"></select>
-          <select class="voice-tier" data-target="orchestration">
-            <option value="fast">Fast</option>
-            <option value="balanced" selected>Balanced</option>
-            <option value="thorough">Thorough</option>
-          </select>
+        <div class="orchestration-card" id="adv-orchestration-card">
+          <div class="voice-row" id="orchestration-voice">
+            <select class="voice-provider" data-target="orchestration"></select>
+            <select class="voice-model" data-target="orchestration"></select>
+            <select class="voice-tier" data-target="orchestration">
+              <option value="fast">Fast</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="thorough">Thorough</option>
+            </select>
+            <select class="adv-timeout" id="adv-orchestration-timeout" title="Orchestration timeout" style="display:none">
+              <option value="300000">5m</option>
+              <option value="600000" selected>10m</option>
+              <option value="900000">15m</option>
+              <option value="1800000">30m</option>
+            </select>
+            <button class="toggle-timeout-icon" id="adv-orchestration-timeout-toggle" title="Orchestration timeout">${AdvancedConfigTab.CLOCK_SVG}</button>
+            <button class="toggle-instructions-icon" id="adv-orchestration-instructions-toggle" title="Orchestration instructions">${AdvancedConfigTab.SPEECH_BUBBLE_SVG}</button>
+          </div>
+          <div class="voice-instructions-area" id="adv-orchestration-instructions-area" style="display:none">
+            <textarea class="voice-instructions-input" id="adv-orchestration-instructions" placeholder="Orchestration instructions (e.g., Prefer security findings over style nits)" rows="2"></textarea>
+          </div>
         </div>
       </section>
 
@@ -332,7 +345,7 @@ class AdvancedConfigTab {
           <div class="voice-list" id="level-${level}-voice-list">
             ${enabledByDefault ? this._buildVoiceRowHTML(level, 0) : ''}
           </div>
-          <button class="btn btn-sm btn-icon add-voice-btn" data-level="${level}" title="Add Participant">+</button>
+          <button class="btn btn-sm btn-icon add-voice-btn" data-level="${level}" title="Add Reviewer">+</button>
         </div>
       </section>
     `;
@@ -354,20 +367,20 @@ class AdvancedConfigTab {
               <option value="balanced" selected>Balanced</option>
               <option value="thorough">Thorough</option>
             </select>
-            <select class="adv-timeout" data-level="${level}" data-index="${index}" title="Per-voice timeout" style="display:none">
+            <select class="adv-timeout" data-level="${level}" data-index="${index}" title="Per-reviewer timeout" style="display:none">
               <option value="300000">5m</option>
               <option value="600000" selected>10m</option>
               <option value="900000">15m</option>
               <option value="1800000">30m</option>
             </select>
-            <button class="toggle-timeout-icon" data-level="${level}" data-index="${index}" title="Per-voice timeout">${AdvancedConfigTab.CLOCK_SVG}</button>
-            <button class="toggle-instructions-icon" data-level="${level}" data-index="${index}" title="Per-participant instructions">${AdvancedConfigTab.SPEECH_BUBBLE_SVG}</button>
+            <button class="toggle-timeout-icon" data-level="${level}" data-index="${index}" title="Per-reviewer timeout">${AdvancedConfigTab.CLOCK_SVG}</button>
+            <button class="toggle-instructions-icon" data-level="${level}" data-index="${index}" title="Per-reviewer instructions">${AdvancedConfigTab.SPEECH_BUBBLE_SVG}</button>
           </div>
           <div class="voice-instructions-area" data-level="${level}" data-index="${index}" style="display:none">
-            <textarea class="voice-instructions-input" data-level="${level}" data-index="${index}" placeholder="Per-participant instructions (e.g., Focus on security)" rows="2"></textarea>
+            <textarea class="voice-instructions-input" data-level="${level}" data-index="${index}" placeholder="Per-reviewer instructions (e.g., Focus on security)" rows="2"></textarea>
           </div>
         </div>
-        <button class="btn btn-sm btn-icon remove-voice-btn" data-level="${level}" data-index="${index}" title="Remove Participant">&minus;</button>
+        <button class="btn btn-sm btn-icon remove-voice-btn" data-level="${level}" data-index="${index}" title="Remove Reviewer">&minus;</button>
       </div>
     `;
   }
@@ -386,7 +399,7 @@ class AdvancedConfigTab {
           <span class="section-hint">(optional)</span>
           ${AdvancedConfigTab.buildInfoTipButton('custom-instructions')}
         </h4>
-        ${AdvancedConfigTab.buildInfoTipContent('custom-instructions', 'Free-form guidance sent to every participant in this review. Use this to focus the review on what matters most &mdash; e.g., "Pay extra attention to error handling" or "This is a security-critical change."')}
+        ${AdvancedConfigTab.buildInfoTipContent('custom-instructions', 'Free-form guidance sent to every reviewer in this review. Use this to focus the review on what matters most &mdash; e.g., "Pay extra attention to error handling" or "This is a security-critical change."')}
         <div class="instructions-container">
           <div class="repo-instructions-banner" id="council-repo-instructions-banner" style="display: none;">
             <div class="banner-icon">
@@ -505,16 +518,29 @@ class AdvancedConfigTab {
 
       const toggleBtn = e.target.closest('.toggle-instructions-icon');
       if (toggleBtn) {
-        const { level, index } = toggleBtn.dataset;
-        const wrapper = panel.querySelector(`.participant-wrapper[data-level="${level}"][data-index="${index}"]`);
-        const area = wrapper?.querySelector(`.voice-instructions-area[data-level="${level}"][data-index="${index}"]`);
-        if (area) {
-          const isHidden = area.style.display === 'none';
-          area.style.display = isHidden ? '' : 'none';
-          // Focus textarea when opening
-          if (isHidden) {
-            const textarea = area.querySelector('.voice-instructions-input');
-            if (textarea) textarea.focus();
+        // Orchestration instructions toggle (no data-level)
+        if (toggleBtn.id === 'adv-orchestration-instructions-toggle') {
+          const area = panel.querySelector('#adv-orchestration-instructions-area');
+          if (area) {
+            const isHidden = area.style.display === 'none';
+            area.style.display = isHidden ? '' : 'none';
+            if (isHidden) {
+              const textarea = area.querySelector('#adv-orchestration-instructions');
+              if (textarea) textarea.focus();
+            }
+          }
+        } else {
+          const { level, index } = toggleBtn.dataset;
+          const wrapper = panel.querySelector(`.participant-wrapper[data-level="${level}"][data-index="${index}"]`);
+          const area = wrapper?.querySelector(`.voice-instructions-area[data-level="${level}"][data-index="${index}"]`);
+          if (area) {
+            const isHidden = area.style.display === 'none';
+            area.style.display = isHidden ? '' : 'none';
+            // Focus textarea when opening
+            if (isHidden) {
+              const textarea = area.querySelector('.voice-instructions-input');
+              if (textarea) textarea.focus();
+            }
           }
         }
       }
@@ -522,12 +548,21 @@ class AdvancedConfigTab {
       // Toggle timeout dropdown via clock icon
       const clockBtn = e.target.closest('.toggle-timeout-icon');
       if (clockBtn) {
-        const { level, index } = clockBtn.dataset;
-        const wrapper = panel.querySelector(`.participant-wrapper[data-level="${level}"][data-index="${index}"]`);
-        const timeoutSelect = wrapper?.querySelector(`.adv-timeout[data-level="${level}"][data-index="${index}"]`);
-        if (timeoutSelect) {
-          const isHidden = timeoutSelect.style.display === 'none';
-          timeoutSelect.style.display = isHidden ? '' : 'none';
+        // Orchestration timeout toggle (no data-level)
+        if (clockBtn.id === 'adv-orchestration-timeout-toggle') {
+          const timeoutSelect = panel.querySelector('#adv-orchestration-timeout');
+          if (timeoutSelect) {
+            const isHidden = timeoutSelect.style.display === 'none';
+            timeoutSelect.style.display = isHidden ? '' : 'none';
+          }
+        } else {
+          const { level, index } = clockBtn.dataset;
+          const wrapper = panel.querySelector(`.participant-wrapper[data-level="${level}"][data-index="${index}"]`);
+          const timeoutSelect = wrapper?.querySelector(`.adv-timeout[data-level="${level}"][data-index="${index}"]`);
+          if (timeoutSelect) {
+            const isHidden = timeoutSelect.style.display === 'none';
+            timeoutSelect.style.display = isHidden ? '' : 'none';
+          }
         }
       }
 
@@ -548,8 +583,13 @@ class AdvancedConfigTab {
     // Update speech bubble icon (outline vs solid) based on textarea content
     panel.addEventListener('input', (e) => {
       if (e.target.classList.contains('voice-instructions-input')) {
-        const { level, index } = e.target.dataset;
-        this._updateInstructionsIcon(panel, level, index, e.target.value);
+        // Orchestration instructions textarea
+        if (e.target.id === 'adv-orchestration-instructions') {
+          this._updateOrchestrationInstructionsIcon(panel, e.target.value);
+        } else {
+          const { level, index } = e.target.dataset;
+          this._updateInstructionsIcon(panel, level, index, e.target.value);
+        }
       }
     });
 
@@ -564,8 +604,13 @@ class AdvancedConfigTab {
       }
       // Timeout change -> update clock icon styling
       if (e.target.classList.contains('adv-timeout')) {
-        const { level, index } = e.target.dataset;
-        this._updateTimeoutIcon(panel, level, index, e.target.value);
+        // Orchestration timeout (no data-level)
+        if (e.target.id === 'adv-orchestration-timeout') {
+          this._updateOrchestrationTimeoutIcon(panel, e.target.value);
+        } else {
+          const { level, index } = e.target.dataset;
+          this._updateTimeoutIcon(panel, level, index, e.target.value);
+        }
       }
     });
 
@@ -846,6 +891,25 @@ class AdvancedConfigTab {
     iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
   }
 
+  _updateOrchestrationTimeoutIcon(panel, value) {
+    const iconBtn = panel.querySelector('#adv-orchestration-timeout-toggle');
+    if (!iconBtn) return;
+
+    const isNonDefault = parseInt(value, 10) !== AdvancedConfigTab.DEFAULT_TIMEOUT;
+    iconBtn.classList.toggle('has-custom-timeout', isNonDefault);
+  }
+
+  _updateOrchestrationInstructionsIcon(panel, value) {
+    const iconBtn = panel.querySelector('#adv-orchestration-instructions-toggle');
+    if (!iconBtn) return;
+
+    const hasContent = value.trim().length > 0;
+    iconBtn.innerHTML = hasContent
+      ? AdvancedConfigTab.SPEECH_BUBBLE_SVG_SOLID
+      : AdvancedConfigTab.SPEECH_BUBBLE_SVG;
+    iconBtn.classList.toggle('has-instructions', hasContent);
+  }
+
   // --- Dirty state tracking ---
 
   _markDirty() {
@@ -946,7 +1010,7 @@ class AdvancedConfigTab {
     const panel = this.modal.querySelector('#tab-panel-advanced');
     if (!panel) return this._defaultConfig();
 
-    const config = { levels: {}, orchestration: {} };
+    const config = { levels: {}, consolidation: {} };
 
     for (const level of [1, 2, 3]) {
       const checkbox = panel.querySelector(`.level-checkbox[data-level="${level}"]`);
@@ -979,11 +1043,17 @@ class AdvancedConfigTab {
 
     // Orchestration
     const orchRow = panel.querySelector('#orchestration-voice');
+    const orchTimeoutSelect = panel.querySelector('#adv-orchestration-timeout');
+    const orchInstrInput = panel.querySelector('#adv-orchestration-instructions');
+    const orchTimeout = orchTimeoutSelect ? parseInt(orchTimeoutSelect.value, 10) : AdvancedConfigTab.DEFAULT_TIMEOUT;
+    const orchCustomInstructions = orchInstrInput?.value?.trim() || undefined;
     if (orchRow) {
-      config.orchestration = {
+      config.consolidation = {
         provider: orchRow.querySelector('.voice-provider')?.value || 'claude',
         model: orchRow.querySelector('.voice-model')?.value || 'sonnet',
-        tier: orchRow.querySelector('.voice-tier')?.value || 'balanced'
+        tier: orchRow.querySelector('.voice-tier')?.value || 'balanced',
+        timeout: orchTimeout,
+        ...(orchCustomInstructions ? { customInstructions: orchCustomInstructions } : {})
       };
     }
 
@@ -1054,20 +1124,45 @@ class AdvancedConfigTab {
       }
     }
 
-    // Orchestration
-    if (config.orchestration) {
+    // Consolidation (read from 'consolidation' key, fall back to legacy 'orchestration')
+    const consolSection = config.consolidation || config.orchestration;
+    if (consolSection) {
       const orchRow = panel.querySelector('#orchestration-voice');
       if (orchRow) {
         const providerSelect = orchRow.querySelector('.voice-provider');
         if (providerSelect) {
           this._populateProviderDropdown(providerSelect);
-          providerSelect.value = config.orchestration.provider;
+          providerSelect.value = consolSection.provider;
           this._updateModelDropdown(providerSelect);
           const modelSelect = orchRow.querySelector('.voice-model');
-          if (modelSelect) modelSelect.value = config.orchestration.model;
+          if (modelSelect) modelSelect.value = consolSection.model;
           const tierSelect = orchRow.querySelector('.voice-tier');
-          if (tierSelect) tierSelect.value = config.orchestration.tier || 'balanced';
+          if (tierSelect) tierSelect.value = consolSection.tier || 'balanced';
         }
+      }
+
+      // Restore consolidation timeout
+      const orchTimeoutSelect = panel.querySelector('#adv-orchestration-timeout');
+      if (orchTimeoutSelect && consolSection.timeout) {
+        orchTimeoutSelect.value = String(consolSection.timeout);
+        // Show the dropdown if non-default
+        if (consolSection.timeout !== AdvancedConfigTab.DEFAULT_TIMEOUT) {
+          orchTimeoutSelect.style.display = '';
+        }
+        this._updateOrchestrationTimeoutIcon(panel, String(consolSection.timeout));
+      }
+
+      // Restore consolidation custom instructions
+      const orchInstrInput = panel.querySelector('#adv-orchestration-instructions');
+      const orchInstrArea = panel.querySelector('#adv-orchestration-instructions-area');
+      if (consolSection.customInstructions) {
+        if (orchInstrInput) orchInstrInput.value = consolSection.customInstructions;
+        if (orchInstrArea) orchInstrArea.style.display = '';
+        this._updateOrchestrationInstructionsIcon(panel, consolSection.customInstructions);
+      } else {
+        if (orchInstrInput) orchInstrInput.value = '';
+        if (orchInstrArea) orchInstrArea.style.display = 'none';
+        this._updateOrchestrationInstructionsIcon(panel, '');
       }
     }
   }

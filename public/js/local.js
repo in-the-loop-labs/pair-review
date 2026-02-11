@@ -303,6 +303,10 @@ class LocalManager {
 
     // Override triggerAIAnalysis for local mode
     manager.triggerAIAnalysis = async function() {
+      // Timeout (ms) for stale check — git commands can hang on locked repos.
+      // Defined locally to avoid relying on cross-script const from pr.js.
+      const STALE_TIMEOUT = 2000;
+
       if (manager.isAnalyzing) {
         manager.reopenProgressModal();
         return;

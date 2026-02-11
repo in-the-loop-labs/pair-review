@@ -1007,7 +1007,7 @@ class CouncilProgressModal {
    * Transposes the level-first config into a voice-first tree:
    *   - Unique voices as parent rows
    *   - Enabled levels (+ orchestration) as child rows under each voice
-   *   - Cross-Voice Consolidation section at the bottom
+   *   - Cross-Reviewer Consolidation section at the bottom
    *
    * @param {Object} config - Council config in levels-format
    */
@@ -1086,7 +1086,7 @@ class CouncilProgressModal {
           <div class="council-voice connector-last" data-vc-voice="${voiceKey}" data-vc-level="4">
             <span class="council-voice-connector connector-last"></span>
             <span class="council-voice-icon pending">\u25CB</span>
-            <span class="council-voice-label">Orchestration</span>
+            <span class="council-voice-label">Consolidation</span>
             <span class="council-voice-status pending">Pending</span>
           </div>
       `;
@@ -1097,12 +1097,12 @@ class CouncilProgressModal {
       `;
     }
 
-    // Cross-Voice Consolidation section (simple, no per-level children)
+    // Cross-Reviewer Consolidation section (simple, no per-level children)
     html += `
       <div class="council-consolidation council-level">
         <div class="council-level-header">
           <span class="council-level-icon pending">\u25CB</span>
-          <span class="council-level-title">Cross-Voice Consolidation</span>
+          <span class="council-level-title">Cross-Reviewer Consolidation</span>
           <span class="council-level-status pending">Pending</span>
         </div>
       </div>
@@ -1162,7 +1162,7 @@ class CouncilProgressModal {
       <div class="council-consolidation council-level">
         <div class="council-level-header">
           <span class="council-level-icon pending">\u25CB</span>
-          <span class="council-level-title">Orchestration</span>
+          <span class="council-level-title">Consolidation</span>
           <span class="council-level-status pending">Pending</span>
         </div>
       </div>
@@ -1324,7 +1324,7 @@ class CouncilProgressModal {
         <div class="council-voice council-consolidation-child ${connectorClass}" data-consolidation="L${levelNum}">
           <span class="council-voice-connector ${connectorClass}"></span>
           <span class="council-voice-icon pending">\u25CB</span>
-          <span class="council-voice-label">Level ${levelNum} (${voiceCount} participants)</span>
+          <span class="council-voice-label">Level ${levelNum} (${voiceCount} reviewers)</span>
           <span class="council-voice-status pending">Pending</span>
         </div>
       `;
@@ -1339,7 +1339,7 @@ class CouncilProgressModal {
         <div class="council-voice council-consolidation-child ${connectorClass}" data-consolidation="orchestration">
           <span class="council-voice-connector ${connectorClass}"></span>
           <span class="council-voice-icon pending">\u25CB</span>
-          <span class="council-voice-label">Cross-level orchestration</span>
+          <span class="council-voice-label">Cross-level consolidation</span>
           <span class="council-voice-status pending">Pending</span>
         </div>
       `;
