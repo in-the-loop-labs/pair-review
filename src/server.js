@@ -2,9 +2,10 @@
 const express = require('express');
 const path = require('path');
 const { loadConfig, getGitHubToken } = require('./config');
-const { initializeDatabase, getDatabaseStatus, queryOne } = require('./database');
+const { initializeDatabase, getDatabaseStatus, queryOne, run } = require('./database');
 const { normalizeRepository } = require('./utils/paths');
 const { applyConfigOverrides, checkAllProviders } = require('./ai');
+const logger = require('./utils/logger');
 
 let db = null;
 let server = null;
@@ -122,7 +123,24 @@ async function startServer(sharedDb = null) {
     } catch (error) {
       console.log('Could not check database status:', error.message);
     }
-    
+
+    // Clean up stale analysis runs that have been "running" for over 30 minutes.
+    // We use a time threshold rather than blanket cleanup because multiple server
+    // processes (e.g. Express + MCP) may share the same database, and a naive
+    // UPDATE would kill legitimately running analyses owned by another process.
+    // TODO: A more robust approach would be to record the owning PID in
+    // analysis_runs and only clean up records whose process is no longer alive.
+    // This would require a schema migration and updating the PID throughout the
+    // analysis lifecycle (since analysis spawns child processes).
+    try {
+      const result = await run(db, "UPDATE analysis_runs SET status = 'failed', completed_at = CURRENT_TIMESTAMP WHERE status = 'running' AND started_at < datetime('now', '-30 minutes')");
+      if (result.changes > 0) {
+        logger.info(`Cleaned up ${result.changes} stale analysis run(s) (running > 30 minutes)`);
+      }
+    } catch (error) {
+      logger.warn(`Failed to clean up orphaned analysis runs: ${error.message}`);
+    }
+
     // Check if public directory exists
     const publicDir = path.join(__dirname, '..', 'public');
     try {
@@ -176,12 +194,22 @@ async function startServer(sharedDb = null) {
       try {
         const existing = await queryOne(db, 'SELECT id FROM pr_metadata WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
         if (existing) {
-          res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
+          // PR metadata exists, but verify the worktree is still present.
+          // When a user deletes a worktree, metadata is preserved but the
+          // worktree record is removed. Without this check the route serves
+          // pr.html for a missing worktree, causing 404s on file fetches.
+          const worktree = await queryOne(db, 'SELECT id FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE', [prNumber, repository]);
+          if (worktree) {
+            res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
+          } else {
+            logger.info(`PR metadata exists but no worktree for ${repository} #${prNumber}, serving setup page`);
+            res.sendFile(path.join(__dirname, '..', 'public', 'setup.html'));
+          }
         } else {
           res.sendFile(path.join(__dirname, '..', 'public', 'setup.html'));
         }
       } catch (error) {
-        console.error('Failed to query pr_metadata for PR route, falling back to pr.html:', error.message);
+        logger.error('Failed to query pr_metadata for PR route, falling back to pr.html:', error.message);
         res.sendFile(path.join(__dirname, '..', 'public', 'pr.html'));
       }
     });

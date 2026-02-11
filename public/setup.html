@@ -754,7 +754,10 @@
 
                     // If the review already exists, redirect immediately
                     if (data.existing && data.reviewUrl) {
-                        window.location.href = data.reviewUrl;
+                        var targetUrl = new URL(data.reviewUrl, window.location.origin);
+                        var qs = new URLSearchParams(window.location.search);
+                        if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
+                        window.location.href = targetUrl.toString();
                         return;
                     }
 
@@ -819,7 +822,10 @@
                         // Small delay so the user sees the completed state
                         setTimeout(function() {
                             if (payload.reviewUrl) {
-                                window.location.href = payload.reviewUrl;
+                                var targetUrl = new URL(payload.reviewUrl, window.location.origin);
+                                var qs = new URLSearchParams(window.location.search);
+                                if (qs.get('analyze') === 'true') targetUrl.searchParams.set('analyze', qs.get('analyze'));
+                                window.location.href = targetUrl.toString();
                             }
                         }, 400);
                     } catch (err) {

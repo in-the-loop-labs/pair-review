@@ -67,6 +67,18 @@ class LocalManager {
     // Load local review data
     await this.loadLocalReview();
 
+    // Auto-trigger analysis if ?analyze=true is present
+    const autoAnalyze = new URLSearchParams(window.location.search).get('analyze');
+    if (autoAnalyze === 'true' && !window.prManager.isAnalyzing) {
+      try {
+        await this.startLocalAnalysis(null, {});
+      } finally {
+        const cleanUrl = new URL(window.location);
+        cleanUrl.searchParams.delete('analyze');
+        history.replaceState(null, '', cleanUrl);
+      }
+    }
+
     this.isInitialized = true;
   }
 
@@ -1035,7 +1047,7 @@ class LocalManager {
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({}));
         throw new Error(error.error || 'Failed to start AI analysis');
       }
 
