@@ -107,7 +107,7 @@ describe('Council analysis summary propagation', () => {
 
       // With no voice summary, should fall back to generic
       expect(result.summary).toContain('Council analysis complete');
-      expect(result.summary).toContain('single voice');
+      expect(result.summary).toContain('single reviewer');
     });
   });
 

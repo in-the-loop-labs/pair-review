@@ -2546,7 +2546,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const { analysisId, progressCallback } = options;
     const parentRunId = options.runId || uuidv4();
 
-    logger.section('Review Council Analysis Starting (Voice-Centric)');
+    logger.section('Review Council Analysis Starting (Reviewer-Centric)');
     logger.info(`Review ID: ${reviewId}, Parent Run ID: ${parentRunId}`);
 
     // Normalize config: detect levels-format from frontend and extract voices + boolean levels
@@ -2605,23 +2605,26 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     const headSha = prMetadata?.head_sha || null;
     const analysisRunRepo = new AnalysisRunRepository(this.db);
 
-    // Create parent analysis run
-    try {
-      await analysisRunRepo.create({
-        id: parentRunId,
-        reviewId,
-        provider: 'council',
-        model: 'voice-centric',
-        customInstructions: mergedInstructions,
-        repoInstructions: instructions?.repoInstructions || null,
-        requestInstructions: instructions?.requestInstructions || null,
-        headSha,
-        configType: 'council',
-        levelsConfig: enabledLevels
-      });
-      logger.info(`[VoiceCouncil] Created parent analysis_run: ${parentRunId}`);
-    } catch (err) {
-      logger.warn(`[VoiceCouncil] Failed to create parent run record: ${err.message}`);
+    // Create parent analysis run only if caller didn't already create it
+    // (when runId is passed via options, the route handler has already inserted the record)
+    if (!options.runId) {
+      try {
+        await analysisRunRepo.create({
+          id: parentRunId,
+          reviewId,
+          provider: 'council',
+          model: 'voice-centric',
+          customInstructions: mergedInstructions,
+          repoInstructions: instructions?.repoInstructions || null,
+          requestInstructions: instructions?.requestInstructions || null,
+          headSha,
+          configType: 'council',
+          levelsConfig: enabledLevels
+        });
+        logger.info(`[VoiceCouncil] Created parent analysis_run: ${parentRunId}`);
+      } catch (err) {
+        logger.warn(`[VoiceCouncil] Failed to create parent run record: ${err.message}`);
+      }
     }
 
     const voices = councilConfig.voices || [];
@@ -2807,7 +2810,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       return {
         runId: parentRunId,
         suggestions: singleResult.suggestions,
-        summary: singleResult.summary || `Voice-centric council complete: ${singleResult.suggestions.length} suggestions`
+        summary: singleResult.summary || `Review council complete: ${singleResult.suggestions.length} suggestions`
       };
     }
 
@@ -2822,7 +2825,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       try {
         await analysisRunRepo.update(parentRunId, {
           status: 'completed',
-          summary: summary || `Voice-centric council complete: ${totalSuggestionCount} suggestions`,
+          summary: summary || `Review council complete: ${totalSuggestionCount} suggestions`,
           totalSuggestions: totalSuggestionCount,
           filesAnalyzed: validFiles.length
         });
@@ -2884,7 +2887,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
 
-      const summary = consolidated.summary || `Voice-centric council complete: ${finalSuggestions.length} suggestions from ${successfulVoices.length} voices`;
+      const summary = consolidated.summary || `Review council complete: ${finalSuggestions.length} suggestions from ${successfulVoices.length} reviewers`;
 
       try {
         await analysisRunRepo.update(parentRunId, {
@@ -2913,7 +2916,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       );
       await this.storeSuggestions(reviewId, parentRunId, fallbackSuggestions, null, validFiles);
 
-      const fallbackSummary = `Voice-centric council complete (consolidation failed): ${fallbackSuggestions.length} suggestions`;
+      const fallbackSummary = `Review council complete (consolidation failed): ${fallbackSuggestions.length} suggestions`;
 
       try {
         await analysisRunRepo.update(parentRunId, {
@@ -3111,7 +3114,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       return {
         runId,
         suggestions: finalSuggestions,
-        summary: bestVoiceSummary || `Council analysis complete: ${finalSuggestions.length} suggestions from single voice`
+        summary: bestVoiceSummary || `Council analysis complete: ${finalSuggestions.length} suggestions from single reviewer`
       };
     }
 
@@ -3511,7 +3514,7 @@ Output ONLY valid JSON with no additional text, explanations, or markdown code b
     const aiProvider = createProvider(provider, model);
 
     const voiceDescriptions = voiceReviews.map(v =>
-      `### Voice: ${v.voiceKey} (${v.provider}/${v.model}) — ${v.suggestionCount} suggestions\n` +
+      `### Reviewer: ${v.voiceKey} (${v.provider}/${v.model}) — ${v.suggestionCount} suggestions\n` +
       (v.summary ? `Summary: ${v.summary}\n` : '') +
       `Suggestions:\n${JSON.stringify(v.suggestions, null, 2)}`
     ).join('\n\n');
@@ -3568,7 +3571,7 @@ Output ONLY valid JSON with no additional text, explanations, or markdown code b
     });
 
     const suggestions = this.parseResponse(response, 'consolidation');
-    const summary = response.summary || `Consolidated ${voiceReviews.length} voice reviews into ${suggestions.length} suggestions`;
+    const summary = response.summary || `Consolidated ${voiceReviews.length} reviewer outputs into ${suggestions.length} suggestions`;
 
     return { suggestions, summary };
   }

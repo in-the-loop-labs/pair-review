@@ -1540,12 +1540,12 @@ describe('AnalysisHistoryManager', () => {
       expect(badge).toContain('analysis-history-config-council');
     });
 
-    it('should return Voice badge for council child run', () => {
+    it('should return Reviewer badge for council child run', () => {
       const badge = manager.renderConfigTypeBadge({
         config_type: 'council',
         parent_run_id: 'parent-123'
       });
-      expect(badge).toContain('Voice');
+      expect(badge).toContain('Reviewer');
       expect(badge).toContain('analysis-history-config-council-voice');
     });
 

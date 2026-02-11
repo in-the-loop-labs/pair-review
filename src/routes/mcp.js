@@ -274,7 +274,7 @@ function createMCPServer(db, options = {}) {
       limit: z.number().int().positive().optional()
         .describe('Maximum number of runs to return (most recent first). Use limit=1 to poll for the latest run.'),
       includeChildRuns: z.boolean().optional()
-        .describe('Include child voice runs from council analyses. Defaults to false (only top-level runs).'),
+        .describe('Include child reviewer runs from council analyses. Defaults to false (only top-level runs).'),
     },
     async (args) => {
       const { review, error } = await resolveReview(args, db);

@@ -449,7 +449,7 @@ class AnalysisHistoryManager {
     const configDisplayMap = {
       'single': 'Single Model',
       'council': 'Council',
-      'council-voice': 'Council Voice',
+      'council-voice': 'Council Reviewer',
       'advanced': 'Advanced'
     };
     const configDisplay = configDisplayMap[configLabel] || configLabel;
@@ -916,7 +916,7 @@ class AnalysisHistoryManager {
     const displayMap = {
       'single': 'Single',
       'council': 'Council',
-      'council-voice': 'Voice',
+      'council-voice': 'Reviewer',
       'advanced': 'Advanced'
     };
     const display = displayMap[label] || label;
