@@ -245,12 +245,14 @@ class CommentManager {
     const rows = targetWrapper.querySelectorAll('tr[data-line-number]');
     const codeLines = [];
 
+    // Always filter by side to prevent including both OLD and NEW versions of modified lines.
+    // Default to 'RIGHT' because suggestions target the NEW version of code.
+    // This is the definitive fix: even if callers fail to propagate side, we never return both versions.
+    const effectiveSide = side || 'RIGHT';
+
     for (const row of rows) {
       const lineNum = parseInt(row.dataset.lineNumber, 10);
-      // Filter by line number, file name, and side (if provided)
-      // Side filtering prevents including both deleted and added versions of modified lines
-      const matchesSide = !side || row.dataset.side === side;
-      if (lineNum >= startLine && lineNum <= endLine && row.dataset.fileName === fileName && matchesSide) {
+      if (lineNum >= startLine && lineNum <= endLine && row.dataset.fileName === fileName && row.dataset.side === effectiveSide) {
         // Get the code content cell
         const codeCell = row.querySelector('.d2h-code-line-ctn');
         if (codeCell) {
@@ -279,6 +281,9 @@ class CommentManager {
     const startLine = parseInt(textarea.dataset.line, 10);
     const endLine = parseInt(textarea.dataset.lineEnd, 10) || startLine;
     const side = textarea.dataset.side;
+    if (!side) {
+      console.warn('[Suggestion] textarea missing data-side attribute, defaulting to RIGHT');
+    }
 
     // Get the code from the selected lines (pass side to avoid including both deleted and added lines)
     const code = this.getCodeFromLines(fileName, startLine, endLine, side);
@@ -587,7 +592,7 @@ class CommentManager {
             data-file="${comment.file}"
             data-line="${comment.line_start}"
             data-line-end="${comment.line_end || comment.line_start}"
-            ${comment.side ? `data-side="${comment.side}"` : ''}
+            data-side="${comment.side || 'RIGHT'}"
           >${escapeHtml(comment.body)}</textarea>
           <div class="comment-edit-actions">
             <button class="btn btn-sm btn-primary save-edit-btn">
