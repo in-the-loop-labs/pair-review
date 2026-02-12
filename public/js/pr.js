@@ -144,6 +144,7 @@ class PRManager {
     this.lineTracker = new window.LineTracker();
     this.commentManager = new window.CommentManager(this);
     this.suggestionManager = new window.SuggestionManager(this);
+    this.chatPanelManager = window.ChatPanelManager ? new window.ChatPanelManager(this) : null;
     this.fileCommentManager = window.FileCommentManager ? new window.FileCommentManager(this) : null;
 
     // Line range selection state - delegate to lineTracker

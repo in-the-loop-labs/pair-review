@@ -116,6 +116,12 @@ class LocalManager {
       manager.viewedFiles = new Set();
     }
 
+    // Set chat panel to local mode if it exists
+    if (manager.chatPanelManager) {
+      manager.chatPanelManager.isLocalMode = true;
+      manager.chatPanelManager.prManager.reviewId = reviewId;
+    }
+
     // Override saveViewedState to use localStorage with scoped key
     manager.saveViewedState = function() {
       if (!manager.currentPR || !manager.currentPR.localPath || !manager.currentPR.head_sha) return;

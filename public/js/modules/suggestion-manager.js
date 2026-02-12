@@ -5,6 +5,14 @@
  */
 
 class SuggestionManager {
+  /**
+   * Shared SVG icon for the chat button.
+   * Uses GitHub Primer comment-discussion-16 octicon (two overlapping speech bubbles).
+   */
+  static CHAT_ICON_SVG = `<svg class="octicon" viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+    <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
+  </svg>`;
+
   // Category to emoji mapping for formatting adopted comments
   static CATEGORY_EMOJI_MAP = {
     'bug': '\u{1F41B}',           // bug
@@ -524,6 +532,10 @@ class SuggestionManager {
           })()}
         </div>
         <div class="ai-suggestion-actions">
+          <button class="ai-action ai-action-chat suggestion-action-btn chat-btn" onclick="console.log('[Chat] DEBUG v2: clicked, prManager=', window.prManager, 'chatPanelManager=', window.prManager?.chatPanelManager); window.prManager && window.prManager.chatPanelManager && window.prManager.chatPanelManager.openChat(${suggestion.id})" title="Chat about this suggestion">
+            ${SuggestionManager.CHAT_ICON_SVG}
+            Chat
+          </button>
           <button class="ai-action ai-action-adopt" onclick="prManager.adoptSuggestion(${suggestion.id})">
             <svg viewBox="0 0 16 16" width="16" height="16"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path></svg>
             Adopt
