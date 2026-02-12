@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.4
+
+### Patch Changes
+
+- 3eabc92: Forbid openai/o3-pro from review model selection due to extreme cost
+
 ## 1.4.3
 
 ### Patch Changes
