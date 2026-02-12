@@ -336,10 +336,13 @@ class RepoSettingsPage {
       triggerHTML = '<span class="trigger-text placeholder">No councils yet — create one from the analysis config</span>';
     }
 
-    // Build option list
+    // Build option list — sort alphabetically by name
+    const sortedCouncils = [...this.councils].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+    );
     let optionsHTML = '';
 
-    for (const council of this.councils) {
+    for (const council of sortedCouncils) {
       const badge = this.getCouncilTypeBadge(council.type);
       const isSelected = council.id === selectedId;
       optionsHTML += `<div class="custom-dropdown-option${isSelected ? ' selected' : ''}" data-value="${this.escapeHtml(council.id)}" role="option" aria-selected="${isSelected}">
@@ -474,7 +477,20 @@ class RepoSettingsPage {
     const cardPreview = document.getElementById('model-card-preview');
     if (singlePanel) singlePanel.style.display = mode === 'single' ? '' : 'none';
     if (councilPanel) councilPanel.style.display = mode === 'council' ? '' : 'none';
-    if (cardPreview) cardPreview.style.display = mode === 'single' ? '' : 'none';
+    if (mode === 'single') {
+      if (cardPreview) cardPreview.style.display = '';
+      this.renderModelCard();
+    } else {
+      // Council mode: show council card if a council is selected
+      const councilId = this.currentSettings.default_council_id;
+      const council = councilId ? this.councils.find(c => c.id === councilId) : null;
+      if (council && cardPreview) {
+        cardPreview.style.display = '';
+        this.renderCouncilCard(council);
+      } else if (cardPreview) {
+        cardPreview.style.display = 'none';
+      }
+    }
     // Map to default_tab: 'single' or 'council'
     this.currentSettings.default_tab = mode === 'council' ? 'council' : 'single';
     if (markChanged) {
@@ -517,6 +533,17 @@ class RepoSettingsPage {
     // Re-render the dropdown to update trigger display and selected state
     this.renderCouncilDropdown();
     this.closeCouncilDropdown(container);
+
+    // Render council card preview or hide it
+    const cardPreview = document.getElementById('model-card-preview');
+    const council = value ? this.councils.find(c => c.id === value) : null;
+    if (council && cardPreview) {
+      cardPreview.style.display = '';
+      this.renderCouncilCard(council);
+    } else if (cardPreview) {
+      cardPreview.style.display = 'none';
+    }
+
     this.checkForChanges();
   }
 
@@ -609,6 +636,161 @@ class RepoSettingsPage {
           <span class="model-tagline">${this.escapeHtml(model.tagline || '')}</span>
         </div>
         <p class="model-description">${this.escapeHtml(model.description || '')}</p>
+      </div>
+    `;
+  }
+
+  /**
+   * Resolve provider/model IDs to display names using loaded provider data
+   * @param {string} providerId
+   * @param {string} modelId
+   * @returns {{ providerName: string, modelName: string }}
+   */
+  resolveModelDisplay(providerId, modelId) {
+    const provider = this.providers[providerId];
+    if (!provider) {
+      return { providerName: providerId || 'Unknown', modelName: modelId || 'Unknown' };
+    }
+    const model = provider.models?.find(m => m.id === modelId);
+    return {
+      providerName: provider.name,
+      modelName: model ? model.name : (modelId || 'Unknown')
+    };
+  }
+
+  /**
+   * Render a council card preview into #model-card-preview
+   * @param {object} council - Council object with id, name, type, config
+   */
+  renderCouncilCard(council) {
+    if (!council) return;
+    if (council.type === 'advanced') {
+      this.renderAdvancedCouncilCard(council);
+    } else {
+      this.renderVoiceCouncilCard(council);
+    }
+  }
+
+  /**
+   * Render a standard (voice) council card
+   * @param {object} council
+   */
+  renderVoiceCouncilCard(council) {
+    const container = document.getElementById('model-card-preview');
+    if (!container) return;
+
+    const config = council.config || {};
+    const voices = config.voices || [];
+    const levels = config.levels || {};
+
+    // Build summary: "Levels 1, 2" for enabled levels
+    const enabledLevels = Object.entries(levels)
+      .filter(([, enabled]) => enabled)
+      .map(([level]) => level);
+    const summaryText = enabledLevels.length > 0
+      ? `Levels ${enabledLevels.join(', ')}`
+      : 'No levels configured';
+
+    // Build reviewer list
+    const reviewerLines = voices.map(voice => {
+      const display = this.resolveModelDisplay(voice.provider, voice.model);
+      const tierLabel = voice.tier ? `<span class="council-card-tier">${this.escapeHtml(voice.tier)}</span>` : '';
+      return `<div class="council-card-reviewer">
+        <span class="council-card-reviewer-name">${this.escapeHtml(display.providerName)} / ${this.escapeHtml(display.modelName)}</span>
+        ${tierLabel}
+      </div>`;
+    }).join('');
+
+    // Build consolidation section
+    let consolidationHTML = '';
+    if (config.consolidation && config.consolidation.provider) {
+      const consolDisplay = this.resolveModelDisplay(config.consolidation.provider, config.consolidation.model);
+      const consolTier = config.consolidation.tier ? `<span class="council-card-tier">${this.escapeHtml(config.consolidation.tier)}</span>` : '';
+      consolidationHTML = `
+        <div class="council-card-divider"></div>
+        <div class="council-card-consolidation">
+          <div class="council-card-consolidation-label">Consolidation</div>
+          <div class="council-card-reviewer">
+            <span class="council-card-reviewer-name">${this.escapeHtml(consolDisplay.providerName)} / ${this.escapeHtml(consolDisplay.modelName)}</span>
+            ${consolTier}
+          </div>
+        </div>`;
+    }
+
+    container.innerHTML = `
+      <div class="council-card">
+        <div class="council-card-name">${this.escapeHtml(council.name)}</div>
+        <div class="council-card-summary">${summaryText}</div>
+        <div class="council-card-reviewers">
+          ${reviewerLines}
+        </div>
+        ${consolidationHTML}
+      </div>
+    `;
+  }
+
+  /**
+   * Render an advanced council card with level-grouped reviewers
+   * @param {object} council
+   */
+  renderAdvancedCouncilCard(council) {
+    const container = document.getElementById('model-card-preview');
+    if (!container) return;
+
+    const config = council.config || {};
+    const levels = config.levels || {};
+
+    const levelLabels = {
+      '1': 'Level 1 — Isolation',
+      '2': 'Level 2 — File Context',
+      '3': 'Level 3 — Codebase'
+    };
+
+    // Build level groups for enabled levels
+    let levelGroupsHTML = '';
+    for (const [levelNum, levelConfig] of Object.entries(levels)) {
+      if (!levelConfig || !levelConfig.enabled) continue;
+      const voices = levelConfig.voices || [];
+      const header = levelLabels[levelNum] || `Level ${levelNum}`;
+      const voiceLines = voices.map(voice => {
+        const display = this.resolveModelDisplay(voice.provider, voice.model);
+        const tierLabel = voice.tier ? `<span class="council-card-tier">${this.escapeHtml(voice.tier)}</span>` : '';
+        return `<div class="council-card-reviewer">
+          <span class="council-card-reviewer-name">${this.escapeHtml(display.providerName)} / ${this.escapeHtml(display.modelName)}</span>
+          ${tierLabel}
+        </div>`;
+      }).join('');
+      levelGroupsHTML += `
+        <div class="council-card-level-header">${this.escapeHtml(header)}</div>
+        ${voiceLines}`;
+    }
+
+    // Build consolidation/orchestration section
+    let consolidationHTML = '';
+    if (config.consolidation && config.consolidation.provider) {
+      const consolDisplay = this.resolveModelDisplay(config.consolidation.provider, config.consolidation.model);
+      const consolTier = config.consolidation.tier ? `<span class="council-card-tier">${this.escapeHtml(config.consolidation.tier)}</span>` : '';
+      consolidationHTML = `
+        <div class="council-card-divider"></div>
+        <div class="council-card-consolidation">
+          <div class="council-card-consolidation-label">Orchestration</div>
+          <div class="council-card-reviewer">
+            <span class="council-card-reviewer-name">${this.escapeHtml(consolDisplay.providerName)} / ${this.escapeHtml(consolDisplay.modelName)}</span>
+            ${consolTier}
+          </div>
+        </div>`;
+    }
+
+    container.innerHTML = `
+      <div class="council-card">
+        <div class="council-card-name">
+          ${this.escapeHtml(council.name)}
+          <span class="council-card-badge-advanced">Advanced</span>
+        </div>
+        <div class="council-card-reviewers">
+          ${levelGroupsHTML}
+        </div>
+        ${consolidationHTML}
       </div>
     `;
   }
