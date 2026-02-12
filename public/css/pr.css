@@ -9193,21 +9193,152 @@ body.resizing * {
   color: var(--color-attention-fg, #d29922);
 }
 
-/* Inline timeout dropdown (hidden by default, revealed by clock icon) */
-.adv-timeout {
-  padding: 5px 8px;
+/* Custom timeout dropdown selector (replaces native <select> for timeouts) */
+.timeout-select {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.timeout-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
   border: 1px solid var(--border-color, #d0d7de);
   border-radius: 6px;
   background: var(--bg-default, #fff);
   color: var(--fg-default, #1f2328);
   font-size: 12px;
-  min-width: 60px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  min-width: 52px;
+  justify-content: center;
+  line-height: 1.4;
 }
 
-[data-theme="dark"] .adv-timeout {
+.timeout-select-trigger:hover {
+  border-color: var(--color-accent-primary, #0969da);
+  background: var(--bg-subtle, #f6f8fa);
+}
+
+.timeout-select.open .timeout-select-trigger {
+  border-color: var(--color-accent-primary, #0969da);
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.15);
+}
+
+.timeout-select-label {
+  pointer-events: none;
+}
+
+.timeout-select-caret {
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+  pointer-events: none;
+}
+
+.timeout-select.open .timeout-select-caret {
+  transform: rotate(180deg);
+}
+
+/* Dropdown menu */
+.timeout-select-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 64px;
+  background: var(--bg-default, #fff);
+  border: 1px solid var(--border-color, #d0d7de);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(27, 31, 36, 0.12), 0 1px 3px rgba(27, 31, 36, 0.08);
+  z-index: 1100;
+  padding: 4px;
+  flex-direction: column;
+}
+
+.timeout-select.open .timeout-select-menu {
+  display: flex;
+}
+
+/* Individual option */
+.timeout-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-default, #1f2328);
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.timeout-select-option:hover,
+.timeout-select-option.focused {
+  background: var(--bg-subtle, #f6f8fa);
+}
+
+.timeout-select-option.selected {
+  color: var(--color-accent-primary, #0969da);
+  background: rgba(9, 105, 218, 0.08);
+  font-weight: 600;
+}
+
+.timeout-select-option.selected:hover,
+.timeout-select-option.selected.focused {
+  background: rgba(9, 105, 218, 0.14);
+}
+
+/* Dark theme overrides */
+[data-theme="dark"] .timeout-select-trigger {
   background: var(--bg-subtle, #161b22);
   color: var(--fg-default, #e6edf3);
   border-color: var(--border-color, #30363d);
+}
+
+[data-theme="dark"] .timeout-select-trigger:hover {
+  border-color: var(--color-accent-primary, #58a6ff);
+  background: var(--color-bg-tertiary, #1c2128);
+}
+
+[data-theme="dark"] .timeout-select.open .timeout-select-trigger {
+  border-color: var(--color-accent-primary, #58a6ff);
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.15);
+}
+
+[data-theme="dark"] .timeout-select-menu {
+  background: var(--bg-subtle, #161b22);
+  border-color: var(--border-color, #30363d);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .timeout-select-option {
+  color: var(--fg-default, #e6edf3);
+}
+
+[data-theme="dark"] .timeout-select-option:hover,
+[data-theme="dark"] .timeout-select-option.focused {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .timeout-select-option.selected {
+  color: var(--color-accent-primary, #58a6ff);
+  background: rgba(88, 166, 255, 0.1);
+}
+
+[data-theme="dark"] .timeout-select-option.selected:hover,
+[data-theme="dark"] .timeout-select-option.selected.focused {
+  background: rgba(88, 166, 255, 0.16);
 }
 
 /* Participant card layout (item 4) */

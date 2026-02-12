@@ -44,6 +44,7 @@ class AdvancedConfigTab {
   /** Default timeout in milliseconds (10 minutes) */
   static DEFAULT_TIMEOUT = 600000;
 
+
   constructor(modal) {
     this.modal = modal;
     this.councils = [];
@@ -70,6 +71,7 @@ class AdvancedConfigTab {
     if (!panel) return;
 
     panel.innerHTML = this._buildCouncilHTML();
+    this._mountTimeoutSelects(panel);
     this._setupCouncilListeners(panel);
     this._injected = true;
 
@@ -254,6 +256,32 @@ class AdvancedConfigTab {
     return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   }
 
+  /**
+   * Mount all TimeoutSelect instances on the panel.
+   * Called after HTML is injected into the DOM.
+   * @param {HTMLElement} panel
+   */
+  _mountTimeoutSelects(panel) {
+    // Orchestration timeout (mounted first so its mount-point is removed from the DOM)
+    const orchMount = panel.querySelector('#adv-orchestration-timeout-mount');
+    if (orchMount) {
+      TimeoutSelect.mount(orchMount, {
+        className: 'adv-timeout',
+        id: 'adv-orchestration-timeout',
+        title: 'Orchestration timeout',
+      });
+    }
+
+    // Per-reviewer timeouts (any that exist from default config).
+    // The orchestration mount is already removed above, so no exclusion needed.
+    panel.querySelectorAll('.adv-timeout-mount').forEach(mount => {
+      TimeoutSelect.mount(mount, {
+        className: 'adv-timeout',
+        title: 'Per-reviewer timeout',
+      });
+    });
+  }
+
   _defaultConfig() {
     return {
       levels: {
@@ -303,12 +331,7 @@ class AdvancedConfigTab {
                 <option value="balanced" selected>Balanced</option>
                 <option value="thorough">Thorough</option>
               </select>
-              <select class="adv-timeout" id="adv-orchestration-timeout" title="Orchestration timeout" style="display:none">
-                <option value="300000">5m</option>
-                <option value="600000" selected>10m</option>
-                <option value="900000">15m</option>
-                <option value="1800000">30m</option>
-              </select>
+              <span class="adv-timeout-mount" id="adv-orchestration-timeout-mount"></span>
               <button class="toggle-timeout-icon" id="adv-orchestration-timeout-toggle" title="Orchestration timeout">${AdvancedConfigTab.CLOCK_SVG}</button>
               <button class="toggle-instructions-icon" id="adv-orchestration-instructions-toggle" title="Orchestration instructions">${AdvancedConfigTab.SPEECH_BUBBLE_SVG}</button>
             </div>
@@ -370,12 +393,7 @@ class AdvancedConfigTab {
               <option value="balanced" selected>Balanced</option>
               <option value="thorough">Thorough</option>
             </select>
-            <select class="adv-timeout" data-level="${level}" data-index="${index}" title="Per-reviewer timeout" style="display:none">
-              <option value="300000">5m</option>
-              <option value="600000" selected>10m</option>
-              <option value="900000">15m</option>
-              <option value="1800000">30m</option>
-            </select>
+            <span class="adv-timeout-mount" data-level="${level}" data-index="${index}"></span>
             <button class="toggle-timeout-icon" data-level="${level}" data-index="${index}" title="Per-reviewer timeout">${AdvancedConfigTab.CLOCK_SVG}</button>
             <button class="toggle-instructions-icon" data-level="${level}" data-index="${index}" title="Per-reviewer instructions">${AdvancedConfigTab.SPEECH_BUBBLE_SVG}</button>
           </div>
@@ -553,18 +571,18 @@ class AdvancedConfigTab {
       if (clockBtn) {
         // Orchestration timeout toggle (no data-level)
         if (clockBtn.id === 'adv-orchestration-timeout-toggle') {
-          const timeoutSelect = panel.querySelector('#adv-orchestration-timeout');
-          if (timeoutSelect) {
-            const isHidden = timeoutSelect.style.display === 'none';
-            timeoutSelect.style.display = isHidden ? '' : 'none';
+          const timeoutEl = panel.querySelector('#adv-orchestration-timeout');
+          if (timeoutEl) {
+            const isHidden = timeoutEl.style.display === 'none';
+            timeoutEl.style.display = isHidden ? '' : 'none';
           }
         } else {
           const { level, index } = clockBtn.dataset;
           const wrapper = panel.querySelector(`.participant-wrapper[data-level="${level}"][data-index="${index}"]`);
-          const timeoutSelect = wrapper?.querySelector(`.adv-timeout[data-level="${level}"][data-index="${index}"]`);
-          if (timeoutSelect) {
-            const isHidden = timeoutSelect.style.display === 'none';
-            timeoutSelect.style.display = isHidden ? '' : 'none';
+          const timeoutEl = wrapper?.querySelector(`.adv-timeout[data-level="${level}"][data-index="${index}"]`);
+          if (timeoutEl) {
+            const isHidden = timeoutEl.style.display === 'none';
+            timeoutEl.style.display = isHidden ? '' : 'none';
           }
         }
       }
@@ -619,7 +637,7 @@ class AdvancedConfigTab {
 
     // Dirty state tracking via event delegation
     panel.addEventListener('change', (e) => {
-      if (e.target.matches('select, input[type="checkbox"]')) {
+      if (e.target.matches('select, input[type="checkbox"]') || e.target.classList.contains('adv-timeout')) {
         this._markDirty();
       }
     });
@@ -783,6 +801,12 @@ class AdvancedConfigTab {
     // The _buildVoiceRowHTML returns a single .participant-wrapper, append it
     while (wrapper.firstChild) {
       voiceList.appendChild(wrapper.firstChild);
+    }
+
+    // Mount the TimeoutSelect for the new voice
+    const mount = voiceList.querySelector(`.adv-timeout-mount[data-level="${level}"][data-index="${index}"]`);
+    if (mount) {
+      TimeoutSelect.mount(mount, { className: 'adv-timeout', title: 'Per-reviewer timeout' });
     }
 
     // Populate the new provider dropdown
@@ -1099,13 +1123,17 @@ class AdvancedConfigTab {
             if (tierSelect) tierSelect.value = voice.tier || 'balanced';
           }
 
-          // Restore timeout value
-          const timeoutSelect = row?.querySelector('.adv-timeout');
-          if (timeoutSelect && voice.timeout) {
-            timeoutSelect.value = String(voice.timeout);
+          // Mount and restore timeout value
+          const mount = row?.querySelector(`.adv-timeout-mount[data-level="${level}"][data-index="${i}"]`);
+          if (mount) {
+            TimeoutSelect.mount(mount, { className: 'adv-timeout', title: 'Per-reviewer timeout' });
+          }
+          const timeoutEl = row?.querySelector('.adv-timeout');
+          if (timeoutEl && voice.timeout) {
+            timeoutEl.value = String(voice.timeout);
             // Show the dropdown if non-default
             if (voice.timeout !== AdvancedConfigTab.DEFAULT_TIMEOUT) {
-              timeoutSelect.style.display = '';
+              timeoutEl.style.display = '';
             }
             this._updateTimeoutIcon(panel, String(level), String(i), String(voice.timeout));
           }

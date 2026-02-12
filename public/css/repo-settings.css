@@ -340,8 +340,8 @@ html, body {
 
 .settings-model-card-preview {
   position: absolute;
-  top: 0;
-  right: 0;
+  top: 12px;
+  right: 16px;
 }
 
 /* Override the interactive model-card styles for the static preview card */
@@ -365,6 +365,12 @@ html, body {
   box-shadow:
     0 0 0 3px rgba(251, 191, 36, 0.15),
     0 4px 12px rgba(251, 191, 36, 0.08);
+}
+
+/* Position the tier badge to straddle the upper-right corner */
+.settings-model-card-static .model-badge {
+  top: -8px;
+  right: -8px;
 }
 
 /* Hide the checkmark indicator on the static preview */

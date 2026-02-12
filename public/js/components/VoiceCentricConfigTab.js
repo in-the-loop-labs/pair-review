@@ -41,6 +41,7 @@ class VoiceCentricConfigTab {
   /** Default timeout in milliseconds (10 minutes) */
   static DEFAULT_TIMEOUT = 600000;
 
+
   constructor(modal) {
     this.modal = modal;
     this.councils = [];
@@ -71,6 +72,7 @@ class VoiceCentricConfigTab {
     if (!panel) return;
 
     panel.innerHTML = this._buildHTML();
+    this._mountTimeoutSelects(panel);
     this._setupListeners(panel);
     this._injected = true;
     this._markClean();
@@ -313,12 +315,7 @@ class VoiceCentricConfigTab {
               <option value="balanced" selected>Balanced</option>
               <option value="thorough">Thorough</option>
             </select>
-            <select class="vc-timeout" id="vc-orchestration-timeout" title="Consolidation timeout" style="display:none">
-              <option value="300000">5m</option>
-              <option value="600000" selected>10m</option>
-              <option value="900000">15m</option>
-              <option value="1800000">30m</option>
-            </select>
+            <span class="vc-timeout-mount" id="vc-orchestration-timeout-mount"></span>
             <button class="toggle-timeout-icon" id="vc-orchestration-timeout-toggle" title="Consolidation timeout">${VoiceCentricConfigTab.CLOCK_SVG}</button>
             <button class="toggle-instructions-icon" id="vc-orchestration-instructions-toggle" title="Consolidation instructions">${VoiceCentricConfigTab.SPEECH_BUBBLE_SVG}</button>
           </div>
@@ -344,12 +341,7 @@ class VoiceCentricConfigTab {
               <option value="balanced" selected>Balanced</option>
               <option value="thorough">Thorough</option>
             </select>
-            <select class="vc-timeout" data-index="${index}" title="Per-reviewer timeout" style="display:none">
-              <option value="300000">5m</option>
-              <option value="600000" selected>10m</option>
-              <option value="900000">15m</option>
-              <option value="1800000">30m</option>
-            </select>
+            <span class="vc-timeout-mount" data-index="${index}"></span>
             <button class="toggle-timeout-icon" data-index="${index}" title="Per-reviewer timeout">${VoiceCentricConfigTab.CLOCK_SVG}</button>
             <button class="toggle-instructions-icon" data-index="${index}" title="Per-reviewer instructions">${VoiceCentricConfigTab.SPEECH_BUBBLE_SVG}</button>
           </div>
@@ -564,7 +556,7 @@ class VoiceCentricConfigTab {
 
     // Dirty state tracking
     panel.addEventListener('change', (e) => {
-      if (e.target.matches('select, input[type="checkbox"]')) {
+      if (e.target.matches('select, input[type="checkbox"]') || e.target.classList.contains('vc-timeout')) {
         this._markDirty();
       }
     });
@@ -605,6 +597,12 @@ class VoiceCentricConfigTab {
     wrapper.innerHTML = this._buildReviewerRowHTML(index);
     while (wrapper.firstChild) {
       list.appendChild(wrapper.firstChild);
+    }
+
+    // Mount the TimeoutSelect for the new reviewer
+    const mount = list.querySelector(`.vc-timeout-mount[data-index="${index}"]`);
+    if (mount) {
+      TimeoutSelect.mount(mount, { className: 'vc-timeout', title: 'Per-reviewer timeout' });
     }
 
     // Populate provider dropdown
@@ -789,6 +787,32 @@ class VoiceCentricConfigTab {
     }
   }
 
+  /**
+   * Mount all TimeoutSelect instances on the panel.
+   * Called after HTML is injected into the DOM.
+   * @param {HTMLElement} panel
+   */
+  _mountTimeoutSelects(panel) {
+    // Orchestration timeout (mounted first so its mount-point is removed from the DOM)
+    const orchMount = panel.querySelector('#vc-orchestration-timeout-mount');
+    if (orchMount) {
+      TimeoutSelect.mount(orchMount, {
+        className: 'vc-timeout',
+        id: 'vc-orchestration-timeout',
+        title: 'Consolidation timeout',
+      });
+    }
+
+    // Per-reviewer timeouts (any that exist from default config).
+    // The orchestration mount is already removed above, so no exclusion needed.
+    panel.querySelectorAll('.vc-timeout-mount').forEach(mount => {
+      TimeoutSelect.mount(mount, {
+        className: 'vc-timeout',
+        title: 'Per-reviewer timeout',
+      });
+    });
+  }
+
   // --- Config read/write ---
 
   _defaultConfig() {
@@ -943,12 +967,17 @@ class VoiceCentricConfigTab {
           if (modelSelect) modelSelect.value = voice.model;
           const tierSelect = row.querySelector('.voice-tier');
           if (tierSelect) tierSelect.value = voice.tier || 'balanced';
-          const timeoutSelect = row.querySelector('.vc-timeout');
-          if (timeoutSelect && voice.timeout) {
-            timeoutSelect.value = String(voice.timeout);
+          // Mount the TimeoutSelect from its placeholder
+          const mount = row.querySelector(`.vc-timeout-mount[data-index="${i}"]`);
+          if (mount) {
+            TimeoutSelect.mount(mount, { className: 'vc-timeout', title: 'Per-reviewer timeout' });
+          }
+          const timeoutEl = row.querySelector('.vc-timeout');
+          if (timeoutEl && voice.timeout) {
+            timeoutEl.value = String(voice.timeout);
             // Show the dropdown if non-default
             if (voice.timeout !== VoiceCentricConfigTab.DEFAULT_TIMEOUT) {
-              timeoutSelect.style.display = '';
+              timeoutEl.style.display = '';
             }
             this._updateTimeoutIcon(panel, String(i), String(voice.timeout));
           }
