@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 14;
+const CURRENT_SCHEMA_VERSION = 15;
 
 /**
  * Database schema SQL statements
@@ -171,6 +171,35 @@ const SCHEMA_SQL = {
       github_url TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  chat_sessions: `
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      comment_id INTEGER NOT NULL,
+      analysis_run_id TEXT,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'completed', 'error')),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+      FOREIGN KEY (analysis_run_id) REFERENCES analysis_runs(id)
+    )
+  `,
+
+  chat_messages: `
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_session_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+      content TEXT NOT NULL,
+      token_count INTEGER,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (chat_session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+    )
   `
 };
 
@@ -195,7 +224,12 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)',
   // GitHub reviews indexes
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
-  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)'
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)',
+  // Chat sessions indexes
+  'CREATE INDEX IF NOT EXISTS idx_chat_sessions_comment ON chat_sessions(comment_id)',
+  'CREATE INDEX IF NOT EXISTS idx_chat_sessions_analysis_run ON chat_sessions(analysis_run_id)',
+  // Chat messages indexes
+  'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(chat_session_id, created_at)'
 ];
 
 /**
@@ -683,6 +717,63 @@ const MIGRATIONS = {
     console.log('  Created index idx_reviews_type_updated');
 
     console.log('Migration to schema version 14 complete');
+  },
+
+  // Migration to version 15: adds chat_sessions and chat_messages tables
+  15: (db) => {
+    console.log('Running migration to schema version 15...');
+
+    // Create chat_sessions table if it doesn't exist
+    if (!tableExists(db, 'chat_sessions')) {
+      db.exec(`
+        CREATE TABLE chat_sessions (
+          id TEXT PRIMARY KEY,
+          comment_id INTEGER NOT NULL,
+          analysis_run_id TEXT,
+          provider TEXT NOT NULL,
+          model TEXT NOT NULL,
+          status TEXT DEFAULT 'active' CHECK(status IN ('active', 'completed', 'error')),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+          FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+          FOREIGN KEY (analysis_run_id) REFERENCES analysis_runs(id)
+        )
+      `);
+      console.log('  Created chat_sessions table');
+
+      // Create indexes for chat_sessions
+      db.exec('CREATE INDEX IF NOT EXISTS idx_chat_sessions_comment ON chat_sessions(comment_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_chat_sessions_analysis_run ON chat_sessions(analysis_run_id)');
+      console.log('  Created indexes for chat_sessions table');
+    } else {
+      console.log('  Table chat_sessions already exists');
+    }
+
+    // Create chat_messages table if it doesn't exist
+    if (!tableExists(db, 'chat_messages')) {
+      db.exec(`
+        CREATE TABLE chat_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_session_id TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+          content TEXT NOT NULL,
+          token_count INTEGER,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+          FOREIGN KEY (chat_session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+        )
+      `);
+      console.log('  Created chat_messages table');
+
+      // Create index for chat_messages
+      db.exec('CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(chat_session_id, created_at)');
+      console.log('  Created index for chat_messages table');
+    } else {
+      console.log('  Table chat_messages already exists');
+    }
+
+    console.log('Migration to schema version 15 complete');
   }
 };
 
@@ -2677,6 +2768,179 @@ class GitHubReviewRepository {
   }
 }
 
+/**
+ * ChatRepository class for managing chat session and message records
+ */
+class ChatRepository {
+  /**
+   * Create a new ChatRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a new chat session
+   * @param {string} sessionId - UUID for the chat session
+   * @param {number} commentId - Comment ID (from comments table)
+   * @param {string|null} analysisRunId - Analysis run ID (for provider/model context)
+   * @param {string} provider - AI provider (claude, gemini, etc.)
+   * @param {string} model - AI model (opus, sonnet, etc.)
+   * @returns {Promise<Object>} Created chat session record
+   */
+  async createSession(sessionId, commentId, analysisRunId, provider, model) {
+    const now = new Date().toISOString();
+
+    await run(this.db, `
+      INSERT INTO chat_sessions (id, comment_id, analysis_run_id, provider, model, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+    `, [sessionId, commentId, analysisRunId, provider, model, now, now]);
+
+    return {
+      id: sessionId,
+      comment_id: commentId,
+      analysis_run_id: analysisRunId,
+      provider,
+      model,
+      status: 'active',
+      created_at: now,
+      updated_at: now
+    };
+  }
+
+  /**
+   * Get a chat session by ID
+   * @param {string} sessionId - Chat session ID
+   * @returns {Promise<Object|null>} Chat session record or null
+   */
+  async getSession(sessionId) {
+    return await queryOne(this.db, `
+      SELECT * FROM chat_sessions WHERE id = ?
+    `, [sessionId]);
+  }
+
+  /**
+   * Get all chat sessions for a comment
+   * @param {number} commentId - Comment ID
+   * @returns {Promise<Array<Object>>} Array of chat session records
+   */
+  async getSessionsByComment(commentId) {
+    return await query(this.db, `
+      SELECT * FROM chat_sessions
+      WHERE comment_id = ?
+      ORDER BY created_at DESC
+    `, [commentId]);
+  }
+
+  /**
+   * Get the most recent active chat session for a comment
+   * @param {number} commentId - Comment ID
+   * @returns {Promise<Object|null>} Chat session record or null
+   */
+  async getActiveSessionByComment(commentId) {
+    return await queryOne(this.db, `
+      SELECT * FROM chat_sessions
+      WHERE comment_id = ? AND status = 'active'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `, [commentId]);
+  }
+
+  /**
+   * Update chat session status
+   * @param {string} sessionId - Chat session ID
+   * @param {string} status - New status ('active', 'completed', 'error')
+   * @returns {Promise<boolean>} True if updated
+   */
+  async updateSessionStatus(sessionId, status) {
+    const now = new Date().toISOString();
+    const result = await run(this.db, `
+      UPDATE chat_sessions
+      SET status = ?, updated_at = ?
+      WHERE id = ?
+    `, [status, now, sessionId]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Add a message to a chat session
+   * @param {string} sessionId - Chat session ID
+   * @param {string} role - Message role ('user' or 'assistant')
+   * @param {string} content - Message content
+   * @param {number|null} tokenCount - Optional token count
+   * @returns {Promise<Object>} Created message record
+   */
+  async addMessage(sessionId, role, content, tokenCount = null) {
+    const now = new Date().toISOString();
+
+    const result = await run(this.db, `
+      INSERT INTO chat_messages (chat_session_id, role, content, token_count, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `, [sessionId, role, content, tokenCount, now]);
+
+    // Update session updated_at
+    await run(this.db, `
+      UPDATE chat_sessions SET updated_at = ? WHERE id = ?
+    `, [now, sessionId]);
+
+    return {
+      id: result.lastID,
+      chat_session_id: sessionId,
+      role,
+      content,
+      token_count: tokenCount,
+      created_at: now
+    };
+  }
+
+  /**
+   * Get all messages for a chat session
+   * @param {string} sessionId - Chat session ID
+   * @returns {Promise<Array<Object>>} Array of message records
+   */
+  async getMessages(sessionId) {
+    return await query(this.db, `
+      SELECT * FROM chat_messages
+      WHERE chat_session_id = ?
+      ORDER BY created_at ASC
+    `, [sessionId]);
+  }
+
+  /**
+   * Get chat session with its messages
+   * @param {string} sessionId - Chat session ID
+   * @returns {Promise<Object|null>} Session with messages array, or null
+   */
+  async getSessionWithMessages(sessionId) {
+    const session = await this.getSession(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    const messages = await this.getMessages(sessionId);
+
+    return {
+      ...session,
+      messages
+    };
+  }
+
+  /**
+   * Delete a chat session and all its messages (cascade delete)
+   * @param {string} sessionId - Chat session ID
+   * @returns {Promise<boolean>} True if deleted
+   */
+  async deleteSession(sessionId) {
+    const result = await run(this.db, `
+      DELETE FROM chat_sessions WHERE id = ?
+    `, [sessionId]);
+
+    return result.changes > 0;
+  }
+}
+
 module.exports = {
   initializeDatabase,
   closeDatabase,
@@ -2698,6 +2962,7 @@ module.exports = {
   PRMetadataRepository,
   AnalysisRunRepository,
   GitHubReviewRepository,
+  ChatRepository,
   generateWorktreeId,
   migrateExistingWorktrees
 };

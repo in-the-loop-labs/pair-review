@@ -22,6 +22,13 @@ window.PanelResizer = (function() {
       default: 320,
       storageKey: 'ai-panel-width',
       cssVar: '--ai-panel-width'
+    },
+    'chat-panel': {
+      min: 320,
+      max: 800,
+      default: 420,
+      storageKey: 'chat-panel-width',
+      cssVar: '--chat-panel-width'
     }
   };
 
@@ -38,11 +45,8 @@ window.PanelResizer = (function() {
     // Apply saved widths on load
     applySavedWidths();
 
-    // Set up event listeners for resize handles
-    const handles = document.querySelectorAll('.resize-handle');
-    handles.forEach(handle => {
-      handle.addEventListener('mousedown', onMouseDown);
-    });
+    // Use event delegation for resize handles (supports dynamically created panels)
+    document.addEventListener('mousedown', onMouseDown);
 
     // Global mouse events for drag
     document.addEventListener('mousemove', onMouseMove);
@@ -113,9 +117,14 @@ window.PanelResizer = (function() {
     if (!handle) return;
 
     const panelName = handle.dataset.panel;
-    const panelEl = panelName === 'sidebar'
-      ? document.getElementById('files-sidebar')
-      : document.getElementById('ai-panel');
+    let panelEl;
+    if (panelName === 'sidebar') {
+      panelEl = document.getElementById('files-sidebar');
+    } else if (panelName === 'ai-panel') {
+      panelEl = document.getElementById('ai-panel');
+    } else if (panelName === 'chat-panel') {
+      panelEl = document.getElementById('chat-panel');
+    }
 
     // Don't allow resize if panel is collapsed
     if (panelEl && panelEl.classList.contains('collapsed')) {
@@ -146,11 +155,12 @@ window.PanelResizer = (function() {
 
     // Calculate delta based on panel position
     // For sidebar (left panel): moving right increases width
-    // For ai-panel (right panel): moving left increases width
+    // For ai-panel and chat-panel (right panels): moving left increases width
     let delta;
     if (currentPanel === 'sidebar') {
       delta = e.clientX - startX;
     } else {
+      // Right-side panels (ai-panel, chat-panel)
       delta = startX - e.clientX;
     }
 
