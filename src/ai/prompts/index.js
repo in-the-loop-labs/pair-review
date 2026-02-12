@@ -25,10 +25,13 @@ let level3Thorough = null;
 let orchestrationBalanced = null;
 let orchestrationFast = null;
 let orchestrationThorough = null;
+let consolidationFast = null;
+let consolidationBalanced = null;
+let consolidationThorough = null;
 
 /**
  * Load a baseline prompt module
- * @param {string} promptType - Prompt type (level1, level2, level3, orchestration)
+ * @param {string} promptType - Prompt type (level1, level2, level3, orchestration, consolidation)
  * @param {string} tier - Capability tier (fast, balanced, thorough)
  * @returns {Object|null} Baseline module or null if not found
  */
@@ -117,6 +120,27 @@ function loadBaseline(promptType, tier) {
     }
     return orchestrationThorough;
   }
+  // Consolidation Fast
+  if (promptType === 'consolidation' && tier === 'fast') {
+    if (!consolidationFast) {
+      consolidationFast = require('./baseline/consolidation/fast');
+    }
+    return consolidationFast;
+  }
+  // Consolidation Balanced
+  if (promptType === 'consolidation' && tier === 'balanced') {
+    if (!consolidationBalanced) {
+      consolidationBalanced = require('./baseline/consolidation/balanced');
+    }
+    return consolidationBalanced;
+  }
+  // Consolidation Thorough
+  if (promptType === 'consolidation' && tier === 'thorough') {
+    if (!consolidationThorough) {
+      consolidationThorough = require('./baseline/consolidation/thorough');
+    }
+    return consolidationThorough;
+  }
   return null;
 }
 
@@ -168,7 +192,7 @@ function stripSectionTags(taggedPrompt) {
 /**
  * Create a prompt builder for a specific prompt type and tier
  *
- * @param {string} promptType - Prompt type (level1, level2, level3, orchestration)
+ * @param {string} promptType - Prompt type (level1, level2, level3, orchestration, consolidation)
  * @param {string} tier - Capability tier (fast, balanced, thorough) or alias
  * @param {string} provider - Provider ID (default: 'claude')
  * @returns {Object|null} Prompt builder object or null if not available

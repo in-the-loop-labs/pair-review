@@ -2511,8 +2511,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     // Build context for the tagged prompt system
     const isLocal = prMetadata.reviewType === 'local';
     const reviewDescription = isLocal
-      ? `local changes (review #${prMetadata.number || 'local'})`
-      : `pull request #${prMetadata.number}`;
+      ? `local changes (review #${prMetadata.pr_number || 'local'})`
+      : `pull request #${prMetadata.pr_number}`;
 
     const context = {
       reviewIntro: `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.`,
@@ -2891,8 +2891,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         voiceKey: v.voiceKey,
         provider: v.provider,
         model: v.model,
-        suggestionCount: v.result.suggestions.length,
+        suggestionCount: v.result.suggestions.length + (v.result.fileLevelSuggestions?.length || 0),
         suggestions: v.result.suggestions,
+        fileLevelSuggestions: v.result.fileLevelSuggestions || [],
         summary: v.result.summary
       }));
 
@@ -3212,7 +3213,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         try {
           const consolidated = await this._intraLevelConsolidate(
             level, suggestions, prMetadata, orchInstructions, worktreePath,
-            { provider: orchProvider, model: orchModel, tier: orchTier, timeout: orchConfig.timeout, analysisId, progressCallback }
+            { provider: orchProvider, model: orchModel, tier: orchTier, timeout: orchConfig.timeout, analysisId, progressCallback, reviewerCount: successfulVoicesForLevel.length }
           );
           consolidatedPerLevel[level] = consolidated;
           // Report intra-level consolidation step as completed
@@ -3382,41 +3383,24 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @private
    */
   async _intraLevelConsolidate(level, suggestions, prMetadata, customInstructions, worktreePath, orchConfig) {
-    const { provider, model, tier, timeout, analysisId, progressCallback } = orchConfig;
+    const { provider, model, tier, timeout, analysisId, progressCallback, reviewerCount } = orchConfig;
 
     const aiProvider = createProvider(provider, model);
 
-    const prompt = `You are consolidating code review suggestions from multiple AI reviewers for Level ${level} analysis.
+    const isLocal = prMetadata.reviewType === 'local';
+    const reviewDescription = isLocal
+      ? `local changes (review #${prMetadata.pr_number || 'local'})`
+      : `pull request #${prMetadata.pr_number}`;
 
-Multiple reviewers have independently analyzed the same code changes. Your job is to:
-1. **Deduplicate**: Merge suggestions that identify the same issue
-2. **Resolve conflicts**: When reviewers disagree, use your judgment to pick the better analysis
-3. **Preserve unique insights**: Keep suggestions that only one reviewer noticed
-4. **Maintain quality**: Only include suggestions with sufficient confidence
-
-## Input Suggestions (${suggestions.length} total from multiple reviewers)
-${JSON.stringify(suggestions)}
-
-## Output Format
-
-### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks.
-
-{
-  "suggestions": [
-    {
-      "file": "path/to/file",
-      "line": 42,
-      "old_or_new": "NEW",
-      "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
-      "title": "Brief title",
-      "description": "Detailed explanation",
-      "suggestion": "How to fix/improve (omit for praise)",
-      "confidence": 0.0-1.0
-    }
-  ],
-  "summary": "Brief consolidation summary"
-}`;
+    const promptBuilder = getPromptBuilder('consolidation', tier || 'balanced', provider);
+    const prompt = promptBuilder.build({
+      reviewIntro: `You are consolidating Level ${level} code review suggestions from multiple independent AI reviewers for ${reviewDescription}.`,
+      customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
+      lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
+      reviewerSuggestions: JSON.stringify(suggestions, null, 2),
+      suggestionCount: suggestions.length,
+      reviewerCount: reviewerCount || 'multiple'
+    });
 
     const response = await aiProvider.execute(prompt, {
       cwd: worktreePath,
@@ -3554,51 +3538,30 @@ Output ONLY valid JSON with no additional text, explanations, or markdown code b
 
     const aiProvider = createProvider(provider, model);
 
-    const voiceDescriptions = voiceReviews.map(v =>
-      `### Reviewer: ${v.voiceKey} (${v.provider}/${v.model}) — ${v.suggestionCount} suggestions\n` +
-      (v.summary ? `Summary: ${v.summary}\n` : '') +
-      `Suggestions:\n${JSON.stringify(v.suggestions, null, 2)}`
-    ).join('\n\n');
+    const voiceDescriptions = voiceReviews.map(v => {
+      let desc = `### Reviewer: ${v.voiceKey} (${v.provider}/${v.model}) — ${v.suggestionCount} suggestions\n`;
+      if (v.summary) desc += `Summary: ${v.summary}\n`;
+      desc += `Suggestions:\n${JSON.stringify(v.suggestions, null, 2)}`;
+      if (v.fileLevelSuggestions?.length > 0) {
+        desc += `\nFile-Level Suggestions:\n${JSON.stringify(v.fileLevelSuggestions, null, 2)}`;
+      }
+      return desc;
+    }).join('\n\n');
 
-    const prompt = `You are consolidating code review results from multiple independent AI reviewers.
+    const isLocal = prMetadata.reviewType === 'local';
+    const reviewDescription = isLocal
+      ? `local changes (review #${prMetadata.pr_number || 'local'})`
+      : `pull request #${prMetadata.pr_number}`;
 
-Each reviewer independently analyzed the SAME code changes and produced a complete review.
-Your job is to merge these reviews into a single, high-quality consolidated review.
-
-## Consolidation Rules
-
-1. **Consensus findings**: When multiple reviewers identify the same issue, merge into one suggestion with HIGHER confidence (capped at 1.0). Note the consensus in the description.
-2. **Unique insights**: Keep suggestions that only one reviewer noticed, preserving the original confidence.
-3. **Contradictions**: When reviewers disagree about an issue, use your judgment. Prefer the more specific/actionable analysis. If genuinely uncertain, keep both with lower confidence.
-4. **Duplicate removal**: Aggressively deduplicate — if two suggestions point to the same file/line with the same core issue, merge them.
-5. **Quality filter**: Drop suggestions with very low confidence (< 0.3) unless they have consensus from multiple reviewers.
-
-## Input: ${voiceReviews.length} Independent Reviews
-
-${voiceDescriptions}
-
-${customInstructions ? `\n## Custom Review Instructions\n${customInstructions}\n` : ''}
-
-## Output Format
-
-### CRITICAL OUTPUT REQUIREMENT
-Output ONLY valid JSON with no additional text, explanations, or markdown code blocks.
-
-{
-  "suggestions": [
-    {
-      "file": "path/to/file",
-      "line": 42,
-      "old_or_new": "NEW",
-      "type": "bug|improvement|praise|suggestion|design|performance|security|code-style",
-      "title": "Brief title",
-      "description": "Detailed explanation. Note if multiple reviewers agree.",
-      "suggestion": "How to fix/improve (omit for praise)",
-      "confidence": 0.0-1.0
-    }
-  ],
-  "summary": "Brief consolidation summary noting reviewer agreement patterns"
-}`;
+    const promptBuilder = getPromptBuilder('consolidation', tier || 'balanced', provider);
+    const prompt = promptBuilder.build({
+      reviewIntro: `You are consolidating code review results from ${voiceReviews.length} independent AI reviewers for ${reviewDescription}. Each reviewer independently analyzed the same code changes and produced a complete review.`,
+      customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
+      lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
+      reviewerSuggestions: voiceDescriptions,
+      suggestionCount: voiceReviews.reduce((sum, v) => sum + v.suggestionCount, 0),
+      reviewerCount: voiceReviews.length
+    });
 
     const response = await aiProvider.execute(prompt, {
       cwd: worktreePath,
