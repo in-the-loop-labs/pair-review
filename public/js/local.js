@@ -385,13 +385,9 @@ class LocalManager {
         const lastInstructions = reviewSettings.custom_instructions;
         const lastCouncilId = reviewSettings.last_council_id;
 
-        // Determine model and provider
-        const modelStorageKey = `pair-review-model:local-${reviewId}`;
-        const providerStorageKey = `pair-review-provider:local-${reviewId}`;
-        const rememberedModel = localStorage.getItem(modelStorageKey);
-        const rememberedProvider = localStorage.getItem(providerStorageKey);
-        const currentModel = rememberedModel || repoSettings?.default_model || 'opus';
-        const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
+        // Determine model and provider (priority: repo default > defaults)
+        const currentModel = repoSettings?.default_model || 'opus';
+        const currentProvider = repoSettings?.default_provider || 'claude';
 
         // Determine default tab (priority: localStorage > repo settings > 'single')
         const tabStorageKey = `pair-review-tab:local-${reviewId}`;
@@ -411,21 +407,11 @@ class LocalManager {
           repoInstructions: repoSettings?.default_instructions || '',
           lastInstructions: lastInstructions,
           lastCouncilId,
-          defaultCouncilId: repoSettings?.default_council_id || null,
-          rememberModel: !!(rememberedModel || rememberedProvider)
+          defaultCouncilId: repoSettings?.default_council_id || null
         });
 
         if (!config) {
           return;
-        }
-
-        // Save preferences if requested
-        if (config.rememberModel) {
-          localStorage.setItem(modelStorageKey, config.model);
-          localStorage.setItem(providerStorageKey, config.provider);
-        } else {
-          localStorage.removeItem(modelStorageKey);
-          localStorage.removeItem(providerStorageKey);
         }
 
         // Start analysis

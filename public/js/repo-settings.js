@@ -13,6 +13,7 @@ class RepoSettingsPage {
     this.hasUnsavedChanges = false;
     this.providers = {};
     this.selectedProvider = null;
+    this.councils = [];
 
     this.init();
   }
@@ -134,8 +135,58 @@ class RepoSettingsPage {
   }
 
   setupEventListeners() {
-    // Model card and provider button listeners are attached dynamically
-    // when renderProviderButtons() and renderModelCards() are called
+    // Provider select
+    const providerSelect = document.getElementById('provider-select');
+    if (providerSelect) {
+      providerSelect.addEventListener('change', () => {
+        const newProviderId = providerSelect.value;
+        const previousProvider = this.selectedProvider;
+        this.selectedProvider = newProviderId;
+        this.currentSettings.default_provider = newProviderId;
+
+        // Re-render model select for the new provider
+        this.renderModelSelect();
+
+        // Try to map the model tier to the new provider
+        if (previousProvider && previousProvider !== newProviderId) {
+          const oldProvider = this.providers[previousProvider];
+          const newProvider = this.providers[newProviderId];
+
+          if (oldProvider && newProvider) {
+            const currentModel = oldProvider.models.find(m => m.id === this.currentSettings.default_model);
+            if (currentModel) {
+              const matchingModel = newProvider.models.find(m => m.tier === currentModel.tier);
+              const defaultModel = newProvider.models.find(m => m.default);
+              const fallbackModel = matchingModel || defaultModel || newProvider.models[0];
+              this.currentSettings.default_model = fallbackModel.id;
+            } else {
+              const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
+              this.currentSettings.default_model = defaultModel.id;
+            }
+          } else if (newProvider) {
+            const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
+            this.currentSettings.default_model = defaultModel.id;
+          }
+
+          // Update model select to reflect the mapped model
+          const modelSelect = document.getElementById('model-select');
+          if (modelSelect) {
+            modelSelect.value = this.currentSettings.default_model;
+          }
+        }
+
+        this.checkForChanges();
+      });
+    }
+
+    // Model select
+    const modelSelect = document.getElementById('model-select');
+    if (modelSelect) {
+      modelSelect.addEventListener('change', () => {
+        this.currentSettings.default_model = modelSelect.value;
+        this.checkForChanges();
+      });
+    }
 
     // Instructions textarea
     const textarea = document.getElementById('default-instructions');
@@ -147,23 +198,17 @@ class RepoSettingsPage {
       });
     }
 
-    // Default tab selector
-    const tabSelect = document.getElementById('default-tab-select');
-    if (tabSelect) {
-      tabSelect.addEventListener('change', () => {
-        this.currentSettings.default_tab = tabSelect.value || 'single';
-        this.checkForChanges();
+    // Analysis mode segmented control
+    const modeToggle = document.getElementById('analysis-mode-toggle');
+    if (modeToggle) {
+      modeToggle.addEventListener('click', (e) => {
+        const btn = e.target.closest('.mode-btn');
+        if (!btn) return;
+        this.setAnalysisMode(btn.dataset.mode);
       });
     }
 
-    // Council select dropdown
-    const councilSelect = document.getElementById('default-council-select');
-    if (councilSelect) {
-      councilSelect.addEventListener('change', () => {
-        this.currentSettings.default_council_id = councilSelect.value || null;
-        this.checkForChanges();
-      });
-    }
+    // Council custom dropdown listeners are attached in renderCouncilDropdown()
 
     // Form submission
     const form = document.getElementById('settings-form');
@@ -225,14 +270,14 @@ class RepoSettingsPage {
       }
 
       // Render provider buttons now that we have data
-      this.renderProviderButtons();
+      this.renderProviderSelect();
 
     } catch (error) {
       console.error('Error loading providers:', error);
       // No hardcoded fallback — rely on the /api/providers endpoint as the single source of truth.
       // If the endpoint is unavailable, show an empty state rather than stale data.
       this.providers = {};
-      this.renderProviderButtons();
+      this.renderProviderSelect();
       this.showToast('error', 'Failed to load AI providers. Please refresh the page.');
     }
   }
@@ -241,156 +286,284 @@ class RepoSettingsPage {
    * Load saved councils for the default council dropdown
    */
   async loadCouncils() {
-    const select = document.getElementById('default-council-select');
-    if (!select) return;
+    const container = document.getElementById('default-council-dropdown');
+    if (!container) return;
 
     try {
       const response = await fetch('/api/councils');
       if (!response.ok) throw new Error('Failed to fetch councils');
       const data = await response.json();
-      const councils = data.councils || [];
-
-      // Populate dropdown (keep the "None" option)
-      select.innerHTML = '<option value="">None</option>';
-      for (const council of councils) {
-        const opt = document.createElement('option');
-        opt.value = council.id;
-        opt.textContent = council.name;
-        select.appendChild(opt);
-      }
+      this.councils = data.councils || [];
     } catch (error) {
       console.error('Error loading councils:', error);
+      this.councils = [];
     }
   }
 
   /**
-   * Render provider toggle buttons
+   * Get the display label for a council type
+   * @param {string} type - Council type ('council' or 'advanced')
+   * @returns {{ label: string, cssClass: string }}
    */
-  renderProviderButtons() {
-    const container = document.getElementById('provider-toggle');
+  getCouncilTypeBadge(type) {
+    if (type === 'advanced') {
+      return { label: 'Advanced', cssClass: 'badge-advanced' };
+    }
+    return { label: 'Standard', cssClass: 'badge-standard' };
+  }
+
+  /**
+   * Render the custom council dropdown
+   */
+  renderCouncilDropdown() {
+    const container = document.getElementById('default-council-dropdown');
     if (!container) return;
 
-    const providerIds = Object.keys(this.providers);
-    container.innerHTML = providerIds.map(providerId => {
-      const provider = this.providers[providerId];
-      return `
-        <button type="button" class="provider-btn ${providerId === this.selectedProvider ? 'selected' : ''}" data-provider="${providerId}">
-          ${provider.name}
-        </button>
-      `;
-    }).join('');
+    const selectedId = this.currentSettings.default_council_id || '';
+    const selectedCouncil = this.councils.find(c => c.id === selectedId);
 
-    // Attach event listeners
-    container.querySelectorAll('.provider-btn').forEach(btn => {
-      btn.addEventListener('click', () => this.selectProvider(btn.dataset.provider));
-    });
+    // Build trigger display
+    let triggerHTML;
+    if (selectedCouncil) {
+      const badge = this.getCouncilTypeBadge(selectedCouncil.type);
+      triggerHTML = `<span class="trigger-text">${this.escapeHtml(selectedCouncil.name)}</span>
+        <span class="council-type-badge ${badge.cssClass}">${badge.label}</span>`;
+    } else if (this.councils.length > 0) {
+      triggerHTML = '<span class="trigger-text placeholder">Select a council...</span>';
+    } else {
+      triggerHTML = '<span class="trigger-text placeholder">No councils yet — create one from the analysis config</span>';
+    }
+
+    // Build option list
+    let optionsHTML = '';
+
+    for (const council of this.councils) {
+      const badge = this.getCouncilTypeBadge(council.type);
+      const isSelected = council.id === selectedId;
+      optionsHTML += `<div class="custom-dropdown-option${isSelected ? ' selected' : ''}" data-value="${this.escapeHtml(council.id)}" role="option" aria-selected="${isSelected}">
+        <span class="option-name">${this.escapeHtml(council.name)}</span>
+        <span class="council-type-badge ${badge.cssClass}">${badge.label}</span>
+      </div>`;
+    }
+
+    container.innerHTML = `
+      <button type="button" class="custom-dropdown-trigger" aria-haspopup="listbox" aria-expanded="false">
+        ${triggerHTML}
+      </button>
+      <div class="custom-dropdown-list" role="listbox">
+        ${optionsHTML}
+      </div>
+    `;
+
+    // Attach event listeners for the dropdown
+    this.setupCouncilDropdownListeners(container);
   }
 
   /**
-   * Select a provider and update model cards
+   * Set up event listeners for the custom council dropdown
+   * @param {HTMLElement} container - The dropdown container element
    */
-  selectProvider(providerId, markAsChanged = true) {
-    if (!this.providers[providerId]) return;
+  setupCouncilDropdownListeners(container) {
+    const trigger = container.querySelector('.custom-dropdown-trigger');
+    const list = container.querySelector('.custom-dropdown-list');
+    if (!trigger || !list) return;
 
-    const previousProvider = this.selectedProvider;
-    this.selectedProvider = providerId;
+    // Track focused option index for keyboard navigation
+    let focusedIndex = -1;
+    const getOptions = () => Array.from(list.querySelectorAll('.custom-dropdown-option'));
 
-    if (markAsChanged) {
-      this.currentSettings.default_provider = providerId;
-    }
+    const updateFocus = (options, index) => {
+      options.forEach(opt => opt.classList.remove('focused'));
+      if (index >= 0 && index < options.length) {
+        options[index].classList.add('focused');
+        options[index].scrollIntoView({ block: 'nearest' });
+      }
+    };
 
-    // Update provider buttons UI
-    document.querySelectorAll('.provider-btn').forEach(btn => {
-      btn.classList.toggle('selected', btn.dataset.provider === providerId);
+    // Toggle dropdown on trigger click
+    trigger.addEventListener('click', () => {
+      const isOpen = container.classList.contains('open');
+      if (isOpen) {
+        this.closeCouncilDropdown(container);
+      } else {
+        this.openCouncilDropdown(container);
+        focusedIndex = -1;
+      }
     });
 
-    // Re-render model cards for the new provider
-    this.renderModelCards();
+    // Select option on click
+    list.addEventListener('click', (e) => {
+      const option = e.target.closest('.custom-dropdown-option');
+      if (!option) return;
+      this.selectCouncilOption(container, option.dataset.value);
+    });
 
-    // If provider changed and we're tracking changes, try to map the model to the new provider
-    if (markAsChanged && previousProvider && previousProvider !== providerId) {
-      const oldProvider = this.providers[previousProvider];
-      const newProvider = this.providers[providerId];
+    // Keyboard navigation
+    trigger.addEventListener('keydown', (e) => {
+      const isOpen = container.classList.contains('open');
 
-      // If old provider no longer exists (e.g., was removed from available providers),
-      // fall back to the new provider's default model
-      if (!oldProvider) {
-        // Guard against empty models array (shouldn't happen as we filter these out)
-        if (!newProvider.models || newProvider.models.length === 0) {
-          console.error(`Provider "${providerId}" has no models - this should not happen`);
-          return;
-        }
-        const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
-        this.selectModel(defaultModel.id, markAsChanged);
-        this.checkForChanges();
+      if (e.key === 'Escape' && isOpen) {
+        e.preventDefault();
+        this.closeCouncilDropdown(container);
+        trigger.focus();
         return;
       }
 
-      // Find the model with same tier as currently selected
-      const currentModel = oldProvider.models.find(m => m.id === this.currentSettings.default_model);
-
-      if (currentModel) {
-        const matchingModel = newProvider.models.find(m => m.tier === currentModel.tier);
-        const defaultModel = newProvider.models.find(m => m.default);
-        const fallbackModel = matchingModel || defaultModel || newProvider.models[0];
-
-        if (!matchingModel && !defaultModel) {
-          console.warn(`No matching tier or default model found for provider "${providerId}", using first available model`);
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        if (!isOpen) {
+          this.openCouncilDropdown(container);
+          focusedIndex = -1;
+        } else {
+          const options = getOptions();
+          if (focusedIndex >= 0 && focusedIndex < options.length) {
+            this.selectCouncilOption(container, options[focusedIndex].dataset.value);
+          }
         }
-
-        this.selectModel(fallbackModel.id, markAsChanged);
-      } else {
-        // No current model selected, use default for new provider
-        const defaultModel = newProvider.models.find(m => m.default) || newProvider.models[0];
-        this.selectModel(defaultModel.id, markAsChanged);
+        return;
       }
 
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && isOpen) {
+        e.preventDefault();
+        const options = getOptions();
+        if (e.key === 'ArrowDown') {
+          focusedIndex = Math.min(focusedIndex + 1, options.length - 1);
+        } else {
+          focusedIndex = Math.max(focusedIndex - 1, 0);
+        }
+        updateFocus(options, focusedIndex);
+        return;
+      }
+
+      // Open on arrow down when closed
+      if (e.key === 'ArrowDown' && !isOpen) {
+        e.preventDefault();
+        this.openCouncilDropdown(container);
+        focusedIndex = 0;
+        updateFocus(getOptions(), focusedIndex);
+      }
+    });
+
+    // Close on click outside (remove previous handler to avoid accumulation on re-render)
+    if (this._councilDropdownOutsideClickHandler) {
+      document.removeEventListener('click', this._councilDropdownOutsideClickHandler);
+    }
+    this._councilDropdownOutsideClickHandler = (e) => {
+      if (!container.contains(e.target) && container.classList.contains('open')) {
+        this.closeCouncilDropdown(container);
+      }
+    };
+    document.addEventListener('click', this._councilDropdownOutsideClickHandler);
+  }
+
+  /**
+   * Set the analysis mode (single model vs council) in the segmented control
+   * @param {string} mode - 'single' or 'council'
+   * @param {boolean} markChanged - Whether to trigger change detection (default true)
+   */
+  setAnalysisMode(mode, markChanged = true) {
+    // Update button states
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+      btn.classList.toggle('selected', btn.dataset.mode === mode);
+    });
+    // Show/hide panels
+    const singlePanel = document.getElementById('mode-panel-single');
+    const councilPanel = document.getElementById('mode-panel-council');
+    if (singlePanel) singlePanel.style.display = mode === 'single' ? '' : 'none';
+    if (councilPanel) councilPanel.style.display = mode === 'council' ? '' : 'none';
+    // Map to default_tab: 'single' or 'council'
+    this.currentSettings.default_tab = mode === 'council' ? 'council' : 'single';
+    if (markChanged) {
       this.checkForChanges();
     }
   }
 
   /**
-   * Render model cards for the currently selected provider
+   * Open the custom council dropdown
+   * @param {HTMLElement} container
    */
-  renderModelCards() {
-    const container = document.getElementById('model-cards');
-    if (!container) return;
-
-    const provider = this.providers[this.selectedProvider];
-    if (!provider) {
-      container.innerHTML = '';
-      return;
-    }
-
-    container.innerHTML = provider.models.map(model => `
-      <button type="button" class="model-card ${model.id === this.currentSettings.default_model ? 'selected' : ''}" data-model="${model.id}" data-tier="${model.tier}">
-        <div class="model-badge ${model.badgeClass || ''}">${model.badge || ''}</div>
-        <div class="model-icon">${this.getModelIcon(model.tier)}</div>
-        <div class="model-info">
-          <span class="model-name">${model.name}</span>
-          <span class="model-tagline">${model.tagline || ''}</span>
-        </div>
-        <p class="model-description">${model.description || ''}</p>
-        <div class="model-selected-indicator">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-          </svg>
-        </div>
-      </button>
-    `).join('');
-
-    // Attach event listeners
-    container.querySelectorAll('.model-card').forEach(card => {
-      card.addEventListener('click', () => this.selectModel(card.dataset.model));
-    });
+  openCouncilDropdown(container) {
+    container.classList.add('open');
+    const trigger = container.querySelector('.custom-dropdown-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
   }
 
   /**
-   * Get model icon based on tier
-   * Delegates to shared utility in utils/tier-icons.js
+   * Close the custom council dropdown
+   * @param {HTMLElement} container
    */
-  getModelIcon(tier) {
-    return window.getTierIcon(tier);
+  closeCouncilDropdown(container) {
+    container.classList.remove('open');
+    const trigger = container.querySelector('.custom-dropdown-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    // Clear focus highlights
+    container.querySelectorAll('.custom-dropdown-option.focused').forEach(
+      opt => opt.classList.remove('focused')
+    );
+  }
+
+  /**
+   * Select a council option in the custom dropdown
+   * @param {HTMLElement} container
+   * @param {string} value - Council ID or empty string for "None"
+   */
+  selectCouncilOption(container, value) {
+    this.currentSettings.default_council_id = value || null;
+
+    // Re-render the dropdown to update trigger display and selected state
+    this.renderCouncilDropdown();
+    this.closeCouncilDropdown(container);
+    this.checkForChanges();
+  }
+
+  /**
+   * Escape HTML to prevent XSS in dynamic content
+   * @param {string} str
+   * @returns {string}
+   */
+  escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  /**
+   * Render provider select dropdown
+   */
+  renderProviderSelect() {
+    const select = document.getElementById('provider-select');
+    if (!select) return;
+
+    select.innerHTML = Object.entries(this.providers).map(([id, provider]) =>
+      `<option value="${id}" ${id === this.selectedProvider ? 'selected' : ''}>${provider.name}</option>`
+    ).join('');
+  }
+
+  /**
+   * Set the selected provider (used by updateUI for initial load)
+   */
+  selectProvider(providerId) {
+    if (!this.providers[providerId]) return;
+    this.selectedProvider = providerId;
+  }
+
+  /**
+   * Render model select dropdown for the currently selected provider
+   */
+  renderModelSelect() {
+    const select = document.getElementById('model-select');
+    if (!select) return;
+
+    const provider = this.providers[this.selectedProvider];
+    if (!provider) {
+      select.innerHTML = '';
+      return;
+    }
+
+    select.innerHTML = provider.models.map(model =>
+      `<option value="${model.id}" ${model.id === this.currentSettings.default_model ? 'selected' : ''}>${model.name}</option>`
+    ).join('');
   }
 
   async loadSettings() {
@@ -444,30 +617,38 @@ class RepoSettingsPage {
 
     if (!providerId || !this.providers[providerId]) {
       // Provider doesn't exist, fall back to first available
-      // Update currentSettings directly so state is consistent for saves,
-      // but don't mark as changed (no unsaved changes indicator)
+      // Update both settings so no false dirty state on load
       providerId = availableProviders[0] || 'claude';
       this.currentSettings.default_provider = providerId;
+      this.originalSettings.default_provider = providerId;
     }
 
-    this.selectProvider(providerId, false);
+    this.selectProvider(providerId);
+    this.renderProviderSelect();
+    this.renderModelSelect();
 
-    // Update model selection
-    if (this.currentSettings.default_model) {
-      this.selectModel(this.currentSettings.default_model, false);
+    // Validate saved model exists in current provider
+    const provider = this.providers[this.selectedProvider];
+    if (provider) {
+      const modelExists = provider.models.some(m => m.id === this.currentSettings.default_model);
+      if (!modelExists) {
+        const fallbackModel = provider.models.find(m => m.default) || provider.models[0];
+        if (fallbackModel) {
+          this.currentSettings.default_model = fallbackModel.id;
+          this.originalSettings.default_model = fallbackModel.id;
+          const modelSelect = document.getElementById('model-select');
+          if (modelSelect) modelSelect.value = fallbackModel.id;
+        }
+      }
     }
 
-    // Update tab dropdown
-    const tabSelect = document.getElementById('default-tab-select');
-    if (tabSelect) {
-      tabSelect.value = this.currentSettings.default_tab || 'single';
-    }
+    // Update analysis mode segmented control (map 'advanced' to 'council')
+    const defaultTab = this.currentSettings.default_tab || 'single';
+    const mode = (defaultTab === 'council' || defaultTab === 'advanced') ? 'council' : 'single';
+    this.setAnalysisMode(mode, false);
 
-    // Update council dropdown
-    const councilSelect = document.getElementById('default-council-select');
-    if (councilSelect) {
-      councilSelect.value = this.currentSettings.default_council_id || '';
-    }
+    // Update council custom dropdown
+    this.renderCouncilDropdown();
 
     // Update instructions textarea
     const textarea = document.getElementById('default-instructions');
@@ -503,19 +684,6 @@ class RepoSettingsPage {
       if (clearLocalPathBtn) clearLocalPathBtn.style.display = 'none';
       if (localPathHint) localPathHint.style.display = 'flex';
     }
-  }
-
-  selectModel(modelId, markAsChanged = true) {
-    // Update current settings
-    if (markAsChanged) {
-      this.currentSettings.default_model = modelId;
-      this.checkForChanges();
-    }
-
-    // Update UI
-    document.querySelectorAll('.model-card').forEach(card => {
-      card.classList.toggle('selected', card.dataset.model === modelId);
-    });
   }
 
   updateCharCount(count) {

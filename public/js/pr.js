@@ -3580,13 +3580,9 @@ class PRManager {
       const lastInstructions = reviewSettings.custom_instructions;
       const lastCouncilId = reviewSettings.last_council_id;
 
-      // Determine the model and provider to use (priority: remembered > repo default > defaults)
-      const modelStorageKey = PRManager.getRepoStorageKey('pair-review-model', owner, repo);
-      const providerStorageKey = PRManager.getRepoStorageKey('pair-review-provider', owner, repo);
-      const rememberedModel = localStorage.getItem(modelStorageKey);
-      const rememberedProvider = localStorage.getItem(providerStorageKey);
-      const currentModel = rememberedModel || repoSettings?.default_model || 'opus';
-      const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
+      // Determine the model and provider to use (priority: repo default > defaults)
+      const currentModel = repoSettings?.default_model || 'opus';
+      const currentProvider = repoSettings?.default_provider || 'claude';
 
       // Determine default tab (priority: localStorage > repo settings > 'single')
       const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
@@ -3606,22 +3602,12 @@ class PRManager {
         repoInstructions: repoSettings?.default_instructions || '',
         lastInstructions: lastInstructions,
         lastCouncilId,
-        defaultCouncilId: repoSettings?.default_council_id || null,
-        rememberModel: !!(rememberedModel || rememberedProvider)
+        defaultCouncilId: repoSettings?.default_council_id || null
       });
 
       // If user cancelled, do nothing
       if (!config) {
         return;
-      }
-
-      // Save remembered model and provider preferences if requested
-      if (config.rememberModel) {
-        localStorage.setItem(modelStorageKey, config.model);
-        localStorage.setItem(providerStorageKey, config.provider);
-      } else {
-        localStorage.removeItem(modelStorageKey);
-        localStorage.removeItem(providerStorageKey);
       }
 
       // Start the analysis with the selected config

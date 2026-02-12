@@ -302,7 +302,7 @@ class VoiceCentricConfigTab {
 
       <section class="config-section">
         <h4 class="section-title">Consolidation ${VoiceCentricConfigTab.buildInfoTipButton('consolidation')}</h4>
-        ${VoiceCentricConfigTab.buildInfoTipContent('consolidation', 'The consolidation model merges findings from all reviewers into a single coherent review. <strong>Fast</strong> tier gives concise output, <strong>Balanced</strong> is the recommended default, and <strong>Thorough</strong> produces the most detailed consolidation.')}
+        ${VoiceCentricConfigTab.buildInfoTipContent('consolidation', 'The consolidation model merges findings from all reviewers into a single coherent review.')}
         <p class="section-hint-text">Model used for cross-reviewer consolidation</p>
         <div class="orchestration-card" id="vc-orchestration-card">
           <div class="voice-row" id="vc-orchestration-voice">

@@ -84,7 +84,7 @@ class Analyzer {
    */
   async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
     const runId = options.runId || uuidv4();
-    const { analysisId, skipRunCreation, skipLevel3 } = options;
+    const { analysisId, skipRunCreation, skipLevel3, reviewerNum } = options;
     const logPrefix = options.logPrefix || '';
     const executionTimeout = options.timeout || 600000; // Default 10 minutes
 
@@ -177,9 +177,9 @@ class Analyzer {
 
       // Build the promises array for each level based on enabledLevels
       const levelAnalyzers = [
-        () => this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix }),
-        () => this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix }),
-        () => this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix })
+        () => this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix, reviewerNum }),
+        () => this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix, reviewerNum }),
+        () => this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix, reviewerNum })
       ];
 
       const analysisPromises = [1, 2, 3].map((level, idx) => {
@@ -711,7 +711,10 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '' } = options;
+    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
+    // Build adapter-level log prefix: when reviewerNum is set (council mode),
+    // use compact format like [R1 L1] so concurrent reviewers are disambiguated
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L1]` : undefined;
     logger.info(`${lp}[Level 1] Analysis Starting`);
 
     try {
@@ -748,6 +751,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
         level: 1,
         analysisId,
         registerProcess,
+        logPrefix: adapterLogPrefix,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 1, status: 'running', streamEvent: event });
         } : undefined
@@ -1700,7 +1704,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '' } = options;
+    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L2]` : undefined;
     logger.info(`${lp}[Level 2] Analysis Starting`);
 
     try {
@@ -1741,6 +1746,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         level: 2,
         analysisId,
         registerProcess,
+        logPrefix: adapterLogPrefix,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 2, status: 'running', streamEvent: event });
         } : undefined
@@ -1808,7 +1814,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '' } = options;
+    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L3]` : undefined;
     logger.info(`${lp}[Level 3] Analysis Starting`);
 
     try {
@@ -1853,6 +1860,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         level: 3,
         analysisId,
         registerProcess,
+        logPrefix: adapterLogPrefix,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 3, status: 'running', streamEvent: event });
         } : undefined
@@ -2390,6 +2398,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       // Execute AI for cross-level consolidation
       logger.info('[Consolidation] Running AI consolidation to curate and merge suggestions...');
       const response = await aiProvider.execute(prompt, {
+        cwd: worktreePath,
         timeout,
         level: 'orchestration',
         analysisId,
@@ -2716,7 +2725,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
             enabledLevels,
             tier: voiceTier,
             timeout: voiceTimeout,
-            logPrefix: `[${reviewerLabel}] `
+            logPrefix: `[${reviewerLabel}] `,
+            reviewerNum: idx + 1
           }
         );
 
@@ -3003,6 +3013,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       for (const [voiceIdx, voice] of levelConfig.voices.entries()) {
         const voiceId = `L${levelKey}-${voice.provider}-${voice.model}${voiceIdx > 0 ? `-${voiceIdx}` : ''}`;
         const reviewerLabel = `L${levelKey} ${buildReviewerLabel(voiceIdx, voice)}`;
+        const reviewerLogPrefix = `[L${levelKey} R${voiceIdx + 1}]`;
         const tier = voice.tier || 'balanced';
 
         // Merge per-voice custom instructions with base instructions
@@ -3016,6 +3027,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         voiceTasks.push({
           voiceId,
           reviewerLabel,
+          reviewerLogPrefix,
           level: parseInt(levelKey),
           provider: voice.provider,
           model: voice.model,
@@ -3283,7 +3295,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @private
    */
   async _executeCouncilVoice(task, context) {
-    const { voiceId, reviewerLabel, level, provider, model, tier, timeout = 600000, customInstructions } = task;
+    const { voiceId, reviewerLabel, reviewerLogPrefix, level, provider, model, tier, timeout = 600000, customInstructions } = task;
     const { reviewId, runId, worktreePath, prMetadata, generatedPatterns, validFiles, analysisId, progressCallback } = context;
     const displayLabel = reviewerLabel || voiceId;
 
@@ -3315,6 +3327,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         level,
         analysisId,
         registerProcess,
+        logPrefix: reviewerLogPrefix,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level, status: 'running', streamEvent: event, voiceId });
         } : undefined

@@ -450,7 +450,7 @@ class AnalysisHistoryManager {
       'single': 'Single Model',
       'council': 'Council',
       'council-voice': 'Council Reviewer',
-      'advanced': 'Custom'
+      'advanced': 'Advanced'
     };
     const configDisplay = configDisplayMap[configLabel] || configLabel;
 
@@ -917,7 +917,7 @@ class AnalysisHistoryManager {
       'single': 'Single',
       'council': 'Council',
       'council-voice': 'Reviewer',
-      'advanced': 'Custom'
+      'advanced': 'Advanced'
     };
     const display = displayMap[label] || label;
     if (label === 'single') return '';

@@ -90,66 +90,37 @@
 
                 <!-- Settings Form -->
                 <form class="settings-form" id="settings-form">
-                    <!-- Default Analysis Tab -->
+                    <!-- Default Analysis Configuration -->
                     <section class="settings-section">
                         <div class="section-header">
-                            <h2>
-                                Default Analysis Tab
-                            </h2>
+                            <h2>Default Analysis Configuration</h2>
                             <p class="section-description">
-                                Which tab to open by default in the analysis configuration dialog.
+                                Choose how AI analysis runs by default for this repository.
                             </p>
                         </div>
-                        <select id="default-tab-select" class="council-select">
-                            <option value="single">Single Model</option>
-                            <option value="council">Council</option>
-                            <option value="advanced">Custom</option>
-                        </select>
-                    </section>
-
-                    <!-- Default Review Council Section -->
-                    <section class="settings-section">
-                        <div class="section-header">
-                            <h2>
-                                Default Review Council <span class="beta-badge">BETA</span>
-                            </h2>
-                            <p class="section-description">
-                                Pre-select this council when starting analysis. Councils are created in the analysis config.
-                            </p>
+                        <div class="analysis-mode-toggle" id="analysis-mode-toggle">
+                            <button type="button" class="mode-btn selected" data-mode="single">Single Model</button>
+                            <button type="button" class="mode-btn" data-mode="council">Review Council</button>
                         </div>
-                        <select id="default-council-select" class="council-select">
-                            <option value="">None</option>
-                            <!-- Council options populated by JavaScript -->
-                        </select>
-                    </section>
-
-                    <!-- Default Provider Section -->
-                    <section class="settings-section">
-                        <div class="section-header">
-                            <h2>
-                                Default AI Provider
-                            </h2>
-                            <p class="section-description">
-                                This AI provider will be pre-selected when starting analysis on any PR in this repository.
-                            </p>
-                        </div>
-                        <div class="provider-toggle" id="provider-toggle">
-                            <!-- Provider buttons rendered dynamically by JavaScript -->
-                        </div>
-                    </section>
-
-                    <!-- Default Model Section -->
-                    <section class="settings-section">
-                        <div class="section-header">
-                            <h2>
-                                Default Model
-                            </h2>
-                            <p class="section-description">
-                                This model will be pre-selected when starting analysis on any PR in this repository.
-                            </p>
-                        </div>
-                        <div class="model-cards" id="model-cards">
-                            <!-- Model cards rendered dynamically by JavaScript -->
+                        <div class="analysis-mode-content" id="analysis-mode-content">
+                            <!-- Single model content -->
+                            <div class="mode-panel" id="mode-panel-single">
+                                <div class="settings-model-row">
+                                    <div class="settings-select-group">
+                                        <label class="subsection-label">Provider</label>
+                                        <select class="settings-select" id="provider-select"></select>
+                                    </div>
+                                    <div class="settings-select-group settings-select-group-grow">
+                                        <label class="subsection-label">Model</label>
+                                        <select class="settings-select" id="model-select"></select>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Council content -->
+                            <div class="mode-panel" id="mode-panel-council" style="display: none;">
+                                <label class="subsection-label">Council Preset</label>
+                                <div id="default-council-dropdown" class="custom-dropdown"></div>
+                            </div>
                         </div>
                         <p class="model-hint">
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -270,7 +241,6 @@ Examples:
     <div class="toast-container" id="toast-container"></div>
 
     <!-- JavaScript -->
-    <script src="/js/utils/tier-icons.js"></script>
     <script src="/js/repo-settings.js"></script>
 </body>
 </html>

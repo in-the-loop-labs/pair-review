@@ -13,7 +13,6 @@ class AnalysisConfigModal {
     this.selectedProvider = 'claude';
     this.selectedModel = 'opus';
     this.selectedPresets = new Set();
-    this.rememberModel = false;
     this.repoInstructions = '';
     this.lastInstructions = '';
     this.providersLoaded = false;
@@ -244,11 +243,6 @@ class AnalysisConfigModal {
             <div class="model-cards" id="model-cards-container">
               <!-- Model cards rendered dynamically -->
             </div>
-            <label class="remember-toggle">
-              <input type="checkbox" id="remember-model" />
-              <span class="toggle-switch"></span>
-              <span class="toggle-label">Remember choices for this repository</span>
-            </label>
           </section>
 
           <!-- Analysis Levels -->
@@ -374,12 +368,6 @@ class AnalysisConfigModal {
     // Preset chip toggle
     this.modal.querySelectorAll('.preset-chip').forEach(chip => {
       chip.addEventListener('click', () => this.togglePreset(chip.dataset.preset));
-    });
-
-    // Remember toggle
-    const rememberCheckbox = this.modal.querySelector('#remember-model');
-    rememberCheckbox?.addEventListener('change', (e) => {
-      this.rememberModel = e.target.checked;
     });
 
     // Single-model level checkboxes
@@ -758,7 +746,6 @@ class AnalysisConfigModal {
       instructions: this.buildInstructions(),
       customInstructions: this.modal.querySelector('#custom-instructions')?.value?.trim() || '',
       presets: Array.from(this.selectedPresets),
-      rememberModel: this.rememberModel,
       repoInstructions: this.repoInstructions,
       enabledLevels: [...this.enabledLevels],
       skipLevel3: !this.enabledLevels.includes(3)
@@ -775,7 +762,6 @@ class AnalysisConfigModal {
    * @param {string} options.currentModel - Currently selected model
    * @param {string} options.repoInstructions - Default instructions from repo settings
    * @param {string} options.lastInstructions - Last used custom instructions
-   * @param {boolean} options.rememberModel - Whether model was remembered
    * @param {Function} options.onSubmit - Callback when analysis is started
    * @returns {Promise<Object|null>} Promise that resolves to config or null if cancelled
    */
@@ -900,12 +886,6 @@ class AnalysisConfigModal {
       }
     }
 
-    if (options.rememberModel) {
-      this.rememberModel = true;
-      const rememberCheckbox = this.modal.querySelector('#remember-model');
-      if (rememberCheckbox) rememberCheckbox.checked = true;
-    }
-
     // Remove loading state and reveal content
     this._showLoading(false);
 
@@ -962,7 +942,7 @@ class AnalysisConfigModal {
     tabBar.innerHTML = `
       <button class="analysis-tab active" data-tab="single">Single Model</button>
       <button class="analysis-tab" data-tab="council">Council <span class="beta-badge">BETA</span></button>
-      <button class="analysis-tab" data-tab="advanced">Custom <span class="beta-badge">BETA</span></button>
+      <button class="analysis-tab" data-tab="advanced">Advanced <span class="beta-badge">BETA</span></button>
     `;
 
     // Assemble
@@ -1062,7 +1042,7 @@ class AnalysisConfigModal {
     // Update submit button text
     const submitBtnSpan = this.modal.querySelector('[data-action="submit"] span');
     if (submitBtnSpan) {
-      if (tabId === 'council') {
+      if (tabId === 'council' || tabId === 'advanced') {
         submitBtnSpan.textContent = 'Analyze with Council';
       } else {
         submitBtnSpan.textContent = 'Start Analysis';
@@ -1179,12 +1159,6 @@ class AnalysisConfigModal {
       this.updateCharacterCount(0);
       const repoExpanded = this.modal.querySelector('#repo-instructions-expanded');
       if (repoExpanded) repoExpanded.style.display = 'none';
-      // Reset rememberModel state to prevent stale values on next show
-      this.rememberModel = false;
-      const rememberCheckbox = this.modal.querySelector('#remember-model');
-      if (rememberCheckbox) {
-        rememberCheckbox.checked = false;
-      }
       // Reset level checkboxes
       this.enabledLevels = [1, 2, 3];
       this.skipLevel3 = false;

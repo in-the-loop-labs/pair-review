@@ -8316,8 +8316,8 @@ body.resizing * {
 
 .model-badge {
   position: absolute;
-  top: -8px;
-  right: -4px;
+  top: 8px;
+  right: 8px;
   padding: 2px 8px;
   font-size: 9px;
   font-weight: 700;
@@ -9037,6 +9037,7 @@ body.resizing * {
 }
 
 .btn-icon {
+  box-sizing: border-box;
   width: 28px;
   height: 28px;
   padding: 0;
@@ -9268,6 +9269,12 @@ body.resizing * {
 .participant-wrapper > .remove-voice-btn {
   flex-shrink: 0;
   margin-top: 10px;
+}
+
+/* Spacer to align consolidation row with level voice rows that have a remove button */
+.participant-wrapper > .remove-voice-btn-spacer {
+  flex-shrink: 0;
+  width: 28px; /* matches .btn-icon width */
 }
 
 /* Dark mode overrides for council +/- icon buttons */

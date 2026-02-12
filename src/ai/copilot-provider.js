@@ -197,9 +197,9 @@ class CopilotProvider extends AIProvider {
     return new Promise((resolve, reject) => {
       // Note: Copilot does not support streaming — output is plain text returned on process exit, not JSONL.
       // onStreamEvent is therefore not destructured here (no StreamParser integration).
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, logPrefix } = options;
 
-      const levelPrefix = `[Level ${level}]`;
+      const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Copilot CLI...`);
       logger.info(`${levelPrefix} Writing prompt: ${prompt.length} bytes`);
 
@@ -310,7 +310,7 @@ class CopilotProvider extends AIProvider {
           // Use async IIFE to handle the async LLM extraction
           (async () => {
             try {
-              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess });
+              const llmExtracted = await this.extractJSONWithLLM(stdout, { level, analysisId, registerProcess, logPrefix: levelPrefix });
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);

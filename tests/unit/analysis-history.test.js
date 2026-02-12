@@ -1549,9 +1549,9 @@ describe('AnalysisHistoryManager', () => {
       expect(badge).toContain('analysis-history-config-council-voice');
     });
 
-    it('should return Custom badge for advanced config type', () => {
+    it('should return Advanced badge for advanced config type', () => {
       const badge = manager.renderConfigTypeBadge({ config_type: 'advanced' });
-      expect(badge).toContain('Custom');
+      expect(badge).toContain('Advanced');
       expect(badge).toContain('analysis-history-config-advanced');
     });
   });

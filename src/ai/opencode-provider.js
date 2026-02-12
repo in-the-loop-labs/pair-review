@@ -102,9 +102,9 @@ class OpenCodeProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
 
-      const levelPrefix = `[Level ${level}]`;
+      const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing OpenCode CLI...`);
       logger.info(`${levelPrefix} Writing prompt via stdin: ${prompt.length} bytes`);
 
@@ -238,7 +238,7 @@ class OpenCodeProvider extends AIProvider {
         logger.info(`${levelPrefix} OpenCode CLI completed - received ${lineCount} JSONL events`);
 
         // Parse the OpenCode JSONL response
-        const parsed = this.parseOpenCodeResponse(stdout, level);
+        const parsed = this.parseOpenCodeResponse(stdout, level, levelPrefix);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
 
@@ -262,7 +262,7 @@ class OpenCodeProvider extends AIProvider {
           // Use async IIFE to handle the async LLM extraction
           (async () => {
             try {
-              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess });
+              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess, logPrefix: levelPrefix });
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);
@@ -442,8 +442,8 @@ class OpenCodeProvider extends AIProvider {
    * @param {string|number} level - Analysis level for logging
    * @returns {{success: boolean, data?: Object, error?: string}}
    */
-  parseOpenCodeResponse(stdout, level) {
-    const levelPrefix = `[Level ${level}]`;
+  parseOpenCodeResponse(stdout, level, logPrefix) {
+    const levelPrefix = logPrefix || `[Level ${level}]`;
 
     try {
       // Split by newlines and parse each JSON line
