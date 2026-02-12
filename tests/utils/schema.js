@@ -58,6 +58,8 @@ const SCHEMA_SQL = {
       adopted_as_id INTEGER,
       parent_id INTEGER,
       is_file_level INTEGER DEFAULT 0,
+      voice_id TEXT,
+      is_raw INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (adopted_as_id) REFERENCES comments(id),
@@ -103,6 +105,8 @@ const SCHEMA_SQL = {
       default_instructions TEXT,
       default_provider TEXT,
       default_model TEXT,
+      default_council_id TEXT,
+      default_tab TEXT,
       local_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -125,6 +129,9 @@ const SCHEMA_SQL = {
       files_analyzed INTEGER DEFAULT 0,
       started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       completed_at TIMESTAMP,
+      parent_run_id TEXT,
+      config_type TEXT DEFAULT 'single',
+      levels_config TEXT,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
   `,
@@ -153,6 +160,18 @@ const SCHEMA_SQL = {
       github_url TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  councils: `
+    CREATE TABLE IF NOT EXISTS councils (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT DEFAULT 'advanced',
+      config JSON NOT NULL,
+      last_used_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -178,7 +197,14 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)',
   // Local sessions listing performance
-  'CREATE INDEX IF NOT EXISTS idx_reviews_type_updated ON reviews(review_type, updated_at DESC)'
+  'CREATE INDEX IF NOT EXISTS idx_reviews_type_updated ON reviews(review_type, updated_at DESC)',
+  // Council indexes
+  'CREATE INDEX IF NOT EXISTS idx_councils_name ON councils(name)',
+  // Voice tracking indexes
+  'CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)',
+  // Voice-centric council indexes
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_parent ON analysis_runs(parent_run_id)'
 ];
 
 /**

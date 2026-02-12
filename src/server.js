@@ -253,9 +253,11 @@ async function startServer(sharedDb = null) {
     const localRoutes = require('./routes/local');
     const setupRoutes = require('./routes/setup');
     const mcpRoutes = require('./routes/mcp');
+    const councilRoutes = require('./routes/councils');
 
     // Mount specific routes first to ensure they match before general PR routes
     app.use('/', analysisRoutes);
+    app.use('/', councilRoutes);
     app.use('/', commentsRoutes);
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);

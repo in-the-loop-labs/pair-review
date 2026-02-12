@@ -346,6 +346,14 @@ class CommentManager {
       return;
     }
 
+    // Prevent duplicate saves from rapid clicks or Cmd+Enter
+    const saveBtn = formRow?.querySelector('.save-comment-btn');
+    if (saveBtn?.dataset.saving === 'true') {
+      return;
+    }
+    if (saveBtn) saveBtn.dataset.saving = 'true';
+    if (saveBtn) saveBtn.disabled = true;
+
     try {
       const reviewId = this.prManager?.currentPR?.id;
       const headSha = this.prManager?.currentPR?.head_sha;
@@ -407,6 +415,11 @@ class CommentManager {
     } catch (error) {
       console.error('Error saving comment:', error);
       alert('Failed to save comment');
+      // Re-enable save button on failure so the user can retry
+      if (saveBtn) {
+        saveBtn.dataset.saving = 'false';
+        saveBtn.disabled = false;
+      }
     }
   }
 

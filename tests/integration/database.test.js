@@ -1398,6 +1398,47 @@ describe('RepoSettingsRepository', () => {
       expect(settings.default_instructions).toBeNull();
       expect(settings.default_model).toBeNull();
     });
+
+    it('should save and retrieve default_tab', async () => {
+      const settings = await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_tab: 'council'
+      });
+
+      expect(settings.default_tab).toBe('council');
+
+      const retrieved = await repoSettingsRepo.getRepoSettings('owner/repo');
+      expect(retrieved.default_tab).toBe('council');
+    });
+
+    it('should update default_tab on existing settings', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_tab: 'single'
+      });
+
+      const updated = await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_tab: 'advanced'
+      });
+
+      expect(updated.default_tab).toBe('advanced');
+    });
+
+    it('should preserve default_tab when not specified in update', async () => {
+      await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_tab: 'council'
+      });
+
+      const updated = await repoSettingsRepo.saveRepoSettings('owner/repo', {
+        default_instructions: 'Updated instructions'
+      });
+
+      expect(updated.default_tab).toBe('council');
+      expect(updated.default_instructions).toBe('Updated instructions');
+    });
+
+    it('should default default_tab to null', async () => {
+      const settings = await repoSettingsRepo.saveRepoSettings('owner/repo', {});
+      expect(settings.default_tab).toBeNull();
+    });
   });
 
   describe('deleteRepoSettings()', () => {
@@ -2034,6 +2075,107 @@ describe('AnalysisRunRepository', () => {
       expect(runs[0].head_sha).toBe(sha2);
       expect(runs[1].head_sha).toBe(sha1);
     });
+
+    it('should order council parent run above child runs when parent completes last', async () => {
+      // Simulate council workflow: parent created first, children created after,
+      // parent completes LAST (after all children finish).
+      // The parent should appear first (most recent) because it completed most recently.
+
+      // Create parent council run with earlier started_at
+      await analysisRunRepo.create({
+        id: 'council-parent',
+        reviewId: testReview.id,
+        configType: 'council',
+        provider: 'council'
+      });
+
+      // Create child runs with later started_at
+      await analysisRunRepo.create({
+        id: 'council-child-1',
+        reviewId: testReview.id,
+        parentRunId: 'council-parent',
+        configType: 'council'
+      });
+      await analysisRunRepo.create({
+        id: 'council-child-2',
+        reviewId: testReview.id,
+        parentRunId: 'council-parent',
+        configType: 'council'
+      });
+
+      // Manually set timestamps to simulate real timing:
+      // - Parent started first (T=0), completed last (T=30)
+      // - Child 1 started at T=1, completed at T=15
+      // - Child 2 started at T=2, completed at T=20
+      await run(db, `UPDATE analysis_runs SET started_at = '2025-01-01 00:00:00', completed_at = '2025-01-01 00:00:30', status = 'completed' WHERE id = 'council-parent'`);
+      await run(db, `UPDATE analysis_runs SET started_at = '2025-01-01 00:00:01', completed_at = '2025-01-01 00:00:15', status = 'completed' WHERE id = 'council-child-1'`);
+      await run(db, `UPDATE analysis_runs SET started_at = '2025-01-01 00:00:02', completed_at = '2025-01-01 00:00:20', status = 'completed' WHERE id = 'council-child-2'`);
+
+      const runs = await analysisRunRepo.getByReviewId(testReview.id);
+      expect(runs).toHaveLength(3);
+      // Parent should appear first because it has the latest completed_at
+      expect(runs[0].id).toBe('council-parent');
+      expect(runs[1].id).toBe('council-child-2');
+      expect(runs[2].id).toBe('council-child-1');
+    });
+
+    it('should order council parent run above child runs when timestamps are identical (single-reviewer council)', async () => {
+      // When a single-reviewer council skips consolidation, parent and child
+      // complete at nearly the same second. The parent must still sort above its children.
+
+      // Create parent council run
+      await analysisRunRepo.create({
+        id: 'council-parent-same-ts',
+        reviewId: testReview.id,
+        configType: 'council',
+        provider: 'council'
+      });
+
+      // Create single child run
+      await analysisRunRepo.create({
+        id: 'council-child-same-ts',
+        reviewId: testReview.id,
+        parentRunId: 'council-parent-same-ts',
+        configType: 'council'
+      });
+
+      // Set identical completed_at for parent and child (simulates single-reviewer council
+      // where consolidation is skipped and both complete at the same second).
+      // Child has a later started_at and higher ID, which would have caused it to sort first
+      // before the fix.
+      await run(db, `UPDATE analysis_runs SET started_at = '2025-06-01 15:16:00', completed_at = '2025-06-01 15:16:05', status = 'completed' WHERE id = 'council-parent-same-ts'`);
+      await run(db, `UPDATE analysis_runs SET started_at = '2025-06-01 15:16:01', completed_at = '2025-06-01 15:16:05', status = 'completed' WHERE id = 'council-child-same-ts'`);
+
+      const runs = await analysisRunRepo.getByReviewId(testReview.id);
+      expect(runs).toHaveLength(2);
+      // Parent (parent_run_id IS NULL) must sort above child even with identical completed_at
+      expect(runs[0].id).toBe('council-parent-same-ts');
+      expect(runs[1].id).toBe('council-child-same-ts');
+    });
+
+    it('should order running (incomplete) runs above completed runs when they started more recently', async () => {
+      // A running run has no completed_at, so COALESCE falls back to started_at.
+      // If a run started recently but hasn't completed, it should still appear near the top.
+      await analysisRunRepo.create({
+        id: 'old-completed',
+        reviewId: testReview.id,
+        status: 'completed'
+      });
+      await analysisRunRepo.create({
+        id: 'new-running',
+        reviewId: testReview.id
+      });
+
+      // Set the old run to have completed before the new run started
+      await run(db, `UPDATE analysis_runs SET started_at = '2025-01-01 00:00:00', completed_at = '2025-01-01 00:00:10' WHERE id = 'old-completed'`);
+      await run(db, `UPDATE analysis_runs SET started_at = '2025-01-01 00:01:00', completed_at = NULL WHERE id = 'new-running'`);
+
+      const runs = await analysisRunRepo.getByReviewId(testReview.id);
+      expect(runs).toHaveLength(2);
+      // Running run (started_at 00:01:00) should appear above old completed run (completed_at 00:00:10)
+      expect(runs[0].id).toBe('new-running');
+      expect(runs[1].id).toBe('old-completed');
+    });
   });
 
   describe('getLatestByReviewId()', () => {
@@ -2064,6 +2206,30 @@ describe('AnalysisRunRepository', () => {
       expect(latest).not.toBeNull();
       expect(latest.id).toBe('sha-run-2');
       expect(latest.head_sha).toBe(latestSha);
+    });
+
+    it('should return council parent run as latest when it completed most recently', async () => {
+      // Council parent is created first but completes last
+      await analysisRunRepo.create({
+        id: 'latest-council-parent',
+        reviewId: testReview.id,
+        configType: 'council',
+        provider: 'council'
+      });
+      await analysisRunRepo.create({
+        id: 'latest-council-child',
+        reviewId: testReview.id,
+        parentRunId: 'latest-council-parent',
+        configType: 'council'
+      });
+
+      // Parent started earlier but completed later
+      await run(db, `UPDATE analysis_runs SET started_at = '2025-06-01 10:00:00', completed_at = '2025-06-01 10:02:00', status = 'completed' WHERE id = 'latest-council-parent'`);
+      await run(db, `UPDATE analysis_runs SET started_at = '2025-06-01 10:00:01', completed_at = '2025-06-01 10:01:00', status = 'completed' WHERE id = 'latest-council-child'`);
+
+      const latest = await analysisRunRepo.getLatestByReviewId(testReview.id);
+      expect(latest).not.toBeNull();
+      expect(latest.id).toBe('latest-council-parent');
     });
   });
 
@@ -2101,6 +2267,152 @@ describe('AnalysisRunRepository', () => {
     it('should return 0 when no runs exist for review', async () => {
       const deleted = await analysisRunRepo.deleteByReviewId(9999);
       expect(deleted).toBe(0);
+    });
+  });
+
+  describe('create() with voice-centric council columns', () => {
+    it('should create a run with parentRunId, configType, and levelsConfig', async () => {
+      // Create a parent council run first
+      const parentRun = await analysisRunRepo.create({
+        id: 'parent-council-run',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+
+      expect(parentRun.config_type).toBe('council');
+      expect(parentRun.parent_run_id).toBeNull();
+
+      // Create a child voice run
+      const childRun = await analysisRunRepo.create({
+        id: 'child-voice-run',
+        reviewId: testReview.id,
+        parentRunId: 'parent-council-run',
+        configType: 'council',
+        levelsConfig: { 1: true, 2: true, 3: false }
+      });
+
+      expect(childRun.parent_run_id).toBe('parent-council-run');
+      expect(childRun.config_type).toBe('council');
+      expect(childRun.levels_config).toBe('{"1":true,"2":true,"3":false}');
+    });
+
+    it('should default config_type to single', async () => {
+      const result = await analysisRunRepo.create({
+        id: 'default-config-run',
+        reviewId: testReview.id
+      });
+
+      expect(result.config_type).toBe('single');
+      expect(result.parent_run_id).toBeNull();
+      expect(result.levels_config).toBeNull();
+    });
+
+    it('should store levelsConfig as JSON string', async () => {
+      const levels = { 1: true, 2: false, 3: true };
+      const result = await analysisRunRepo.create({
+        id: 'levels-run',
+        reviewId: testReview.id,
+        levelsConfig: levels
+      });
+
+      expect(result.levels_config).toBe(JSON.stringify(levels));
+    });
+
+    it('should handle null levelsConfig', async () => {
+      const result = await analysisRunRepo.create({
+        id: 'null-levels-run',
+        reviewId: testReview.id,
+        levelsConfig: null
+      });
+
+      expect(result.levels_config).toBeNull();
+    });
+  });
+
+  describe('getChildRuns()', () => {
+    it('should return child runs for a parent council run ordered by started_at ASC', async () => {
+      // Create parent run
+      await analysisRunRepo.create({
+        id: 'council-parent',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+
+      // Create child voice runs
+      await analysisRunRepo.create({
+        id: 'voice-1',
+        reviewId: testReview.id,
+        parentRunId: 'council-parent',
+        configType: 'council'
+      });
+      await analysisRunRepo.create({
+        id: 'voice-2',
+        reviewId: testReview.id,
+        parentRunId: 'council-parent',
+        configType: 'council'
+      });
+
+      const children = await analysisRunRepo.getChildRuns('council-parent');
+      expect(children).toHaveLength(2);
+      expect(children[0].id).toBe('voice-1');
+      expect(children[1].id).toBe('voice-2');
+      expect(children[0].parent_run_id).toBe('council-parent');
+      expect(children[1].parent_run_id).toBe('council-parent');
+    });
+
+    it('should return empty array when no child runs exist', async () => {
+      const children = await analysisRunRepo.getChildRuns('non-existent-parent');
+      expect(children).toEqual([]);
+    });
+
+    it('should not include runs from other parents', async () => {
+      await analysisRunRepo.create({
+        id: 'parent-a',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+      await analysisRunRepo.create({
+        id: 'parent-b',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+
+      await analysisRunRepo.create({
+        id: 'child-of-a',
+        reviewId: testReview.id,
+        parentRunId: 'parent-a'
+      });
+      await analysisRunRepo.create({
+        id: 'child-of-b',
+        reviewId: testReview.id,
+        parentRunId: 'parent-b'
+      });
+
+      const childrenA = await analysisRunRepo.getChildRuns('parent-a');
+      expect(childrenA).toHaveLength(1);
+      expect(childrenA[0].id).toBe('child-of-a');
+    });
+
+    it('should include new columns in child run results', async () => {
+      await analysisRunRepo.create({
+        id: 'parent-run',
+        reviewId: testReview.id,
+        configType: 'council'
+      });
+
+      await analysisRunRepo.create({
+        id: 'child-run',
+        reviewId: testReview.id,
+        parentRunId: 'parent-run',
+        configType: 'council',
+        levelsConfig: { 1: true, 2: true, 3: false }
+      });
+
+      const children = await analysisRunRepo.getChildRuns('parent-run');
+      expect(children).toHaveLength(1);
+      expect(children[0].config_type).toBe('council');
+      expect(children[0].levels_config).toBe('{"1":true,"2":true,"3":false}');
+      expect(children[0].parent_run_id).toBe('parent-run');
     });
   });
 });

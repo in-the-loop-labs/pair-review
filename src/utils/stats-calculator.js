@@ -56,6 +56,7 @@ function getStatsQuery(runId = null) {
       query: `
         SELECT type, COUNT(*) as count FROM comments
         WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL
+          AND (is_raw = 0 OR is_raw IS NULL)
           AND ai_run_id = ?
         GROUP BY type
       `,
@@ -67,6 +68,7 @@ function getStatsQuery(runId = null) {
       query: `
         SELECT type, COUNT(*) as count FROM comments
         WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL
+          AND (is_raw = 0 OR is_raw IS NULL)
           AND ai_run_id = (
             SELECT ai_run_id FROM comments
             WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL

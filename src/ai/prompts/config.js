@@ -24,7 +24,7 @@ const TIERS = ['fast', 'balanced', 'thorough'];
 /**
  * Prompt types (analysis levels)
  */
-const PROMPT_TYPES = ['level1', 'level2', 'level3', 'orchestration'];
+const PROMPT_TYPES = ['level1', 'level2', 'level3', 'orchestration', 'consolidation'];
 
 /**
  * Resolve a user-friendly tier alias to internal tier

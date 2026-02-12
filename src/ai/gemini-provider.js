@@ -174,9 +174,9 @@ class GeminiProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
 
-      const levelPrefix = `[Level ${level}]`;
+      const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Gemini CLI...`);
       logger.info(`${levelPrefix} Writing prompt: ${prompt.length} bytes`);
 
@@ -298,7 +298,7 @@ class GeminiProvider extends AIProvider {
         }
 
         // Parse the Gemini JSONL stream response
-        const parsed = this.parseGeminiResponse(stdout, level);
+        const parsed = this.parseGeminiResponse(stdout, level, levelPrefix);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
           // Dump the parsed data for debugging
@@ -320,7 +320,7 @@ class GeminiProvider extends AIProvider {
           // Use async IIFE to handle the async LLM extraction
           (async () => {
             try {
-              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess });
+              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess, logPrefix: levelPrefix });
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);
@@ -382,8 +382,8 @@ class GeminiProvider extends AIProvider {
    * @param {string|number} level - Analysis level for logging
    * @returns {{success: boolean, data?: Object, error?: string}}
    */
-  parseGeminiResponse(stdout, level) {
-    const levelPrefix = `[Level ${level}]`;
+  parseGeminiResponse(stdout, level, logPrefix) {
+    const levelPrefix = logPrefix || `[Level ${level}]`;
 
     try {
       // Split by newlines and parse each JSON line

@@ -33,7 +33,8 @@ const {
   determineCompletionInfo,
   broadcastProgress,
   CancellationError,
-  createProgressCallback
+  createProgressCallback,
+  parseEnabledLevels
 } = require('./shared');
 
 const router = express.Router();
@@ -603,7 +604,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     }
 
     // Extract optional provider, model, tier, customInstructions and skipLevel3 from request body
-    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3 } = req.body || {};
+    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3, enabledLevels: requestEnabledLevels } = req.body || {};
 
     // Trim and validate custom instructions
     const MAX_INSTRUCTIONS_LENGTH = 5000;
@@ -680,6 +681,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
 
     // Create DB analysis_runs record immediately so it's queryable for polling
     const analysisRunRepo = new AnalysisRunRepository(db);
+    const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);
     try {
       await analysisRunRepo.create({
         id: runId,
@@ -688,7 +690,9 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
         model: selectedModel,
         repoInstructions,
         requestInstructions,
-        headSha: review.local_head_sha || null
+        headSha: review.local_head_sha || null,
+        configType: 'single',
+        levelsConfig
       });
     } catch (error) {
       logger.error('Failed to create analysis run record:', error);
@@ -705,9 +709,9 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
       startedAt: new Date().toISOString(),
       progress: 'Starting analysis...',
       levels: {
-        1: { status: 'running', progress: 'Starting...' },
-        2: { status: 'running', progress: 'Starting...' },
-        3: requestSkipLevel3 ? { status: 'skipped', progress: 'Skipped' } : { status: 'running', progress: 'Starting...' },
+        1: levelsConfig[1] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+        2: levelsConfig[2] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+        3: levelsConfig[3] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
         4: { status: 'pending', progress: 'Pending' }
       },
       filesAnalyzed: 0,
@@ -760,7 +764,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     const progressCallback = createProgressCallback(analysisId);
 
     // Start analysis asynchronously (skipRunCreation since we created the record above; also passes changedFiles for local mode path validation, tier for prompt selection, and skipLevel3 flag)
-    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3 })
+    analyzer.analyzeLevel1(reviewId, localPath, localMetadata, progressCallback, { repoInstructions, requestInstructions }, changedFiles, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
       .then(async result => {
         logger.section('Local Analysis Results');
         logger.success(`Analysis complete for local review #${reviewId}`);
@@ -979,6 +983,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
         AND source = 'ai'
         AND ${levelFilter}
         AND status IN ('active', 'dismissed', 'adopted', 'draft', 'submitted')
+        AND (is_raw = 0 OR is_raw IS NULL)
         AND ${runIdFilter}
       ORDER BY
         CASE
@@ -1741,10 +1746,11 @@ router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
     }
 
     // Check if any AI suggestions exist for this review
+    // Exclude raw council voice suggestions (is_raw=1) — only count final/consolidated suggestions
     const result = await queryOne(db, `
       SELECT EXISTS(
         SELECT 1 FROM comments
-        WHERE review_id = ? AND source = 'ai'
+        WHERE review_id = ? AND source = 'ai' AND (is_raw = 0 OR is_raw IS NULL)
       ) as has_suggestions
     `, [reviewId]);
 
@@ -1997,12 +2003,25 @@ router.get('/api/local/:reviewId/review-settings', async (req, res) => {
 
     if (!review) {
       return res.json({
-        custom_instructions: null
+        custom_instructions: null,
+        last_council_id: null
       });
     }
 
+    // Find the last council used for this review
+    let last_council_id = null;
+    const lastCouncilRun = await queryOne(db, `
+      SELECT model FROM analysis_runs
+      WHERE review_id = ? AND provider = 'council' AND model != 'inline-config'
+      ORDER BY started_at DESC LIMIT 1
+    `, [review.id]);
+    if (lastCouncilRun) {
+      last_council_id = lastCouncilRun.model;
+    }
+
     res.json({
-      custom_instructions: review.custom_instructions || null
+      custom_instructions: review.custom_instructions || null,
+      last_council_id
     });
 
   } catch (error) {
@@ -2072,7 +2091,10 @@ router.get('/api/local/:reviewId/analysis-runs', async (req, res) => {
     const analysisRunRepo = new AnalysisRunRepository(db);
     const runs = await analysisRunRepo.getByReviewId(reviewId);
 
-    res.json({ runs });
+    res.json({ runs: runs.map(r => ({
+      ...r,
+      levels_config: r.levels_config ? JSON.parse(r.levels_config) : null
+    })) });
   } catch (error) {
     logger.error('Error fetching analysis runs:', error);
     res.status(500).json({ error: 'Failed to fetch analysis runs' });

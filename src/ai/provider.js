@@ -99,6 +99,8 @@ class AIProvider {
    *   Called with normalized events: { type: 'assistant_text'|'tool_use', text: string, timestamp: number }.
    *   Providers that support streaming (Claude, Codex) will call this as data arrives.
    *   Providers without streaming support silently ignore this option.
+   * @param {string} [options.logPrefix] - Custom log prefix to use instead of `[Level N]`.
+   *   Used by council mode to disambiguate concurrent reviewers (e.g., `[L1 R1]`).
    * @returns {Promise<Object>} Parsed JSON response or { raw, parsed: false }
    */
   async execute(prompt, options = {}) {
@@ -195,8 +197,8 @@ class AIProvider {
    * @returns {Promise<{success: boolean, data?: Object, error?: string}>}
    */
   async extractJSONWithLLM(rawResponse, options = {}) {
-    const { level = 'extraction', analysisId, registerProcess } = options;
-    const levelPrefix = `[Level ${level}]`;
+    const { level = 'extraction', analysisId, registerProcess, logPrefix } = options;
+    const levelPrefix = logPrefix || `[Level ${level}]`;
 
     // Get the fast-tier model, with fallback to analysis model
     const extractionModel = this.getFastTierModel();

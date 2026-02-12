@@ -8,6 +8,9 @@
  * - CommentManager: Comment forms and editing
  * - SuggestionManager: AI suggestion handling
  */
+// Timeout (ms) for stale check — git commands can hang on locked repos
+const STALE_TIMEOUT = 2000;
+
 class PRManager {
   // Forward static constants from modules for backward compatibility
   static get CATEGORY_EMOJI_MAP() {
@@ -1868,6 +1871,15 @@ class PRManager {
    * Save edited user comment
    */
   async saveEditedUserComment(commentId) {
+    // Prevent duplicate saves from rapid clicks or Cmd+Enter
+    const editForm = document.querySelector(`#edit-comment-${commentId}`)?.closest('.user-comment-edit-form');
+    const saveBtn = editForm?.querySelector('.save-edit-btn');
+    if (saveBtn?.dataset.saving === 'true') {
+      return;
+    }
+    if (saveBtn) saveBtn.dataset.saving = 'true';
+    if (saveBtn) saveBtn.disabled = true;
+
     try {
       const textarea = document.getElementById(`edit-comment-${commentId}`);
       const editedText = textarea.value.trim();
@@ -1875,6 +1887,10 @@ class PRManager {
       if (!editedText) {
         alert('Comment cannot be empty');
         textarea.focus();
+        if (saveBtn) {
+          saveBtn.dataset.saving = 'false';
+          saveBtn.disabled = false;
+        }
         return;
       }
 
@@ -1889,7 +1905,7 @@ class PRManager {
       const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
       const commentDiv = commentRow.querySelector('.user-comment');
       let bodyDiv = commentDiv.querySelector('.user-comment-body');
-      const editForm = commentDiv.querySelector('.user-comment-edit-form');
+      const editFormEl = commentDiv.querySelector('.user-comment-edit-form');
 
       if (!bodyDiv) {
         bodyDiv = document.createElement('div');
@@ -1901,7 +1917,7 @@ class PRManager {
       bodyDiv.dataset.originalMarkdown = editedText;
       bodyDiv.style.display = '';
 
-      if (editForm) editForm.remove();
+      if (editFormEl) editFormEl.remove();
       commentDiv.classList.remove('editing-mode');
 
       const timestamp = commentDiv.querySelector('.user-comment-timestamp');
@@ -1915,6 +1931,11 @@ class PRManager {
     } catch (error) {
       console.error('Error saving comment:', error);
       alert('Failed to save comment');
+      // Re-enable save button on failure so the user can retry
+      if (saveBtn) {
+        saveBtn.dataset.saving = 'false';
+        saveBtn.disabled = false;
+      }
     }
   }
 
@@ -3377,8 +3398,16 @@ class PRManager {
         // Set button to analyzing state
         this.setButtonAnalyzing(data.analysisId);
 
-        // Show progress dialog for the running analysis
-        if (window.progressModal) {
+        // Show the appropriate progress modal
+        if (data.status?.isCouncil && window.councilProgressModal && data.status?.councilConfig) {
+          window.councilProgressModal.setPRMode();
+          window.councilProgressModal.show(
+            data.analysisId,
+            data.status.councilConfig,
+            null,
+            { configType: data.status.configType || 'advanced' }
+          );
+        } else if (window.progressModal) {
           window.progressModal.show(data.analysisId);
         } else {
           console.warn('Progress modal not yet initialized');
@@ -3394,7 +3423,15 @@ class PRManager {
    * Reopen progress modal when button is clicked during analysis
    */
   reopenProgressModal() {
-    if (this.currentAnalysisId && window.progressModal) {
+    if (!this.currentAnalysisId) return;
+
+    // If the council modal was used for this analysis, reopen it
+    if (window.councilProgressModal && window.councilProgressModal.currentAnalysisId === this.currentAnalysisId) {
+      window.councilProgressModal.reopenFromBackground();
+      return;
+    }
+
+    if (window.progressModal) {
       window.progressModal.show(this.currentAnalysisId);
     }
   }
@@ -3424,23 +3461,26 @@ class PRManager {
   }
 
   /**
-   * Fetch last used custom instructions from review record
-   * @returns {Promise<string>} Last custom instructions or empty string
+   * Fetch last review settings (custom instructions and council ID) from review record
+   * @returns {Promise<{custom_instructions: string, last_council_id: string|null}>} Last review settings
    */
-  async fetchLastCustomInstructions() {
-    if (!this.currentPR) return '';
+  async fetchLastReviewSettings() {
+    if (!this.currentPR) return { custom_instructions: '', last_council_id: null };
 
     const { owner, repo, number } = this.currentPR;
     try {
       const response = await fetch(`/api/pr/${owner}/${repo}/${number}/review-settings`);
       if (!response.ok) {
-        return '';
+        return { custom_instructions: '', last_council_id: null };
       }
       const data = await response.json();
-      return data.custom_instructions || '';
+      return {
+        custom_instructions: data.custom_instructions || '',
+        last_council_id: data.last_council_id || null
+      };
     } catch (error) {
       console.warn('Error fetching last custom instructions:', error);
-      return '';
+      return { custom_instructions: '', last_council_id: null };
     }
   }
 
@@ -3469,71 +3509,6 @@ class PRManager {
     }
 
     try {
-      // Check if PR has new commits before analysis
-      try {
-        const staleResponse = await fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`);
-        if (!staleResponse.ok) {
-          // Handle non-OK responses (401/403/500 etc)
-          const errorText = await staleResponse.text().catch(() => 'Unknown error');
-          console.warn(`Stale check failed with status ${staleResponse.status}:`, errorText);
-          if (window.toast) {
-            window.toast.showWarning(`Could not verify PR is current (${staleResponse.status}). Proceeding with analysis.`);
-          }
-          // Fall through to continue with analysis
-        } else {
-          const staleData = await staleResponse.json();
-
-          // Handle PR state - show info for closed/merged PRs but still allow analysis
-          if (staleData.prState && (staleData.prState !== 'open' || staleData.merged)) {
-            const stateLabel = staleData.merged ? 'merged' : 'closed';
-            if (window.toast) {
-              window.toast.showWarning(`This PR is ${stateLabel}. Analysis will proceed on the existing data.`);
-            }
-          }
-
-          // Handle isStale === null (unknown - couldn't check)
-          if (staleData.isStale === null) {
-            // Couldn't verify - show toast and proceed
-            if (window.toast) {
-              window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
-            }
-            // Continue with analysis
-          } else if (staleData.isStale === true) {
-            // PR is stale - show single dialog with 3 options
-            if (!window.confirmDialog) {
-              console.warn('ConfirmDialog not available for stale PR check');
-            } else {
-              const choice = await window.confirmDialog.show({
-                title: 'PR Has New Commits',
-                message: 'This pull request has new commits since you last loaded it. What would you like to do?',
-                confirmText: 'Refresh & Analyze',
-                confirmClass: 'btn-primary',
-                secondaryText: 'Analyze Anyway',
-                secondaryClass: 'btn-warning'
-              });
-
-              if (choice === 'confirm') {
-                // User wants to refresh first
-                await this.refreshPR();
-                // After refresh, continue with analysis
-              } else if (choice === 'secondary') {
-                // User chose to analyze anyway - continue with stale data
-              } else {
-                // User cancelled
-                return;
-              }
-            }
-          }
-          // If isStale === false, PR is up-to-date, just continue
-        }
-      } catch (staleError) {
-        // Fail-open: show toast warning and continue with analysis
-        console.warn('Error checking PR staleness:', staleError);
-        if (window.toast) {
-          window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
-        }
-      }
-
       // Show analysis config modal
       if (!this.analysisConfigModal) {
         console.warn('AnalysisConfigModal not initialized, proceeding without config');
@@ -3541,27 +3516,98 @@ class PRManager {
         return;
       }
 
-      // Fetch repo settings and last used instructions in parallel
-      const [repoSettings, lastInstructions] = await Promise.all([
-        this.fetchRepoSettings(),
-        this.fetchLastCustomInstructions()
-      ]);
+      // Run stale check and settings fetch in parallel to minimize dialog delay
+      // Use AbortController so the fetch is truly cancelled on timeout,
+      // freeing the HTTP connection for subsequent requests.
+      const _tParallel0 = performance.now();
+      const staleAbort = new AbortController();
+      const staleTimer = setTimeout(() => {
+        console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
+        staleAbort.abort();
+      }, STALE_TIMEOUT);
+      const staleCheckWithTimeout = fetch(`/api/pr/${owner}/${repo}/${number}/check-stale`, { signal: staleAbort.signal })
+        .then(r => r.ok ? r.json() : null)
+        .then(result => { clearTimeout(staleTimer); return result; })
+        .catch(() => { clearTimeout(staleTimer); return null; });
 
-      // Determine the model and provider to use (priority: remembered > repo default > defaults)
-      const modelStorageKey = PRManager.getRepoStorageKey('pair-review-model', owner, repo);
-      const providerStorageKey = PRManager.getRepoStorageKey('pair-review-provider', owner, repo);
-      const rememberedModel = localStorage.getItem(modelStorageKey);
-      const rememberedProvider = localStorage.getItem(providerStorageKey);
-      const currentModel = rememberedModel || repoSettings?.default_model || 'opus';
-      const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
+      const [staleResult, repoSettings, reviewSettings] = await Promise.all([
+        staleCheckWithTimeout,
+        this.fetchRepoSettings(),
+        this.fetchLastReviewSettings()
+      ]);
+      console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
+
+      // Handle staleness result — check for expected properties to distinguish
+      // a valid response from a failed/timed-out fetch (which resolves to null)
+      if (staleResult && 'isStale' in staleResult) {
+        // Handle PR state - show info for closed/merged PRs
+        if (staleResult.prState && (staleResult.prState !== 'open' || staleResult.merged)) {
+          const stateLabel = staleResult.merged ? 'merged' : 'closed';
+          if (window.toast) {
+            window.toast.showWarning(`This PR is ${stateLabel}. Analysis will proceed on the existing data.`);
+          }
+        }
+
+        if (staleResult.isStale === null) {
+          if (window.toast) {
+            window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
+          }
+        } else if (staleResult.isStale === true) {
+          if (window.confirmDialog) {
+            const choice = await window.confirmDialog.show({
+              title: 'PR Has New Commits',
+              message: 'This pull request has new commits since you last loaded it. What would you like to do?',
+              confirmText: 'Refresh & Analyze',
+              confirmClass: 'btn-primary',
+              secondaryText: 'Analyze Anyway',
+              secondaryClass: 'btn-warning'
+            });
+
+            if (choice === 'confirm') {
+              await this.refreshPR();
+            } else if (choice !== 'secondary') {
+              return;
+            }
+          }
+        }
+      } else if (!staleResult) {
+        // Network error, HTTP error, or timeout — fail open with warning
+        if (window.toast) {
+          window.toast.showWarning('Could not verify PR is current. Proceeding with analysis.');
+        }
+      }
+
+      const lastCouncilId = reviewSettings.last_council_id;
+
+      // Determine the model and provider to use (priority: repo default > defaults)
+      const currentModel = repoSettings?.default_model || 'opus';
+      const currentProvider = repoSettings?.default_provider || 'claude';
+
+      // Determine default tab (priority: localStorage > repo settings > 'single')
+      const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
+      const rememberedTab = localStorage.getItem(tabStorageKey);
+      const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
+
+      // Restore custom instructions (priority: database > localStorage)
+      const instructionsStorageKey = PRManager.getRepoStorageKey('pair-review-instructions', owner, repo);
+      const lastInstructions = reviewSettings.custom_instructions
+        ?? localStorage.getItem(instructionsStorageKey)
+        ?? '';
+
+      // Save tab selection to localStorage when user switches tabs
+      this.analysisConfigModal.onTabChange = (tabId) => {
+        localStorage.setItem(tabStorageKey, tabId);
+      };
 
       // Show the config modal
       const config = await this.analysisConfigModal.show({
         currentModel,
         currentProvider,
+        defaultTab,
         repoInstructions: repoSettings?.default_instructions || '',
         lastInstructions: lastInstructions,
-        rememberModel: !!(rememberedModel || rememberedProvider)
+        lastCouncilId,
+        defaultCouncilId: repoSettings?.default_council_id || null
       });
 
       // If user cancelled, do nothing
@@ -3569,13 +3615,12 @@ class PRManager {
         return;
       }
 
-      // Save remembered model and provider preferences if requested
-      if (config.rememberModel) {
-        localStorage.setItem(modelStorageKey, config.model);
-        localStorage.setItem(providerStorageKey, config.provider);
+      // Persist custom instructions to localStorage for immediate recall on next dialog open
+      const submittedInstructions = config.customInstructions || '';
+      if (submittedInstructions) {
+        localStorage.setItem(instructionsStorageKey, submittedInstructions);
       } else {
-        localStorage.removeItem(modelStorageKey);
-        localStorage.removeItem(providerStorageKey);
+        localStorage.removeItem(instructionsStorageKey);
       }
 
       // Start the analysis with the selected config
@@ -3622,19 +3667,35 @@ class PRManager {
       // Always do manual DOM cleanup as backup
       document.querySelectorAll('.ai-suggestion-row').forEach(row => row.remove());
 
-      // Start AI analysis with model, tier, and instructions
-      const response = await fetch(`/api/analyze/${owner}/${repo}/${number}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      // Determine endpoint and body based on whether this is a council analysis
+      let analyzeUrl, analyzeBody;
+      if (config.isCouncil) {
+        analyzeUrl = `/api/analyze/council/${owner}/${repo}/${number}`;
+        analyzeBody = {
+          councilId: config.councilId || undefined,
+          councilConfig: config.councilConfig || undefined,
+          configType: config.configType || 'advanced',
+          customInstructions: config.customInstructions || null
+        };
+      } else {
+        analyzeUrl = `/api/analyze/${owner}/${repo}/${number}`;
+        analyzeBody = {
           provider: config.provider || 'claude',
           model: config.model || 'opus',
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
+          enabledLevels: config.enabledLevels || [1, 2, 3],
           skipLevel3: config.skipLevel3 || false
-        })
+        };
+      }
+
+      // Start AI analysis
+      const response = await fetch(analyzeUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(analyzeBody)
       });
 
       if (!response.ok) {
@@ -3656,7 +3717,20 @@ class PRManager {
       // Set analyzing state and show progress modal
       this.setButtonAnalyzing(result.analysisId);
 
-      if (window.progressModal) {
+      // Always use the unified progress modal
+      if (window.councilProgressModal) {
+        window.councilProgressModal.setPRMode();
+        window.councilProgressModal.show(
+          result.analysisId,
+          config.isCouncil ? config.councilConfig : null,
+          config.isCouncil ? config.councilName : null,
+          {
+            configType: config.isCouncil ? (config.configType || 'advanced') : 'single',
+            enabledLevels: config.enabledLevels || [1, 2, 3]
+          }
+        );
+      } else if (window.progressModal) {
+        // Fallback to old progress modal if unified modal not available
         window.progressModal.show(result.analysisId);
       }
 

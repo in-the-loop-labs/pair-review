@@ -7,6 +7,8 @@
  * - Hiding GitHub-specific UI elements
  * - Adapting the UI for local uncommitted changes review
  */
+// STALE_TIMEOUT is declared in pr.js (shared global scope via script tags)
+
 class LocalManager {
   /**
    * Create LocalManager instance.
@@ -301,6 +303,10 @@ class LocalManager {
 
     // Override triggerAIAnalysis for local mode
     manager.triggerAIAnalysis = async function() {
+      // Timeout (ms) for stale check — git commands can hang on locked repos.
+      // Defined locally to avoid relying on cross-script const from pr.js.
+      const STALE_TIMEOUT = 2000;
+
       if (manager.isAnalyzing) {
         manager.reopenProgressModal();
         return;
@@ -316,14 +322,42 @@ class LocalManager {
         return;
       }
 
-      // Check staleness FIRST, before showing config modal
       try {
-        const staleResponse = await fetch(`/api/local/${reviewId}/check-stale`);
-        if (staleResponse.ok) {
-          const staleData = await staleResponse.json();
+        // Show analysis config modal
+        if (!manager.analysisConfigModal) {
+          console.warn('AnalysisConfigModal not initialized, proceeding without config');
+          await self.startLocalAnalysis(btn, {});
+          return;
+        }
 
-          if (staleData.isStale === true) {
-            // Working directory has changed - show dialog with options
+        // Run stale check and settings fetch in parallel to minimize dialog delay
+        // Use AbortController so the fetch is truly cancelled on timeout,
+        // freeing the HTTP connection for subsequent requests.
+        const _tParallel0 = performance.now();
+        const staleAbort = new AbortController();
+        const staleTimer = setTimeout(() => {
+          console.debug(`[Analyze] stale-check timed out after ${STALE_TIMEOUT}ms, aborting`);
+          staleAbort.abort();
+        }, STALE_TIMEOUT);
+        const staleCheckWithTimeout = fetch(`/api/local/${reviewId}/check-stale`, { signal: staleAbort.signal })
+          .then(r => r.ok ? r.json() : null)
+          .then(result => { clearTimeout(staleTimer); return result; })
+          .catch(() => { clearTimeout(staleTimer); return null; });
+        const [staleResult, repoSettings, reviewSettings] = await Promise.all([
+          staleCheckWithTimeout,
+          manager.fetchRepoSettings().catch(() => null),
+          manager.fetchLastReviewSettings().catch(() => ({ custom_instructions: '', last_council_id: null }))
+        ]);
+        console.debug(`[Analyze] parallel-fetch (stale+settings): ${Math.round(performance.now() - _tParallel0)}ms`);
+
+        // Handle staleness result — check for expected properties to distinguish
+        // a valid response from a failed/timed-out fetch (which resolves to null)
+        if (staleResult && 'isStale' in staleResult) {
+          if (staleResult.isStale === null && staleResult.error) {
+            if (window.toast) {
+              window.toast.showWarning('Could not verify working directory is current.');
+            }
+          } else if (staleResult.isStale === true) {
             if (window.confirmDialog) {
               const choice = await window.confirmDialog.show({
                 title: 'Files Have Changed',
@@ -335,69 +369,62 @@ class LocalManager {
               });
 
               if (choice === 'confirm') {
-                // User wants to refresh first, then continue to analysis
                 await self.refreshDiff();
-                // Continue to config modal after refresh (don't return)
               } else if (choice !== 'secondary') {
-                // User cancelled
                 return;
               }
-              // Both 'confirm' (after refresh) and 'secondary' continue to config modal
-            }
-          } else if (staleData.isStale === null && staleData.error) {
-            // Couldn't verify - show toast warning
-            if (window.toast) {
-              window.toast.showWarning('Could not verify working directory is current.');
             }
           }
-        }
-      } catch (staleError) {
-        console.warn('[Local] Error checking staleness:', staleError);
-        if (window.toast) {
-          window.toast.showWarning('Could not verify working directory is current.');
-        }
-      }
-
-      try {
-        // Show analysis config modal
-        if (!manager.analysisConfigModal) {
-          console.warn('AnalysisConfigModal not initialized, proceeding without config');
-          await self.startLocalAnalysis(btn, {});
-          return;
+        } else {
+          // Network error, HTTP error, or timeout — fail open with warning
+          if (window.toast) {
+            window.toast.showWarning('Could not verify working directory is current.');
+          }
         }
 
-        // Get repo settings for default instructions
-        const repoSettings = await manager.fetchRepoSettings().catch(() => null);
-        const lastInstructions = await manager.fetchLastCustomInstructions().catch(() => '');
+        const lastCouncilId = reviewSettings.last_council_id;
 
-        // Determine model and provider
-        const modelStorageKey = `pair-review-model:local-${reviewId}`;
-        const providerStorageKey = `pair-review-provider:local-${reviewId}`;
-        const rememberedModel = localStorage.getItem(modelStorageKey);
-        const rememberedProvider = localStorage.getItem(providerStorageKey);
-        const currentModel = rememberedModel || repoSettings?.default_model || 'opus';
-        const currentProvider = rememberedProvider || repoSettings?.default_provider || 'claude';
+        // Determine model and provider (priority: repo default > defaults)
+        const currentModel = repoSettings?.default_model || 'opus';
+        const currentProvider = repoSettings?.default_provider || 'claude';
+
+        // Determine default tab (priority: localStorage > repo settings > 'single')
+        const tabStorageKey = `pair-review-tab:local-${reviewId}`;
+        const rememberedTab = localStorage.getItem(tabStorageKey);
+        const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
+
+        // Restore custom instructions (priority: database > localStorage)
+        const instructionsStorageKey = `pair-review-instructions:local-${reviewId}`;
+        const lastInstructions = reviewSettings.custom_instructions
+          ?? localStorage.getItem(instructionsStorageKey)
+          ?? '';
+
+        // Save tab selection to localStorage when user switches tabs
+        manager.analysisConfigModal.onTabChange = (tabId) => {
+          localStorage.setItem(tabStorageKey, tabId);
+        };
 
         // Show config modal
         const config = await manager.analysisConfigModal.show({
           currentModel,
           currentProvider,
+          defaultTab,
           repoInstructions: repoSettings?.default_instructions || '',
           lastInstructions: lastInstructions,
-          rememberModel: !!(rememberedModel || rememberedProvider)
+          lastCouncilId,
+          defaultCouncilId: repoSettings?.default_council_id || null
         });
 
         if (!config) {
           return;
         }
 
-        // Save preferences if requested
-        if (config.rememberModel) {
-          localStorage.setItem(modelStorageKey, config.model);
-          localStorage.setItem(providerStorageKey, config.provider);
+        // Persist custom instructions to localStorage for immediate recall on next dialog open
+        const submittedInstructions = config.customInstructions || '';
+        if (submittedInstructions) {
+          localStorage.setItem(instructionsStorageKey, submittedInstructions);
         } else {
-          localStorage.removeItem(modelStorageKey);
-          localStorage.removeItem(providerStorageKey);
+          localStorage.removeItem(instructionsStorageKey);
         }
 
         // Start analysis
@@ -422,8 +449,16 @@ class LocalManager {
           manager.isAnalyzing = true;
           manager.setButtonAnalyzing(data.analysisId);
 
-          // Optionally reopen progress modal
-          if (window.progressModal) {
+          // Show the appropriate progress modal
+          if (data.status?.isCouncil && window.councilProgressModal && data.status?.councilConfig) {
+            window.councilProgressModal.setLocalMode(reviewId);
+            window.councilProgressModal.show(
+              data.analysisId,
+              data.status.councilConfig,
+              null,
+              { configType: data.status.configType || 'advanced' }
+            );
+          } else if (window.progressModal) {
             // Update the SSE endpoint for progress modal
             self.patchProgressModalForLocal();
             window.progressModal.show(data.analysisId);
@@ -452,6 +487,14 @@ class LocalManager {
         if (!content) {
           return;
         }
+
+        // Prevent duplicate saves from rapid clicks or Cmd+Enter
+        const saveBtn = formRow?.querySelector('.save-comment-btn');
+        if (saveBtn?.dataset.saving === 'true') {
+          return;
+        }
+        if (saveBtn) saveBtn.dataset.saving = 'true';
+        if (saveBtn) saveBtn.disabled = true;
 
         try {
           const response = await fetch(`/api/local/${reviewId}/user-comments`, {
@@ -514,6 +557,11 @@ class LocalManager {
         } catch (error) {
           console.error('Error saving user comment:', error);
           alert('Failed to save comment: ' + error.message);
+          // Re-enable save button on failure so the user can retry
+          if (saveBtn) {
+            saveBtn.dataset.saving = 'false';
+            saveBtn.disabled = false;
+          }
         }
       };
     }
@@ -681,6 +729,15 @@ class LocalManager {
     const originalSaveEditedUserComment = manager.saveEditedUserComment?.bind(manager);
     if (originalSaveEditedUserComment) {
       manager.saveEditedUserComment = async function(commentId) {
+        // Prevent duplicate saves from rapid clicks or Cmd+Enter
+        const editFormEl = document.querySelector(`#edit-comment-${commentId}`)?.closest('.user-comment-edit-form');
+        const saveBtnEl = editFormEl?.querySelector('.save-edit-btn');
+        if (saveBtnEl?.dataset.saving === 'true') {
+          return;
+        }
+        if (saveBtnEl) saveBtnEl.dataset.saving = 'true';
+        if (saveBtnEl) saveBtnEl.disabled = true;
+
         try {
           const textarea = document.getElementById(`edit-comment-${commentId}`);
           const editedText = textarea.value.trim();
@@ -688,6 +745,10 @@ class LocalManager {
           if (!editedText) {
             alert('Comment cannot be empty');
             textarea.focus();
+            if (saveBtnEl) {
+              saveBtnEl.dataset.saving = 'false';
+              saveBtnEl.disabled = false;
+            }
             return;
           }
 
@@ -732,6 +793,11 @@ class LocalManager {
         } catch (error) {
           console.error('Error saving comment:', error);
           alert('Failed to save comment');
+          // Re-enable save button on failure so the user can retry
+          if (saveBtnEl) {
+            saveBtnEl.dataset.saving = 'false';
+            saveBtnEl.disabled = false;
+          }
         }
       };
     }
@@ -897,21 +963,24 @@ class LocalManager {
       }
     };
 
-    // Patch fetchLastCustomInstructions to use local API endpoint
+    // Patch fetchLastReviewSettings to use local API endpoint
     // Local mode uses a different endpoint pattern than PR mode because local reviews
     // don't have PR metadata (owner/repo/number). Instead, instructions are stored
     // directly on the review record and accessed via the review ID.
-    manager.fetchLastCustomInstructions = async function() {
+    manager.fetchLastReviewSettings = async function() {
       try {
         const response = await fetch(`/api/local/${reviewId}/review-settings`);
         if (!response.ok) {
-          return '';
+          return { custom_instructions: '', last_council_id: null };
         }
         const data = await response.json();
-        return data.custom_instructions || '';
+        return {
+          custom_instructions: data.custom_instructions || '',
+          last_council_id: data.last_council_id || null
+        };
       } catch (error) {
         console.warn('Error fetching last custom instructions:', error);
-        return '';
+        return { custom_instructions: '', last_council_id: null };
       }
     };
 
@@ -1031,19 +1100,35 @@ class LocalManager {
 
       // Staleness is now checked in triggerAIAnalysis before showing config modal
 
-      // Start AI analysis
-      const response = await fetch(`/api/local/${this.reviewId}/analyze`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      // Determine endpoint and body based on whether this is a council analysis
+      let analyzeUrl, analyzeBody;
+      if (config.isCouncil) {
+        analyzeUrl = `/api/local/${this.reviewId}/analyze/council`;
+        analyzeBody = {
+          councilId: config.councilId || undefined,
+          councilConfig: config.councilConfig || undefined,
+          configType: config.configType || 'advanced',
+          customInstructions: config.customInstructions || null
+        };
+      } else {
+        analyzeUrl = `/api/local/${this.reviewId}/analyze`;
+        analyzeBody = {
           provider: config.provider || 'claude',
           model: config.model || 'opus',
           tier: config.tier || 'balanced',
           customInstructions: config.customInstructions || null,
+          enabledLevels: config.enabledLevels || [1, 2, 3],
           skipLevel3: config.skipLevel3 || false
-        })
+        };
+      }
+
+      // Start AI analysis
+      const response = await fetch(analyzeUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(analyzeBody)
       });
 
       if (!response.ok) {
@@ -1061,12 +1146,24 @@ class LocalManager {
       // Set analyzing state
       manager.setButtonAnalyzing(result.analysisId);
 
-      // Patch progress modal for local mode
-      this.patchProgressModalForLocal();
-
-      // Show progress modal
-      if (window.progressModal) {
-        window.progressModal.show(result.analysisId);
+      // Always use the unified progress modal
+      if (window.councilProgressModal) {
+        window.councilProgressModal.setLocalMode(this.reviewId);
+        window.councilProgressModal.show(
+          result.analysisId,
+          config.isCouncil ? config.councilConfig : null,
+          config.isCouncil ? config.councilName : null,
+          {
+            configType: config.isCouncil ? (config.configType || 'advanced') : 'single',
+            enabledLevels: config.enabledLevels || [1, 2, 3]
+          }
+        );
+      } else {
+        // Fallback to old progress modal if unified modal not available
+        this.patchProgressModalForLocal();
+        if (window.progressModal) {
+          window.progressModal.show(result.analysisId);
+        }
       }
 
     } catch (error) {

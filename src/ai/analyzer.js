@@ -23,6 +23,59 @@ const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guidance');
 
+/** Minimum total suggestion count across all voices before consolidation is applied */
+const COUNCIL_CONSOLIDATION_THRESHOLD = 8;
+
+/**
+ * Build a human-readable display label for a council voice/reviewer.
+ * Uses 1-based index so logs read "Reviewer 1", "Reviewer 2", etc.
+ * @param {number} idx - 0-based array index
+ * @param {Object} voice - Voice config with provider, model, tier
+ * @returns {string} e.g. "Reviewer 1 (claude/sonnet-4-5)"
+ */
+function buildReviewerLabel(idx, voice) {
+  return `Reviewer ${idx + 1} (${voice.provider}/${voice.model})`;
+}
+
+/**
+ * Build shared context for a council voice/reviewer.
+ * Used by both single-voice and multi-voice paths in runReviewerCentricCouncil.
+ *
+ * @param {Object} voice - Voice config with provider, model, tier, timeout, customInstructions
+ * @param {number} idx - 0-based voice index
+ * @param {Object|null} instructions - Instructions object { repoInstructions, requestInstructions }
+ * @param {Function|null} progressCallback - Parent progress callback to wrap
+ * @param {Object} db - Database instance
+ * @returns {Object} { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout }
+ */
+function buildVoiceContext(voice, idx, instructions, progressCallback, db) {
+  const voiceKey = `${voice.provider}-${voice.model}${idx > 0 ? `-${idx}` : ''}`;
+  const reviewerLabel = buildReviewerLabel(idx, voice);
+
+  // Build per-voice request instructions, treating whitespace-only as null
+  let voiceRequestInstructions = instructions?.requestInstructions?.trim() || null;
+  if (voice.customInstructions) {
+    voiceRequestInstructions = voiceRequestInstructions
+      ? `${voiceRequestInstructions}\n\n${voice.customInstructions}`
+      : voice.customInstructions;
+  }
+
+  const voiceAnalyzer = new Analyzer(db, voice.model, voice.provider);
+  const voiceTier = voice.tier || 'balanced';
+  const voiceTimeout = voice.timeout || 600000;
+
+  // Wrap progress callback with voice-centric metadata
+  const voiceProgressCallback = progressCallback ? (update) => {
+    progressCallback({
+      ...update,
+      voiceId: voiceKey,
+      voiceCentric: true
+    });
+  } : null;
+
+  return { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout };
+}
+
 class Analyzer {
   /**
    * @param {Object} database - Database instance
@@ -63,13 +116,20 @@ class Analyzer {
    * @param {string} options.analysisId - Analysis ID for process tracking (enables cancellation)
    * @param {string} [options.runId] - Pre-generated run ID (required if skipRunCreation is true)
    * @param {boolean} [options.skipRunCreation] - Skip creating analysis_run record in database
-   * @param {boolean} [options.skipLevel3] - Skip Level 3 codebase context analysis
+   * @param {boolean} [options.skipLevel3] - Skip Level 3 codebase context analysis (deprecated: use enabledLevels)
+   * @param {Object} [options.enabledLevels] - Which levels to run, e.g. {1: true, 2: true, 3: false}
    * @param {string} [options.tier='balanced'] - Analysis tier (fast, balanced, thorough)
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeAllLevels(prId, worktreePath, prMetadata, progressCallback = null, instructions = null, changedFiles = null, options = {}) {
     const runId = options.runId || uuidv4();
-    const { analysisId, skipRunCreation, skipLevel3 } = options;
+    const { analysisId, skipRunCreation, skipLevel3, reviewerNum } = options;
+    const logPrefix = options.logPrefix || '';
+    const executionTimeout = options.timeout || 600000; // Default 10 minutes
+
+    // Resolve enabledLevels: prefer explicit option, fall back to skipLevel3 compat
+    const enabledLevels = options.enabledLevels
+      || { 1: true, 2: true, 3: !skipLevel3 };
 
     if (skipRunCreation && !options.runId) {
       throw new Error('runId is required when skipRunCreation is true');
@@ -91,19 +151,19 @@ class Analyzer {
     }
 
     logger.section('Multi-Level AI Analysis Starting (Parallel Execution)');
-    logger.info(`PR ID: ${prId}`);
-    logger.info(`Analysis run ID: ${runId}`);
+    logger.info(`${logPrefix}PR ID: ${prId}`);
+    logger.info(`${logPrefix}Analysis run ID: ${runId}`);
     if (analysisId) {
-      logger.info(`Analysis ID (for cancellation): ${analysisId}`);
+      logger.info(`${logPrefix}Analysis ID (for cancellation): ${analysisId}`);
     }
-    logger.info(`Worktree path: ${worktreePath}`);
+    logger.info(`${logPrefix}Worktree path: ${worktreePath}`);
 
     // Extract head_sha from prMetadata for traceability
     // PR mode: prMetadata.head_sha is the PR head commit
     // Local mode: prMetadata.head_sha is the local HEAD commit
     const headSha = prMetadata?.head_sha || null;
     if (headSha) {
-      logger.info(`HEAD SHA: ${headSha}`);
+      logger.info(`${logPrefix}HEAD SHA: ${headSha}`);
     }
 
     // Create analysis run record in database (skip when caller already created it)
@@ -120,9 +180,9 @@ class Analyzer {
           requestInstructions,
           headSha
         });
-        logger.info(`Created analysis_run record: ${runId}`);
+        logger.info(`${logPrefix}Created analysis_run record: ${runId}`);
       } catch (createError) {
-        logger.warn(`Failed to create analysis_run record: ${createError.message}`);
+        logger.warn(`${logPrefix}Failed to create analysis_run record: ${createError.message}`);
         // Continue with analysis even if record creation fails
       }
     }
@@ -130,51 +190,46 @@ class Analyzer {
     // Load generated file patterns to skip during analysis
     const generatedPatterns = await this.loadGeneratedFilePatterns(worktreePath);
     if (generatedPatterns.length > 0) {
-      logger.info(`Found ${generatedPatterns.length} generated file patterns to skip: ${generatedPatterns.join(', ')}`);
+      logger.info(`${logPrefix}Found ${generatedPatterns.length} generated file patterns to skip: ${generatedPatterns.join(', ')}`);
     }
 
     // Get changed files for validation (use provided list for local mode, or compute for PR mode)
     const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
-    logger.info(`[Orchestration] Using ${validFiles.length} changed files for path validation`);
+    logger.info(`${logPrefix}Using ${validFiles.length} changed files for path validation`);
 
     // Build file line count map for line number validation
     const fileLineCountMap = await buildFileLineCountMap(worktreePath, validFiles);
-    logger.info(`[Line Validation] Built line count map for ${fileLineCountMap.size} files`);
+    logger.info(`${logPrefix}[Line Validation] Built line count map for ${fileLineCountMap.size} files`);
 
     try {
       // Note: We no longer delete old AI suggestions to preserve analysis history.
       // The API endpoint filters to show only the latest ai_run_id.
 
-      // Run analysis levels in parallel (optionally skip level 3)
-      const levelsToRun = skipLevel3 ? 2 : 3;
-      logger.info(`Starting ${levelsToRun} analysis levels in parallel${skipLevel3 ? ' (Level 3 skipped)' : ''}...`);
+      // Run analysis levels in parallel based on enabledLevels
+      const enabledCount = [1, 2, 3].filter(l => enabledLevels[l]).length;
+      const skippedNames = [1, 2, 3].filter(l => !enabledLevels[l]).map(l => `L${l}`);
+      logger.info(`${logPrefix}Starting ${enabledCount} analysis levels in parallel${skippedNames.length ? ` (${skippedNames.join(', ')} skipped)` : ''}...`);
       if (mergedInstructions) {
-        logger.info(`Custom instructions provided: ${mergedInstructions.length} chars`);
+        logger.info(`${logPrefix}Custom instructions provided: ${mergedInstructions.length} chars`);
       }
       const tier = options.tier || 'balanced';
 
-      // Build the promises array - always include levels 1 and 2, optionally include level 3
-      const analysisPromises = [
-        this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier }),
-        this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier })
+      // Build the promises array for each level based on enabledLevels
+      const levelAnalyzers = [
+        () => this.analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix, reviewerNum }),
+        () => this.analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix, reviewerNum }),
+        () => this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier, timeout: executionTimeout, logPrefix, reviewerNum })
       ];
 
-      if (skipLevel3) {
-        // Return a pre-resolved promise with skipped status (include summary for consistent result shape)
-        analysisPromises.push(Promise.resolve({ suggestions: [], status: 'skipped', summary: 'Level 3 skipped' }));
-        // Update progress for level 3 as skipped
-        if (progressCallback) {
-          progressCallback({
-            status: 'skipped',
-            progress: 'Skipped',
-            level: 3
-          });
+      const analysisPromises = [1, 2, 3].map((level, idx) => {
+        if (!enabledLevels[level]) {
+          if (progressCallback) {
+            progressCallback({ status: 'skipped', progress: 'Skipped', level });
+          }
+          return Promise.resolve({ suggestions: [], status: 'skipped', summary: `Level ${level} skipped` });
         }
-      } else {
-        analysisPromises.push(
-          this.analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns, progressCallback, mergedInstructions, validFiles, { analysisId, tier })
-        );
-      }
+        return levelAnalyzers[idx]();
+      });
 
       const results = await Promise.allSettled(analysisPromises);
 
@@ -190,7 +245,7 @@ class Analyzer {
         r => r.status === 'rejected' && r.reason?.isCancellation
       );
       if (hasCancellation) {
-        logger.info('Analysis cancelled by user');
+        logger.info(`${logPrefix}Analysis cancelled by user`);
         throw new CancellationError('Analysis cancelled by user');
       }
 
@@ -203,19 +258,19 @@ class Analyzer {
               suggestions: [],
               status: 'skipped'
             };
-            logger.info(`Level ${index + 1} skipped`);
+            logger.info(`${logPrefix}Level ${index + 1} skipped`);
           } else {
             levelResults[levelName] = {
               suggestions: result.value.suggestions || [],
               status: 'success',
               summary: result.value.summary
             };
-            logger.success(`Level ${index + 1} completed: ${levelResults[levelName].suggestions.length} suggestions`);
+            logger.success(`${logPrefix}Level ${index + 1} completed: ${levelResults[levelName].suggestions.length} suggestions`);
           }
         } else {
           // Don't log cancellation as a warning - it's expected
           if (!result.reason?.isCancellation) {
-            logger.warn(`Level ${index + 1} failed: ${result.reason?.message || 'Unknown error'}`);
+            logger.warn(`${logPrefix}Level ${index + 1} failed: ${result.reason?.message || 'Unknown error'}`);
           }
         }
       });
@@ -230,11 +285,11 @@ class Analyzer {
       }
 
       // Step 4: Orchestrate all suggestions
-      logger.info('All levels complete. Starting orchestration...');
+      logger.info(`${logPrefix}All levels complete. Starting cross-level consolidation...`);
       if (progressCallback) {
         progressCallback({
           status: 'running',
-          progress: 'Orchestrating AI suggestions for intelligent curation...',
+          progress: 'Consolidating suggestions across analysis levels...',
           level: 'orchestration'
         });
       }
@@ -246,7 +301,12 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback });
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum });
+
+        // Report orchestration step as completed
+        if (progressCallback) {
+          progressCallback({ level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
+        }
 
         // Validate and finalize suggestions
         const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -256,7 +316,7 @@ class Analyzer {
         );
 
         // Store orchestrated results with ai_level = NULL (final suggestions)
-        logger.info('Storing orchestrated suggestions in database...');
+        logger.info(`${logPrefix}Storing consolidated suggestions in database...`);
         await this.storeSuggestions(prId, runId, finalSuggestions, null, validFiles);
 
         // Update analysis_run record with completion data
@@ -267,12 +327,12 @@ class Analyzer {
             totalSuggestions: finalSuggestions.length,
             filesAnalyzed: validFiles.length
           });
-          logger.info(`Updated analysis_run record to completed: ${finalSuggestions.length} suggestions, ${validFiles.length} files`);
+          logger.info(`${logPrefix}Updated analysis_run record to completed: ${finalSuggestions.length} suggestions, ${validFiles.length} files`);
         } catch (updateError) {
-          logger.warn(`Failed to update analysis_run record: ${updateError.message}`);
+          logger.warn(`${logPrefix}Failed to update analysis_run record: ${updateError.message}`);
         }
 
-        logger.success(`Analysis complete: ${finalSuggestions.length} final suggestions`);
+        logger.success(`${logPrefix}Analysis complete: ${finalSuggestions.length} final suggestions`);
 
         return {
           runId,
@@ -282,8 +342,13 @@ class Analyzer {
         };
 
       } catch (orchestrationError) {
-        logger.error(`Orchestration failed: ${orchestrationError.message}`);
-        logger.warn('Falling back to storing all level suggestions without orchestration');
+        logger.error(`${logPrefix}Cross-level consolidation failed: ${orchestrationError.message}`);
+        logger.warn(`${logPrefix}Falling back to storing all level suggestions without consolidation`);
+
+        // Report orchestration step as failed
+        if (progressCallback) {
+          progressCallback({ level: 'orchestration', status: 'failed', progress: 'Cross-level consolidation failed' });
+        }
 
         // Fallback: store all suggestions as final without orchestration
         const fallbackSuggestions = [
@@ -302,7 +367,7 @@ class Analyzer {
         await this.storeSuggestions(prId, runId, finalFallbackSuggestions, null, validFiles);
 
         // Update analysis_run record with completion data (even though orchestration failed)
-        const fallbackSummary = `Analysis complete (orchestration failed): ${finalFallbackSuggestions.length} suggestions`;
+        const fallbackSummary = `Analysis complete (consolidation failed): ${finalFallbackSuggestions.length} suggestions`;
         try {
           await analysisRunRepo.update(runId, {
             status: 'completed',
@@ -310,9 +375,9 @@ class Analyzer {
             totalSuggestions: finalFallbackSuggestions.length,
             filesAnalyzed: validFiles.length
           });
-          logger.info(`Updated analysis_run record to completed (fallback): ${finalFallbackSuggestions.length} suggestions`);
+          logger.info(`${logPrefix}Updated analysis_run record to completed (fallback): ${finalFallbackSuggestions.length} suggestions`);
         } catch (updateError) {
-          logger.warn(`Failed to update analysis_run record: ${updateError.message}`);
+          logger.warn(`${logPrefix}Failed to update analysis_run record: ${updateError.message}`);
         }
 
         return {
@@ -329,21 +394,21 @@ class Analyzer {
       try {
         if (error.isCancellation) {
           await analysisRunRepo.update(runId, { status: 'cancelled' });
-          logger.info(`Updated analysis_run record to cancelled`);
+          logger.info(`${logPrefix}Updated analysis_run record to cancelled`);
         } else {
           await analysisRunRepo.update(runId, { status: 'failed' });
-          logger.info(`Updated analysis_run record to failed`);
+          logger.info(`${logPrefix}Updated analysis_run record to failed`);
         }
       } catch (updateError) {
-        logger.warn(`Failed to update analysis_run record on error: ${updateError.message}`);
+        logger.warn(`${logPrefix}Failed to update analysis_run record on error: ${updateError.message}`);
       }
 
       // Don't log cancellation as an error - it's expected user behavior
       if (error.isCancellation) {
         throw error;
       }
-      logger.error(`Analysis failed: ${error.message}`);
-      logger.error(`Error stack: ${error.stack}`);
+      logger.error(`${logPrefix}Analysis failed: ${error.message}`);
+      logger.error(`${logPrefix}Error stack: ${error.stack}`);
       throw error;
     }
   }
@@ -601,7 +666,7 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
     }
 
     if (!validPaths || validPaths.length === 0) {
-      logger.warn('[Orchestration] No valid paths provided for validation, skipping path filtering');
+      logger.warn('[Validation] No valid paths provided for validation, skipping path filtering');
       return suggestions;
     }
 
@@ -630,11 +695,11 @@ Do NOT create suggestions for any files not in this list. If you cannot find iss
 
     // Log discarded suggestions for debugging
     if (discardedSuggestions.length > 0) {
-      logger.warn(`[Orchestration] Discarded ${discardedSuggestions.length} suggestion(s) with invalid file paths:`);
+      logger.warn(`[Validation] Discarded ${discardedSuggestions.length} suggestion(s) with invalid file paths:`);
       for (const discarded of discardedSuggestions) {
         logger.warn(`  - "${discarded.file}" (normalized: "${discarded.normalizedPath}"): ${discarded.type} - ${discarded.title}`);
       }
-      logger.info(`[Orchestration] Valid paths in PR diff: ${Array.from(normalizedValidPaths).slice(0, 10).join(', ')}${normalizedValidPaths.size > 10 ? '...' : ''}`);
+      logger.info(`[Validation] Valid paths in PR diff: ${Array.from(normalizedValidPaths).slice(0, 10).join(', ')}${normalizedValidPaths.size > 10 ? '...' : ''}`);
     }
 
     return validSuggestions;
@@ -695,8 +760,11 @@ Or simply ignore any changes to files matching these patterns in your analysis.
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel1Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId, tier = 'balanced' } = options;
-    logger.info('[Level 1] Analysis Starting');
+    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
+    // Build adapter-level log prefix: when reviewerNum is set (council mode),
+    // use compact format like [R1 L1] so concurrent reviewers are disambiguated
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L1]` : '';
+    logger.info(`${lp}[Level 1] Analysis Starting`);
 
     try {
       // Check if analysis was cancelled before starting
@@ -708,7 +776,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `[Level 1] ${step}...`;
+        const progress = `${lp}[Level 1] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -728,10 +796,11 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       updateProgress('Running AI to analyze changes in isolation');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000, // 10 minutes for Level 1
+        timeout,
         level: 1,
         analysisId,
         registerProcess,
+        logPrefix: adapterLogPrefix,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 1, status: 'running', streamEvent: event });
         } : undefined
@@ -740,20 +809,20 @@ Or simply ignore any changes to files matching these patterns in your analysis.
       // Parse and validate the response
       updateProgress('Processing AI results');
       const parsedSuggestions = this.parseResponse(response, 1);
-      logger.success(`Parsed ${parsedSuggestions.length} valid Level 1 suggestions`);
+      logger.success(`${lp}Parsed ${parsedSuggestions.length} valid Level 1 suggestions`);
 
       // Validate suggestion file paths if changedFiles provided
       const suggestions = (changedFiles && changedFiles.length > 0)
         ? this.validateSuggestionFilePaths(parsedSuggestions, changedFiles)
         : parsedSuggestions;
       if (changedFiles && changedFiles.length > 0) {
-        logger.success(`After path validation: ${suggestions.length} suggestions`);
+        logger.success(`${lp}After path validation: ${suggestions.length} suggestions`);
       }
 
       // Store Level 1 suggestions
       updateProgress('Storing Level 1 suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 1, changedFiles);
-      logger.success(`Level 1 complete: ${suggestions.length} suggestions`);
+      logger.success(`${lp}Level 1 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
       if (progressCallback) {
@@ -772,7 +841,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
     } catch (error) {
       // Don't log cancellation as an error - it's expected user behavior
       if (!error.isCancellation) {
-        logger.error(`Level 1 analysis failed: ${error.message}`);
+        logger.error(`${lp}Level 1 analysis failed: ${error.message}`);
       }
 
       // Report failure to progress callback (unless cancelled)
@@ -1684,8 +1753,9 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId, tier = 'balanced' } = options;
-    logger.info('[Level 2] Analysis Starting');
+    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L2]` : '';
+    logger.info(`${lp}[Level 2] Analysis Starting`);
 
     try {
       // Check if analysis was cancelled before starting
@@ -1697,7 +1767,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `[Level 2] ${step}...`;
+        const progress = `${lp}[Level 2] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -1711,7 +1781,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Get list of changed files for grounding (use provided list for local mode, or compute for PR mode)
       const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
-      logger.info(`[Level 2] Changed files for grounding: ${validFiles.length} files`);
+      logger.info(`${lp}[Level 2] Changed files for grounding: ${validFiles.length} files`);
 
       // Build the Level 2 prompt
       updateProgress('Building prompt for AI to analyze file context');
@@ -1721,10 +1791,11 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       updateProgress('Running AI to analyze files in context');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000, // 10 minutes for Level 2
+        timeout,
         level: 2,
         analysisId,
         registerProcess,
+        logPrefix: adapterLogPrefix,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 2, status: 'running', streamEvent: event });
         } : undefined
@@ -1733,16 +1804,16 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       // Parse and validate the response
       updateProgress('Processing AI results');
       let suggestions = this.parseResponse(response, 2);
-      logger.success(`Parsed ${suggestions.length} valid Level 2 suggestions`);
+      logger.success(`${lp}Parsed ${suggestions.length} valid Level 2 suggestions`);
 
       // Validate suggestion file paths against changed files
       suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
-      logger.success(`After path validation: ${suggestions.length} suggestions`);
+      logger.success(`${lp}After path validation: ${suggestions.length} suggestions`);
 
       // Store Level 2 suggestions
       updateProgress('Storing Level 2 suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 2, validFiles);
-      logger.success(`Level 2 complete: ${suggestions.length} suggestions`);
+      logger.success(`${lp}Level 2 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
       if (progressCallback) {
@@ -1761,7 +1832,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     } catch (error) {
       // Don't log cancellation as an error - it's expected user behavior
       if (!error.isCancellation) {
-        logger.error(`Level 2 analysis failed: ${error.message}`);
+        logger.error(`${lp}Level 2 analysis failed: ${error.message}`);
       }
 
       // Report failure to progress callback (unless cancelled)
@@ -1792,8 +1863,9 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @returns {Promise<Object>} Analysis results
    */
   async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
-    const { analysisId, tier = 'balanced' } = options;
-    logger.info('[Level 3] Analysis Starting');
+    const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L3]` : '';
+    logger.info(`${lp}[Level 3] Analysis Starting`);
 
     try {
       // Check if analysis was cancelled before starting
@@ -1805,7 +1877,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       const aiProvider = createProvider(this.provider, this.model);
 
       const updateProgress = (step) => {
-        const progress = `[Level 3] ${step}...`;
+        const progress = `${lp}[Level 3] ${step}...`;
 
         if (progressCallback) {
           progressCallback({
@@ -1823,7 +1895,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
 
       // Get list of changed files for grounding (use provided list for local mode, or compute for PR mode)
       const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
-      logger.info(`[Level 3] Changed files for grounding: ${validFiles.length} files`);
+      logger.info(`${lp}[Level 3] Changed files for grounding: ${validFiles.length} files`);
 
       // Build the Level 3 prompt with test context
       updateProgress('Building prompt for AI to analyze codebase impact');
@@ -1833,10 +1905,11 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       updateProgress('Running AI to analyze codebase-wide implications');
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
-        timeout: 600000, // 10 minutes for Level 3
+        timeout,
         level: 3,
         analysisId,
         registerProcess,
+        logPrefix: adapterLogPrefix,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 3, status: 'running', streamEvent: event });
         } : undefined
@@ -1845,16 +1918,16 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       // Parse and validate the response
       updateProgress('Processing codebase context results');
       let suggestions = this.parseResponse(response, 3);
-      logger.success(`Parsed ${suggestions.length} valid Level 3 suggestions`);
+      logger.success(`${lp}Parsed ${suggestions.length} valid Level 3 suggestions`);
 
       // Validate suggestion file paths against changed files
       suggestions = this.validateSuggestionFilePaths(suggestions, validFiles);
-      logger.success(`After path validation: ${suggestions.length} suggestions`);
+      logger.success(`${lp}After path validation: ${suggestions.length} suggestions`);
 
       // Store Level 3 suggestions
       updateProgress('Storing Level 3 suggestions in database');
       await this.storeSuggestions(prId, runId, suggestions, 3, validFiles);
-      logger.success(`Level 3 complete: ${suggestions.length} suggestions`);
+      logger.success(`${lp}Level 3 complete: ${suggestions.length} suggestions`);
 
       // Report completion to progress callback
       if (progressCallback) {
@@ -1873,7 +1946,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     } catch (error) {
       // Don't log cancellation as an error - it's expected user behavior
       if (!error.isCancellation) {
-        logger.error(`Level 3 analysis failed: ${error.message}`);
+        logger.error(`${lp}Level 3 analysis failed: ${error.message}`);
       }
 
       // Report failure to progress callback (unless cancelled)
@@ -2350,14 +2423,17 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @returns {Promise<Array>} Curated suggestions array
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced', progressCallback } = options;
-    logger.section('[Orchestration] AI Orchestration Starting');
+    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
+    // Build adapter-level log prefix: when reviewerNum is set (council mode),
+    // use compact format like [R1 Orch] so concurrent reviewers are disambiguated
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} Orch]` : '';
+    logger.section(`${lp}[Consolidation] Cross-Level Consolidation Starting`);
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
                            (allSuggestions.level2?.length || 0) +
                            (allSuggestions.level3?.length || 0);
 
-    logger.info(`[Orchestration] Orchestrating ${totalSuggestions} total suggestions across all levels`);
+    logger.info(`${lp}[Consolidation] Consolidating ${totalSuggestions} total suggestions across all levels`);
 
     try {
       // Check if analysis was cancelled before starting
@@ -2365,19 +2441,21 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         throw new CancellationError('Analysis was cancelled');
       }
 
-      // Create provider instance for orchestration
-      const aiProvider = createProvider(this.provider, this.model);
+      // Create provider instance for consolidation (use overrides if provided)
+      const aiProvider = createProvider(providerOverride || this.provider, modelOverride || this.model);
 
-      // Build the orchestration prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier);
+      // Build the consolidation prompt
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier, lp);
 
-      // Execute Claude CLI for orchestration
-      logger.info('[Orchestration] Running AI orchestration to curate and merge suggestions...');
+      // Execute AI for cross-level consolidation
+      logger.info(`${lp}[Consolidation] Running AI consolidation to curate and merge suggestions...`);
       const response = await aiProvider.execute(prompt, {
-        timeout: 600000, // 10 minutes for orchestration
+        cwd: worktreePath,
+        timeout,
         level: 'orchestration',
         analysisId,
         registerProcess,
+        logPrefix: adapterLogPrefix,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 'orchestration', status: 'running', streamEvent: event });
         } : undefined
@@ -2386,25 +2464,25 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       // Parse the orchestrated response
       const orchestratedSuggestions = this.parseResponse(response, 'orchestration');
 
-      // Debug: If orchestration returned 0 suggestions but there was input, log for investigation
+      // Debug: If consolidation returned 0 suggestions but there was input, log for investigation
       const inputLevel1Count = allSuggestions.level1?.length || 0;
       const inputLevel2Count = allSuggestions.level2?.length || 0;
       const inputLevel3Count = allSuggestions.level3?.length || 0;
       const hadInputSuggestions = inputLevel1Count > 0 || inputLevel2Count > 0 || inputLevel3Count > 0;
 
       if (orchestratedSuggestions.length === 0 && hadInputSuggestions) {
-        logger.warn('[Orchestration] WARNING: Orchestration returned 0 suggestions despite input');
-        logger.warn(`[Orchestration] Input suggestion counts: Level1=${inputLevel1Count}, Level2=${inputLevel2Count}, Level3=${inputLevel3Count}`);
+        logger.warn(`${lp}[Consolidation] WARNING: Consolidation returned 0 suggestions despite input`);
+        logger.warn(`${lp}[Consolidation] Input suggestion counts: Level1=${inputLevel1Count}, Level2=${inputLevel2Count}, Level3=${inputLevel3Count}`);
         if (response.raw) {
-          logger.warn('[Orchestration] Raw AI response for debugging:');
-          logger.warn('--- BEGIN RAW ORCHESTRATION RESPONSE ---');
+          logger.warn(`${lp}[Consolidation] Raw AI response for debugging:`);
+          logger.warn('--- BEGIN RAW CONSOLIDATION RESPONSE ---');
           logger.warn(response.raw);
-          logger.warn('--- END RAW ORCHESTRATION RESPONSE ---');
+          logger.warn('--- END RAW CONSOLIDATION RESPONSE ---');
         } else if (response.suggestions) {
-          logger.warn('[Orchestration] Response had suggestions array but parsing returned 0. Response.suggestions:');
+          logger.warn(`${lp}[Consolidation] Response had suggestions array but parsing returned 0. Response.suggestions:`);
           logger.warn(JSON.stringify(response.suggestions, null, 2));
         } else {
-          logger.warn('[Orchestration] Response object keys: ' + Object.keys(response).join(', '));
+          logger.warn(`${lp}[Consolidation] Response object keys: ` + Object.keys(response).join(', '));
         }
       }
 
@@ -2419,7 +2497,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         }
       }
 
-      logger.success(`[Orchestration] AI orchestration complete: ${orchestratedSuggestions.length} curated suggestions`);
+      logger.success(`${lp}[Consolidation] Cross-level consolidation complete: ${orchestratedSuggestions.length} curated suggestions`);
 
       return {
         suggestions: orchestratedSuggestions,
@@ -2427,8 +2505,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       };
       
     } catch (error) {
-      logger.warn(`AI orchestration failed: ${error.message}`);
-      logger.warn('Falling back to storing all original suggestions');
+      logger.warn(`${lp}[Consolidation] Cross-level consolidation failed: ${error.message}`);
+      logger.warn(`${lp}[Consolidation] Falling back to storing all original suggestions`);
 
       // Fallback: combine all suggestions with level labels
       const fallbackSuggestions = [];
@@ -2453,7 +2531,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
       return {
         suggestions: fallbackSuggestions,
-        summary: `Analysis complete (orchestration failed): ${fallbackSuggestions.length} suggestions from all analysis levels`
+        summary: `Analysis complete (consolidation failed): ${fallbackSuggestions.length} suggestions from all analysis levels`
       };
     }
   }
@@ -2477,17 +2555,18 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
    * @param {string} worktreePath - Path to the git worktree
    * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
+   * @param {string} logPrefix - Optional log prefix for reviewer identification in council mode
    * @returns {string} Orchestration prompt
    */
-  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, tier = 'balanced') {
-    logger.debug(`[Orchestration] Building prompt with tier: ${tier}`);
+  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, tier = 'balanced', logPrefix = '') {
+    logger.debug(`${logPrefix}[Consolidation] Building consolidation prompt with tier: ${tier}`);
     const promptBuilder = getPromptBuilder('orchestration', tier, this.provider);
 
     // Build context for the tagged prompt system
     const isLocal = prMetadata.reviewType === 'local';
     const reviewDescription = isLocal
-      ? `local changes (review #${prMetadata.number || 'local'})`
-      : `pull request #${prMetadata.number}`;
+      ? `local changes (review #${prMetadata.pr_number || 'local'})`
+      : `pull request #${prMetadata.pr_number}`;
 
     const context = {
       reviewIntro: `You are orchestrating AI-powered code review suggestions for ${reviewDescription}.`,
@@ -2504,6 +2583,1078 @@ File-level suggestions should NOT have a line number. They apply to the entire f
     return promptBuilder.build(context);
   }
 
+
+  /**
+   * Run a reviewer-centric council analysis. Each reviewer independently runs all enabled
+   * levels, producing a complete review. Results are then consolidated cross-voice.
+   *
+   * @param {Object} reviewContext - Context for the review
+   * @param {number} reviewContext.reviewId - Review ID
+   * @param {string} reviewContext.worktreePath - Path to the git worktree
+   * @param {Object} reviewContext.prMetadata - PR/review metadata
+   * @param {Array<string>} [reviewContext.changedFiles] - Changed files list
+   * @param {Object} reviewContext.instructions - Instructions { repoInstructions, requestInstructions }
+   * @param {Object} councilConfig - Reviewer-centric council configuration
+   * @param {Array<Object>} councilConfig.voices - Reviewer configurations (provider, model, tier, customInstructions, timeout)
+   * @param {Object} councilConfig.levels - Which levels to enable, e.g. {1: true, 2: true, 3: false}
+   * @param {Object} [councilConfig.consolidation] - Consolidation provider/model/tier
+   * @param {Object} options - Additional options
+   * @param {string} options.analysisId - Analysis ID for process tracking
+   * @param {string} [options.runId] - Pre-generated parent run ID
+   * @param {Function} [options.progressCallback] - Progress callback
+   * @returns {Promise<Object>} Analysis results { runId, suggestions, summary }
+   */
+  async runReviewerCentricCouncil(reviewContext, councilConfig, options = {}) {
+    const { reviewId, worktreePath, prMetadata, changedFiles, instructions } = reviewContext;
+    const { analysisId, progressCallback } = options;
+    const parentRunId = options.runId || uuidv4();
+
+    logger.section('Review Council Analysis Starting (Reviewer-Centric)');
+    logger.info(`Review ID: ${reviewId}, Parent Run ID: ${parentRunId}`);
+
+    // Normalize config: detect levels-format from frontend and extract voices + boolean levels
+    if (!councilConfig.voices && councilConfig.levels) {
+      // Frontend sends levels-format: { levels: { "1": { enabled, voices }, ... }, orchestration }
+      // Convert to voice-centric format expected by this method
+      const normalizedVoices = [];
+      const seenVoices = new Set();
+      const normalizedLevels = {};
+      for (const [key, levelConfig] of Object.entries(councilConfig.levels)) {
+        if (typeof levelConfig === 'object' && levelConfig !== null) {
+          normalizedLevels[key] = levelConfig.enabled !== false;
+          if (levelConfig.enabled !== false && Array.isArray(levelConfig.voices)) {
+            for (const v of levelConfig.voices) {
+              const voiceSig = `${v.provider}|${v.model}|${v.tier || 'balanced'}|${v.customInstructions || ''}`;
+              if (!seenVoices.has(voiceSig)) {
+                seenVoices.add(voiceSig);
+                normalizedVoices.push(v);
+              }
+            }
+          }
+        } else {
+          // Already boolean format
+          normalizedLevels[key] = levelConfig !== false;
+        }
+      }
+      councilConfig = { ...councilConfig, voices: normalizedVoices, levels: normalizedLevels };
+      logger.info(`[ReviewerCouncil] Normalized levels-format config: ${normalizedVoices.length} unique reviewer(s), levels: ${JSON.stringify(normalizedLevels)}`);
+    }
+
+    // Merge instructions
+    let mergedInstructions = null;
+    if (instructions && typeof instructions === 'object') {
+      mergedInstructions = mergeInstructions(instructions.repoInstructions, instructions.requestInstructions);
+    }
+
+    // Resolve enabledLevels from council config
+    const enabledLevels = {};
+    for (const key of ['1', '2', '3']) {
+      const levelVal = councilConfig.levels?.[key];
+      enabledLevels[parseInt(key)] = typeof levelVal === 'object' ? levelVal?.enabled !== false : levelVal !== false;
+    }
+    const enabledLevelsList = Object.entries(enabledLevels).filter(([, v]) => v).map(([k]) => parseInt(k));
+    logger.info(`[ReviewerCouncil] Enabled levels: ${enabledLevelsList.join(', ')}`);
+
+    // Load generated file patterns
+    const generatedPatterns = await this.loadGeneratedFilePatterns(worktreePath);
+
+    // Get changed files for validation
+    const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
+    logger.info(`[ReviewerCouncil] Using ${validFiles.length} changed files for path validation`);
+
+    // Build file line count map for validation
+    const fileLineCountMap = await buildFileLineCountMap(worktreePath, validFiles);
+
+    const headSha = prMetadata?.head_sha || null;
+    const analysisRunRepo = new AnalysisRunRepository(this.db);
+
+    // Create parent analysis run only if caller didn't already create it
+    // (when runId is passed via options, the route handler has already inserted the record)
+    if (!options.runId) {
+      try {
+        await analysisRunRepo.create({
+          id: parentRunId,
+          reviewId,
+          provider: 'council',
+          model: 'voice-centric',
+          customInstructions: mergedInstructions,
+          repoInstructions: instructions?.repoInstructions || null,
+          requestInstructions: instructions?.requestInstructions || null,
+          headSha,
+          configType: 'council',
+          levelsConfig: enabledLevels
+        });
+        logger.info(`[ReviewerCouncil] Created parent analysis_run: ${parentRunId}`);
+      } catch (err) {
+        logger.warn(`[ReviewerCouncil] Failed to create parent run record: ${err.message}`);
+      }
+    }
+
+    const voices = councilConfig.voices || [];
+    if (voices.length === 0) {
+      throw new Error('No voices configured in council');
+    }
+
+    // Single voice: skip child run entirely, run analysis directly on parent run
+    if (voices.length === 1) {
+      const voice = voices[0];
+      const { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
+        buildVoiceContext(voice, 0, instructions, progressCallback, this.db);
+      logger.info(`[ReviewerCouncil] Single reviewer (${reviewerLabel}) — running directly on parent run, no child run`);
+
+      // Report voice-centric progress structure
+      if (progressCallback) {
+        progressCallback({
+          voiceCentric: true,
+          level: 'voice-init',
+          status: 'running',
+          voices: { [voiceKey]: { status: 'pending', provider: voice.provider, model: voice.model, tier: voiceTier } }
+        });
+      }
+
+      // analyzeAllLevels handles validation, storage, and run status updates internally
+      // (including error/cancellation status), so no error handling needed here
+      const result = await voiceAnalyzer.analyzeAllLevels(
+        reviewId,
+        worktreePath,
+        prMetadata,
+        voiceProgressCallback,
+        { repoInstructions: instructions?.repoInstructions, requestInstructions: voiceRequestInstructions },
+        changedFiles,
+        {
+          analysisId,
+          runId: parentRunId,
+          skipRunCreation: true,
+          enabledLevels,
+          tier: voiceTier,
+          timeout: voiceTimeout,
+          logPrefix: `[${reviewerLabel}] `,
+          reviewerNum: 1
+        }
+      );
+
+      return {
+        runId: parentRunId,
+        suggestions: result.suggestions,
+        summary: result.summary || `Review council complete: ${result.suggestions?.length || 0} suggestions`
+      };
+    }
+
+    logger.info(`[ReviewerCouncil] Launching ${voices.length} reviewer(s), each running levels: ${enabledLevelsList.join(', ')}`);
+
+    // Report voice-centric progress structure
+    if (progressCallback) {
+      progressCallback({
+        voiceCentric: true,
+        level: 'voice-init',
+        status: 'running',
+        voices: Object.fromEntries(voices.map((v, idx) => {
+          const voiceKey = `${v.provider}-${v.model}${idx > 0 ? `-${idx}` : ''}`;
+          return [voiceKey, {
+            status: 'pending',
+            provider: v.provider,
+            model: v.model,
+            tier: v.tier || 'balanced'
+          }];
+        }))
+      });
+    }
+
+    // For each voice, create a child run and launch analyzeAllLevels
+    const voicePromises = voices.map(async (voice, idx) => {
+      const { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
+        buildVoiceContext(voice, idx, instructions, progressCallback, this.db);
+      const childRunId = uuidv4();
+
+      // Create child analysis run record
+      try {
+        await analysisRunRepo.create({
+          id: childRunId,
+          reviewId,
+          provider: voice.provider,
+          model: voice.model,
+          customInstructions: mergedInstructions,
+          repoInstructions: instructions?.repoInstructions || null,
+          requestInstructions: instructions?.requestInstructions || null,
+          headSha,
+          parentRunId,
+          configType: 'council',
+          levelsConfig: enabledLevels
+        });
+        logger.info(`[ReviewerCouncil] Created child run ${childRunId} for ${reviewerLabel}`);
+      } catch (err) {
+        logger.warn(`[ReviewerCouncil] Failed to create child run record: ${err.message}`);
+      }
+
+      try {
+        const result = await voiceAnalyzer.analyzeAllLevels(
+          reviewId,
+          worktreePath,
+          prMetadata,
+          voiceProgressCallback,
+          { repoInstructions: instructions?.repoInstructions, requestInstructions: voiceRequestInstructions },
+          changedFiles,
+          {
+            analysisId,
+            runId: childRunId,
+            skipRunCreation: true,
+            enabledLevels,
+            tier: voiceTier,
+            timeout: voiceTimeout,
+            logPrefix: `[${reviewerLabel}] `,
+            reviewerNum: idx + 1
+          }
+        );
+
+        // Update child run to completed
+        try {
+          await analysisRunRepo.update(childRunId, {
+            status: 'completed',
+            summary: result.summary,
+            totalSuggestions: result.suggestions?.length || 0,
+            filesAnalyzed: validFiles.length
+          });
+        } catch (err) {
+          logger.warn(`[ReviewerCouncil] Failed to update child run ${childRunId}: ${err.message}`);
+        }
+
+        return { voiceKey, reviewerLabel, childRunId, result, provider: voice.provider, model: voice.model };
+      } catch (error) {
+        // Update child run to failed/cancelled
+        try {
+          await analysisRunRepo.update(childRunId, {
+            status: error.isCancellation ? 'cancelled' : 'failed'
+          });
+        } catch (err) {
+          logger.warn(`[ReviewerCouncil] Failed to update child run ${childRunId}: ${err.message}`);
+        }
+        throw error;
+      }
+    });
+
+    const voiceResults = await Promise.allSettled(voicePromises);
+
+    // Check for cancellation
+    const hasCancellation = voiceResults.some(
+      r => r.status === 'rejected' && r.reason?.isCancellation
+    );
+    if (hasCancellation) {
+      try {
+        await analysisRunRepo.update(parentRunId, { status: 'cancelled' });
+      } catch (err) {
+        logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
+      }
+      throw new CancellationError('Voice-centric council analysis cancelled by user');
+    }
+
+    // Collect successful results
+    const successfulVoices = [];
+    const allVoiceSuggestions = [];
+    const voiceSummaries = [];
+
+    for (let i = 0; i < voiceResults.length; i++) {
+      const settled = voiceResults[i];
+      if (settled.status === 'fulfilled' && settled.value.result?.suggestions) {
+        successfulVoices.push(settled.value);
+        allVoiceSuggestions.push(...settled.value.result.suggestions);
+        if (settled.value.result.summary) {
+          voiceSummaries.push(settled.value.result.summary);
+        }
+        logger.success(`[ReviewerCouncil] ${settled.value.reviewerLabel}: ${settled.value.result.suggestions.length} suggestions`);
+      } else {
+        const reason = settled.status === 'rejected' ? settled.reason?.message : 'No suggestions';
+        const label = voices[i] ? buildReviewerLabel(i, voices[i]) : `Reviewer ${i + 1}`;
+        logger.warn(`[ReviewerCouncil] ${label} failed: ${reason}`);
+      }
+    }
+
+    if (successfulVoices.length === 0) {
+      try {
+        await analysisRunRepo.update(parentRunId, { status: 'failed' });
+      } catch (err) {
+        logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
+      }
+      throw new Error('All council voices failed');
+    }
+
+    // Single voice: use directly, no consolidation
+    if (successfulVoices.length === 1) {
+      logger.info('[ReviewerCouncil] Single reviewer result — skipping consolidation');
+      const singleResult = successfulVoices[0].result;
+
+      const finalSuggestions = this.validateAndFinalizeSuggestions(
+        singleResult.suggestions, fileLineCountMap, validFiles
+      );
+      await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
+
+      try {
+        await analysisRunRepo.update(parentRunId, {
+          status: 'completed',
+          summary: singleResult.summary,
+          totalSuggestions: finalSuggestions.length,
+          filesAnalyzed: validFiles.length
+        });
+      } catch (err) {
+        logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
+      }
+
+      return {
+        runId: parentRunId,
+        suggestions: finalSuggestions,
+        summary: singleResult.summary || `Review council complete: ${finalSuggestions.length} suggestions`
+      };
+    }
+
+    // Multiple voices: cross-voice consolidation
+    const totalSuggestionCount = allVoiceSuggestions.length;
+
+    // If below consolidation threshold, skip
+    if (totalSuggestionCount < COUNCIL_CONSOLIDATION_THRESHOLD) {
+      logger.info(`[ReviewerCouncil] ${totalSuggestionCount} total suggestions below threshold (${COUNCIL_CONSOLIDATION_THRESHOLD}) — skipping consolidation`);
+      const summary = voiceSummaries.length > 1 ? voiceSummaries.join('\n\n') : voiceSummaries[0];
+
+      const finalSuggestions = this.validateAndFinalizeSuggestions(
+        allVoiceSuggestions, fileLineCountMap, validFiles
+      );
+      await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
+
+      try {
+        await analysisRunRepo.update(parentRunId, {
+          status: 'completed',
+          summary: summary || `Review council complete: ${finalSuggestions.length} suggestions`,
+          totalSuggestions: finalSuggestions.length,
+          filesAnalyzed: validFiles.length
+        });
+      } catch (err) {
+        logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
+      }
+
+      return {
+        runId: parentRunId,
+        suggestions: finalSuggestions,
+        summary: summary || `Reviewer-centric council complete: ${finalSuggestions.length} suggestions`
+      };
+    }
+
+    // Run cross-reviewer consolidation
+    logger.info(`[ReviewerCouncil] Starting cross-reviewer consolidation of ${successfulVoices.length} reviewers (${totalSuggestionCount} total suggestions)`);
+
+    if (progressCallback) {
+      progressCallback({
+        status: 'running',
+        progress: 'Consolidating results across reviewers...',
+        level: 'orchestration',
+        voiceCentric: true
+      });
+    }
+
+    const consolConfig = councilConfig.consolidation || this._defaultConsolidation(councilConfig);
+    const consolProvider = consolConfig.provider;
+    const consolModel = consolConfig.model;
+    const consolTier = consolConfig.tier || 'balanced';
+
+    // Merge consolidation-specific custom instructions with global instructions
+    let consolInstructions = mergedInstructions;
+    if (consolConfig.customInstructions) {
+      consolInstructions = consolInstructions
+        ? `${consolInstructions}\n\n## Orchestration-Specific Instructions\n${consolConfig.customInstructions}`
+        : consolConfig.customInstructions;
+    }
+
+    try {
+      // Build per-voice review summaries for the consolidation prompt
+      const voiceReviews = successfulVoices.map(v => ({
+        voiceKey: v.voiceKey,
+        provider: v.provider,
+        model: v.model,
+        suggestionCount: v.result.suggestions.length + (v.result.fileLevelSuggestions?.length || 0),
+        suggestions: v.result.suggestions,
+        fileLevelSuggestions: v.result.fileLevelSuggestions || [],
+        summary: v.result.summary
+      }));
+
+      const consolidated = await this._crossVoiceConsolidate(
+        voiceReviews, prMetadata, consolInstructions, worktreePath,
+        { provider: consolProvider, model: consolModel, tier: consolTier, timeout: consolConfig.timeout, analysisId, progressCallback }
+      );
+
+      const finalSuggestions = this.validateAndFinalizeSuggestions(
+        consolidated.suggestions, fileLineCountMap, validFiles
+      );
+
+      await this.storeSuggestions(reviewId, parentRunId, finalSuggestions, null, validFiles);
+
+      const summary = consolidated.summary || `Review council complete: ${finalSuggestions.length} suggestions from ${successfulVoices.length} reviewers`;
+
+      try {
+        await analysisRunRepo.update(parentRunId, {
+          status: 'completed',
+          summary,
+          totalSuggestions: finalSuggestions.length,
+          filesAnalyzed: validFiles.length
+        });
+      } catch (err) {
+        logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
+      }
+
+      logger.success(`[ReviewerCouncil] Analysis complete: ${finalSuggestions.length} consolidated suggestions`);
+
+      return {
+        runId: parentRunId,
+        suggestions: finalSuggestions,
+        summary
+      };
+    } catch (error) {
+      logger.error(`[ReviewerCouncil] Cross-reviewer consolidation failed: ${error.message}`);
+
+      // Fallback: use all voice suggestions combined
+      const fallbackSuggestions = this.validateAndFinalizeSuggestions(
+        allVoiceSuggestions, fileLineCountMap, validFiles
+      );
+      await this.storeSuggestions(reviewId, parentRunId, fallbackSuggestions, null, validFiles);
+
+      const fallbackSummary = `Review council complete (consolidation failed): ${fallbackSuggestions.length} suggestions`;
+
+      try {
+        await analysisRunRepo.update(parentRunId, {
+          status: 'completed',
+          summary: fallbackSummary,
+          totalSuggestions: fallbackSuggestions.length,
+          filesAnalyzed: validFiles.length
+        });
+      } catch (err) {
+        logger.warn(`[ReviewerCouncil] Failed to update parent run: ${err.message}`);
+      }
+
+      return {
+        runId: parentRunId,
+        suggestions: fallbackSuggestions,
+        summary: fallbackSummary,
+        orchestrationFailed: true
+      };
+    }
+  }
+
+  /**
+   * Run a council analysis with multiple voices across configurable levels
+   *
+   * @param {Object} reviewContext - Context for the review
+   * @param {number} reviewContext.reviewId - Review ID (from reviews table)
+   * @param {string} reviewContext.worktreePath - Path to the git worktree
+   * @param {Object} reviewContext.prMetadata - PR/review metadata
+   * @param {Array<string>} [reviewContext.changedFiles] - Changed files list
+   * @param {Object} reviewContext.instructions - Instructions object { repoInstructions, requestInstructions }
+   * @param {Object} councilConfig - Council configuration
+   * @param {Object} councilConfig.levels - Level configurations keyed by '1', '2', '3'
+   * @param {Object} [councilConfig.consolidation] - Consolidation provider/model/tier
+   * @param {Object} options - Additional options
+   * @param {string} options.analysisId - Analysis ID for process tracking
+   * @param {string} [options.runId] - Pre-generated run ID
+   * @param {Function} [options.progressCallback] - Progress callback
+   * @returns {Promise<Object>} Analysis results
+   */
+  async runCouncilAnalysis(reviewContext, councilConfig, options = {}) {
+    const { reviewId, worktreePath, prMetadata, changedFiles, instructions } = reviewContext;
+    const { analysisId, progressCallback } = options;
+    const runId = options.runId || uuidv4();
+
+    logger.section('Review Council Analysis Starting');
+    logger.info(`Review ID: ${reviewId}, Run ID: ${runId}`);
+
+    // Merge instructions
+    const { mergeInstructions } = require('../utils/instructions');
+    let mergedInstructions = null;
+    if (instructions && typeof instructions === 'object') {
+      mergedInstructions = mergeInstructions(instructions.repoInstructions, instructions.requestInstructions);
+    }
+
+    // Load generated file patterns
+    const generatedPatterns = await this.loadGeneratedFilePatterns(worktreePath);
+
+    // Get changed files for validation
+    const validFiles = changedFiles || await this.getChangedFilesList(worktreePath, prMetadata);
+    logger.info(`[Council] Using ${validFiles.length} changed files for path validation`);
+
+    // Build file line count map for validation
+    const { buildFileLineCountMap } = require('../utils/line-validation');
+    const fileLineCountMap = await buildFileLineCountMap(worktreePath, validFiles);
+
+    // Collect all voice tasks across enabled levels
+    const voiceTasks = [];
+    const enabledLevels = [];
+
+    for (const [levelKey, levelConfig] of Object.entries(councilConfig.levels)) {
+      if (!levelConfig.enabled) continue;
+      enabledLevels.push(parseInt(levelKey));
+
+      for (const [voiceIdx, voice] of levelConfig.voices.entries()) {
+        const voiceId = `L${levelKey}-${voice.provider}-${voice.model}${voiceIdx > 0 ? `-${voiceIdx}` : ''}`;
+        const reviewerLabel = `L${levelKey} ${buildReviewerLabel(voiceIdx, voice)}`;
+        const reviewerLogPrefix = `[L${levelKey} R${voiceIdx + 1}]`;
+        const tier = voice.tier || 'balanced';
+
+        // Merge per-voice custom instructions with base instructions
+        let voiceInstructions = mergedInstructions;
+        if (voice.customInstructions) {
+          voiceInstructions = voiceInstructions
+            ? `${voiceInstructions}\n\n${voice.customInstructions}`
+            : voice.customInstructions;
+        }
+
+        voiceTasks.push({
+          voiceId,
+          reviewerLabel,
+          reviewerLogPrefix,
+          level: parseInt(levelKey),
+          provider: voice.provider,
+          model: voice.model,
+          tier,
+          timeout: voice.timeout || 600000,
+          customInstructions: voiceInstructions
+        });
+      }
+    }
+
+    if (voiceTasks.length === 0) {
+      throw new Error('No enabled levels with voices in council config');
+    }
+
+    logger.info(`[Council] Launching ${voiceTasks.length} reviewer(s) across levels: ${enabledLevels.join(', ')}`);
+
+    // Execute all voices in parallel
+    const voicePromises = voiceTasks.map(task => {
+      return this._executeCouncilVoice(task, {
+        reviewId, runId, worktreePath, prMetadata,
+        generatedPatterns, validFiles, analysisId, progressCallback
+      });
+    });
+
+    const voiceResults = await Promise.allSettled(voicePromises);
+
+    // Check for cancellation
+    const hasCancellation = voiceResults.some(
+      r => r.status === 'rejected' && r.reason?.isCancellation
+    );
+    if (hasCancellation) {
+      throw new CancellationError('Council analysis cancelled by user');
+    }
+
+    // Collect results per level, including voice summaries
+    const levelSuggestions = {};
+    const voiceSummaries = [];
+    const rawSuggestions = [];
+    let voiceSuccessCount = 0;
+
+    for (let i = 0; i < voiceTasks.length; i++) {
+      const task = voiceTasks[i];
+      const result = voiceResults[i];
+
+      if (result.status === 'fulfilled' && result.value.suggestions) {
+        const suggestions = result.value.suggestions;
+        voiceSuccessCount++;
+
+        // Capture voice summary (voices may produce summaries even with 0 suggestions)
+        if (result.value.summary) {
+          voiceSummaries.push(result.value.summary);
+        }
+
+        // Tag each suggestion with voice_id, level, and mark as raw
+        const taggedSuggestions = suggestions.map(s => ({
+          ...s,
+          voice_id: task.voiceId,
+          level: task.level,
+          is_raw: 1
+        }));
+
+        rawSuggestions.push(...taggedSuggestions);
+
+        if (!levelSuggestions[task.level]) {
+          levelSuggestions[task.level] = [];
+        }
+        levelSuggestions[task.level].push(...suggestions);
+
+        logger.success(`[Council] ${task.reviewerLabel}: ${suggestions.length} suggestions`);
+      } else {
+        const reason = result.status === 'rejected' ? result.reason?.message : 'No suggestions';
+        logger.warn(`[Council] ${task.reviewerLabel} failed: ${reason}`);
+      }
+    }
+
+    if (voiceSuccessCount === 0) {
+      throw new Error('All council voices failed');
+    }
+
+    // Pick the best available voice summary for bypass paths.
+    // When consolidation/orchestration is skipped, we use the first real voice summary
+    // rather than a generic placeholder, so AI-generated summaries aren't lost.
+    const bestVoiceSummary = voiceSummaries.length > 0 ? voiceSummaries[0] : null;
+
+    // Check if we can skip ALL consolidation
+    // Use voiceSuccessCount (not just voices with >0 suggestions) so a single voice
+    // returning 0 suggestions but a summary still takes the fast path
+    const enabledLevelsWithResults = Object.keys(levelSuggestions).map(Number);
+    const successfulVoiceLevels = new Set();
+    for (let i = 0; i < voiceTasks.length; i++) {
+      if (voiceResults[i].status === 'fulfilled' && voiceResults[i].value.suggestions) {
+        successfulVoiceLevels.add(voiceTasks[i].level);
+      }
+    }
+
+    if (voiceSuccessCount === 1 && successfulVoiceLevels.size === 1) {
+      // Single voice, single level — skip all consolidation
+      logger.info('[Council] Single reviewer result — skipping consolidation');
+      const singleLevel = [...successfulVoiceLevels][0];
+      const singleLevelSuggestions = levelSuggestions[singleLevel] || [];
+      const finalSuggestions = this.validateAndFinalizeSuggestions(
+        singleLevelSuggestions, fileLineCountMap, validFiles
+      );
+      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles);
+
+      return {
+        runId,
+        suggestions: finalSuggestions,
+        summary: bestVoiceSummary || `Council analysis complete: ${finalSuggestions.length} suggestions from single reviewer`
+      };
+    }
+
+    // Check if total suggestion count is below consolidation threshold
+    const totalSuggestionCount = Object.values(levelSuggestions).reduce((sum, arr) => sum + arr.length, 0);
+    if (totalSuggestionCount < COUNCIL_CONSOLIDATION_THRESHOLD) {
+      logger.info(`[Council] ${totalSuggestionCount} total suggestions below threshold (${COUNCIL_CONSOLIDATION_THRESHOLD}) — skipping consolidation`);
+      const allSuggestions = Object.values(levelSuggestions).flat();
+      const finalSuggestions = this.validateAndFinalizeSuggestions(
+        allSuggestions, fileLineCountMap, validFiles
+      );
+      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles);
+
+      // Prefer voice summaries over generic placeholders. When multiple voices
+      // produced summaries, join them so no insight is lost.
+      const thresholdSummary = voiceSummaries.length > 1
+        ? voiceSummaries.join('\n\n')
+        : bestVoiceSummary;
+
+      return {
+        runId,
+        suggestions: finalSuggestions,
+        summary: thresholdSummary || `Council analysis complete: ${finalSuggestions.length} suggestions (consolidation skipped — below threshold)`
+      };
+    }
+
+    // Store raw per-reviewer suggestions (only when consolidation will occur)
+    logger.info(`[Council] Storing ${rawSuggestions.length} raw reviewer suggestions`);
+    await this._storeCouncilSuggestions(reviewId, runId, rawSuggestions, validFiles);
+
+    // Determine orchestration provider
+    const orchConfig = councilConfig.consolidation || councilConfig.orchestration || this._defaultOrchestration(councilConfig);
+    const orchProvider = orchConfig.provider;
+    const orchModel = orchConfig.model;
+    const orchTier = orchConfig.tier || 'balanced';
+
+    // Merge orchestration-specific custom instructions with global instructions
+    let orchInstructions = mergedInstructions;
+    if (orchConfig.customInstructions) {
+      orchInstructions = orchInstructions
+        ? `${orchInstructions}\n\n## Orchestration-Specific Instructions\n${orchConfig.customInstructions}`
+        : orchConfig.customInstructions;
+    }
+
+    logger.info(`[Council] Consolidation: ${orchProvider}/${orchModel} (${orchTier})`);
+
+    if (progressCallback) {
+      progressCallback({
+        status: 'running',
+        progress: 'Consolidating council results...',
+        level: 'orchestration'
+      });
+    }
+
+    // Pass 1: Intra-level consolidation (for levels with >1 reviewer)
+    const consolidatedPerLevel = {};
+    for (const [levelStr, suggestions] of Object.entries(levelSuggestions)) {
+      const level = parseInt(levelStr);
+      const successfulVoicesForLevel = voiceTasks
+        .map((t, idx) => ({ t, idx }))
+        .filter(({ t, idx }) =>
+          t.level === level &&
+          voiceResults[idx].status === 'fulfilled' &&
+          voiceResults[idx].value.suggestions?.length > 0
+        );
+
+      if (successfulVoicesForLevel.length <= 1) {
+        // Single reviewer or no results — no intra-level consolidation needed
+        consolidatedPerLevel[level] = suggestions;
+      } else {
+        // Multiple reviewers — run intra-level consolidation
+        logger.info(`[Council] Pass 1: Consolidating ${successfulVoicesForLevel.length} reviewers for Level ${level}`);
+        try {
+          const consolidated = await this._intraLevelConsolidate(
+            level, suggestions, prMetadata, orchInstructions, worktreePath,
+            { provider: orchProvider, model: orchModel, tier: orchTier, timeout: orchConfig.timeout, analysisId, progressCallback, reviewerCount: successfulVoicesForLevel.length }
+          );
+          consolidatedPerLevel[level] = consolidated;
+          // Report intra-level consolidation step as completed
+          if (progressCallback) {
+            progressCallback({ level: `consolidation-L${level}`, status: 'completed', progress: `Level ${level} consolidation complete` });
+          }
+        } catch (error) {
+          logger.warn(`[Council] Intra-level consolidation failed for Level ${level}: ${error.message}`);
+          consolidatedPerLevel[level] = suggestions; // Fallback to raw
+          // Report intra-level consolidation step as failed
+          if (progressCallback) {
+            progressCallback({ level: `consolidation-L${level}`, status: 'failed', progress: `Level ${level} consolidation failed` });
+          }
+        }
+      }
+    }
+
+    // Pass 2: Cross-level orchestration
+    logger.info('[Council] Pass 2: Cross-level consolidation');
+    try {
+      const allSuggestions = {
+        level1: consolidatedPerLevel[1] || [],
+        level2: consolidatedPerLevel[2] || [],
+        level3: consolidatedPerLevel[3] || []
+      };
+
+      const orchestrationResult = await this.orchestrateWithAI(
+        allSuggestions, prMetadata, orchInstructions, worktreePath,
+        { analysisId, tier: orchTier, progressCallback, providerOverride: orchProvider, modelOverride: orchModel, timeout: orchConfig.timeout || 600000 }
+      );
+
+      // Report cross-level orchestration step as completed
+      if (progressCallback) {
+        progressCallback({ level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
+      }
+
+      const finalSuggestions = this.validateAndFinalizeSuggestions(
+        orchestrationResult.suggestions, fileLineCountMap, validFiles
+      );
+
+      // Store final consolidated suggestions (is_raw=0, voice_id=null)
+      await this.storeSuggestions(reviewId, runId, finalSuggestions, null, validFiles);
+
+      logger.success(`[Council] Analysis complete: ${finalSuggestions.length} final suggestions`);
+
+      return {
+        runId,
+        suggestions: finalSuggestions,
+        summary: orchestrationResult.summary
+      };
+    } catch (error) {
+      logger.error(`[Council] Cross-level consolidation failed: ${error.message}`);
+
+      // Report cross-level orchestration step as failed
+      if (progressCallback) {
+        progressCallback({ level: 'orchestration', status: 'failed', progress: 'Cross-level consolidation failed' });
+      }
+
+      // Fallback: combine all consolidated suggestions
+      const fallbackSuggestions = Object.values(consolidatedPerLevel).flat();
+      const finalFallback = this.validateAndFinalizeSuggestions(
+        fallbackSuggestions, fileLineCountMap, validFiles
+      );
+      await this.storeSuggestions(reviewId, runId, finalFallback, null, validFiles);
+
+      return {
+        runId,
+        suggestions: finalFallback,
+        summary: `Council analysis complete (consolidation failed): ${finalFallback.length} suggestions`,
+        orchestrationFailed: true
+      };
+    }
+  }
+
+  /**
+   * Execute a single council voice
+   * @param {Object} task - Voice task configuration
+   * @param {Object} context - Shared context
+   * @returns {Promise<Object>} Voice results { suggestions, summary }
+   * @private
+   */
+  async _executeCouncilVoice(task, context) {
+    const { voiceId, reviewerLabel, reviewerLogPrefix, level, provider, model, tier, timeout = 600000, customInstructions } = task;
+    const { reviewId, runId, worktreePath, prMetadata, generatedPatterns, validFiles, analysisId, progressCallback } = context;
+    const displayLabel = reviewerLabel || voiceId;
+
+    logger.info(`[Council] Starting ${displayLabel} (${tier})`);
+
+    if (analysisId && isAnalysisCancelled(analysisId)) {
+      throw new CancellationError('Analysis was cancelled');
+    }
+
+    // Create provider instance for this voice
+    const aiProvider = createProvider(provider, model);
+
+    // Build prompt based on level
+    let prompt;
+    if (level === 1) {
+      prompt = this.buildLevel1Prompt(reviewId, worktreePath, prMetadata, generatedPatterns, customInstructions, validFiles, tier);
+    } else if (level === 2) {
+      prompt = this.buildLevel2Prompt(reviewId, worktreePath, prMetadata, generatedPatterns, customInstructions, validFiles, tier);
+    } else if (level === 3) {
+      // Level 3 is async and has a testingContext parameter (null for council voices)
+      prompt = await this.buildLevel3Prompt(reviewId, worktreePath, prMetadata, null, generatedPatterns, customInstructions, validFiles, tier);
+    }
+
+    // Execute
+    try {
+      const response = await aiProvider.execute(prompt, {
+        cwd: worktreePath,
+        timeout,
+        level,
+        analysisId,
+        registerProcess,
+        logPrefix: reviewerLogPrefix,
+        onStreamEvent: progressCallback ? (event) => {
+          progressCallback({ level, status: 'running', streamEvent: event, voiceId });
+        } : undefined
+      });
+
+      // Parse response
+      const suggestions = this.parseResponse(response, level);
+      logger.success(`[Council] ${displayLabel}: parsed ${suggestions.length} suggestions`);
+
+      // Report per-voice completion to progress callback
+      if (progressCallback) {
+        progressCallback({
+          status: 'completed',
+          progress: `${suggestions.length} suggestions`,
+          level,
+          voiceId
+        });
+      }
+
+      return {
+        suggestions,
+        summary: response.summary || `${displayLabel}: ${suggestions.length} suggestions`
+      };
+    } catch (error) {
+      if (!error.isCancellation) {
+        logger.error(`[Council] ${displayLabel} failed: ${error.message}`);
+      }
+
+      // Report per-voice failure to progress callback (unless cancelled)
+      if (progressCallback && !error.isCancellation) {
+        progressCallback({
+          status: 'failed',
+          progress: `Failed: ${error.message}`,
+          level,
+          voiceId
+        });
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Run intra-level consolidation for a level with multiple voices
+   * @param {number} level - Analysis level
+   * @param {Array} suggestions - Combined suggestions from all voices at this level
+   * @param {Object} prMetadata - PR metadata
+   * @param {string} customInstructions - Custom instructions
+   * @param {string} worktreePath - Worktree path
+   * @param {Object} orchConfig - Orchestration config { provider, model, tier, timeout, analysisId, progressCallback }
+   * @returns {Promise<Array>} Consolidated suggestions
+   * @private
+   */
+  async _intraLevelConsolidate(level, suggestions, prMetadata, customInstructions, worktreePath, orchConfig) {
+    const { provider, model, tier, timeout, analysisId, progressCallback, reviewerCount } = orchConfig;
+
+    const aiProvider = createProvider(provider, model);
+
+    const isLocal = prMetadata.reviewType === 'local';
+    const reviewDescription = isLocal
+      ? `local changes (review #${prMetadata.pr_number || 'local'})`
+      : `pull request #${prMetadata.pr_number}`;
+
+    const promptBuilder = getPromptBuilder('consolidation', tier || 'balanced', provider);
+    const prompt = promptBuilder.build({
+      reviewIntro: `You are consolidating Level ${level} code review suggestions from multiple independent AI reviewers for ${reviewDescription}.`,
+      customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
+      lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
+      reviewerSuggestions: JSON.stringify(suggestions, null, 2),
+      suggestionCount: suggestions.length,
+      reviewerCount: reviewerCount || 'multiple'
+    });
+
+    const response = await aiProvider.execute(prompt, {
+      cwd: worktreePath,
+      timeout: timeout || 300000,
+      level: `consolidation-L${level}`,
+      analysisId,
+      registerProcess,
+      onStreamEvent: progressCallback ? (event) => {
+        progressCallback({ level: `consolidation-L${level}`, status: 'running', streamEvent: event });
+      } : undefined
+    });
+
+    return this.parseResponse(response, level);
+  }
+
+  /**
+   * Store council suggestions with voice_id and is_raw fields
+   * @param {number} reviewId - Review ID
+   * @param {string} runId - Analysis run ID
+   * @param {Array} suggestions - Suggestions with voice_id and is_raw fields
+   * @param {Array<string>} validFiles - Valid file paths
+   * @private
+   */
+  async _storeCouncilSuggestions(reviewId, runId, suggestions, validFiles) {
+    const { run: dbRun } = require('../database');
+
+    // FAILSAFE: Filter suggestions to only those with valid file paths (same as storeSuggestions)
+    const validPathsSet = new Set(validFiles.map(f => normalizePath(resolveRenamedFile(f))));
+    let filteredCount = 0;
+
+    for (const suggestion of suggestions) {
+      // Validate file path against changed files
+      if (!this.isValidSuggestionPath(suggestion.file, validPathsSet)) {
+        filteredCount++;
+        continue;
+      }
+
+      const body = suggestion.description +
+        (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
+
+      const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;
+      const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';
+
+      await dbRun(this.db, `
+        INSERT INTO comments (
+          review_id, source, author, ai_run_id, ai_level, ai_confidence,
+          file, line_start, line_end, side, type, title, body, status, is_file_level,
+          voice_id, is_raw
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        reviewId,
+        'ai',
+        'AI Assistant',
+        runId,
+        suggestion.level || null, // ai_level
+        suggestion.confidence,
+        suggestion.file,
+        suggestion.line_start,
+        suggestion.line_end,
+        side,
+        suggestion.type,
+        suggestion.title,
+        body,
+        'active',
+        isFileLevel,
+        suggestion.voice_id || null,
+        suggestion.is_raw || 0
+      ]);
+    }
+
+    if (filteredCount > 0) {
+      logger.warn(`[Council] Filtered ${filteredCount} raw suggestions with invalid file paths`);
+    }
+    logger.info(`[Council] Stored ${suggestions.length - filteredCount} raw reviewer suggestions`);
+  }
+
+  /**
+   * Derive default orchestration config from the council config
+   * @param {Object} councilConfig - Council configuration
+   * @returns {Object} Default orchestration { provider, model, tier }
+   * @private
+   */
+  _defaultOrchestration(councilConfig) {
+    // Find the first enabled level with voices
+    for (const levelKey of ['1', '2', '3']) {
+      const level = councilConfig.levels[levelKey];
+      if (level?.enabled && level.voices?.length > 0) {
+        const firstVoice = level.voices[0];
+        return {
+          provider: firstVoice.provider,
+          model: firstVoice.model,
+          tier: firstVoice.tier || 'balanced'
+        };
+      }
+    }
+
+    // Fallback to claude/sonnet
+    return { provider: 'claude', model: 'sonnet', tier: 'balanced' };
+  }
+
+  /**
+   * Derive default consolidation config from voice-centric council config
+   * @param {Object} councilConfig - Voice-centric council configuration
+   * @returns {Object} Default consolidation { provider, model, tier }
+   * @private
+   */
+  _defaultConsolidation(councilConfig) {
+    // Use the first voice as consolidation model
+    const voices = councilConfig.voices || [];
+    if (voices.length > 0) {
+      return {
+        provider: voices[0].provider,
+        model: voices[0].model,
+        tier: voices[0].tier || 'balanced'
+      };
+    }
+    return { provider: 'claude', model: 'sonnet', tier: 'balanced' };
+  }
+
+  /**
+   * Consolidate suggestions across multiple complete voice reviews.
+   * Unlike intra-level consolidation which merges duplicates within a level,
+   * this merges complete, independent reviews from different AI models.
+   *
+   * @param {Array<Object>} voiceReviews - Array of { voiceKey, provider, model, suggestionCount, suggestions, summary }
+   * @param {Object} prMetadata - PR metadata
+   * @param {string} customInstructions - Merged custom instructions
+   * @param {string} worktreePath - Worktree path
+   * @param {Object} config - { provider, model, tier, timeout, analysisId, progressCallback }
+   * @returns {Promise<Object>} { suggestions, summary }
+   * @private
+   */
+  async _crossVoiceConsolidate(voiceReviews, prMetadata, customInstructions, worktreePath, config) {
+    const { provider, model, tier, timeout, analysisId, progressCallback } = config;
+
+    const aiProvider = createProvider(provider, model);
+
+    const voiceDescriptions = voiceReviews.map(v => {
+      let desc = `### Reviewer: ${v.voiceKey} (${v.provider}/${v.model}) — ${v.suggestionCount} suggestions\n`;
+      if (v.summary) desc += `Summary: ${v.summary}\n`;
+      desc += `Suggestions:\n${JSON.stringify(v.suggestions, null, 2)}`;
+      if (v.fileLevelSuggestions?.length > 0) {
+        desc += `\nFile-Level Suggestions:\n${JSON.stringify(v.fileLevelSuggestions, null, 2)}`;
+      }
+      return desc;
+    }).join('\n\n');
+
+    const isLocal = prMetadata.reviewType === 'local';
+    const reviewDescription = isLocal
+      ? `local changes (review #${prMetadata.pr_number || 'local'})`
+      : `pull request #${prMetadata.pr_number}`;
+
+    const promptBuilder = getPromptBuilder('consolidation', tier || 'balanced', provider);
+    const prompt = promptBuilder.build({
+      reviewIntro: `You are consolidating code review results from ${voiceReviews.length} independent AI reviewers for ${reviewDescription}. Each reviewer independently analyzed the same code changes and produced a complete review.`,
+      customInstructions: customInstructions ? this.buildCustomInstructionsSection(customInstructions) : '',
+      lineNumberGuidance: this.buildOrchestrationLineNumberGuidance(worktreePath),
+      reviewerSuggestions: voiceDescriptions,
+      suggestionCount: voiceReviews.reduce((sum, v) => sum + v.suggestionCount, 0),
+      reviewerCount: voiceReviews.length
+    });
+
+    const response = await aiProvider.execute(prompt, {
+      cwd: worktreePath,
+      timeout: timeout || 300000,
+      level: 'cross-voice-consolidation',
+      analysisId,
+      registerProcess,
+      onStreamEvent: progressCallback ? (event) => {
+        progressCallback({ level: 'orchestration', status: 'running', streamEvent: event, voiceCentric: true });
+      } : undefined
+    });
+
+    const suggestions = this.parseResponse(response, 'consolidation');
+    const summary = response.summary || `Consolidated ${voiceReviews.length} reviewer outputs into ${suggestions.length} suggestions`;
+
+    return { suggestions, summary };
+  }
 
   /**
    * Update suggestion status (adopt, dismiss, etc)

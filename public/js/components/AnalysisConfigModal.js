@@ -13,7 +13,6 @@ class AnalysisConfigModal {
     this.selectedProvider = 'claude';
     this.selectedModel = 'opus';
     this.selectedPresets = new Set();
-    this.rememberModel = false;
     this.repoInstructions = '';
     this.lastInstructions = '';
     this.providersLoaded = false;
@@ -43,8 +42,26 @@ class AnalysisConfigModal {
       { id: 'bugs', label: 'Bug Detection', instruction: 'Focus on potential bugs, edge cases, and error handling.' }
     ];
 
+    // Council tabs (lazily initialized after createModal)
+    this.councilTab = null;     // Voice-centric council tab
+    this.advancedTab = null;    // Level-centric (advanced) council tab
+
+    // Active tab tracking: 'single' | 'council' | 'advanced'
+    this.activeTab = 'single';
+
+    // Enabled levels for single-model mode (replaces skipLevel3)
+    this.enabledLevels = [1, 2, 3];
+
     this.createModal();
     this.setupEventListeners();
+
+    // Initialize council tabs if available
+    if (typeof VoiceCentricConfigTab !== 'undefined') {
+      this.councilTab = new VoiceCentricConfigTab(this.modal);
+    }
+    if (typeof AdvancedConfigTab !== 'undefined') {
+      this.advancedTab = new AdvancedConfigTab(this.modal);
+    }
   }
 
   /**
@@ -130,6 +147,14 @@ class AnalysisConfigModal {
         attempts++;
         await this.loadProviders(true);
         this.renderProviderButtons();
+
+        // Propagate refreshed providers to council and advanced tabs
+        if (this.councilTab) {
+          this.councilTab.setProviders(this.providers);
+        }
+        if (this.advancedTab) {
+          this.advancedTab.setProviders(this.providers);
+        }
 
         if (this.availabilityCheckInProgress && attempts < maxAttempts) {
           const timeoutId = setTimeout(poll, pollInterval);
@@ -218,17 +243,12 @@ class AnalysisConfigModal {
             <div class="model-cards" id="model-cards-container">
               <!-- Model cards rendered dynamically -->
             </div>
-            <label class="remember-toggle">
-              <input type="checkbox" id="remember-model" />
-              <span class="toggle-switch"></span>
-              <span class="toggle-label">Remember choices for this repository</span>
-            </label>
           </section>
 
-          <!-- Skip Level 3 Analysis -->
+          <!-- Analysis Levels -->
           <section class="config-section">
             <h4 class="section-title">
-              Analysis Scope
+              Analysis Levels
             </h4>
             <div class="skip-level3-info" id="skip-level3-info" style="display: none;">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
@@ -236,11 +256,23 @@ class AnalysisConfigModal {
               </svg>
               <span>Codebase-wide analysis is automatically skipped for fast-tier models.</span>
             </div>
-            <label class="remember-toggle" id="skip-level3-toggle">
-              <input type="checkbox" id="skip-level3" />
-              <span class="toggle-switch"></span>
-              <span class="toggle-label">Skip codebase-wide analysis (Level 3)</span>
-            </label>
+            <div class="single-level-toggles">
+              <label class="remember-toggle">
+                <input type="checkbox" class="single-level-checkbox" data-level="1" checked />
+                <span class="toggle-switch"></span>
+                <span class="toggle-label">Level 1 &mdash; Changes in Isolation</span>
+              </label>
+              <label class="remember-toggle">
+                <input type="checkbox" class="single-level-checkbox" data-level="2" checked />
+                <span class="toggle-switch"></span>
+                <span class="toggle-label">Level 2 &mdash; File Context</span>
+              </label>
+              <label class="remember-toggle">
+                <input type="checkbox" class="single-level-checkbox" data-level="3" checked />
+                <span class="toggle-switch"></span>
+                <span class="toggle-label">Level 3 &mdash; Codebase Context</span>
+              </label>
+            </div>
           </section>
 
           <!-- Focus Presets - Hidden for now, may reintroduce later -->
@@ -308,6 +340,11 @@ class AnalysisConfigModal {
         </div>
 
         <div class="modal-footer analysis-config-footer">
+          <div class="council-footer-left" id="council-footer-left" style="display: none;">
+            <span class="council-dirty-hint" id="council-dirty-hint">Unsaved changes</span>
+            <button class="btn btn-sm btn-secondary" id="council-footer-save-btn"
+              title="Save configuration changes. Unsaved changes will be auto-saved as a new configuration when you analyze.">Save</button>
+          </div>
           <button class="btn btn-secondary" data-action="cancel">Cancel</button>
           <button class="btn btn-primary btn-analyze" data-action="submit" title="Start Analysis (Cmd/Ctrl+Enter)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -333,16 +370,11 @@ class AnalysisConfigModal {
       chip.addEventListener('click', () => this.togglePreset(chip.dataset.preset));
     });
 
-    // Remember toggle
-    const rememberCheckbox = this.modal.querySelector('#remember-model');
-    rememberCheckbox?.addEventListener('change', (e) => {
-      this.rememberModel = e.target.checked;
-    });
-
-    // Skip Level 3 toggle
-    const skipLevel3Checkbox = this.modal.querySelector('#skip-level3');
-    skipLevel3Checkbox?.addEventListener('change', (e) => {
-      this.skipLevel3 = e.target.checked;
+    // Single-model level checkboxes
+    this.modal.querySelectorAll('.single-level-checkbox').forEach(cb => {
+      cb.addEventListener('change', () => {
+        this._updateEnabledLevels();
+      });
     });
 
     // Refresh providers button
@@ -356,13 +388,17 @@ class AnalysisConfigModal {
     });
 
     // Keyboard shortcut: Cmd+Enter / Ctrl+Enter to start analysis
-    textarea?.addEventListener('keydown', (e) => {
+    // Listen on the entire modal so it works from both Single and Council tabs
+    this.modal.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        // Don't intercept Cmd+Enter inside comment form textareas
+        if (e.target.matches('.comment-textarea, .comment-edit-textarea')) return;
         e.preventDefault();
-        // Only submit if not over character limit (button would be disabled)
         const submitBtn = this.modal.querySelector('[data-action="submit"]');
         if (submitBtn && !submitBtn.disabled) {
-          this.handleSubmit();
+          this.handleSubmit().catch(err => {
+            console.error('Error in handleSubmit:', err);
+          });
         }
       }
     });
@@ -384,7 +420,9 @@ class AnalysisConfigModal {
       if (action === 'cancel') {
         this.hide();
       } else if (action === 'submit') {
-        this.handleSubmit();
+        this.handleSubmit().catch(err => {
+          console.error('Error in handleSubmit:', err);
+        });
       }
     });
 
@@ -523,29 +561,28 @@ class AnalysisConfigModal {
     const selectedCard = this.modal.querySelector(`.model-card[data-model="${modelId}"]`);
     const tier = selectedCard?.dataset?.tier;
 
-    // Update skip level 3 checkbox based on tier
-    const skipLevel3Checkbox = this.modal.querySelector('#skip-level3');
+    // Update level 3 checkbox based on tier
+    const level3Checkbox = this.modal.querySelector('.single-level-checkbox[data-level="3"]');
     const skipLevel3Info = this.modal.querySelector('#skip-level3-info');
 
     if (tier === 'fast') {
-      // Always check for fast tier models and show info banner
-      if (skipLevel3Checkbox) {
-        skipLevel3Checkbox.checked = true;
-        this.skipLevel3 = true;
+      // Auto-uncheck L3 for fast tier models and show info banner
+      if (level3Checkbox) {
+        level3Checkbox.checked = false;
       }
       if (skipLevel3Info) {
         skipLevel3Info.style.display = 'flex';
       }
     } else {
-      // Always uncheck for non-fast tiers and hide info banner
-      if (skipLevel3Checkbox) {
-        skipLevel3Checkbox.checked = false;
-        this.skipLevel3 = false;
+      // Re-check L3 for non-fast tiers and hide info banner
+      if (level3Checkbox) {
+        level3Checkbox.checked = true;
       }
       if (skipLevel3Info) {
         skipLevel3Info.style.display = 'none';
       }
     }
+    this._updateEnabledLevels();
   }
 
   /**
@@ -647,8 +684,58 @@ class AnalysisConfigModal {
   /**
    * Handle form submission
    */
-  handleSubmit() {
-    // Extract tier from the selected model's data-tier attribute
+  async handleSubmit() {
+    if (this.activeTab === 'council') {
+      // Voice-centric council tab
+      if (!this.councilTab || !this.councilTab.validate()) return;
+
+      await this.councilTab.autoSaveIfDirty();
+
+      const councilConfig = this.councilTab.getCouncilConfig();
+      const councilId = this.councilTab.getSelectedCouncilId();
+      const selectedCouncil = this.councilTab.councils.find(c => c.id === councilId);
+
+      const config = {
+        isCouncil: true,
+        configType: 'council',
+        councilId: councilId,
+        councilName: selectedCouncil?.name || null,
+        councilConfig: councilConfig,
+        customInstructions: this.modal.querySelector('#vc-custom-instructions')?.value?.trim() || '',
+        repoInstructions: this.repoInstructions
+      };
+
+      if (this.onSubmit) this.onSubmit(config);
+      this.hide(true);
+      return;
+    }
+
+    if (this.activeTab === 'advanced') {
+      // Level-centric (advanced) council tab
+      if (!this.advancedTab || !this.advancedTab.validate()) return;
+
+      await this.advancedTab.autoSaveIfDirty();
+
+      const councilConfig = this.advancedTab.getCouncilConfig();
+      const councilId = this.advancedTab.getSelectedCouncilId();
+      const selectedCouncil = this.advancedTab.councils.find(c => c.id === councilId);
+
+      const config = {
+        isCouncil: true,
+        configType: 'advanced',
+        councilId: councilId,
+        councilName: selectedCouncil?.name || null,
+        councilConfig: councilConfig,
+        customInstructions: this.modal.querySelector('#council-custom-instructions')?.value?.trim() || '',
+        repoInstructions: this.repoInstructions
+      };
+
+      if (this.onSubmit) this.onSubmit(config);
+      this.hide(true);
+      return;
+    }
+
+    // Single model tab
     const selectedModelCard = this.modal.querySelector('.model-card.selected');
     const tier = selectedModelCard?.dataset?.tier || 'balanced';
 
@@ -659,16 +746,12 @@ class AnalysisConfigModal {
       instructions: this.buildInstructions(),
       customInstructions: this.modal.querySelector('#custom-instructions')?.value?.trim() || '',
       presets: Array.from(this.selectedPresets),
-      rememberModel: this.rememberModel,
       repoInstructions: this.repoInstructions,
-      skipLevel3: this.skipLevel3
+      enabledLevels: [...this.enabledLevels],
+      skipLevel3: !this.enabledLevels.includes(3)
     };
 
-    if (this.onSubmit) {
-      this.onSubmit(config);
-    }
-
-    // Hide with wasSubmitted=true to avoid calling onCancel
+    if (this.onSubmit) this.onSubmit(config);
     this.hide(true);
   }
 
@@ -679,19 +762,11 @@ class AnalysisConfigModal {
    * @param {string} options.currentModel - Currently selected model
    * @param {string} options.repoInstructions - Default instructions from repo settings
    * @param {string} options.lastInstructions - Last used custom instructions
-   * @param {boolean} options.rememberModel - Whether model was remembered
    * @param {Function} options.onSubmit - Callback when analysis is started
    * @returns {Promise<Object|null>} Promise that resolves to config or null if cancelled
    */
   async show(options = {}) {
     if (!this.modal) return null;
-
-    // Load providers from backend before showing modal
-    await this.loadProviders();
-
-    // Render provider buttons and model cards now that we have provider data
-    this.renderProviderButtons();
-    this.renderModelCards();
 
     return new Promise((resolve) => {
       // Store callbacks
@@ -702,48 +777,8 @@ class AnalysisConfigModal {
         resolve(null);
       };
 
-      // Set initial provider and model
-      if (options.currentProvider && this.providers[options.currentProvider]) {
-        this.selectProvider(options.currentProvider);
-      } else if (Object.keys(this.providers).length > 0) {
-        // Default to first available provider
-        this.selectProvider(Object.keys(this.providers)[0]);
-      }
-      if (options.currentModel) {
-        this.selectModel(options.currentModel);
-      }
-
-      if (options.repoInstructions) {
-        this.repoInstructions = options.repoInstructions;
-        const repoBanner = this.modal.querySelector('#repo-instructions-banner');
-        if (repoBanner) repoBanner.style.display = 'flex';
-        const repoText = this.modal.querySelector('#repo-instructions-text');
-        if (repoText) repoText.textContent = options.repoInstructions;
-      } else {
-        const repoBanner = this.modal.querySelector('#repo-instructions-banner');
-        if (repoBanner) repoBanner.style.display = 'none';
-      }
-
-      // Always get textarea reference and set its value
-      // This ensures any stale content from race conditions is cleared
-      const textarea = this.modal.querySelector('#custom-instructions');
-      if (textarea) {
-        if (options.lastInstructions) {
-          textarea.value = options.lastInstructions;
-          this.updateCharacterCount(options.lastInstructions.length);
-        } else {
-          textarea.value = '';
-          this.updateCharacterCount(0);
-        }
-      }
-
-      if (options.rememberModel) {
-        this.rememberModel = true;
-        const rememberCheckbox = this.modal.querySelector('#remember-model');
-        if (rememberCheckbox) rememberCheckbox.checked = true;
-      }
-
-      // Show modal with animation
+      // Show modal immediately with loading state (providers may take a moment)
+      this._showLoading(true);
       this.modal.style.display = 'flex';
       requestAnimationFrame(() => {
         this.modal.classList.add('visible');
@@ -753,19 +788,337 @@ class AnalysisConfigModal {
       // Add escape key listener when modal is shown
       document.addEventListener('keydown', this.escapeHandler);
 
-      // Focus the textarea without scrolling the modal body
-      setTimeout(() => {
-        const textarea = this.modal.querySelector('#custom-instructions');
-        const modalBody = this.modal.querySelector('.analysis-config-body');
-        if (textarea) {
-          textarea.focus({ preventScroll: true });
-          // Ensure modal body is scrolled to top
-          if (modalBody) {
-            modalBody.scrollTop = 0;
-          }
-        }
-      }, 200);
+      // Load providers and populate content in the background
+      this._initializeContent(options);
     });
+  }
+
+  /**
+   * Initialize modal content after it's visible.
+   * Loads providers, renders UI, and configures options.
+   * @param {Object} options - Configuration options passed to show()
+   * @private
+   */
+  async _initializeContent(options) {
+    try {
+      await this.loadProviders();
+    } catch (error) {
+      console.error('Error loading providers:', error);
+    }
+
+    // Render provider buttons and model cards now that we have provider data
+    this.renderProviderButtons();
+    this.renderModelCards();
+
+    // Build three-tab layout
+    this._injectTabLayout(options);
+
+    // Initialize voice-centric council tab
+    if (this.councilTab) {
+      const councilPanel = this.modal.querySelector('#tab-panel-council');
+      this.councilTab.inject(councilPanel);
+      this.councilTab.setProviders(this.providers);
+
+      if (options.repoInstructions) {
+        this.councilTab.setRepoInstructions(options.repoInstructions);
+      }
+      if (options.lastInstructions) {
+        this.councilTab.setLastInstructions(options.lastInstructions);
+      }
+      this.councilTab.setDefaultOrchestration(options.currentProvider, options.currentModel);
+      const councilDefault = options.lastCouncilId || options.defaultCouncilId || null;
+      if (councilDefault) {
+        this.councilTab.setDefaultCouncilId(councilDefault);
+      }
+    }
+
+    // Initialize advanced (level-centric) tab
+    if (this.advancedTab) {
+      const advancedPanel = this.modal.querySelector('#tab-panel-advanced');
+      this.advancedTab.inject(advancedPanel);
+      this.advancedTab.setProviders(this.providers);
+
+      if (options.repoInstructions) {
+        this.advancedTab.setRepoInstructions(options.repoInstructions);
+      }
+      if (options.lastInstructions) {
+        this.advancedTab.setLastInstructions(options.lastInstructions);
+      }
+      this.advancedTab.setDefaultOrchestration(options.currentProvider, options.currentModel);
+      const councilDefault = options.lastCouncilId || options.defaultCouncilId || null;
+      if (councilDefault) {
+        this.advancedTab.setDefaultCouncilId(councilDefault);
+      }
+    }
+
+    // Set initial provider and model
+    if (options.currentProvider && this.providers[options.currentProvider]) {
+      this.selectProvider(options.currentProvider);
+    } else if (Object.keys(this.providers).length > 0) {
+      // Default to first available provider
+      this.selectProvider(Object.keys(this.providers)[0]);
+    }
+    if (options.currentModel) {
+      this.selectModel(options.currentModel);
+    }
+
+    if (options.repoInstructions) {
+      this.repoInstructions = options.repoInstructions;
+      const repoBanner = this.modal.querySelector('#repo-instructions-banner');
+      if (repoBanner) repoBanner.style.display = 'flex';
+      const repoText = this.modal.querySelector('#repo-instructions-text');
+      if (repoText) repoText.textContent = options.repoInstructions;
+    } else {
+      const repoBanner = this.modal.querySelector('#repo-instructions-banner');
+      if (repoBanner) repoBanner.style.display = 'none';
+    }
+
+    // Always get textarea reference and set its value
+    // This ensures any stale content from race conditions is cleared
+    const textarea = this.modal.querySelector('#custom-instructions');
+    if (textarea) {
+      if (options.lastInstructions) {
+        textarea.value = options.lastInstructions;
+        this.updateCharacterCount(options.lastInstructions.length);
+      } else {
+        textarea.value = '';
+        this.updateCharacterCount(0);
+      }
+    }
+
+    // Remove loading state and reveal content
+    this._showLoading(false);
+
+    // Focus the textarea without scrolling the modal body
+    setTimeout(() => {
+      const textarea = this.modal.querySelector('#custom-instructions');
+      const modalBody = this.modal.querySelector('.analysis-config-body');
+      if (textarea) {
+        textarea.focus({ preventScroll: true });
+        // Ensure modal body is scrolled to top
+        if (modalBody) {
+          modalBody.scrollTop = 0;
+        }
+      }
+    }, 50);
+  }
+
+  /**
+   * Build the three-tab layout in the modal body.
+   * Wraps existing single-model content into the first tab panel,
+   * then creates council and advanced panels.
+   * @param {Object} options - show() options (for defaultTab)
+   * @private
+   */
+  _injectTabLayout(options) {
+    const modalBody = this.modal.querySelector('.analysis-config-body');
+    if (!modalBody) return;
+
+    // Only inject DOM once; on subsequent opens the tab bar already exists
+    if (!modalBody.querySelector('.analysis-tab-bar')) {
+      // Wrap existing content in a "Single Model" tab panel
+      const existingContent = Array.from(modalBody.children);
+      const singlePanel = document.createElement('div');
+      singlePanel.id = 'tab-panel-single';
+      singlePanel.className = 'tab-panel active';
+      existingContent.forEach(child => singlePanel.appendChild(child));
+
+      // Create council (voice-centric) tab panel
+      const councilPanel = document.createElement('div');
+      councilPanel.id = 'tab-panel-council';
+      councilPanel.className = 'tab-panel';
+      councilPanel.style.display = 'none';
+
+      // Create advanced (level-centric) tab panel
+      const advancedPanel = document.createElement('div');
+      advancedPanel.id = 'tab-panel-advanced';
+      advancedPanel.className = 'tab-panel';
+      advancedPanel.style.display = 'none';
+
+      // Create tab bar
+      const tabBar = document.createElement('div');
+      tabBar.className = 'analysis-tab-bar';
+      tabBar.innerHTML = `
+        <button class="analysis-tab active" data-tab="single">Single Model</button>
+        <button class="analysis-tab" data-tab="council">Council <span class="beta-badge">BETA</span></button>
+        <button class="analysis-tab" data-tab="advanced">Advanced <span class="beta-badge">BETA</span></button>
+      `;
+
+      // Assemble
+      modalBody.innerHTML = '';
+      modalBody.appendChild(tabBar);
+      modalBody.appendChild(singlePanel);
+      modalBody.appendChild(councilPanel);
+      modalBody.appendChild(advancedPanel);
+
+      // Tab click listeners
+      tabBar.querySelectorAll('.analysis-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          this._switchTab(tab.dataset.tab);
+        });
+      });
+    }
+
+    // Always apply the default tab — hide() resets to 'single', so on re-open
+    // we must restore the remembered tab from localStorage / repo settings.
+    const defaultTab = options.defaultTab || 'single';
+    this._switchTab(defaultTab, true);
+  }
+
+  /**
+   * Switch the active tab. Handles panel visibility, instruction sync,
+   * lazy council loading, and submit button text.
+   * @param {string} tabId - 'single', 'council', or 'advanced'
+   * @private
+   */
+  _switchTab(tabId, skipCallback = false) {
+    this.activeTab = tabId;
+
+    // Notify listeners of tab change (for localStorage persistence)
+    if (!skipCallback && this.onTabChange) {
+      this.onTabChange(tabId);
+    }
+
+    const tabBar = this.modal.querySelector('.analysis-tab-bar');
+    if (tabBar) {
+      tabBar.querySelectorAll('.analysis-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.tab === tabId);
+      });
+    }
+
+    const singlePanel = this.modal.querySelector('#tab-panel-single');
+    const councilPanel = this.modal.querySelector('#tab-panel-council');
+    const advancedPanel = this.modal.querySelector('#tab-panel-advanced');
+
+    // Hide all panels
+    if (singlePanel) singlePanel.style.display = 'none';
+    if (councilPanel) councilPanel.style.display = 'none';
+    if (advancedPanel) advancedPanel.style.display = 'none';
+
+    if (tabId === 'single') {
+      if (singlePanel) singlePanel.style.display = '';
+      // Sync instructions from whichever council tab was last active
+      const vcTextarea = this.modal.querySelector('#vc-custom-instructions');
+      const advTextarea = this.modal.querySelector('#council-custom-instructions');
+      const singleTextarea = this.modal.querySelector('#custom-instructions');
+      const source = vcTextarea?.value || advTextarea?.value || '';
+      if (singleTextarea && source) {
+        singleTextarea.value = source;
+        singleTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    } else if (tabId === 'council') {
+      if (councilPanel) councilPanel.style.display = '';
+      // Sync instructions to council tab
+      const singleTextarea = this.modal.querySelector('#custom-instructions');
+      const vcTextarea = this.modal.querySelector('#vc-custom-instructions');
+      if (singleTextarea && vcTextarea) {
+        vcTextarea.value = singleTextarea.value;
+      }
+      // Load councils on first switch
+      if (this.councilTab && !this.councilTab._councilsLoaded) {
+        this.councilTab.loadCouncils();
+      }
+      if (this.councilTab) {
+        this.councilTab._updateAllVoiceDropdowns();
+      }
+    } else if (tabId === 'advanced') {
+      if (advancedPanel) advancedPanel.style.display = '';
+      // Sync instructions to advanced tab
+      const singleTextarea = this.modal.querySelector('#custom-instructions');
+      const advTextarea = this.modal.querySelector('#council-custom-instructions');
+      if (singleTextarea && advTextarea) {
+        advTextarea.value = singleTextarea.value;
+      }
+      // Load councils on first switch
+      if (this.advancedTab && !this.advancedTab._councilsLoaded) {
+        this.advancedTab.loadCouncils();
+      }
+      if (this.advancedTab) {
+        this.advancedTab._updateAllVoiceDropdowns();
+      }
+    }
+
+    // Update submit button text
+    const submitBtnSpan = this.modal.querySelector('[data-action="submit"] span');
+    if (submitBtnSpan) {
+      if (tabId === 'council' || tabId === 'advanced') {
+        submitBtnSpan.textContent = 'Analyze with Council';
+      } else {
+        submitBtnSpan.textContent = 'Start Analysis';
+      }
+    }
+
+    // Show/hide council footer (dirty hint)
+    const dirtyHintContainer = this.modal.querySelector('#council-footer-left');
+    if (dirtyHintContainer) {
+      if (tabId === 'council' && this.councilTab) {
+        dirtyHintContainer.style.display = this.councilTab.isDirty ? '' : 'none';
+      } else if (tabId === 'advanced' && this.advancedTab) {
+        dirtyHintContainer.style.display = this.advancedTab._isDirty ? '' : 'none';
+      } else {
+        dirtyHintContainer.style.display = 'none';
+      }
+    }
+  }
+
+  /**
+   * Update the enabledLevels array from the single-model level checkboxes.
+   * Enforces at least one level must be enabled.
+   * @private
+   */
+  _updateEnabledLevels() {
+    const checkboxes = this.modal.querySelectorAll('.single-level-checkbox');
+    const levels = [];
+    checkboxes.forEach(cb => {
+      if (cb.checked) levels.push(parseInt(cb.dataset.level, 10));
+    });
+
+    // Enforce at least one level
+    if (levels.length === 0) {
+      // Re-check L1 as minimum
+      const l1 = this.modal.querySelector('.single-level-checkbox[data-level="1"]');
+      if (l1) l1.checked = true;
+      levels.push(1);
+      if (window.toast) {
+        window.toast.showWarning('At least one analysis level must be enabled.');
+      }
+    }
+
+    this.enabledLevels = levels;
+    // Backward-compat: keep skipLevel3 in sync
+    this.skipLevel3 = !levels.includes(3);
+  }
+
+  /**
+   * Toggle loading state overlay on the modal body
+   * @param {boolean} loading - Whether to show the loading state
+   * @private
+   */
+  _showLoading(loading) {
+    const body = this.modal.querySelector('.analysis-config-body');
+    const footer = this.modal.querySelector('.analysis-config-footer');
+    const submitBtn = this.modal.querySelector('[data-action="submit"]');
+
+    if (loading) {
+      // Add loading overlay to body
+      let overlay = this.modal.querySelector('.config-loading-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'config-loading-overlay';
+        overlay.innerHTML = `
+          <div class="config-loading-spinner"></div>
+          <span>Loading providers…</span>
+        `;
+        body.style.position = 'relative';
+        body.appendChild(overlay);
+      }
+      overlay.style.display = '';
+      if (submitBtn) submitBtn.disabled = true;
+    } else {
+      const overlay = this.modal.querySelector('.config-loading-overlay');
+      if (overlay) overlay.style.display = 'none';
+      if (submitBtn) submitBtn.disabled = false;
+    }
   }
 
   /**
@@ -805,22 +1158,45 @@ class AnalysisConfigModal {
       this.updateCharacterCount(0);
       const repoExpanded = this.modal.querySelector('#repo-instructions-expanded');
       if (repoExpanded) repoExpanded.style.display = 'none';
-      // Reset rememberModel state to prevent stale values on next show
-      this.rememberModel = false;
-      const rememberCheckbox = this.modal.querySelector('#remember-model');
-      if (rememberCheckbox) {
-        rememberCheckbox.checked = false;
-      }
-      // Reset skipLevel3 state
+      // Reset level checkboxes
+      this.enabledLevels = [1, 2, 3];
       this.skipLevel3 = false;
-      const skipLevel3Checkbox = this.modal.querySelector('#skip-level3');
-      if (skipLevel3Checkbox) {
-        skipLevel3Checkbox.checked = false;
-      }
+      this.modal.querySelectorAll('.single-level-checkbox').forEach(cb => {
+        cb.checked = true;
+      });
       const skipLevel3Info = this.modal.querySelector('#skip-level3-info');
       if (skipLevel3Info) {
         skipLevel3Info.style.display = 'none';
       }
+      // Reset to single-model tab for next open
+      this.activeTab = 'single';
+      if (this.councilTab) {
+        this.councilTab._isDirty = false;
+      }
+      if (this.advancedTab) {
+        this.advancedTab._isDirty = false;
+      }
+      const tabBar = this.modal.querySelector('.analysis-tab-bar');
+      if (tabBar) {
+        tabBar.querySelectorAll('.analysis-tab').forEach(t => {
+          t.classList.toggle('active', t.dataset.tab === 'single');
+        });
+      }
+      const singlePanel = this.modal.querySelector('#tab-panel-single');
+      const councilPanel = this.modal.querySelector('#tab-panel-council');
+      const advancedPanel = this.modal.querySelector('#tab-panel-advanced');
+      if (singlePanel) singlePanel.style.display = '';
+      if (councilPanel) councilPanel.style.display = 'none';
+      if (advancedPanel) advancedPanel.style.display = 'none';
+      // Reset dirty hint container
+      const dirtyHintContainer = this.modal.querySelector('#council-footer-left');
+      if (dirtyHintContainer) dirtyHintContainer.style.display = 'none';
+      // Reset submit button text
+      const submitBtnSpan = this.modal.querySelector('[data-action="submit"] span');
+      if (submitBtnSpan) submitBtnSpan.textContent = 'Start Analysis';
+      // Clear loading overlay if still present
+      const loadingOverlay = this.modal.querySelector('.config-loading-overlay');
+      if (loadingOverlay) loadingOverlay.style.display = 'none';
       // Clear callbacks
       this.onSubmit = null;
       this.onCancel = null;

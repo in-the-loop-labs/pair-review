@@ -113,7 +113,7 @@ function determineCompletionInfo(result) {
     // We have orchestrated suggestions - use those as the final count
     totalSuggestions = result.level2Result.orchestratedSuggestions.length;
     progressMessage = `Analysis complete: ${totalSuggestions} orchestrated suggestions stored`;
-    logger.success(`Orchestration successful: ${totalSuggestions} curated suggestions from all levels`);
+    logger.success(`Consolidation successful: ${totalSuggestions} curated suggestions from all levels`);
   } else {
     // Fall back to individual level counts
     const level1Count = result.suggestions.length;
@@ -272,7 +272,11 @@ function createProgressCallback(analysisId) {
     if (!currentStatus) return;
 
     const level = progressUpdate.level;
-    const levelKey = level === 'orchestration' ? 4 : level;
+    // Map consolidation-L* and orchestration to level 4 (consolidation phase)
+    const consolidationMatch = typeof level === 'string' && level.match(/^consolidation-L(\d+)$/);
+    const levelKey = level === 'orchestration' ? 4
+      : consolidationMatch ? 4
+      : level;
 
     // Stream event: store latest and throttle broadcasts
     if (progressUpdate.streamEvent && levelKey) {
@@ -292,6 +296,16 @@ function createProgressCallback(analysisId) {
       }
 
       currentStatus.levels[levelKey].streamEvent = evt;
+      // Propagate voiceId so council progress modal can identify active voice
+      if (progressUpdate.voiceId) {
+        currentStatus.levels[levelKey].voiceId = progressUpdate.voiceId;
+      }
+      // Propagate consolidation step so frontend can identify active consolidation child
+      if (consolidationMatch) {
+        currentStatus.levels[levelKey].consolidationStep = `L${consolidationMatch[1]}`;
+      } else if (level === 'orchestration') {
+        currentStatus.levels[levelKey].consolidationStep = 'orchestration';
+      }
       activeAnalyses.set(analysisId, currentStatus);
 
       // Throttle: only broadcast if enough time has elapsed
@@ -306,20 +320,88 @@ function createProgressCallback(analysisId) {
     // Regular status update (not a stream event)
     // Update the specific level's status, clearing any stale streamEvent
     if (level && level >= 1 && level <= 3) {
-      currentStatus.levels[level] = {
-        status: progressUpdate.status || 'running',
-        progress: progressUpdate.progress || 'In progress...',
-        streamEvent: undefined
-      };
+      if (progressUpdate.voiceId) {
+        // Per-voice update (council mode): track in voices map so concurrent
+        // completions on the same level don't clobber each other
+        if (!currentStatus.levels[level].voices) {
+          currentStatus.levels[level].voices = {};
+        }
+        currentStatus.levels[level].voices[progressUpdate.voiceId] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'In progress...'
+        };
+        // Last-writer-wins: set top-level voiceId for backward compat with frontend
+        // routing. The per-voice detail lives in the `voices` map above.
+        currentStatus.levels[level].voiceId = progressUpdate.voiceId;
+        currentStatus.levels[level].status = progressUpdate.status || 'running';
+        currentStatus.levels[level].progress = progressUpdate.progress || 'In progress...';
+        currentStatus.levels[level].streamEvent = undefined;
+      } else {
+        // Non-voice update (single-model mode)
+        currentStatus.levels[level] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'In progress...',
+          streamEvent: undefined,
+          voiceId: undefined
+        };
+      }
     }
 
-    // Handle orchestration as level 4
-    if (level === 'orchestration') {
-      currentStatus.levels[4] = {
+    // Handle orchestration and consolidation as level 4.
+    //
+    // levels[4] is intentionally denormalized with two parallel maps:
+    //   - `steps`: keyed by consolidation sub-step ("L1", "L2", "L3", "orchestration").
+    //     Tracks which consolidation phases have run/completed. Used to derive the
+    //     aggregate status so one step completing doesn't mark the whole phase done.
+    //   - `voices`: keyed by reviewer voiceId (council mode only). Tracks per-reviewer
+    //     orchestration progress so the frontend can render individual reviewer rows.
+    //
+    // Both maps must be preserved across updates since each progress event only
+    // reports on a single step or voice at a time.
+    if (level === 'orchestration' || consolidationMatch) {
+      const step = consolidationMatch ? `L${consolidationMatch[1]}` : 'orchestration';
+      // Preserve existing consolidation steps when updating level 4
+      const existing = currentStatus.levels[4] || {};
+      const steps = { ...(existing.steps || {}) };
+      steps[step] = {
         status: progressUpdate.status || 'running',
-        progress: progressUpdate.progress || 'Finalizing results...',
-        streamEvent: undefined
+        progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...')
       };
+      // Derive the top-level consolidation status from the aggregate of step statuses
+      // so that a single step completing doesn't mark the whole phase as completed
+      const stepStatuses = Object.values(steps).map(s => s.status);
+      const derivedStatus = stepStatuses.every(s => s === 'completed') ? 'completed'
+        : stepStatuses.some(s => s === 'failed') ? 'failed'
+        : stepStatuses.some(s => s === 'running') ? 'running'
+        : progressUpdate.status || 'running';
+      // Preserve existing per-voice orchestration states when rebuilding level 4
+      const existingVoices = existing.voices ? { ...existing.voices } : undefined;
+      currentStatus.levels[4] = {
+        status: derivedStatus,
+        progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...'),
+        streamEvent: undefined,
+        consolidationStep: step,
+        steps,
+        voices: existingVoices
+      };
+
+      // Track per-voice orchestration state (voice-centric council mode):
+      // When a voiceId is present, store per-voice status in levels[4].voices
+      // so the frontend can update individual reviewer's consolidation row.
+      if (progressUpdate.voiceId) {
+        if (!currentStatus.levels[4].voices) {
+          currentStatus.levels[4].voices = {};
+        }
+        currentStatus.levels[4].voices[progressUpdate.voiceId] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'Consolidating...'
+        };
+        // Last-writer-wins: reflects whichever voice reported most recently.
+        // Intentional — mirrors levels 1-3 behavior (line ~334) and the frontend
+        // uses per-voice detail from the `voices` map, not this top-level field.
+        // This field exists for backward compat with single-model progress routing.
+        currentStatus.levels[4].voiceId = progressUpdate.voiceId;
+      }
     }
 
     // Update overall progress message if provided
@@ -330,6 +412,36 @@ function createProgressCallback(analysisId) {
     activeAnalyses.set(analysisId, currentStatus);
     broadcastProgress(analysisId, currentStatus);
   };
+}
+
+/**
+ * Parse enabledLevels from a request body into a normalized { 1: bool, 2: bool, 3: bool } object.
+ *
+ * Accepts three formats:
+ *   - Array: e.g. [1, 3]  -> { 1: true, 2: false, 3: true }
+ *   - Object: e.g. { 1: true, 2: false, 3: true } -> filtered to known keys only
+ *   - Null/undefined: falls back to skipLevel3 flag -> { 1: true, 2: true, 3: !skipLevel3 }
+ *
+ * @param {Array|Object|null} requestEnabledLevels - Raw enabledLevels from request body
+ * @param {boolean} [skipLevel3=false] - Fallback flag when enabledLevels is not provided
+ * @returns {Object} Normalized levels config { 1: boolean, 2: boolean, 3: boolean }
+ */
+function parseEnabledLevels(requestEnabledLevels, skipLevel3 = false) {
+  const levelsConfig = {};
+  if (Array.isArray(requestEnabledLevels)) {
+    for (const key of [1, 2, 3]) {
+      levelsConfig[key] = requestEnabledLevels.includes(key);
+    }
+  } else if (requestEnabledLevels && typeof requestEnabledLevels === 'object') {
+    for (const key of [1, 2, 3]) {
+      levelsConfig[key] = !!requestEnabledLevels[key];
+    }
+  } else {
+    levelsConfig[1] = true;
+    levelsConfig[2] = true;
+    levelsConfig[3] = !skipLevel3;
+  }
+  return levelsConfig;
 }
 
 module.exports = {
@@ -351,5 +463,6 @@ module.exports = {
   registerProcess,
   killProcesses,
   isAnalysisCancelled,
-  createProgressCallback
+  createProgressCallback,
+  parseEnabledLevels
 };

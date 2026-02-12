@@ -37,9 +37,9 @@ class ClaudeCLI {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown' } = options; // 5 minute default timeout
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', logPrefix } = options; // 5 minute default timeout
 
-      const levelPrefix = `[Level ${level}]`;
+      const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Claude CLI...`);
       logger.info(`${levelPrefix} Writing prompt: ${prompt.length} bytes`);
 

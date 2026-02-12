@@ -33,6 +33,8 @@ class AnalysisHistoryManager {
     this.isDropdownOpen = false;
     this.previewingRunId = null; // Track which run ID is currently being previewed to prevent flicker
     this.newRunId = null; // Track a new run that user hasn't viewed yet
+    this.councilNameCache = {}; // Cache council name lookups by council UUID
+    this._renderVersion = 0; // Monotonic counter to prevent stale async DOM updates in renderDropdown
 
     // DOM elements (cached after init)
     this.container = null;
@@ -158,6 +160,48 @@ class AnalysisHistoryManager {
   }
 
   /**
+   * Resolve a council name from its UUID, with caching.
+   * Fetches from /api/councils/:id and caches the result.
+   * @param {string} councilId - The council UUID
+   * @returns {Promise<string>} The council name, or 'Unknown Council' on failure
+   */
+  async resolveCouncilName(councilId) {
+    if (!councilId) return 'Unknown Council';
+
+    if (this.councilNameCache[councilId] !== undefined) {
+      return this.councilNameCache[councilId];
+    }
+
+    try {
+      const response = await fetch(`/api/councils/${councilId}`);
+      if (!response.ok) {
+        this.councilNameCache[councilId] = 'Unknown Council';
+        return 'Unknown Council';
+      }
+      const data = await response.json();
+      const name = data.council?.name || 'Unknown Council';
+      this.councilNameCache[councilId] = name;
+      return name;
+    } catch {
+      this.councilNameCache[councilId] = 'Unknown Council';
+      return 'Unknown Council';
+    }
+  }
+
+  /**
+   * Resolve a council name and patch a DOM element with the result.
+   * @param {HTMLElement} element - Element to update
+   * @param {string} councilId - Council ID to resolve
+   * @param {function} formatter - Takes the resolved name, returns the text to set on the element
+   */
+  async _patchCouncilName(element, councilId, formatter) {
+    const name = await this.resolveCouncilName(councilId);
+    if (element && element.isConnected) {
+      element.textContent = formatter(name);
+    }
+  }
+
+  /**
    * Load analysis runs from the API (initial load only)
    *
    * This method is intended for initial page load and always selects the latest run.
@@ -202,23 +246,24 @@ class AnalysisHistoryManager {
   renderDropdown(runs) {
     if (!this.listElement) return;
 
+    const renderVersion = ++this._renderVersion;
+
     this.listElement.innerHTML = runs.map((run) => {
       const isSelected = String(run.id) === String(this.selectedRunId);
-      const isNewRun = String(run.id) === String(this.newRunId);
       const timeAgo = this.formatRelativeTime(run.completed_at || run.started_at);
 
-      const modelName = this.escapeHtml(run.model || 'Unknown');
+      const isCouncil = run.provider === 'council';
+      const modelName = isCouncil ? 'council' : this.escapeHtml(run.model || 'Unknown');
       const providerName = this.escapeHtml(this.formatProviderName(run.provider));
-      const fullTitle = `${this.formatProviderName(run.provider)} - ${run.model || 'Unknown'}`;
-
-      const newBadge = isNewRun ? '<span class="analysis-history-new-badge">LATEST</span>' : '';
+      const fullTitle = isCouncil
+        ? 'council'
+        : `${this.formatProviderName(run.provider)} - ${run.model || 'Unknown'}`;
 
       return `
-        <button class="analysis-history-item ${isSelected ? 'selected' : ''} ${isNewRun ? 'is-new' : ''}" data-run-id="${run.id}">
+        <button class="analysis-history-item ${isSelected ? 'selected' : ''}" data-run-id="${run.id}">
           <div class="analysis-history-item-main" title="${this.escapeHtml(fullTitle)}">
             <span class="analysis-history-item-provider">${providerName}</span>
-            <span class="analysis-history-item-model">&middot; ${modelName}</span>
-            ${newBadge}
+            <span class="analysis-history-item-model" ${isCouncil ? `data-council-id="${this.escapeHtml(run.model)}"` : ''}>&middot; ${modelName}</span>
           </div>
           <div class="analysis-history-item-meta">
             <span>${timeAgo}</span>
@@ -226,6 +271,24 @@ class AnalysisHistoryManager {
         </button>
       `;
     }).join('');
+
+    // Async-resolve council names and patch dropdown items
+    const councilRuns = runs.filter(r => r.provider === 'council' && r.model);
+    if (councilRuns.length > 0) {
+      Promise.all(councilRuns.map(async (run) => {
+        const modelSpan = this.listElement.querySelector(
+          `.analysis-history-item[data-run-id="${run.id}"] .analysis-history-item-model[data-council-id]`
+        );
+        await this._patchCouncilName(modelSpan, run.model, n => `\u00B7 ${n}`);
+        // Skip title update if a newer render has occurred since we started
+        if (this._renderVersion !== renderVersion) return;
+        // Update the parent title too (name is now cached from _patchCouncilName)
+        const mainDiv = modelSpan?.closest('.analysis-history-item-main');
+        if (mainDiv && mainDiv.isConnected) {
+          mainDiv.title = `council \u00B7 ${this.councilNameCache[run.model] || 'Unknown Council'}`;
+        }
+      }));
+    }
 
     // Add click and hover handlers to items
     this.listElement.querySelectorAll('.analysis-history-item').forEach(item => {
@@ -303,9 +366,15 @@ class AnalysisHistoryManager {
     const run = this.selectedRun;
     const timeAgo = this.formatRelativeTime(run.completed_at || run.started_at);
     const provider = this.formatProviderName(run.provider);
-    const model = run.model || 'Unknown';
 
-    this.historyLabel.textContent = `${timeAgo} \u00B7 ${provider} \u00B7 ${model}`;
+    if (run.provider === 'council' && run.model) {
+      // Show placeholder immediately, then resolve council name async
+      this.historyLabel.textContent = `${timeAgo} \u00B7 council`;
+      this._patchCouncilName(this.historyLabel, run.model, name => `${timeAgo} \u00B7 council \u00B7 ${name}`);
+    } else {
+      const model = run.model || 'Unknown';
+      this.historyLabel.textContent = `${timeAgo} \u00B7 ${provider} \u00B7 ${model}`;
+    }
   }
 
   /**
@@ -346,8 +415,21 @@ class AnalysisHistoryManager {
 
     // Format model in lowercase
     const modelDisplay = run.model ? run.model.toLowerCase() : 'unknown';
+    const isCouncil = run.provider === 'council';
 
-    let html = `
+    let html = '';
+
+    if (isCouncil) {
+      // For council runs, show a single "Council" row with name (resolved async)
+      const cachedName = run.model ? this.councilNameCache[run.model] : null;
+      const councilDisplay = cachedName || 'Loading\u2026';
+      html += `
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Council</span>
+        <span class="analysis-preview-value analysis-preview-council-name" data-council-id="${this.escapeHtml(run.model || '')}">${this.escapeHtml(councilDisplay)}</span>
+      </div>`;
+    } else {
+      html += `
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Provider</span>
         <span class="analysis-preview-value">${this.escapeHtml(this.formatProviderName(run.provider))}</span>
@@ -359,6 +441,23 @@ class AnalysisHistoryManager {
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Tier</span>
         <span class="analysis-preview-value">${this.escapeHtml(tier || 'unknown')}</span>
+      </div>`;
+    }
+
+    // Config type row
+    const configLabel = this.getConfigTypeLabel(run);
+    const configDisplayMap = {
+      'single': 'Single Model',
+      'council': 'Council',
+      'council-voice': 'Council Reviewer',
+      'advanced': 'Advanced'
+    };
+    const configDisplay = configDisplayMap[configLabel] || configLabel;
+
+    html += `
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Config</span>
+        <span class="analysis-preview-value">${this.escapeHtml(configDisplay)}</span>
       </div>
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Status</span>
@@ -383,6 +482,16 @@ class AnalysisHistoryManager {
       </div>
       ` : ''}
     `;
+
+    // Level indicators in preview
+    if (run.levels_config) {
+      html += `
+      <div class="analysis-preview-row">
+        <span class="analysis-preview-label">Levels</span>
+        <span class="analysis-preview-value">${this.renderLevelIndicators(run)}</span>
+      </div>
+      `;
+    }
 
     // Add collapsible summary section if present
     const hasSummary = run.summary && run.summary.trim();
@@ -488,6 +597,12 @@ class AnalysisHistoryManager {
     }
 
     this.previewPanel.innerHTML = html;
+
+    // Async-resolve council name and patch the preview panel element
+    if (isCouncil && run.model && !this.councilNameCache[run.model]) {
+      const el = this.previewPanel.querySelector(`.analysis-preview-council-name[data-council-id="${run.model}"]`);
+      this._patchCouncilName(el, run.model, name => name);
+    }
   }
 
   /**
@@ -776,6 +891,65 @@ class AnalysisHistoryManager {
   formatTierDisplayName(tier) {
     if (!tier) return '';
     return tier.charAt(0).toUpperCase() + tier.slice(1).toLowerCase();
+  }
+
+  /**
+   * Determine the display config type for a run.
+   * @param {Object} run - Analysis run object
+   * @returns {string} One of 'single', 'council', 'council-voice', 'advanced'
+   */
+  getConfigTypeLabel(run) {
+    const configType = run.config_type || 'single';
+    if (configType === 'council' && run.parent_run_id) {
+      return 'council-voice';
+    }
+    return configType;
+  }
+
+  /**
+   * Render a config type badge for a run.
+   * @param {Object} run - Analysis run object
+   * @returns {string} HTML string for the badge
+   */
+  renderConfigTypeBadge(run) {
+    const label = this.getConfigTypeLabel(run);
+    const displayMap = {
+      'single': 'Single',
+      'council': 'Council',
+      'council-voice': 'Reviewer',
+      'advanced': 'Advanced'
+    };
+    const display = displayMap[label] || label;
+    if (label === 'single') return '';
+    return `<span class="analysis-history-config-badge analysis-history-config-${this.escapeHtml(label)}">${this.escapeHtml(display)}</span>`;
+  }
+
+  /**
+   * Render level indicators (L1/L2/L3) based on levels_config.
+   * @param {Object} run - Analysis run object with optional levels_config
+   * @returns {string} HTML string for level indicators
+   */
+  renderLevelIndicators(run) {
+    const levelsConfig = run.levels_config;
+    if (!levelsConfig) return '';
+
+    // levels_config can be:
+    // - An array like [1, 2] (voice-centric: enabled levels)
+    // - An object like { level1: true, level2: true, level3: false } (advanced)
+    const levels = [1, 2, 3];
+    const indicators = levels.map(level => {
+      let enabled;
+      if (Array.isArray(levelsConfig)) {
+        enabled = levelsConfig.includes(level);
+      } else {
+        const key = `level${level}`;
+        enabled = levelsConfig[key] !== false;
+      }
+      const cls = enabled ? 'level-on' : 'level-off';
+      const icon = enabled ? '\u2713' : '\u2717';
+      return `<span class="analysis-history-level ${cls}">L${level}${icon}</span>`;
+    });
+    return `<span class="analysis-history-levels">${indicators.join('')}</span>`;
   }
 
   /**

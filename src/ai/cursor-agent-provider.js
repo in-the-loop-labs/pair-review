@@ -211,9 +211,9 @@ class CursorAgentProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
 
-      const levelPrefix = `[Level ${level}]`;
+      const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Cursor Agent CLI...`);
       logger.info(`${levelPrefix} Writing prompt: ${prompt.length} chars`);
 
@@ -335,7 +335,7 @@ class CursorAgentProvider extends AIProvider {
         logger.info(`${levelPrefix} Cursor Agent CLI completed: ${lineCount} JSONL events received`);
 
         // Parse the Cursor Agent JSONL stream response
-        const parsed = this.parseCursorAgentResponse(stdout, level);
+        const parsed = this.parseCursorAgentResponse(stdout, level, levelPrefix);
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
           // Dump the parsed data for debugging
@@ -361,7 +361,7 @@ class CursorAgentProvider extends AIProvider {
               // orphan processes if timeout fired between close-handler entry
               // and reaching this point.
               if (settled) return;
-              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess });
+              const llmExtracted = await this.extractJSONWithLLM(llmFallbackInput, { level, analysisId, registerProcess, logPrefix: levelPrefix });
               if (llmExtracted.success) {
                 logger.success(`${levelPrefix} LLM extraction fallback succeeded`);
                 settle(resolve, llmExtracted.data);
@@ -425,8 +425,8 @@ class CursorAgentProvider extends AIProvider {
    * @param {string|number} level - Analysis level for logging
    * @returns {{success: boolean, data?: Object, error?: string}}
    */
-  parseCursorAgentResponse(stdout, level) {
-    const levelPrefix = `[Level ${level}]`;
+  parseCursorAgentResponse(stdout, level, logPrefix) {
+    const levelPrefix = logPrefix || `[Level ${level}]`;
 
     try {
       // Split by newlines and parse each JSON line

@@ -881,7 +881,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
         title,
         type
       FROM comments
-      WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL AND status = 'active'
+      WHERE review_id = ? AND source = 'ai' AND ai_level IS NULL AND (is_raw = 0 OR is_raw IS NULL) AND status = 'active'
       ORDER BY file, line_start
     `, [review.id]);
 

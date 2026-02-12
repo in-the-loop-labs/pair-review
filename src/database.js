@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 14;
+const CURRENT_SCHEMA_VERSION = 18;
 
 /**
  * Database schema SQL statements
@@ -75,6 +75,9 @@ const SCHEMA_SQL = {
       parent_id INTEGER,
       is_file_level INTEGER DEFAULT 0,
 
+      voice_id TEXT,
+      is_raw INTEGER DEFAULT 0,
+
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
@@ -121,6 +124,8 @@ const SCHEMA_SQL = {
       default_instructions TEXT,
       default_provider TEXT,
       default_model TEXT,
+      default_council_id TEXT,
+      default_tab TEXT,
       local_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -143,6 +148,9 @@ const SCHEMA_SQL = {
       files_analyzed INTEGER DEFAULT 0,
       started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       completed_at TIMESTAMP,
+      parent_run_id TEXT,
+      config_type TEXT DEFAULT 'single',
+      levels_config TEXT,
       FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
     )
   `,
@@ -171,6 +179,18 @@ const SCHEMA_SQL = {
       github_url TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  councils: `
+    CREATE TABLE IF NOT EXISTS councils (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT DEFAULT 'advanced',
+      config JSON NOT NULL,
+      last_used_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
   `
 };
 
@@ -193,9 +213,15 @@ const INDEX_SQL = [
   // Analysis runs indexes
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_review_id ON analysis_runs(review_id, started_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)',
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_parent ON analysis_runs(parent_run_id)',
   // GitHub reviews indexes
   'CREATE INDEX IF NOT EXISTS idx_github_reviews_review_id ON github_reviews(review_id)',
-  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)'
+  'CREATE INDEX IF NOT EXISTS idx_github_reviews_state ON github_reviews(state)',
+  // Council indexes
+  'CREATE INDEX IF NOT EXISTS idx_councils_name ON councils(name)',
+  // Voice tracking indexes
+  'CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)'
 ];
 
 /**
@@ -683,6 +709,205 @@ const MIGRATIONS = {
     console.log('  Created index idx_reviews_type_updated');
 
     console.log('Migration to schema version 14 complete');
+  },
+
+  // Migration to version 15: adds councils table and voice tracking columns to comments
+  15: (db) => {
+    console.log('Running migration to schema version 15...');
+
+    // Create councils table if it doesn't exist
+    if (!tableExists(db, 'councils')) {
+      db.exec(`
+        CREATE TABLE councils (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          config JSON NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_councils_name ON councils(name)');
+      console.log('  Created councils table');
+    } else {
+      console.log('  Table councils already exists');
+    }
+
+    // Add voice_id column to comments if it doesn't exist
+    const hasVoiceId = columnExists(db, 'comments', 'voice_id');
+    if (!hasVoiceId) {
+      try {
+        db.prepare(`ALTER TABLE comments ADD COLUMN voice_id TEXT`).run();
+        db.exec('CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)');
+        console.log('  Added voice_id column to comments');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column voice_id already exists (race condition)');
+      }
+    } else {
+      console.log('  Column voice_id already exists');
+    }
+
+    // Add is_raw column to comments if it doesn't exist
+    const hasIsRaw = columnExists(db, 'comments', 'is_raw');
+    if (!hasIsRaw) {
+      try {
+        db.prepare(`ALTER TABLE comments ADD COLUMN is_raw INTEGER DEFAULT 0`).run();
+        db.exec('CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)');
+        console.log('  Added is_raw column to comments');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column is_raw already exists (race condition)');
+      }
+    } else {
+      console.log('  Column is_raw already exists');
+    }
+
+    console.log('Migration to schema version 15 complete');
+  },
+
+  // Migration to version 16: Add council MRU tracking and repo default council
+  16: (db) => {
+    console.log('Running migration to schema version 16...');
+
+    // Add last_used_at column to councils for MRU ordering
+    const hasLastUsedAt = columnExists(db, 'councils', 'last_used_at');
+    if (!hasLastUsedAt) {
+      try {
+        db.prepare(`ALTER TABLE councils ADD COLUMN last_used_at DATETIME`).run();
+        console.log('  Added last_used_at column to councils');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column last_used_at already exists (race condition)');
+      }
+    } else {
+      console.log('  Column last_used_at already exists');
+    }
+
+    // Add default_council_id column to repo_settings
+    const hasDefaultCouncilId = columnExists(db, 'repo_settings', 'default_council_id');
+    if (!hasDefaultCouncilId) {
+      try {
+        db.prepare(`ALTER TABLE repo_settings ADD COLUMN default_council_id TEXT`).run();
+        console.log('  Added default_council_id column to repo_settings');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column default_council_id already exists (race condition)');
+      }
+    } else {
+      console.log('  Column default_council_id already exists');
+    }
+
+    console.log('Migration to schema version 16 complete');
+  },
+
+  // Migration to version 17: Add voice-centric council columns and repo default_tab
+  17: (db) => {
+    console.log('Running migration to schema version 17...');
+
+    // Add parent_run_id to analysis_runs for child voice runs
+    const hasParentRunId = columnExists(db, 'analysis_runs', 'parent_run_id');
+    if (!hasParentRunId) {
+      try {
+        db.prepare(`ALTER TABLE analysis_runs ADD COLUMN parent_run_id TEXT`).run();
+        console.log('  Added parent_run_id column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column parent_run_id already exists (race condition)');
+      }
+    } else {
+      console.log('  Column parent_run_id already exists');
+    }
+
+    // Add config_type to analysis_runs
+    const hasConfigType = columnExists(db, 'analysis_runs', 'config_type');
+    if (!hasConfigType) {
+      try {
+        db.prepare(`ALTER TABLE analysis_runs ADD COLUMN config_type TEXT DEFAULT 'single'`).run();
+        console.log('  Added config_type column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column config_type already exists (race condition)');
+      }
+    } else {
+      console.log('  Column config_type already exists');
+    }
+
+    // Add levels_config to analysis_runs
+    const hasLevelsConfig = columnExists(db, 'analysis_runs', 'levels_config');
+    if (!hasLevelsConfig) {
+      try {
+        db.prepare(`ALTER TABLE analysis_runs ADD COLUMN levels_config TEXT`).run();
+        console.log('  Added levels_config column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column levels_config already exists (race condition)');
+      }
+    } else {
+      console.log('  Column levels_config already exists');
+    }
+
+    // Add default_tab to repo_settings
+    const hasDefaultTab = columnExists(db, 'repo_settings', 'default_tab');
+    if (!hasDefaultTab) {
+      try {
+        db.prepare(`ALTER TABLE repo_settings ADD COLUMN default_tab TEXT`).run();
+        console.log('  Added default_tab column to repo_settings');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column default_tab already exists (race condition)');
+      }
+    } else {
+      console.log('  Column default_tab already exists');
+    }
+
+    // Add index for parent_run_id lookups
+    try {
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_analysis_runs_parent ON analysis_runs(parent_run_id)`).run();
+      console.log('  Created idx_analysis_runs_parent index');
+    } catch (error) {
+      console.log('  Index idx_analysis_runs_parent already exists');
+    }
+
+    console.log('Migration to schema version 17 complete');
+  },
+
+  // Migration to version 18: Add type column to councils table
+  18: (db) => {
+    console.log('Running migration to schema version 18...');
+
+    // Add type column to councils for distinguishing 'council' (voice-centric) from 'advanced' (level-centric)
+    const hasType = columnExists(db, 'councils', 'type');
+    if (!hasType) {
+      try {
+        db.prepare(`ALTER TABLE councils ADD COLUMN type TEXT DEFAULT 'advanced'`).run();
+        console.log('  Added type column to councils');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column type already exists (race condition)');
+      }
+    } else {
+      console.log('  Column type already exists');
+    }
+
+    console.log('Migration to schema version 18 complete');
   }
 };
 
@@ -1179,7 +1404,7 @@ class RepoSettingsRepository {
    */
   async getRepoSettings(repository) {
     const row = await queryOne(this.db, `
-      SELECT id, repository, default_instructions, default_provider, default_model, local_path, created_at, updated_at
+      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, local_path, created_at, updated_at
       FROM repo_settings
       WHERE repository = ? COLLATE NOCASE
     `, [repository]);
@@ -1236,7 +1461,7 @@ class RepoSettingsRepository {
    * @returns {Promise<Object>} Saved settings object
    */
   async saveRepoSettings(repository, settings) {
-    const { default_instructions, default_provider, default_model, local_path } = settings;
+    const { default_instructions, default_provider, default_model, default_council_id, default_tab, local_path } = settings;
     const now = new Date().toISOString();
 
     // Check if settings already exist
@@ -1249,6 +1474,8 @@ class RepoSettingsRepository {
         SET default_instructions = ?,
             default_provider = ?,
             default_model = ?,
+            default_council_id = ?,
+            default_tab = ?,
             local_path = ?,
             updated_at = ?
         WHERE repository = ? COLLATE NOCASE
@@ -1256,6 +1483,8 @@ class RepoSettingsRepository {
         default_instructions !== undefined ? default_instructions : existing.default_instructions,
         default_provider !== undefined ? default_provider : existing.default_provider,
         default_model !== undefined ? default_model : existing.default_model,
+        default_council_id !== undefined ? default_council_id : existing.default_council_id,
+        default_tab !== undefined ? default_tab : existing.default_tab,
         local_path !== undefined ? local_path : existing.local_path,
         now,
         repository
@@ -1266,15 +1495,17 @@ class RepoSettingsRepository {
         default_instructions: default_instructions !== undefined ? default_instructions : existing.default_instructions,
         default_provider: default_provider !== undefined ? default_provider : existing.default_provider,
         default_model: default_model !== undefined ? default_model : existing.default_model,
+        default_council_id: default_council_id !== undefined ? default_council_id : existing.default_council_id,
+        default_tab: default_tab !== undefined ? default_tab : existing.default_tab,
         local_path: local_path !== undefined ? local_path : existing.local_path,
         updated_at: now
       };
     } else {
       // Insert new settings
       const result = await run(this.db, `
-        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, local_path, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `, [repository, default_instructions || null, default_provider || null, default_model || null, local_path || null, now, now]);
+        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, default_tab, local_path, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, default_tab || null, local_path || null, now, now]);
 
       return {
         id: result.lastID,
@@ -1282,6 +1513,8 @@ class RepoSettingsRepository {
         default_instructions: default_instructions || null,
         default_provider: default_provider || null,
         default_model: default_model || null,
+        default_council_id: default_council_id || null,
+        default_tab: default_tab || null,
         local_path: local_path || null,
         created_at: now,
         updated_at: now
@@ -2357,13 +2590,14 @@ class AnalysisRunRepository {
    * @param {string} [runInfo.status='running'] - Initial status (default 'running'; pass 'completed' for externally-produced results)
    * @returns {Promise<Object>} Created analysis run record
    */
-  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, status = 'running' }) {
+  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, status = 'running', parentRunId = null, configType = 'single', levelsConfig = null }) {
     const isTerminal = ['completed', 'failed', 'cancelled'].includes(status);
     const completedAt = isTerminal ? 'CURRENT_TIMESTAMP' : 'NULL';
+    const levelsConfigJson = levelsConfig ? JSON.stringify(levelsConfig) : null;
     await run(this.db, `
-      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, head_sha, status, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt})
-    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions, headSha, status]);
+      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, head_sha, status, completed_at, parent_run_id, config_type, levels_config)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt}, ?, ?, ?)
+    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions, headSha, status, parentRunId, configType, levelsConfigJson]);
 
     // Query back the inserted row to return actual database values (including timestamps)
     return await this.getById(id);
@@ -2431,7 +2665,8 @@ class AnalysisRunRepository {
   async getById(id) {
     const row = await queryOne(this.db, `
       SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at
+             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
+             parent_run_id, config_type, levels_config
       FROM analysis_runs
       WHERE id = ?
     `, [id]);
@@ -2451,10 +2686,11 @@ class AnalysisRunRepository {
     const params = [reviewId];
     let sql = `
       SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
-             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at
+             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
+             parent_run_id, config_type, levels_config
       FROM analysis_runs
       WHERE review_id = ?
-      ORDER BY started_at DESC, id DESC`;
+      ORDER BY COALESCE(completed_at, started_at) DESC, CASE WHEN parent_run_id IS NULL THEN 0 ELSE 1 END, started_at DESC, id DESC`;
     if (limit) {
       sql += `\n      LIMIT ?`;
       params.push(limit);
@@ -2470,6 +2706,22 @@ class AnalysisRunRepository {
   async getLatestByReviewId(reviewId) {
     const rows = await this.getByReviewId(reviewId, { limit: 1 });
     return rows.length > 0 ? rows[0] : null;
+  }
+
+  /**
+   * Get child runs for a parent council run, ordered by start time ascending
+   * @param {string} parentRunId - Parent analysis run ID
+   * @returns {Promise<Array<Object>>} Array of child analysis run records
+   */
+  async getChildRuns(parentRunId) {
+    return query(this.db, `
+      SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+             head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
+             parent_run_id, config_type, levels_config
+      FROM analysis_runs
+      WHERE parent_run_id = ?
+      ORDER BY started_at ASC
+    `, [parentRunId]);
   }
 
   /**
@@ -2677,6 +2929,156 @@ class GitHubReviewRepository {
   }
 }
 
+/**
+ * CouncilRepository class for managing council configurations
+ */
+class CouncilRepository {
+  /**
+   * Create a new CouncilRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Create a new council
+   * @param {Object} councilData - Council data
+   * @param {string} councilData.id - Unique ID (UUID)
+   * @param {string} councilData.name - Council name
+   * @param {Object} councilData.config - Council configuration JSON
+   * @param {string} [councilData.type='advanced'] - Council type ('council' for voice-centric, 'advanced' for level-centric)
+   * @returns {Promise<Object>} Created council record
+   */
+  async create({ id, name, config, type = 'advanced' }) {
+    if (!id || !name || !config) {
+      throw new Error('Missing required fields: id, name, config');
+    }
+
+    const configJson = typeof config === 'string' ? config : JSON.stringify(config);
+
+    await run(this.db, `
+      INSERT INTO councils (id, name, type, config)
+      VALUES (?, ?, ?, ?)
+    `, [id, name, type, configJson]);
+
+    return this.getById(id);
+  }
+
+  /**
+   * Get a council by ID
+   * @param {string} id - Council ID
+   * @returns {Promise<Object|null>} Council record with parsed config, or null
+   */
+  async getById(id) {
+    const row = await queryOne(this.db, `
+      SELECT id, name, type, config, last_used_at, created_at, updated_at
+      FROM councils
+      WHERE id = ?
+    `, [id]);
+
+    if (!row) return null;
+    return this._parseRow(row);
+  }
+
+  /**
+   * List all councils
+   * @returns {Promise<Array<Object>>} Array of council records with parsed configs
+   */
+  async list() {
+    const rows = await query(this.db, `
+      SELECT id, name, type, config, last_used_at, created_at, updated_at
+      FROM councils
+      ORDER BY last_used_at DESC NULLS LAST, updated_at DESC
+    `);
+
+    return rows.map(row => this._parseRow(row));
+  }
+
+  /**
+   * Update the last_used_at timestamp for a council (for MRU tracking)
+   * @param {string} id - Council ID
+   * @returns {Promise<boolean>} True if record was updated (council exists)
+   */
+  async touchLastUsedAt(id) {
+    const result = await run(this.db, `
+      UPDATE councils SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Update a council
+   * @param {string} id - Council ID
+   * @param {Object} updates - Fields to update
+   * @param {string} [updates.name] - New name
+   * @param {Object} [updates.config] - New configuration
+   * @param {string} [updates.type] - New type ('council' or 'advanced')
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async update(id, updates) {
+    const setClauses = ['updated_at = CURRENT_TIMESTAMP'];
+    const params = [];
+
+    if (updates.name !== undefined) {
+      setClauses.push('name = ?');
+      params.push(updates.name);
+    }
+
+    if (updates.type !== undefined) {
+      setClauses.push('type = ?');
+      params.push(updates.type);
+    }
+
+    if (updates.config !== undefined) {
+      setClauses.push('config = ?');
+      const configJson = typeof updates.config === 'string' ? updates.config : JSON.stringify(updates.config);
+      params.push(configJson);
+    }
+
+    params.push(id);
+
+    const result = await run(this.db, `
+      UPDATE councils
+      SET ${setClauses.join(', ')}
+      WHERE id = ?
+    `, params);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Delete a council
+   * @param {string} id - Council ID
+   * @returns {Promise<boolean>} True if record was deleted
+   */
+  async delete(id) {
+    const result = await run(this.db, `
+      DELETE FROM councils WHERE id = ?
+    `, [id]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Parse a database row, converting JSON config string to object
+   * @param {Object} row - Raw database row
+   * @returns {Object} Row with parsed config
+   * @private
+   */
+  _parseRow(row) {
+    try {
+      return {
+        ...row,
+        config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config
+      };
+    } catch (e) {
+      return { ...row, config: {} };
+    }
+  }
+}
+
 module.exports = {
   initializeDatabase,
   closeDatabase,
@@ -2698,6 +3100,7 @@ module.exports = {
   PRMetadataRepository,
   AnalysisRunRepository,
   GitHubReviewRepository,
+  CouncilRepository,
   generateWorktreeId,
   migrateExistingWorktrees
 };
