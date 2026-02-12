@@ -86,7 +86,8 @@ Do NOT modify files or run write commands. Analyze and report only.
     "title": "Brief title",
     "description": "Detailed explanation",
     "suggestion": "How to fix/improve (omit for praise items)",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
   }],
   "summary": "Brief summary of findings"
 }

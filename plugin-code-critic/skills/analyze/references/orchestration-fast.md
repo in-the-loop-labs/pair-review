@@ -49,6 +49,7 @@ Each level provides suggestions as a JSON array with the following schema per it
 - description: full explanation
 - suggestion: remediation advice
 - confidence: 0.0-1.0 score
+- reasoning: (optional) array of strings with step-by-step reasoning
 - is_file_level: true if this is a file-level suggestion (no line numbers)
 
 **Level 1 - Diff Analysis ([N] suggestions):**

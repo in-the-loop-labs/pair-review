@@ -54,6 +54,7 @@ const SCHEMA_SQL = {
       type TEXT,
       title TEXT,
       body TEXT,
+      reasoning TEXT,
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
       adopted_as_id INTEGER,
       parent_id INTEGER,

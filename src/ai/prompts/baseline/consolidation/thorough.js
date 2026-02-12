@@ -158,7 +158,8 @@ Output JSON with this structure:
       "title": "Brief title",
       "description": "Detailed explanation",
       "suggestion": "How to fix/improve (omit for praise)",
-      "confidence": 0.0-1.0
+      "confidence": 0.0-1.0,
+      "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
     }
   ],
   "fileLevelSuggestions": [{
@@ -167,7 +168,8 @@ Output JSON with this structure:
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation",
     "suggestion": "How to address the file-level concern (omit for praise items)",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
   }],
   "summary": "Brief summary of the key findings and their significance. Write as if a single reviewer produced this analysis — do NOT mention 'consolidation', 'merging', or 'multiple reviewers'."
 }

@@ -23,6 +23,7 @@ const ORCHESTRATION_INPUT_SCHEMA_DOCS = `Each level provides suggestions as a JS
 - description: full explanation
 - suggestion: remediation advice
 - confidence: 0.0-1.0 score
+- reasoning: (optional) array of strings with step-by-step reasoning
 - is_file_level: true if this is a file-level suggestion (no line numbers)`;
 
 /**
@@ -39,7 +40,8 @@ const LEVEL1_OUTPUT_SCHEMA = {
     title: 'Brief title',
     description: 'Detailed explanation',
     suggestion: 'How to fix/improve (omit this field for praise items - no action needed)',
-    confidence: '0.0-1.0'
+    confidence: '0.0-1.0',
+    reasoning: ['Step 1: ...', 'Step 2: ...']
   }],
   summary: 'Brief summary of findings'
 };
@@ -58,7 +60,8 @@ const LEVEL2_OUTPUT_SCHEMA = {
     title: 'Brief title',
     description: 'Detailed explanation mentioning why full file context was needed',
     suggestion: 'How to fix/improve based on file context (omit for praise items)',
-    confidence: 0.8
+    confidence: 0.8,
+    reasoning: ['Step 1: ...', 'Step 2: ...']
   }],
   fileLevelSuggestions: [{
     file: 'path/to/file',
@@ -66,7 +69,8 @@ const LEVEL2_OUTPUT_SCHEMA = {
     title: 'Brief title describing file-level concern',
     description: 'Explanation of the file-level observation (architecture, organization, naming, etc.)',
     suggestion: 'How to address the file-level concern (omit for praise items)',
-    confidence: 0.8
+    confidence: 0.8,
+    reasoning: ['Step 1: ...', 'Step 2: ...']
   }],
   summary: 'Brief summary of file context findings'
 };
@@ -85,7 +89,8 @@ const LEVEL3_OUTPUT_SCHEMA = {
     title: 'Brief title',
     description: 'Detailed explanation mentioning why codebase context was needed',
     suggestion: 'How to fix/improve based on codebase context (omit for praise items)',
-    confidence: '0.0-1.0'
+    confidence: '0.0-1.0',
+    reasoning: ['Step 1: ...', 'Step 2: ...']
   }],
   fileLevelSuggestions: [{
     file: 'path/to/file',
@@ -93,7 +98,8 @@ const LEVEL3_OUTPUT_SCHEMA = {
     title: 'Brief title describing file-level concern',
     description: 'Explanation of the file-level observation from codebase perspective',
     suggestion: 'How to address the file-level concern (omit for praise items)',
-    confidence: '0.0-1.0'
+    confidence: '0.0-1.0',
+    reasoning: ['Step 1: ...', 'Step 2: ...']
   }],
   summary: 'Brief summary of how these changes connect to and impact the codebase'
 };
@@ -112,7 +118,8 @@ const ORCHESTRATION_OUTPUT_SCHEMA = {
     title: 'Brief title describing the curated insight',
     description: 'Clear explanation of the issue and why this guidance matters to the human reviewer',
     suggestion: 'Specific, actionable guidance for the reviewer (omit for praise items)',
-    confidence: '0.0-1.0'
+    confidence: '0.0-1.0',
+    reasoning: ['Step 1: ...', 'Step 2: ...']
   }],
   fileLevelSuggestions: [{
     file: 'path/to/file',
@@ -120,7 +127,8 @@ const ORCHESTRATION_OUTPUT_SCHEMA = {
     title: 'Brief title describing file-level concern',
     description: 'Explanation of the file-level observation',
     suggestion: 'How to address the file-level concern (omit for praise items)',
-    confidence: '0.0-1.0'
+    confidence: '0.0-1.0',
+    reasoning: ['Step 1: ...', 'Step 2: ...']
   }],
   summary: 'Brief summary of orchestration results and key patterns found'
 };

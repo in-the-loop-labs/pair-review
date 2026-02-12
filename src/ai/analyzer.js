@@ -1605,8 +1605,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       await run(this.db, `
         INSERT INTO comments (
           review_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, side, type, title, body, status, is_file_level
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          file, line_start, line_end, side, type, title, body, reasoning, status, is_file_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         reviewId,
         'ai',
@@ -1621,6 +1621,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         suggestion.type,
         suggestion.title,
         body,
+        suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
         'active',
         isFileLevel
       ]);
@@ -3523,9 +3524,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       await dbRun(this.db, `
         INSERT INTO comments (
           review_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, side, type, title, body, status, is_file_level,
+          file, line_start, line_end, side, type, title, body, reasoning, status, is_file_level,
           voice_id, is_raw
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         reviewId,
         'ai',
@@ -3540,6 +3541,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         suggestion.type,
         suggestion.title,
         body,
+        suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
         'active',
         isFileLevel,
         suggestion.voice_id || null,

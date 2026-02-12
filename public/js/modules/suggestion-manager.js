@@ -418,6 +418,16 @@ class SuggestionManager {
             return window.renderMarkdown ? window.renderMarkdown(body) : escapeHtml(body);
           })()}
         </div>
+        ${suggestion.reasoning && suggestion.reasoning.length > 0 ? `
+        <div class="ai-suggestion-reasoning collapsed">
+          <div class="reasoning-toggle" onclick="this.parentElement.classList.toggle('collapsed')">
+            <span class="reasoning-chevron">&#9654;</span> Reasoning
+          </div>
+          <ul class="reasoning-content">
+            ${suggestion.reasoning.map(step => `<li>${escapeHtml(step)}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
         <div class="ai-suggestion-actions">
           <button class="ai-action ai-action-adopt" onclick="prManager.adoptSuggestion(${suggestion.id})">
             <svg viewBox="0 0 16 16" width="16" height="16"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path></svg>

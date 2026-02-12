@@ -269,7 +269,8 @@ Output JSON with this structure:
     "title": "Brief title describing the curated insight",
     "description": "Clear explanation of the issue and why this guidance matters to the human reviewer",
     "suggestion": "Specific, actionable guidance for the reviewer (omit for praise items)",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
@@ -277,7 +278,8 @@ Output JSON with this structure:
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation",
     "suggestion": "How to address the file-level concern (omit for praise items)",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
   }],
   "summary": "Brief summary of the key findings and their significance to the reviewer. Focus on WHAT was found, not HOW it was found. Do NOT mention 'orchestration', 'levels', 'merged from Level 1/2/3' etc. Write as if a single reviewer produced this analysis."
 }

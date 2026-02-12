@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 18;
+const CURRENT_SCHEMA_VERSION = 19;
 
 /**
  * Database schema SQL statements
@@ -69,6 +69,7 @@ const SCHEMA_SQL = {
       type TEXT,
       title TEXT,
       body TEXT,
+      reasoning TEXT,
 
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
       adopted_as_id INTEGER,
@@ -908,6 +909,28 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 18 complete');
+  },
+
+  // Migration to version 19: adds reasoning column to comments for AI reasoning chains
+  19: (db) => {
+    console.log('Running migration to schema version 19...');
+
+    const hasReasoning = columnExists(db, 'comments', 'reasoning');
+    if (!hasReasoning) {
+      try {
+        db.prepare(`ALTER TABLE comments ADD COLUMN reasoning TEXT`).run();
+        console.log('  Added reasoning column to comments');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column reasoning already exists (race condition)');
+      }
+    } else {
+      console.log('  Column reasoning already exists');
+    }
+
+    console.log('Migration to schema version 19 complete');
   }
 };
 
