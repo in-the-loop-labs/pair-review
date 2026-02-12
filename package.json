@@ -1,6 +1,6 @@
 {
   "name": "@in-the-loop-labs/pair-review",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Your AI-powered code review partner - Close the feedback loop with AI coding agents",
   "main": "src/server.js",
   "bin": {

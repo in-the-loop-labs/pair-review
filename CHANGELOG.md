@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.3
+
+### Patch Changes
+
+- e4ee85c: Fix suggestion on modified lines including both old and new line content by making getCodeFromLines always filter by side, defaulting to RIGHT when not provided
+- c30b251: Fix _f_ function context markers being lost during upward gap expansion. Stranded markers are now relocated to the nearest remaining gap boundary instead of being removed, preserving function scope context for collapsed code sections.
+
 ## 1.4.2
 
 ### Patch Changes
