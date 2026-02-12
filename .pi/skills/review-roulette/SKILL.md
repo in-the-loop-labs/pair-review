@@ -17,11 +17,13 @@ Run `${PI_CMD:-pi} --list-models` via bash to get the current list of models wit
 valid API keys. **Eligible models** are those that show `thinking: yes` in the
 output — these are the reasoning-capable / premium models.
 
+**Excluded models**: Never select `openai/o3-pro` — it is prohibitively
+expensive. If it appears in the model list, skip it entirely.
+
 Example reasoning models you might see (provider/model format):
 
 - `anthropic/claude-opus-4-6`
 - `anthropic/claude-sonnet-4-5` (with thinking)
-- `openai/o3-pro`
 - `openai/o3`
 - `openai/o4-mini`
 - `openai/gpt-5-pro`

@@ -15,6 +15,17 @@ Before switching models, check which models are actually available by running
 configured in `provider   model` columns. Specify models as
 `provider/model`. Only switch to models that appear in that list.
 
+## Forbidden Models
+
+The following models are **never** permitted due to extreme cost:
+
+- **openai/o3-pro** — Prohibitively expensive. Use `openai/o3` instead, which
+  provides strong reasoning at a fraction of the cost.
+
+Do not select these models for your own work, subtasks, or any model parameter.
+If a forbidden model is the only reasoning model available, fall back to a
+balanced model with extended thinking enabled instead.
+
 ## When to Switch Models
 
 Not every task benefits from model switching. Use these heuristics:
@@ -58,11 +69,8 @@ Here are the higher-end models and their strengths for code review:
 - **anthropic/claude-sonnet-4-5 with extended thinking**: Enable thinking for complex analysis
   without switching models. Good balance of capability and responsiveness.
 
-**OpenAI**
-- **openai/o3-pro**: OpenAI's most powerful reasoning model. Excels at exhaustive
-  multi-step analysis and finding subtle logical flaws. Strongest at tracing
-  complex execution paths and catching concurrency bugs.
-- **openai/o3**: Strong reasoning model. Good for state management analysis, algorithmic
+**OpenAI** (note: o3-pro is forbidden — see Forbidden Models above)
+- **openai/o3**: OpenAI's best reasoning model for code review. Good for state management analysis, algorithmic
   correctness, and methodical bug-hunting through code paths.
 - **openai/gpt-5-pro / openai/gpt-5.2-pro**: OpenAI's flagship non-o-series models with
   reasoning. Good general-purpose deep analysis.
@@ -93,7 +101,7 @@ Here are the higher-end models and their strengths for code review:
 When the goal is specifically to track down bugs or logical flaws in changes,
 these models excel:
 
-- **openai/o3 / openai/o3-pro**: The o-series models are particularly strong at systematic
+- **openai/o3**: The o-series models are particularly strong at systematic
   bug-hunting. They methodically trace execution paths, track state through
   branches, and identify edge cases. Best choice when you suspect there's a bug
   and need to find it.
