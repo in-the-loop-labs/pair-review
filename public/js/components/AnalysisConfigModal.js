@@ -914,56 +914,55 @@ class AnalysisConfigModal {
     const modalBody = this.modal.querySelector('.analysis-config-body');
     if (!modalBody) return;
 
-    // Skip if already injected (tabs exist)
-    if (modalBody.querySelector('.analysis-tab-bar')) return;
+    // Only inject DOM once; on subsequent opens the tab bar already exists
+    if (!modalBody.querySelector('.analysis-tab-bar')) {
+      // Wrap existing content in a "Single Model" tab panel
+      const existingContent = Array.from(modalBody.children);
+      const singlePanel = document.createElement('div');
+      singlePanel.id = 'tab-panel-single';
+      singlePanel.className = 'tab-panel active';
+      existingContent.forEach(child => singlePanel.appendChild(child));
 
-    // Wrap existing content in a "Single Model" tab panel
-    const existingContent = Array.from(modalBody.children);
-    const singlePanel = document.createElement('div');
-    singlePanel.id = 'tab-panel-single';
-    singlePanel.className = 'tab-panel active';
-    existingContent.forEach(child => singlePanel.appendChild(child));
+      // Create council (voice-centric) tab panel
+      const councilPanel = document.createElement('div');
+      councilPanel.id = 'tab-panel-council';
+      councilPanel.className = 'tab-panel';
+      councilPanel.style.display = 'none';
 
-    // Create council (voice-centric) tab panel
-    const councilPanel = document.createElement('div');
-    councilPanel.id = 'tab-panel-council';
-    councilPanel.className = 'tab-panel';
-    councilPanel.style.display = 'none';
+      // Create advanced (level-centric) tab panel
+      const advancedPanel = document.createElement('div');
+      advancedPanel.id = 'tab-panel-advanced';
+      advancedPanel.className = 'tab-panel';
+      advancedPanel.style.display = 'none';
 
-    // Create advanced (level-centric) tab panel
-    const advancedPanel = document.createElement('div');
-    advancedPanel.id = 'tab-panel-advanced';
-    advancedPanel.className = 'tab-panel';
-    advancedPanel.style.display = 'none';
+      // Create tab bar
+      const tabBar = document.createElement('div');
+      tabBar.className = 'analysis-tab-bar';
+      tabBar.innerHTML = `
+        <button class="analysis-tab active" data-tab="single">Single Model</button>
+        <button class="analysis-tab" data-tab="council">Council <span class="beta-badge">BETA</span></button>
+        <button class="analysis-tab" data-tab="advanced">Advanced <span class="beta-badge">BETA</span></button>
+      `;
 
-    // Create tab bar
-    const tabBar = document.createElement('div');
-    tabBar.className = 'analysis-tab-bar';
-    tabBar.innerHTML = `
-      <button class="analysis-tab active" data-tab="single">Single Model</button>
-      <button class="analysis-tab" data-tab="council">Council <span class="beta-badge">BETA</span></button>
-      <button class="analysis-tab" data-tab="advanced">Advanced <span class="beta-badge">BETA</span></button>
-    `;
+      // Assemble
+      modalBody.innerHTML = '';
+      modalBody.appendChild(tabBar);
+      modalBody.appendChild(singlePanel);
+      modalBody.appendChild(councilPanel);
+      modalBody.appendChild(advancedPanel);
 
-    // Assemble
-    modalBody.innerHTML = '';
-    modalBody.appendChild(tabBar);
-    modalBody.appendChild(singlePanel);
-    modalBody.appendChild(councilPanel);
-    modalBody.appendChild(advancedPanel);
-
-    // Tab click listeners
-    tabBar.querySelectorAll('.analysis-tab').forEach(tab => {
-      tab.addEventListener('click', () => {
-        this._switchTab(tab.dataset.tab);
+      // Tab click listeners
+      tabBar.querySelectorAll('.analysis-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          this._switchTab(tab.dataset.tab);
+        });
       });
-    });
-
-    // Apply default tab if specified (skip callback since this is initialization)
-    const defaultTab = options.defaultTab || 'single';
-    if (defaultTab !== 'single') {
-      this._switchTab(defaultTab, true);
     }
+
+    // Always apply the default tab — hide() resets to 'single', so on re-open
+    // we must restore the remembered tab from localStorage / repo settings.
+    const defaultTab = options.defaultTab || 'single';
+    this._switchTab(defaultTab, true);
   }
 
   /**

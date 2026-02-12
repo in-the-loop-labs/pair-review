@@ -800,6 +800,73 @@ describe('createProgressCallback', () => {
       const status = activeAnalyses.get(analysisId);
       expect(status.levels[4].consolidationStep).toBe('orchestration');
     });
+
+    it('should track per-voice orchestration state in levels[4].voices', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'Consolidating voice results...',
+        voiceId: 'claude-opus'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].voices).toBeDefined();
+      expect(status.levels[4].voices['claude-opus']).toEqual({
+        status: 'running',
+        progress: 'Consolidating voice results...'
+      });
+      expect(status.levels[4].voiceId).toBe('claude-opus');
+    });
+
+    it('should track multiple per-voice orchestration states independently', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'Running...',
+        voiceId: 'claude-opus'
+      });
+
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'Running...',
+        voiceId: 'gemini-pro-1'
+      });
+
+      callback({
+        level: 'orchestration',
+        status: 'completed',
+        progress: 'Done',
+        voiceId: 'claude-opus'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].voices['claude-opus']).toEqual({
+        status: 'completed',
+        progress: 'Done'
+      });
+      expect(status.levels[4].voices['gemini-pro-1']).toEqual({
+        status: 'running',
+        progress: 'Running...'
+      });
+    });
+
+    it('should not create voices map on orchestration update without voiceId', () => {
+      const callback = createProgressCallback(analysisId);
+
+      callback({
+        level: 'orchestration',
+        status: 'running',
+        progress: 'Cross-reviewer consolidation...'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].voices).toBeUndefined();
+    });
   });
 
   describe('Overall progress updates', () => {

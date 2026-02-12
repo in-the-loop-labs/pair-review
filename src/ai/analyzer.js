@@ -262,7 +262,12 @@ class Analyzer {
           level3: levelResults.level3.suggestions
         };
 
-        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout });
+        const orchestrationResult = await this.orchestrateWithAI(allSuggestions, prMetadata, mergedInstructions, worktreePath, { analysisId, tier, progressCallback, timeout: executionTimeout, logPrefix, reviewerNum });
+
+        // Report orchestration step as completed
+        if (progressCallback) {
+          progressCallback({ level: 'orchestration', status: 'completed', progress: 'Cross-level consolidation complete' });
+        }
 
         // Validate and finalize suggestions
         const finalSuggestions = this.validateAndFinalizeSuggestions(
@@ -300,6 +305,11 @@ class Analyzer {
       } catch (orchestrationError) {
         logger.error(`${logPrefix}Cross-level consolidation failed: ${orchestrationError.message}`);
         logger.warn(`${logPrefix}Falling back to storing all level suggestions without consolidation`);
+
+        // Report orchestration step as failed
+        if (progressCallback) {
+          progressCallback({ level: 'orchestration', status: 'failed', progress: 'Cross-level consolidation failed' });
+        }
 
         // Fallback: store all suggestions as final without orchestration
         const fallbackSuggestions = [
@@ -714,7 +724,7 @@ Or simply ignore any changes to files matching these patterns in your analysis.
     const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
     // Build adapter-level log prefix: when reviewerNum is set (council mode),
     // use compact format like [R1 L1] so concurrent reviewers are disambiguated
-    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L1]` : undefined;
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L1]` : '';
     logger.info(`${lp}[Level 1] Analysis Starting`);
 
     try {
@@ -1705,7 +1715,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    */
   async analyzeLevel2Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
     const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
-    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L2]` : undefined;
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L2]` : '';
     logger.info(`${lp}[Level 2] Analysis Starting`);
 
     try {
@@ -1815,7 +1825,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    */
   async analyzeLevel3Isolated(prId, runId, worktreePath, prMetadata, generatedPatterns = [], progressCallback = null, customInstructions = null, changedFiles = null, options = {}) {
     const { analysisId, tier = 'balanced', timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
-    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L3]` : undefined;
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} L3]` : '';
     logger.info(`${lp}[Level 3] Analysis Starting`);
 
     try {
@@ -2374,14 +2384,17 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @returns {Promise<Array>} Curated suggestions array
    */
   async orchestrateWithAI(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, options = {}) {
-    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000 } = options;
-    logger.section('[Consolidation] Cross-Level Consolidation Starting');
+    const { analysisId, tier = 'balanced', progressCallback, providerOverride, modelOverride, timeout = 600000, logPrefix: lp = '', reviewerNum } = options;
+    // Build adapter-level log prefix: when reviewerNum is set (council mode),
+    // use compact format like [R1 Orch] so concurrent reviewers are disambiguated
+    const adapterLogPrefix = reviewerNum ? `[R${reviewerNum} Orch]` : '';
+    logger.section(`${lp}[Consolidation] Cross-Level Consolidation Starting`);
 
     const totalSuggestions = (allSuggestions.level1?.length || 0) +
                            (allSuggestions.level2?.length || 0) +
                            (allSuggestions.level3?.length || 0);
 
-    logger.info(`[Consolidation] Consolidating ${totalSuggestions} total suggestions across all levels`);
+    logger.info(`${lp}[Consolidation] Consolidating ${totalSuggestions} total suggestions across all levels`);
 
     try {
       // Check if analysis was cancelled before starting
@@ -2393,16 +2406,17 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       const aiProvider = createProvider(providerOverride || this.provider, modelOverride || this.model);
 
       // Build the consolidation prompt
-      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier);
+      const prompt = this.buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions, worktreePath, tier, lp);
 
       // Execute AI for cross-level consolidation
-      logger.info('[Consolidation] Running AI consolidation to curate and merge suggestions...');
+      logger.info(`${lp}[Consolidation] Running AI consolidation to curate and merge suggestions...`);
       const response = await aiProvider.execute(prompt, {
         cwd: worktreePath,
         timeout,
         level: 'orchestration',
         analysisId,
         registerProcess,
+        logPrefix: adapterLogPrefix,
         onStreamEvent: progressCallback ? (event) => {
           progressCallback({ level: 'orchestration', status: 'running', streamEvent: event });
         } : undefined
@@ -2418,18 +2432,18 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       const hadInputSuggestions = inputLevel1Count > 0 || inputLevel2Count > 0 || inputLevel3Count > 0;
 
       if (orchestratedSuggestions.length === 0 && hadInputSuggestions) {
-        logger.warn('[Consolidation] WARNING: Consolidation returned 0 suggestions despite input');
-        logger.warn(`[Consolidation] Input suggestion counts: Level1=${inputLevel1Count}, Level2=${inputLevel2Count}, Level3=${inputLevel3Count}`);
+        logger.warn(`${lp}[Consolidation] WARNING: Consolidation returned 0 suggestions despite input`);
+        logger.warn(`${lp}[Consolidation] Input suggestion counts: Level1=${inputLevel1Count}, Level2=${inputLevel2Count}, Level3=${inputLevel3Count}`);
         if (response.raw) {
-          logger.warn('[Consolidation] Raw AI response for debugging:');
+          logger.warn(`${lp}[Consolidation] Raw AI response for debugging:`);
           logger.warn('--- BEGIN RAW CONSOLIDATION RESPONSE ---');
           logger.warn(response.raw);
           logger.warn('--- END RAW CONSOLIDATION RESPONSE ---');
         } else if (response.suggestions) {
-          logger.warn('[Consolidation] Response had suggestions array but parsing returned 0. Response.suggestions:');
+          logger.warn(`${lp}[Consolidation] Response had suggestions array but parsing returned 0. Response.suggestions:`);
           logger.warn(JSON.stringify(response.suggestions, null, 2));
         } else {
-          logger.warn('[Consolidation] Response object keys: ' + Object.keys(response).join(', '));
+          logger.warn(`${lp}[Consolidation] Response object keys: ` + Object.keys(response).join(', '));
         }
       }
 
@@ -2444,7 +2458,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         }
       }
 
-      logger.success(`[Consolidation] Cross-level consolidation complete: ${orchestratedSuggestions.length} curated suggestions`);
+      logger.success(`${lp}[Consolidation] Cross-level consolidation complete: ${orchestratedSuggestions.length} curated suggestions`);
 
       return {
         suggestions: orchestratedSuggestions,
@@ -2452,8 +2466,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       };
       
     } catch (error) {
-      logger.warn(`Cross-level consolidation failed: ${error.message}`);
-      logger.warn('Falling back to storing all original suggestions');
+      logger.warn(`${lp}[Consolidation] Cross-level consolidation failed: ${error.message}`);
+      logger.warn(`${lp}[Consolidation] Falling back to storing all original suggestions`);
 
       // Fallback: combine all suggestions with level labels
       const fallbackSuggestions = [];
@@ -2502,10 +2516,11 @@ File-level suggestions should NOT have a line number. They apply to the entire f
    * @param {string} customInstructions - Optional custom instructions to guide prioritization/filtering
    * @param {string} worktreePath - Path to the git worktree
    * @param {string} tier - Capability tier: 'fast', 'balanced', or 'thorough' (default: 'balanced')
+   * @param {string} logPrefix - Optional log prefix for reviewer identification in council mode
    * @returns {string} Orchestration prompt
    */
-  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, tier = 'balanced') {
-    logger.debug(`[Consolidation] Building consolidation prompt with tier: ${tier}`);
+  buildOrchestrationPrompt(allSuggestions, prMetadata, customInstructions = null, worktreePath = null, tier = 'balanced', logPrefix = '') {
+    logger.debug(`${logPrefix}[Consolidation] Building consolidation prompt with tier: ${tier}`);
     const promptBuilder = getPromptBuilder('orchestration', tier, this.provider);
 
     // Build context for the tagged prompt system

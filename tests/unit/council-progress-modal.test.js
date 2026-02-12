@@ -834,4 +834,120 @@ describe('CouncilProgressModal', () => {
       expect(voiceKeyMatches).toHaveLength(1);
     });
   });
+
+  describe('_updateVoiceCentric — per-voice orchestration (level 4)', () => {
+    it('updates per-voice consolidation row when level 4 has voices map', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      const setVoiceCentricLevelStateSpy = vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      const refreshAllVoiceHeadersSpy = vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      const updateConsolidationSpy = vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+
+      const status = {
+        levels: {
+          4: {
+            status: 'running',
+            voices: {
+              'claude-opus': { status: 'running', progress: 'Consolidating...' },
+              'gemini-pro-1': { status: 'running', progress: 'Consolidating...' }
+            }
+          }
+        }
+      };
+
+      modal._updateVoiceCentric(status);
+
+      // Should call _setVoiceCentricLevelState for each voice at level 4
+      expect(setVoiceCentricLevelStateSpy).toHaveBeenCalledWith(
+        'claude-opus', 4, 'running', { status: 'running', progress: 'Consolidating...' }
+      );
+      expect(setVoiceCentricLevelStateSpy).toHaveBeenCalledWith(
+        'gemini-pro-1', 4, 'running', { status: 'running', progress: 'Consolidating...' }
+      );
+
+      // Should also update the cross-reviewer consolidation section
+      expect(updateConsolidationSpy).toHaveBeenCalledWith(status.levels[4]);
+      expect(refreshAllVoiceHeadersSpy).toHaveBeenCalled();
+    });
+
+    it('transitions per-voice consolidation row from running to completed', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      const setVoiceCentricLevelStateSpy = vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+
+      const status = {
+        levels: {
+          4: {
+            status: 'running',
+            voices: {
+              'claude-opus': { status: 'completed', progress: 'Cross-level consolidation complete' }
+            }
+          }
+        }
+      };
+
+      modal._updateVoiceCentric(status);
+
+      expect(setVoiceCentricLevelStateSpy).toHaveBeenCalledWith(
+        'claude-opus', 4, 'completed', { status: 'completed', progress: 'Cross-level consolidation complete' }
+      );
+    });
+
+    it('updates stream text for active voice orchestration step', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+      const setStreamTextSpy = vi.spyOn(modal, '_setVoiceCentricStreamText').mockImplementation(() => {});
+
+      const status = {
+        levels: {
+          4: {
+            status: 'running',
+            voiceId: 'claude-opus',
+            streamEvent: { text: 'Merging suggestions...' }
+          }
+        }
+      };
+
+      modal._updateVoiceCentric(status);
+
+      expect(setStreamTextSpy).toHaveBeenCalledWith('claude-opus', 4, 'Merging suggestions...');
+    });
+
+    it('does not update stream text when level 4 has no voiceId', () => {
+      const { modal } = createTestCouncilProgressModal();
+
+      modal._renderMode = 'council';
+
+      vi.spyOn(modal, '_setVoiceCentricLevelState').mockImplementation(() => {});
+      vi.spyOn(modal, '_refreshAllVoiceHeaders').mockImplementation(() => {});
+      vi.spyOn(modal, '_updateConsolidation').mockImplementation(() => {});
+      const setStreamTextSpy = vi.spyOn(modal, '_setVoiceCentricStreamText').mockImplementation(() => {});
+
+      const status = {
+        levels: {
+          4: {
+            status: 'running',
+            streamEvent: { text: 'Cross-reviewer consolidation...' }
+            // No voiceId — this is the cross-reviewer consolidation, not per-voice
+          }
+        }
+      };
+
+      modal._updateVoiceCentric(status);
+
+      // Should NOT call _setVoiceCentricStreamText without voiceId
+      expect(setStreamTextSpy).not.toHaveBeenCalled();
+    });
+  });
 });

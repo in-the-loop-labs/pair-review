@@ -330,7 +330,8 @@ function createProgressCallback(analysisId) {
           status: progressUpdate.status || 'running',
           progress: progressUpdate.progress || 'In progress...'
         };
-        // Also set the top-level voiceId for backward compat with frontend routing
+        // Last-writer-wins: set top-level voiceId for backward compat with frontend
+        // routing. The per-voice detail lives in the `voices` map above.
         currentStatus.levels[level].voiceId = progressUpdate.voiceId;
         currentStatus.levels[level].status = progressUpdate.status || 'running';
         currentStatus.levels[level].progress = progressUpdate.progress || 'In progress...';
@@ -346,7 +347,17 @@ function createProgressCallback(analysisId) {
       }
     }
 
-    // Handle orchestration and consolidation as level 4
+    // Handle orchestration and consolidation as level 4.
+    //
+    // levels[4] is intentionally denormalized with two parallel maps:
+    //   - `steps`: keyed by consolidation sub-step ("L1", "L2", "L3", "orchestration").
+    //     Tracks which consolidation phases have run/completed. Used to derive the
+    //     aggregate status so one step completing doesn't mark the whole phase done.
+    //   - `voices`: keyed by reviewer voiceId (council mode only). Tracks per-reviewer
+    //     orchestration progress so the frontend can render individual reviewer rows.
+    //
+    // Both maps must be preserved across updates since each progress event only
+    // reports on a single step or voice at a time.
     if (level === 'orchestration' || consolidationMatch) {
       const step = consolidationMatch ? `L${consolidationMatch[1]}` : 'orchestration';
       // Preserve existing consolidation steps when updating level 4
@@ -363,13 +374,34 @@ function createProgressCallback(analysisId) {
         : stepStatuses.some(s => s === 'failed') ? 'failed'
         : stepStatuses.some(s => s === 'running') ? 'running'
         : progressUpdate.status || 'running';
+      // Preserve existing per-voice orchestration states when rebuilding level 4
+      const existingVoices = existing.voices ? { ...existing.voices } : undefined;
       currentStatus.levels[4] = {
         status: derivedStatus,
         progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...'),
         streamEvent: undefined,
         consolidationStep: step,
-        steps
+        steps,
+        voices: existingVoices
       };
+
+      // Track per-voice orchestration state (voice-centric council mode):
+      // When a voiceId is present, store per-voice status in levels[4].voices
+      // so the frontend can update individual reviewer's consolidation row.
+      if (progressUpdate.voiceId) {
+        if (!currentStatus.levels[4].voices) {
+          currentStatus.levels[4].voices = {};
+        }
+        currentStatus.levels[4].voices[progressUpdate.voiceId] = {
+          status: progressUpdate.status || 'running',
+          progress: progressUpdate.progress || 'Consolidating...'
+        };
+        // Last-writer-wins: reflects whichever voice reported most recently.
+        // Intentional — mirrors levels 1-3 behavior (line ~334) and the frontend
+        // uses per-voice detail from the `voices` map, not this top-level field.
+        // This field exists for backward compat with single-model progress routing.
+        currentStatus.levels[4].voiceId = progressUpdate.voiceId;
+      }
     }
 
     // Update overall progress message if provided
