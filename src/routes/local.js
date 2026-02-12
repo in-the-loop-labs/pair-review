@@ -2482,6 +2482,80 @@ router.get('/api/local/:reviewId/chat/:chatId/stream', async (req, res) => {
 });
 
 /**
+ * Generate a refined suggestion based on chat conversation and adopt it (Local Mode)
+ * POST /api/local/:reviewId/chat/:chatId/adopt
+ */
+router.post('/api/local/:reviewId/chat/:chatId/adopt', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const { chatId } = req.params;
+
+    if (isNaN(reviewId)) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+    const commentRepo = new CommentRepository(db);
+    const analysisRunRepo = new AnalysisRunRepository(db);
+
+    // Get session
+    const session = await chatRepo.getSession(chatId);
+    if (!session) {
+      return res.status(404).json({
+        error: 'Chat session not found'
+      });
+    }
+
+    // Get the comment to verify review ownership
+    const comment = await commentRepo.getCommentById(session.comment_id);
+    if (!comment) {
+      return res.status(404).json({
+        error: 'Comment not found'
+      });
+    }
+
+    // Verify comment belongs to this review
+    if (comment.review_id !== reviewId) {
+      return res.status(400).json({
+        error: 'Comment does not belong to this review'
+      });
+    }
+
+    // Get review to find the worktree path
+    const review = await db.get('SELECT * FROM reviews WHERE id = ?', [reviewId]);
+    if (!review) {
+      return res.status(404).json({
+        error: 'Review not found'
+      });
+    }
+
+    // For local mode, the worktree path is stored in the review
+    const worktreePath = review.worktree_path || review.repository_path || process.cwd();
+
+    // Create the chat service and generate refined suggestion
+    const chatService = new ChatService(db, chatRepo, commentRepo, analysisRunRepo);
+    const result = await chatService.generateRefinedSuggestion(chatId, worktreePath);
+
+    logger.info(`Generated refined suggestion for local chat ${chatId}`);
+
+    res.json({
+      success: true,
+      refinedText: result.refinedText,
+      commentId: comment.id
+    });
+
+  } catch (error) {
+    logger.error('Error generating refined suggestion (local):', error);
+    res.status(500).json({
+      error: error.message || 'Failed to generate refined suggestion'
+    });
+  }
+});
+
+/**
  * Get all chat sessions for a comment (Local Mode)
  * GET /api/local/:reviewId/chat/comment/:commentId/sessions
  */

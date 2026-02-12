@@ -128,6 +128,7 @@ class ChatService {
       const result = await provider.execute(prompt, {
         cwd: worktreePath,
         timeout: 120000, // 2 minute timeout for chat (shorter than full analysis)
+        level: 'chat',
         skipJsonExtraction: true, // Chat responses are plain text, not JSON
         onStreamEvent: onStreamEvent ? (event) => {
           if (event.type === 'assistant_text' && event.text) {
@@ -397,6 +398,104 @@ Instructions: Provide concise, actionable answers focused on this specific comme
     }
 
     return lines.join('\n');
+  }
+
+  /**
+   * Generate a refined version of an AI suggestion based on the chat conversation
+   * @param {string} sessionId - Chat session ID
+   * @param {string} worktreePath - Path to git worktree
+   * @returns {Promise<Object>} Object with refinedText
+   */
+  async generateRefinedSuggestion(sessionId, worktreePath) {
+    // Get session
+    const session = await this.chatRepo.getSession(sessionId);
+    if (!session) {
+      throw new Error(`Chat session not found: ${sessionId}`);
+    }
+
+    // Get comment
+    const comment = await this.commentRepo.getComment(session.comment_id);
+    if (!comment) {
+      throw new Error(`Comment not found: ${session.comment_id}`);
+    }
+
+    // Get conversation history
+    const messages = await this.chatRepo.getMessages(sessionId);
+
+    // Get code snippet
+    const codeSnippet = await this._getCodeSnippet(comment, worktreePath);
+    const fileExt = comment.file ? path.extname(comment.file).slice(1) : '';
+    const language = this._getLanguageForExtension(fileExt) || '';
+
+    // Build conversation history for context
+    const conversationHistory = messages.map(m => `${m.role === 'user' ? 'Human' : 'Assistant'}: ${m.content}`).join('\n\n');
+
+    // Build prompt for refinement
+    const prompt = `You are helping to refine a code review comment based on a conversation.
+
+## Original Suggestion
+File: ${comment.file || 'N/A'}
+Lines: ${comment.line_start || 'N/A'}${comment.line_end && comment.line_end !== comment.line_start ? `-${comment.line_end}` : ''}
+Type: ${comment.type || 'comment'}
+${comment.title ? `Title: ${comment.title}\n` : ''}
+Original Body:
+${comment.body || 'No comment body'}
+
+## Code Context
+\`\`\`${language}
+${codeSnippet}
+\`\`\`
+
+## Conversation
+${conversationHistory}
+
+## Task
+Based on the conversation above, generate a refined and improved version of the code review comment. The refined comment should:
+1. Incorporate any feedback, corrections, or improvements discussed
+2. Be clear, concise, and actionable
+3. Maintain the same general intent as the original
+4. Be suitable for posting as a GitHub review comment
+
+Output ONLY the refined comment text. Do not include any preamble, explanation, or formatting markers. Just the final comment text that should be posted.`;
+
+    logger.info(`Generating refined suggestion for session ${sessionId}`);
+
+    // Create AI provider
+    const provider = createProvider(session.provider, session.model);
+
+    // Execute AI request
+    const result = await provider.execute(prompt, {
+      cwd: worktreePath,
+      timeout: 60000,
+      level: 'chat',
+      skipJsonExtraction: true
+    });
+
+    // Extract the refined text
+    let refinedText = '';
+    if (result.raw) {
+      refinedText = result.raw.trim();
+    } else if (typeof result === 'string') {
+      refinedText = result.trim();
+    } else if (result.response || result.text || result.content) {
+      refinedText = (result.response || result.text || result.content).trim();
+    }
+
+    if (!refinedText) {
+      throw new Error('Failed to generate refined suggestion');
+    }
+
+    logger.info(`Generated refined suggestion: ${refinedText.length} characters`);
+
+    // Add the refinement to the chat history as context
+    await this.chatRepo.addMessage(sessionId, 'user', '[System: Generate refined suggestion for adoption]');
+    await this.chatRepo.addMessage(sessionId, 'assistant', `Refined suggestion:\n\n${refinedText}`);
+
+    return {
+      refinedText,
+      originalComment: comment,
+      sessionId
+    };
   }
 
   /**
