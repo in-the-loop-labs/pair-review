@@ -91,7 +91,9 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
       return res.json({ setupId: existing.setupId });
     }
 
-    // Check if we already have data for this PR in the database
+    // Check if we already have data AND a worktree for this PR in the database.
+    // When a user deletes a worktree, PR metadata is preserved but the worktree
+    // record is removed. We must re-run setup to recreate the worktree.
     const repository = normalizeRepository(owner, repo);
     const existingPR = await queryOne(
       db,
@@ -99,7 +101,15 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
       [prNumber, repository]
     );
     if (existingPR) {
-      return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+      const worktree = await queryOne(
+        db,
+        'SELECT id FROM worktrees WHERE pr_number = ? AND repository = ? COLLATE NOCASE',
+        [prNumber, repository]
+      );
+      if (worktree) {
+        return res.json({ existing: true, reviewUrl: `/pr/${owner}/${repo}/${prNumber}` });
+      }
+      logger.info(`PR metadata exists but worktree missing for ${repository} #${prNumber}, re-running setup`);
     }
 
     // Start the async setup

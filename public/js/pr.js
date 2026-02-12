@@ -273,7 +273,12 @@ class PRManager {
       const pathMatch = window.location.pathname.match(/^\/pr\/([^\/]+)\/([^\/]+)\/(\d+)$/);
       if (pathMatch) {
         const [, owner, repo, number] = pathMatch;
-        await this.loadPR(owner, repo, parseInt(number));
+        const prNumber = parseInt(number);
+        await this.loadPR(owner, repo, prNumber);
+
+        // Auto-trigger analysis if ?analyze=true is present
+        await this._maybeAutoAnalyze(owner, repo, prNumber);
+
         return;
       }
 
@@ -292,11 +297,37 @@ class PRManager {
         throw new Error('Invalid PR reference format. Expected: owner/repo/number');
       }
 
-      const [owner, repo, number] = parts;
-      await this.loadPR(owner, repo, number);
+      const [owner, repo, numberStr] = parts;
+      const prNumber = parseInt(numberStr);
+      await this.loadPR(owner, repo, prNumber);
+
+      // Auto-trigger analysis if ?analyze=true is present
+      await this._maybeAutoAnalyze(owner, repo, prNumber);
     } catch (error) {
       console.error('Error initializing PR viewer:', error);
       this.showError(error.message);
+    }
+  }
+
+  /**
+   * Auto-trigger analysis if ?analyze=true is present in the URL.
+   * Cleans up the query parameter afterwards regardless of success or failure.
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} prNumber - PR number
+   */
+  async _maybeAutoAnalyze(owner, repo, prNumber) {
+    const autoAnalyze = new URLSearchParams(window.location.search).get('analyze');
+    if (autoAnalyze === 'true' && !this.isAnalyzing) {
+      this._autoAnalyzeRequested = true;
+      try {
+        await this.startAnalysis(owner, repo, prNumber, null, {});
+      } finally {
+        this._autoAnalyzeRequested = false;
+        const cleanUrl = new URL(window.location);
+        cleanUrl.searchParams.delete('analyze');
+        history.replaceState(null, '', cleanUrl);
+      }
     }
   }
 
@@ -3607,7 +3638,11 @@ class PRManager {
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({}));
+        if (response.status === 404) {
+          this.showWorktreeNotFoundError(owner, repo, number);
+          return;
+        }
         throw new Error(error.error || 'Failed to start AI analysis');
       }
 
@@ -3630,6 +3665,34 @@ class PRManager {
       this.showError(`Failed to start AI analysis: ${error.message}`);
       this.resetButton();
     }
+  }
+
+  /**
+   * Show an error when the worktree is not found during analysis.
+   * Displays a helpful message with a reload link. If the user arrived
+   * via auto-analyze (?analyze=true), the reload link preserves that
+   * parameter so analysis re-triggers after setup.
+   * @param {string} owner - Repository owner
+   * @param {string} repo - Repository name
+   * @param {number} number - PR number
+   */
+  showWorktreeNotFoundError(owner, repo, number) {
+    let setupUrl = `/pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(number)}`;
+    if (this._autoAnalyzeRequested) {
+      setupUrl += '?analyze=true';
+    }
+    const container = document.getElementById('pr-container');
+    if (container) {
+      container.innerHTML = `
+        <div class="error-container">
+          <div class="error-icon">Warning</div>
+          <div class="error-message">Worktree not found. Please reload the PR to set up the worktree before running analysis.</div>
+          <a class="btn btn-primary" href="${this.escapeHtml(setupUrl)}">Reload PR</a>
+        </div>
+      `;
+      container.style.display = 'block';
+    }
+    this.resetButton();
   }
 
   /**
