@@ -2,8 +2,8 @@
 /**
  * Unit tests for runReviewerCentricCouncil in analyzer.js
  *
- * Verifies that storeSuggestions is called for the parent run ID on:
- * - Single-voice early return path (no consolidation needed)
+ * Verifies:
+ * - Single-voice path: analyzeAllLevels runs directly on parent run (no child run)
  * - Below-threshold path (suggestions < COUNCIL_CONSOLIDATION_THRESHOLD)
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -26,10 +26,12 @@ vi.mock('../../src/utils/line-validation', () => ({
   })
 }));
 
+const mockRunRepoCreate = vi.fn().mockResolvedValue({});
+const mockRunRepoUpdate = vi.fn().mockResolvedValue({});
 vi.mock('../../src/database', () => ({
   AnalysisRunRepository: vi.fn().mockImplementation(() => ({
-    create: vi.fn().mockResolvedValue({}),
-    update: vi.fn().mockResolvedValue({})
+    create: mockRunRepoCreate,
+    update: mockRunRepoUpdate
   })),
   run: vi.fn().mockResolvedValue({}),
   get: vi.fn().mockResolvedValue(null),
@@ -49,6 +51,8 @@ vi.mock('uuid', () => ({
 }));
 
 const Analyzer = require('../../src/ai/analyzer');
+const { AnalysisRunRepository } = require('../../src/database');
+const { CancellationError } = require('../../src/routes/shared');
 
 /**
  * Helper: build a minimal reviewContext and councilConfig for tests
@@ -112,33 +116,51 @@ describe('runReviewerCentricCouncil', () => {
   });
 
   describe('single-voice early return path', () => {
-    it('should call storeSuggestions with parent run ID when only one voice succeeds', async () => {
-      const { reviewContext, councilConfig, options } = buildTestContext();
+    it('should run analyzeAllLevels directly on parent run with no child run', async () => {
+      const progressCallback = vi.fn();
+      const { reviewContext, councilConfig, options } = buildTestContext({
+        options: {
+          analysisId: 'test-analysis-id',
+          runId: 'parent-run-id',
+          progressCallback
+        }
+      });
       const mockSuggestions = buildMockSuggestions(3);
 
-      // Mock analyzeAllLevels on child Analyzer instances created inside the method
-      vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockResolvedValue({
+      const analyzeAllLevelsSpy = vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockResolvedValue({
         suggestions: mockSuggestions,
         summary: 'Test summary'
       });
 
       const result = await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
 
-      // Verify storeSuggestions was called with parent run ID
-      expect(analyzer.storeSuggestions).toHaveBeenCalledWith(
+      // analyzeAllLevels should be called with parent run ID and skipRunCreation
+      expect(analyzeAllLevelsSpy).toHaveBeenCalledWith(
         reviewContext.reviewId,
-        'parent-run-id',
-        mockSuggestions,
-        null,
-        expect.any(Array)
+        reviewContext.worktreePath,
+        reviewContext.prMetadata,
+        expect.any(Function),
+        expect.objectContaining({ repoInstructions: null }),
+        reviewContext.changedFiles,
+        expect.objectContaining({
+          runId: 'parent-run-id',
+          skipRunCreation: true,
+          reviewerNum: 1
+        })
       );
 
-      // Verify validateAndFinalizeSuggestions was called
-      expect(analyzer.validateAndFinalizeSuggestions).toHaveBeenCalledWith(
-        mockSuggestions,
-        expect.anything(), // fileLineCountMap
-        expect.any(Array)  // validFiles
-      );
+      // The callback passed to analyzeAllLevels should be the wrapped version (not the raw one)
+      const passedCallback = analyzeAllLevelsSpy.mock.calls[0][3];
+      expect(passedCallback).not.toBe(progressCallback);
+
+      // No child run should be created — only the parent run creation (or none if runId provided)
+      // Since options.runId is set, no create calls at all
+      expect(mockRunRepoCreate).not.toHaveBeenCalled();
+
+      // storeSuggestions and validateAndFinalizeSuggestions should NOT be called
+      // by runReviewerCentricCouncil — analyzeAllLevels handles it internally
+      expect(analyzer.storeSuggestions).not.toHaveBeenCalled();
+      expect(analyzer.validateAndFinalizeSuggestions).not.toHaveBeenCalled();
 
       // Verify result structure
       expect(result.runId).toBe('parent-run-id');
@@ -146,34 +168,111 @@ describe('runReviewerCentricCouncil', () => {
       expect(result.summary).toBe('Test summary');
     });
 
-    it('should store validated suggestions (not raw) for single-voice path', async () => {
-      const { reviewContext, councilConfig, options } = buildTestContext();
-      const rawSuggestions = buildMockSuggestions(3);
-      const validatedSuggestions = [rawSuggestions[0], rawSuggestions[2]]; // simulate filtering
+    it('should pass voice-specific options to analyzeAllLevels', async () => {
+      const { reviewContext, options } = buildTestContext();
+      const councilConfig = {
+        voices: [
+          { provider: 'gemini', model: 'pro', tier: 'thorough', timeout: 300000, customInstructions: 'Be strict' }
+        ],
+        levels: { '1': true, '2': true, '3': false },
+        consolidation: { provider: 'claude', model: 'opus', tier: 'balanced' }
+      };
+      const mockSuggestions = buildMockSuggestions(2);
 
-      vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockResolvedValue({
-        suggestions: rawSuggestions,
+      const analyzeAllLevelsSpy = vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockResolvedValue({
+        suggestions: mockSuggestions,
+        summary: 'Strict review'
+      });
+
+      await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
+
+      // Should use voice's tier, timeout, and custom instructions
+      expect(analyzeAllLevelsSpy).toHaveBeenCalledOnce();
+      const [, , , , passedInstructions, , passedOptions] = analyzeAllLevelsSpy.mock.calls[0];
+      expect(passedInstructions.requestInstructions).toBe('Be strict');
+      expect(passedOptions.tier).toBe('thorough');
+      expect(passedOptions.timeout).toBe(300000);
+    });
+
+    it('should wrap progressCallback with voiceCentric metadata', async () => {
+      const { reviewContext, councilConfig } = buildTestContext();
+      const mockSuggestions = buildMockSuggestions(2);
+      const progressCallback = vi.fn();
+
+      const analyzeAllLevelsSpy = vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockResolvedValue({
+        suggestions: mockSuggestions,
         summary: 'Test summary'
       });
 
-      // validateAndFinalizeSuggestions removes one suggestion
-      analyzer.validateAndFinalizeSuggestions = vi.fn().mockReturnValue(validatedSuggestions);
+      await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, {
+        analysisId: 'test-analysis-id',
+        runId: 'parent-run-id',
+        progressCallback
+      });
 
-      const result = await analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options);
-
-      // storeSuggestions should receive the validated (filtered) list
-      expect(analyzer.storeSuggestions).toHaveBeenCalledWith(
-        reviewContext.reviewId,
-        'parent-run-id',
-        validatedSuggestions,
-        null,
-        expect.any(Array)
+      // Should send voice-init progress update with voice metadata
+      expect(progressCallback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          voiceCentric: true,
+          level: 'voice-init',
+          status: 'running',
+          voices: expect.objectContaining({
+            'claude-sonnet': expect.objectContaining({
+              status: 'pending',
+              provider: 'claude',
+              model: 'sonnet'
+            })
+          })
+        })
       );
 
-      // Return value should also use validated suggestions
-      expect(result.suggestions).toEqual(validatedSuggestions);
-      // When the voice has a summary, it's used as-is
-      expect(result.summary).toBe('Test summary');
+      // The callback passed to analyzeAllLevels should be the wrapped version (not raw)
+      const passedCallback = analyzeAllLevelsSpy.mock.calls[0][3];
+      expect(passedCallback).not.toBe(progressCallback);
+
+      // Simulate analyzeAllLevels calling the wrapped callback
+      passedCallback({ level: 1, status: 'completed', progress: 'Done' });
+
+      // The raw progressCallback should receive the update with voiceCentric metadata injected
+      expect(progressCallback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: 1,
+          status: 'completed',
+          progress: 'Done',
+          voiceCentric: true,
+          voiceId: 'claude-sonnet'
+        })
+      );
+    });
+
+    it('should re-throw CancellationError without updating run status (analyzeAllLevels handles it)', async () => {
+      const { reviewContext, councilConfig, options } = buildTestContext();
+      const cancellationError = new CancellationError('Analysis was cancelled');
+
+      vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockRejectedValue(cancellationError);
+
+      await expect(
+        analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options)
+      ).rejects.toThrow(cancellationError);
+
+      // runReviewerCentricCouncil should NOT update the run status itself;
+      // analyzeAllLevels is responsible for that (and it's mocked here)
+      expect(mockRunRepoUpdate).not.toHaveBeenCalled();
+    });
+
+    it('should re-throw generic error without updating run status (analyzeAllLevels handles it)', async () => {
+      const { reviewContext, councilConfig, options } = buildTestContext();
+      const genericError = new Error('Something went wrong');
+
+      vi.spyOn(Analyzer.prototype, 'analyzeAllLevels').mockRejectedValue(genericError);
+
+      await expect(
+        analyzer.runReviewerCentricCouncil(reviewContext, councilConfig, options)
+      ).rejects.toThrow(genericError);
+
+      // runReviewerCentricCouncil should NOT update the run status itself;
+      // analyzeAllLevels is responsible for that (and it's mocked here)
+      expect(mockRunRepoUpdate).not.toHaveBeenCalled();
     });
   });
 

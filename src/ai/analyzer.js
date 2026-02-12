@@ -37,6 +37,45 @@ function buildReviewerLabel(idx, voice) {
   return `Reviewer ${idx + 1} (${voice.provider}/${voice.model})`;
 }
 
+/**
+ * Build shared context for a council voice/reviewer.
+ * Used by both single-voice and multi-voice paths in runReviewerCentricCouncil.
+ *
+ * @param {Object} voice - Voice config with provider, model, tier, timeout, customInstructions
+ * @param {number} idx - 0-based voice index
+ * @param {Object|null} instructions - Instructions object { repoInstructions, requestInstructions }
+ * @param {Function|null} progressCallback - Parent progress callback to wrap
+ * @param {Object} db - Database instance
+ * @returns {Object} { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout }
+ */
+function buildVoiceContext(voice, idx, instructions, progressCallback, db) {
+  const voiceKey = `${voice.provider}-${voice.model}${idx > 0 ? `-${idx}` : ''}`;
+  const reviewerLabel = buildReviewerLabel(idx, voice);
+
+  // Build per-voice request instructions, treating whitespace-only as null
+  let voiceRequestInstructions = instructions?.requestInstructions?.trim() || null;
+  if (voice.customInstructions) {
+    voiceRequestInstructions = voiceRequestInstructions
+      ? `${voiceRequestInstructions}\n\n${voice.customInstructions}`
+      : voice.customInstructions;
+  }
+
+  const voiceAnalyzer = new Analyzer(db, voice.model, voice.provider);
+  const voiceTier = voice.tier || 'balanced';
+  const voiceTimeout = voice.timeout || 600000;
+
+  // Wrap progress callback with voice-centric metadata
+  const voiceProgressCallback = progressCallback ? (update) => {
+    progressCallback({
+      ...update,
+      voiceId: voiceKey,
+      voiceCentric: true
+    });
+  } : null;
+
+  return { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout };
+}
+
 class Analyzer {
   /**
    * @param {Object} database - Database instance
@@ -2656,6 +2695,51 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       throw new Error('No voices configured in council');
     }
 
+    // Single voice: skip child run entirely, run analysis directly on parent run
+    if (voices.length === 1) {
+      const voice = voices[0];
+      const { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
+        buildVoiceContext(voice, 0, instructions, progressCallback, this.db);
+      logger.info(`[ReviewerCouncil] Single reviewer (${reviewerLabel}) — running directly on parent run, no child run`);
+
+      // Report voice-centric progress structure
+      if (progressCallback) {
+        progressCallback({
+          voiceCentric: true,
+          level: 'voice-init',
+          status: 'running',
+          voices: { [voiceKey]: { status: 'pending', provider: voice.provider, model: voice.model, tier: voiceTier } }
+        });
+      }
+
+      // analyzeAllLevels handles validation, storage, and run status updates internally
+      // (including error/cancellation status), so no error handling needed here
+      const result = await voiceAnalyzer.analyzeAllLevels(
+        reviewId,
+        worktreePath,
+        prMetadata,
+        voiceProgressCallback,
+        { repoInstructions: instructions?.repoInstructions, requestInstructions: voiceRequestInstructions },
+        changedFiles,
+        {
+          analysisId,
+          runId: parentRunId,
+          skipRunCreation: true,
+          enabledLevels,
+          tier: voiceTier,
+          timeout: voiceTimeout,
+          logPrefix: `[${reviewerLabel}] `,
+          reviewerNum: 1
+        }
+      );
+
+      return {
+        runId: parentRunId,
+        suggestions: result.suggestions,
+        summary: result.summary || `Review council complete: ${result.suggestions?.length || 0} suggestions`
+      };
+    }
+
     logger.info(`[ReviewerCouncil] Launching ${voices.length} reviewer(s), each running levels: ${enabledLevelsList.join(', ')}`);
 
     // Report voice-centric progress structure
@@ -2678,8 +2762,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
 
     // For each voice, create a child run and launch analyzeAllLevels
     const voicePromises = voices.map(async (voice, idx) => {
-      const voiceKey = `${voice.provider}-${voice.model}${idx > 0 ? `-${idx}` : ''}`;
-      const reviewerLabel = buildReviewerLabel(idx, voice);
+      const { voiceAnalyzer, voiceKey, reviewerLabel, voiceRequestInstructions, voiceProgressCallback, voiceTier, voiceTimeout } =
+        buildVoiceContext(voice, idx, instructions, progressCallback, this.db);
       const childRunId = uuidv4();
 
       // Create child analysis run record
@@ -2701,29 +2785,6 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       } catch (err) {
         logger.warn(`[ReviewerCouncil] Failed to create child run record: ${err.message}`);
       }
-
-      // Build per-voice request instructions (appending voice custom instructions to request)
-      let voiceRequestInstructions = instructions?.requestInstructions || null;
-      if (voice.customInstructions) {
-        voiceRequestInstructions = voiceRequestInstructions
-          ? `${voiceRequestInstructions}\n\n${voice.customInstructions}`
-          : voice.customInstructions;
-      }
-
-      // Create a per-voice Analyzer with the voice's provider/model
-      const voiceAnalyzer = new Analyzer(this.db, voice.model, voice.provider);
-
-      // Wrap progress callback to tag updates with voice info
-      const voiceProgressCallback = progressCallback ? (update) => {
-        progressCallback({
-          ...update,
-          voiceId: voiceKey,
-          voiceCentric: true
-        });
-      } : null;
-
-      const voiceTimeout = voice.timeout || 600000;
-      const voiceTier = voice.tier || 'balanced';
 
       try {
         const result = await voiceAnalyzer.analyzeAllLevels(
