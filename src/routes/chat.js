@@ -293,6 +293,70 @@ router.get('/api/chat/:chatId/stream', async (req, res) => {
 });
 
 /**
+ * Generate a refined suggestion based on chat conversation and adopt it
+ * POST /api/chat/:chatId/adopt
+ */
+router.post('/api/chat/:chatId/adopt', async (req, res) => {
+  try {
+    const { chatId } = req.params;
+
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+    const commentRepo = new CommentRepository(db);
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const worktreeRepo = new WorktreeRepository(db);
+
+    // Get session
+    const session = await chatRepo.getSession(chatId);
+    if (!session) {
+      return res.status(404).json({
+        error: 'Chat session not found'
+      });
+    }
+
+    // Get the comment to find the review and worktree
+    const comment = await commentRepo.getComment(session.comment_id);
+    if (!comment) {
+      return res.status(404).json({
+        error: 'Comment not found'
+      });
+    }
+
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [comment.review_id]);
+    if (!review) {
+      return res.status(404).json({
+        error: 'Review not found'
+      });
+    }
+
+    const worktree = await worktreeRepo.findByPR(review.pr_number, review.repository);
+    if (!worktree) {
+      return res.status(404).json({
+        error: 'Worktree not found'
+      });
+    }
+
+    // Create the chat service and generate refined suggestion
+    const chatService = new ChatService(db, chatRepo, commentRepo, analysisRunRepo);
+    const result = await chatService.generateRefinedSuggestion(chatId, worktree.path);
+
+    logger.info(`Generated refined suggestion for chat ${chatId}`);
+
+    res.json({
+      success: true,
+      refinedText: result.refinedText,
+      commentId: comment.id
+    });
+
+  } catch (error) {
+    logger.error('Error generating refined suggestion:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to generate refined suggestion'
+    });
+  }
+});
+
+/**
  * Get all chat sessions for a comment
  * GET /api/chat/comment/:commentId/sessions
  */

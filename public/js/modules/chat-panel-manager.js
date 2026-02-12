@@ -54,6 +54,15 @@ class ChatPanelManager {
             <button class="chat-send-btn">Send</button>
           </div>
         </div>
+
+        <div class="chat-actions" style="display: none;">
+          <button class="chat-adopt-btn" title="Ask AI to refine the suggestion based on your conversation, then adopt it">
+            <svg class="octicon" viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+              <path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path>
+            </svg>
+            Adopt with AI Edits
+          </button>
+        </div>
       </div>
     `;
 
@@ -96,6 +105,12 @@ class ChatPanelManager {
           this._sendMessage();
         }
       });
+    }
+
+    // Adopt with AI Edits button
+    const adoptBtn = this.panel.querySelector('.chat-adopt-btn');
+    if (adoptBtn) {
+      adoptBtn.addEventListener('click', () => this._adoptWithAIEdits());
     }
   }
 
@@ -212,7 +227,7 @@ class ChatPanelManager {
 
     if (sendBtn) {
       sendBtn.disabled = false;
-      sendBtn.innerHTML = '<span>Send</span><svg viewBox="0 0 16 16" fill="currentColor"><path d="M.5 1.163A1 1 0 0 1 1.97.28l12.868 6.837a1 1 0 0 1 0 1.766L1.969 15.72A1 1 0 0 1 .5 14.836V10.33a1 1 0 0 1 .816-.983L8.5 8 1.316 6.653A1 1 0 0 1 .5 5.67V1.163Z"/></svg>';
+      sendBtn.textContent = 'Send';
     }
 
     // Also reset streaming content accumulator
@@ -251,6 +266,12 @@ class ChatPanelManager {
     `;
 
     contextDiv.innerHTML = contextHtml;
+
+    // Always show the "Adopt with AI Edits" button for consistency
+    const chatActionsDiv = this.panel.querySelector('.chat-actions');
+    if (chatActionsDiv) {
+      chatActionsDiv.style.display = 'block';
+    }
 
     // Update header title to show the comment title (or fallback to filename)
     const titleSpan = this.panel.querySelector('.chat-header-title');
@@ -447,7 +468,7 @@ class ChatPanelManager {
     } finally {
       input.disabled = false;
       sendBtn.disabled = false;
-      sendBtn.innerHTML = '<span>Send</span><svg viewBox="0 0 16 16" fill="currentColor"><path d="M.5 1.163A1 1 0 0 1 1.97.28l12.868 6.837a1 1 0 0 1 0 1.766L1.969 15.72A1 1 0 0 1 .5 14.836V10.33a1 1 0 0 1 .816-.983L8.5 8 1.316 6.653A1 1 0 0 1 .5 5.67V1.163Z"/></svg>';
+      sendBtn.textContent = 'Send';
       input.focus();
     }
   }
@@ -594,6 +615,99 @@ class ChatPanelManager {
   }
 
   /**
+   * Adopt the suggestion with AI-refined edits based on the conversation
+   * @private
+   */
+  async _adoptWithAIEdits() {
+    if (!this.currentChatId) {
+      alert('No active chat session');
+      return;
+    }
+
+    const session = this.activeChatSessions.get(this.currentChatId);
+    if (!session) {
+      alert('Chat session not found');
+      return;
+    }
+
+    const adoptBtn = this.panel.querySelector('.chat-adopt-btn');
+    if (!adoptBtn) return;
+
+    // Disable button and show loading state
+    adoptBtn.disabled = true;
+    const originalText = adoptBtn.innerHTML;
+    adoptBtn.innerHTML = `
+      <span class="typing-indicator"><span></span><span></span><span></span></span>
+      Refining...
+    `;
+
+    try {
+      // Call the backend to generate a refined suggestion
+      const endpoint = this.isLocalMode
+        ? `/api/local/${this.prManager.reviewId}/chat/${this.currentChatId}/adopt`
+        : `/api/chat/${this.currentChatId}/adopt`;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to refine suggestion: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (!data.refinedText) {
+        throw new Error('No refined text received from AI');
+      }
+
+      // Add the refined suggestion as a message in the chat
+      this._appendMessage('assistant', `**Refined Suggestion:**\n\n${data.refinedText}`);
+
+      // Now adopt the suggestion with the refined text
+      // We need to update the suggestion's body text before adopting
+      const suggestionId = comment.id;
+
+      // Find the suggestion element and update its text
+      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+      if (suggestionDiv) {
+        const bodyDiv = suggestionDiv.querySelector('.ai-suggestion-body');
+        if (bodyDiv) {
+          // Store the refined text for adoption
+          bodyDiv.dataset.refinedText = data.refinedText;
+        }
+      }
+
+      // Call prManager to adopt with the refined text
+      if (this.prManager?.adoptSuggestionWithText) {
+        await this.prManager.adoptSuggestionWithText(suggestionId, data.refinedText);
+      } else if (this.prManager?.adoptAndEditSuggestion) {
+        // Fallback: adopt and edit so user can review
+        await this.prManager.adoptAndEditSuggestion(suggestionId);
+        // After adoption, update the textarea with refined text
+        setTimeout(() => {
+          const textarea = document.querySelector(`.user-comment-edit-form textarea`);
+          if (textarea) {
+            textarea.value = data.refinedText;
+            textarea.dispatchEvent(new Event('input'));
+          }
+        }, 100);
+      }
+
+      // Close the chat panel after successful adoption
+      this.closePanel();
+
+    } catch (error) {
+      console.error('Error adopting with AI edits:', error);
+      this._addErrorMessage(`Failed to adopt with AI edits: ${error.message}`);
+    } finally {
+      adoptBtn.disabled = false;
+      adoptBtn.innerHTML = originalText;
+    }
+  }
+
+  /**
    * Close the chat panel
    */
   closePanel() {
@@ -634,5 +748,5 @@ if (typeof module !== 'undefined' && module.exports) {
 // Export to window for browser usage
 if (typeof window !== 'undefined') {
   window.ChatPanelManager = ChatPanelManager;
-  console.log('[ChatPanelManager] v11: Improved header with comment title, left-truncated file path');
+  console.log('[ChatPanelManager] v12: Added Adopt with AI Edits feature');
 }
