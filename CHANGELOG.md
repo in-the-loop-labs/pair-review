@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.0
+
+### Minor Changes
+
+- 8f300d5: Add review-requests skill to batch-open outstanding GitHub review requests with auto-analysis
+- e9d7642: Add Review Council for multi-model analysis with parallel voices, per-level consolidation, and cross-level orchestration. Includes council configuration UI with participant cards, slider toggles, dirty state tracking, auto-save, and a new hierarchical progress dialog showing per-participant status.
+
+### Patch Changes
+
+- 12487f5: Add council card UI and model card improvements to repo settings: council participant cards with speech-bubble arrows, static model display cards, CSS custom properties for theme-consistent styling, and safer model resolution with optional chaining.
+
 ## 1.4.4
 
 ### Patch Changes
