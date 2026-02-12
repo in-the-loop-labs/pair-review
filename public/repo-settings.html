@@ -91,12 +91,15 @@
                 <!-- Settings Form -->
                 <form class="settings-form" id="settings-form">
                     <!-- Default Analysis Configuration -->
-                    <section class="settings-section">
+                    <section class="settings-section settings-section--has-card">
                         <div class="section-header">
                             <h2>Default Analysis Configuration</h2>
                             <p class="section-description">
                                 Choose how AI analysis runs by default for this repository.
                             </p>
+                        </div>
+                        <div class="settings-model-card-preview" id="model-card-preview">
+                            <!-- Rendered dynamically by JS -->
                         </div>
                         <div class="analysis-mode-toggle" id="analysis-mode-toggle">
                             <button type="button" class="mode-btn selected" data-mode="single">Single Model</button>
@@ -241,6 +244,7 @@ Examples:
     <div class="toast-container" id="toast-container"></div>
 
     <!-- JavaScript -->
+    <script src="/js/utils/tier-icons.js"></script>
     <script src="/js/repo-settings.js"></script>
 </body>
 </html>

@@ -1407,6 +1407,11 @@ router.post('/api/analyze/council/:owner/:repo/:pr', async (req, res) => {
     // Get or create review record
     const review = await reviewRepo.getOrCreate({ prNumber, repository });
 
+    // Save custom instructions to the review record (same as single-model endpoint)
+    if (requestInstructions) {
+      await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
+    }
+
     const { analysisId, runId } = await launchCouncilAnalysis(
       db,
       {
@@ -1518,11 +1523,19 @@ router.post('/api/local/:reviewId/analyze/council', async (req, res) => {
 
     // Resolve instructions
     const repoSettingsRepo = new RepoSettingsRepository(db);
+    const reviewRepo = new ReviewRepository(db);
     const repoSettings = await repoSettingsRepo.getRepoSettings(review.repository);
     const repoInstructions = repoSettings?.default_instructions || null;
     const requestInstructions = rawInstructions?.trim() || null;
 
     const parsedReviewId = parseInt(reviewId, 10);
+
+    // Save custom instructions to the review record (same as single-model endpoint)
+    if (requestInstructions) {
+      await reviewRepo.updateReview(parsedReviewId, {
+        customInstructions: requestInstructions
+      });
+    }
 
     const { analysisId, runId } = await launchCouncilAnalysis(
       db,

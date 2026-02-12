@@ -3577,7 +3577,6 @@ class PRManager {
         }
       }
 
-      const lastInstructions = reviewSettings.custom_instructions;
       const lastCouncilId = reviewSettings.last_council_id;
 
       // Determine the model and provider to use (priority: repo default > defaults)
@@ -3588,6 +3587,12 @@ class PRManager {
       const tabStorageKey = PRManager.getRepoStorageKey('pair-review-tab', owner, repo);
       const rememberedTab = localStorage.getItem(tabStorageKey);
       const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
+
+      // Restore custom instructions (priority: database > localStorage)
+      const instructionsStorageKey = PRManager.getRepoStorageKey('pair-review-instructions', owner, repo);
+      const lastInstructions = reviewSettings.custom_instructions
+        ?? localStorage.getItem(instructionsStorageKey)
+        ?? '';
 
       // Save tab selection to localStorage when user switches tabs
       this.analysisConfigModal.onTabChange = (tabId) => {
@@ -3608,6 +3613,14 @@ class PRManager {
       // If user cancelled, do nothing
       if (!config) {
         return;
+      }
+
+      // Persist custom instructions to localStorage for immediate recall on next dialog open
+      const submittedInstructions = config.customInstructions || '';
+      if (submittedInstructions) {
+        localStorage.setItem(instructionsStorageKey, submittedInstructions);
+      } else {
+        localStorage.removeItem(instructionsStorageKey);
       }
 
       // Start the analysis with the selected config

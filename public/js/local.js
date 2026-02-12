@@ -382,7 +382,6 @@ class LocalManager {
           }
         }
 
-        const lastInstructions = reviewSettings.custom_instructions;
         const lastCouncilId = reviewSettings.last_council_id;
 
         // Determine model and provider (priority: repo default > defaults)
@@ -393,6 +392,12 @@ class LocalManager {
         const tabStorageKey = `pair-review-tab:local-${reviewId}`;
         const rememberedTab = localStorage.getItem(tabStorageKey);
         const defaultTab = rememberedTab || repoSettings?.default_tab || 'single';
+
+        // Restore custom instructions (priority: database > localStorage)
+        const instructionsStorageKey = `pair-review-instructions:local-${reviewId}`;
+        const lastInstructions = reviewSettings.custom_instructions
+          ?? localStorage.getItem(instructionsStorageKey)
+          ?? '';
 
         // Save tab selection to localStorage when user switches tabs
         manager.analysisConfigModal.onTabChange = (tabId) => {
@@ -412,6 +417,14 @@ class LocalManager {
 
         if (!config) {
           return;
+        }
+
+        // Persist custom instructions to localStorage for immediate recall on next dialog open
+        const submittedInstructions = config.customInstructions || '';
+        if (submittedInstructions) {
+          localStorage.setItem(instructionsStorageKey, submittedInstructions);
+        } else {
+          localStorage.removeItem(instructionsStorageKey);
         }
 
         // Start analysis

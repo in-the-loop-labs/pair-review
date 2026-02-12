@@ -82,7 +82,7 @@ router.patch('/api/config', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error updating config:', error);
+    logger.error('Error updating config:', error);
     res.status(500).json({
       error: 'Failed to update configuration'
     });
@@ -128,7 +128,7 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching repo settings:', error);
+    logger.error('Error fetching repo settings:', error);
     res.status(500).json({
       error: 'Failed to fetch repository settings'
     });
@@ -180,7 +180,7 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error saving repo settings:', error);
+    logger.error('Error saving repo settings:', error);
     res.status(500).json({
       error: 'Failed to save repository settings'
     });
@@ -232,7 +232,7 @@ router.get('/api/pr/:owner/:repo/:number/review-settings', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error fetching review settings:', error);
+    logger.error('Error fetching review settings:', error);
     res.status(500).json({
       error: 'Failed to fetch review settings'
     });
@@ -259,7 +259,7 @@ router.get('/api/providers', (req, res) => {
       checkInProgress: isCheckInProgress()
     });
   } catch (error) {
-    console.error('Error fetching providers:', error);
+    logger.error('Error fetching providers:', error);
     res.status(500).json({
       error: 'Failed to fetch AI providers'
     });
@@ -282,7 +282,7 @@ router.get('/api/providers/:providerId/test', async (req, res) => {
       installInstructions: result.installInstructions || null
     });
   } catch (error) {
-    console.error('Error testing provider:', error);
+    logger.error('Error testing provider:', error);
     res.status(500).json({
       error: 'Failed to test provider availability'
     });
@@ -319,7 +319,7 @@ router.post('/api/providers/refresh-availability', async (req, res) => {
       checkInProgress: true
     });
   } catch (error) {
-    console.error('Error refreshing provider availability:', error);
+    logger.error('Error refreshing provider availability:', error);
     res.status(500).json({
       error: 'Failed to refresh provider availability'
     });

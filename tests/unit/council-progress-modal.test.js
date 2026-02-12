@@ -442,7 +442,7 @@ describe('CouncilProgressModal', () => {
       expect(titleEl.textContent).toBe('Review progress');
     });
 
-    it('sets title to "Review progress" with council name for council mode', () => {
+    it('sets title to "Review council progress" with council name for council mode', () => {
       const { modal, modalContainer } = createTestCouncilProgressModal();
 
       const titleEl = { textContent: '' };
@@ -459,10 +459,10 @@ describe('CouncilProgressModal', () => {
       const config = { levels: { '1': { enabled: true, voices: [] } } };
       modal.show('test-id', config, 'My Council', { configType: 'council' });
 
-      expect(titleEl.textContent).toBe('Review progress \u00b7 My Council');
+      expect(titleEl.textContent).toBe('Review council progress \u00b7 My Council');
     });
 
-    it('sets title to "Review progress" for council mode without name', () => {
+    it('sets title to "Review council progress" for council mode without name', () => {
       const { modal, modalContainer } = createTestCouncilProgressModal();
 
       const titleEl = { textContent: '' };
@@ -479,7 +479,7 @@ describe('CouncilProgressModal', () => {
       const config = { levels: { '1': { enabled: true, voices: [] } } };
       modal.show('test-id', config, null, { configType: 'advanced' });
 
-      expect(titleEl.textContent).toBe('Review progress');
+      expect(titleEl.textContent).toBe('Review council progress');
     });
   });
 

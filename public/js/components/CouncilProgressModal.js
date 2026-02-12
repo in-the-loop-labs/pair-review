@@ -74,9 +74,9 @@ class CouncilProgressModal {
       if (configType === 'single') {
         titleEl.textContent = 'Review progress';
       } else if (councilName) {
-        titleEl.textContent = `Review progress \u00b7 ${councilName}`;
+        titleEl.textContent = `Review council progress \u00b7 ${councilName}`;
       } else {
-        titleEl.textContent = 'Review progress';
+        titleEl.textContent = 'Review council progress';
       }
     }
 

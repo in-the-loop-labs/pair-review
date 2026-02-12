@@ -242,6 +242,10 @@ html, body {
   border-radius: 12px;
 }
 
+.settings-section--has-card {
+  position: relative;
+}
+
 .section-header {
   margin-bottom: 20px;
 }
@@ -321,12 +325,51 @@ html, body {
   align-items: center;
   gap: 6px;
   margin: 0;
+  margin-top: 14px;
   font-size: 12px;
   color: var(--color-text-muted);
 }
 
 .model-hint svg {
   flex-shrink: 0;
+}
+
+/* ============================================
+   Model Card Preview (Single Model mode)
+   ============================================ */
+
+.settings-model-card-preview {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+/* Override the interactive model-card styles for the static preview card */
+.settings-model-card-static {
+  cursor: default;
+  pointer-events: none;
+  width: 160px;
+  aspect-ratio: auto;
+  padding: 12px 10px 10px;
+  overflow: visible;
+}
+
+.settings-model-card-static:hover {
+  transform: none;
+  box-shadow:
+    0 0 0 3px rgba(245, 158, 11, 0.15),
+    0 4px 12px rgba(245, 158, 11, 0.1);
+}
+
+[data-theme="dark"] .settings-model-card-static:hover {
+  box-shadow:
+    0 0 0 3px rgba(251, 191, 36, 0.15),
+    0 4px 12px rgba(251, 191, 36, 0.08);
+}
+
+/* Hide the checkmark indicator on the static preview */
+.settings-model-card-static .model-selected-indicator {
+  display: none;
 }
 
 /* ============================================
@@ -949,6 +992,17 @@ html, body {
 
   .settings-model-row {
     flex-direction: column;
+  }
+
+  .settings-model-card-preview {
+    position: static;
+    margin-top: 16px;
+    display: flex;
+    justify-content: center;
+  }
+
+  .settings-model-card-static {
+    width: 180px;
   }
 
   .action-bar-content {

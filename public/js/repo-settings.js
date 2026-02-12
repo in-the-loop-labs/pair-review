@@ -168,11 +168,12 @@ class RepoSettingsPage {
             this.currentSettings.default_model = defaultModel.id;
           }
 
-          // Update model select to reflect the mapped model
+          // Update model select and card to reflect the mapped model
           const modelSelect = document.getElementById('model-select');
           if (modelSelect) {
             modelSelect.value = this.currentSettings.default_model;
           }
+          this.renderModelCard();
         }
 
         this.checkForChanges();
@@ -184,6 +185,7 @@ class RepoSettingsPage {
     if (modelSelect) {
       modelSelect.addEventListener('change', () => {
         this.currentSettings.default_model = modelSelect.value;
+        this.renderModelCard();
         this.checkForChanges();
       });
     }
@@ -469,8 +471,10 @@ class RepoSettingsPage {
     // Show/hide panels
     const singlePanel = document.getElementById('mode-panel-single');
     const councilPanel = document.getElementById('mode-panel-council');
+    const cardPreview = document.getElementById('model-card-preview');
     if (singlePanel) singlePanel.style.display = mode === 'single' ? '' : 'none';
     if (councilPanel) councilPanel.style.display = mode === 'council' ? '' : 'none';
+    if (cardPreview) cardPreview.style.display = mode === 'single' ? '' : 'none';
     // Map to default_tab: 'single' or 'council'
     this.currentSettings.default_tab = mode === 'council' ? 'council' : 'single';
     if (markChanged) {
@@ -558,12 +562,55 @@ class RepoSettingsPage {
     const provider = this.providers[this.selectedProvider];
     if (!provider) {
       select.innerHTML = '';
+      this.renderModelCard();
       return;
     }
 
     select.innerHTML = provider.models.map(model =>
       `<option value="${model.id}" ${model.id === this.currentSettings.default_model ? 'selected' : ''}>${model.name}</option>`
     ).join('');
+
+    this.renderModelCard();
+  }
+
+  /**
+   * Render a model card preview for the currently selected provider + model.
+   * Reuses the model-card design from the analysis config modal (styled in pr.css).
+   */
+  renderModelCard() {
+    const container = document.getElementById('model-card-preview');
+    if (!container) return;
+
+    const provider = this.providers[this.selectedProvider];
+    if (!provider) {
+      container.innerHTML = '';
+      return;
+    }
+
+    // Find the selected model, fall back to default or first
+    const modelId = this.currentSettings.default_model;
+    const model = provider.models.find(m => m.id === modelId)
+      || provider.models.find(m => m.default)
+      || provider.models[0];
+
+    if (!model) {
+      container.innerHTML = '';
+      return;
+    }
+
+    const tierIcon = window.getTierIcon ? window.getTierIcon(model.tier) : '';
+
+    container.innerHTML = `
+      <div class="model-card selected settings-model-card-static" data-tier="${this.escapeHtml(model.tier || '')}">
+        <div class="model-badge ${this.escapeHtml(model.badgeClass || '')}">${this.escapeHtml(model.badge || '')}</div>
+        <div class="model-icon">${tierIcon}</div>
+        <div class="model-info">
+          <span class="model-name">${this.escapeHtml(model.name)}</span>
+          <span class="model-tagline">${this.escapeHtml(model.tagline || '')}</span>
+        </div>
+        <p class="model-description">${this.escapeHtml(model.description || '')}</p>
+      </div>
+    `;
   }
 
   async loadSettings() {
@@ -625,7 +672,6 @@ class RepoSettingsPage {
 
     this.selectProvider(providerId);
     this.renderProviderSelect();
-    this.renderModelSelect();
 
     // Validate saved model exists in current provider
     const provider = this.providers[this.selectedProvider];
@@ -641,6 +687,8 @@ class RepoSettingsPage {
         }
       }
     }
+
+    this.renderModelSelect();
 
     // Update analysis mode segmented control (map 'advanced' to 'council')
     const defaultTab = this.currentSettings.default_tab || 'single';

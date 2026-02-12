@@ -95,7 +95,7 @@ class VoiceCentricConfigTab {
       const response = await fetch('/api/councils');
       if (!response.ok) throw new Error('Failed to fetch councils');
       const data = await response.json();
-      // Only show voice-centric councils (type === 'council' or missing type for backwards compat)
+      // Only show voice-centric councils (legacy councils without a type are level-centric, shown in Advanced tab)
       this.councils = (data.councils || []).filter(c => c.type === 'council');
       this._councilsLoaded = true;
       this._renderCouncilSelector();
