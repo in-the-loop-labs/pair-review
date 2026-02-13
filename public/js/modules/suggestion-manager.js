@@ -24,6 +24,96 @@ class SuggestionManager {
     this.prManager = prManagerRef;
     // Concurrency guard for displayAISuggestions
     this._isDisplayingSuggestions = false;
+
+    // Event delegation for reasoning brain icon popover (pinned to button)
+    document.addEventListener('click', (e) => {
+      const toggleBtn = e.target.closest('.btn-reasoning-toggle');
+
+      if (toggleBtn) {
+        e.stopPropagation();
+        const existingPopover = document.querySelector('.reasoning-popover');
+        const isOwnPopover = existingPopover && existingPopover._triggerBtn === toggleBtn;
+
+        // Close any existing popover
+        this._closeReasoningPopover();
+
+        // If clicking the same button that was already open, just close
+        if (isOwnPopover) return;
+
+        // Create and show new popover
+        this._openReasoningPopover(toggleBtn);
+        return;
+      }
+
+      // Close popover when clicking outside
+      if (!e.target.closest('.reasoning-popover')) {
+        this._closeReasoningPopover();
+      }
+    });
+  }
+
+  /**
+   * Open a reasoning popover pinned to the toggle button inside .ai-suggestion-header-right
+   * @param {HTMLElement} toggleBtn - The brain icon button that was clicked
+   */
+  _openReasoningPopover(toggleBtn) {
+    const reasoningData = toggleBtn.dataset.reasoning;
+    if (!reasoningData) return;
+
+    let reasoning;
+    try {
+      reasoning = JSON.parse(decodeURIComponent(reasoningData));
+    } catch {
+      return;
+    }
+    if (!Array.isArray(reasoning)) return;
+
+    const escapeHtml = this.prManager?.escapeHtml?.bind(this.prManager) || ((s) => s);
+    const bulletMd = reasoning.map(step => `- ${step}`).join('\n');
+    const rendered = window.renderMarkdown
+      ? window.renderMarkdown(bulletMd)
+      : `<ul>${reasoning.map(step => `<li>${escapeHtml(step)}</li>`).join('')}</ul>`;
+
+    const popover = document.createElement('div');
+    popover.className = 'reasoning-popover';
+    popover._triggerBtn = toggleBtn;
+    popover.innerHTML = `
+      <div class="reasoning-popover-arrow"></div>
+      <div class="reasoning-popover-header">
+        <span class="reasoning-popover-title">Reasoning</span>
+        <button class="reasoning-popover-close" title="Close">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path></svg>
+        </button>
+      </div>
+      <div class="reasoning-popover-content">${rendered}</div>
+    `;
+
+    // Close button handler
+    popover.querySelector('.reasoning-popover-close').addEventListener('click', () => {
+      this._closeReasoningPopover();
+    });
+
+    // Insert into the header-right container (next to the button)
+    const headerRight = toggleBtn.closest('.ai-suggestion-header-right');
+    if (headerRight) {
+      headerRight.appendChild(popover);
+    } else {
+      // Fallback: append to button's parent
+      toggleBtn.parentElement.appendChild(popover);
+    }
+
+    toggleBtn.classList.add('active');
+  }
+
+  /**
+   * Close any open reasoning popover
+   */
+  _closeReasoningPopover() {
+    const existing = document.querySelector('.reasoning-popover');
+    if (existing) {
+      existing._triggerBtn?.classList.remove('active');
+      existing.remove();
+    }
   }
 
   /**
@@ -147,6 +237,7 @@ class SuggestionManager {
     this._isDisplayingSuggestions = true;
 
     try {
+      this._closeReasoningPopover();
       console.log(`[UI] Displaying ${suggestions.length} AI suggestions`);
 
       // Clear existing AI suggestion rows before displaying new ones
@@ -396,6 +487,13 @@ class SuggestionManager {
             ${categoryLabel ? `<span class="ai-suggestion-category">${escapeHtml(categoryLabel)}</span>` : ''}
             <span class="ai-title">${escapeHtml(suggestion.title || '')}</span>
           </div>
+          ${suggestion.reasoning && suggestion.reasoning.length > 0 ? `
+          <div class="ai-suggestion-header-right">
+            <button class="btn-reasoning-toggle" title="View reasoning" data-suggestion-id="${suggestion.id}" data-reasoning="${encodeURIComponent(JSON.stringify(suggestion.reasoning))}">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M21.33 12.91c.09 1.55-.62 3.04-1.89 3.95l.77 1.49c.23.45.26.98.06 1.45c-.19.47-.58.84-1.06 1l-.79.25a1.69 1.69 0 0 1-1.86-.55L14.44 18c-.89-.15-1.73-.53-2.44-1.1c-.5.15-1 .23-1.5.23c-.88 0-1.76-.27-2.5-.79c-.53.16-1.07.23-1.62.22c-.79.01-1.57-.15-2.3-.45a4.1 4.1 0 0 1-2.43-3.61c-.08-.72.04-1.45.35-2.11c-.29-.75-.32-1.57-.07-2.33C2.3 7.11 3 6.32 3.87 5.82c.58-1.69 2.21-2.82 4-2.7c1.6-1.5 4.05-1.66 5.83-.37c.42-.11.86-.17 1.3-.17c1.36-.03 2.65.57 3.5 1.64c2.04.53 3.5 2.35 3.58 4.47c.05 1.11-.25 2.2-.86 3.13c.07.36.11.72.11 1.09m-5-1.41c.57.07 1.02.5 1.02 1.07a1 1 0 0 1-1 1h-.63c-.32.9-.88 1.69-1.62 2.29c.25.09.51.14.77.21c5.13-.07 4.53-3.2 4.53-3.25a2.59 2.59 0 0 0-2.69-2.49a1 1 0 0 1-1-1a1 1 0 0 1 1-1c1.23.03 2.41.49 3.33 1.3c.05-.29.08-.59.08-.89c-.06-1.24-.62-2.32-2.87-2.53c-1.25-2.96-4.4-1.32-4.4-.4c-.03.23.21.72.25.75a1 1 0 0 1 1 1c0 .55-.45 1-1 1c-.53-.02-1.03-.22-1.43-.56c-.48.31-1.03.5-1.6.56c-.57.05-1.04-.35-1.07-.9a.97.97 0 0 1 .88-1.1c.16-.02.94-.14.94-.77c0-.66.25-1.29.68-1.79c-.92-.25-1.91.08-2.91 1.29C6.75 5 6 5.25 5.45 7.2C4.5 7.67 4 8 3.78 9c1.08-.22 2.19-.13 3.22.25c.5.19.78.75.59 1.29c-.19.52-.77.78-1.29.59c-.73-.32-1.55-.34-2.3-.06c-.32.27-.32.83-.32 1.27c0 .74.37 1.43 1 1.83c.53.27 1.12.41 1.71.4q-.225-.39-.39-.81a1.038 1.038 0 0 1 1.96-.68c.4 1.14 1.42 1.92 2.62 2.05c1.37-.07 2.59-.88 3.19-2.13c.23-1.38 1.34-1.5 2.56-1.5m2 7.47l-.62-1.3l-.71.16l1 1.25zm-4.65-8.61a1 1 0 0 0-.91-1.03c-.71-.04-1.4.2-1.93.67c-.57.58-.87 1.38-.84 2.19a1 1 0 0 0 1 1c.57 0 1-.45 1-1c0-.27.07-.54.23-.76c.12-.1.27-.15.43-.15c.55.03 1.02-.38 1.02-.92"/></svg>
+            </button>
+          </div>
+          ` : ''}
         </div>
         <div class="ai-suggestion-collapsed-content">
           ${suggestion.type === 'praise'
@@ -418,16 +516,6 @@ class SuggestionManager {
             return window.renderMarkdown ? window.renderMarkdown(body) : escapeHtml(body);
           })()}
         </div>
-        ${suggestion.reasoning && suggestion.reasoning.length > 0 ? `
-        <div class="ai-suggestion-reasoning collapsed">
-          <div class="reasoning-toggle" onclick="this.parentElement.classList.toggle('collapsed')">
-            <span class="reasoning-chevron">&#9654;</span> Reasoning
-          </div>
-          <ul class="reasoning-content">
-            ${suggestion.reasoning.map(step => `<li>${escapeHtml(step)}</li>`).join('')}
-          </ul>
-        </div>
-        ` : ''}
         <div class="ai-suggestion-actions">
           <button class="ai-action ai-action-adopt" onclick="prManager.adoptSuggestion(${suggestion.id})">
             <svg viewBox="0 0 16 16" width="16" height="16"><path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path></svg>
