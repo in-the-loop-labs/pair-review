@@ -178,9 +178,6 @@ class ChatPanelManager {
         // Switch to this chat (will load messages from server)
         this.switchChat(existingServerSession.id);
 
-        // Setup SSE streaming for new messages
-        this._setupEventStream(existingServerSession.id);
-
         console.log(`Resumed chat session: ${existingServerSession.id}`);
         return;
       }
@@ -215,9 +212,6 @@ class ChatPanelManager {
       // Switch to this chat
       this.switchChat(data.chatId);
 
-      // Setup SSE streaming
-      this._setupEventStream(data.chatId);
-
       // Add chat badge to this comment since it now has a session
       // Note: don't add indicator yet — session is empty until first message is sent
 
@@ -248,11 +242,6 @@ class ChatPanelManager {
     // Update panel to show this chat
     this._renderChatContext(session);
     await this._loadChatMessages(chatId);
-
-    // Reconnect SSE if it was closed (e.g. panel was closed and reopened)
-    if (!session.eventSource) {
-      this._setupEventStream(chatId);
-    }
 
     // Expand panel if collapsed
     if (this.panel.classList.contains('collapsed')) {
@@ -513,6 +502,14 @@ class ChatPanelManager {
       // Update button to reflect we're now waiting for the AI
       sendBtn.textContent = 'Thinking...';
 
+      // Ensure SSE stream is open and connected before sending so we receive chunks.
+      // Awaiting the connection prevents a race where the POST completes before
+      // the SSE is registered server-side, causing us to miss the 'done' event.
+      const session = this.activeChatSessions.get(this.currentChatId);
+      if (session && !session.eventSource) {
+        await this._setupEventStream(this.currentChatId);
+      }
+
       // Send message to backend
       const endpoint = this.isLocalMode
         ? `/api/local/${this.prManager.reviewId}/chat/${this.currentChatId}/message`
@@ -555,7 +552,7 @@ class ChatPanelManager {
    */
   _setupEventStream(chatId) {
     const session = this.activeChatSessions.get(chatId);
-    if (!session) return;
+    if (!session) return Promise.resolve();
 
     // Close ALL other SSE connections first to avoid exhausting the browser's
     // per-domain connection limit (typically 6 for HTTP/1.1).
@@ -578,30 +575,44 @@ class ChatPanelManager {
 
     const eventSource = new EventSource(endpoint);
 
-    eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+    // Return a promise that resolves once the server confirms the SSE
+    // connection is registered. This prevents a race where we send the
+    // POST /message before the server can stream events back to us.
+    const connected = new Promise((resolve) => {
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
 
-      if (data.type === 'connected') {
-        console.log(`SSE connected for chat ${chatId}`);
-      } else if (data.type === 'chunk') {
-        // Update the streaming message content
-        this._updateStreamingMessage(data.content);
-      } else if (data.type === 'done') {
-        // Finalize the streaming message
-        this._finalizeStreamingMessage();
-      } else if (data.type === 'error') {
-        console.error('SSE error:', data.error);
-        this._addErrorMessage(data.error);
-      }
-    };
+        if (data.type === 'connected') {
+          console.log(`SSE connected for chat ${chatId}`);
+          resolve();
+        } else if (data.type === 'chunk') {
+          // Update the streaming message content
+          this._updateStreamingMessage(data.content);
+        } else if (data.type === 'done') {
+          // Finalize the streaming message
+          this._finalizeStreamingMessage();
+          // Close the SSE connection — the response is complete.
+          // A new connection will be opened before the next message is sent.
+          eventSource.close();
+          session.eventSource = null;
+        } else if (data.type === 'error') {
+          console.error('SSE error:', data.error);
+          this._addErrorMessage(data.error);
+          eventSource.close();
+          session.eventSource = null;
+        }
+      };
 
-    eventSource.onerror = (error) => {
-      console.error('SSE connection error:', error);
-      eventSource.close();
-      session.eventSource = null;
-    };
+      eventSource.onerror = (error) => {
+        console.error('SSE connection error:', error);
+        eventSource.close();
+        session.eventSource = null;
+        resolve(); // Resolve anyway so sendMessage can proceed (will fall back to POST response)
+      };
+    });
 
     session.eventSource = eventSource;
+    return connected;
   }
 
   /**
