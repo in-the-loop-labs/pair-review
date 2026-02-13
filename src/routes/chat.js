@@ -376,7 +376,8 @@ router.get('/api/chat/comment/:commentId/sessions', async (req, res) => {
       });
     }
 
-    const sessions = await chatRepo.getSessionsByComment(commentId);
+    const chatService = new ChatService(db, chatRepo, commentRepo, new AnalysisRunRepository(db));
+    const { sessions } = await chatService.getChatSessions(commentId);
 
     res.json({
       success: true,
