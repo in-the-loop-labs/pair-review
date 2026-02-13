@@ -520,12 +520,14 @@ async function globalSetup() {
   const commentsRoutes = require('../../src/routes/comments');
   const configRoutes = require('../../src/routes/config');
   const prRoutes = require('../../src/routes/pr');
+  const councilRoutes = require('../../src/routes/councils');
 
   app.use('/', analysisRoutes);
   app.use('/', commentsRoutes);
   app.use('/', configRoutes);
   app.use('/', worktreesRoutes);
   app.use('/', prRoutes);
+  app.use('/', councilRoutes);
 
   // Error handling
   app.use((error, req, res, next) => {
