@@ -342,7 +342,7 @@ class AnalysisConfigModal {
         <div class="modal-footer analysis-config-footer">
           <div class="council-footer-left" id="council-footer-left" style="display: none;">
             <span class="council-dirty-hint" id="council-dirty-hint">Unsaved changes</span>
-            <button class="btn btn-sm btn-secondary" id="council-footer-save-btn"
+            <button class="btn btn-sm btn-save-council" id="council-footer-save-btn"
               title="Save configuration changes. Unsaved changes will be auto-saved as a new configuration when you analyze.">Save</button>
           </div>
           <button class="btn btn-secondary" data-action="cancel">Cancel</button>
@@ -432,6 +432,15 @@ class AnalysisConfigModal {
         this.hide();
       }
     };
+    // Footer save button - delegates to the active council tab
+    this.modal.querySelector('#council-footer-save-btn')?.addEventListener('click', () => {
+      if (this.activeTab === 'council' && this.councilTab) {
+        this.councilTab._saveCouncil();
+      } else if (this.activeTab === 'advanced' && this.advancedTab) {
+        this.advancedTab._saveCouncil();
+      }
+    });
+
     // Note: Event listener is added in show() and removed in hide() to prevent memory leaks
   }
 

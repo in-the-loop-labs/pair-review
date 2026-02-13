@@ -260,7 +260,7 @@ class VoiceCentricConfigTab {
           <select id="vc-council-selector" class="council-select new-council-selected">
             <option value="" class="council-option-new">+ New Council</option>
           </select>
-          <button class="btn btn-sm btn-secondary" id="vc-council-save-btn" title="Save" disabled>Save</button>
+          <button class="btn btn-sm btn-save-council" id="vc-council-save-btn" title="Save" disabled>Save</button>
           <button class="btn btn-sm btn-secondary" id="vc-council-save-as-btn" title="Save As" disabled>Save As</button>
           <button class="btn btn-sm btn-secondary" id="vc-council-export-btn" title="Copy config JSON to clipboard">Export</button>
           <button class="btn btn-sm btn-icon-danger" id="vc-council-delete-btn" title="Delete council" disabled>
@@ -437,15 +437,6 @@ class VoiceCentricConfigTab {
     panel.querySelector('#vc-council-export-btn')?.addEventListener('click', () => this._exportCouncil());
     // Delete button
     panel.querySelector('#vc-council-delete-btn')?.addEventListener('click', () => this._deleteCouncil());
-
-    // Footer save button (lives in modal footer, not council panel)
-    this.modal.querySelector('#council-footer-save-btn')?.addEventListener('click', () => {
-      if (this.selectedCouncilId) {
-        this._saveCouncil();
-      } else {
-        this._saveCouncilAs();
-      }
-    });
 
     // Add reviewer button
     panel.querySelector('#vc-add-reviewer-btn')?.addEventListener('click', () => this._addReviewer());

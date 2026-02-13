@@ -302,7 +302,7 @@ class AdvancedConfigTab {
           <select id="council-selector" class="council-select new-council-selected">
             <option value="" class="council-option-new">+ New Council</option>
           </select>
-          <button class="btn btn-sm btn-secondary" id="council-save-btn" title="Save" disabled>Save</button>
+          <button class="btn btn-sm btn-save-council" id="council-save-btn" title="Save" disabled>Save</button>
           <button class="btn btn-sm btn-secondary" id="council-save-as-btn" title="Save As" disabled>Save As</button>
           <button class="btn btn-sm btn-secondary" id="council-export-btn" title="Copy config JSON to clipboard">Export</button>
           <button class="btn btn-sm btn-icon-danger" id="council-delete-btn" title="Delete council" disabled>
@@ -496,15 +496,6 @@ class AdvancedConfigTab {
 
     // Delete button
     panel.querySelector('#council-delete-btn')?.addEventListener('click', () => this._deleteCouncil());
-
-    // Footer save button (lives in modal footer, not council panel)
-    this.modal.querySelector('#council-footer-save-btn')?.addEventListener('click', () => {
-      if (this.selectedCouncilId) {
-        this._saveCouncil();
-      } else {
-        this._saveCouncilAs();
-      }
-    });
 
     // Level toggles (slider toggles that still use .level-checkbox class)
     panel.querySelectorAll('.level-checkbox').forEach(checkbox => {
