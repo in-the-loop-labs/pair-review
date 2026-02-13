@@ -216,6 +216,23 @@ function insertTestData() {
     INSERT INTO worktrees (id, pr_number, repository, branch, path, created_at, last_accessed_at)
     VALUES ('e2e-test-id', 1, 'test-owner/test-repo', 'feature-test', '/tmp/worktree/e2e-test', ?, ?)
   `).run(now, now);
+
+  // Insert chat session and messages for E2E chat panel tests
+  // The review record inserted above has id=1
+  db.prepare(`
+    INSERT INTO chat_sessions (id, review_id, provider, model, status, created_at, updated_at)
+    VALUES (1, 1, 'pi', 'claude-sonnet-4', 'active', ?, ?)
+  `).run(now, now);
+
+  db.prepare(`
+    INSERT INTO chat_messages (id, session_id, role, content, created_at)
+    VALUES (1, 1, 'user', 'What does the computeValue function do?', ?)
+  `).run(now);
+
+  db.prepare(`
+    INSERT INTO chat_messages (id, session_id, role, content, created_at)
+    VALUES (2, 1, 'assistant', 'The `computeValue()` function computes a derived value. Based on the diff, it was introduced to replace a bare `return null` with a more meaningful computation.', ?)
+  `).run(now);
 }
 
 /**
@@ -527,6 +544,22 @@ async function globalSetup() {
   const configRoutes = require('../../src/routes/config');
   const prRoutes = require('../../src/routes/pr');
   const councilRoutes = require('../../src/routes/councils');
+  const chatRoutes = require('../../src/routes/chat');
+
+  // Mock chat session manager for E2E (reads from DB, no real bridge)
+  app.chatSessionManager = {
+    createSession: async () => ({ id: Date.now(), status: 'active' }),
+    sendMessage: async () => ({ id: Date.now() }),
+    closeSession: async () => {},
+    getSession: (id) => db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id) || null,
+    getSessionsForReview: (reviewId) =>
+      db.prepare('SELECT * FROM chat_sessions WHERE review_id = ? ORDER BY created_at DESC').all(reviewId),
+    getMessages: (sessionId) =>
+      db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC').all(sessionId),
+    onDelta: () => () => {},
+    onComplete: () => () => {},
+    onToolUse: () => () => {}
+  };
 
   app.use('/', analysisRoutes);
   app.use('/', commentsRoutes);
@@ -534,6 +567,7 @@ async function globalSetup() {
   app.use('/', worktreesRoutes);
   app.use('/', prRoutes);
   app.use('/', councilRoutes);
+  app.use('/', chatRoutes);
 
   // Error handling
   app.use((error, req, res, next) => {

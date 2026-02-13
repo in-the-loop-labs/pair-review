@@ -9,6 +9,7 @@ const logger = require('./utils/logger');
 
 let db = null;
 let server = null;
+let chatSessionManager = null;
 
 /**
  * Request logging middleware (disabled for cleaner output)
@@ -257,8 +258,15 @@ async function startServer(sharedDb = null) {
     const setupRoutes = require('./routes/setup');
     const mcpRoutes = require('./routes/mcp');
     const councilRoutes = require('./routes/councils');
+    const chatRoutes = require('./routes/chat');
+
+    // Initialize chat session manager
+    const ChatSessionManager = require('./chat/session-manager');
+    chatSessionManager = new ChatSessionManager(db);
+    app.chatSessionManager = chatSessionManager;
 
     // Mount specific routes first to ensure they match before general PR routes
+    app.use('/', chatRoutes);
     app.use('/', analysisRoutes);
     app.use('/', councilRoutes);
     app.use('/', commentsRoutes);
@@ -318,9 +326,18 @@ async function startServer(sharedDb = null) {
 /**
  * Graceful shutdown handler
  */
-function gracefulShutdown(signal) {
+async function gracefulShutdown(signal) {
   console.log('\nServer shutting down...');
-  
+
+  // Close all active chat sessions
+  if (chatSessionManager) {
+    try {
+      await chatSessionManager.closeAll();
+    } catch (error) {
+      console.error('Error closing chat sessions:', error.message);
+    }
+  }
+
   if (server) {
     server.close(() => {
       if (db) {
