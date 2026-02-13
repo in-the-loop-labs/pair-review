@@ -247,6 +247,11 @@ class LocalManager {
         }
 
         manager.updateCommentCount();
+
+        // Refresh chat indicators now that comment elements are in the DOM
+        if (manager.chatPanelManager && reviewId) {
+          manager.chatPanelManager.loadChatIndicators(reviewId);
+        }
       } catch (error) {
         console.error('Error loading user comments:', error);
       }
@@ -301,6 +306,11 @@ class LocalManager {
           await manager.displayAISuggestions(data.suggestions);
         } else {
           await manager.displayAISuggestions([]);
+        }
+
+        // Refresh chat indicators now that suggestion elements are in the DOM
+        if (manager.chatPanelManager && reviewId) {
+          manager.chatPanelManager.loadChatIndicators(reviewId);
         }
       } catch (error) {
         console.error('Error loading AI suggestions:', error);

@@ -264,7 +264,9 @@ ${conversationHistory}
 ## Current Question
 ${userQuestion}
 
-Instructions: Provide concise, actionable answers focused on this specific comment. If asked to refine or improve the suggestion, output the improved comment text clearly. Be helpful and precise.`;
+Instructions: Provide concise, actionable answers focused on this specific comment. If asked to refine or improve the suggestion, output the improved comment text clearly. Be helpful and precise.
+
+You are running in a non-interactive browser context. You have read-only access to the codebase via Read and Bash (git, cat, grep, find, rg). You cannot write or modify files, and any tool not pre-approved will be automatically denied. Focus on reading code and reasoning about it rather than attempting modifications.`;
 
     return prompt;
   }

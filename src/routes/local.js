@@ -2592,13 +2592,49 @@ router.get('/api/local/:reviewId/chat/comment/:commentId/sessions', async (req, 
 
     res.json({
       success: true,
-      sessions
+      sessions,
+      comment
     });
 
   } catch (error) {
     logger.error('Error fetching local chat sessions:', error);
     res.status(500).json({
       error: error.message || 'Failed to fetch chat sessions'
+    });
+  }
+});
+
+/**
+ * Get comment IDs that have chat history (at least one message) for a local review.
+ * Used for displaying chat indicator dots on comments/suggestions.
+ * GET /api/local/:reviewId/chat/comment-sessions
+ * Returns: { commentIds: [number] }
+ */
+router.get('/api/local/:reviewId/chat/comment-sessions', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+
+    const rows = await chatRepo.getCommentsWithChatHistory(reviewId);
+    const commentIds = rows.map(r => r.comment_id);
+
+    res.json({
+      success: true,
+      commentIds
+    });
+
+  } catch (error) {
+    logger.error('Error fetching local review chat sessions:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to fetch review chat sessions'
     });
   }
 });

@@ -3390,6 +3390,22 @@ class ChatRepository {
 
     return result.changes > 0;
   }
+
+  /**
+   * Get comment IDs that have chat sessions with at least one message.
+   * Used for displaying chat indicator dots on comments/suggestions.
+   * @param {number} reviewId - Review ID
+   * @returns {Promise<Array<Object>>} Array of { comment_id }
+   */
+  async getCommentsWithChatHistory(reviewId) {
+    return await query(this.db, `
+      SELECT DISTINCT cs.comment_id
+      FROM chat_sessions cs
+      JOIN comments c ON c.id = cs.comment_id
+      JOIN chat_messages cm ON cm.chat_session_id = cs.id
+      WHERE c.review_id = ?
+    `, [reviewId]);
+  }
 }
 
 module.exports = {

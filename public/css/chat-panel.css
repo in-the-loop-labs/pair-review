@@ -122,7 +122,21 @@ body.chat-panel-open #local-container {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
+}
+
+.chat-context-file-link {
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+
+.chat-context-file-link:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.chat-context-file-link:hover .chat-context-file-path {
+  color: var(--color-accent-primary);
 }
 
 .chat-context-file-icon {
@@ -292,7 +306,7 @@ body.chat-panel-open #local-container {
 .chat-message.user .chat-message-content {
   background: var(--color-accent-lighter);
   border: 1px solid var(--color-accent-light);
-  border-radius: 12px 12px 12px 12px;
+  border-radius: 12px;
   padding: 10px 14px;
 }
 
@@ -521,9 +535,9 @@ body.chat-panel-open #local-container {
 
 .chat-send-btn {
   padding: 8px 16px;
-  background: var(--color-bg-tertiary);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border-primary);
+  background: var(--color-accent-lighter);
+  color: var(--color-accent-primary);
+  border: 1px solid var(--color-accent-primary);
   border-radius: 6px;
   font-size: 13px;
   font-weight: 500;
@@ -535,8 +549,9 @@ body.chat-panel-open #local-container {
 }
 
 .chat-send-btn:hover:not(:disabled) {
-  background: var(--color-bg-secondary);
-  border-color: var(--color-border-secondary);
+  background: var(--color-accent-light);
+  border-color: var(--color-accent-hover);
+  color: var(--color-accent-hover);
 }
 
 .chat-send-btn:active:not(:disabled) {
@@ -628,15 +643,14 @@ body.chat-panel-open #local-container {
   background: transparent;
   color: var(--color-text-secondary);
   border: 1px solid var(--color-border-primary);
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 500;
+  border-radius: 4px;
+}
+
+/* Icon-only chat button on comments: match edit/delete button style */
+.btn-chat-comment {
+  border-color: transparent;
+  padding: 4px 6px;
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  transition: all 0.15s ease;
 }
 
 .btn-chat-comment:hover,
@@ -646,12 +660,29 @@ body.chat-panel-open #local-container {
   color: var(--color-accent-primary);
 }
 
-/* Badge for comments with active chats */
-.comment-with-chat::after {
-  content: '💬';
-  margin-left: 6px;
-  font-size: 12px;
-  opacity: 0.7;
+/* Chat history indicator dot on chat buttons */
+.btn-chat-comment.has-chat-history,
+.ai-action-chat.has-chat-history {
+  position: relative;
+  color: var(--color-accent-primary);
+}
+
+.ai-action-chat.has-chat-history {
+  border-color: var(--color-accent-primary);
+}
+
+.btn-chat-comment.has-chat-history::after,
+.ai-action-chat.has-chat-history::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  /* 6px matches the .has-ai-suggestions indicator in pr.css */
+  width: 6px;
+  height: 6px;
+  background: var(--color-accent-primary);
+  border-radius: 50%;
+  border: 1.5px solid var(--color-bg-primary);
 }
 
 /* Comment highlighting when chat is active */
