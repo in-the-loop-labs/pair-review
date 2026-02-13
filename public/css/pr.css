@@ -8910,6 +8910,29 @@ body.resizing * {
   color: var(--color-accent-primary, #58a6ff);
 }
 
+/* Blue save button for council footer */
+.btn-save-council {
+  background-color: var(--color-accent-primary, #0969da);
+  color: #ffffff;
+  border-color: var(--color-accent-primary, #0969da);
+}
+
+.btn-save-council:hover {
+  background-color: #0860ca;
+  border-color: #0860ca;
+}
+
+[data-theme="dark"] .btn-save-council {
+  background-color: var(--color-accent-primary, #58a6ff);
+  border-color: var(--color-accent-primary, #58a6ff);
+  color: #ffffff;
+}
+
+[data-theme="dark"] .btn-save-council:hover {
+  background-color: #79b8ff;
+  border-color: #79b8ff;
+}
+
 .btn-analyze {
   display: inline-flex;
   align-items: center;
