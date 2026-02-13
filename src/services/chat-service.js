@@ -249,7 +249,7 @@ class ChatService {
 
 ## Original Comment Context
 File: ${comment.file || 'N/A'}
-Lines: ${comment.line_start || 'N/A'}${comment.line_end && comment.line_end !== comment.line_start ? `-${comment.line_end}` : ''}
+${comment.line_start ? `Lines: ${comment.line_start}${comment.line_end && comment.line_end !== comment.line_start ? `-${comment.line_end}` : ''}` : 'Scope: File-level comment (applies to the entire file)'}
 Type: ${comment.type || 'comment'} (${comment.source || 'unknown'})${comment.title ? `\nTitle: ${comment.title}` : ''}
 Body: ${comment.body || 'No comment body'}
 
@@ -280,26 +280,41 @@ You are running in a non-interactive browser context. You have read-only access 
    */
   async _getCodeSnippet(comment, worktreePath) {
     if (!comment.file) {
-      return '(File-level comment - no specific code location)';
+      return '(No specific file - general comment)';
     }
 
     const filePath = path.join(worktreePath, comment.file);
+    const isFileLevel = !comment.line_start;
 
     try {
       const fileContent = await fs.readFile(filePath, 'utf-8');
       const lines = fileContent.split('\n');
 
-      // Get context: 5 lines before and after
+      if (isFileLevel) {
+        // File-level comment: include beginning of file for context, with a note
+        // The AI has tool access to read the full file if needed
+        const maxLines = 50;
+        const snippet = lines.slice(0, maxLines);
+        const numberedSnippet = snippet.map((line, idx) => {
+          return `${String(idx + 1).padStart(4, ' ')}  ${line}`;
+        }).join('\n');
+        const truncationNote = lines.length > maxLines
+          ? `\n... (${lines.length - maxLines} more lines — use Read tool to see the full file)`
+          : '';
+        return numberedSnippet + truncationNote;
+      }
+
+      // Line-level comment: 5 lines before and after
       const contextLines = 5;
-      const startLine = Math.max(0, (comment.line_start || 1) - 1 - contextLines);
-      const endLine = Math.min(lines.length, (comment.line_end || comment.line_start || 1) + contextLines);
+      const startLine = Math.max(0, comment.line_start - 1 - contextLines);
+      const endLine = Math.min(lines.length, (comment.line_end || comment.line_start) + contextLines);
 
       const snippet = lines.slice(startLine, endLine);
 
       // Add line numbers
       const numberedSnippet = snippet.map((line, idx) => {
         const lineNum = startLine + idx + 1;
-        const marker = lineNum >= (comment.line_start || 1) && lineNum <= (comment.line_end || comment.line_start || 1) ? '→' : ' ';
+        const marker = lineNum >= comment.line_start && lineNum <= (comment.line_end || comment.line_start) ? '→' : ' ';
         return `${String(lineNum).padStart(4, ' ')}${marker} ${line}`;
       }).join('\n');
 
