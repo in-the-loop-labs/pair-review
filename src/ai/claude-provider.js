@@ -161,7 +161,7 @@ class ClaudeProvider extends AIProvider {
         'Bash(find *)',
         'Bash(rg *)',
       ].join(',');
-      permissionArgs = ['--allowedTools', allowedTools];
+      permissionArgs = ['--allowedTools', allowedTools, '--permission-mode', 'dontAsk'];
     }
     const baseArgs = ['-p', '--verbose', ...cliModelArgs, '--output-format', 'stream-json', ...permissionArgs];
     if (maxBudget) {

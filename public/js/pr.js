@@ -2199,6 +2199,11 @@ class PRManager {
       }
 
       this.updateCommentCount();
+
+      // Refresh chat indicators now that comment elements are in the DOM
+      if (this.chatPanelManager && this.currentPR?.id) {
+        this.chatPanelManager.loadChatIndicators(this.currentPR.id);
+      }
     } catch (error) {
       console.error('Error loading user comments:', error);
     }
@@ -2278,7 +2283,11 @@ class PRManager {
   }
 
   async displayAISuggestions(suggestions) {
-    return this.suggestionManager.displayAISuggestions(suggestions);
+    await this.suggestionManager.displayAISuggestions(suggestions);
+    // Refresh chat indicators now that suggestion elements are in the DOM
+    if (this.chatPanelManager && this.currentPR?.id) {
+      this.chatPanelManager.loadChatIndicators(this.currentPR.id);
+    }
   }
 
   createSuggestionRow(suggestions) {

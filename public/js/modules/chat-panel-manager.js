@@ -115,7 +115,8 @@ class ChatPanelManager {
   }
 
   /**
-   * Open chat for a specific comment
+   * Open chat for a specific comment.
+   * Resumes the most recent existing session if one exists, otherwise starts a new one.
    * @param {number} commentId - Comment ID
    * @param {Object} comment - Comment object with details
    */
@@ -125,18 +126,66 @@ class ChatPanelManager {
       this.initializePanel();
     }
 
-    // Check if we already have an active chat for this comment
+    // Close all open SSE connections upfront to free the browser's per-domain
+    // connection pool (6 max for HTTP/1.1). Without this, stale EventSource
+    // connections block regular fetch() calls from completing.
+    this._closeAllEventSources();
+
+    // Check if we already have this chat loaded in memory
     const existingSession = Array.from(this.activeChatSessions.values())
       .find(session => session.commentId === commentId);
 
     if (existingSession) {
-      // Switch to existing chat
+      // Switch to existing in-memory chat
       this.switchChat(existingSession.chatId);
       return;
     }
 
-    // Start a new chat session
     try {
+      // Check the server for an existing session for this comment
+      const sessionsEndpoint = this.isLocalMode
+        ? `/api/local/${this.prManager.reviewId}/chat/comment/${commentId}/sessions`
+        : `/api/chat/comment/${commentId}/sessions`;
+
+      const sessionsResp = await fetch(sessionsEndpoint);
+      let existingServerSession = null;
+      let serverComment = null;
+
+      if (sessionsResp.ok) {
+        const sessionsData = await sessionsResp.json();
+        const sessions = sessionsData.sessions || [];
+        serverComment = sessionsData.comment || null;
+        // Pick the most recent session (they're ordered by created_at DESC)
+        if (sessions.length > 0) {
+          existingServerSession = sessions[0];
+        }
+      }
+
+      if (existingServerSession) {
+        // Resume existing session — use comment from server response or caller
+        const sessionComment = comment || serverComment;
+
+        // Register in active sessions map
+        this.activeChatSessions.set(existingServerSession.id, {
+          chatId: existingServerSession.id,
+          commentId: commentId,
+          comment: sessionComment,
+          provider: existingServerSession.provider,
+          model: existingServerSession.model,
+          eventSource: null
+        });
+
+        // Switch to this chat (will load messages from server)
+        this.switchChat(existingServerSession.id);
+
+        // Setup SSE streaming for new messages
+        this._setupEventStream(existingServerSession.id);
+
+        console.log(`Resumed chat session: ${existingServerSession.id}`);
+        return;
+      }
+
+      // No existing session — start a new one
       const endpoint = this.isLocalMode
         ? `/api/local/${this.prManager.reviewId}/chat/start`
         : '/api/chat/start';
@@ -169,6 +218,9 @@ class ChatPanelManager {
       // Setup SSE streaming
       this._setupEventStream(data.chatId);
 
+      // Add chat badge to this comment since it now has a session
+      // Note: don't add indicator yet — session is empty until first message is sent
+
       console.log(`Chat session started: ${data.chatId}`);
 
     } catch (error) {
@@ -197,6 +249,11 @@ class ChatPanelManager {
     this._renderChatContext(session);
     await this._loadChatMessages(chatId);
 
+    // Reconnect SSE if it was closed (e.g. panel was closed and reopened)
+    if (!session.eventSource) {
+      this._setupEventStream(chatId);
+    }
+
     // Expand panel if collapsed
     if (this.panel.classList.contains('collapsed')) {
       this.panel.classList.remove('collapsed');
@@ -206,8 +263,8 @@ class ChatPanelManager {
     // Add class to body to trigger layout shift (push content left)
     document.body.classList.add('chat-panel-open');
 
-    // Highlight the comment in the diff
-    this._highlightComment(session.commentId);
+    // Scroll to and highlight the comment in the diff
+    this._scrollToComment(session.commentId, session.comment?.source);
   }
 
   /**
@@ -243,7 +300,7 @@ class ChatPanelManager {
     const contextDiv = this.panel.querySelector('.chat-comment-context');
     if (!contextDiv) return;
 
-    const comment = session.comment;
+    const comment = session.comment || {};
     const lineInfo = comment.line_start
       ? `L${comment.line_start}${comment.line_end && comment.line_end !== comment.line_start ? `-${comment.line_end}` : ''}`
       : '';
@@ -253,7 +310,7 @@ class ChatPanelManager {
 
     const contextHtml = `
       <div class="chat-context-card">
-        <div class="chat-context-file">
+        <div class="chat-context-file chat-context-file-link" title="Scroll to comment in diff">
           <span class="chat-context-file-icon">${fileIcon}</span>
           <span class="chat-context-file-path">${this._escapeHtml(comment.file || 'File-level comment')}</span>
           ${lineInfo ? `<span class="chat-context-line-badge">${lineInfo}</span>` : ''}
@@ -267,10 +324,22 @@ class ChatPanelManager {
 
     contextDiv.innerHTML = contextHtml;
 
-    // Always show the "Adopt with AI Edits" button for consistency
+    // Make the file line clickable to scroll to the comment in the diff
+    const fileLink = contextDiv.querySelector('.chat-context-file-link');
+    if (fileLink) {
+      fileLink.addEventListener('click', () => {
+        this._scrollToComment(session.commentId, comment.source);
+      });
+    }
+
+    // Show the actions bar but disable the adopt button until there's conversation content
     const chatActionsDiv = this.panel.querySelector('.chat-actions');
     if (chatActionsDiv) {
       chatActionsDiv.style.display = 'block';
+    }
+    const adoptBtn = this.panel.querySelector('.chat-adopt-btn');
+    if (adoptBtn) {
+      adoptBtn.disabled = true;
     }
 
     // Update header title to show the comment title (or fallback to filename)
@@ -318,6 +387,9 @@ class ChatPanelManager {
       const messages = data.session?.messages || [];
 
       this._renderMessages(messages);
+
+      // Enable adopt button only when conversation has content
+      this._updateAdoptButtonState(messages.length > 0);
 
     } catch (error) {
       console.error('Error loading chat messages:', error);
@@ -438,6 +510,9 @@ class ChatPanelManager {
       messagesDiv.appendChild(assistantPlaceholder);
       messagesDiv.scrollTop = messagesDiv.scrollHeight;
 
+      // Update button to reflect we're now waiting for the AI
+      sendBtn.textContent = 'Thinking...';
+
       // Send message to backend
       const endpoint = this.isLocalMode
         ? `/api/local/${this.prManager.reviewId}/chat/${this.currentChatId}/message`
@@ -482,7 +557,17 @@ class ChatPanelManager {
     const session = this.activeChatSessions.get(chatId);
     if (!session) return;
 
-    // Close existing event source if any
+    // Close ALL other SSE connections first to avoid exhausting the browser's
+    // per-domain connection limit (typically 6 for HTTP/1.1).
+    // Only the currently active chat needs a live SSE connection.
+    this.activeChatSessions.forEach((s, id) => {
+      if (id !== chatId && s.eventSource) {
+        s.eventSource.close();
+        s.eventSource = null;
+      }
+    });
+
+    // Close existing event source for this session if any
     if (session.eventSource) {
       session.eventSource.close();
     }
@@ -513,6 +598,7 @@ class ChatPanelManager {
     eventSource.onerror = (error) => {
       console.error('SSE connection error:', error);
       eventSource.close();
+      session.eventSource = null;
     };
 
     session.eventSource = eventSource;
@@ -572,6 +658,13 @@ class ChatPanelManager {
 
     // Reset streaming content
     this.streamingContent = '';
+
+    // Chat now has content — enable adopt button and show indicator dot
+    this._updateAdoptButtonState(true);
+    const session = this.activeChatSessions.get(this.currentChatId);
+    if (session) {
+      this._addChatIndicator(session.commentId);
+    }
   }
 
   /**
@@ -596,21 +689,27 @@ class ChatPanelManager {
   }
 
   /**
-   * Highlight a comment in the diff view
+   * Scroll to and highlight a comment or suggestion in the diff view
    * @private
-   * @param {number} commentId - Comment ID to highlight
+   * @param {number} commentId - Comment or suggestion ID
+   * @param {string} [source] - 'ai' for suggestions, 'user' for comments
    */
-  _highlightComment(commentId) {
+  _scrollToComment(commentId, source) {
     // Remove previous highlights
     document.querySelectorAll('.comment-highlighted').forEach(el => {
       el.classList.remove('comment-highlighted');
     });
 
-    // Find and highlight the comment
-    const commentEl = document.querySelector(`[data-comment-id="${commentId}"]`);
-    if (commentEl) {
-      commentEl.classList.add('comment-highlighted');
-      commentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Try user comment first, then AI suggestion
+    const el = source === 'ai'
+      ? (document.querySelector(`[data-suggestion-id="${commentId}"]`) || document.querySelector(`[data-comment-id="${commentId}"]`))
+      : (document.querySelector(`[data-comment-id="${commentId}"]`) || document.querySelector(`[data-suggestion-id="${commentId}"]`));
+
+    if (el) {
+      el.classList.add('comment-highlighted');
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Remove highlight after a few seconds so it doesn't stay forever
+      setTimeout(() => el.classList.remove('comment-highlighted'), 3000);
     }
   }
 
@@ -665,34 +764,42 @@ class ChatPanelManager {
       // Add the refined suggestion as a message in the chat
       this._appendMessage('assistant', `**Refined Suggestion:**\n\n${data.refinedText}`);
 
-      // Now adopt the suggestion with the refined text
-      // We need to update the suggestion's body text before adopting
-      const suggestionId = comment.id;
+      const commentId = session.comment?.id || session.commentId;
+      const isUserComment = session.comment?.source !== 'ai';
 
-      // Find the suggestion element and update its text
-      const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-      if (suggestionDiv) {
-        const bodyDiv = suggestionDiv.querySelector('.ai-suggestion-body');
-        if (bodyDiv) {
-          // Store the refined text for adoption
-          bodyDiv.dataset.refinedText = data.refinedText;
-        }
-      }
-
-      // Call prManager to adopt with the refined text
-      if (this.prManager?.adoptSuggestionWithText) {
-        await this.prManager.adoptSuggestionWithText(suggestionId, data.refinedText);
-      } else if (this.prManager?.adoptAndEditSuggestion) {
-        // Fallback: adopt and edit so user can review
-        await this.prManager.adoptAndEditSuggestion(suggestionId);
-        // After adoption, update the textarea with refined text
-        setTimeout(() => {
-          const textarea = document.querySelector(`.user-comment-edit-form textarea`);
+      if (isUserComment) {
+        // For user comments: open in edit mode with refined text pre-populated
+        if (this.prManager?.editUserComment) {
+          await this.prManager.editUserComment(commentId);
+          // Replace textarea content with the refined text
+          const textarea = document.getElementById(`edit-comment-${commentId}`);
           if (textarea) {
             textarea.value = data.refinedText;
             textarea.dispatchEvent(new Event('input'));
           }
-        }, 100);
+        }
+      } else {
+        // For AI suggestions: adopt the suggestion with refined text
+        const suggestionDiv = document.querySelector(`[data-suggestion-id="${commentId}"]`);
+        if (suggestionDiv) {
+          const bodyDiv = suggestionDiv.querySelector('.ai-suggestion-body');
+          if (bodyDiv) {
+            bodyDiv.dataset.refinedText = data.refinedText;
+          }
+        }
+
+        if (this.prManager?.adoptSuggestionWithText) {
+          await this.prManager.adoptSuggestionWithText(commentId, data.refinedText);
+        } else if (this.prManager?.adoptAndEditSuggestion) {
+          await this.prManager.adoptAndEditSuggestion(commentId);
+          // After adoption, update the textarea with refined text
+          const textarea = document.getElementById(`edit-comment-${commentId}`)
+            || document.querySelector('.user-comment-edit-form textarea');
+          if (textarea) {
+            textarea.value = data.refinedText;
+            textarea.dispatchEvent(new Event('input'));
+          }
+        }
       }
 
       // Close the chat panel after successful adoption
@@ -708,6 +815,86 @@ class ChatPanelManager {
   }
 
   /**
+   * Load chat indicators (blue dots) for all comments that have chat history.
+   * Fetches from server on first call, then uses cached data on subsequent calls.
+   * Safe to call multiple times (e.g. after comments render, after suggestions render).
+   * @param {number} reviewId - Review ID to fetch chat sessions for
+   */
+  async loadChatIndicators(reviewId) {
+    if (!reviewId) return;
+
+    // Fetch from server only once, then reuse cached data
+    if (!this._chatHistoryCommentIds) {
+      try {
+        const endpoint = this.isLocalMode
+          ? `/api/local/${reviewId}/chat/comment-sessions`
+          : `/api/chat/review/${reviewId}/comment-sessions`;
+
+        const response = await fetch(endpoint);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        this._chatHistoryCommentIds = new Set(data.commentIds || []);
+      } catch (error) {
+        console.error('Error loading chat indicators:', error);
+        return;
+      }
+    }
+
+    // Apply indicator dots to any matching DOM elements
+    this._chatHistoryCommentIds.forEach(id => this._addChatIndicator(id));
+  }
+
+  /**
+   * Add a blue dot indicator to a comment or suggestion chat button.
+   * Only shown when the comment has at least one chat message.
+   * @private
+   * @param {number} commentId - Comment ID
+   */
+  _addChatIndicator(commentId) {
+    // Find the chat button — either on a user comment row or an AI suggestion
+    const commentRow = document.querySelector(`tr.user-comment-row[data-comment-id="${commentId}"]`);
+    const chatBtn = commentRow
+      ? commentRow.querySelector('.btn-chat-comment')
+      : document.querySelector(`[data-suggestion-id="${commentId}"] .ai-action-chat`);
+
+    if (chatBtn && !chatBtn.classList.contains('has-chat-history')) {
+      chatBtn.classList.add('has-chat-history');
+    }
+
+    // Also add to cache so subsequent loadChatIndicators calls include it
+    if (this._chatHistoryCommentIds) {
+      this._chatHistoryCommentIds.add(commentId);
+    }
+  }
+
+  /**
+   * Enable or disable the "Adopt with AI Edits" button.
+   * @private
+   * @param {boolean} enabled - Whether the button should be enabled
+   */
+  _updateAdoptButtonState(enabled) {
+    const adoptBtn = this.panel?.querySelector('.chat-adopt-btn');
+    if (adoptBtn) {
+      adoptBtn.disabled = !enabled;
+    }
+  }
+
+  /**
+   * Close all open SSE EventSource connections to free the browser's
+   * per-domain connection pool.
+   * @private
+   */
+  _closeAllEventSources() {
+    this.activeChatSessions.forEach(session => {
+      if (session.eventSource) {
+        session.eventSource.close();
+        session.eventSource = null;
+      }
+    });
+  }
+
+  /**
    * Close the chat panel
    */
   closePanel() {
@@ -719,12 +906,8 @@ class ChatPanelManager {
     // Remove class from body to restore layout
     document.body.classList.remove('chat-panel-open');
 
-    // Close all event sources
-    this.activeChatSessions.forEach(session => {
-      if (session.eventSource) {
-        session.eventSource.close();
-      }
-    });
+    // Close SSE event sources but keep sessions in memory so they can be reopened
+    this._closeAllEventSources();
   }
 
   /**
@@ -748,5 +931,4 @@ if (typeof module !== 'undefined' && module.exports) {
 // Export to window for browser usage
 if (typeof window !== 'undefined') {
   window.ChatPanelManager = ChatPanelManager;
-  console.log('[ChatPanelManager] v12: Added Adopt with AI Edits feature');
 }
