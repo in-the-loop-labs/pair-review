@@ -8,6 +8,7 @@
 
 const { createProvider } = require('../ai');
 const { v4: uuidv4 } = require('uuid');
+const { queryOne } = require('../database');
 const logger = require('../utils/logger');
 const fs = require('fs').promises;
 const path = require('path');
@@ -43,13 +44,33 @@ class ChatService {
       throw new Error(`Comment not found: ${commentId}`);
     }
 
+    // If this comment was adopted from an AI suggestion, check for an existing
+    // session on the parent so the conversation continues seamlessly.
+    if (comment.parent_id) {
+      const parentSessions = await this.chatRepo.getSessionsByComment(comment.parent_id);
+      if (parentSessions.length > 0) {
+        const existingSession = parentSessions[0];
+        logger.info(`Comment ${commentId} adopted from ${comment.parent_id}, reusing session ${existingSession.id}`);
+        const parentComment = await this.commentRepo.getComment(comment.parent_id);
+        return {
+          ...existingSession,
+          comment: parentComment || comment
+        };
+      }
+    }
+
     // Get provider and model from the original analysis run
     let provider = options.provider;
     let model = options.model;
 
     if (!provider || !model) {
-      if (comment.ai_run_id) {
-        const analysisRun = await this.analysisRunRepo.getById(comment.ai_run_id);
+      // For adopted comments, try the parent's analysis run
+      const aiRunId = comment.ai_run_id || (comment.parent_id
+        ? (await this.commentRepo.getComment(comment.parent_id))?.ai_run_id
+        : null);
+
+      if (aiRunId) {
+        const analysisRun = await this.analysisRunRepo.getById(aiRunId);
         if (analysisRun) {
           provider = provider || analysisRun.provider || 'claude';
           model = model || analysisRun.model || 'opus';
@@ -244,6 +265,18 @@ class ChatService {
     // Build conversation history
     const conversationHistory = messages.map(m => `${m.role === 'user' ? 'Human' : 'Assistant'}: ${m.content}`).join('\n\n');
 
+    // Check if this AI suggestion was adopted — the adopted comment may have edited text
+    let adoptionContext = '';
+    if (comment.source === 'ai') {
+      const adoptedComment = await this._getAdoptedChild(comment.id);
+      if (adoptedComment) {
+        const bodyChanged = adoptedComment.body !== comment.body;
+        adoptionContext = `\n## Adoption Context
+This AI suggestion was adopted as a user comment${bodyChanged ? ' and edited' : ''}.
+${bodyChanged ? `Adopted comment (current): ${adoptedComment.body}` : 'The comment text was kept as-is.'}`;
+      }
+    }
+
     // Build the prompt
     const prompt = `You are assisting with a code review follow-up question.
 
@@ -251,7 +284,7 @@ class ChatService {
 File: ${comment.file || 'N/A'}
 ${comment.line_start ? `Lines: ${comment.line_start}${comment.line_end && comment.line_end !== comment.line_start ? `-${comment.line_end}` : ''}` : 'Scope: File-level comment (applies to the entire file)'}
 Type: ${comment.type || 'comment'} (${comment.source || 'unknown'})${comment.title ? `\nTitle: ${comment.title}` : ''}
-Body: ${comment.body || 'No comment body'}
+Body: ${comment.body || 'No comment body'}${adoptionContext}
 
 ## Code Context
 \`\`\`${language}
@@ -504,9 +537,9 @@ Output ONLY the refined comment text. Do not include any preamble, explanation, 
 
     logger.info(`Generated refined suggestion: ${refinedText.length} characters`);
 
-    // Add the refinement to the chat history as context
-    await this.chatRepo.addMessage(sessionId, 'user', '[System: Generate refined suggestion for adoption]');
-    await this.chatRepo.addMessage(sessionId, 'assistant', `Refined suggestion:\n\n${refinedText}`);
+    // Note: We intentionally don't persist the refinement exchange to chat history.
+    // The adoption closes the panel, and showing "[System: ...]" messages in the
+    // conversation on reopen is confusing. The refined text is returned to the caller.
 
     return {
       refinedText,
@@ -516,12 +549,29 @@ Output ONLY the refined comment text. Do not include any preamble, explanation, 
   }
 
   /**
-   * Get all chat sessions for a comment
+   * Get all chat sessions for a comment.
+   * If the comment has a parent_id (adopted suggestion) and no sessions of its own,
+   * returns the parent's sessions so the conversation continues seamlessly.
    * @param {number} commentId - Comment ID
-   * @returns {Promise<Array<Object>>} Array of chat sessions
+   * @returns {Promise<{sessions: Array<Object>, resolvedCommentId: number}>}
    */
   async getChatSessions(commentId) {
-    return await this.chatRepo.getSessionsByComment(commentId);
+    const sessions = await this.chatRepo.getSessionsByComment(commentId);
+    if (sessions.length > 0) {
+      return { sessions, resolvedCommentId: commentId };
+    }
+
+    // Check if this comment was adopted from a parent (AI suggestion)
+    const comment = await this.commentRepo.getComment(commentId);
+    if (comment?.parent_id) {
+      const parentSessions = await this.chatRepo.getSessionsByComment(comment.parent_id);
+      if (parentSessions.length > 0) {
+        logger.info(`Comment ${commentId} has no sessions, using parent ${comment.parent_id} sessions`);
+        return { sessions: parentSessions, resolvedCommentId: comment.parent_id };
+      }
+    }
+
+    return { sessions: [], resolvedCommentId: commentId };
   }
 
   /**
@@ -531,6 +581,19 @@ Output ONLY the refined comment text. Do not include any preamble, explanation, 
    */
   async getChatSessionWithMessages(sessionId) {
     return await this.chatRepo.getSessionWithMessages(sessionId);
+  }
+
+  /**
+   * Find the adopted user comment for an AI suggestion (child with parent_id pointing here)
+   * @private
+   * @param {number} commentId - The AI suggestion's comment ID
+   * @returns {Promise<Object|null>} The adopted comment, or null
+   */
+  async _getAdoptedChild(commentId) {
+    return await queryOne(this.db,
+      `SELECT * FROM comments WHERE parent_id = ? AND source = 'user' ORDER BY created_at DESC LIMIT 1`,
+      [commentId]
+    );
   }
 }
 

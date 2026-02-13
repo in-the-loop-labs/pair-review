@@ -3399,12 +3399,24 @@ class ChatRepository {
    */
   async getCommentsWithChatHistory(reviewId) {
     return await query(this.db, `
-      SELECT DISTINCT cs.comment_id
-      FROM chat_sessions cs
-      JOIN comments c ON c.id = cs.comment_id
-      JOIN chat_messages cm ON cm.chat_session_id = cs.id
-      WHERE c.review_id = ?
-    `, [reviewId]);
+      SELECT DISTINCT comment_id FROM (
+        /* Comments/suggestions that directly have chat sessions */
+        SELECT cs.comment_id
+        FROM chat_sessions cs
+        JOIN comments c ON c.id = cs.comment_id
+        JOIN chat_messages cm ON cm.chat_session_id = cs.id
+        WHERE c.review_id = ?
+
+        UNION
+
+        /* Adopted comments whose parent AI suggestion has chat sessions */
+        SELECT child.id AS comment_id
+        FROM comments child
+        JOIN chat_sessions cs ON cs.comment_id = child.parent_id
+        JOIN chat_messages cm ON cm.chat_session_id = cs.id
+        WHERE child.review_id = ? AND child.parent_id IS NOT NULL
+      )
+    `, [reviewId, reviewId]);
   }
 }
 
