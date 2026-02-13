@@ -739,6 +739,136 @@ describe('Analyzer.validateSuggestions old_or_new field', () => {
   });
 });
 
+describe('Analyzer.validateSuggestions reasoning field preservation', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should preserve reasoning array through validateSuggestions()', () => {
+    const reasoning = ['Step 1: Identified the issue', 'Step 2: Confirmed the bug'];
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 10,
+        type: 'bug',
+        title: 'Test reasoning preservation',
+        description: 'Test',
+        confidence: 0.8,
+        reasoning
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toEqual(reasoning);
+  });
+
+  it('should set reasoning to null when not provided in validateSuggestions()', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 10,
+        type: 'bug',
+        title: 'No reasoning field',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toBeNull();
+  });
+
+  it('should set reasoning to null when non-array (e.g. string) in validateSuggestions()', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 10,
+        type: 'bug',
+        title: 'String reasoning',
+        description: 'Test',
+        confidence: 0.8,
+        reasoning: 'this is not an array'
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toBeNull();
+  });
+});
+
+describe('Analyzer.validateFileLevelSuggestions reasoning field preservation', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should preserve reasoning array through validateFileLevelSuggestions()', () => {
+    const reasoning = ['Analyzed file structure', 'Found design concern'];
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'design',
+        title: 'File-level reasoning test',
+        description: 'Test',
+        confidence: 0.8,
+        reasoning
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toEqual(reasoning);
+  });
+
+  it('should set reasoning to null when not provided in validateFileLevelSuggestions()', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'design',
+        title: 'No reasoning field',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toBeNull();
+  });
+
+  it('should set reasoning to null when non-array (e.g. string) in validateFileLevelSuggestions()', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'design',
+        title: 'String reasoning',
+        description: 'Test',
+        confidence: 0.8,
+        reasoning: 'this is not an array'
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toBeNull();
+  });
+});
+
 describe('Analyzer.validateSuggestions line to line_start/line_end normalization', () => {
   let analyzer;
 
