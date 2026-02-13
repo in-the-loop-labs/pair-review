@@ -18,7 +18,7 @@ const {
   buildOrchestrationLineNumberGuidance: buildOrchestrationGuidance,
 } = require('./prompts/line-number-guidance');
 const { registerProcess, isAnalysisCancelled, CancellationError } = require('../routes/shared');
-const { AnalysisRunRepository } = require('../database');
+const { AnalysisRunRepository, CommentRepository } = require('../database');
 const { mergeInstructions } = require('../utils/instructions');
 const { GitWorktreeManager } = require('../git/worktree');
 const { buildSparseCheckoutGuidance } = require('./prompts/sparse-checkout-guidance');
@@ -1314,6 +1314,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         return true;
       })
       .map(s => ({
+        ...s,  // Preserve all fields including future additions
         file: s.file,
         line_start: null,  // File-level suggestions have no line numbers
         line_end: null,
@@ -1323,6 +1324,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         description: s.description || '',
         suggestion: s.suggestion || '',
         confidence: s.confidence || 0.7,
+        reasoning: Array.isArray(s.reasoning) ? s.reasoning : null,
         is_file_level: true  // Mark as file-level suggestion
       }));
 
@@ -1420,6 +1422,7 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
     
     return deduplicatedSuggestions
       .map(s => ({
+        ...s,  // Preserve all fields including future additions
         file: s.file,
         line_start: s.line_start,
         line_end: s.line_end ?? s.line_start,
@@ -1428,7 +1431,8 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
         title: s.title,
         description: s.description || '',
         suggestion: s.suggestion || '',
-        confidence: s.confidence || 0.7
+        confidence: s.confidence || 0.7,
+        reasoning: Array.isArray(s.reasoning) ? s.reasoning : null
       }));
   }
 
@@ -1542,8 +1546,6 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
    * @param {Array<string>} changedFiles - Optional list of changed files for local mode fallback
    */
   async storeSuggestions(reviewId, runId, suggestions, level, changedFiles = null) {
-    const { run } = require('../database');
-
     // FAILSAFE: Get valid file paths to filter suggestions against
     // Prefer changedFiles parameter when available for performance (avoids DB lookup)
     // Fallback to getValidFilePaths() which properly looks up pr_metadata via review.id
@@ -1579,52 +1581,19 @@ If you are unsure, use "NEW" - it is correct for the vast majority of suggestion
       logger.warn(`[FAILSAFE] Filtered ${filteredCount} suggestions with invalid file paths`);
     }
 
-    // Store only valid suggestions
-    for (const suggestion of validSuggestions) {
-      const body = suggestion.description +
-        (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
-
-      // Handle different level types including orchestrated
-      const aiLevel = typeof level === 'string' ? level : level;
-
-      // Determine if this is a file-level suggestion
-      // File-level suggestions have is_file_level=true or have null line_start
-      const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;
-
-      // Map old_or_new to database side column: OLD -> LEFT, NEW -> RIGHT
-      // File-level suggestions (null old_or_new) default to RIGHT
-      const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';
-
-      // Log overall suggestions at debug level (level === null means orchestrated/final suggestions)
-      // Short-circuit: check debug flag first to avoid string construction when disabled
-      if (level === null && logger.isDebugEnabled()) {
+    // Log overall suggestions at debug level (level === null means orchestrated/final suggestions)
+    // Short-circuit: check debug flag first to avoid string construction when disabled
+    if (level === null && logger.isDebugEnabled()) {
+      for (const suggestion of validSuggestions) {
+        const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';
         const lineInfo = suggestion.line_start !== null ? `L${suggestion.line_start}` : 'file-level';
         logger.debug(`[Suggestion] ${suggestion.file}:${lineInfo} (${side}) - ${suggestion.title || '(no title)'}`);
       }
-
-      await run(this.db, `
-        INSERT INTO comments (
-          review_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, side, type, title, body, status, is_file_level
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        reviewId,
-        'ai',
-        'AI Assistant',
-        runId,
-        aiLevel,
-        suggestion.confidence,
-        suggestion.file,
-        suggestion.line_start,
-        suggestion.line_end,
-        side,
-        suggestion.type,
-        suggestion.title,
-        body,
-        'active',
-        isFileLevel
-      ]);
     }
+
+    // Delegate actual INSERT to CommentRepository
+    const commentRepo = new CommentRepository(this.db);
+    await commentRepo.bulkInsertAISuggestions(reviewId, runId, validSuggestions, level);
 
     logger.success(`Stored ${validSuggestions.length} suggestions in database`);
   }
@@ -3523,9 +3492,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       await dbRun(this.db, `
         INSERT INTO comments (
           review_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, side, type, title, body, status, is_file_level,
+          file, line_start, line_end, side, type, title, body, reasoning, status, is_file_level,
           voice_id, is_raw
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         reviewId,
         'ai',
@@ -3540,6 +3509,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         suggestion.type,
         suggestion.title,
         body,
+        suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
         'active',
         isFileLevel,
         suggestion.voice_id || null,

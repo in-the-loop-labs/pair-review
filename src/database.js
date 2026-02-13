@@ -9,7 +9,7 @@ const DB_PATH = path.join(getConfigDir(), 'database.db');
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 18;
+const CURRENT_SCHEMA_VERSION = 19;
 
 /**
  * Database schema SQL statements
@@ -69,6 +69,7 @@ const SCHEMA_SQL = {
       type TEXT,
       title TEXT,
       body TEXT,
+      reasoning TEXT,
 
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
       adopted_as_id INTEGER,
@@ -908,6 +909,28 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 18 complete');
+  },
+
+  // Migration to version 19: adds reasoning column to comments for AI reasoning chains
+  19: (db) => {
+    console.log('Running migration to schema version 19...');
+
+    const hasReasoning = columnExists(db, 'comments', 'reasoning');
+    if (!hasReasoning) {
+      try {
+        db.prepare(`ALTER TABLE comments ADD COLUMN reasoning TEXT`).run();
+        console.log('  Added reasoning column to comments');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column reasoning already exists (race condition)');
+      }
+    } else {
+      console.log('  Column reasoning already exists');
+    }
+
+    console.log('Migration to schema version 19 complete');
   }
 };
 
@@ -1945,7 +1968,7 @@ class CommentRepository {
    * @param {string} runId - Analysis run ID
    * @param {Array<Object>} suggestions - Normalized suggestion array (with is_file_level already set)
    */
-  async bulkInsertAISuggestions(reviewId, runId, suggestions) {
+  async bulkInsertAISuggestions(reviewId, runId, suggestions, level = null) {
     // Normalize: convert single 'line' field to 'line_start'/'line_end'
     // Work with shallow copies to avoid mutating the caller's array
     const normalized = suggestions.map(s => ({ ...s }));
@@ -1961,28 +1984,32 @@ class CommentRepository {
       const body = suggestion.description +
         (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
 
-      const isFileLevel = suggestion.is_file_level ? 1 : 0;
+      // File-level suggestions have is_file_level=true or have null line_start
+      const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;
+      // Map old_or_new to database side column: OLD -> LEFT, NEW -> RIGHT
+      // File-level suggestions (null old_or_new) default to RIGHT
       const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';
 
       await run(this.db, `
         INSERT INTO comments (
           review_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, side, type, title, body, status, is_file_level
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          file, line_start, line_end, side, type, title, body, reasoning, status, is_file_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         reviewId,
         'ai',
         'AI Assistant',
         runId,
-        null,          // ai_level NULL = orchestrated/final
+        level,
         suggestion.confidence ?? null,
         suggestion.file,
-        isFileLevel ? null : (suggestion.line_start ?? null),
-        isFileLevel ? null : (suggestion.line_end ?? null),
+        suggestion.line_start ?? null,
+        suggestion.line_end ?? null,
         side,
         suggestion.type,
         suggestion.title,
         body,
+        suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
         'active',
         isFileLevel
       ]);

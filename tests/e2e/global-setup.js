@@ -43,6 +43,11 @@ const mockAISuggestions = [
     type: 'improvement',
     title: 'Consider using const for immutable values',
     body: 'The variable `result` could be declared with `const` since it is not reassigned after initialization. This makes the code more readable and prevents accidental reassignment.',
+    reasoning: [
+      'The variable `result` is assigned once and never reassigned.',
+      'Using `const` communicates immutability intent to other developers.',
+      'This is a minor readability improvement with no behavioral change.'
+    ],
     status: 'active',
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
@@ -350,8 +355,8 @@ async function globalSetup() {
       const insertStmt = db.prepare(`
         INSERT INTO comments (
           review_id, source, ai_run_id, ai_level, file, line_start, line_end,
-          type, title, body, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          type, title, body, reasoning, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const suggestion of mockAISuggestions) {
         insertStmt.run(
@@ -365,6 +370,7 @@ async function globalSetup() {
           suggestion.type,
           suggestion.title,
           suggestion.body,
+          suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
           suggestion.status,
           now,
           now

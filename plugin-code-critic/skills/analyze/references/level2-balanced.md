@@ -88,7 +88,8 @@ Note: You may use parallel read-only Tasks to examine multiple files simultaneou
     "title": "Brief title",
     "description": "Explanation mentioning why full file context was needed",
     "suggestion": "How to fix/improve (omit for praise items)",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
@@ -96,7 +97,8 @@ Note: You may use parallel read-only Tasks to examine multiple files simultaneou
     "title": "File-level concern",
     "description": "File-level observation (architecture, organization, naming, etc.)",
     "suggestion": "How to address (omit for praise items)",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged (optional)"]
   }],
   "summary": "Brief summary of file context findings"
 }

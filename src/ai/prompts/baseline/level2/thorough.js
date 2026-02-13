@@ -187,7 +187,8 @@ Output JSON with this structure:
     "title": "Brief title",
     "description": "Detailed explanation mentioning why full file context was needed",
     "suggestion": "How to fix/improve based on file context (omit for praise items)",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
   }],
   "fileLevelSuggestions": [{
     "file": "path/to/file",
@@ -195,7 +196,8 @@ Output JSON with this structure:
     "title": "Brief title describing file-level concern",
     "description": "Explanation of the file-level observation (architecture, organization, naming, etc.)",
     "suggestion": "How to address the file-level concern (omit for praise items)",
-    "confidence": 0.0-1.0
+    "confidence": 0.0-1.0,
+    "reasoning": ["Step-by-step reasoning explaining why this issue was flagged"]
   }],
   "summary": "Brief summary of file context findings"
 }

@@ -2072,6 +2072,62 @@ tr.newly-expanded .d2h-code-line-ctn {
   color: var(--color-text-secondary);
 }
 
+/* Reasoning section (collapsible) */
+.ai-suggestion-reasoning {
+  padding: 0 16px 8px;
+  font-size: 0.8125rem;
+}
+
+.reasoning-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  color: var(--color-text-tertiary, #6e7681);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 4px 0;
+  user-select: none;
+}
+
+.reasoning-toggle:hover {
+  color: var(--color-text-secondary, #8b949e);
+}
+
+.reasoning-chevron {
+  font-size: 0.625rem;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+.ai-suggestion-reasoning:not(.collapsed) .reasoning-chevron {
+  transform: rotate(90deg);
+}
+
+.reasoning-content {
+  margin: 4px 0 0;
+  padding-left: 20px;
+  color: var(--color-text-tertiary, #6e7681);
+  line-height: 1.5;
+}
+
+.reasoning-content li {
+  margin: 2px 0;
+}
+
+.ai-suggestion-reasoning.collapsed .reasoning-content {
+  display: none;
+}
+
+/* Hide reasoning when suggestion is collapsed */
+.ai-suggestion.collapsed .ai-suggestion-reasoning {
+  display: none;
+}
+
+.file-comment-card.ai-suggestion.collapsed .ai-suggestion-reasoning {
+  display: none;
+}
+
 .ai-suggestion-actions {
   display: flex;
   gap: 8px;

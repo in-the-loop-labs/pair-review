@@ -739,6 +739,136 @@ describe('Analyzer.validateSuggestions old_or_new field', () => {
   });
 });
 
+describe('Analyzer.validateSuggestions reasoning field preservation', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should preserve reasoning array through validateSuggestions()', () => {
+    const reasoning = ['Step 1: Identified the issue', 'Step 2: Confirmed the bug'];
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 10,
+        type: 'bug',
+        title: 'Test reasoning preservation',
+        description: 'Test',
+        confidence: 0.8,
+        reasoning
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toEqual(reasoning);
+  });
+
+  it('should set reasoning to null when not provided in validateSuggestions()', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 10,
+        type: 'bug',
+        title: 'No reasoning field',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toBeNull();
+  });
+
+  it('should set reasoning to null when non-array (e.g. string) in validateSuggestions()', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 10,
+        type: 'bug',
+        title: 'String reasoning',
+        description: 'Test',
+        confidence: 0.8,
+        reasoning: 'this is not an array'
+      }
+    ];
+
+    const result = analyzer.validateSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toBeNull();
+  });
+});
+
+describe('Analyzer.validateFileLevelSuggestions reasoning field preservation', () => {
+  let analyzer;
+
+  beforeEach(() => {
+    analyzer = new Analyzer({}, 'sonnet', 'claude');
+  });
+
+  it('should preserve reasoning array through validateFileLevelSuggestions()', () => {
+    const reasoning = ['Analyzed file structure', 'Found design concern'];
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'design',
+        title: 'File-level reasoning test',
+        description: 'Test',
+        confidence: 0.8,
+        reasoning
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toEqual(reasoning);
+  });
+
+  it('should set reasoning to null when not provided in validateFileLevelSuggestions()', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'design',
+        title: 'No reasoning field',
+        description: 'Test',
+        confidence: 0.8
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toBeNull();
+  });
+
+  it('should set reasoning to null when non-array (e.g. string) in validateFileLevelSuggestions()', () => {
+    const suggestions = [
+      {
+        file: 'src/foo.js',
+        type: 'design',
+        title: 'String reasoning',
+        description: 'Test',
+        confidence: 0.8,
+        reasoning: 'this is not an array'
+      }
+    ];
+
+    const result = analyzer.validateFileLevelSuggestions(suggestions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].reasoning).toBeNull();
+  });
+});
+
 describe('Analyzer.validateSuggestions line to line_start/line_end normalization', () => {
   let analyzer;
 
@@ -938,11 +1068,11 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
     await analyzer.storeSuggestions(1, 'run-123', suggestions, 2);
 
     expect(runCalls).toHaveLength(1);
-    // Parameter indices after adding 'side' at index 9:
+    // Parameter indices:
     // 0:review_id, 1:source, 2:author, 3:ai_run_id, 4:ai_level, 5:ai_confidence,
-    // 6:file, 7:line_start, 8:line_end, 9:side, 10:type, 11:title, 12:body, 13:status, 14:is_file_level
+    // 6:file, 7:line_start, 8:line_end, 9:side, 10:type, 11:title, 12:body, 13:reasoning, 14:status, 15:is_file_level
     const params = runCalls[0].params;
-    expect(params[14]).toBe(1); // is_file_level should be 1
+    expect(params[15]).toBe(1); // is_file_level should be 1
     expect(params[7]).toBeNull(); // line_start should be null
     expect(params[8]).toBeNull(); // line_end should be null
     expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT for file-level (null old_or_new)
@@ -965,7 +1095,7 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     expect(runCalls).toHaveLength(1);
     const params = runCalls[0].params;
-    expect(params[14]).toBe(0); // is_file_level should be 0
+    expect(params[15]).toBe(0); // is_file_level should be 0
     expect(params[7]).toBe(10); // line_start should be 10
     expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT (NEW is default)
   });
@@ -997,9 +1127,9 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     expect(runCalls).toHaveLength(2);
     // First call (line-level)
-    expect(runCalls[0].params[14]).toBe(0);
+    expect(runCalls[0].params[15]).toBe(0);
     // Second call (file-level)
-    expect(runCalls[1].params[14]).toBe(1);
+    expect(runCalls[1].params[15]).toBe(1);
   });
 
   it('should map old_or_new=OLD to side=LEFT', async () => {

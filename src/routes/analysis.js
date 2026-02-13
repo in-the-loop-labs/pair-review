@@ -756,7 +756,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
       queryParams = [review.id, review.id];
     }
 
-    const suggestions = await query(db, `
+    const rows = await query(db, `
       SELECT
         id,
         source,
@@ -771,6 +771,7 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         type,
         title,
         body,
+        reasoning,
         status,
         is_file_level,
         created_at,
@@ -794,6 +795,11 @@ router.get('/api/pr/:owner/:repo/:number/ai-suggestions', async (req, res) => {
         file,
         line_start
     `, queryParams);
+
+    const suggestions = rows.map(row => ({
+      ...row,
+      reasoning: row.reasoning ? JSON.parse(row.reasoning) : null
+    }));
 
     res.json({ suggestions });
 

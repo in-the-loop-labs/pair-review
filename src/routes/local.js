@@ -959,7 +959,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
       queryParams = [reviewId, reviewId];
     }
 
-    const suggestions = await query(db, `
+    const rows = await query(db, `
       SELECT
         id,
         source,
@@ -974,6 +974,7 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
         type,
         title,
         body,
+        reasoning,
         status,
         is_file_level,
         created_at,
@@ -997,6 +998,11 @@ router.get('/api/local/:reviewId/suggestions', async (req, res) => {
         file,
         line_start
     `, queryParams);
+
+    const suggestions = rows.map(row => ({
+      ...row,
+      reasoning: row.reasoning ? JSON.parse(row.reasoning) : null
+    }));
 
     res.json({ suggestions });
 
