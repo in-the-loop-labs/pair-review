@@ -90,9 +90,11 @@ test.describe('Council Save Button', () => {
     // Select the seeded council from the dropdown
     await page.locator('#vc-council-selector').selectOption(councilId);
 
-    // Type in custom instructions to trigger dirty state
-    const instructionsInput = page.locator('#vc-custom-instructions');
-    await instructionsInput.fill('Trigger dirty state');
+    // Change a reviewer dropdown to trigger dirty state.
+    // Note: #vc-custom-instructions has data-no-dirty (it's per-review, not part of
+    // the saved council config), so we must use a select to reliably mark dirty.
+    const tierSelect = page.locator('#tab-panel-council .voice-tier').first();
+    await tierSelect.selectOption('thorough');
 
     // Wait for footer save to appear
     const footerSave = page.locator('#council-footer-save-btn');
@@ -130,9 +132,10 @@ test.describe('Council Save Button', () => {
     // Select the seeded council from the dropdown
     await page.locator('#council-selector').selectOption(councilId);
 
-    // Type in custom instructions to trigger dirty state
-    const instructionsInput = page.locator('#council-custom-instructions');
-    await instructionsInput.fill('Trigger dirty state');
+    // Change a voice dropdown to trigger dirty state.
+    // Note: #council-custom-instructions has data-no-dirty (per-review, not council config).
+    const tierSelect = page.locator('#tab-panel-advanced .voice-tier').first();
+    await tierSelect.selectOption('thorough');
 
     // Wait for footer save to appear
     const footerSave = page.locator('#council-footer-save-btn');
@@ -192,10 +195,10 @@ test.describe('Council Save Button', () => {
     // Open modal and switch to Council tab
     await openConfigModalTab(page, 'council');
 
-    // Select the council and modify to trigger dirty state
+    // Select the council and change a dropdown to trigger dirty state
     await page.locator('#vc-council-selector').selectOption(councilId);
-    const instructionsInput = page.locator('#vc-custom-instructions');
-    await instructionsInput.fill('Trigger dirty for styling check');
+    const tierSelect = page.locator('#tab-panel-council .voice-tier').first();
+    await tierSelect.selectOption('thorough');
 
     // Footer save should appear
     const footerSave = page.locator('#council-footer-save-btn');
