@@ -151,6 +151,60 @@ describe('ChatSessionManager', () => {
       expect(bridge.sendMessage).toHaveBeenCalledWith('What does this code do?');
     });
 
+    it('should prepend initial context on the first message', async () => {
+      const session = await manager.createSession({
+        provider: 'pi',
+        reviewId: 1,
+        initialContext: 'Here are the suggestions...'
+      });
+      const bridge = _createdBridges[0];
+
+      await manager.sendMessage(session.id, 'Tell me about this bug');
+
+      // Bridge should receive context + message
+      expect(bridge.sendMessage).toHaveBeenCalledWith(
+        'Here are the suggestions...\n\n---\n\nTell me about this bug'
+      );
+
+      // DB should store only the user's original message
+      const msgs = db.prepare("SELECT * FROM chat_messages WHERE session_id = ? AND role = 'user'").all(session.id);
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0].content).toBe('Tell me about this bug');
+    });
+
+    it('should only prepend initial context on the first message, not subsequent ones', async () => {
+      const session = await manager.createSession({
+        provider: 'pi',
+        reviewId: 1,
+        initialContext: 'Context here'
+      });
+      const bridge = _createdBridges[0];
+
+      await manager.sendMessage(session.id, 'first message');
+      await manager.sendMessage(session.id, 'second message');
+
+      // First call should have context prepended
+      expect(bridge.sendMessage).toHaveBeenNthCalledWith(1,
+        'Context here\n\n---\n\nfirst message'
+      );
+
+      // Second call should be plain
+      expect(bridge.sendMessage).toHaveBeenNthCalledWith(2, 'second message');
+    });
+
+    it('should not prepend anything when initialContext is null', async () => {
+      const session = await manager.createSession({
+        provider: 'pi',
+        reviewId: 1,
+        initialContext: null
+      });
+      const bridge = _createdBridges[0];
+
+      await manager.sendMessage(session.id, 'plain message');
+
+      expect(bridge.sendMessage).toHaveBeenCalledWith('plain message');
+    });
+
     it('should throw on sendMessage to non-existent session', async () => {
       await expect(
         manager.sendMessage(999, 'hello')

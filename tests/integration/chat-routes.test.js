@@ -131,6 +131,40 @@ describe('Chat Routes', () => {
       expect(callArgs.systemPrompt).toContain('code review');
     });
 
+    it('should pass initialContext as null when no AI suggestions exist', async () => {
+      const res = await request(app)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1 });
+
+      expect(res.status).toBe(200);
+      const callArgs = mockManager.createSession.mock.calls[0][0];
+      expect(callArgs.initialContext).toBeNull();
+    });
+
+    it('should pass initialContext with suggestion content when AI suggestions exist', async () => {
+      // Insert AI suggestions for the review
+      const runId = 'test-run-123';
+      db.prepare(`
+        INSERT INTO comments (id, review_id, source, ai_run_id, ai_level, ai_confidence, file, line_start, line_end, type, title, body, status, is_file_level, is_raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(10, 1, 'ai', runId, null, 0.85, 'src/app.js', 10, 15, 'bug', 'Null check missing', 'Variable may be null', 'active', 0, 0);
+
+      db.prepare(`
+        INSERT INTO comments (id, review_id, source, ai_run_id, ai_level, ai_confidence, file, line_start, line_end, type, title, body, status, is_file_level, is_raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(11, 1, 'ai', runId, null, 0.7, 'src/utils.js', 5, 5, 'improvement', 'Use const', 'Never reassigned', 'active', 0, 0);
+
+      const res = await request(app)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1 });
+
+      expect(res.status).toBe(200);
+      const callArgs = mockManager.createSession.mock.calls[0][0];
+      expect(callArgs.initialContext).toBeTypeOf('string');
+      expect(callArgs.initialContext).toContain('Null check missing');
+      expect(callArgs.initialContext).toContain('Use const');
+    });
+
     it('should return 404 when review does not exist and no system prompt given', async () => {
       const res = await request(app)
         .post('/api/chat/session')

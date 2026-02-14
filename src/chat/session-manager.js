@@ -28,9 +28,10 @@ class ChatSessionManager {
    * @param {number} [options.contextCommentId] - Optional suggestion ID that triggered chat
    * @param {string} [options.systemPrompt] - System prompt text
    * @param {string} [options.cwd] - Working directory for agent
+   * @param {string} [options.initialContext] - Initial context to prepend to the first user message
    * @returns {Promise<{id: number, status: string}>}
    */
-  async createSession({ provider, model, reviewId, contextCommentId, systemPrompt, cwd }) {
+  async createSession({ provider, model, reviewId, contextCommentId, systemPrompt, cwd, initialContext }) {
     // Insert session record into DB
     const stmt = this._db.prepare(`
       INSERT INTO chat_sessions (review_id, context_comment_id, provider, model, status)
@@ -47,11 +48,13 @@ class ChatSessionManager {
     logger.info(`[ChatSession] Creating session ${sessionId} (provider=${provider}, review=${reviewId})`);
 
     // Create and start the bridge
+    // Chat sessions get bash for git commands; review analysis uses the safe default
     const bridge = new PiBridge({
       provider,
       model,
       cwd,
-      systemPrompt
+      systemPrompt,
+      tools: 'read,bash,grep,find,ls'
     });
 
     const listeners = {
@@ -61,7 +64,7 @@ class ChatSessionManager {
     };
 
     // Store in map before starting so event handlers can find it
-    this._sessions.set(sessionId, { bridge, listeners });
+    this._sessions.set(sessionId, { bridge, listeners, initialContext: initialContext || null });
 
     // Wire up bridge events
     bridge.on('delta', (data) => {
@@ -170,6 +173,13 @@ class ChatSessionManager {
       throw new Error(`Session ${sessionId} is currently processing a message`);
     }
 
+    // On the first message, prepend initial context (suggestions, etc.)
+    let messageForAgent = content;
+    if (session.initialContext) {
+      messageForAgent = session.initialContext + '\n\n---\n\n' + content;
+      session.initialContext = null; // Only prepend once
+    }
+
     // Store user message in DB
     const stmt = this._db.prepare(`
       INSERT INTO chat_messages (session_id, role, content)
@@ -179,7 +189,7 @@ class ChatSessionManager {
     const messageId = Number(result.lastInsertRowid);
 
     // Forward to bridge
-    await session.bridge.sendMessage(content);
+    await session.bridge.sendMessage(messageForAgent);
 
     return { id: messageId };
   }

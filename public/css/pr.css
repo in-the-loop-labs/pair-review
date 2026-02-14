@@ -6357,6 +6357,9 @@ body:not([data-theme="dark"]) .theme-icon-light {
   position: relative;
   overflow: hidden;
   transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 #analyze-btn::before {
@@ -6441,6 +6444,74 @@ body:not([data-theme="dark"]) .theme-icon-light {
 
 [data-theme="dark"] #analyze-btn.btn-analyzing .analyze-icon {
   color: #1c1917;
+}
+
+/* Chat Button - Cool blue/purple conversation CTA */
+#chat-toggle-btn {
+  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  border: 1px solid #93c5fd;
+  color: #1d4ed8;
+  font-weight: 600;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#chat-toggle-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.4) 50%,
+    transparent 100%
+  );
+  transition: left 0.5s ease;
+}
+
+#chat-toggle-btn:hover {
+  background: linear-gradient(135deg, #bfdbfe 0%, #93c5fd 100%);
+  border-color: #60a5fa;
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.4), 0 0 32px rgba(59, 130, 246, 0.2);
+  transform: translateY(-1px);
+}
+
+#chat-toggle-btn:hover::before {
+  left: 100%;
+}
+
+#chat-toggle-btn .chat-icon {
+  color: #2563eb;
+  filter: drop-shadow(0 0 2px rgba(37, 99, 235, 0.5));
+}
+
+#chat-toggle-btn:hover .chat-icon {
+  animation: sparkle-float 0.6s ease-in-out infinite;
+}
+
+/* Dark theme adjustments for Chat button */
+[data-theme="dark"] #chat-toggle-btn {
+  background: linear-gradient(135deg, #1e3a5f 0%, #1e40af 100%);
+  border-color: #3b82f6;
+  color: #93c5fd;
+}
+
+[data-theme="dark"] #chat-toggle-btn:hover {
+  background: linear-gradient(135deg, #1e40af 0%, #2563eb 100%);
+  border-color: #60a5fa;
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.5), 0 0 32px rgba(59, 130, 246, 0.3);
+}
+
+[data-theme="dark"] #chat-toggle-btn .chat-icon {
+  color: #60a5fa;
+  filter: drop-shadow(0 0 2px rgba(96, 165, 250, 0.5));
 }
 
 .main-layout .diff-container {
@@ -10632,13 +10703,6 @@ body.resizing * {
 .chat-panel__send-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
-}
-
-/* Chat toggle button in header */
-.btn-chat-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 /* "Ask about this" button on suggestions */

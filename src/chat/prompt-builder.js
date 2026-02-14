@@ -2,59 +2,37 @@
 /**
  * Chat Prompt Builder
  *
- * Builds system prompts for chat sessions with contextual review information.
- * The prompt gives the chat agent enough context about the review, any focused
- * suggestion, and the relevant diff to answer questions helpfully.
+ * Builds system prompts and initial context for chat sessions.
+ * The system prompt is lean (role + review context + instructions).
+ * Suggestion context is delivered via the first user message, not the system prompt.
  */
 
 const logger = require('../utils/logger');
 
-const MAX_DIFF_LENGTH = 10000;
-
 /**
- * Build a system prompt for chat sessions with contextual review information.
+ * Build a lean system prompt for chat sessions.
+ * Contains only role, review context, and behavioral instructions.
  * @param {Object} options
  * @param {Object} options.review - Review metadata {pr_number, repository, review_type, local_path, name}
- * @param {Object} [options.suggestion] - Optional suggestion context {title, body, reasoning, type, file, line_start, line_end}
- * @param {string} [options.diff] - Relevant diff context for the file(s)
- * @param {Object} [options.analysisRun] - Optional analysis run summary {provider, model, summary, total_suggestions}
  * @returns {string} System prompt for the chat agent
  */
-function buildChatPrompt({ review, suggestion, diff, analysisRun }) {
+function buildChatPrompt({ review }) {
   const sections = [];
 
   // Role
-  sections.push('You are a code review assistant helping with a code review.');
+  sections.push('You are a code review assistant helping with a code review. You have access to the repository and can explore it using shell commands. Do not modify any files.');
 
   // Review context
   sections.push(buildReviewContext(review));
 
-  // Analysis run summary
-  if (analysisRun) {
-    sections.push(buildAnalysisContext(analysisRun));
-  }
-
-  // Suggestion context
-  if (suggestion) {
-    sections.push(buildSuggestionContext(suggestion));
-  }
-
-  // Diff context
-  if (diff) {
-    sections.push(buildDiffContext(diff));
-  }
-
   // Instructions
   sections.push(
-    'Answer questions about this review, the code changes, and any suggestions. ' +
-    'You have read-only access to the repository. Be concise and helpful.'
+    'Answer questions about this review, the code changes, and any AI suggestions. ' +
+    'Be concise and helpful. Use markdown formatting in your responses.'
   );
 
-  // Formatting
-  sections.push('Use markdown formatting in your responses.');
-
   const prompt = sections.join('\n\n');
-  logger.debug(`Chat prompt built: ${prompt.length} chars`);
+  logger.debug(`Chat system prompt built: ${prompt.length} chars`);
   return prompt;
 }
 
@@ -87,79 +65,75 @@ function buildReviewContext(review) {
 }
 
 /**
- * Build the analysis run summary section.
- * @param {Object} analysisRun - Analysis run metadata
- * @returns {string}
+ * Safely parse a reasoning field from the database.
+ * Handles null, pre-parsed objects/arrays, valid JSON strings, and malformed JSON.
+ * @param {*} reasoning - Raw reasoning value from DB
+ * @returns {*} Parsed reasoning or null on failure
  */
-function buildAnalysisContext(analysisRun) {
-  const parts = ['An AI analysis has been run on this review.'];
-  if (analysisRun.provider || analysisRun.model) {
-    const model = [analysisRun.provider, analysisRun.model].filter(Boolean).join('/');
-    parts.push(`Model: ${model}.`);
-  }
-  if (analysisRun.total_suggestions != null) {
-    parts.push(`Total suggestions: ${analysisRun.total_suggestions}.`);
-  }
-  if (analysisRun.summary) {
-    parts.push(`Summary: ${analysisRun.summary}`);
-  }
-  return parts.join(' ');
+function parseReasoning(reasoning) {
+  if (!reasoning) return null;
+  if (typeof reasoning !== 'string') return reasoning;
+  try { return JSON.parse(reasoning); } catch { return null; }
 }
 
 /**
- * Build the suggestion context section.
- * @param {Object} suggestion - Suggestion details
- * @returns {string}
+ * Format a suggestion DB row into a lean context object for the chat agent.
+ * @param {Object} s - Suggestion row from the database
+ * @returns {Object} Formatted suggestion
  */
-function buildSuggestionContext(suggestion) {
-  const lines = ['The user is asking about this specific suggestion:'];
-
-  if (suggestion.title) {
-    lines.push(`Title: ${suggestion.title}`);
-  }
-  if (suggestion.type) {
-    lines.push(`Type: ${suggestion.type}`);
-  }
-  if (suggestion.file) {
-    let location = `File: ${suggestion.file}`;
-    if (suggestion.line_start != null) {
-      location += suggestion.line_end != null && suggestion.line_end !== suggestion.line_start
-        ? ` (lines ${suggestion.line_start}-${suggestion.line_end})`
-        : ` (line ${suggestion.line_start})`;
-    }
-    lines.push(location);
-  }
-  if (suggestion.body) {
-    lines.push(`\nDescription:\n${suggestion.body}`);
-  }
-  if (Array.isArray(suggestion.reasoning) && suggestion.reasoning.length > 0) {
-    lines.push(`\nReasoning:\n${suggestion.reasoning.map((step, i) => `${i + 1}. ${step}`).join('\n')}`);
-  }
-
-  return lines.join('\n');
+function formatSuggestionForContext(s) {
+  return {
+    id: s.id,
+    file: s.file,
+    line_start: s.line_start,
+    line_end: s.line_end,
+    type: s.type,
+    title: s.title,
+    body: s.body,
+    reasoning: parseReasoning(s.reasoning),
+    status: s.status,
+    ai_confidence: s.ai_confidence,
+    is_file_level: s.is_file_level
+  };
 }
 
 /**
- * Build the diff context section, truncating if necessary.
- * @param {string} diff - Raw diff text
- * @returns {string}
+ * Build initial context to prepend to the first user message.
+ * Contains all AI suggestions from the latest analysis run, and optionally
+ * highlights a specific suggestion that triggered the chat.
+ *
+ * @param {Object} options
+ * @param {Array} options.suggestions - All AI suggestions from the latest run
+ * @param {Object} [options.focusedSuggestion] - The specific suggestion that triggered chat (full DB row)
+ * @returns {string|null} Context text to prepend to first message, or null if no context
  */
-function buildDiffContext(diff) {
-  if (!diff || diff.length === 0) {
-    return '';
+function buildInitialContext({ suggestions, focusedSuggestion }) {
+  const sections = [];
+
+  if (suggestions && suggestions.length > 0) {
+    const formatted = suggestions.map(formatSuggestionForContext);
+
+    const label = formatted.length === 1 ? '1 AI suggestion' : `${formatted.length} AI suggestions`;
+    sections.push(
+      `Here ${formatted.length === 1 ? 'is' : 'are all'} ${label} from the latest analysis run:\n` +
+      '```json\n' + JSON.stringify(formatted, null, 2) + '\n```'
+    );
   }
 
-  let diffContent = diff;
-  if (diff.length > MAX_DIFF_LENGTH) {
-    const half = Math.floor(MAX_DIFF_LENGTH / 2);
-    const head = diff.substring(0, half);
-    const tail = diff.substring(diff.length - half);
-    const omitted = diff.length - MAX_DIFF_LENGTH;
-    diffContent = `${head}\n\n... (${omitted} characters omitted) ...\n\n${tail}`;
-    logger.debug(`Chat diff truncated from ${diff.length} to ~${MAX_DIFF_LENGTH} chars`);
+  if (focusedSuggestion) {
+    const focused = formatSuggestionForContext(focusedSuggestion);
+
+    sections.push(
+      'The user is asking about this specific suggestion:\n' +
+      '```json\n' + JSON.stringify(focused, null, 2) + '\n```'
+    );
   }
 
-  return `Relevant diff:\n\`\`\`diff\n${diffContent}\n\`\`\``;
+  if (sections.length === 0) {
+    return null;
+  }
+
+  return sections.join('\n\n');
 }
 
-module.exports = { buildChatPrompt };
+module.exports = { buildChatPrompt, buildInitialContext };
