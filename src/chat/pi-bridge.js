@@ -28,6 +28,7 @@ class PiBridge extends EventEmitter {
    * @param {string} [options.provider] - Provider name (e.g., 'anthropic')
    * @param {string} [options.cwd] - Working directory for Pi process
    * @param {string} [options.systemPrompt] - System prompt text
+   * @param {string} [options.tools] - Comma-separated tool list (default: 'read,grep,find,ls')
    * @param {string} [options.piCommand] - Override Pi command (default: 'pi')
    */
   constructor(options = {}) {
@@ -36,6 +37,7 @@ class PiBridge extends EventEmitter {
     this.provider = options.provider || null;
     this.cwd = options.cwd || process.cwd();
     this.systemPrompt = options.systemPrompt || null;
+    this.tools = options.tools || 'read,grep,find,ls';
     this.piCommand = options.piCommand || process.env.PAIR_REVIEW_PI_CMD || 'pi';
 
     this._process = null;
@@ -240,7 +242,7 @@ class PiBridge extends EventEmitter {
    * @returns {string[]}
    */
   _buildArgs() {
-    const args = ['--mode', 'rpc', '--no-session', '--tools', 'read,grep,find,ls'];
+    const args = ['--mode', 'rpc', '--tools', this.tools];
 
     if (this.provider) {
       args.push('--provider', this.provider);

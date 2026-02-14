@@ -12,8 +12,8 @@
  */
 
 const express = require('express');
-const { queryOne } = require('../database');
-const { buildChatPrompt } = require('../chat/prompt-builder');
+const { queryOne, query } = require('../database');
+const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -37,21 +37,48 @@ router.post('/api/chat/session', async (req, res) => {
 
     // Build system prompt if not provided directly
     let finalSystemPrompt = systemPrompt;
+    let initialContext = null;
+
     if (!finalSystemPrompt) {
       const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
       if (!review) {
         return res.status(404).json({ error: 'Review not found' });
       }
 
-      let suggestion = null;
+      // Focused suggestion (if chat was triggered from a specific suggestion)
+      let focusedSuggestion = null;
       if (contextCommentId) {
-        suggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [contextCommentId]);
+        focusedSuggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [contextCommentId]);
       }
 
-      finalSystemPrompt = buildChatPrompt({
-        review,
-        suggestion,
-        diff: null
+      finalSystemPrompt = buildChatPrompt({ review });
+
+      // Fetch all AI suggestions from the latest analysis run
+      const suggestions = await query(db, `
+        SELECT
+          id, ai_run_id, ai_level, ai_confidence,
+          file, line_start, line_end, type, title, body,
+          reasoning, status, is_file_level
+        FROM comments
+        WHERE review_id = ?
+          AND source = 'ai'
+          -- ai_level IS NULL = orchestrated/final suggestions only
+          -- TODO: If single-level results can be saved without orchestration,
+          -- we may need an \`is_final\` flag to identify displayable suggestions.
+          AND ai_level IS NULL
+          AND (is_raw = 0 OR is_raw IS NULL)
+          AND ai_run_id = (
+            SELECT ai_run_id FROM comments
+            WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+          )
+        ORDER BY file, line_start
+      `, [reviewId, reviewId]);
+
+      initialContext = buildInitialContext({
+        suggestions,
+        focusedSuggestion
       });
     }
 
@@ -61,7 +88,8 @@ router.post('/api/chat/session', async (req, res) => {
       reviewId,
       contextCommentId: contextCommentId || null,
       systemPrompt: finalSystemPrompt,
-      cwd: cwd || null
+      cwd: cwd || null,
+      initialContext
     });
 
     logger.info(`Chat session created: ${session.id} (provider=${provider}, model=${model})`);

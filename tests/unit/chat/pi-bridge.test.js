@@ -94,14 +94,22 @@ describe('PiBridge', () => {
   });
 
   describe('_buildArgs', () => {
-    it('should include --mode rpc, --no-session, --tools', () => {
+    it('should include --mode rpc and --tools with safe defaults', () => {
       const bridge = new PiBridge();
       const args = bridge._buildArgs();
       expect(args).toContain('--mode');
       expect(args).toContain('rpc');
-      expect(args).toContain('--no-session');
+      expect(args).not.toContain('--no-session');
       expect(args).toContain('--tools');
       expect(args).toContain('read,grep,find,ls');
+    });
+
+    it('should use custom tools when specified', () => {
+      const bridge = new PiBridge({ tools: 'read,bash,grep,find,ls' });
+      const args = bridge._buildArgs();
+      expect(args).toContain('read,bash,grep,find,ls');
+      expect(args).not.toContain('read,grep,find,ls');
+      expect(args.filter(a => a === '--tools').length).toBe(1);
     });
 
     it('should include provider when specified', () => {
