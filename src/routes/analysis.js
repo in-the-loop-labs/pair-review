@@ -176,6 +176,7 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
     // Store analysis status with separate tracking for each level
     const initialStatus = {
       id: analysisId,
+      runId,
       prNumber,
       repository,
       status: 'running',
@@ -264,6 +265,12 @@ router.post('/api/analyze/:owner/:repo/:pr', async (req, res) => {
         const currentStatus = activeAnalyses.get(analysisId);
         if (!currentStatus) {
           logger.warn('Analysis already completed or removed:', analysisId);
+          return;
+        }
+
+        // Check if analysis was cancelled while running
+        if (currentStatus.status === 'cancelled') {
+          logger.info(`Analysis ${analysisId} was cancelled, skipping completion update`);
           return;
         }
 
@@ -419,6 +426,18 @@ router.post('/api/analyze/cancel/:id', async (req, res) => {
     // Kill all running child processes for this analysis
     const killedCount = killProcesses(id);
     logger.info(`Killed ${killedCount} running process(es)`);
+
+    // Update database record to cancelled
+    if (analysis.runId) {
+      try {
+        const db = req.app.get('db');
+        const analysisRunRepo = new AnalysisRunRepository(db);
+        await analysisRunRepo.update(analysis.runId, { status: 'cancelled' });
+        logger.info(`Updated analysis_run DB record to cancelled: ${analysis.runId}`);
+      } catch (dbError) {
+        logger.warn(`Failed to update analysis_run DB record: ${dbError.message}`);
+      }
+    }
 
     // Update analysis status to cancelled
     const cancelledStatus = {

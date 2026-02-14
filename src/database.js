@@ -2611,9 +2611,11 @@ class AnalysisRunRepository {
    * @param {string} [updates.summary] - Analysis summary
    * @param {number} [updates.totalSuggestions] - Total suggestions count
    * @param {number} [updates.filesAnalyzed] - Files analyzed count
+   * @param {Object} [options] - Update options
+   * @param {string} [options.skipIfStatus] - Skip the update if the record already has this status (prevents redundant writes)
    * @returns {Promise<boolean>} True if record was updated
    */
-  async update(id, updates) {
+  async update(id, updates, options = {}) {
     const setClauses = [];
     const params = [];
 
@@ -2648,10 +2650,16 @@ class AnalysisRunRepository {
 
     params.push(id);
 
+    let whereClause = 'WHERE id = ?';
+    if (options.skipIfStatus) {
+      whereClause += ' AND status != ?';
+      params.push(options.skipIfStatus);
+    }
+
     const result = await run(this.db, `
       UPDATE analysis_runs
       SET ${setClauses.join(', ')}
-      WHERE id = ?
+      ${whereClause}
     `, params);
 
     return result.changes > 0;
