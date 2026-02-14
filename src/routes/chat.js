@@ -85,9 +85,8 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
     }
 
     const chatSessionManager = req.app.chatSessionManager;
-    const session = chatSessionManager.getSession(sessionId);
-    if (!session) {
-      return res.status(404).json({ error: 'Chat session not found' });
+    if (!chatSessionManager.isSessionActive(sessionId)) {
+      return res.status(404).json({ error: 'Chat session not found or not active' });
     }
 
     const result = await chatSessionManager.sendMessage(sessionId, content);
@@ -105,9 +104,8 @@ router.get('/api/chat/session/:id/stream', (req, res) => {
   const sessionId = parseInt(req.params.id, 10);
   const chatSessionManager = req.app.chatSessionManager;
 
-  const session = chatSessionManager.getSession(sessionId);
-  if (!session) {
-    return res.status(404).json({ error: 'Chat session not found' });
+  if (!chatSessionManager.isSessionActive(sessionId)) {
+    return res.status(404).json({ error: 'Chat session not found or not active' });
   }
 
   // Set up SSE headers

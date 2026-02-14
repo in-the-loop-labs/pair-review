@@ -35,6 +35,7 @@ function MockPiBridge() {
   bridge.close = vi.fn().mockResolvedValue(undefined);
   bridge.sendMessage = vi.fn().mockResolvedValue(undefined);
   bridge.isReady = vi.fn().mockReturnValue(true);
+  bridge.isBusy = vi.fn().mockReturnValue(false);
   bridge.abort = vi.fn();
   _createdBridges.push(bridge);
   return bridge;
@@ -310,6 +311,34 @@ describe('ChatSessionManager', () => {
 
     it('should do nothing when no active sessions', async () => {
       await expect(manager.closeAll()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('isSessionActive', () => {
+    it('should return true for active sessions', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      expect(manager.isSessionActive(session.id)).toBe(true);
+    });
+
+    it('should return false for non-existent sessions', () => {
+      expect(manager.isSessionActive(999)).toBe(false);
+    });
+
+    it('should return false after session is closed', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      await manager.closeSession(session.id);
+      expect(manager.isSessionActive(session.id)).toBe(false);
+    });
+  });
+
+  describe('sendMessage busy guard', () => {
+    it('should throw when bridge is busy', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[_createdBridges.length - 1];
+      bridge.isBusy.mockReturnValue(true);
+
+      await expect(manager.sendMessage(session.id, 'hello'))
+        .rejects.toThrow('currently processing a message');
     });
   });
 });

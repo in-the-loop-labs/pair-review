@@ -28,6 +28,7 @@ class SuggestionManager {
     // Event delegation for "Ask about this" chat button on suggestions
     document.addEventListener('click', (e) => {
       const chatBtn = e.target.closest('.btn-chat-suggestion');
+      if (chatBtn && chatBtn.closest('.file-comments-zone')) return; // handled by FileCommentManager
       if (chatBtn && window.chatPanel) {
         e.stopPropagation();
         const suggestionDiv = chatBtn.closest('.ai-suggestion');
