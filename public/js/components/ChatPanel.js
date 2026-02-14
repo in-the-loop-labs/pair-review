@@ -270,6 +270,9 @@ class ChatPanel {
       const sessionId = await this.createSession();
       if (!sessionId) return;
       this.connectSSE(this.currentSessionId);
+    } else if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
+      // Reconnect SSE if disconnected by close() or error
+      this.connectSSE(this.currentSessionId);
     }
 
     // Prepare streaming UI
@@ -344,8 +347,11 @@ class ChatPanel {
     };
 
     this.eventSource.onerror = () => {
-      // SSE connection closed (normal after complete event)
-      this._finalizeStreaming();
+      // Only finalize if the connection is truly closed, not on transient errors
+      // (EventSource auto-reconnects on transient errors with readyState=CONNECTING)
+      if (this.eventSource?.readyState === EventSource.CLOSED) {
+        this._finalizeStreaming();
+      }
     };
   }
 

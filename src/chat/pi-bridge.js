@@ -59,17 +59,8 @@ class PiBridge extends EventEmitter {
     }
 
     const args = this._buildArgs();
-    const useShell = this.piCommand.includes(' ');
-
-    let command;
-    let spawnArgs;
-    if (useShell) {
-      command = `${this.piCommand} ${args.join(' ')}`;
-      spawnArgs = [];
-    } else {
-      command = this.piCommand;
-      spawnArgs = args;
-    }
+    const command = this.piCommand;
+    const spawnArgs = args;
 
     logger.info(`[PiBridge] Starting Pi RPC: ${command} ${spawnArgs.join(' ')}`);
 
@@ -77,7 +68,6 @@ class PiBridge extends EventEmitter {
       const proc = spawn(command, spawnArgs, {
         cwd: this.cwd,
         env: { ...process.env },
-        shell: useShell,
         stdio: ['pipe', 'pipe', 'pipe']
       });
 
@@ -188,6 +178,7 @@ class PiBridge extends EventEmitter {
     if (!this._process) return;
 
     this._closing = true;
+    this.removeAllListeners();
 
     // Try to abort any in-flight work first
     try {
@@ -230,6 +221,14 @@ class PiBridge extends EventEmitter {
    */
   isReady() {
     return this._ready && this._process !== null && !this._closing;
+  }
+
+  /**
+   * Check if the bridge is currently processing a message.
+   * @returns {boolean}
+   */
+  isBusy() {
+    return this._inMessage;
   }
 
   // ---------------------------------------------------------------------------

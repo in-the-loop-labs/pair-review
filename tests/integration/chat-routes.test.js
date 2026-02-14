@@ -27,6 +27,11 @@ function createMockSessionManager(db) {
     getSession: vi.fn().mockImplementation((id) => {
       return db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id) || null;
     }),
+    isSessionActive: vi.fn().mockImplementation((id) => {
+      // Mirror getSession behavior for test purposes — session is "active" if it exists in DB
+      const row = db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id);
+      return !!row;
+    }),
     getSessionsForReview: vi.fn().mockReturnValue([]),
     getMessages: vi.fn().mockReturnValue([]),
     onDelta: vi.fn().mockReturnValue(() => {}),

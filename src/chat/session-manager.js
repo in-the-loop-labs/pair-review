@@ -166,6 +166,10 @@ class ChatSessionManager {
       throw new Error(`Session ${sessionId} bridge is not ready`);
     }
 
+    if (session.bridge.isBusy()) {
+      throw new Error(`Session ${sessionId} is currently processing a message`);
+    }
+
     // Store user message in DB
     const stmt = this._db.prepare(`
       INSERT INTO chat_messages (session_id, role, content)
@@ -245,7 +249,7 @@ class ChatSessionManager {
     // Remove from map first so the 'close' event handler doesn't double-update
     this._sessions.delete(sessionId);
 
-    // Close the bridge process
+    // Close the bridge process (PiBridge.close() handles listener cleanup internally)
     await session.bridge.close();
 
     // Update DB status
@@ -264,6 +268,16 @@ class ChatSessionManager {
    */
   getSession(sessionId) {
     return this._db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(sessionId) || null;
+  }
+
+  /**
+   * Check if a session has an active in-memory bridge.
+   * Unlike getSession() which queries the DB, this checks the live session map.
+   * @param {number} sessionId
+   * @returns {boolean}
+   */
+  isSessionActive(sessionId) {
+    return this._sessions.has(sessionId);
   }
 
   /**
