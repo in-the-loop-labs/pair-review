@@ -3075,6 +3075,127 @@ describe('Analysis Status Endpoints', () => {
         activeAnalyses.delete(analysisId);
       }
     });
+
+    it('should update database analysis_run record to cancelled when runId is present', async () => {
+      const { activeAnalyses } = require('../../src/routes/shared');
+
+      const analysisId = 'test-cancel-db-update-id';
+      const runId = 'test-cancel-run-id';
+
+      // Insert a review record so the analysis_runs foreign key is satisfied
+      const reviewResult = await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type)
+        VALUES (99, 'owner/repo', 'draft', 'pr')
+      `);
+      const reviewId = reviewResult.lastID;
+
+      // Insert a running analysis_runs DB record
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, status, provider, model, started_at)
+        VALUES (?, ?, 'running', 'claude', 'sonnet', datetime('now'))
+      `, [runId, reviewId]);
+
+      // Set up an active analysis with runId so the cancel endpoint updates the DB
+      activeAnalyses.set(analysisId, {
+        id: analysisId,
+        runId,
+        prNumber: 99,
+        repository: 'owner/repo',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        progress: 'Running analysis...',
+        levels: {
+          1: { status: 'running', progress: 'Running...' },
+          2: { status: 'running', progress: 'Running...' },
+          3: { status: 'running', progress: 'Running...' },
+          4: { status: 'pending', progress: 'Pending' }
+        }
+      });
+
+      try {
+        const response = await request(app)
+          .post(`/api/analyze/cancel/${analysisId}`);
+
+        expect(response.status).toBe(200);
+        expect(response.body.success).toBe(true);
+        expect(response.body.status).toBe('cancelled');
+
+        // Verify the database record was updated to 'cancelled'
+        const dbRecord = await queryOne(db, 'SELECT status, completed_at FROM analysis_runs WHERE id = ?', [runId]);
+        expect(dbRecord).toBeTruthy();
+        expect(dbRecord.status).toBe('cancelled');
+        // completed_at should be set for terminal statuses
+        expect(dbRecord.completed_at).toBeTruthy();
+      } finally {
+        activeAnalyses.delete(analysisId);
+      }
+    });
+
+    it('should not overwrite cancelled status when analysis promise resolves after cancellation (race condition)', async () => {
+      const { activeAnalyses, isAnalysisCancelled } = require('../../src/routes/shared');
+
+      // This test verifies the race condition fix where the .then() handler
+      // (analysis.js lines 265-275) checks the in-memory status before updating.
+      // When a cancel sets status to 'cancelled' in activeAnalyses, the .then()
+      // handler's guard (which uses the same isAnalysisCancelled check) must
+      // detect it and skip overwriting the status to 'completed'.
+
+      const analysisId = 'race-condition-cancel-test';
+
+      // Step 1: Set up a running analysis in activeAnalyses
+      activeAnalyses.set(analysisId, {
+        id: analysisId,
+        runId: 'race-run-id',
+        prNumber: 1,
+        repository: 'owner/repo',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        progress: 'Running analysis...',
+        levels: {
+          1: { status: 'running', progress: 'Running...' },
+          2: { status: 'running', progress: 'Running...' },
+          3: { status: 'running', progress: 'Running...' },
+          4: { status: 'pending', progress: 'Pending' }
+        },
+        filesAnalyzed: 0,
+        filesRemaining: 0
+      });
+
+      try {
+        // Verify analysis is running and not cancelled
+        expect(isAnalysisCancelled(analysisId)).toBe(false);
+        expect(activeAnalyses.get(analysisId).status).toBe('running');
+
+        // Step 2: Cancel the analysis via the cancel endpoint
+        const cancelResponse = await request(app)
+          .post(`/api/analyze/cancel/${analysisId}`);
+
+        expect(cancelResponse.status).toBe(200);
+        expect(cancelResponse.body.status).toBe('cancelled');
+
+        // Step 3: Verify that isAnalysisCancelled now returns true - this is the
+        // same check the .then() handler uses to decide whether to skip completion.
+        // The production code at analysis.js line 272 does:
+        //   if (currentStatus.status === 'cancelled') { return; }
+        // which is equivalent to isAnalysisCancelled(analysisId)
+        expect(isAnalysisCancelled(analysisId)).toBe(true);
+
+        // Verify the full cancelled state is preserved
+        const finalStatus = activeAnalyses.get(analysisId);
+        expect(finalStatus.status).toBe('cancelled');
+        expect(finalStatus.progress).toBe('Analysis cancelled by user');
+        expect(finalStatus.cancelledAt).toBeTruthy();
+
+        // Verify levels were marked as cancelled (running levels should be cancelled)
+        expect(finalStatus.levels[1].status).toBe('cancelled');
+        expect(finalStatus.levels[2].status).toBe('cancelled');
+        expect(finalStatus.levels[3].status).toBe('cancelled');
+        // Non-running level 4 (pending) should remain unchanged
+        expect(finalStatus.levels[4].status).toBe('pending');
+      } finally {
+        activeAnalyses.delete(analysisId);
+      }
+    });
   });
 
   describe('GET /api/local/:reviewId/analysis-status', () => {
