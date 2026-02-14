@@ -319,6 +319,12 @@ class Analyzer {
         logger.info(`${logPrefix}Storing consolidated suggestions in database...`);
         await this.storeSuggestions(prId, runId, finalSuggestions, null, validFiles);
 
+        // Check if analysis was cancelled before updating DB status
+        if (analysisId && isAnalysisCancelled(analysisId)) {
+          logger.info(`${logPrefix}Analysis was cancelled, skipping DB status update to completed`);
+          throw new CancellationError('Analysis was cancelled');
+        }
+
         // Update analysis_run record with completion data
         try {
           await analysisRunRepo.update(runId, {
@@ -366,6 +372,12 @@ class Analyzer {
 
         await this.storeSuggestions(prId, runId, finalFallbackSuggestions, null, validFiles);
 
+        // Check if analysis was cancelled before updating DB status
+        if (analysisId && isAnalysisCancelled(analysisId)) {
+          logger.info(`${logPrefix}Analysis was cancelled, skipping DB status update to completed`);
+          throw new CancellationError('Analysis was cancelled');
+        }
+
         // Update analysis_run record with completion data (even though orchestration failed)
         const fallbackSummary = `Analysis complete (consolidation failed): ${finalFallbackSuggestions.length} suggestions`;
         try {
@@ -393,8 +405,14 @@ class Analyzer {
       // Update analysis_run record with appropriate status
       try {
         if (error.isCancellation) {
-          await analysisRunRepo.update(runId, { status: 'cancelled' });
-          logger.info(`${logPrefix}Updated analysis_run record to cancelled`);
+          // Use skipIfStatus to avoid redundantly overwriting the 'cancelled' status
+          // (and resetting completed_at) if the cancel endpoint already wrote it
+          const updated = await analysisRunRepo.update(runId, { status: 'cancelled' }, { skipIfStatus: 'cancelled' });
+          if (updated) {
+            logger.info(`${logPrefix}Updated analysis_run record to cancelled`);
+          } else {
+            logger.info(`${logPrefix}Analysis run already cancelled by endpoint, skipping redundant update`);
+          }
         } else {
           await analysisRunRepo.update(runId, { status: 'failed' });
           logger.info(`${logPrefix}Updated analysis_run record to failed`);

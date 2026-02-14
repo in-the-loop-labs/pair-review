@@ -702,6 +702,7 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     // Store analysis status with separate tracking for each level
     const initialStatus = {
       id: analysisId,
+      runId,
       reviewId,
       repository: repository,
       reviewType: 'local',
@@ -788,6 +789,12 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
         const currentStatus = activeAnalyses.get(analysisId);
         if (!currentStatus) {
           logger.warn('Analysis already completed or removed:', analysisId);
+          return;
+        }
+
+        // Check if analysis was cancelled while running
+        if (currentStatus.status === 'cancelled') {
+          logger.info(`Analysis ${analysisId} was cancelled, skipping completion update`);
           return;
         }
 
