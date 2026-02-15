@@ -4,7 +4,18 @@ const path = require('path');
 const fs = require('fs').promises;
 const { getConfigDir } = require('./config');
 
-const DB_PATH = path.join(getConfigDir(), 'database.db');
+let dbPath = null;
+
+/**
+ * Gets the database file path, lazily defaulting to the standard location.
+ * @returns {string} - Database file path
+ */
+function getDbPath() {
+  if (!dbPath) {
+    dbPath = path.join(getConfigDir(), 'database.db');
+  }
+  return dbPath;
+}
 
 /**
  * Current schema version - increment this when adding new migrations
@@ -984,9 +995,12 @@ function runVersionedMigrations(db) {
  * Initialize database with schema
  * @returns {Promise<Database>} - Database instance
  */
-async function initializeDatabase() {
+async function initializeDatabase(dbName) {
+  if (dbName) {
+    dbPath = path.join(getConfigDir(), dbName);
+  }
   try {
-    const db = new Database(DB_PATH);
+    const db = new Database(getDbPath());
     // Enable foreign key enforcement (required for CASCADE to work)
     db.pragma('foreign_keys = ON');
     setupSchema(db);
@@ -999,7 +1013,7 @@ async function initializeDatabase() {
       console.log('Database appears corrupted, recreating with fresh schema...');
       await recreateDatabase();
       // Retry connection
-      const newDb = new Database(DB_PATH);
+      const newDb = new Database(getDbPath());
       // Enable foreign key enforcement (required for CASCADE to work)
       newDb.pragma('foreign_keys = ON');
       setupSchema(newDb);
@@ -1035,8 +1049,8 @@ function setupSchema(db) {
   }
 
   console.log(isFreshInstall
-    ? `Created new database at: ${DB_PATH}`
-    : `Connected to existing database at: ${DB_PATH}`);
+    ? `Created new database at: ${getDbPath()}`
+    : `Connected to existing database at: ${getDbPath()}`);
 }
 
 /**
@@ -1044,7 +1058,7 @@ function setupSchema(db) {
  */
 async function recreateDatabase() {
   try {
-    await fs.unlink(DB_PATH);
+    await fs.unlink(getDbPath());
     console.log('Removed corrupted database file');
   } catch (error) {
     if (error.code !== 'ENOENT') {
@@ -3127,7 +3141,7 @@ module.exports = {
   getDatabaseStatus,
   getSchemaVersion,
   CURRENT_SCHEMA_VERSION,
-  DB_PATH,
+  getDbPath,
   WorktreeRepository,
   RepoSettingsRepository,
   ReviewRepository,

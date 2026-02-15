@@ -4,7 +4,7 @@ const { promisify } = require('util');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs').promises;
-const { loadConfig, showWelcomeMessage } = require('./config');
+const { loadConfig, showWelcomeMessage, resolveDbName } = require('./config');
 const logger = require('./utils/logger');
 
 const execAsync = promisify(exec);
@@ -520,7 +520,7 @@ async function handleLocalReview(targetPath, flags = {}) {
 
     // Initialize database
     console.log('Initializing database...');
-    db = await initializeDatabase();
+    db = await initializeDatabase(resolveDbName(config));
 
     // Check for existing session or create new one
     const reviewRepo = new ReviewRepository(db);
