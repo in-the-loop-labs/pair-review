@@ -2214,13 +2214,16 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: none;
 }
 
-/* Hide reasoning button when suggestion is collapsed */
+/* Compact reasoning button in collapsed suggestion rows */
 .ai-suggestion.collapsed .ai-suggestion-header-right {
-  display: none;
+  margin-left: auto;
+  gap: 4px;
 }
 
-.file-comment-card.ai-suggestion.collapsed .ai-suggestion-header-right {
-  display: none;
+.btn-reasoning-toggle.collapsed-reasoning {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
 }
 
 .ai-suggestion-actions {
@@ -2346,7 +2349,6 @@ tr.newly-expanded .d2h-code-line-ctn {
 /* Collapsed AI Suggestion Styles */
 .ai-suggestion.collapsed {
   background: var(--color-bg-secondary, #f6f8fa); /* Use CSS variable for proper light/dark mode */
-  opacity: 0.7;
   border-left-color: var(--color-text-tertiary, #6e7681);
   padding: 4px 8px;
   margin: 2px 16px;
@@ -2380,6 +2382,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   min-height: 20px;
   width: 100%;
   flex: 1;
+  position: relative;
 }
 
 .collapsed-text {
@@ -2411,7 +2414,6 @@ tr.newly-expanded .d2h-code-line-ctn {
   min-width: auto;
   border-radius: 4px;
   transition: all 0.2s ease;
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -9904,7 +9906,6 @@ body.resizing * {
 /* File-level AI suggestion collapsed state - uses same classes as line-level */
 .file-comment-card.ai-suggestion.collapsed {
   background: var(--color-bg-secondary, #f6f8fa);
-  opacity: 0.7;
   border-left-color: var(--color-text-tertiary, #6e7681);
   padding: 4px 8px;
   margin: 2px 0;
