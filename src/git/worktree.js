@@ -23,6 +23,113 @@ class GitWorktreeManager {
   }
 
   /**
+   * Resolve which git remote points to the given repository URLs.
+   * Compares normalized URLs against all configured remotes. If no match is
+   * found, adds (or updates) a managed `pair-review-base` remote so that
+   * subsequent fetches target the correct repository (e.g. the base repo of a fork PR).
+   *
+   * @param {Object} git - simple-git instance
+   * @param {string} cloneUrl - HTTPS clone URL of the target repository
+   * @param {string} sshUrl - SSH URL of the target repository (may be empty/null)
+   * @returns {Promise<string>} Remote name to use for fetch/checkout operations
+   */
+  async resolveRemoteForRepo(git, cloneUrl, sshUrl) {
+    const MANAGED_REMOTE = 'pair-review-base';
+
+    // Get all remotes with their URLs
+    const remoteOutput = await git.raw(['remote', '-v']);
+
+    if (!remoteOutput || !remoteOutput.trim()) {
+      console.log(`No remotes found, adding ${MANAGED_REMOTE} remote for ${cloneUrl}`);
+      await git.addRemote(MANAGED_REMOTE, cloneUrl);
+      return MANAGED_REMOTE;
+    }
+
+    // Parse remote output into { name: url } map (fetch URLs only)
+    const remotes = {};
+    for (const line of remoteOutput.trim().split('\n')) {
+      const match = line.match(/^(\S+)\s+(\S+)\s+\(fetch\)$/);
+      if (match) {
+        remotes[match[1]] = match[2];
+      }
+    }
+
+    /**
+     * Normalize a git remote URL for comparison.
+     * Strips `.git` suffix, trailing slashes, lowercases, and canonicalizes
+     * `ssh://git@host/path` to `git@host:path` form.
+     */
+    const normalizeUrl = (url) => {
+      if (!url) return '';
+      let normalized = url.trim().toLowerCase();
+      normalized = normalized.replace(/\.git$/, '');
+      normalized = normalized.replace(/\/+$/, '');
+      // Canonicalize ssh:// protocol form to scp-like form
+      const sshProtoMatch = normalized.match(/^ssh:\/\/([^/]+)\/(.+)$/);
+      if (sshProtoMatch) {
+        normalized = `${sshProtoMatch[1]}:${sshProtoMatch[2]}`;
+      }
+      return normalized;
+    };
+
+    const normalizedCloneUrl = normalizeUrl(cloneUrl);
+    const normalizedSshUrl = sshUrl ? normalizeUrl(sshUrl) : '';
+
+    // Check each remote for a match
+    for (const [name, url] of Object.entries(remotes)) {
+      const normalizedRemoteUrl = normalizeUrl(url);
+      if (normalizedRemoteUrl === normalizedCloneUrl ||
+          (normalizedSshUrl && normalizedRemoteUrl === normalizedSshUrl)) {
+        console.log(`Found matching remote '${name}' for base repository`);
+        return name;
+      }
+    }
+
+    // No match found — add or update the managed remote
+    if (remotes[MANAGED_REMOTE]) {
+      console.log(`Updating ${MANAGED_REMOTE} remote URL to ${cloneUrl}`);
+      await git.raw(['remote', 'set-url', MANAGED_REMOTE, cloneUrl]);
+    } else {
+      console.log(`Adding ${MANAGED_REMOTE} remote for ${cloneUrl}`);
+      await git.addRemote(MANAGED_REMOTE, cloneUrl);
+    }
+
+    return MANAGED_REMOTE;
+  }
+
+  /**
+   * Convenience wrapper: resolve the correct remote for a PR's base repository.
+   * Extracts clone/SSH URLs from prData.repository when available, otherwise
+   * constructs a GitHub HTTPS URL from prInfo.owner/repo.
+   *
+   * @param {Object} git - simple-git instance
+   * @param {Object|null} prData - PR data from GitHub API (may be null)
+   * @param {Object|null} prInfo - PR info { owner, repo, number } (may be null)
+   * @returns {Promise<string>} Remote name to use
+   */
+  async resolveRemoteForPR(git, prData, prInfo) {
+    let cloneUrl, sshUrl;
+
+    if (prData?.repository) {
+      cloneUrl = prData.repository.clone_url;
+      sshUrl = prData.repository.ssh_url || '';
+    }
+
+    // Fallback: construct URL from prInfo
+    if (!cloneUrl && prInfo?.owner && prInfo?.repo) {
+      cloneUrl = `https://github.com/${prInfo.owner}/${prInfo.repo}.git`;
+      sshUrl = '';
+    }
+
+    if (!cloneUrl) {
+      console.warn('Could not determine base repository URL, falling back to origin');
+      return 'origin';
+    }
+
+    return this.resolveRemoteForRepo(git, cloneUrl, sshUrl);
+  }
+
+  /**
    * Create a git worktree for a PR and checkout to the PR head commit
    * @param {Object} prInfo - PR information { owner, repo, number }
    * @param {Object} prData - PR data from GitHub API
@@ -54,7 +161,7 @@ class GitWorktreeManager {
         // Try to reuse existing worktree by refreshing it
         console.log(`Found existing worktree for PR #${prInfo.number} at ${worktreePath}`);
         try {
-          return await this.refreshWorktree(worktreeRecord, prInfo.number);
+          return await this.refreshWorktree(worktreeRecord, prInfo.number, prData, prInfo);
         } catch (refreshError) {
           // If refresh fails due to uncommitted changes, propagate that error
           if (refreshError.message.includes('uncommitted changes')) {
@@ -89,7 +196,7 @@ class GitWorktreeManager {
 
         // Try to refresh and reuse the legacy worktree
         try {
-          return await this.refreshWorktree({ path: legacyPath, id: worktreeRecord?.id }, prInfo.number);
+          return await this.refreshWorktree({ path: legacyPath, id: worktreeRecord?.id }, prInfo.number, prData, prInfo);
         } catch (refreshError) {
           // If refresh fails due to uncommitted changes, propagate that error
           if (refreshError.message.includes('uncommitted changes')) {
@@ -116,17 +223,20 @@ class GitWorktreeManager {
       
       // Create git instance for the source repository
       const git = simpleGit(repositoryPath);
-      
+
+      // Resolve which remote points to the PR's base repository (handles forks)
+      const remote = await this.resolveRemoteForPR(git, prData, prInfo);
+
       // Fetch only the specific base branch we need, with error handling for ref conflicts
-      console.log(`Fetching base branch ${prData.base_branch} from origin...`);
+      console.log(`Fetching base branch ${prData.base_branch} from ${remote}...`);
       try {
-        await git.fetch(['origin', `+refs/heads/${prData.base_branch}:refs/remotes/origin/${prData.base_branch}`]);
+        await git.fetch([remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`]);
       } catch (fetchError) {
         // If fetch fails due to ref conflicts, try alternative approaches
         console.log(`Standard fetch failed, trying alternative: ${fetchError.message}`);
         try {
           // Try fetching with force flag to overwrite conflicting refs
-          await git.raw(['fetch', 'origin', `+refs/heads/${prData.base_branch}:refs/remotes/origin/${prData.base_branch}`, '--force']);
+          await git.raw(['fetch', remote, `+refs/heads/${prData.base_branch}:refs/remotes/${remote}/${prData.base_branch}`, '--force']);
         } catch (altFetchError) {
           console.warn(`Could not fetch base branch ${prData.base_branch}, will try to use existing ref`);
           // Continue anyway - the branch might already be available locally
@@ -142,12 +252,12 @@ class GitWorktreeManager {
         console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch}...`);
       }
       try {
-        await worktreeAddGit.raw(['worktree', 'add', worktreePath, `origin/${prData.base_branch}`]);
+        await worktreeAddGit.raw(['worktree', 'add', worktreePath, `${remote}/${prData.base_branch}`]);
       } catch (worktreeError) {
         // If worktree creation fails due to existing registration, try with --force
         if (worktreeError.message.includes('already registered')) {
           console.log('Worktree already registered, trying with --force...');
-          await worktreeAddGit.raw(['worktree', 'add', '--force', worktreePath, `origin/${prData.base_branch}`]);
+          await worktreeAddGit.raw(['worktree', 'add', '--force', worktreePath, `${remote}/${prData.base_branch}`]);
         } else {
           throw worktreeError;
         }
@@ -160,7 +270,7 @@ class GitWorktreeManager {
       console.log(`Ensuring base commit ${prData.base_sha} is available...`);
       try {
         // Try to fetch the specific base SHA if it's not already available
-        await worktreeGit.raw(['fetch', 'origin', prData.base_sha]);
+        await worktreeGit.raw(['fetch', remote, prData.base_sha]);
       } catch (fetchError) {
         // If fetch fails, the SHA might already be available locally
         console.log(`Base SHA fetch not needed or already available: ${fetchError.message}`);
@@ -168,11 +278,11 @@ class GitWorktreeManager {
 
       // Fetch the PR head using GitHub's pull request refs (more reliable than branch names)
       console.log(`Fetching PR #${prInfo.number} head...`);
-      await worktreeGit.fetch(['origin', `+refs/pull/${prInfo.number}/head:refs/remotes/origin/pr-${prInfo.number}`]);
+      await worktreeGit.fetch([remote, `+refs/pull/${prInfo.number}/head:refs/remotes/${remote}/pr-${prInfo.number}`]);
 
       // Checkout to PR head commit
       console.log(`Checking out to PR head commit ${prData.head_sha}...`);
-      await worktreeGit.checkout([`origin/pr-${prInfo.number}`]);
+      await worktreeGit.checkout([`${remote}/pr-${prInfo.number}`]);
       
       // Verify we're at the correct commit
       const currentCommit = await worktreeGit.revparse(['HEAD']);
@@ -213,12 +323,12 @@ class GitWorktreeManager {
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
    * @param {number} number - PR number
-   * @param {string} baseRef - Base branch reference
-   * @param {string} headSha - Head commit SHA
+   * @param {Object} prData - PR data from GitHub API (for remote resolution)
    * @returns {Promise<string>} Path to updated worktree
    */
-  async updateWorktree(owner, repo, number, baseRef, headSha) {
+  async updateWorktree(owner, repo, number, prData) {
     const prInfo = { owner, repo, number };
+    const headSha = prData.head_sha;
     const worktreePath = await this.getWorktreePath(prInfo);
 
     try {
@@ -233,17 +343,20 @@ class GitWorktreeManager {
       // Create git instance for the worktree
       const worktreeGit = simpleGit(worktreePath);
 
-      // Fetch the latest from origin
-      console.log(`Fetching latest changes from origin...`);
-      await worktreeGit.fetch(['origin']);
+      // Resolve which remote points to the PR's base repository (handles forks)
+      const remote = await this.resolveRemoteForPR(worktreeGit, prData, prInfo);
+
+      // Fetch the latest from the resolved remote
+      console.log(`Fetching latest changes from ${remote}...`);
+      await worktreeGit.fetch([remote]);
 
       // Fetch the PR head using GitHub's pull request refs
       console.log(`Fetching PR #${number} head...`);
-      await worktreeGit.fetch(['origin', `+refs/pull/${number}/head:refs/remotes/origin/pr-${number}`]);
+      await worktreeGit.fetch([remote, `+refs/pull/${number}/head:refs/remotes/${remote}/pr-${number}`]);
 
       // Checkout to PR head commit
       console.log(`Checking out to PR head commit ${headSha}...`);
-      await worktreeGit.checkout([`origin/pr-${number}`]);
+      await worktreeGit.checkout([`${remote}/pr-${number}`]);
 
       // Verify we're at the correct commit
       const currentCommit = await worktreeGit.revparse(['HEAD']);
@@ -553,10 +666,12 @@ class GitWorktreeManager {
    * Refresh an existing worktree with latest PR changes from remote
    * @param {Object} worktreeRecord - Database record for the worktree
    * @param {number} prNumber - PR number to refresh
+   * @param {Object} [prData=null] - PR data from GitHub API (for remote resolution)
+   * @param {Object} [prInfo=null] - PR info { owner, repo, number } (for remote resolution)
    * @returns {Promise<string>} Path to the refreshed worktree
    * @throws {Error} If worktree has uncommitted changes
    */
-  async refreshWorktree(worktreeRecord, prNumber) {
+  async refreshWorktree(worktreeRecord, prNumber, prData = null, prInfo = null) {
     const worktreePath = worktreeRecord.path;
 
     try {
@@ -570,9 +685,12 @@ class GitWorktreeManager {
 
       const git = simpleGit(worktreePath);
 
+      // Resolve which remote points to the PR's base repository (handles forks)
+      const remote = await this.resolveRemoteForPR(git, prData, prInfo);
+
       // Fetch the latest PR head from remote
-      console.log(`Fetching PR #${prNumber} head from remote...`);
-      await git.fetch(['origin', `pull/${prNumber}/head`]);
+      console.log(`Fetching PR #${prNumber} head from ${remote}...`);
+      await git.fetch([remote, `pull/${prNumber}/head`]);
 
       // Reset to the fetched PR head
       console.log(`Resetting worktree to PR head...`);
