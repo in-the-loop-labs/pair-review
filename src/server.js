@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 const express = require('express');
 const path = require('path');
-const { loadConfig, getGitHubToken } = require('./config');
+const { loadConfig, getGitHubToken, resolveDbName, warnIfDevModeWithoutDbName } = require('./config');
 const { initializeDatabase, getDatabaseStatus, queryOne, run } = require('./database');
 const { normalizeRepository } = require('./utils/paths');
 const { applyConfigOverrides, checkAllProviders } = require('./ai');
@@ -92,6 +92,9 @@ async function startServer(sharedDb = null) {
     // Apply provider configuration overrides (custom models, commands, etc.)
     applyConfigOverrides(config);
 
+    // Warn if dev mode is on without a custom database name
+    warnIfDevModeWithoutDbName(config);
+
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
 
@@ -106,7 +109,7 @@ async function startServer(sharedDb = null) {
       db = sharedDb;
     } else {
       console.log('Connecting to database...');
-      db = await initializeDatabase();
+      db = await initializeDatabase(resolveDbName(config));
     }
     
     // Log database status

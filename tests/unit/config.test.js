@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const os = require('os');
-const { getGitHubToken, expandPath, getMonorepoPath } = require('../../src/config');
+const { getGitHubToken, expandPath, getMonorepoPath, resolveDbName, warnIfDevModeWithoutDbName } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -191,6 +191,118 @@ describe('config.js', () => {
 
       const result = getMonorepoPath(config, 'owner/repo');
       expect(result).toBe('/absolute/path/to/repo');
+    });
+  });
+
+  describe('resolveDbName', () => {
+    let originalEnv;
+
+    beforeEach(() => {
+      originalEnv = process.env.PAIR_REVIEW_DB_NAME;
+      delete process.env.PAIR_REVIEW_DB_NAME;
+    });
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.PAIR_REVIEW_DB_NAME = originalEnv;
+      } else {
+        delete process.env.PAIR_REVIEW_DB_NAME;
+      }
+    });
+
+    it('should return PAIR_REVIEW_DB_NAME env var when set', () => {
+      process.env.PAIR_REVIEW_DB_NAME = 'env-db.db';
+      const config = { db_name: 'config-db.db' };
+
+      const result = resolveDbName(config);
+
+      expect(result).toBe('env-db.db');
+    });
+
+    it('should fall back to config.db_name when env var is not set', () => {
+      const config = { db_name: 'config-db.db' };
+
+      const result = resolveDbName(config);
+
+      expect(result).toBe('config-db.db');
+    });
+
+    it('should return database.db when neither env var nor config is set', () => {
+      const config = {};
+
+      const result = resolveDbName(config);
+
+      expect(result).toBe('database.db');
+    });
+
+    it('should return database.db when config.db_name is empty string', () => {
+      const config = { db_name: '' };
+
+      const result = resolveDbName(config);
+
+      expect(result).toBe('database.db');
+    });
+
+    it('should prefer env var over config when both are set', () => {
+      process.env.PAIR_REVIEW_DB_NAME = 'env-wins.db';
+      const config = { db_name: 'config-loses.db' };
+
+      const result = resolveDbName(config);
+
+      expect(result).toBe('env-wins.db');
+    });
+  });
+
+  describe('warnIfDevModeWithoutDbName', () => {
+    let originalEnv;
+    let warnSpy;
+
+    beforeEach(() => {
+      originalEnv = process.env.PAIR_REVIEW_DB_NAME;
+      delete process.env.PAIR_REVIEW_DB_NAME;
+      const logger = require('../../src/utils/logger');
+      warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.PAIR_REVIEW_DB_NAME = originalEnv;
+      } else {
+        delete process.env.PAIR_REVIEW_DB_NAME;
+      }
+      warnSpy.mockRestore();
+    });
+
+    it('should warn when dev_mode is true and no db_name is configured', () => {
+      warnIfDevModeWithoutDbName({ dev_mode: true });
+
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy.mock.calls[0][0]).toContain('dev_mode');
+    });
+
+    it('should not warn when dev_mode is false', () => {
+      warnIfDevModeWithoutDbName({ dev_mode: false });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not warn when dev_mode is true but db_name is set in config', () => {
+      warnIfDevModeWithoutDbName({ dev_mode: true, db_name: 'dev.db' });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not warn when dev_mode is true but PAIR_REVIEW_DB_NAME env var is set', () => {
+      process.env.PAIR_REVIEW_DB_NAME = 'env.db';
+      warnIfDevModeWithoutDbName({ dev_mode: true });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not warn when dev_mode is not set', () => {
+      warnIfDevModeWithoutDbName({});
+
+      expect(warnSpy).not.toHaveBeenCalled();
     });
   });
 });

@@ -18,6 +18,7 @@ const DEFAULT_CONFIG = {
   worktree_retention_days: 7,
   dev_mode: false,  // When true, disables static file caching for development
   debug_stream: false,  // When true, logs AI provider streaming events (equivalent to --debug-stream CLI flag)
+  db_name: "",  // Custom database filename (default: database.db). Useful for per-worktree isolation.
   yolo: false,  // When true, skips fine-grained AI provider permission setup (equivalent to --yolo CLI flag)
   providers: {},  // Custom provider configurations (overrides built-in defaults)
   monorepos: {}  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
@@ -137,6 +138,22 @@ async function loadConfig() {
     // Merge with defaults to ensure all keys exist
     // Legacy keys ('provider', 'model') are handled lazily via getDefaultProvider/getDefaultModel
     const mergedConfig = { ...DEFAULT_CONFIG, ...config };
+
+    // Merge local config (CWD/.pair-review/config.json) on top of global config
+    try {
+      const localConfigPath = path.join(process.cwd(), '.pair-review', 'config.json');
+      const localConfigData = await fs.readFile(localConfigPath, 'utf8');
+      const localConfig = JSON.parse(localConfigData);
+      Object.assign(mergedConfig, localConfig);
+    } catch (localError) {
+      if (localError.code !== 'ENOENT') {
+        if (localError instanceof SyntaxError) {
+          logger.warn('Malformed local config at .pair-review/config.json, skipping');
+        } else {
+          throw localError;
+        }
+      }
+    }
 
     // Validate port
     if (!validatePort(mergedConfig.port)) {
@@ -285,6 +302,36 @@ function getMonorepoPath(config, repository) {
   return null;
 }
 
+/**
+ * Resolves the database filename to use.
+ * Priority:
+ *   1. PAIR_REVIEW_DB_NAME environment variable (highest priority)
+ *   2. config.db_name from config files
+ *   3. 'database.db' (default)
+ *
+ * @param {Object} config - Configuration object from loadConfig()
+ * @returns {string} - Database filename
+ */
+function resolveDbName(config) {
+  if (process.env.PAIR_REVIEW_DB_NAME) {
+    return process.env.PAIR_REVIEW_DB_NAME;
+  }
+  return config.db_name || 'database.db';
+}
+
+/**
+ * Warns if dev_mode is enabled but no custom db_name is configured.
+ * Helps developers avoid accidentally corrupting the shared database
+ * when switching between branches with different schemas.
+ *
+ * @param {Object} config - Configuration object from loadConfig()
+ */
+function warnIfDevModeWithoutDbName(config) {
+  if (config.dev_mode && !config.db_name && !process.env.PAIR_REVIEW_DB_NAME) {
+    logger.warn('dev_mode is enabled but no db_name is configured. Consider setting db_name in .pair-review/config.json or PAIR_REVIEW_DB_NAME env var to avoid schema conflicts between branches.');
+  }
+}
+
 module.exports = {
   loadConfig,
   saveConfig,
@@ -296,5 +343,7 @@ module.exports = {
   isRunningViaNpx,
   showWelcomeMessage,
   expandPath,
-  getMonorepoPath
+  getMonorepoPath,
+  resolveDbName,
+  warnIfDevModeWithoutDbName
 };

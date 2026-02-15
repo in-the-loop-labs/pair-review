@@ -32,14 +32,11 @@ async function startMCPStdio() {
 
   const { initializeDatabase } = require('./database');
   const { startServer } = require('./server');
-  const { loadConfig } = require('./config');
+  const { loadConfig, resolveDbName } = require('./config');
   const { createMCPServer } = require('./routes/mcp');
   const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 
-  const db = await initializeDatabase();
-  const port = await startServer(db);
-
-  // Load config so start_analysis can resolve provider/model
+  // Load config BEFORE database so we can resolve db_name
   let config = {};
   try {
     const loaded = await loadConfig();
@@ -47,6 +44,9 @@ async function startMCPStdio() {
   } catch (err) {
     console.error(`[MCP] Warning: failed to load config, using defaults: ${err.message}`);
   }
+
+  const db = await initializeDatabase(resolveDbName(config));
+  const port = await startServer(db);
 
   const mcpServer = createMCPServer(db, { port, config });
   const transport = new StdioServerTransport();

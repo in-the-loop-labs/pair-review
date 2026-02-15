@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 const fs = require('fs');
-const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage } = require('./config');
+const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -307,7 +307,8 @@ CONFIG FILE:
       "port": 7247,
       "theme": "light",
       "debug_stream": false,
-      "yolo": false
+      "yolo": false,
+      "db_name": "dev.db"
     }
 
 GITHUB TOKEN:
@@ -328,6 +329,11 @@ ENVIRONMENT VARIABLES:
     PAIR_REVIEW_GEMINI_CMD  Custom Gemini CLI command (default: gemini)
     PAIR_REVIEW_CODEX_CMD   Custom Codex CLI command (default: codex)
     PAIR_REVIEW_MODEL       Default AI model (e.g., opus, sonnet, haiku)
+    PAIR_REVIEW_DB_NAME     Custom database filename (overrides config)
+
+LOCAL CONFIG:
+    Place a .pair-review/config.json in your working directory to override
+    global settings (e.g., db_name for per-worktree database isolation).
 
 AI PROVIDERS:
     Claude (default): Requires 'claude' CLI installed
@@ -346,10 +352,10 @@ AI PROVIDERS:
     if (isFirstRun) {
       showWelcomeMessage();
     }
-    
+
     // Initialize database
     console.log('Initializing database...');
-    db = await initializeDatabase();
+    db = await initializeDatabase(resolveDbName(config));
 
     // Migrate existing worktrees to database (if any)
     const path = require('path');
