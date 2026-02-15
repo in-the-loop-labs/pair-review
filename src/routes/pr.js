@@ -286,7 +286,7 @@ router.post('/api/pr/:owner/:repo/:number/refresh', async (req, res) => {
 
     // Update worktree with latest changes
     const worktreeManager = new GitWorktreeManager(db);
-    const worktreePath = await worktreeManager.updateWorktree(owner, repo, prNumber, prData.base_branch, prData.head_sha);
+    const worktreePath = await worktreeManager.updateWorktree(owner, repo, prNumber, prData);
 
     // Generate fresh diff and get changed files
     const diffPrData = {
