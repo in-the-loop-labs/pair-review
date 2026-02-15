@@ -84,8 +84,8 @@ class ChatSessionManager {
       if (fullText) {
         try {
           const msgStmt = this._db.prepare(`
-            INSERT INTO chat_messages (session_id, role, content)
-            VALUES (?, 'assistant', ?)
+            INSERT INTO chat_messages (session_id, role, type, content)
+            VALUES (?, 'assistant', 'message', ?)
           `);
           const msgResult = msgStmt.run(sessionId, fullText);
           messageId = Number(msgResult.lastInsertRowid);
@@ -157,9 +157,14 @@ class ChatSessionManager {
    * Bridge will emit 'delta' and 'complete' events that route handlers listen to.
    * @param {number} sessionId - Chat session ID
    * @param {string} content - User message text
+   * @param {Object} [options]
+   * @param {string} [options.context] - Per-message context to prepend (e.g., focused suggestion details).
+   *   Sent to the agent but NOT stored in DB as part of the user message.
+   * @param {Object} [options.contextData] - Structured context data (JSON-serializable) to persist
+   *   in DB as a separate 'context' type message for session resumption UI reconstruction.
    * @returns {Promise<{id: number}>} The stored message ID
    */
-  async sendMessage(sessionId, content) {
+  async sendMessage(sessionId, content, { context, contextData } = {}) {
     const session = this._sessions.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found or not active`);
@@ -173,17 +178,38 @@ class ChatSessionManager {
       throw new Error(`Session ${sessionId} is currently processing a message`);
     }
 
-    // On the first message, prepend initial context (suggestions, etc.)
+    // Build the message for the agent: initialContext > context > userMessage
+    // (broad session context first, then narrow per-message context, then user text)
     let messageForAgent = content;
+
+    // Prepend per-message context first (focused suggestion — closer to user message)
+    if (context) {
+      messageForAgent = context + '\n\n---\n\n' + messageForAgent;
+    }
+
+    // Then prepend initial session context (all suggestions — outermost)
     if (session.initialContext) {
-      messageForAgent = session.initialContext + '\n\n---\n\n' + content;
+      messageForAgent = session.initialContext + '\n\n---\n\n' + messageForAgent;
       session.initialContext = null; // Only prepend once
     }
 
-    // Store user message in DB
+    // Store context message(s) in DB if provided (for session resumption UI)
+    // contextData may be a single object/string or an array of objects
+    if (contextData) {
+      const ctxStmt = this._db.prepare(`
+        INSERT INTO chat_messages (session_id, role, type, content)
+        VALUES (?, 'user', 'context', ?)
+      `);
+      const items = Array.isArray(contextData) ? contextData : [contextData];
+      for (const item of items) {
+        ctxStmt.run(sessionId, typeof item === 'string' ? item : JSON.stringify(item));
+      }
+    }
+
+    // Store user message in DB (only the user's actual text, not injected context)
     const stmt = this._db.prepare(`
-      INSERT INTO chat_messages (session_id, role, content)
-      VALUES (?, 'user', ?)
+      INSERT INTO chat_messages (session_id, role, type, content)
+      VALUES (?, 'user', 'message', ?)
     `);
     const result = stmt.run(sessionId, content);
     const messageId = Number(result.lastInsertRowid);
@@ -303,6 +329,10 @@ class ChatSessionManager {
 
   /**
    * Get message history for a session.
+   * Returns all message types including rows with type='context' (used to
+   * reconstruct context cards in the UI for session resumption). Consumers
+   * building session replay should dispatch on the `type` field to distinguish
+   * 'message' rows from 'context' rows.
    * @param {number} sessionId
    * @returns {Array}
    */

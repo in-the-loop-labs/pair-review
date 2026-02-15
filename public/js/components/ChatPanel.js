@@ -16,6 +16,9 @@ class ChatPanel {
     this.eventSource = null;
     this.messages = [];
     this._streamingContent = '';
+    this._pendingContext = [];
+    this._pendingContextData = [];
+    this._resizeConfig = { min: 300, max: 800, default: 400, storageKey: 'chat-panel-width' };
 
     this._render();
     this._bindEvents();
@@ -29,6 +32,7 @@ class ChatPanel {
 
     this.container.innerHTML = `
       <div id="chat-panel" class="chat-panel chat-panel--closed">
+        <div class="chat-panel__resize-handle" title="Drag to resize"></div>
         <div class="chat-panel__header">
           <span class="chat-panel__title">
             <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
@@ -114,6 +118,54 @@ class ChatPanel {
         this.close();
       }
     });
+
+    this._bindResizeEvents();
+  }
+
+  /**
+   * Bind resize drag events on the left edge handle
+   */
+  _bindResizeEvents() {
+    const handle = this.panel.querySelector('.chat-panel__resize-handle');
+    if (!handle) return;
+
+    const { min, max, storageKey } = this._resizeConfig;
+
+    let startX = 0;
+    let startWidth = 0;
+
+    const onMouseMove = (e) => {
+      // Panel is right-anchored, so dragging left (decreasing clientX) should increase width
+      const delta = startX - e.clientX;
+      const newWidth = Math.max(min, Math.min(max, startWidth + delta));
+      this.panel.style.width = newWidth + 'px';
+    };
+
+    const onMouseUp = () => {
+      // Persist the final width
+      const finalWidth = this.panel.getBoundingClientRect().width;
+      localStorage.setItem(storageKey, Math.round(finalWidth));
+
+      handle.classList.remove('dragging');
+      this.panel.classList.remove('chat-panel--resizing');
+      document.body.classList.remove('resizing');
+
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startWidth = this.panel.getBoundingClientRect().width;
+
+      handle.classList.add('dragging');
+      this.panel.classList.add('chat-panel--resizing');
+      document.body.classList.add('resizing');
+
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
   }
 
   /**
@@ -141,19 +193,35 @@ class ChatPanel {
       this.reviewId = window.prManager.currentPR.id;
     }
 
+    // Restore persisted width before opening
+    const { min, max, storageKey } = this._resizeConfig;
+    const savedWidth = localStorage.getItem(storageKey);
+    if (savedWidth) {
+      const width = parseInt(savedWidth, 10);
+      if (width >= min && width <= max) {
+        this.panel.style.width = width + 'px';
+      }
+    }
+
     this.isOpen = true;
     this.panel.classList.remove('chat-panel--closed');
     this.panel.classList.add('chat-panel--open');
 
-    // If opening with suggestion context and no active session, start a new session
+    // If opening with suggestion context, inject it as a context card
+    // and store it as pending context for the next user message.
+    // Does NOT start a new session — continues the existing one.
     if (options.suggestionContext) {
-      await this._startNewConversation();
-      // Pre-fill the input with context about the suggestion
-      const ctx = options.suggestionContext;
-      const contextMsg = `Regarding the ${ctx.type || 'AI'} suggestion "${ctx.title || ''}" on file ${ctx.file || ''}${ctx.line_start ? ` (line ${ctx.line_start}${ctx.line_end && ctx.line_end !== ctx.line_start ? '-' + ctx.line_end : ''})` : ''}:\n\n${ctx.body || ctx.reasoning?.join(', ') || ''}\n\nCan you explain this suggestion in more detail?`;
-      this.inputEl.value = contextMsg;
-      this._autoResizeTextarea();
-      this.sendBtn.disabled = false;
+      // If no active session, create one first
+      if (!this.currentSessionId) {
+        const sessionId = await this.createSession();
+        if (!sessionId) return;
+        this.connectSSE(this.currentSessionId);
+      } else if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
+        this.connectSSE(this.currentSessionId);
+      }
+
+      // Store pending context and show compact card
+      this._sendContextMessage(options.suggestionContext);
     }
 
     this.inputEl.focus();
@@ -166,6 +234,8 @@ class ChatPanel {
     this.isOpen = false;
     this.panel.classList.remove('chat-panel--open');
     this.panel.classList.add('chat-panel--closed');
+    this._pendingContext = [];
+    this._pendingContextData = [];
     this.disconnectSSE();
   }
 
@@ -188,6 +258,8 @@ class ChatPanel {
     this.currentSessionId = null;
     this.messages = [];
     this._streamingContent = '';
+    this._pendingContext = [];
+    this._pendingContextData = [];
     this._clearMessages();
   }
 
@@ -262,7 +334,7 @@ class ChatPanel {
     const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
-    // Display user message
+    // Display user message (just the user's actual text)
     this.addMessage('user', content);
 
     // Ensure we have a session and SSE is connected
@@ -281,12 +353,21 @@ class ChatPanel {
     this._streamingContent = '';
     this._addStreamingPlaceholder();
 
+    // Build the API payload — may include pending context from "Ask about this"
+    const payload = { content };
+    if (this._pendingContext.length > 0) {
+      payload.context = this._pendingContext.join('\n\n');
+      payload.contextData = this._pendingContextData;
+      this._pendingContext = [];
+      this._pendingContextData = [];
+    }
+
     // Send to API
     try {
       const response = await fetch(`/api/chat/session/${this.currentSessionId}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
@@ -298,6 +379,76 @@ class ChatPanel {
       this._showError('Failed to send message. ' + error.message);
       this._finalizeStreaming();
     }
+  }
+
+  /**
+   * Store pending context and render a compact context card in the UI.
+   * Called when the user clicks "Ask about this" on a suggestion.
+   * The context is NOT sent to the agent immediately — it is prepended
+   * to the next user message so the agent receives question + context together.
+   * @param {Object} ctx - Suggestion context {title, type, file, line_start, line_end, body}
+   */
+  _sendContextMessage(ctx) {
+    // Remove empty state if present
+    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    // Store structured context data for DB persistence (session resumption)
+    const contextData = {
+      type: ctx.type || 'general',
+      title: ctx.title || 'Untitled',
+      file: ctx.file || null,
+      line_start: ctx.line_start || null,
+      line_end: ctx.line_end || null,
+      body: ctx.body || null
+    };
+    this._pendingContextData.push(contextData);
+
+    // Build the plain text context for the agent (will be prepended to next message)
+    const lines = ['The user wants to discuss this specific suggestion:'];
+    lines.push(`- Type: ${contextData.type}`);
+    lines.push(`- Title: ${contextData.title}`);
+    if (contextData.file) {
+      let fileLine = `- File: ${contextData.file}`;
+      if (contextData.line_start) {
+        fileLine += ` (line ${contextData.line_start}${contextData.line_end && contextData.line_end !== contextData.line_start ? '-' + contextData.line_end : ''})`;
+      }
+      lines.push(fileLine);
+    }
+    if (contextData.body) {
+      lines.push(`- Details: ${contextData.body}`);
+    }
+
+    this._pendingContext.push(lines.join('\n'));
+
+    // Render the compact context card in the UI
+    this._addContextCard(ctx);
+  }
+
+  /**
+   * Add a compact context card to the messages area.
+   * Visually indicates which suggestion the user is asking about,
+   * without taking up space as a full message bubble.
+   * @param {Object} ctx - Suggestion context {title, type, file, line_start, line_end, body}
+   */
+  _addContextCard(ctx) {
+    const card = document.createElement('div');
+    card.className = 'chat-panel__context-card';
+
+    const typeLabel = ctx.type || 'suggestion';
+    const fileInfo = ctx.file ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}` : '';
+
+    card.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+        <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/>
+      </svg>
+      <span class="chat-panel__context-label">${this._escapeHtml(typeLabel)}</span>
+      <span class="chat-panel__context-title">${this._escapeHtml(ctx.title || 'Untitled')}</span>
+      ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
+    `;
+
+    this.messagesEl.appendChild(card);
+    this.scrollToBottom();
   }
 
   /**
@@ -329,7 +480,7 @@ class ChatPanel {
             break;
 
           case 'tool_use':
-            this._showToolUse(data.toolName, data.status);
+            this._showToolUse(data.toolName, data.status, data.toolInput);
             break;
 
           case 'complete':
@@ -471,12 +622,15 @@ class ChatPanel {
    * Show a tool use indicator in the streaming message
    * @param {string} toolName - Name of the tool being used
    * @param {string} status - 'start' or 'end'
+   * @param {Object} [toolInput] - Tool input/arguments (optional)
    */
-  _showToolUse(toolName, status) {
+  _showToolUse(toolName, status, toolInput) {
     const streamingMsg = document.getElementById('chat-streaming-msg');
     if (!streamingMsg) return;
 
     if (status === 'start') {
+      const argSummary = this._summarizeToolInput(toolName, toolInput);
+
       // Add tool badge before the bubble content
       const badge = document.createElement('div');
       badge.className = 'chat-panel__tool-badge';
@@ -485,7 +639,7 @@ class ChatPanel {
         <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
           <path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
         </svg>
-        <span>${this._escapeHtml(toolName)}</span>
+        <span>${this._escapeHtml(toolName)}</span>${argSummary ? `<span class="chat-panel__tool-args" title="${this._escapeHtml(argSummary)}">${this._escapeHtml(argSummary)}</span>` : ''}
         <span class="chat-panel__tool-spinner"></span>
       `;
       streamingMsg.insertBefore(badge, streamingMsg.querySelector('.chat-panel__bubble'));
@@ -496,6 +650,46 @@ class ChatPanel {
         const spinner = b.querySelector('.chat-panel__tool-spinner');
         if (spinner) spinner.remove();
       });
+    }
+  }
+
+  /**
+   * Extract a compact summary string from tool input for display.
+   * @param {string} toolName - Name of the tool
+   * @param {Object} [input] - Tool input/arguments
+   * @returns {string} Compact summary or empty string
+   */
+  _summarizeToolInput(toolName, input) {
+    if (!input || typeof input !== 'object') return '';
+
+    const name = toolName.toLowerCase();
+    switch (name) {
+      case 'bash': {
+        let cmd = input.command || '';
+        // Strip "cd <path> && " prefix — the actual command is more interesting
+        cmd = cmd.replace(/^cd\s+\S+\s*&&\s*/, '');
+        return cmd;
+      }
+      case 'read':
+        return input.file_path || input.path || '';
+      case 'grep':
+        return input.pattern || '';
+      case 'glob':
+        return input.pattern || '';
+      case 'find':
+      case 'ls':
+        return input.path || '';
+      case 'write':
+      case 'edit':
+        return input.file_path || input.path || '';
+      default: {
+        // For unknown tools, show the first string-valued argument
+        const vals = Object.values(input);
+        for (const v of vals) {
+          if (typeof v === 'string' && v.length > 0) return v;
+        }
+        return '';
+      }
     }
   }
 

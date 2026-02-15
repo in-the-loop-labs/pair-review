@@ -10367,8 +10367,30 @@ body.resizing * {
   flex-direction: column;
   z-index: 1000;
   transform: translateX(100%);
-  transition: transform 0.2s ease;
+  transition: transform 0.2s ease, width 0.15s ease;
   box-shadow: -4px 0 16px rgba(0, 0, 0, 0.08);
+}
+
+/* Chat Panel Resize Handle */
+.chat-panel__resize-handle {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 1001;
+  transition: background 0.15s ease;
+}
+
+.chat-panel__resize-handle:hover,
+.chat-panel__resize-handle.dragging {
+  background: var(--color-accent-primary);
+}
+
+/* Disable width transition during active resize drag */
+.chat-panel--resizing {
+  transition: transform 0.2s ease;
 }
 
 .chat-panel--open {
@@ -10634,6 +10656,18 @@ body.resizing * {
   color: var(--color-text-tertiary);
 }
 
+.chat-panel__tool-args {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace);
+  color: var(--color-text-quaternary, var(--color-text-tertiary));
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+  border-left: 1px solid var(--color-border-primary);
+  padding-left: 5px;
+}
+
 .chat-panel__tool-spinner {
   display: inline-block;
   width: 10px;
@@ -10642,6 +10676,47 @@ body.resizing * {
   border-top-color: var(--color-accent-primary);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+}
+
+/* Chat Panel Context Card */
+.chat-panel__context-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  margin: 4px 12px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+}
+
+.chat-panel__context-card svg {
+  flex-shrink: 0;
+  color: var(--color-accent-primary);
+}
+
+.chat-panel__context-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.chat-panel__context-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.chat-panel__context-file {
+  flex-shrink: 0;
+  font-family: var(--font-mono, 'SFMono-Regular', Consolas, monospace);
+  color: var(--color-text-tertiary);
+  font-size: 10px;
 }
 
 /* Chat Input Area */
@@ -10748,6 +10823,6 @@ body.resizing * {
 /* Responsive: narrower on small screens */
 @media (max-width: 768px) {
   .chat-panel {
-    width: 100%;
+    width: 100% !important;
   }
 }

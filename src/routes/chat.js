@@ -106,7 +106,7 @@ router.post('/api/chat/session', async (req, res) => {
 router.post('/api/chat/session/:id/message', async (req, res) => {
   try {
     const sessionId = parseInt(req.params.id, 10);
-    const { content } = req.body || {};
+    const { content, context, contextData } = req.body || {};
 
     if (!content) {
       return res.status(400).json({ error: 'Missing required field: content' });
@@ -117,7 +117,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       return res.status(404).json({ error: 'Chat session not found or not active' });
     }
 
-    const result = await chatSessionManager.sendMessage(sessionId, content);
+    const result = await chatSessionManager.sendMessage(sessionId, content, { context, contextData });
     res.json({ data: { messageId: result.id } });
   } catch (error) {
     logger.error(`Error sending chat message: ${error.message}`);
@@ -159,7 +159,11 @@ router.get('/api/chat/session/:id/stream', (req, res) => {
 
     unsubToolUse = chatSessionManager.onToolUse(sessionId, (data) => {
       try {
-        res.write(`data: ${JSON.stringify({ type: 'tool_use', toolName: data.toolName, status: data.status })}\n\n`);
+        const event = { type: 'tool_use', toolName: data.toolName, status: data.status };
+        if (data.args) {
+          event.toolInput = data.args;
+        }
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
       } catch {
         // Client disconnected
       }

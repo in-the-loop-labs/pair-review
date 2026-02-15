@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 20;
+const CURRENT_SCHEMA_VERSION = 21;
 
 /**
  * Database schema SQL statements
@@ -226,6 +226,7 @@ const SCHEMA_SQL = {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
       role TEXT NOT NULL,
+      type TEXT DEFAULT 'message',
       content TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
@@ -1011,6 +1012,7 @@ const MIGRATIONS = {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           session_id INTEGER NOT NULL,
           role TEXT NOT NULL,
+          type TEXT DEFAULT 'message',
           content TEXT NOT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
@@ -1026,6 +1028,28 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 20 complete');
+  },
+
+  // Migration to version 21: adds type column to chat_messages for distinguishing context vs message
+  21: (db) => {
+    console.log('Running migration to schema version 21...');
+
+    const hasType = columnExists(db, 'chat_messages', 'type');
+    if (!hasType) {
+      try {
+        db.prepare(`ALTER TABLE chat_messages ADD COLUMN type TEXT DEFAULT 'message'`).run();
+        console.log('  Added type column to chat_messages');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column type already exists (race condition)');
+      }
+    } else {
+      console.log('  Column type already exists');
+    }
+
+    console.log('Migration to schema version 21 complete');
   }
 };
 

@@ -205,6 +205,152 @@ describe('ChatSessionManager', () => {
       expect(bridge.sendMessage).toHaveBeenCalledWith('plain message');
     });
 
+    it('should prepend per-message context when provided', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+
+      await manager.sendMessage(session.id, 'What is wrong here?', {
+        context: 'Suggestion: Null check missing on line 42'
+      });
+
+      // Bridge should receive context + message
+      expect(bridge.sendMessage).toHaveBeenCalledWith(
+        'Suggestion: Null check missing on line 42\n\n---\n\nWhat is wrong here?'
+      );
+
+      // DB should store only the user's original message (type='message')
+      const msgs = db.prepare("SELECT * FROM chat_messages WHERE session_id = ? AND role = 'user' AND type = 'message'").all(session.id);
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0].content).toBe('What is wrong here?');
+    });
+
+    it('should prepend both initialContext and per-message context', async () => {
+      const session = await manager.createSession({
+        provider: 'pi',
+        reviewId: 1,
+        initialContext: 'All suggestions: ...'
+      });
+      const bridge = _createdBridges[0];
+
+      await manager.sendMessage(session.id, 'Explain this', {
+        context: 'Focused: Bug on line 10'
+      });
+
+      // initialContext (broad) wraps outermost, per-message context (focused) is closer to user text
+      expect(bridge.sendMessage).toHaveBeenCalledWith(
+        'All suggestions: ...\n\n---\n\nFocused: Bug on line 10\n\n---\n\nExplain this'
+      );
+    });
+
+    it('should not prepend context when context option is undefined', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+
+      await manager.sendMessage(session.id, 'plain message', {});
+
+      expect(bridge.sendMessage).toHaveBeenCalledWith('plain message');
+    });
+
+    it('should store contextData as a context-type message in DB before the user message', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      const ctxData = { type: 'bug', title: 'Null check missing', file: 'src/app.js', line_start: 42, line_end: 42, body: 'Variable may be null' };
+      await manager.sendMessage(session.id, 'Tell me about this', {
+        context: 'Suggestion: Null check missing on line 42',
+        contextData: ctxData
+      });
+
+      // Should have a context message and a user message
+      const allMsgs = db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id ASC').all(session.id);
+      expect(allMsgs).toHaveLength(2);
+
+      // First message: context
+      expect(allMsgs[0].role).toBe('user');
+      expect(allMsgs[0].type).toBe('context');
+      expect(JSON.parse(allMsgs[0].content)).toEqual(ctxData);
+
+      // Second message: user message
+      expect(allMsgs[1].role).toBe('user');
+      expect(allMsgs[1].type).toBe('message');
+      expect(allMsgs[1].content).toBe('Tell me about this');
+    });
+
+    it('should store contextData as string if already stringified', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      const ctxString = '{"type":"bug","title":"Already stringified"}';
+      await manager.sendMessage(session.id, 'Check this', { contextData: ctxString });
+
+      const ctxMsg = db.prepare("SELECT * FROM chat_messages WHERE session_id = ? AND type = 'context'").get(session.id);
+      expect(ctxMsg).toBeDefined();
+      expect(ctxMsg.content).toBe(ctxString);
+    });
+
+    it('should not store context message when contextData is not provided', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      await manager.sendMessage(session.id, 'No context here');
+
+      const ctxMsgs = db.prepare("SELECT * FROM chat_messages WHERE session_id = ? AND type = 'context'").all(session.id);
+      expect(ctxMsgs).toHaveLength(0);
+
+      const userMsgs = db.prepare("SELECT * FROM chat_messages WHERE session_id = ? AND type = 'message'").all(session.id);
+      expect(userMsgs).toHaveLength(1);
+    });
+
+    it('should store contextData object as a context row before the message row', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      await manager.sendMessage(session.id, 'text', {
+        contextData: { type: 'bug', title: 'Null check' }
+      });
+
+      const allMsgs = db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id ASC').all(session.id);
+      expect(allMsgs).toHaveLength(2);
+
+      // First row: context
+      expect(allMsgs[0].role).toBe('user');
+      expect(allMsgs[0].type).toBe('context');
+      expect(JSON.parse(allMsgs[0].content)).toEqual({ type: 'bug', title: 'Null check' });
+
+      // Second row: user message
+      expect(allMsgs[1].role).toBe('user');
+      expect(allMsgs[1].type).toBe('message');
+      expect(allMsgs[1].content).toBe('text');
+
+      // Context row appears before message row (by id ordering)
+      expect(allMsgs[0].id).toBeLessThan(allMsgs[1].id);
+    });
+
+    it('should store each item in a contextData array as a separate context row', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      const ctxArray = [
+        { type: 'bug', title: 'Null check missing', file: 'app.js' },
+        { type: 'improvement', title: 'Use const', file: 'utils.js' }
+      ];
+      await manager.sendMessage(session.id, 'Tell me about these', {
+        contextData: ctxArray
+      });
+
+      const allMsgs = db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id ASC').all(session.id);
+      expect(allMsgs).toHaveLength(3); // 2 context + 1 message
+
+      // First two rows: context
+      expect(allMsgs[0].type).toBe('context');
+      expect(JSON.parse(allMsgs[0].content)).toEqual(ctxArray[0]);
+      expect(allMsgs[1].type).toBe('context');
+      expect(JSON.parse(allMsgs[1].content)).toEqual(ctxArray[1]);
+
+      // Third row: user message
+      expect(allMsgs[2].type).toBe('message');
+      expect(allMsgs[2].content).toBe('Tell me about these');
+
+      // Both context rows appear before the message row
+      expect(allMsgs[0].id).toBeLessThan(allMsgs[2].id);
+      expect(allMsgs[1].id).toBeLessThan(allMsgs[2].id);
+    });
+
     it('should throw on sendMessage to non-existent session', async () => {
       await expect(
         manager.sendMessage(999, 'hello')

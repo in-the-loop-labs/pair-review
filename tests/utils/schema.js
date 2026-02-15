@@ -196,6 +196,7 @@ const SCHEMA_SQL = {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
       role TEXT NOT NULL,
+      type TEXT DEFAULT 'message',
       content TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE

@@ -188,7 +188,71 @@ describe('Chat Routes', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data).toHaveProperty('messageId', 100);
-      expect(mockManager.sendMessage).toHaveBeenCalledWith(1, 'What does this code do?');
+      expect(mockManager.sendMessage).toHaveBeenCalledWith(
+        1, 'What does this code do?', { context: undefined, contextData: undefined }
+      );
+    });
+
+    it('should pass context to sendMessage when provided', async () => {
+      db.prepare(
+        "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
+      ).run();
+
+      const res = await request(app)
+        .post('/api/chat/session/1/message')
+        .send({
+          content: 'Explain this bug',
+          context: 'Suggestion: Null pointer on line 42'
+        });
+
+      expect(res.status).toBe(200);
+      expect(mockManager.sendMessage).toHaveBeenCalledWith(
+        1, 'Explain this bug', { context: 'Suggestion: Null pointer on line 42', contextData: undefined }
+      );
+    });
+
+    it('should pass contextData to sendMessage when provided', async () => {
+      db.prepare(
+        "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
+      ).run();
+
+      const ctxData = { type: 'bug', title: 'Null pointer', file: 'app.js', line_start: 42 };
+      const res = await request(app)
+        .post('/api/chat/session/1/message')
+        .send({
+          content: 'Explain this bug',
+          context: 'Suggestion: Null pointer on line 42',
+          contextData: ctxData
+        });
+
+      expect(res.status).toBe(200);
+      expect(mockManager.sendMessage).toHaveBeenCalledWith(
+        1, 'Explain this bug', {
+          context: 'Suggestion: Null pointer on line 42',
+          contextData: ctxData
+        }
+      );
+    });
+
+    it('should forward contextData without context to sendMessage', async () => {
+      db.prepare(
+        "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
+      ).run();
+
+      const res = await request(app)
+        .post('/api/chat/session/1/message')
+        .send({
+          content: 'test',
+          contextData: { type: 'bug', title: 'test' }
+        });
+
+      expect(res.status).toBe(200);
+      expect(mockManager.sendMessage).toHaveBeenCalledWith(
+        1, 'test', {
+          context: undefined,
+          contextData: { type: 'bug', title: 'test' }
+        }
+      );
     });
 
     it('should return 404 for unknown session', async () => {
