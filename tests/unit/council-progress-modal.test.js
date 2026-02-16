@@ -835,6 +835,85 @@ describe('CouncilProgressModal', () => {
     });
   });
 
+  describe('reopenFromBackground', () => {
+    it('re-shows modal for single-model analysis (councilConfig is null)', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      // Simulate a single-model analysis: councilConfig is null
+      modal.currentAnalysisId = 'test-analysis-123';
+      modal.councilConfig = null;
+      modal.isRunningInBackground = true;
+      modalContainer.style.display = 'none';
+
+      modal.reopenFromBackground();
+
+      expect(modal.isVisible).toBe(true);
+      expect(modalContainer.style.display).toBe('flex');
+      expect(modal.isRunningInBackground).toBe(false);
+    });
+
+    it('re-shows modal for council analysis (councilConfig is set)', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      modal.currentAnalysisId = 'test-analysis-456';
+      modal.councilConfig = { levels: { '1': { enabled: true } } };
+      modal.isRunningInBackground = true;
+      modalContainer.style.display = 'none';
+
+      modal.reopenFromBackground();
+
+      expect(modal.isVisible).toBe(true);
+      expect(modalContainer.style.display).toBe('flex');
+      expect(modal.isRunningInBackground).toBe(false);
+    });
+
+    it('does not re-show modal when no analysis is running', () => {
+      const { modal, modalContainer } = createTestCouncilProgressModal();
+
+      modal.currentAnalysisId = null;
+      modal.isRunningInBackground = true;
+      modalContainer.style.display = 'none';
+
+      modal.reopenFromBackground();
+
+      expect(modal.isVisible).toBeFalsy();
+      expect(modalContainer.style.display).toBe('none');
+      expect(modal.isRunningInBackground).toBe(false);
+    });
+
+    it('hides status indicator when reopening', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const originalStatusIndicator = window.statusIndicator;
+
+      const mockStatusIndicator = { hide: vi.fn() };
+      window.statusIndicator = mockStatusIndicator;
+
+      modal.currentAnalysisId = 'test-analysis-789';
+      modal.isRunningInBackground = true;
+
+      modal.reopenFromBackground();
+
+      expect(mockStatusIndicator.hide).toHaveBeenCalled();
+
+      window.statusIndicator = originalStatusIndicator;
+    });
+
+    it('hides status indicator even when no analysis is running', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const mockStatusIndicator = { hide: vi.fn() };
+      window.statusIndicator = mockStatusIndicator;
+
+      modal.currentAnalysisId = null;
+      modal.isRunningInBackground = true;
+
+      modal.reopenFromBackground();
+
+      expect(mockStatusIndicator.hide).toHaveBeenCalled();
+
+      delete window.statusIndicator;
+    });
+  });
+
   describe('_updateVoiceCentric — per-voice orchestration (level 4)', () => {
     it('updates per-voice consolidation row when level 4 has voices map', () => {
       const { modal } = createTestCouncilProgressModal();

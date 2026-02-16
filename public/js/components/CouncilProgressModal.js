@@ -111,7 +111,7 @@ class CouncilProgressModal {
    */
   reopenFromBackground() {
     this.isRunningInBackground = false;
-    if (this.currentAnalysisId && this.councilConfig) {
+    if (this.currentAnalysisId) {
       // Don't rebuild — just re-show the existing DOM
       this.isVisible = true;
       this.modal.style.display = 'flex';
