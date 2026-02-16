@@ -68,6 +68,11 @@ class ChatPanel {
               <path d="M.989 8 .064 2.68a1.342 1.342 0 0 1 1.85-1.462l13.402 5.744a1.13 1.13 0 0 1 0 2.076L1.913 14.782a1.343 1.343 0 0 1-1.85-1.463L.99 8Zm.603-4.776L2.296 7.25h5.954a.75.75 0 0 1 0 1.5H2.296l-.704 4.026L13.788 8Z"/>
             </svg>
           </button>
+          <button class="chat-panel__stop-btn" title="Stop" style="display: none;">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+              <path d="M4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5v-7A2.5 2.5 0 0 0 11.5 2h-7Z"/>
+            </svg>
+          </button>
         </div>
       </div>
     `;
@@ -77,6 +82,7 @@ class ChatPanel {
     this.messagesEl = this.container.querySelector('#chat-messages');
     this.inputEl = this.container.querySelector('.chat-panel__input');
     this.sendBtn = this.container.querySelector('.chat-panel__send-btn');
+    this.stopBtn = this.container.querySelector('.chat-panel__stop-btn');
     this.closeBtn = this.container.querySelector('.chat-panel__close-btn');
     this.newBtn = this.container.querySelector('.chat-panel__new-btn');
   }
@@ -96,6 +102,9 @@ class ChatPanel {
     // Send button
     this.sendBtn.addEventListener('click', () => this.sendMessage());
 
+    // Stop button
+    this.stopBtn.addEventListener('click', () => this._stopAgent());
+
     // Textarea input handling
     this.inputEl.addEventListener('input', () => {
       this._autoResizeTextarea();
@@ -112,12 +121,17 @@ class ChatPanel {
       }
     });
 
-    // Escape to close
-    document.addEventListener('keydown', (e) => {
+    // Escape: stop agent if streaming, otherwise close panel
+    this._onKeydown = (e) => {
       if (e.key === 'Escape' && this.isOpen) {
-        this.close();
+        if (this.isStreaming) {
+          this._stopAgent();
+        } else {
+          this.close();
+        }
       }
-    });
+    };
+    document.addEventListener('keydown', this._onKeydown);
 
     this._bindResizeEvents();
   }
@@ -207,20 +221,18 @@ class ChatPanel {
     this.panel.classList.remove('chat-panel--closed');
     this.panel.classList.add('chat-panel--open');
 
-    // If opening with suggestion context, inject it as a context card
-    // and store it as pending context for the next user message.
-    // Does NOT start a new session — continues the existing one.
-    if (options.suggestionContext) {
-      // If no active session, create one first
-      if (!this.currentSessionId) {
-        const sessionId = await this.createSession();
-        if (!sessionId) return;
-        this.connectSSE(this.currentSessionId);
-      } else if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
-        this.connectSSE(this.currentSessionId);
-      }
+    // Eagerly create session if we don't have one
+    if (!this.currentSessionId) {
+      const sessionData = await this.createSession();
+      if (!sessionData) { this._showError('Failed to start chat session'); return; }
+      this._showAnalysisContextIfPresent(sessionData);
+      this.connectSSE(this.currentSessionId);
+    } else if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
+      this.connectSSE(this.currentSessionId);
+    }
 
-      // Store pending context and show compact card
+    // If opening with suggestion context, inject it as a context card
+    if (options.suggestionContext) {
       this._sendContextMessage(options.suggestionContext);
     }
 
@@ -280,7 +292,7 @@ class ChatPanel {
   /**
    * Create a new chat session via API
    * @param {number} contextCommentId - Optional AI suggestion ID for context
-   * @returns {number|null} Session ID or null on failure
+   * @returns {Object|null} Session data ({ id, status, context? }) or null on failure
    */
   async createSession(contextCommentId) {
     if (!this.reviewId) {
@@ -310,7 +322,7 @@ class ChatPanel {
 
       const result = await response.json();
       this.currentSessionId = result.data.id;
-      return result.data.id;
+      return result.data;
     } catch (error) {
       console.error('[ChatPanel] Error creating session:', error);
       this._showError('Failed to start chat session. ' + error.message);
@@ -339,8 +351,9 @@ class ChatPanel {
 
     // Ensure we have a session and SSE is connected
     if (!this.currentSessionId) {
-      const sessionId = await this.createSession();
-      if (!sessionId) return;
+      const sessionData = await this.createSession();
+      if (!sessionData) return;
+      this._showAnalysisContextIfPresent(sessionData);
       this.connectSSE(this.currentSessionId);
     } else if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
       // Reconnect SSE if disconnected by close() or error
@@ -350,11 +363,15 @@ class ChatPanel {
     // Prepare streaming UI
     this.isStreaming = true;
     this.sendBtn.disabled = true;
+    this.sendBtn.style.display = 'none';
+    this.stopBtn.style.display = '';
     this._streamingContent = '';
     this._addStreamingPlaceholder();
 
     // Build the API payload — may include pending context from "Ask about this"
     const payload = { content };
+    const savedContext = this._pendingContext;
+    const savedContextData = this._pendingContextData;
     if (this._pendingContext.length > 0) {
       payload.context = this._pendingContext.join('\n\n');
       payload.contextData = this._pendingContextData;
@@ -375,6 +392,9 @@ class ChatPanel {
         throw new Error(err.error || 'Failed to send message');
       }
     } catch (error) {
+      // Restore pending context so it's not lost
+      this._pendingContext = savedContext;
+      this._pendingContextData = savedContextData;
       console.error('[ChatPanel] Error sending message:', error);
       this._showError('Failed to send message. ' + error.message);
       this._finalizeStreaming();
@@ -389,6 +409,17 @@ class ChatPanel {
    * @param {Object} ctx - Suggestion context {title, type, file, line_start, line_end, body}
    */
   _sendContextMessage(ctx) {
+    // Cap pending context items to avoid unbounded accumulation
+    const MAX_CONTEXT_ITEMS = 5;
+    if (this._pendingContext.length >= MAX_CONTEXT_ITEMS) {
+      // Replace oldest — remove first item from arrays
+      this._pendingContext.shift();
+      this._pendingContextData.shift();
+      // Remove oldest context card from UI
+      const oldestCard = this.messagesEl.querySelector('.chat-panel__context-card');
+      if (oldestCard) oldestCard.remove();
+    }
+
     // Remove empty state if present
     const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
@@ -452,6 +483,42 @@ class ChatPanel {
   }
 
   /**
+   * Show analysis context card if the session response includes context metadata.
+   * Removes the empty state first so the card appears as the first element.
+   * @param {Object} sessionData - Response data from createSession ({ id, status, context? })
+   */
+  _showAnalysisContextIfPresent(sessionData) {
+    if (sessionData.context && sessionData.context.suggestionCount > 0) {
+      const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+      if (emptyState) emptyState.remove();
+      this._addAnalysisContextCard(sessionData.context);
+    }
+  }
+
+  /**
+   * Add a compact analysis context card to the messages area.
+   * Visually indicates that the agent has analysis suggestions loaded as context.
+   * @param {Object} context - Context metadata { suggestionCount }
+   */
+  _addAnalysisContextCard(context) {
+    const card = document.createElement('div');
+    card.className = 'chat-panel__analysis-context-card';
+
+    const count = context.suggestionCount;
+    const label = count === 1 ? '1 suggestion' : `${count} suggestions`;
+
+    card.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
+        <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+      </svg>
+      <span>Analysis context loaded &mdash; ${this._escapeHtml(label)}</span>
+    `;
+
+    this.messagesEl.appendChild(card);
+    this.scrollToBottom();
+  }
+
+  /**
    * Connect to SSE stream for a session
    * @param {number} sessionId - Session to stream from
    */
@@ -475,12 +542,17 @@ class ChatPanel {
             break;
 
           case 'delta':
+            this._hideThinkingIndicator();
             this._streamingContent += data.text;
             this.updateStreamingMessage(this._streamingContent);
             break;
 
           case 'tool_use':
             this._showToolUse(data.toolName, data.status, data.toolInput);
+            break;
+
+          case 'status':
+            this._handleAgentStatus(data.status);
             break;
 
           case 'complete':
@@ -589,14 +661,25 @@ class ChatPanel {
       streamingMsg.id = '';
       if (messageId) streamingMsg.dataset.messageId = messageId;
 
-      // Remove cursor
+      // Remove cursor and thinking indicator
       const cursor = streamingMsg.querySelector('.chat-panel__cursor');
       if (cursor) cursor.remove();
+      const thinking = streamingMsg.querySelector('.chat-panel__thinking');
+      if (thinking) thinking.remove();
+
+      // Remove any active tool spinners (e.g. abort mid-tool-execution)
+      const spinners = streamingMsg.querySelectorAll('.chat-panel__tool-spinner');
+      spinners.forEach(s => s.remove());
 
       // Final render
       const bubble = streamingMsg.querySelector('.chat-panel__bubble');
-      if (bubble && this._streamingContent) {
-        bubble.innerHTML = this.renderMarkdown(this._streamingContent);
+      if (bubble) {
+        if (this._streamingContent) {
+          bubble.innerHTML = this.renderMarkdown(this._streamingContent);
+        } else {
+          // Empty response - show a subtle message
+          bubble.innerHTML = '<em class="chat-panel__empty-response">No response generated.</em>';
+        }
       }
     }
 
@@ -609,11 +692,31 @@ class ChatPanel {
   }
 
   /**
+   * Abort the current agent turn
+   */
+  async _stopAgent() {
+    if (!this.isStreaming || !this.currentSessionId) return;
+
+    try {
+      await fetch(`/api/chat/session/${this.currentSessionId}/abort`, {
+        method: 'POST'
+      });
+    } catch (error) {
+      console.error('[ChatPanel] Error aborting:', error);
+    }
+
+    // Finalize the streaming message with whatever content we have so far
+    this.finalizeStreamingMessage(null);
+  }
+
+  /**
    * Clean up streaming state
    */
   _finalizeStreaming() {
     this.isStreaming = false;
     this._streamingContent = '';
+    this.sendBtn.style.display = '';
+    this.stopBtn.style.display = 'none';
     this.sendBtn.disabled = !this.inputEl?.value?.trim();
     this.inputEl?.focus();
   }
@@ -629,6 +732,7 @@ class ChatPanel {
     if (!streamingMsg) return;
 
     if (status === 'start') {
+      this._hideThinkingIndicator();
       const argSummary = this._summarizeToolInput(toolName, toolInput);
 
       // Add tool badge before the bubble content
@@ -642,7 +746,7 @@ class ChatPanel {
         <span>${this._escapeHtml(toolName)}</span>${argSummary ? `<span class="chat-panel__tool-args" title="${this._escapeHtml(argSummary)}">${this._escapeHtml(argSummary)}</span>` : ''}
         <span class="chat-panel__tool-spinner"></span>
       `;
-      streamingMsg.insertBefore(badge, streamingMsg.querySelector('.chat-panel__bubble'));
+      streamingMsg.appendChild(badge);
     } else {
       // Remove spinner from completed tool
       const badges = streamingMsg.querySelectorAll(`.chat-panel__tool-badge[data-tool="${toolName}"]`);
@@ -650,6 +754,7 @@ class ChatPanel {
         const spinner = b.querySelector('.chat-panel__tool-spinner');
         if (spinner) spinner.remove();
       });
+      this._showThinkingIndicator();
     }
   }
 
@@ -691,6 +796,55 @@ class ChatPanel {
         return '';
       }
     }
+  }
+
+  /**
+   * Handle agent status events from the backend.
+   * @param {string} status - 'working' or 'turn_complete'
+   */
+  _handleAgentStatus(status) {
+    if (status === 'working') {
+      this._showThinkingIndicator();
+    }
+    // 'turn_complete' is informational; the agent may start another turn
+  }
+
+  /**
+   * Show the pulsing thinking indicator in/below the streaming message.
+   * If there's already content, append it after the content. If no content, it's the typing dots.
+   */
+  _showThinkingIndicator() {
+    const streamingMsg = document.getElementById('chat-streaming-msg');
+    if (!streamingMsg) return;
+
+    // Don't add duplicate
+    if (streamingMsg.querySelector('.chat-panel__thinking')) return;
+
+    // Don't add if the bubble still has its initial typing indicator (no content yet).
+    // The bubble's own dots are sufficient — adding a second set would show two pulsing indicators.
+    const bubble = streamingMsg.querySelector('.chat-panel__bubble');
+    if (bubble && bubble.querySelector('.chat-panel__typing-indicator')) return;
+
+    // Remove the cursor — the thinking indicator replaces it as the "working" signal.
+    // When new text arrives, updateStreamingMessage() will re-add the cursor naturally.
+    const cursor = bubble?.querySelector('.chat-panel__cursor');
+    if (cursor) cursor.remove();
+
+    const indicator = document.createElement('div');
+    indicator.className = 'chat-panel__thinking';
+    indicator.innerHTML = '<span class="chat-panel__typing-indicator"><span></span><span></span><span></span></span>';
+    streamingMsg.appendChild(indicator);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Hide the thinking indicator from the streaming message.
+   */
+  _hideThinkingIndicator() {
+    const streamingMsg = document.getElementById('chat-streaming-msg');
+    if (!streamingMsg) return;
+    const thinking = streamingMsg.querySelector('.chat-panel__thinking');
+    if (thinking) thinking.remove();
   }
 
   /**
@@ -752,6 +906,7 @@ class ChatPanel {
    * Clean up on page unload
    */
   destroy() {
+    document.removeEventListener('keydown', this._onKeydown);
     this.disconnectSSE();
     this.messages = [];
     if (this.container) {

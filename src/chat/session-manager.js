@@ -60,7 +60,9 @@ class ChatSessionManager {
     const listeners = {
       delta: new Set(),
       complete: new Set(),
-      toolUse: new Set()
+      toolUse: new Set(),
+      status: new Set(),
+      error: new Set()
     };
 
     // Store in map before starting so event handlers can find it
@@ -113,13 +115,37 @@ class ChatSessionManager {
       }
     });
 
+    bridge.on('status', (data) => {
+      for (const cb of listeners.status) {
+        try {
+          cb(data);
+        } catch (err) {
+          logger.error(`[ChatSession] Status listener error: ${err.message}`);
+        }
+      }
+    });
+
     bridge.on('error', (data) => {
       logger.error(`[ChatSession] Bridge error for session ${sessionId}: ${data.error?.message || 'unknown'}`);
+      for (const cb of listeners.error) {
+        try {
+          cb({ message: data.error?.message || 'Agent encountered an error' });
+        } catch (err) {
+          logger.error(`[ChatSession] Error listener error: ${err.message}`);
+        }
+      }
     });
 
     bridge.on('close', () => {
       // If the bridge closes unexpectedly (not via closeSession), update DB
       if (this._sessions.has(sessionId)) {
+        for (const cb of listeners.error) {
+          try {
+            cb({ message: 'Agent process ended unexpectedly' });
+          } catch (err) {
+            logger.error(`[ChatSession] Error listener error: ${err.message}`);
+          }
+        }
         try {
           this._db.prepare(`
             UPDATE chat_sessions SET status = 'closed', updated_at = CURRENT_TIMESTAMP
@@ -193,25 +219,29 @@ class ChatSessionManager {
       session.initialContext = null; // Only prepend once
     }
 
-    // Store context message(s) in DB if provided (for session resumption UI)
-    // contextData may be a single object/string or an array of objects
-    if (contextData) {
-      const ctxStmt = this._db.prepare(`
-        INSERT INTO chat_messages (session_id, role, type, content)
-        VALUES (?, 'user', 'context', ?)
-      `);
-      const items = Array.isArray(contextData) ? contextData : [contextData];
-      for (const item of items) {
-        ctxStmt.run(sessionId, typeof item === 'string' ? item : JSON.stringify(item));
+    // Store context + user message atomically
+    const insertAll = this._db.transaction(() => {
+      // 1. Insert context rows (for session resumption UI)
+      if (contextData) {
+        const ctxStmt = this._db.prepare(`
+          INSERT INTO chat_messages (session_id, role, type, content)
+          VALUES (?, 'user', 'context', ?)
+        `);
+        const items = Array.isArray(contextData) ? contextData : [contextData];
+        for (const item of items) {
+          ctxStmt.run(sessionId, typeof item === 'string' ? item : JSON.stringify(item));
+        }
       }
-    }
 
-    // Store user message in DB (only the user's actual text, not injected context)
-    const stmt = this._db.prepare(`
-      INSERT INTO chat_messages (session_id, role, type, content)
-      VALUES (?, 'user', 'message', ?)
-    `);
-    const result = stmt.run(sessionId, content);
+      // 2. Insert user message
+      const stmt = this._db.prepare(`
+        INSERT INTO chat_messages (session_id, role, type, content)
+        VALUES (?, 'user', 'message', ?)
+      `);
+      return stmt.run(sessionId, content);
+    });
+
+    const result = insertAll();
     const messageId = Number(result.lastInsertRowid);
 
     // Forward to bridge
@@ -264,6 +294,49 @@ class ChatSessionManager {
     }
     session.listeners.toolUse.add(callback);
     return () => session.listeners.toolUse.delete(callback);
+  }
+
+  /**
+   * Register a callback for agent status events (working, turn_complete).
+   * @param {number} sessionId
+   * @param {function} callback - Called with {status}
+   * @returns {function} Unsubscribe function
+   */
+  onStatus(sessionId, callback) {
+    const session = this._sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found or not active`);
+    }
+    session.listeners.status.add(callback);
+    return () => session.listeners.status.delete(callback);
+  }
+
+  /**
+   * Register a callback for error events from the bridge.
+   * @param {number} sessionId
+   * @param {function} callback - Called with {message}
+   * @returns {function} Unsubscribe function
+   */
+  onError(sessionId, callback) {
+    const session = this._sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found or not active`);
+    }
+    session.listeners.error.add(callback);
+    return () => session.listeners.error.delete(callback);
+  }
+
+  /**
+   * Abort the current turn in an active session.
+   * @param {number} sessionId
+   */
+  abortSession(sessionId) {
+    const session = this._sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found or not active`);
+    }
+    session.bridge.abort();
+    logger.info(`[ChatSession] Aborted session ${sessionId}`);
   }
 
   /**
@@ -338,7 +411,7 @@ class ChatSessionManager {
    */
   getMessages(sessionId) {
     return this._db.prepare(
-      'SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC'
+      'SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id ASC'
     ).all(sessionId);
   }
 

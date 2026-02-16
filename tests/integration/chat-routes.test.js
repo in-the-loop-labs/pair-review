@@ -24,6 +24,7 @@ function createMockSessionManager(db) {
     createSession: vi.fn().mockResolvedValue({ id: 1, status: 'active' }),
     sendMessage: vi.fn().mockResolvedValue({ id: 100 }),
     closeSession: vi.fn().mockResolvedValue(undefined),
+    abortSession: vi.fn(),
     getSession: vi.fn().mockImplementation((id) => {
       return db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id) || null;
     }),
@@ -131,14 +132,16 @@ describe('Chat Routes', () => {
       expect(callArgs.systemPrompt).toContain('code review');
     });
 
-    it('should pass initialContext as null when no AI suggestions exist', async () => {
+    it('should pass initialContext with only port info when no AI suggestions exist', async () => {
       const res = await request(app)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1 });
 
       expect(res.status).toBe(200);
       const callArgs = mockManager.createSession.mock.calls[0][0];
-      expect(callArgs.initialContext).toBeNull();
+      // No suggestions, but port info is still included
+      expect(callArgs.initialContext).toContain('pair-review web server is running at');
+      expect(res.body.data.context).toBeUndefined();
     });
 
     it('should pass initialContext with suggestion content when AI suggestions exist', async () => {
@@ -163,6 +166,19 @@ describe('Chat Routes', () => {
       expect(callArgs.initialContext).toBeTypeOf('string');
       expect(callArgs.initialContext).toContain('Null check missing');
       expect(callArgs.initialContext).toContain('Use const');
+
+      // Response should include context metadata with suggestion count
+      expect(res.body.data.context).toBeDefined();
+      expect(res.body.data.context.suggestionCount).toBe(2);
+    });
+
+    it('should not include context metadata when no AI suggestions exist', async () => {
+      const res = await request(app)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.context).toBeUndefined();
     });
 
     it('should return 404 when review does not exist and no system prompt given', async () => {
@@ -314,6 +330,40 @@ describe('Chat Routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.data.success).toBe(true);
       expect(mockManager.closeSession).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe('POST /api/chat/session/:id/abort', () => {
+    it('should abort an active session', async () => {
+      mockManager.isSessionActive.mockReturnValue(true);
+
+      const res = await request(app)
+        .post('/api/chat/session/1/abort');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ success: true });
+      expect(mockManager.abortSession).toHaveBeenCalledWith(1);
+    });
+
+    it('should return 404 for inactive session', async () => {
+      mockManager.isSessionActive.mockReturnValue(false);
+
+      const res = await request(app)
+        .post('/api/chat/session/999/abort');
+
+      expect(res.status).toBe(404);
+    });
+
+    it('should return 500 on abort error', async () => {
+      mockManager.isSessionActive.mockReturnValue(true);
+      mockManager.abortSession.mockImplementation(() => {
+        throw new Error('abort failed');
+      });
+
+      const res = await request(app)
+        .post('/api/chat/session/1/abort');
+
+      expect(res.status).toBe(500);
     });
   });
 

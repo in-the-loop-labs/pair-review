@@ -38,6 +38,7 @@ router.post('/api/chat/session', async (req, res) => {
     // Build system prompt if not provided directly
     let finalSystemPrompt = systemPrompt;
     let initialContext = null;
+    let suggestions = null;
 
     if (!finalSystemPrompt) {
       const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
@@ -54,7 +55,7 @@ router.post('/api/chat/session', async (req, res) => {
       finalSystemPrompt = buildChatPrompt({ review });
 
       // Fetch all AI suggestions from the latest analysis run
-      const suggestions = await query(db, `
+      suggestions = await query(db, `
         SELECT
           id, ai_run_id, ai_level, ai_confidence,
           file, line_start, line_end, type, title, body,
@@ -78,7 +79,8 @@ router.post('/api/chat/session', async (req, res) => {
 
       initialContext = buildInitialContext({
         suggestions,
-        focusedSuggestion
+        focusedSuggestion,
+        port: req.socket.localPort
       });
     }
 
@@ -93,7 +95,17 @@ router.post('/api/chat/session', async (req, res) => {
     });
 
     logger.info(`Chat session created: ${session.id} (provider=${provider}, model=${model})`);
-    res.json({ data: { id: session.id, status: session.status } });
+
+    const responseData = { id: session.id, status: session.status };
+
+    // Include analysis context metadata so the frontend can show a context indicator
+    if (initialContext && suggestions && suggestions.length > 0) {
+      responseData.context = {
+        suggestionCount: suggestions.length
+      };
+    }
+
+    res.json({ data: responseData });
   } catch (error) {
     logger.error(`Error creating chat session: ${error.message}`);
     res.status(500).json({ error: 'Failed to create chat session' });
@@ -147,7 +159,7 @@ router.get('/api/chat/session/:id/stream', (req, res) => {
   res.write(`data: ${JSON.stringify({ type: 'connected', sessionId })}\n\n`);
 
   // Register event listeners (session may have closed between DB check and registration)
-  let unsubDelta, unsubToolUse, unsubComplete;
+  let unsubDelta, unsubToolUse, unsubComplete, unsubStatus, unsubError;
   try {
     unsubDelta = chatSessionManager.onDelta(sessionId, (data) => {
       try {
@@ -176,6 +188,22 @@ router.get('/api/chat/session/:id/stream', (req, res) => {
         // Client disconnected
       }
     });
+
+    unsubStatus = chatSessionManager.onStatus(sessionId, (data) => {
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'status', status: data.status })}\n\n`);
+      } catch {
+        // Client disconnected
+      }
+    });
+
+    unsubError = chatSessionManager.onError(sessionId, (data) => {
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: data.message })}\n\n`);
+      } catch {
+        // Client disconnected
+      }
+    });
   } catch {
     res.write(`data: ${JSON.stringify({ type: 'error', message: 'Session is no longer active' })}\n\n`);
     res.end();
@@ -187,10 +215,32 @@ router.get('/api/chat/session/:id/stream', (req, res) => {
     if (unsubDelta) unsubDelta();
     if (unsubToolUse) unsubToolUse();
     if (unsubComplete) unsubComplete();
+    if (unsubStatus) unsubStatus();
+    if (unsubError) unsubError();
   };
 
   req.on('close', cleanup);
   req.on('error', cleanup);
+});
+
+/**
+ * Abort the current agent turn in a chat session
+ */
+router.post('/api/chat/session/:id/abort', async (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id, 10);
+    const chatSessionManager = req.app.chatSessionManager;
+
+    if (!chatSessionManager.isSessionActive(sessionId)) {
+      return res.status(404).json({ error: 'Chat session not found or not active' });
+    }
+
+    chatSessionManager.abortSession(sessionId);
+    res.json({ data: { success: true } });
+  } catch (error) {
+    logger.error(`Error aborting chat session: ${error.message}`);
+    res.status(500).json({ error: 'Failed to abort' });
+  }
 });
 
 /**

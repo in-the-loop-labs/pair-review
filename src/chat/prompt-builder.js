@@ -105,10 +105,15 @@ function formatSuggestionForContext(s) {
  * @param {Object} options
  * @param {Array} options.suggestions - All AI suggestions from the latest run
  * @param {Object} [options.focusedSuggestion] - The specific suggestion that triggered chat (full DB row)
+ * @param {number} [options.port] - The port the pair-review web server is running on
  * @returns {string|null} Context text to prepend to first message, or null if no context
  */
-function buildInitialContext({ suggestions, focusedSuggestion }) {
+function buildInitialContext({ suggestions, focusedSuggestion, port }) {
   const sections = [];
+
+  if (port) {
+    sections.push(`The pair-review web server is running at http://localhost:${port}`);
+  }
 
   if (suggestions && suggestions.length > 0) {
     const formatted = suggestions.map(formatSuggestionForContext);

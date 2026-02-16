@@ -244,6 +244,42 @@ describe('buildInitialContext', () => {
     });
   });
 
+  describe('with port', () => {
+    it('should include server URL when port is provided', () => {
+      const context = buildInitialContext({ suggestions: [], port: 7247 });
+
+      expect(context).toContain('http://localhost:7247');
+    });
+
+    it('should place server URL before suggestions', () => {
+      const suggestions = [
+        {
+          id: 1, file: 'a.js', line_start: 1, type: 'bug',
+          title: 'Bug A', body: 'Body A', reasoning: null,
+          status: 'active', ai_confidence: 0.5, is_file_level: 0
+        }
+      ];
+
+      const context = buildInitialContext({ suggestions, port: 9000 });
+
+      const portIndex = context.indexOf('http://localhost:9000');
+      const suggestionsIndex = context.indexOf('AI suggestion');
+      expect(portIndex).toBeLessThan(suggestionsIndex);
+    });
+
+    it('should not include server URL when port is not provided', () => {
+      const context = buildInitialContext({
+        suggestions: [{
+          id: 1, file: 'a.js', line_start: 1, type: 'bug',
+          title: 'Bug', body: 'Body', reasoning: null,
+          status: 'active', ai_confidence: 0.5, is_file_level: 0
+        }]
+      });
+
+      expect(context).not.toContain('localhost');
+    });
+  });
+
   describe('edge cases', () => {
     it('should return null when no suggestions and no focused suggestion', () => {
       const context = buildInitialContext({ suggestions: [] });

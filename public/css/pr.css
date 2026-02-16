@@ -10638,9 +10638,20 @@ body.resizing * {
   50% { opacity: 0; }
 }
 
+/* Thinking indicator (shown below content when agent is processing) */
+.chat-panel__thinking {
+  padding: 4px 0 0;
+}
+
+/* Empty response fallback */
+.chat-panel__empty-response {
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+
 /* Tool use badge */
 .chat-panel__tool-badge {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
@@ -10650,6 +10661,7 @@ body.resizing * {
   border-radius: 10px;
   font-size: 11px;
   color: var(--color-text-tertiary);
+  max-width: 100%;
 }
 
 .chat-panel__tool-badge svg {
@@ -10659,13 +10671,14 @@ body.resizing * {
 .chat-panel__tool-args {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace);
   color: var(--color-text-quaternary, var(--color-text-tertiary));
-  max-width: 250px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   opacity: 0.8;
   border-left: 1px solid var(--color-border-primary);
   padding-left: 5px;
+  min-width: 0;
+  flex: 1;
 }
 
 .chat-panel__tool-spinner {
@@ -10717,6 +10730,33 @@ body.resizing * {
   font-family: var(--font-mono, 'SFMono-Regular', Consolas, monospace);
   color: var(--color-text-tertiary);
   font-size: 10px;
+}
+
+/* Chat Panel Analysis Context Card */
+.chat-panel__analysis-context-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  margin: 8px 12px 4px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--color-text-tertiary);
+}
+
+.chat-panel__analysis-context-card svg {
+  flex-shrink: 0;
+  color: var(--color-accent-primary);
+  opacity: 0.6;
+}
+
+.chat-panel__analysis-context-card span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Chat Input Area */
@@ -10778,6 +10818,25 @@ body.resizing * {
 .chat-panel__send-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.chat-panel__stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: var(--color-danger, #d0242f);
+  color: white;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.chat-panel__stop-btn:hover {
+  opacity: 0.85;
 }
 
 /* "Ask about this" button on suggestions */

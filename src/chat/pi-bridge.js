@@ -346,9 +346,14 @@ class PiBridge extends EventEmitter {
 
       case 'agent_start':
       case 'turn_start':
+        logger.debug(`[PiBridge] ${type}`);
+        this.emit('status', { status: 'working' });
+        break;
       case 'turn_end':
+        logger.debug(`[PiBridge] ${type}`);
+        this.emit('status', { status: 'turn_complete' });
+        break;
       case 'session':
-        // Lifecycle events - log at debug level
         logger.debug(`[PiBridge] ${type}`);
         break;
 
