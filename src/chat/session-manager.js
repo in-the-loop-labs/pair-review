@@ -80,6 +80,7 @@ class ChatSessionManager {
     });
 
     bridge.on('complete', (data) => {
+      logger.debug(`[ChatSession] Session ${sessionId} complete: ${(data.fullText || '').length} chars, ${listeners.complete.size} listener(s)`);
       // Store assistant message in DB
       const fullText = data.fullText || '';
       let messageId = null;
@@ -245,6 +246,7 @@ class ChatSessionManager {
     const messageId = Number(result.lastInsertRowid);
 
     // Forward to bridge
+    logger.debug(`[ChatSession] Session ${sessionId}: forwarding message to bridge (${messageForAgent.length} chars, delta listeners: ${session.listeners.delta.size})`);
     await session.bridge.sendMessage(messageForAgent);
 
     return { id: messageId };

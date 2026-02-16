@@ -158,8 +158,9 @@ class PiBridge extends EventEmitter {
     this._inMessage = false;
 
     const command = JSON.stringify({ type: 'prompt', message: content });
-    logger.debug(`[PiBridge] Sending prompt: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
+    logger.debug(`[PiBridge] Sending prompt (${content.length} chars): ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
     this._write(command);
+    logger.debug(`[PiBridge] Prompt written to stdin (${command.length} bytes)`);
   }
 
   /**

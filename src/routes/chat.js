@@ -129,7 +129,9 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       return res.status(404).json({ error: 'Chat session not found or not active' });
     }
 
+    logger.debug(`[ChatRoute] Forwarding message to session ${sessionId} (${content.length} chars)`);
     const result = await chatSessionManager.sendMessage(sessionId, content, { context, contextData });
+    logger.debug(`[ChatRoute] Message stored as ID ${result.id}, awaiting agent response via SSE`);
     res.json({ data: { messageId: result.id } });
   } catch (error) {
     logger.error(`Error sending chat message: ${error.message}`);
@@ -156,6 +158,7 @@ router.get('/api/chat/session/:id/stream', (req, res) => {
   });
 
   // Send initial connection message
+  logger.debug(`[ChatRoute] SSE stream opened for session ${sessionId}`);
   res.write(`data: ${JSON.stringify({ type: 'connected', sessionId })}\n\n`);
 
   // Register event listeners (session may have closed between DB check and registration)
@@ -183,6 +186,7 @@ router.get('/api/chat/session/:id/stream', (req, res) => {
 
     unsubComplete = chatSessionManager.onComplete(sessionId, (data) => {
       try {
+        logger.debug(`[ChatRoute] SSE complete for session ${sessionId}, messageId=${data.messageId}`);
         res.write(`data: ${JSON.stringify({ type: 'complete', messageId: data.messageId })}\n\n`);
       } catch {
         // Client disconnected
@@ -199,11 +203,14 @@ router.get('/api/chat/session/:id/stream', (req, res) => {
 
     unsubError = chatSessionManager.onError(sessionId, (data) => {
       try {
+        logger.debug(`[ChatRoute] SSE error for session ${sessionId}: ${data.message}`);
         res.write(`data: ${JSON.stringify({ type: 'error', message: data.message })}\n\n`);
       } catch {
         // Client disconnected
       }
     });
+
+    logger.debug(`[ChatRoute] All SSE listeners registered for session ${sessionId}`);
   } catch {
     res.write(`data: ${JSON.stringify({ type: 'error', message: 'Session is no longer active' })}\n\n`);
     res.end();

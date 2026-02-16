@@ -36,7 +36,7 @@ class ChatPanel {
         <div class="chat-panel__header">
           <span class="chat-panel__title">
             <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-              <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25H5c.414 0 .75.336.75.75v1.94l2.22-2.22a.75.75 0 0 1 .53-.22h4.75a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
+              <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
             </svg>
             Chat with AI
           </span>
@@ -222,13 +222,11 @@ class ChatPanel {
     this.panel.classList.add('chat-panel--open');
 
     // Eagerly create session if we don't have one
-    if (!this.currentSessionId) {
-      const sessionData = await this.createSession();
-      if (!sessionData) { this._showError('Failed to start chat session'); return; }
-      this._showAnalysisContextIfPresent(sessionData);
-      this.connectSSE(this.currentSessionId);
-    } else if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
-      this.connectSSE(this.currentSessionId);
+    const result = await this._ensureConnected();
+    if (!result) return;
+
+    if (result.sessionData) {
+      this._showAnalysisContextIfPresent(result.sessionData);
     }
 
     // If opening with suggestion context, inject it as a context card
@@ -290,6 +288,33 @@ class ChatPanel {
   }
 
   /**
+   * Ensure we have an active session and SSE connection.
+   * Creates a new session if needed, reconnects SSE if closed, or waits if connecting.
+   * @returns {Promise<{sessionData: Object|null}|null>} Object with sessionData on success
+   *   (sessionData is non-null only when a NEW session was created), or null on failure.
+   */
+  async _ensureConnected() {
+    try {
+      let sessionData = null;
+      if (!this.currentSessionId) {
+        sessionData = await this.createSession();
+        if (!sessionData) { this._showError('Failed to start chat session'); return null; }
+        await this.connectSSE(this.currentSessionId);
+      } else if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
+        await this.connectSSE(this.currentSessionId);
+      } else if (this.eventSource.readyState === EventSource.CONNECTING) {
+        await this._sseConnectPromise;
+      }
+      return { sessionData };
+    } catch (err) {
+      this.disconnectSSE();
+      console.error('[ChatPanel] SSE connection failed:', err);
+      this._showError('Failed to connect to chat stream. ' + err.message);
+      return null;
+    }
+  }
+
+  /**
    * Create a new chat session via API
    * @param {number} contextCommentId - Optional AI suggestion ID for context
    * @returns {Object|null} Session data ({ id, status, context? }) or null on failure
@@ -309,6 +334,7 @@ class ChatPanel {
         body.contextCommentId = contextCommentId;
       }
 
+      console.debug('[ChatPanel] Creating session for review', this.reviewId);
       const response = await fetch('/api/chat/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -322,6 +348,7 @@ class ChatPanel {
 
       const result = await response.json();
       this.currentSessionId = result.data.id;
+      console.debug('[ChatPanel] Session created:', this.currentSessionId);
       return result.data;
     } catch (error) {
       console.error('[ChatPanel] Error creating session:', error);
@@ -350,14 +377,11 @@ class ChatPanel {
     this.addMessage('user', content);
 
     // Ensure we have a session and SSE is connected
-    if (!this.currentSessionId) {
-      const sessionData = await this.createSession();
-      if (!sessionData) return;
-      this._showAnalysisContextIfPresent(sessionData);
-      this.connectSSE(this.currentSessionId);
-    } else if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
-      // Reconnect SSE if disconnected by close() or error
-      this.connectSSE(this.currentSessionId);
+    const connectResult = await this._ensureConnected();
+    if (!connectResult) return;
+
+    if (connectResult.sessionData) {
+      this._showAnalysisContextIfPresent(connectResult.sessionData);
     }
 
     // Prepare streaming UI
@@ -381,6 +405,7 @@ class ChatPanel {
 
     // Send to API
     try {
+      console.debug('[ChatPanel] Sending message to session', this.currentSessionId);
       const response = await fetch(`/api/chat/session/${this.currentSessionId}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -391,6 +416,7 @@ class ChatPanel {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to send message');
       }
+      console.debug('[ChatPanel] Message accepted, waiting for SSE events');
     } catch (error) {
       // Restore pending context so it's not lost
       this._pendingContext = savedContext;
@@ -523,59 +549,93 @@ class ChatPanel {
    * @param {number} sessionId - Session to stream from
    */
   connectSSE(sessionId) {
-    // Don't reconnect if already connected to this session
-    if (this.eventSource && this._sseSessionId === sessionId) return;
+    // Already connected to this session — resolve immediately
+    if (this.eventSource && this._sseSessionId === sessionId &&
+        this.eventSource.readyState === EventSource.OPEN) {
+      return Promise.resolve();
+    }
 
     this.disconnectSSE();
     this._sseSessionId = sessionId;
 
     const url = `/api/chat/session/${sessionId}/stream`;
+    console.debug('[ChatPanel] Connecting SSE:', url);
     this.eventSource = new EventSource(url);
 
-    this.eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
+    const promise = new Promise((resolve, reject) => {
+      let settled = false;
 
-        switch (data.type) {
-          case 'connected':
-            // Session connected, waiting for response
-            break;
+      this.eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type !== 'delta') {
+            console.debug('[ChatPanel] SSE event:', data.type);
+          }
 
-          case 'delta':
-            this._hideThinkingIndicator();
-            this._streamingContent += data.text;
-            this.updateStreamingMessage(this._streamingContent);
-            break;
+          switch (data.type) {
+            case 'connected':
+              if (!settled) {
+                settled = true;
+                clearTimeout(this._sseTimeout);
+                console.debug('[ChatPanel] SSE connected for session', sessionId);
+                resolve();
+              }
+              break;
 
-          case 'tool_use':
-            this._showToolUse(data.toolName, data.status, data.toolInput);
-            break;
+            case 'delta':
+              this._hideThinkingIndicator();
+              this._streamingContent += data.text;
+              this.updateStreamingMessage(this._streamingContent);
+              break;
 
-          case 'status':
-            this._handleAgentStatus(data.status);
-            break;
+            case 'tool_use':
+              this._showToolUse(data.toolName, data.status, data.toolInput);
+              break;
 
-          case 'complete':
-            this.finalizeStreamingMessage(data.messageId);
-            break;
+            case 'status':
+              this._handleAgentStatus(data.status);
+              break;
 
-          case 'error':
-            this._showError(data.message || 'An error occurred');
-            this._finalizeStreaming();
-            break;
+            case 'complete':
+              this.finalizeStreamingMessage(data.messageId);
+              break;
+
+            case 'error':
+              this._showError(data.message || 'An error occurred');
+              this._finalizeStreaming();
+              break;
+          }
+        } catch (e) {
+          console.error('[ChatPanel] SSE parse error:', e);
         }
-      } catch (e) {
-        console.error('[ChatPanel] SSE parse error:', e);
-      }
-    };
+      };
 
-    this.eventSource.onerror = () => {
-      // Only finalize if the connection is truly closed, not on transient errors
-      // (EventSource auto-reconnects on transient errors with readyState=CONNECTING)
-      if (this.eventSource?.readyState === EventSource.CLOSED) {
-        this._finalizeStreaming();
-      }
-    };
+      this.eventSource.onerror = () => {
+        // Only finalize if the connection is truly closed, not on transient errors
+        // (EventSource auto-reconnects on transient errors with readyState=CONNECTING)
+        if (this.eventSource?.readyState === EventSource.CLOSED) {
+          console.warn('[ChatPanel] SSE connection closed');
+          if (!settled) {
+            settled = true;
+            clearTimeout(this._sseTimeout);
+            reject(new Error('SSE connection failed'));
+          }
+          this._finalizeStreaming();
+        }
+      };
+
+      this._sseTimeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          console.warn('[ChatPanel] SSE connection timed out after 10s');
+          reject(new Error('SSE connection timed out'));
+          this.disconnectSSE();
+        }
+      }, 10000);
+    });
+
+    this._sseConnectPromise = promise;
+    return promise;
   }
 
   /**
@@ -586,6 +646,9 @@ class ChatPanel {
       this.eventSource.close();
       this.eventSource = null;
     }
+    clearTimeout(this._sseTimeout);
+    this._sseTimeout = null;
+    this._sseConnectPromise = null;
     this.isStreaming = false;
     this.sendBtn.disabled = !this.inputEl?.value?.trim();
   }
@@ -746,7 +809,9 @@ class ChatPanel {
         <span>${this._escapeHtml(toolName)}</span>${argSummary ? `<span class="chat-panel__tool-args" title="${this._escapeHtml(argSummary)}">${this._escapeHtml(argSummary)}</span>` : ''}
         <span class="chat-panel__tool-spinner"></span>
       `;
-      streamingMsg.appendChild(badge);
+      // Insert before the bubble so tool calls stack above the response text
+      const bubble = streamingMsg.querySelector('.chat-panel__bubble');
+      streamingMsg.insertBefore(badge, bubble);
     } else {
       // Remove spinner from completed tool
       const badges = streamingMsg.querySelectorAll(`.chat-panel__tool-badge[data-tool="${toolName}"]`);
