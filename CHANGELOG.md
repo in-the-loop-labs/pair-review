@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.1
+
+### Patch Changes
+
+- 531d717: Fix cancelled analysis runs incorrectly showing as completed due to race condition
+- 6e659d0: Fix council save button incorrectly prompting for a name when saving existing councils. Style save buttons blue to make unsaved changes more visible.
+- fe3ccfb: Fix fork PR fetching by resolving the correct git remote for the base repository
+- c2e13af: Fix progress dialog not reopening when clicking Analyzing button during single-model analysis
+
 ## 1.5.0
 
 ### Minor Changes
