@@ -2176,7 +2176,7 @@ router.post('/api/local/:reviewId/chat/start', async (req, res) => {
     const analysisRunRepo = new AnalysisRunRepository(db);
 
     // Get the comment to verify it belongs to this review
-    const comment = await commentRepo.getCommentById(commentId);
+    const comment = await commentRepo.getComment(commentId);
     if (!comment) {
       return res.status(404).json({
         error: 'Comment not found'
@@ -2276,7 +2276,7 @@ router.post('/api/local/:reviewId/chat/:chatId/message', async (req, res) => {
     }
 
     // Get the comment to verify review ID
-    const comment = await commentRepo.getCommentById(session.comment_id);
+    const comment = await commentRepo.getComment(session.comment_id);
     if (!comment) {
       return res.status(404).json({
         error: 'Comment not found'
@@ -2390,7 +2390,7 @@ router.get('/api/local/:reviewId/chat/:chatId/messages', async (req, res) => {
 
     // Verify session belongs to this review
     const commentRepo = new CommentRepository(db);
-    const comment = await commentRepo.getCommentById(sessionWithMessages.comment_id);
+    const comment = await commentRepo.getComment(sessionWithMessages.comment_id);
     if (comment && comment.review_id !== reviewId) {
       return res.status(400).json({
         error: 'Chat session does not belong to this review'
@@ -2438,7 +2438,7 @@ router.get('/api/local/:reviewId/chat/:chatId/stream', async (req, res) => {
 
     // Verify session belongs to this review
     const commentRepo = new CommentRepository(db);
-    const comment = await commentRepo.getCommentById(session.comment_id);
+    const comment = await commentRepo.getComment(session.comment_id);
     if (comment && comment.review_id !== reviewId) {
       return res.status(400).json({
         error: 'Chat session does not belong to this review'
@@ -2510,7 +2510,7 @@ router.post('/api/local/:reviewId/chat/:chatId/adopt', async (req, res) => {
     }
 
     // Get the comment to verify review ownership
-    const comment = await commentRepo.getCommentById(session.comment_id);
+    const comment = await commentRepo.getComment(session.comment_id);
     if (!comment) {
       return res.status(404).json({
         error: 'Comment not found'
@@ -2525,7 +2525,7 @@ router.post('/api/local/:reviewId/chat/:chatId/adopt', async (req, res) => {
     }
 
     // Get review to find the worktree path
-    const review = await db.get('SELECT * FROM reviews WHERE id = ?', [reviewId]);
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
     if (!review) {
       return res.status(404).json({
         error: 'Review not found'
@@ -2533,7 +2533,7 @@ router.post('/api/local/:reviewId/chat/:chatId/adopt', async (req, res) => {
     }
 
     // For local mode, the worktree path is stored in the review
-    const worktreePath = review.worktree_path || review.repository_path || process.cwd();
+    const worktreePath = review.local_path || process.cwd();
 
     // Create the chat service and generate refined suggestion
     const chatService = new ChatService(db, chatRepo, commentRepo, analysisRunRepo);
@@ -2575,7 +2575,7 @@ router.get('/api/local/:reviewId/chat/comment/:commentId/sessions', async (req, 
     const commentRepo = new CommentRepository(db);
 
     // Verify comment exists and belongs to this review
-    const comment = await commentRepo.getCommentById(commentId);
+    const comment = await commentRepo.getComment(commentId);
     if (!comment) {
       return res.status(404).json({
         error: 'Comment not found'

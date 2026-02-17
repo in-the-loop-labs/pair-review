@@ -409,6 +409,16 @@ The markdown includes file paths, line numbers, and your comments - everything t
 - Edit or discard AI suggestions before finalizing
 - Comments include file and line number for precision
 
+### Chat with AI
+
+Have a conversation with AI about any suggestion or comment. Click the chat button on any AI suggestion or user comment to open a contextual chat panel:
+
+- **Ask follow-up questions** about why the AI flagged something
+- **Discuss alternatives** with full code context included automatically
+- **Adopt with AI edits** — after chatting, click "Adopt with AI Edits" to generate a refined suggestion that incorporates your discussion
+- **Chat history persists** — blue indicator dots show which comments have chat history, and conversations resume where you left off
+- Works in both PR mode and Local mode
+
 ### Local Mode
 
 Review **unstaged**, uncommitted changes before creating a PR:
