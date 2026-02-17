@@ -29,6 +29,35 @@ class ChatService {
   }
 
   /**
+   * Resolve a provider/model pair, handling virtual providers like 'council'.
+   * Council runs store provider='council' which isn't a real AI provider.
+   * This resolves to the first child run's provider, or falls back to claude/opus.
+   *
+   * @param {string} provider - Provider name (may be 'council')
+   * @param {string} model - Model name (may be a council ID)
+   * @param {string|null} analysisRunId - Analysis run ID to look up child runs
+   * @returns {Promise<{provider: string, model: string}>} Resolved provider/model
+   * @private
+   */
+  async _resolveProvider(provider, model, analysisRunId) {
+    if (provider !== 'council') {
+      return { provider, model };
+    }
+
+    // Try to resolve from child runs
+    if (analysisRunId) {
+      const childRuns = await this.analysisRunRepo.getChildRuns(analysisRunId);
+      if (childRuns.length > 0) {
+        logger.info(`Council provider resolved to child run: ${childRuns[0].provider}/${childRuns[0].model}`);
+        return { provider: childRuns[0].provider, model: childRuns[0].model };
+      }
+    }
+
+    logger.warn(`Could not resolve council provider, falling back to claude/opus`);
+    return { provider: 'claude', model: 'opus' };
+  }
+
+  /**
    * Start a new chat session about a comment
    * @param {number} commentId - Comment ID
    * @param {string} worktreePath - Path to git worktree (for reading code context)
@@ -72,8 +101,13 @@ class ChatService {
       if (aiRunId) {
         const analysisRun = await this.analysisRunRepo.getById(aiRunId);
         if (analysisRun) {
-          provider = provider || analysisRun.provider || 'claude';
-          model = model || analysisRun.model || 'opus';
+          const resolved = await this._resolveProvider(
+            analysisRun.provider || 'claude',
+            analysisRun.model || 'opus',
+            aiRunId
+          );
+          provider = provider || resolved.provider;
+          model = model || resolved.model;
         }
       }
 
@@ -138,8 +172,9 @@ class ChatService {
     logger.info(`Sending chat message in session ${sessionId}`);
     logger.debug(`Prompt length: ${prompt.length} characters`);
 
-    // Create AI provider
-    const provider = createProvider(session.provider, session.model);
+    // Resolve provider (handles 'council' virtual provider from legacy sessions)
+    const resolved = await this._resolveProvider(session.provider, session.model, session.analysis_run_id);
+    const provider = createProvider(resolved.provider, resolved.model);
 
     // Execute AI request
     let aiResponse = '';
@@ -510,8 +545,9 @@ Output ONLY the refined comment text. Do not include any preamble, explanation, 
 
     logger.info(`Generating refined suggestion for session ${sessionId}`);
 
-    // Create AI provider
-    const provider = createProvider(session.provider, session.model);
+    // Resolve provider (handles 'council' virtual provider from legacy sessions)
+    const resolved = await this._resolveProvider(session.provider, session.model, session.analysis_run_id);
+    const provider = createProvider(resolved.provider, resolved.model);
 
     // Execute AI request
     const result = await provider.execute(prompt, {

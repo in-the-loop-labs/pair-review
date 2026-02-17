@@ -142,6 +142,33 @@ describe('ChatService', () => {
       expect(session.comment_id).toBe(childId);
     });
 
+    it('should resolve provider from child run when analysis used a council', async () => {
+      // Create a council parent run (provider='council' is not a real provider)
+      const councilRunId = await seedAnalysisRun(1, 'council-run', 'council', 'some-council-id');
+      // Create a child run with the actual provider/model
+      await run(db, `
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, parent_run_id, config_type)
+        VALUES ('child-run-1', 1, 'gemini', 'flash', 'completed', 'council-run', 'council')
+      `);
+
+      const commentId = await seedComment({ aiRunId: councilRunId });
+
+      const session = await chatService.startChatSession(commentId, '/fake/path');
+
+      expect(session.provider).toBe('gemini');
+      expect(session.model).toBe('flash');
+    });
+
+    it('should fallback to claude/opus when council run has no child runs', async () => {
+      const councilRunId = await seedAnalysisRun(1, 'council-run-2', 'council', 'some-council-id');
+      const commentId = await seedComment({ aiRunId: councilRunId });
+
+      const session = await chatService.startChatSession(commentId, '/fake/path');
+
+      expect(session.provider).toBe('claude');
+      expect(session.model).toBe('opus');
+    });
+
     it('should resolve provider from parent analysis run for adopted comments', async () => {
       const runId = await seedAnalysisRun(1, 'run-1', 'gemini', 'flash');
       const parentId = await seedComment({ source: 'ai', aiRunId: runId });
