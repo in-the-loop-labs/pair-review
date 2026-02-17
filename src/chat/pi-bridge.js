@@ -30,6 +30,7 @@ class PiBridge extends EventEmitter {
    * @param {string} [options.systemPrompt] - System prompt text
    * @param {string} [options.tools] - Comma-separated tool list (default: 'read,grep,find,ls')
    * @param {string} [options.piCommand] - Override Pi command (default: 'pi')
+   * @param {string[]} [options.skills] - Array of skill file paths to load via --skill
    */
   constructor(options = {}) {
     super();
@@ -39,6 +40,7 @@ class PiBridge extends EventEmitter {
     this.systemPrompt = options.systemPrompt || null;
     this.tools = options.tools || 'read,grep,find,ls';
     this.piCommand = options.piCommand || process.env.PAIR_REVIEW_PI_CMD || 'pi';
+    this.skills = options.skills || [];
 
     this._process = null;
     this._readline = null;
@@ -255,6 +257,10 @@ class PiBridge extends EventEmitter {
 
     if (this.systemPrompt) {
       args.push('--append-system-prompt', this.systemPrompt);
+    }
+
+    for (const skill of this.skills) {
+      args.push('--skill', skill);
     }
 
     return args;

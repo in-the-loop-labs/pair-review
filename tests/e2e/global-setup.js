@@ -231,7 +231,7 @@ function insertTestData() {
 
   db.prepare(`
     INSERT INTO chat_messages (id, session_id, role, content, created_at)
-    VALUES (2, 1, 'assistant', 'The `computeValue()` function computes a derived value. Based on the diff, it was introduced to replace a bare `return null` with a more meaningful computation.', ?)
+    VALUES (2, 1, 'assistant', 'The computeValue() function computes a derived value. Based on the diff, it was introduced to replace a bare return null with a more meaningful computation.', ?)
   `).run(now);
 }
 

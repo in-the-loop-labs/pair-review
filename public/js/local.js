@@ -782,9 +782,6 @@ class LocalManager {
           if (editForm) editForm.remove();
           commentDiv.classList.remove('editing-mode');
 
-          const timestamp = commentDiv.querySelector('.user-comment-timestamp');
-          if (timestamp) timestamp.textContent = new Date().toLocaleString();
-
           // Notify AI Panel about the updated comment body
           if (window.aiPanel?.updateComment) {
             window.aiPanel.updateComment(commentId, { body: editedText });

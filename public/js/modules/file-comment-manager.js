@@ -51,6 +51,29 @@ class FileCommentManager {
         });
       }
     });
+
+    // Event delegation for "Ask about this" chat button on file-level user comments
+    document.addEventListener('click', (e) => {
+      const chatBtn = e.target.closest('.file-comments-zone .btn-chat-comment');
+      if (chatBtn && window.chatPanel) {
+        e.stopPropagation();
+        const commentCard = chatBtn.closest('.file-comment-card');
+        const bodyEl = commentCard?.querySelector('.user-comment-body');
+        const originalMarkdown = bodyEl?.dataset?.originalMarkdown || bodyEl?.textContent || '';
+        window.chatPanel.open({
+          reviewId: this.prManager?.currentPR?.id,
+          commentContext: {
+            commentId: chatBtn.dataset.chatCommentId,
+            body: originalMarkdown,
+            file: chatBtn.dataset.chatFile || '',
+            line_start: null,
+            line_end: null,
+            source: 'user',
+            isFileLevel: true
+          }
+        });
+      }
+    });
   }
 
   /**
@@ -386,8 +409,10 @@ class FileCommentManager {
         <span class="file-comment-badge" title="Comment applies to the entire file">File comment</span>
         ${praiseBadge}
         ${titleHtml}
-        <span class="user-comment-timestamp">${this.formatTimestamp(comment.created_at)}</span>
         <div class="user-comment-actions">
+          <button class="btn-chat-comment" title="Ask about this comment" data-chat-comment-id="${comment.id}" data-chat-file="${this.escapeHtml(comment.file || '')}">
+            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
+          </button>
           <button class="btn-edit-comment" title="Edit comment">
             <svg class="octicon" viewBox="0 0 16 16" width="16" height="16">
               <path fill-rule="evenodd" d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25a1.75 1.75 0 01.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.249.249 0 00.108-.064l6.286-6.286z"></path>

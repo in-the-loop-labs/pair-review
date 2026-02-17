@@ -7,8 +7,11 @@
  * and event dispatch (delta, complete, tool_use) to registered listeners.
  */
 
+const path = require('path');
 const PiBridge = require('./pi-bridge');
 const logger = require('../utils/logger');
+
+const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
 
 class ChatSessionManager {
   /**
@@ -54,7 +57,8 @@ class ChatSessionManager {
       model,
       cwd,
       systemPrompt,
-      tools: 'read,bash,grep,find,ls'
+      tools: 'read,bash,grep,find,ls',
+      skills: [pairReviewSkillPath]
     });
 
     const listeners = {

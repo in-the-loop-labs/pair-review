@@ -14,9 +14,10 @@ const logger = require('../utils/logger');
  * Contains only role, review context, and behavioral instructions.
  * @param {Object} options
  * @param {Object} options.review - Review metadata {pr_number, repository, review_type, local_path, name}
+ * @param {number} [options.port] - The port the pair-review web server is running on
  * @returns {string} System prompt for the chat agent
  */
-function buildChatPrompt({ review }) {
+function buildChatPrompt({ review, port }) {
   const sections = [];
 
   // Role
@@ -24,6 +25,14 @@ function buildChatPrompt({ review }) {
 
   // Review context
   sections.push(buildReviewContext(review));
+
+  // API capability
+  if (port) {
+    sections.push(
+      `You can interact with the pair-review API at http://localhost:${port} to take actions on this review. ` +
+      'Use the pair-review-api skill for endpoint details. You can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.'
+    );
+  }
 
   // Instructions
   sections.push(

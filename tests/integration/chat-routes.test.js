@@ -15,6 +15,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 const chatRouter = require('../../src/routes/chat');
+const { _sseClients, _sseUnsubscribers } = require('../../src/routes/chat');
 
 /**
  * Creates a mock ChatSessionManager with controllable behavior.
@@ -37,7 +38,9 @@ function createMockSessionManager(db) {
     getMessages: vi.fn().mockReturnValue([]),
     onDelta: vi.fn().mockReturnValue(() => {}),
     onComplete: vi.fn().mockReturnValue(() => {}),
-    onToolUse: vi.fn().mockReturnValue(() => {})
+    onToolUse: vi.fn().mockReturnValue(() => {}),
+    onStatus: vi.fn().mockReturnValue(() => {}),
+    onError: vi.fn().mockReturnValue(() => {})
   };
 }
 
@@ -67,6 +70,9 @@ describe('Chat Routes', () => {
   });
 
   afterEach(() => {
+    // Clean up any SSE clients and unsubscribers registered during tests
+    _sseClients.clear();
+    _sseUnsubscribers.clear();
     closeTestDatabase(db);
   });
 
@@ -179,6 +185,24 @@ describe('Chat Routes', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.context).toBeUndefined();
+    });
+
+    it('should register SSE broadcast listeners on session creation', async () => {
+      const res = await request(app)
+        .post('/api/chat/session')
+        .send({
+          provider: 'pi',
+          reviewId: 1,
+          systemPrompt: 'Be helpful'
+        });
+
+      expect(res.status).toBe(200);
+      // All five event types should have broadcast listeners registered
+      expect(mockManager.onDelta).toHaveBeenCalledWith(1, expect.any(Function));
+      expect(mockManager.onToolUse).toHaveBeenCalledWith(1, expect.any(Function));
+      expect(mockManager.onComplete).toHaveBeenCalledWith(1, expect.any(Function));
+      expect(mockManager.onStatus).toHaveBeenCalledWith(1, expect.any(Function));
+      expect(mockManager.onError).toHaveBeenCalledWith(1, expect.any(Function));
     });
 
     it('should return 404 when review does not exist and no system prompt given', async () => {
@@ -364,6 +388,61 @@ describe('Chat Routes', () => {
         .post('/api/chat/session/1/abort');
 
       expect(res.status).toBe(500);
+    });
+  });
+
+  describe('GET /api/chat/stream (multiplexed SSE)', () => {
+    it('should return SSE headers and connected event', async () => {
+      // SSE connections stay open, so we use a raw HTTP approach with a promise
+      const http = require('http');
+      const server = app.listen(0);
+      const port = server.address().port;
+
+      try {
+        const result = await new Promise((resolve, reject) => {
+          const req = http.get(`http://127.0.0.1:${port}/api/chat/stream`, (res) => {
+            let data = '';
+            res.on('data', (chunk) => {
+              data += chunk.toString();
+              // We have data — destroy the connection
+              req.destroy();
+              resolve({ headers: res.headers, data });
+            });
+            res.on('error', () => resolve({ headers: res.headers, data }));
+          });
+          req.on('error', reject);
+          setTimeout(() => { req.destroy(); reject(new Error('timeout')); }, 5000);
+        });
+
+        expect(result.headers['content-type']).toBe('text/event-stream');
+        expect(result.headers['cache-control']).toBe('no-cache');
+        expect(result.data).toContain('data: {"type":"connected"}');
+      } finally {
+        server.close();
+      }
+    });
+
+    it('should add and remove clients from sseClients set', async () => {
+      const http = require('http');
+      const server = app.listen(0);
+      const port = server.address().port;
+
+      try {
+        expect(_sseClients.size).toBe(0);
+
+        const req = http.get(`http://127.0.0.1:${port}/api/chat/stream`, () => {});
+
+        // Wait briefly for the connection to be registered
+        await new Promise(r => setTimeout(r, 100));
+        expect(_sseClients.size).toBe(1);
+
+        // Disconnect the client
+        req.destroy();
+        await new Promise(r => setTimeout(r, 100));
+        expect(_sseClients.size).toBe(0);
+      } finally {
+        server.close();
+      }
     });
   });
 

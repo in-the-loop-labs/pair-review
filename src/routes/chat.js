@@ -19,6 +19,101 @@ const logger = require('../utils/logger');
 const router = express.Router();
 
 /**
+ * Connected SSE clients for the multiplexed chat stream.
+ * Each entry is an Express response object with an open SSE connection.
+ */
+const sseClients = new Set();
+
+/**
+ * Unsubscribe functions for SSE broadcast listeners, keyed by session ID.
+ * Each value is an array of unsubscribe functions returned by the on* methods.
+ * Used to clean up listeners when a session is closed.
+ * @type {Map<number, function[]>}
+ */
+const sseUnsubscribers = new Map();
+
+/**
+ * Broadcast an SSE event to all connected clients.
+ * @param {number} sessionId - Chat session ID to include in the event
+ * @param {Object} payload - Event data (will be merged with sessionId)
+ */
+function broadcastSSE(sessionId, payload) {
+  const data = JSON.stringify({ ...payload, sessionId });
+  for (const client of sseClients) {
+    try {
+      client.write(`data: ${data}\n\n`);
+    } catch {
+      // Client disconnected — remove from set
+      sseClients.delete(client);
+    }
+  }
+}
+
+/**
+ * Register SSE broadcast listeners on a chat session so that all events
+ * (delta, tool_use, complete, status, error) are forwarded to connected SSE clients.
+ * @param {Object} chatSessionManager
+ * @param {number} sessionId
+ */
+function registerSSEBroadcast(chatSessionManager, sessionId) {
+  // Guard against double-registration
+  if (sseUnsubscribers.has(sessionId)) {
+    logger.debug(`[ChatRoute] SSE broadcast already registered for session ${sessionId}, skipping`);
+    return;
+  }
+
+  try {
+    const unsubs = [];
+
+    unsubs.push(chatSessionManager.onDelta(sessionId, (data) => {
+      broadcastSSE(sessionId, { type: 'delta', text: data.text });
+    }));
+
+    unsubs.push(chatSessionManager.onToolUse(sessionId, (data) => {
+      const event = { type: 'tool_use', toolName: data.toolName, status: data.status };
+      if (data.args) {
+        event.toolInput = data.args;
+      }
+      broadcastSSE(sessionId, event);
+    }));
+
+    unsubs.push(chatSessionManager.onComplete(sessionId, (data) => {
+      logger.debug(`[ChatRoute] SSE broadcast complete for session ${sessionId}, messageId=${data.messageId}`);
+      broadcastSSE(sessionId, { type: 'complete', messageId: data.messageId });
+    }));
+
+    unsubs.push(chatSessionManager.onStatus(sessionId, (data) => {
+      broadcastSSE(sessionId, { type: 'status', status: data.status });
+    }));
+
+    unsubs.push(chatSessionManager.onError(sessionId, (data) => {
+      logger.debug(`[ChatRoute] SSE broadcast error for session ${sessionId}: ${data.message}`);
+      broadcastSSE(sessionId, { type: 'error', message: data.message });
+    }));
+
+    sseUnsubscribers.set(sessionId, unsubs);
+    logger.debug(`[ChatRoute] SSE broadcast listeners registered for session ${sessionId}`);
+  } catch (err) {
+    logger.warn(`[ChatRoute] Failed to register SSE broadcast for session ${sessionId}: ${err.message}`);
+  }
+}
+
+/**
+ * Unsubscribe all SSE broadcast listeners for a session.
+ * @param {number} sessionId
+ */
+function unregisterSSEBroadcast(sessionId) {
+  const unsubs = sseUnsubscribers.get(sessionId);
+  if (unsubs) {
+    for (const unsub of unsubs) {
+      try { unsub(); } catch { /* session may already be closed */ }
+    }
+    sseUnsubscribers.delete(sessionId);
+    logger.debug(`[ChatRoute] SSE broadcast listeners unregistered for session ${sessionId}`);
+  }
+}
+
+/**
  * Create a new chat session
  */
 router.post('/api/chat/session', async (req, res) => {
@@ -39,9 +134,10 @@ router.post('/api/chat/session', async (req, res) => {
     let finalSystemPrompt = systemPrompt;
     let initialContext = null;
     let suggestions = null;
+    let review = null;
 
     if (!finalSystemPrompt) {
-      const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
+      review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
       if (!review) {
         return res.status(404).json({ error: 'Review not found' });
       }
@@ -52,7 +148,7 @@ router.post('/api/chat/session', async (req, res) => {
         focusedSuggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [contextCommentId]);
       }
 
-      finalSystemPrompt = buildChatPrompt({ review });
+      finalSystemPrompt = buildChatPrompt({ review, port: req.socket.localPort });
 
       // Fetch all AI suggestions from the latest analysis run
       suggestions = await query(db, `
@@ -84,17 +180,23 @@ router.post('/api/chat/session', async (req, res) => {
       });
     }
 
+    // Resolve cwd: explicit from request body, or local_path from review record
+    const resolvedCwd = cwd || (review && review.local_path) || null;
+
     const session = await chatSessionManager.createSession({
       provider,
       model,
       reviewId,
       contextCommentId: contextCommentId || null,
       systemPrompt: finalSystemPrompt,
-      cwd: cwd || null,
+      cwd: resolvedCwd,
       initialContext
     });
 
     logger.info(`Chat session created: ${session.id} (provider=${provider}, model=${model})`);
+
+    // Register SSE broadcast listeners so events reach all connected clients
+    registerSSEBroadcast(chatSessionManager, session.id);
 
     const responseData = { id: session.id, status: session.status };
 
@@ -140,16 +242,10 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
 });
 
 /**
- * SSE stream for real-time chat responses
+ * Multiplexed SSE stream for all chat sessions.
+ * Clients connect once and receive events tagged with sessionId.
  */
-router.get('/api/chat/session/:id/stream', (req, res) => {
-  const sessionId = parseInt(req.params.id, 10);
-  const chatSessionManager = req.app.chatSessionManager;
-
-  if (!chatSessionManager.isSessionActive(sessionId)) {
-    return res.status(404).json({ error: 'Chat session not found or not active' });
-  }
-
+router.get('/api/chat/stream', (req, res) => {
   // Set up SSE headers
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -157,73 +253,16 @@ router.get('/api/chat/session/:id/stream', (req, res) => {
     'Connection': 'keep-alive'
   });
 
-  // Send initial connection message
-  logger.debug(`[ChatRoute] SSE stream opened for session ${sessionId}`);
-  res.write(`data: ${JSON.stringify({ type: 'connected', sessionId })}\n\n`);
+  // Send initial connection acknowledgement
+  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+  logger.debug(`[ChatRoute] Multiplexed SSE client connected (total: ${sseClients.size + 1})`);
 
-  // Register event listeners (session may have closed between DB check and registration)
-  let unsubDelta, unsubToolUse, unsubComplete, unsubStatus, unsubError;
-  try {
-    unsubDelta = chatSessionManager.onDelta(sessionId, (data) => {
-      try {
-        res.write(`data: ${JSON.stringify({ type: 'delta', text: data.text })}\n\n`);
-      } catch {
-        // Client disconnected
-      }
-    });
-
-    unsubToolUse = chatSessionManager.onToolUse(sessionId, (data) => {
-      try {
-        const event = { type: 'tool_use', toolName: data.toolName, status: data.status };
-        if (data.args) {
-          event.toolInput = data.args;
-        }
-        res.write(`data: ${JSON.stringify(event)}\n\n`);
-      } catch {
-        // Client disconnected
-      }
-    });
-
-    unsubComplete = chatSessionManager.onComplete(sessionId, (data) => {
-      try {
-        logger.debug(`[ChatRoute] SSE complete for session ${sessionId}, messageId=${data.messageId}`);
-        res.write(`data: ${JSON.stringify({ type: 'complete', messageId: data.messageId })}\n\n`);
-      } catch {
-        // Client disconnected
-      }
-    });
-
-    unsubStatus = chatSessionManager.onStatus(sessionId, (data) => {
-      try {
-        res.write(`data: ${JSON.stringify({ type: 'status', status: data.status })}\n\n`);
-      } catch {
-        // Client disconnected
-      }
-    });
-
-    unsubError = chatSessionManager.onError(sessionId, (data) => {
-      try {
-        logger.debug(`[ChatRoute] SSE error for session ${sessionId}: ${data.message}`);
-        res.write(`data: ${JSON.stringify({ type: 'error', message: data.message })}\n\n`);
-      } catch {
-        // Client disconnected
-      }
-    });
-
-    logger.debug(`[ChatRoute] All SSE listeners registered for session ${sessionId}`);
-  } catch {
-    res.write(`data: ${JSON.stringify({ type: 'error', message: 'Session is no longer active' })}\n\n`);
-    res.end();
-    return;
-  }
+  sseClients.add(res);
 
   // Handle client disconnect
   const cleanup = () => {
-    if (unsubDelta) unsubDelta();
-    if (unsubToolUse) unsubToolUse();
-    if (unsubComplete) unsubComplete();
-    if (unsubStatus) unsubStatus();
-    if (unsubError) unsubError();
+    sseClients.delete(res);
+    logger.debug(`[ChatRoute] Multiplexed SSE client disconnected (total: ${sseClients.size})`);
   };
 
   req.on('close', cleanup);
@@ -279,6 +318,9 @@ router.delete('/api/chat/session/:id', async (req, res) => {
     const sessionId = parseInt(req.params.id, 10);
     const chatSessionManager = req.app.chatSessionManager;
 
+    // Unregister SSE broadcast listeners before closing the session
+    unregisterSSEBroadcast(sessionId);
+
     await chatSessionManager.closeSession(sessionId);
     logger.info(`Chat session closed: ${sessionId}`);
     res.json({ data: { success: true } });
@@ -305,3 +347,7 @@ router.get('/api/review/:reviewId/chat/sessions', (req, res) => {
 });
 
 module.exports = router;
+
+// Expose internals for testing
+module.exports._sseClients = sseClients;
+module.exports._sseUnsubscribers = sseUnsubscribers;

@@ -650,24 +650,6 @@ test.describe('Comment API Integration', () => {
 });
 
 test.describe('Comment Display', () => {
-  test('should display comment timestamp', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-
-    // Create a comment
-    await openCommentFormOnLine(page, 0);
-    const textarea = page.locator('.user-comment-form textarea');
-    await textarea.fill('Comment with timestamp');
-    await page.locator('.save-comment-btn').click();
-
-    // Wait for comment to appear
-    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
-
-    // Should show timestamp
-    const timestamp = page.locator('.user-comment-timestamp');
-    await expect(timestamp.first()).toBeVisible();
-  });
-
   test('should display line info in comment header', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);

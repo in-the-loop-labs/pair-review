@@ -14,10 +14,13 @@ class ChatPanel {
     this.isOpen = false;
     this.isStreaming = false;
     this.eventSource = null;
+    this._sseReconnectTimer = null;
     this.messages = [];
     this._streamingContent = '';
     this._pendingContext = [];
     this._pendingContextData = [];
+    this._contextSource = null;   // 'suggestion' or 'user' — set when opened with context
+    this._contextItemId = null;   // suggestion ID or comment ID from context
     this._resizeConfig = { min: 300, max: 800, default: 400, storageKey: 'chat-panel-width' };
 
     this._render();
@@ -61,6 +64,20 @@ class ChatPanel {
             <p>Ask questions about this review, or click "Ask about this" on any suggestion.</p>
           </div>
         </div>
+        <div class="chat-panel__action-bar" style="display: none;">
+          <button class="chat-panel__action-btn chat-panel__action-btn--adopt" style="display: none;" title="Ask the agent to refine and adopt this suggestion">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+              <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
+            </svg>
+            Adopt with AI edits
+          </button>
+          <button class="chat-panel__action-btn chat-panel__action-btn--update" style="display: none;" title="Ask the agent to update your comment based on the conversation">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+              <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.253.253 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z"/>
+            </svg>
+            Update comment
+          </button>
+        </div>
         <div class="chat-panel__input-area">
           <textarea class="chat-panel__input" placeholder="Ask about this review..." rows="1"></textarea>
           <button class="chat-panel__send-btn" title="Send" disabled>
@@ -85,6 +102,9 @@ class ChatPanel {
     this.stopBtn = this.container.querySelector('.chat-panel__stop-btn');
     this.closeBtn = this.container.querySelector('.chat-panel__close-btn');
     this.newBtn = this.container.querySelector('.chat-panel__new-btn');
+    this.actionBar = this.container.querySelector('.chat-panel__action-bar');
+    this.adoptBtn = this.container.querySelector('.chat-panel__action-btn--adopt');
+    this.updateBtn = this.container.querySelector('.chat-panel__action-btn--update');
   }
 
   /**
@@ -104,6 +124,10 @@ class ChatPanel {
 
     // Stop button
     this.stopBtn.addEventListener('click', () => this._stopAgent());
+
+    // Action buttons
+    this.adoptBtn.addEventListener('click', () => this._handleAdoptClick());
+    this.updateBtn.addEventListener('click', () => this._handleUpdateClick());
 
     // Textarea input handling
     this.inputEl.addEventListener('input', () => {
@@ -197,7 +221,15 @@ class ChatPanel {
    * @param {Object} options - Optional context
    * @param {number} options.reviewId - Review ID
    * @param {number} options.suggestionId - Suggestion ID to ask about
-   * @param {Object} options.suggestionContext - Suggestion details for context
+   * @param {Object} options.suggestionContext - AI suggestion details for context
+   * @param {Object} options.commentContext - User comment details for context
+   * @param {string} options.commentContext.commentId - Comment ID
+   * @param {string} options.commentContext.body - Comment body text
+   * @param {string} options.commentContext.file - File path
+   * @param {number} options.commentContext.line_start - Start line number
+   * @param {number} options.commentContext.line_end - End line number
+   * @param {string} options.commentContext.source - 'user' for user comments
+   * @param {boolean} options.commentContext.isFileLevel - True if file-level comment
    */
   async open(options = {}) {
     // Resolve reviewId from options or from prManager
@@ -232,8 +264,16 @@ class ChatPanel {
     // If opening with suggestion context, inject it as a context card
     if (options.suggestionContext) {
       this._sendContextMessage(options.suggestionContext);
+      this._contextSource = 'suggestion';
+      this._contextItemId = options.suggestionId || null;
+    } else if (options.commentContext) {
+      // If opening with user comment context, inject it as a context card
+      this._sendCommentContextMessage(options.commentContext);
+      this._contextSource = 'user';
+      this._contextItemId = options.commentContext.commentId || null;
     }
 
+    this._updateActionButtons();
     this.inputEl.focus();
   }
 
@@ -241,12 +281,19 @@ class ChatPanel {
    * Close the chat panel
    */
   close() {
+    // Reset UI streaming state (buttons) but keep isStreaming and _streamingContent
+    // intact so the background SSE handler can continue accumulating events.
+    this.sendBtn.style.display = '';
+    this.stopBtn.style.display = 'none';
+    this.sendBtn.disabled = !this.inputEl?.value?.trim();
+
     this.isOpen = false;
     this.panel.classList.remove('chat-panel--open');
     this.panel.classList.add('chat-panel--closed');
     this._pendingContext = [];
     this._pendingContextData = [];
-    this.disconnectSSE();
+    this._contextSource = null;
+    this._contextItemId = null;
   }
 
   /**
@@ -264,13 +311,17 @@ class ChatPanel {
    * Start a new conversation (reset session)
    */
   async _startNewConversation() {
-    this.disconnectSSE();
+    this._finalizeStreaming();
     this.currentSessionId = null;
     this.messages = [];
     this._streamingContent = '';
     this._pendingContext = [];
     this._pendingContextData = [];
+    this._contextSource = null;
+    this._contextItemId = null;
     this._clearMessages();
+    this._updateActionButtons();
+    // SSE stays connected — it's multiplexed and will filter by sessionId
   }
 
   /**
@@ -288,27 +339,23 @@ class ChatPanel {
   }
 
   /**
-   * Ensure we have an active session and SSE connection.
-   * Creates a new session if needed, reconnects SSE if closed, or waits if connecting.
+   * Ensure we have an active session and global SSE connection.
+   * Creates a new session if needed and establishes the multiplexed SSE stream.
    * @returns {Promise<{sessionData: Object|null}|null>} Object with sessionData on success
    *   (sessionData is non-null only when a NEW session was created), or null on failure.
    */
   async _ensureConnected() {
     try {
+      this._ensureGlobalSSE();
+
       let sessionData = null;
       if (!this.currentSessionId) {
         sessionData = await this.createSession();
         if (!sessionData) { this._showError('Failed to start chat session'); return null; }
-        await this.connectSSE(this.currentSessionId);
-      } else if (!this.eventSource || this.eventSource.readyState === EventSource.CLOSED) {
-        await this.connectSSE(this.currentSessionId);
-      } else if (this.eventSource.readyState === EventSource.CONNECTING) {
-        await this._sseConnectPromise;
       }
       return { sessionData };
     } catch (err) {
-      this.disconnectSSE();
-      console.error('[ChatPanel] SSE connection failed:', err);
+      console.error('[ChatPanel] Connection failed:', err);
       this._showError('Failed to connect to chat stream. ' + err.message);
       return null;
     }
@@ -389,6 +436,7 @@ class ChatPanel {
     this.sendBtn.disabled = true;
     this.sendBtn.style.display = 'none';
     this.stopBtn.style.display = '';
+    this._updateActionButtons();
     this._streamingContent = '';
     this._addStreamingPlaceholder();
 
@@ -483,6 +531,87 @@ class ChatPanel {
   }
 
   /**
+   * Store pending context and render a compact context card for a user comment.
+   * Called when the user clicks "Ask about this" on a user comment.
+   * The context is NOT sent to the agent immediately -- it is prepended
+   * to the next user message so the agent receives question + context together.
+   * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, source, isFileLevel}
+   */
+  _sendCommentContextMessage(ctx) {
+    // Cap pending context items to avoid unbounded accumulation
+    const MAX_CONTEXT_ITEMS = 5;
+    if (this._pendingContext.length >= MAX_CONTEXT_ITEMS) {
+      this._pendingContext.shift();
+      this._pendingContextData.shift();
+      const oldestCard = this.messagesEl.querySelector('.chat-panel__context-card');
+      if (oldestCard) oldestCard.remove();
+    }
+
+    // Remove empty state if present
+    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    // Store structured context data for DB persistence
+    const contextData = {
+      type: 'comment',
+      title: ctx.isFileLevel ? 'File comment' : `Comment on line ${ctx.line_start || '?'}`,
+      file: ctx.file || null,
+      line_start: ctx.line_start || null,
+      line_end: ctx.line_end || null,
+      body: ctx.body || null,
+      source: 'user'
+    };
+    this._pendingContextData.push(contextData);
+
+    // Build the plain text context for the agent
+    const lines = ['The user wants to discuss their own review comment:'];
+    if (contextData.file) {
+      let fileLine = `- File: ${contextData.file}`;
+      if (contextData.line_start) {
+        fileLine += ` (line ${contextData.line_start}${contextData.line_end && contextData.line_end !== contextData.line_start ? '-' + contextData.line_end : ''})`;
+      }
+      lines.push(fileLine);
+    }
+    if (ctx.isFileLevel) {
+      lines.push('- Scope: File-level comment');
+    }
+    if (contextData.body) {
+      lines.push(`- Comment: ${contextData.body}`);
+    }
+
+    this._pendingContext.push(lines.join('\n'));
+
+    // Render the compact context card in the UI
+    this._addCommentContextCard(ctx);
+  }
+
+  /**
+   * Add a compact context card for a user comment to the messages area.
+   * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, isFileLevel}
+   */
+  _addCommentContextCard(ctx) {
+    const card = document.createElement('div');
+    card.className = 'chat-panel__context-card';
+
+    const label = ctx.isFileLevel ? 'file comment' : 'your comment';
+    const fileInfo = ctx.file
+      ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}`
+      : '';
+
+    card.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+        <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
+      </svg>
+      <span class="chat-panel__context-label">${this._escapeHtml(label)}</span>
+      <span class="chat-panel__context-title">${this._escapeHtml(ctx.body ? (ctx.body.length > 60 ? ctx.body.substring(0, 60) + '...' : ctx.body) : 'Comment')}</span>
+      ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
+    `;
+
+    this.messagesEl.appendChild(card);
+    this.scrollToBottom();
+  }
+
+  /**
    * Add a compact context card to the messages area.
    * Visually indicates which suggestion the user is asking about,
    * without taking up space as a full message bubble.
@@ -545,112 +674,115 @@ class ChatPanel {
   }
 
   /**
-   * Connect to SSE stream for a session
-   * @param {number} sessionId - Session to stream from
+   * Ensure the global multiplexed SSE connection is established.
+   * Creates the EventSource once; subsequent calls are no-ops if already connected.
+   * Events are filtered by sessionId to dispatch only to the active session.
    */
-  connectSSE(sessionId) {
-    // Already connected to this session — resolve immediately
-    if (this.eventSource && this._sseSessionId === sessionId &&
-        this.eventSource.readyState === EventSource.OPEN) {
-      return Promise.resolve();
+  _ensureGlobalSSE() {
+    // Already connected or connecting — nothing to do
+    if (this.eventSource &&
+        this.eventSource.readyState !== EventSource.CLOSED) {
+      return;
     }
 
-    this.disconnectSSE();
-    this._sseSessionId = sessionId;
+    // Clear any pending reconnect timer
+    clearTimeout(this._sseReconnectTimer);
+    this._sseReconnectTimer = null;
 
-    const url = `/api/chat/session/${sessionId}/stream`;
-    console.debug('[ChatPanel] Connecting SSE:', url);
+    const url = '/api/chat/stream';
+    console.debug('[ChatPanel] Connecting multiplexed SSE:', url);
     this.eventSource = new EventSource(url);
 
-    const promise = new Promise((resolve, reject) => {
-      let settled = false;
+    this.eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
 
-      this.eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.type !== 'delta') {
-            console.debug('[ChatPanel] SSE event:', data.type);
-          }
+        // Initial connection acknowledgement — no sessionId, just log
+        if (data.type === 'connected' && !data.sessionId) {
+          console.debug('[ChatPanel] Multiplexed SSE connected');
+          return;
+        }
 
+        // Filter: only process events for the active session
+        if (data.sessionId !== this.currentSessionId) return;
+
+        if (data.type !== 'delta') {
+          console.debug('[ChatPanel] SSE event:', data.type, 'session:', data.sessionId);
+        }
+
+        // When the panel is closed, still accumulate internal state
+        // so messages are available when the panel reopens.
+        if (!this.isOpen) {
           switch (data.type) {
-            case 'connected':
-              if (!settled) {
-                settled = true;
-                clearTimeout(this._sseTimeout);
-                console.debug('[ChatPanel] SSE connected for session', sessionId);
-                resolve();
-              }
-              break;
-
             case 'delta':
-              this._hideThinkingIndicator();
               this._streamingContent += data.text;
-              this.updateStreamingMessage(this._streamingContent);
               break;
-
-            case 'tool_use':
-              this._showToolUse(data.toolName, data.status, data.toolInput);
-              break;
-
-            case 'status':
-              this._handleAgentStatus(data.status);
-              break;
-
             case 'complete':
-              this.finalizeStreamingMessage(data.messageId);
+              if (this._streamingContent) {
+                this.messages.push({ role: 'assistant', content: this._streamingContent, id: data.messageId });
+              }
+              this._streamingContent = '';
+              this.isStreaming = false;
               break;
-
             case 'error':
-              this._showError(data.message || 'An error occurred');
-              this._finalizeStreaming();
+              this._streamingContent = '';
+              this.isStreaming = false;
               break;
+            // tool_use, status: purely visual, skip when closed
           }
-        } catch (e) {
-          console.error('[ChatPanel] SSE parse error:', e);
+          return;
         }
-      };
 
-      this.eventSource.onerror = () => {
-        // Only finalize if the connection is truly closed, not on transient errors
-        // (EventSource auto-reconnects on transient errors with readyState=CONNECTING)
-        if (this.eventSource?.readyState === EventSource.CLOSED) {
-          console.warn('[ChatPanel] SSE connection closed');
-          if (!settled) {
-            settled = true;
-            clearTimeout(this._sseTimeout);
-            reject(new Error('SSE connection failed'));
-          }
-          this._finalizeStreaming();
+        switch (data.type) {
+          case 'delta':
+            this._hideThinkingIndicator();
+            this._streamingContent += data.text;
+            this.updateStreamingMessage(this._streamingContent);
+            break;
+
+          case 'tool_use':
+            this._showToolUse(data.toolName, data.status, data.toolInput);
+            break;
+
+          case 'status':
+            this._handleAgentStatus(data.status);
+            break;
+
+          case 'complete':
+            this.finalizeStreamingMessage(data.messageId);
+            break;
+
+          case 'error':
+            this._showError(data.message || 'An error occurred');
+            this._finalizeStreaming();
+            break;
         }
-      };
+      } catch (e) {
+        console.error('[ChatPanel] SSE parse error:', e);
+      }
+    };
 
-      this._sseTimeout = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          console.warn('[ChatPanel] SSE connection timed out after 10s');
-          reject(new Error('SSE connection timed out'));
-          this.disconnectSSE();
-        }
-      }, 10000);
-    });
-
-    this._sseConnectPromise = promise;
-    return promise;
+    this.eventSource.onerror = () => {
+      if (this.eventSource?.readyState === EventSource.CLOSED) {
+        console.warn('[ChatPanel] Multiplexed SSE connection closed, reconnecting in 2s');
+        this.eventSource = null;
+        this._sseReconnectTimer = setTimeout(() => {
+          this._ensureGlobalSSE();
+        }, 2000);
+      }
+    };
   }
 
   /**
-   * Close SSE connection
+   * Close the global SSE connection and cancel any reconnect timer.
    */
-  disconnectSSE() {
+  _closeGlobalSSE() {
+    clearTimeout(this._sseReconnectTimer);
+    this._sseReconnectTimer = null;
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
     }
-    clearTimeout(this._sseTimeout);
-    this._sseTimeout = null;
-    this._sseConnectPromise = null;
-    this.isStreaming = false;
-    this.sendBtn.disabled = !this.inputEl?.value?.trim();
   }
 
   /**
@@ -781,6 +913,7 @@ class ChatPanel {
     this.sendBtn.style.display = '';
     this.stopBtn.style.display = 'none';
     this.sendBtn.disabled = !this.inputEl?.value?.trim();
+    this._updateActionButtons();
     this.inputEl?.focus();
   }
 
@@ -968,11 +1101,51 @@ class ChatPanel {
   }
 
   /**
+   * Update visibility and disabled state of action buttons based on context and streaming state.
+   */
+  _updateActionButtons() {
+    const hasSuggestion = this._contextSource === 'suggestion' && this._contextItemId;
+    const hasComment = this._contextSource === 'user' && this._contextItemId;
+
+    // Show the bar only if at least one button is relevant
+    const showBar = hasSuggestion || hasComment;
+    this.actionBar.style.display = showBar ? '' : 'none';
+    this.adoptBtn.style.display = hasSuggestion ? '' : 'none';
+    this.updateBtn.style.display = hasComment ? '' : 'none';
+
+    // Disable while streaming
+    this.adoptBtn.disabled = this.isStreaming;
+    this.updateBtn.disabled = this.isStreaming;
+  }
+
+  /**
+   * Handle click on "Adopt with AI edits" button.
+   * Sends a message asking the agent to refine and adopt the suggestion.
+   */
+  _handleAdoptClick() {
+    if (this.isStreaming || !this._contextItemId) return;
+    const id = this._contextItemId;
+    this.inputEl.value = `Based on our conversation, please refine the original AI suggestion and adopt it using the pair-review API. The suggestion ID is ${id}.`;
+    this.sendMessage();
+  }
+
+  /**
+   * Handle click on "Update comment" button.
+   * Sends a message asking the agent to update the user's comment.
+   */
+  _handleUpdateClick() {
+    if (this.isStreaming || !this._contextItemId) return;
+    const id = this._contextItemId;
+    this.inputEl.value = `Based on our conversation, please update my comment using the pair-review API. The comment ID is ${id}.`;
+    this.sendMessage();
+  }
+
+  /**
    * Clean up on page unload
    */
   destroy() {
     document.removeEventListener('keydown', this._onKeydown);
-    this.disconnectSSE();
+    this._closeGlobalSSE();
     this.messages = [];
     if (this.container) {
       this.container.innerHTML = '';
