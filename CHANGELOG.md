@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.6.0
+
+### Minor Changes
+
+- 2b05496: Add configurable database names for per-worktree isolation. Set `db_name` in config or `PAIR_REVIEW_DB_NAME` env var to use a custom database file, preventing schema conflicts when switching branches during development. Also supports local `.pair-review/config.json` overrides.
+
+### Patch Changes
+
+- 633c49f: Add reasoning field to AI suggestions showing step-by-step explanation of why issues were flagged
+- 51bd27e: Show reasoning popover button on collapsed AI suggestions alongside the restore button
+- a0ee5c1: Add reasoning popover to AI suggestions with brain icon button in header
+
 ## 1.5.1
 
 ### Patch Changes
