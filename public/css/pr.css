@@ -655,6 +655,11 @@
   --comment-primary: #8250df;
   --comment-subtle: rgba(130, 80, 223, 0.08);
   --comment-border: rgba(130, 80, 223, 0.3);
+
+  /* Reasoning toggle hover - deep purple for light backgrounds */
+  --color-reasoning-hover: #7c3aed;
+  --color-reasoning-hover-bg: rgba(124, 58, 237, 0.1);
+  --color-reasoning-hover-border: rgba(124, 58, 237, 0.35);
 }
 
 [data-theme="dark"] {
@@ -741,6 +746,11 @@
   --comment-primary: #a371f7;
   --comment-subtle: rgba(163, 113, 247, 0.1);
   --comment-border: rgba(163, 113, 247, 0.3);
+
+  /* Reasoning toggle hover - rich purple for dark backgrounds */
+  --color-reasoning-hover: #9333ea;
+  --color-reasoning-hover-bg: rgba(147, 51, 234, 0.12);
+  --color-reasoning-hover-border: rgba(147, 51, 234, 0.4);
 }
 
 /* Update PR container styles */
@@ -2095,9 +2105,9 @@ tr.newly-expanded .d2h-code-line-ctn {
 }
 
 .btn-reasoning-toggle:hover {
-  color: var(--color-text-secondary, #8b949e);
-  background: var(--color-bg-tertiary, rgba(255, 255, 255, 0.04));
-  border-color: var(--color-border-primary, rgba(255, 255, 255, 0.1));
+  color: var(--color-reasoning-hover);
+  background: var(--color-reasoning-hover-bg);
+  border-color: var(--color-reasoning-hover-border);
 }
 
 .btn-reasoning-toggle.active {
