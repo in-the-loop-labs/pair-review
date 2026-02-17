@@ -219,7 +219,7 @@ class ChatPanelManager {
 
     } catch (error) {
       console.error('Error starting chat:', error);
-      alert(`Failed to start chat: ${error.message}`);
+      this._addErrorMessage(`Failed to start chat: ${error.message}`);
     }
   }
 
@@ -465,7 +465,7 @@ class ChatPanelManager {
    */
   async _sendMessage() {
     if (!this.currentChatId) {
-      alert('No active chat session');
+      this._addErrorMessage('No active chat session');
       return;
     }
 
@@ -580,7 +580,16 @@ class ChatPanelManager {
     // POST /message before the server can stream events back to us.
     const connected = new Promise((resolve) => {
       eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        let data;
+        try {
+          data = JSON.parse(event.data);
+        } catch (e) {
+          console.error('SSE parse error:', e);
+          eventSource.close();
+          session.eventSource = null;
+          resolve();
+          return;
+        }
 
         if (data.type === 'connected') {
           console.log(`SSE connected for chat ${chatId}`);
@@ -730,13 +739,13 @@ class ChatPanelManager {
    */
   async _adoptWithAIEdits() {
     if (!this.currentChatId) {
-      alert('No active chat session');
+      this._addErrorMessage('No active chat session');
       return;
     }
 
     const session = this.activeChatSessions.get(this.currentChatId);
     if (!session) {
-      alert('Chat session not found');
+      this._addErrorMessage('Chat session not found');
       return;
     }
 
@@ -799,13 +808,12 @@ class ChatPanelManager {
           }
         }
 
-        if (this.prManager?.adoptSuggestionWithText) {
-          await this.prManager.adoptSuggestionWithText(commentId, data.refinedText);
-        } else if (this.prManager?.adoptAndEditSuggestion) {
-          await this.prManager.adoptAndEditSuggestion(commentId);
-          // After adoption, update the textarea with refined text
-          const textarea = document.getElementById(`edit-comment-${commentId}`)
-            || document.querySelector('.user-comment-edit-form textarea');
+        if (this.prManager?.adoptAndEditSuggestion) {
+          const newComment = await this.prManager.adoptAndEditSuggestion(commentId);
+          // adoptAndEditSuggestion creates a new comment with a different ID,
+          // so use the returned comment's ID to find the correct textarea.
+          const newId = newComment?.id || commentId;
+          const textarea = document.getElementById(`edit-comment-${newId}`);
           if (textarea) {
             textarea.value = data.refinedText;
             textarea.dispatchEvent(new Event('input'));

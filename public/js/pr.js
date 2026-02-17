@@ -2399,6 +2399,8 @@ class PRManager {
       }
 
       this.updateCommentCount();
+
+      return newComment;
     } catch (error) {
       console.error('Error adopting and editing suggestion:', error);
       alert(`Failed to adopt suggestion: ${error.message}`);

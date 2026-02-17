@@ -443,25 +443,27 @@ You are running in a non-interactive browser context. You have read-only access 
       return String(obj);
     }
 
+    // Work on a shallow copy to avoid mutating the caller's object
+    const copy = { ...obj };
     const lines = [];
 
     // Handle common text-like properties first
     const textProps = ['response', 'text', 'content', 'message', 'answer', 'explanation', 'summary'];
     for (const prop of textProps) {
-      if (obj[prop] && typeof obj[prop] === 'string') {
-        lines.push(obj[prop]);
-        delete obj[prop]; // Remove so we don't duplicate below
+      if (copy[prop] && typeof copy[prop] === 'string') {
+        lines.push(copy[prop]);
+        delete copy[prop]; // Remove so we don't duplicate below
       }
     }
 
     // Format remaining properties
-    const remainingKeys = Object.keys(obj).filter(k => obj[k] !== undefined);
+    const remainingKeys = Object.keys(copy).filter(k => copy[k] !== undefined);
     if (remainingKeys.length > 0 && lines.length > 0) {
       lines.push(''); // Add spacing
     }
 
     for (const key of remainingKeys) {
-      const value = obj[key];
+      const value = copy[key];
       const formattedKey = key.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
 
       if (Array.isArray(value)) {

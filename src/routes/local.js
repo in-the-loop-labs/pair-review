@@ -2321,8 +2321,10 @@ router.post('/api/local/:reviewId/chat/:chatId/message', async (req, res) => {
           if (event.type === 'assistant_text' && event.text) {
             streamedResponse += event.text;
             clients.forEach(client => {
-              if (!client.closed) {
+              try {
                 client.write(`data: ${JSON.stringify({ type: 'chunk', content: event.text })}\n\n`);
+              } catch (e) {
+                clients.delete(client);
               }
             });
           }
@@ -2332,8 +2334,10 @@ router.post('/api/local/:reviewId/chat/:chatId/message', async (req, res) => {
 
     // Send completion event to SSE clients
     clients.forEach(client => {
-      if (!client.closed) {
+      try {
         client.write(`data: ${JSON.stringify({ type: 'done', messageId: result.messageId })}\n\n`);
+      } catch (e) {
+        clients.delete(client);
       }
     });
 
@@ -2351,8 +2355,10 @@ router.post('/api/local/:reviewId/chat/:chatId/message', async (req, res) => {
     // Send error event to SSE clients
     const clients = localChatStreamClients.get(req.params.chatId) || new Set();
     clients.forEach(client => {
-      if (!client.closed) {
+      try {
         client.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+      } catch (e) {
+        clients.delete(client);
       }
     });
 
