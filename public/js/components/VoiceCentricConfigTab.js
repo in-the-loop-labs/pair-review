@@ -547,6 +547,7 @@ class VoiceCentricConfigTab {
 
     // Dirty state tracking
     panel.addEventListener('change', (e) => {
+      if (e.target.id === 'vc-council-selector') return; // council selector has its own clean/dirty logic
       if (e.target.matches('select, input[type="checkbox"]') || e.target.classList.contains('vc-timeout')) {
         this._markDirty();
       }

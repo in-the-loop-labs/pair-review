@@ -628,6 +628,7 @@ class AdvancedConfigTab {
 
     // Dirty state tracking via event delegation
     panel.addEventListener('change', (e) => {
+      if (e.target.id === 'council-selector') return; // council selector has its own clean/dirty logic
       if (e.target.matches('select, input[type="checkbox"]') || e.target.classList.contains('adv-timeout')) {
         this._markDirty();
       }
