@@ -211,4 +211,50 @@ test.describe('Council Save Button', () => {
     const inTabSave = page.locator('#vc-council-save-btn');
     await expect(inTabSave).toHaveClass(/btn-save-council/);
   });
+
+  test('selecting a saved council should NOT immediately mark it dirty', async ({ page }) => {
+    // Seed a council
+    const councilId = await seedCouncil(page, {
+      name: 'Clean Load Council',
+      type: 'council',
+      config: voiceCouncilConfig
+    });
+
+    // Open modal and switch to Council tab
+    await openConfigModalTab(page, 'council');
+
+    // Select the seeded council from the dropdown
+    await page.locator('#vc-council-selector').selectOption(councilId);
+
+    // The in-tab save button should be disabled (not dirty)
+    const saveBtn = page.locator('#vc-council-save-btn');
+    await expect(saveBtn).toBeDisabled();
+
+    // The dirty hint in the footer should be hidden
+    const dirtyHint = page.locator('#council-footer-left');
+    await expect(dirtyHint).toBeHidden();
+  });
+
+  test('selecting a saved advanced council should NOT immediately mark it dirty', async ({ page }) => {
+    // Seed an advanced council
+    const councilId = await seedCouncil(page, {
+      name: 'Clean Load Advanced Council',
+      type: 'advanced',
+      config: advancedCouncilConfig
+    });
+
+    // Open modal and switch to Advanced tab
+    await openConfigModalTab(page, 'advanced');
+
+    // Select the seeded council from the dropdown
+    await page.locator('#council-selector').selectOption(councilId);
+
+    // The in-tab save button should be disabled (not dirty)
+    const saveBtn = page.locator('#council-save-btn');
+    await expect(saveBtn).toBeDisabled();
+
+    // The dirty hint in the footer should be hidden
+    const dirtyHint = page.locator('#council-footer-left');
+    await expect(dirtyHint).toBeHidden();
+  });
 });
