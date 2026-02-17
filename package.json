@@ -30,7 +30,7 @@
     "test:e2e:debug": "playwright test --debug",
     "generate:skill-prompts": "node scripts/generate-skill-prompts.js",
     "changeset": "changeset",
-    "version": "changeset version && npm install --package-lock-only && node scripts/sync-plugin-versions.js && git add package.json package-lock.json CHANGELOG.md .changeset .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin-code-critic/.claude-plugin/plugin.json && git commit -m 'RELEASING: Bump versions'",
+    "version": "changeset version && npm install --package-lock-only && node scripts/sync-plugin-versions.js && git add package.json package-lock.json CHANGELOG.md .changeset .claude-plugin/marketplace.json plugin/.claude-plugin/plugin.json plugin-code-critic/.claude-plugin/plugin.json && git commit -m \"RELEASING: v$(node -p \"require('./package.json').version\")\"",
     "release": "npm whoami > /dev/null || { echo 'Error: Not logged in to npm. Run: npm login'; exit 1; } && npm run version && changeset tag && npm publish && git push && git push --tags"
   },
   "keywords": [
