@@ -148,7 +148,7 @@ router.post('/api/chat/session', async (req, res) => {
         focusedSuggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [contextCommentId]);
       }
 
-      finalSystemPrompt = buildChatPrompt({ review, port: req.socket.localPort });
+      finalSystemPrompt = buildChatPrompt({ review });
 
       // Fetch all AI suggestions from the latest analysis run
       suggestions = await query(db, `
@@ -175,13 +175,22 @@ router.post('/api/chat/session', async (req, res) => {
 
       initialContext = buildInitialContext({
         suggestions,
-        focusedSuggestion,
-        port: req.socket.localPort
+        focusedSuggestion
       });
     }
 
     // Resolve cwd: explicit from request body, or local_path from review record
     const resolvedCwd = cwd || (review && review.local_path) || null;
+
+    // Inject the server port into the initial context so the agent learns it
+    // once at session start. This avoids wasting tokens by repeating the port
+    // with every user message.  If the server restarts on a new port, the next
+    // session will pick up the new value automatically.
+    const serverPort = req.socket.localPort;
+    const portContext = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`;
+    const initialContextWithPort = initialContext
+      ? portContext + '\n\n' + initialContext
+      : portContext;
 
     const session = await chatSessionManager.createSession({
       provider,
@@ -190,7 +199,7 @@ router.post('/api/chat/session', async (req, res) => {
       contextCommentId: contextCommentId || null,
       systemPrompt: finalSystemPrompt,
       cwd: resolvedCwd,
-      initialContext
+      initialContext: initialContextWithPort
     });
 
     logger.info(`Chat session created: ${session.id} (provider=${provider}, model=${model})`);

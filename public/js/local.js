@@ -168,83 +168,10 @@ class LocalManager {
     };
 
     // Store original methods we need to patch
-    const originalLoadUserComments = manager.loadUserComments.bind(manager);
     const originalLoadAISuggestions = manager.loadAISuggestions.bind(manager);
 
-    // Override loadUserComments
-    // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
-    // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
-    // This provides cleaner UX - the diff view shows only active comments, while
-    // the AI Panel serves as the "inbox" where you can optionally see and restore dismissed items.
-    manager.loadUserComments = async function(includeDismissed = false) {
-      if (!manager.currentPR) return;
-
-      try {
-        const queryParam = includeDismissed ? '?includeDismissed=true' : '';
-        const response = await fetch(`/api/local/${reviewId}/user-comments${queryParam}`);
-        if (!response.ok) return;
-
-        const data = await response.json();
-        manager.userComments = data.comments || [];
-
-        // Separate file-level and line-level comments for diff view rendering
-        // Skip inactive (dismissed) comments - they should not appear in the diff view
-        const fileLevelComments = [];
-        const lineLevelComments = [];
-
-        manager.userComments.forEach(comment => {
-          // Skip inactive (dismissed) comments - they should not appear in the diff view
-          if (comment.status === 'inactive') {
-            return;
-          }
-          if (comment.is_file_level === 1) {
-            fileLevelComments.push(comment);
-          } else {
-            lineLevelComments.push(comment);
-          }
-        });
-
-        // Clear existing comment rows before re-rendering
-        document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
-
-        // Display line-level comments inline with diff (only active comments reach here)
-        lineLevelComments.forEach(comment => {
-          const fileElement = manager.findFileElement(comment.file);
-          if (!fileElement) return;
-
-          // Use the comment's side to determine which coordinate system to search in
-          // LEFT side = OLD coordinates (deleted lines or context lines in OLD coords)
-          // RIGHT side = NEW coordinates (added lines or context lines in NEW coords)
-          const side = comment.side || 'RIGHT';
-
-          const lineRows = fileElement.querySelectorAll('tr');
-          for (const row of lineRows) {
-            // Pass side to getLineNumber() to get the correct coordinate system
-            // This allows context lines (which have BOTH old and new line numbers) to be found
-            // when the comment was placed on a LEFT-side line (old coordinate)
-            const lineNum = manager.getLineNumber(row, side);
-            if (lineNum === comment.line_start) {
-              manager.displayUserComment(comment, row);
-              break;
-            }
-          }
-        });
-
-        // Load file-level comments into their zones (only active comments reach here)
-        if (manager.fileCommentManager && fileLevelComments.length > 0) {
-          manager.fileCommentManager.loadFileComments(fileLevelComments, []);
-        }
-
-        // Populate AI Panel with all comments (including dismissed if requested)
-        if (window.aiPanel?.setComments) {
-          window.aiPanel.setComments(manager.userComments);
-        }
-
-        manager.updateCommentCount();
-      } catch (error) {
-        console.error('Error loading user comments:', error);
-      }
-    };
+    // Note: loadUserComments no longer needs patching because pr.js now uses the unified
+    // /api/reviews/:reviewId/comments endpoint which works for both PR and local mode.
 
     // Override loadAISuggestions
     manager.loadAISuggestions = async function(level = null, runId = null) {
@@ -257,7 +184,7 @@ class LocalManager {
 
         // First, check if analysis has been run and get summary data for the selected run
         try {
-          let checkUrl = `/api/local/${reviewId}/has-ai-suggestions`;
+          let checkUrl = `/api/reviews/${reviewId}/suggestions/check`;
           if (filterRunId) {
             checkUrl += `?runId=${filterRunId}`;
           }
@@ -282,7 +209,7 @@ class LocalManager {
           console.warn('Error checking analysis status:', checkError);
         }
 
-        let url = `/api/local/${reviewId}/suggestions?levels=${filterLevel}`;
+        let url = `/api/reviews/${reviewId}/suggestions?levels=${filterLevel}`;
         if (filterRunId) {
           url += `&runId=${filterRunId}`;
         }
@@ -440,7 +367,7 @@ class LocalManager {
     // Override checkRunningAnalysis
     manager.checkRunningAnalysis = async function() {
       try {
-        const response = await fetch(`/api/local/${reviewId}/analysis-status`);
+        const response = await fetch(`/api/reviews/${reviewId}/analyses/status`);
         if (!response.ok) return;
 
         const data = await response.json();
@@ -459,8 +386,6 @@ class LocalManager {
               { configType: data.status.configType || 'advanced' }
             );
           } else if (window.progressModal) {
-            // Update the SSE endpoint for progress modal
-            self.patchProgressModalForLocal();
             window.progressModal.show(data.analysisId);
           }
         }
@@ -469,470 +394,11 @@ class LocalManager {
       }
     };
 
-    // Patch CommentManager.saveUserComment for local mode
-    // This is the method that handles creating new comments via the form
-    if (manager.commentManager) {
-      const cm = manager.commentManager;
-      const originalSaveUserComment = cm.saveUserComment.bind(cm);
-
-      cm.saveUserComment = async function(textarea, formRow) {
-        const fileName = textarea.dataset.file;
-        const lineNumber = parseInt(textarea.dataset.line);
-        const parsedEndLine = parseInt(textarea.dataset.lineEnd);
-        const endLineNumber = !isNaN(parsedEndLine) ? parsedEndLine : lineNumber;
-        const diffPosition = textarea.dataset.diffPosition ? parseInt(textarea.dataset.diffPosition) : null;
-        const side = textarea.dataset.side || 'RIGHT';
-        const content = textarea.value.trim();
-
-        if (!content) {
-          return;
-        }
-
-        // Prevent duplicate saves from rapid clicks or Cmd+Enter
-        const saveBtn = formRow?.querySelector('.save-comment-btn');
-        if (saveBtn?.dataset.saving === 'true') {
-          return;
-        }
-        if (saveBtn) saveBtn.dataset.saving = 'true';
-        if (saveBtn) saveBtn.disabled = true;
-
-        try {
-          const response = await fetch(`/api/local/${reviewId}/user-comments`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              file: fileName,
-              line_start: lineNumber,
-              line_end: endLineNumber,
-              diff_position: diffPosition,
-              side: side,
-              body: content
-            })
-          });
-
-          if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || 'Failed to save comment');
-          }
-
-          const result = await response.json();
-
-          // Build comment object
-          const commentData = {
-            id: result.commentId,
-            file: fileName,
-            line_start: lineNumber,
-            line_end: endLineNumber,
-            diff_position: diffPosition,
-            side: side,  // Include side for suggestion code extraction
-            body: content,
-            created_at: new Date().toISOString()
-          };
-
-          // Create comment display row
-          const targetRow = formRow.previousElementSibling;
-          if (!targetRow) {
-            console.error('Could not find target row for comment display');
-            return;
-          }
-          cm.displayUserComment(commentData, targetRow);
-
-          // Notify AI Panel about the new comment
-          if (window.aiPanel?.addComment) {
-            window.aiPanel.addComment(commentData);
-          }
-
-          // Hide form and clear selection
-          cm.hideCommentForm();
-          if (cm.prManager?.lineTracker) {
-            cm.prManager.lineTracker.clearRangeSelection();
-          }
-
-          // Update comment count
-          if (cm.prManager?.updateCommentCount) {
-            cm.prManager.updateCommentCount();
-          }
-        } catch (error) {
-          console.error('Error saving user comment:', error);
-          alert('Failed to save comment: ' + error.message);
-          // Re-enable save button on failure so the user can retry
-          if (saveBtn) {
-            saveBtn.dataset.saving = 'false';
-            saveBtn.disabled = false;
-          }
-        }
-      };
-    }
-
-    // Patch PRManager.deleteUserComment for local mode
-    // DESIGN DECISION: Dismissed comments are NEVER shown in the diff panel.
-    // They only appear in the AI/Review Panel when the "show dismissed" filter is ON.
-    const originalDeleteUserComment = manager.deleteUserComment?.bind(manager);
-    if (originalDeleteUserComment) {
-      manager.deleteUserComment = async function(commentId) {
-        try {
-          const response = await fetch(`/api/local/${reviewId}/user-comments/${commentId}`, {
-            method: 'DELETE'
-          });
-
-          if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || 'Failed to delete comment');
-          }
-
-          const apiResult = await response.json();
-
-          // Check if dismissed comments filter is enabled for AI Panel updates
-          const showDismissed = window.aiPanel?.showDismissedComments || false;
-
-          // Always remove the comment from the diff view (design decision: dismissed comments never shown in diff)
-          const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
-          if (commentRow) {
-            commentRow.remove();
-            manager.updateCommentCount();
-          }
-
-          // Also handle file-level comment cards
-          const fileCommentCard = document.querySelector(`.file-comment-card[data-comment-id="${commentId}"]`);
-          if (fileCommentCard) {
-            const zone = fileCommentCard.closest('.file-comments-zone');
-            fileCommentCard.remove();
-            if (zone && manager.fileCommentManager) {
-              manager.fileCommentManager.updateCommentCount(zone);
-            }
-            manager.updateCommentCount();
-          }
-
-          // Update AI Panel - transition to dismissed state or remove based on filter
-          if (showDismissed && window.aiPanel?.updateComment) {
-            // Update comment status to 'inactive' so it renders with dismissed styling in AI Panel
-            window.aiPanel.updateComment(commentId, { status: 'inactive' });
-          } else if (window.aiPanel?.removeComment) {
-            window.aiPanel.removeComment(commentId);
-          }
-
-          // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
-          // Update AIPanel to show the suggestion as 'dismissed' (matching its visual state).
-          // User can click "Show" to restore it to active state if they want to re-adopt.
-          if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
-            window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
-          }
-
-          // Show success toast
-          if (window.toast) {
-            window.toast.showSuccess('Comment dismissed');
-          }
-        } catch (error) {
-          console.error('Error deleting comment:', error);
-          if (window.toast) {
-            window.toast.showError('Failed to dismiss comment');
-          }
-        }
-      };
-    }
-
-    // Patch PRManager.editUserComment for local mode
-    // This method fetches comment data when editing
-    const originalEditUserComment = manager.editUserComment?.bind(manager);
-    if (originalEditUserComment) {
-      manager.editUserComment = async function(commentId) {
-        try {
-          const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
-          if (!commentRow) return;
-
-          const commentDiv = commentRow.querySelector('.user-comment');
-          const bodyDiv = commentDiv.querySelector('.user-comment-body');
-          let currentText = bodyDiv.dataset.originalMarkdown || '';
-
-          // Fetch from local endpoint if needed
-          if (!currentText) {
-            const response = await fetch(`/api/local/${reviewId}/user-comments/${commentId}`);
-            if (response.ok) {
-              const data = await response.json();
-              currentText = data.body || bodyDiv.textContent.trim();
-            } else {
-              currentText = bodyDiv.textContent.trim();
-            }
-          }
-
-          if (commentDiv.classList.contains('editing-mode')) return;
-
-          commentDiv.classList.add('editing-mode');
-
-          const fileName = commentRow.dataset.file || '';
-          const lineStart = commentRow.dataset.lineStart || '';
-          const lineEnd = commentRow.dataset.lineEnd || lineStart;
-          const side = commentRow.dataset.side || '';
-
-          const editFormHTML = `
-            <div class="user-comment-edit-form">
-              <div class="comment-form-toolbar">
-                <button type="button" class="btn btn-sm suggestion-btn" title="Insert a suggestion">
-                  ${CommentManager.SUGGESTION_ICON_SVG}
-                </button>
-              </div>
-              <textarea
-                id="edit-comment-${commentId}"
-                class="comment-edit-textarea"
-                placeholder="Enter your comment..."
-                data-file="${fileName}"
-                data-line="${lineStart}"
-                data-line-end="${lineEnd}"
-                data-side="${side || 'RIGHT'}"
-              >${manager.escapeHtml(currentText)}</textarea>
-              <div class="comment-edit-actions">
-                <button class="btn btn-sm btn-primary save-edit-btn">Save</button>
-                <button class="btn btn-sm btn-secondary cancel-edit-btn">Cancel</button>
-              </div>
-            </div>
-          `;
-
-          bodyDiv.style.display = 'none';
-          bodyDiv.insertAdjacentHTML('afterend', editFormHTML);
-
-          const editForm = commentDiv.querySelector('.user-comment-edit-form');
-          const textarea = document.getElementById(`edit-comment-${commentId}`);
-          const suggestionBtn = editForm.querySelector('.suggestion-btn');
-          const saveBtn = editForm.querySelector('.save-edit-btn');
-          const cancelBtn = editForm.querySelector('.cancel-edit-btn');
-
-          if (textarea) {
-            manager.autoResizeTextarea(textarea);
-            textarea.focus();
-            textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-            manager.updateSuggestionButtonState(textarea, suggestionBtn);
-
-            suggestionBtn.addEventListener('click', () => {
-              if (!suggestionBtn.disabled) {
-                manager.insertSuggestionBlock(textarea, suggestionBtn);
-              }
-            });
-
-            saveBtn.addEventListener('click', () => manager.saveEditedUserComment(commentId));
-            cancelBtn.addEventListener('click', () => manager.cancelEditUserComment(commentId));
-
-            textarea.addEventListener('input', () => {
-              manager.autoResizeTextarea(textarea);
-              manager.updateSuggestionButtonState(textarea, suggestionBtn);
-            });
-          }
-        } catch (error) {
-          console.error('Error editing comment:', error);
-          alert('Failed to edit comment');
-        }
-      };
-    }
-
-    // Patch PRManager.saveEditedUserComment for local mode
-    const originalSaveEditedUserComment = manager.saveEditedUserComment?.bind(manager);
-    if (originalSaveEditedUserComment) {
-      manager.saveEditedUserComment = async function(commentId) {
-        // Prevent duplicate saves from rapid clicks or Cmd+Enter
-        const editFormEl = document.querySelector(`#edit-comment-${commentId}`)?.closest('.user-comment-edit-form');
-        const saveBtnEl = editFormEl?.querySelector('.save-edit-btn');
-        if (saveBtnEl?.dataset.saving === 'true') {
-          return;
-        }
-        if (saveBtnEl) saveBtnEl.dataset.saving = 'true';
-        if (saveBtnEl) saveBtnEl.disabled = true;
-
-        try {
-          const textarea = document.getElementById(`edit-comment-${commentId}`);
-          const editedText = textarea.value.trim();
-
-          if (!editedText) {
-            alert('Comment cannot be empty');
-            textarea.focus();
-            if (saveBtnEl) {
-              saveBtnEl.dataset.saving = 'false';
-              saveBtnEl.disabled = false;
-            }
-            return;
-          }
-
-          const response = await fetch(`/api/local/${reviewId}/user-comments/${commentId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ body: editedText })
-          });
-
-          if (!response.ok) throw new Error('Failed to update comment');
-
-          const commentRow = document.querySelector(`[data-comment-id="${commentId}"]`);
-          if (!commentRow) {
-            console.error('Comment element not found');
-            return;
-          }
-          const commentDiv = commentRow.querySelector('.user-comment');
-          let bodyDiv = commentDiv.querySelector('.user-comment-body');
-          const editForm = commentDiv.querySelector('.user-comment-edit-form');
-
-          if (!bodyDiv) {
-            bodyDiv = document.createElement('div');
-            bodyDiv.className = 'user-comment-body';
-            commentDiv.appendChild(bodyDiv);
-          }
-
-          bodyDiv.innerHTML = window.renderMarkdown ? window.renderMarkdown(editedText) : manager.escapeHtml(editedText);
-          bodyDiv.dataset.originalMarkdown = editedText;
-          bodyDiv.style.display = '';
-
-          if (editForm) editForm.remove();
-          commentDiv.classList.remove('editing-mode');
-
-          // Notify AI Panel about the updated comment body
-          if (window.aiPanel?.updateComment) {
-            window.aiPanel.updateComment(commentId, { body: editedText });
-          }
-
-        } catch (error) {
-          console.error('Error saving comment:', error);
-          alert('Failed to save comment');
-          // Re-enable save button on failure so the user can retry
-          if (saveBtnEl) {
-            saveBtnEl.dataset.saving = 'false';
-            saveBtnEl.disabled = false;
-          }
-        }
-      };
-    }
-
-    // Patch PRManager.clearAllUserComments for local mode
-    const originalClearAllUserComments = manager.clearAllUserComments?.bind(manager);
-    if (originalClearAllUserComments) {
-      manager.clearAllUserComments = async function() {
-        // Count both line-level and file-level user comments
-        const lineCommentRows = document.querySelectorAll('.user-comment-row');
-        const fileCommentCards = document.querySelectorAll('.file-comment-card.user-comment');
-        const totalComments = lineCommentRows.length + fileCommentCards.length;
-
-        if (totalComments === 0) {
-          if (window.toast?.showInfo) {
-            window.toast.showInfo('No comments to clear');
-          }
-          return;
-        }
-
-        if (!window.confirmDialog) {
-          alert('Confirmation dialog unavailable. Please refresh the page.');
-          return;
-        }
-
-        const dialogResult = await window.confirmDialog.show({
-          title: 'Clear All Comments?',
-          message: `This will dismiss all ${totalComments} comment${totalComments !== 1 ? 's' : ''}. You can restore them later.`,
-          confirmText: 'Clear All',
-          confirmClass: 'btn-danger'
-        });
-
-        if (dialogResult !== 'confirm') return;
-
-        try {
-          const response = await fetch(`/api/local/${reviewId}/user-comments`, {
-            method: 'DELETE'
-          });
-
-          if (!response.ok) throw new Error('Failed to delete comments');
-
-          const result = await response.json();
-          const deletedCount = result.deletedCount || totalComments;
-
-          // Remove line-level comment rows from DOM
-          lineCommentRows.forEach(row => row.remove());
-
-          // Remove file-level comment cards from DOM
-          fileCommentCards.forEach(card => {
-            const zone = card.closest('.file-comments-zone');
-            card.remove();
-
-            // Update the file comment zone header button state
-            if (zone && manager.fileCommentManager) {
-              manager.fileCommentManager.updateCommentCount(zone);
-            }
-          });
-
-          // Remove line-level and file-level comment elements from diff view
-          // (They have been soft-deleted, so should not appear in the diff panel per design decision)
-          // The comments array will be reloaded below with proper dismissed state.
-
-          // Reload comments to update both internal state and AI Panel
-          // This shows dismissed comments in AI Panel if filter is enabled, matching individual deletion behavior
-          const includeDismissed = window.aiPanel?.showDismissedComments || false;
-          await manager.loadUserComments(includeDismissed);
-
-          // Update dismissed suggestions in the diff view UI
-          // (AI Panel is already updated by loadUserComments via setComments)
-          if (result.dismissedSuggestionIds && result.dismissedSuggestionIds.length > 0 && manager.updateDismissedSuggestionUI) {
-            for (const suggestionId of result.dismissedSuggestionIds) {
-              manager.updateDismissedSuggestionUI(suggestionId);
-            }
-          }
-
-          // Show success toast notification
-          if (window.toast) {
-            window.toast.showSuccess(`Cleared ${deletedCount} comment${deletedCount !== 1 ? 's' : ''}`);
-          }
-        } catch (error) {
-          console.error('Error clearing user comments:', error);
-          if (window.toast) {
-            window.toast.showError('Failed to clear comments');
-          } else {
-            alert('Failed to clear comments');
-          }
-        }
-      };
-    }
-
-    // Patch SuggestionManager.createUserCommentFromSuggestion for local mode
-    // This method is called when adopting AI suggestions
-    if (manager.suggestionManager) {
-      const sm = manager.suggestionManager;
-
-      sm.createUserCommentFromSuggestion = async function(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side) {
-        // Format the comment text with emoji and category prefix
-        const formattedText = sm.formatAdoptedComment(suggestionText, suggestionType);
-
-        // Parse diff_position if it's a string (from dataset)
-        const parsedDiffPosition = diffPosition ? parseInt(diffPosition) : null;
-
-        const createResponse = await fetch(`/api/local/${reviewId}/user-comments`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            file: fileName,
-            line_start: parseInt(lineNumber),
-            line_end: parseInt(lineNumber),
-            diff_position: parsedDiffPosition,
-            side: side || 'RIGHT',
-            body: formattedText,
-            parent_id: suggestionId,
-            type: suggestionType,
-            title: suggestionTitle
-          })
-        });
-
-        if (!createResponse.ok) {
-          throw new Error('Failed to create user comment');
-        }
-
-        const result = await createResponse.json();
-        return {
-          id: result.commentId,
-          file: fileName,
-          line_start: parseInt(lineNumber),
-          body: formattedText,
-          type: suggestionType,
-          title: suggestionTitle,
-          parent_id: suggestionId,
-          diff_position: parsedDiffPosition,
-          created_at: new Date().toISOString()
-        };
-      };
-    }
+    // Note: Comment-related method overrides (saveUserComment, deleteUserComment,
+    // editUserComment, saveEditedUserComment, clearAllUserComments,
+    // createUserCommentFromSuggestion, restoreUserComment) have been removed because
+    // the base PRManager methods now use the unified /api/reviews/:reviewId/comments
+    // endpoints which work for both PR and local mode.
 
     // Patch fetchRepoSettings to use the repository from local review data
     manager.fetchRepoSettings = async function() {
@@ -996,87 +462,7 @@ class LocalManager {
       }
     };
 
-    // Patch PRManager.restoreUserComment for local mode
-    // Uses the local API endpoint to restore dismissed comments
-    manager.restoreUserComment = async function(commentId) {
-      try {
-        const response = await fetch(`/api/local/${reviewId}/user-comments/${commentId}/restore`, {
-          method: 'PUT'
-        });
-        if (!response.ok) throw new Error('Failed to restore comment');
-
-        // Reload comments to update both the diff view and AI panel
-        // Pass the current filter state from the AI panel
-        const includeDismissed = window.aiPanel?.showDismissedComments || false;
-        await manager.loadUserComments(includeDismissed);
-
-        // Show success toast
-        if (window.toast) {
-          window.toast.showSuccess('Comment restored');
-        }
-      } catch (error) {
-        console.error('Error restoring comment:', error);
-        if (window.toast) {
-          window.toast.showError('Failed to restore comment');
-        } else {
-          alert('Failed to restore comment');
-        }
-      }
-    };
-
     console.log('PRManager patched for local mode');
-  }
-
-  /**
-   * Patch ProgressModal to use local SSE endpoint
-   */
-  patchProgressModalForLocal() {
-    const modal = window.progressModal;
-    if (!modal) return;
-
-    const reviewId = this.reviewId;
-    const originalStartMonitoring = modal.startProgressMonitoring.bind(modal);
-
-    modal.startProgressMonitoring = function() {
-      if (modal.eventSource) {
-        modal.eventSource.close();
-      }
-
-      if (!modal.currentAnalysisId) return;
-
-      // Use local SSE endpoint
-      modal.eventSource = new EventSource(`/api/local/${reviewId}/ai-suggestions/status`);
-
-      modal.eventSource.onopen = () => {
-        console.log('Connected to local progress stream');
-      };
-
-      modal.eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-
-          if (data.type === 'connected') {
-            console.log('Local SSE connection established');
-            return;
-          }
-
-          if (data.type === 'progress') {
-            modal.updateProgress(data);
-
-            if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
-              modal.stopProgressMonitoring();
-            }
-          }
-        } catch (error) {
-          console.error('Error parsing SSE data:', error);
-        }
-      };
-
-      modal.eventSource.onerror = (error) => {
-        console.error('SSE connection error:', error);
-        modal.fallbackToPolling();
-      };
-    };
   }
 
   /**
@@ -1100,7 +486,7 @@ class LocalManager {
       // Determine endpoint and body based on whether this is a council analysis
       let analyzeUrl, analyzeBody;
       if (config.isCouncil) {
-        analyzeUrl = `/api/local/${this.reviewId}/analyze/council`;
+        analyzeUrl = `/api/local/${this.reviewId}/analyses/council`;
         analyzeBody = {
           councilId: config.councilId || undefined,
           councilConfig: config.councilConfig || undefined,
@@ -1108,7 +494,7 @@ class LocalManager {
           customInstructions: config.customInstructions || null
         };
       } else {
-        analyzeUrl = `/api/local/${this.reviewId}/analyze`;
+        analyzeUrl = `/api/local/${this.reviewId}/analyses`;
         analyzeBody = {
           provider: config.provider || 'claude',
           model: config.model || 'opus',
@@ -1155,12 +541,9 @@ class LocalManager {
             enabledLevels: config.enabledLevels || [1, 2, 3]
           }
         );
-      } else {
+      } else if (window.progressModal) {
         // Fallback to old progress modal if unified modal not available
-        this.patchProgressModalForLocal();
-        if (window.progressModal) {
-          window.progressModal.show(result.analysisId);
-        }
+        window.progressModal.show(result.analysisId);
       }
 
     } catch (error) {
@@ -1439,7 +822,7 @@ class LocalManager {
     const reviewId = this.reviewId;
 
     this._externalResultsSource = new EventSource(
-      `/api/local/${reviewId}/ai-suggestions/status`
+      `/api/analyses/review-${reviewId}/progress`
     );
 
     this._externalResultsSource.onmessage = (event) => {

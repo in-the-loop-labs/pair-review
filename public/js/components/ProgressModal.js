@@ -190,7 +190,7 @@ class ProgressModal {
 
     try {
       // Make cancel request to backend
-      const response = await fetch(`/api/analyze/cancel/${this.currentAnalysisId}`, {
+      const response = await fetch(`/api/analyses/${this.currentAnalysisId}/cancel`, {
         method: 'POST'
       });
 
@@ -296,7 +296,7 @@ class ProgressModal {
     if (!this.currentAnalysisId) return;
 
     // Connect to SSE endpoint
-    this.eventSource = new EventSource(`/api/pr/${this.currentAnalysisId}/ai-suggestions/status`);
+    this.eventSource = new EventSource(`/api/analyses/${this.currentAnalysisId}/progress`);
     
     this.eventSource.onopen = () => {
       console.log('Connected to progress stream');
@@ -348,7 +348,7 @@ class ProgressModal {
       if (!this.currentAnalysisId) return;
       
       try {
-        const response = await fetch(`/api/analyze/status/${this.currentAnalysisId}`);
+        const response = await fetch(`/api/analyses/${this.currentAnalysisId}/status`);
         if (!response.ok) {
           throw new Error('Failed to fetch status');
         }

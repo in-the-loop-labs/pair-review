@@ -132,25 +132,30 @@ describe('Chat Routes', () => {
         .send({ provider: 'pi', reviewId: 1 });
 
       expect(res.status).toBe(200);
-      // systemPrompt should have been auto-built
+      // systemPrompt should have been auto-built with reviewId
       const callArgs = mockManager.createSession.mock.calls[0][0];
       expect(callArgs.systemPrompt).toBeTruthy();
       expect(callArgs.systemPrompt).toContain('code review');
+      expect(callArgs.systemPrompt).toContain('The review ID for this session is: 1');
+      // Port should NOT be baked into the system prompt
+      expect(callArgs.systemPrompt).not.toMatch(/http:\/\/localhost:\d+/);
     });
 
-    it('should pass initialContext with only port info when no AI suggestions exist', async () => {
+    it('should include port context in initialContext even when no AI suggestions exist', async () => {
       const res = await request(app)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1 });
 
       expect(res.status).toBe(200);
       const callArgs = mockManager.createSession.mock.calls[0][0];
-      // No suggestions, but port info is still included
-      expect(callArgs.initialContext).toContain('pair-review web server is running at');
+      // Port is injected once at session start via initialContext
+      expect(callArgs.initialContext).toMatch(/\[Server port: \d+\]/);
+      expect(callArgs.initialContext).toMatch(/http:\/\/localhost:\d+/);
+      // No suggestion metadata in the response since there are no suggestions
       expect(res.body.data.context).toBeUndefined();
     });
 
-    it('should pass initialContext with suggestion content when AI suggestions exist', async () => {
+    it('should pass initialContext with port and suggestion content when AI suggestions exist', async () => {
       // Insert AI suggestions for the review
       const runId = 'test-run-123';
       db.prepare(`
@@ -170,6 +175,8 @@ describe('Chat Routes', () => {
       expect(res.status).toBe(200);
       const callArgs = mockManager.createSession.mock.calls[0][0];
       expect(callArgs.initialContext).toBeTypeOf('string');
+      // Port context is prepended before suggestion context
+      expect(callArgs.initialContext).toMatch(/\[Server port: \d+\]/);
       expect(callArgs.initialContext).toContain('Null check missing');
       expect(callArgs.initialContext).toContain('Use const');
 
@@ -178,12 +185,13 @@ describe('Chat Routes', () => {
       expect(res.body.data.context.suggestionCount).toBe(2);
     });
 
-    it('should not include context metadata when no AI suggestions exist', async () => {
+    it('should not include context metadata when no AI suggestions exist (port is in initialContext but not in response)', async () => {
       const res = await request(app)
         .post('/api/chat/session')
         .send({ provider: 'pi', reviewId: 1 });
 
       expect(res.status).toBe(200);
+      // Port is in initialContext, but response.context is only set when suggestions exist
       expect(res.body.data.context).toBeUndefined();
     });
 
@@ -216,7 +224,7 @@ describe('Chat Routes', () => {
   });
 
   describe('POST /api/chat/session/:id/message', () => {
-    it('should send a message', async () => {
+    it('should send a message without per-turn port context (port is injected at session start)', async () => {
       // Insert a session into the DB so getSession finds it
       db.prepare(
         "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
@@ -228,12 +236,15 @@ describe('Chat Routes', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data).toHaveProperty('messageId', 100);
-      expect(mockManager.sendMessage).toHaveBeenCalledWith(
-        1, 'What does this code do?', { context: undefined, contextData: undefined }
-      );
+      // Port context is NOT injected per-turn (it's sent once at session start)
+      const callArgs = mockManager.sendMessage.mock.calls[0];
+      expect(callArgs[0]).toBe(1);
+      expect(callArgs[1]).toBe('What does this code do?');
+      expect(callArgs[2].context).toBeUndefined();
+      expect(callArgs[2].contextData).toBeUndefined();
     });
 
-    it('should pass context to sendMessage when provided', async () => {
+    it('should pass explicit context through unchanged (no port injection)', async () => {
       db.prepare(
         "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
       ).run();
@@ -246,9 +257,10 @@ describe('Chat Routes', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(mockManager.sendMessage).toHaveBeenCalledWith(
-        1, 'Explain this bug', { context: 'Suggestion: Null pointer on line 42', contextData: undefined }
-      );
+      const callArgs = mockManager.sendMessage.mock.calls[0];
+      expect(callArgs[1]).toBe('Explain this bug');
+      // Context is passed through unchanged — no port injection per-turn
+      expect(callArgs[2].context).toBe('Suggestion: Null pointer on line 42');
     });
 
     it('should pass contextData to sendMessage when provided', async () => {
@@ -266,15 +278,14 @@ describe('Chat Routes', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(mockManager.sendMessage).toHaveBeenCalledWith(
-        1, 'Explain this bug', {
-          context: 'Suggestion: Null pointer on line 42',
-          contextData: ctxData
-        }
-      );
+      const callArgs = mockManager.sendMessage.mock.calls[0];
+      expect(callArgs[1]).toBe('Explain this bug');
+      // Context passed through unchanged — no port injection per-turn
+      expect(callArgs[2].context).toBe('Suggestion: Null pointer on line 42');
+      expect(callArgs[2].contextData).toEqual(ctxData);
     });
 
-    it('should forward contextData without context to sendMessage', async () => {
+    it('should pass contextData without injecting port context', async () => {
       db.prepare(
         "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
       ).run();
@@ -287,12 +298,11 @@ describe('Chat Routes', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(mockManager.sendMessage).toHaveBeenCalledWith(
-        1, 'test', {
-          context: undefined,
-          contextData: { type: 'bug', title: 'test' }
-        }
-      );
+      const callArgs = mockManager.sendMessage.mock.calls[0];
+      expect(callArgs[1]).toBe('test');
+      // No port context injected per-turn (port is sent at session start)
+      expect(callArgs[2].context).toBeUndefined();
+      expect(callArgs[2].contextData).toEqual({ type: 'bug', title: 'test' });
     });
 
     it('should return 404 for unknown session', async () => {

@@ -23,8 +23,9 @@ class CancellationError extends Error {
 // Store active analysis runs in memory for status tracking
 const activeAnalyses = new Map();
 
-// Store mapping of PR (owner/repo/number) to analysis ID for tracking
-const prToAnalysisId = new Map();
+// Store mapping of integer reviewId to analysis UUID for tracking.
+// Unified map: replaces the previous separate prToAnalysisId and localReviewToAnalysisId maps.
+const reviewToAnalysisId = new Map();
 
 // Store SSE clients for real-time progress updates
 const progressClients = new Map();
@@ -37,9 +38,6 @@ const localReviewDiffs = new Map();
 // Maps analysisId -> Set of ChildProcess objects
 const activeProcesses = new Map();
 
-// Store mapping of local review key to analysis ID for tracking
-const localReviewToAnalysisId = new Map();
-
 // Store active review setup operations (concurrency guard)
 // Maps setupKey (e.g., "pr:owner/repo/123" or "local:/path") -> { setupId, promise }
 const activeSetups = new Map();
@@ -47,26 +45,6 @@ const activeSetups = new Map();
 // Store SSE clients for setup progress updates
 // Maps setupId -> Set of response objects
 const setupProgressClients = new Map();
-
-/**
- * Generate a consistent PR key for mapping
- * @param {string} owner - Repository owner
- * @param {string} repo - Repository name
- * @param {number} prNumber - Pull request number
- * @returns {string} PR key in format "owner/repo/number"
- */
-function getPRKey(owner, repo, prNumber) {
-  return `${owner}/${repo}/${prNumber}`;
-}
-
-/**
- * Generate a consistent key for local review mapping
- * @param {number} reviewId - Local review ID
- * @returns {string} Review key
- */
-function getLocalReviewKey(reviewId) {
-  return `local/${reviewId}`;
-}
 
 /**
  * Get the model to use for AI analysis
@@ -447,15 +425,12 @@ function parseEnabledLevels(requestEnabledLevels, skipLevel3 = false) {
 module.exports = {
   CancellationError,
   activeAnalyses,
-  prToAnalysisId,
-  localReviewToAnalysisId,
+  reviewToAnalysisId,
   progressClients,
   localReviewDiffs,
   activeProcesses,
   activeSetups,
   setupProgressClients,
-  getPRKey,
-  getLocalReviewKey,
   getModel,
   determineCompletionInfo,
   broadcastProgress,

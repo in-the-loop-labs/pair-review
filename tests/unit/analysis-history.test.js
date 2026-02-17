@@ -1448,7 +1448,7 @@ describe('AnalysisHistoryManager', () => {
 
       const result = await manager.fetchRuns();
 
-      expect(mockFetch).toHaveBeenCalledWith('/api/analysis-runs/123');
+      expect(mockFetch).toHaveBeenCalledWith('/api/analyses/runs?reviewId=123');
       expect(result).toEqual({ runs: mockRuns, error: null });
     });
 

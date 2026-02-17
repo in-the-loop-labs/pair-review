@@ -147,7 +147,7 @@ class AnalysisHistoryManager {
     }
 
     try {
-      const response = await fetch(`/api/analysis-runs/${this.reviewId}`);
+      const response = await fetch(`/api/analyses/runs?reviewId=${this.reviewId}`);
       if (!response.ok) {
         return { runs: [], error: `HTTP ${response.status}` };
       }

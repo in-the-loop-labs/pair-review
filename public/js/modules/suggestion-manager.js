@@ -714,7 +714,8 @@ class SuggestionManager {
    */
   async collapseAISuggestion(suggestionId, suggestionRow, collapsedText = 'Suggestion adopted', status = 'dismissed') {
     // Update the AI suggestion status via API
-    const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+    const reviewId = this.prManager?.currentPR?.id;
+    const response = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -776,13 +777,12 @@ class SuggestionManager {
     const reviewId = this.prManager?.currentPR?.id;
     const headSha = this.prManager?.currentPR?.head_sha;
 
-    const createResponse = await fetch('/api/user-comment', {
+    const createResponse = await fetch(`/api/reviews/${reviewId}/comments`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        review_id: reviewId,
         file: fileName,
         line_start: parseInt(lineNumber),
         line_end: parseInt(lineNumber),

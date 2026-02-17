@@ -113,50 +113,33 @@ class FileCommentManager {
    */
   _getFileCommentEndpoint(operation, options = {}) {
     const reviewId = this.prManager?.currentPR?.id;
-    const reviewType = this.prManager?.currentPR?.reviewType;
     const headSha = this.prManager?.currentPR?.head_sha;
-    const isLocal = reviewType === 'local';
 
     let endpoint;
     let requestBody = null;
 
     switch (operation) {
       case 'create':
-        endpoint = isLocal
-          ? `/api/local/${reviewId}/file-comment`
-          : '/api/file-comment';
+        endpoint = `/api/reviews/${reviewId}/comments`;
 
-        requestBody = isLocal
-          ? {
-              file: options.file,
-              body: options.body,
-              parent_id: options.parent_id,
-              type: options.type,
-              title: options.title
-            }
-          : {
-              review_id: reviewId,
-              file: options.file,
-              body: options.body,
-              commit_sha: headSha,
-              parent_id: options.parent_id,
-              type: options.type,
-              title: options.title
-            };
+        requestBody = {
+          file: options.file,
+          body: options.body,
+          commit_sha: headSha,
+          parent_id: options.parent_id,
+          type: options.type,
+          title: options.title
+        };
         break;
 
       case 'update':
-        endpoint = isLocal
-          ? `/api/local/${reviewId}/file-comment/${options.commentId}`
-          : `/api/user-comment/${options.commentId}`;
+        endpoint = `/api/reviews/${reviewId}/comments/${options.commentId}`;
 
         requestBody = { body: options.body };
         break;
 
       case 'delete':
-        endpoint = isLocal
-          ? `/api/local/${reviewId}/file-comment/${options.commentId}`
-          : `/api/user-comment/${options.commentId}`;
+        endpoint = `/api/reviews/${reviewId}/comments/${options.commentId}`;
 
         // No body needed for DELETE
         break;
@@ -1094,12 +1077,8 @@ class FileCommentManager {
    */
   _getSuggestionStatusEndpoint(suggestionId) {
     const reviewId = this.prManager?.currentPR?.id;
-    const reviewType = this.prManager?.currentPR?.reviewType;
-    const isLocal = reviewType === 'local';
 
-    return isLocal
-      ? `/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`
-      : `/api/ai-suggestion/${suggestionId}/status`;
+    return `/api/reviews/${reviewId}/suggestions/${suggestionId}/status`;
   }
 
   /**

@@ -318,14 +318,14 @@ async function globalSetup() {
   let analysisHasRun = false;
 
   // Mock AI analysis endpoint - responds with mock suggestions
-  app.post('/api/analyze/:owner/:repo/:pr', (req, res) => {
-    const { owner, repo, pr } = req.params;
+  app.post('/api/pr/:owner/:repo/:number/analyses', (req, res) => {
+    const { owner, repo, number } = req.params;
     analysisId = `test-analysis-${Date.now()}`;
     analysisRunning = true;
     analysisHasRun = true;
 
     const repository = `${owner}/${repo}`;
-    const prNumber = parseInt(pr);
+    const prNumber = parseInt(number);
 
     // Get review record (which is what AnalysisHistoryManager uses)
     let review = db.prepare('SELECT id FROM reviews WHERE pr_number = ? AND repository = ?')
@@ -409,7 +409,7 @@ async function globalSetup() {
   });
 
   // Mock SSE endpoint for analysis progress
-  app.get('/api/pr/:id/ai-suggestions/status', (req, res) => {
+  app.get('/api/analyses/:id/progress', (req, res) => {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -454,7 +454,7 @@ async function globalSetup() {
   });
 
   // Mock analysis status check endpoint
-  app.get('/api/pr/:owner/:repo/:number/analysis-status', (req, res) => {
+  app.get('/api/reviews/:reviewId/analyses/status', (req, res) => {
     if (analysisRunning && analysisId) {
       res.json({
         running: true,
@@ -470,21 +470,64 @@ async function globalSetup() {
     }
   });
 
-  // Mock has-ai-suggestions endpoint
-  app.get('/api/pr/:owner/:repo/:number/has-ai-suggestions', (req, res) => {
-    const { owner, repo, number } = req.params;
+  // Mock suggestions check endpoint (unified)
+  app.get('/api/reviews/:reviewId/suggestions/check', (req, res) => {
+    const { reviewId } = req.params;
     try {
       const result = db.prepare(`
-        SELECT COUNT(*) as count FROM comments c
-        JOIN pr_metadata p ON c.review_id = p.id
-        WHERE p.pr_number = ? AND p.repository = ? AND c.source = 'ai'
-      `).get(parseInt(number), `${owner}/${repo}`);
+        SELECT COUNT(*) as count FROM comments
+        WHERE review_id = ? AND source = 'ai'
+      `).get(parseInt(reviewId));
       res.json({
         hasSuggestions: result?.count > 0,
         analysisHasRun: analysisHasRun || result?.count > 0
       });
     } catch (e) {
       res.json({ hasSuggestions: false, analysisHasRun: false });
+    }
+  });
+
+  // Mock suggestions endpoint (unified)
+  app.get('/api/reviews/:reviewId/suggestions', (req, res) => {
+    const { reviewId } = req.params;
+    try {
+      const rows = db.prepare(`
+        SELECT id, source, author, ai_run_id, ai_level, ai_confidence,
+               file, line_start, line_end, side, type, title, body,
+               reasoning, status, is_file_level, created_at, updated_at
+        FROM comments
+        WHERE review_id = ? AND source = 'ai'
+          AND (ai_level IS NULL)
+          AND status IN ('active', 'dismissed', 'adopted', 'draft', 'submitted')
+          AND (is_raw = 0 OR is_raw IS NULL)
+        ORDER BY is_file_level DESC, file, line_start
+      `).all(parseInt(reviewId));
+
+      const suggestions = rows.map(row => ({
+        ...row,
+        reasoning: row.reasoning ? JSON.parse(row.reasoning) : null
+      }));
+
+      res.json({ suggestions });
+    } catch (e) {
+      res.json({ suggestions: [] });
+    }
+  });
+
+  // Mock suggestion status update endpoint (unified)
+  app.post('/api/reviews/:reviewId/suggestions/:id/status', (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!['adopted', 'dismissed', 'active'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    try {
+      db.prepare('UPDATE comments SET status = ? WHERE id = ?').run(status, parseInt(id));
+      res.json({ success: true, status });
+    } catch (e) {
+      res.status(500).json({ error: 'Failed to update status' });
     }
   });
 
@@ -538,9 +581,9 @@ async function globalSetup() {
   });
 
   // Load API routes
-  const analysisRoutes = require('../../src/routes/analysis');
+  const analysisRoutes = require('../../src/routes/analyses');
   const worktreesRoutes = require('../../src/routes/worktrees');
-  const commentsRoutes = require('../../src/routes/comments');
+  const reviewsRoutes = require('../../src/routes/reviews');
   const configRoutes = require('../../src/routes/config');
   const prRoutes = require('../../src/routes/pr');
   const councilRoutes = require('../../src/routes/councils');
@@ -558,11 +601,15 @@ async function globalSetup() {
       db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC').all(sessionId),
     onDelta: () => () => {},
     onComplete: () => () => {},
-    onToolUse: () => () => {}
+    onToolUse: () => () => {},
+    onStatus: () => () => {},
+    onError: () => () => {},
+    isSessionActive: () => false,
+    abortSession: () => {}
   };
 
   app.use('/', analysisRoutes);
-  app.use('/', commentsRoutes);
+  app.use('/', reviewsRoutes);
   app.use('/', configRoutes);
   app.use('/', worktreesRoutes);
   app.use('/', prRoutes);

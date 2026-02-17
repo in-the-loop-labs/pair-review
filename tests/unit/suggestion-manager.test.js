@@ -25,7 +25,9 @@ const { SuggestionManager } = require('../../public/js/modules/suggestion-manage
  */
 function createTestSuggestionManager() {
   const suggestionManager = Object.create(SuggestionManager.prototype);
-  suggestionManager.prManager = null;
+  suggestionManager.prManager = {
+    currentPR: { id: 'test-review-1' }
+  };
   return suggestionManager;
 }
 
@@ -677,7 +679,7 @@ describe('SuggestionManager.collapseAISuggestion()', () => {
 
     // Verify the API was called with the correct suggestion ID
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/ai-suggestion/2/status',
+      '/api/reviews/test-review-1/suggestions/2/status',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ status: 'adopted' })

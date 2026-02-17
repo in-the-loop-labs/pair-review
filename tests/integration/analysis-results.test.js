@@ -30,7 +30,7 @@ vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test')
 
 const { query, queryOne, run } = require('../../src/database');
 
-const analysisRoutes = require('../../src/routes/analysis');
+const analysisRoutes = require('../../src/routes/analyses');
 
 function createTestApp(db) {
   const app = express();
@@ -47,7 +47,7 @@ function createTestApp(db) {
   return app;
 }
 
-describe('POST /api/analysis-results', () => {
+describe('POST /api/analyses/results', () => {
   let db;
   let app;
 
@@ -67,7 +67,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when no identification pair is provided', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({ suggestions: [] });
 
     expect(response.status).toBe(400);
@@ -76,7 +76,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when both identification pairs are provided', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'abc123',
@@ -91,7 +91,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when path is provided without headSha', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({ path: '/tmp/project', suggestions: [] });
 
     expect(response.status).toBe(400);
@@ -100,7 +100,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when repo is provided without prNumber', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({ repo: 'owner/repo', suggestions: [] });
 
     expect(response.status).toBe(400);
@@ -109,7 +109,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when suggestions is not an array', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'abc123',
@@ -122,7 +122,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when fileLevelSuggestions is not an array', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'abc123',
@@ -136,7 +136,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when a suggestion is missing required fields', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'abc123',
@@ -149,7 +149,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when prNumber is not a positive integer', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({ repo: 'owner/repo', prNumber: -1, suggestions: [] });
     expect(response.status).toBe(400);
     expect(response.body.error).toContain('Invalid pull request number');
@@ -157,7 +157,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when prNumber is zero', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({ repo: 'owner/repo', prNumber: 0, suggestions: [] });
     expect(response.status).toBe(400);
     expect(response.body.error).toContain('Invalid pull request number');
@@ -165,7 +165,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when prNumber is not a number', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({ repo: 'owner/repo', prNumber: 'abc', suggestions: [] });
     expect(response.status).toBe(400);
     expect(response.body.error).toContain('Invalid pull request number');
@@ -173,7 +173,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should return 400 when a file-level suggestion is missing required fields', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'abc123',
@@ -189,7 +189,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should create analysis run and suggestions for local mode', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/my-project',
         headSha: 'abc123def',
@@ -275,7 +275,7 @@ describe('POST /api/analysis-results', () => {
     `, [42, 'owner/repo']);
 
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         repo: 'owner/repo',
         prNumber: 42,
@@ -308,7 +308,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should create a new review for PR mode if none exists', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         repo: 'owner/repo',
         prNumber: 99,
@@ -330,7 +330,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should create a run with zero suggestions', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/empty-project',
         headSha: 'deadbeef',
@@ -351,7 +351,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should map OLD to LEFT and NEW to RIGHT', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'sha1',
@@ -387,7 +387,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should store file-level suggestions with is_file_level=1 and null line numbers', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'sha2',
@@ -419,7 +419,7 @@ describe('POST /api/analysis-results', () => {
   it('should store summary on the analysis_run record', async () => {
     const summary = 'This PR introduces 3 new utility functions. Overall quality is high.';
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'sha3',
@@ -442,7 +442,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should format suggestion body with description and suggestion text', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'sha4',
@@ -464,7 +464,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should format suggestion body without suggestion text when absent', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'sha5',
@@ -487,7 +487,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should handle both line-level and file-level suggestions in one request', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'sha6',
@@ -526,7 +526,7 @@ describe('POST /api/analysis-results', () => {
 
   it('should normalize line to line_start/line_end', async () => {
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/project',
         headSha: 'sha-norm',
@@ -557,8 +557,8 @@ describe('POST /api/analysis-results', () => {
       ]
     };
 
-    const first = await request(app).post('/api/analysis-results').send(payload);
-    const second = await request(app).post('/api/analysis-results').send(payload);
+    const first = await request(app).post('/api/analyses/results').send(payload);
+    const second = await request(app).post('/api/analyses/results').send(payload);
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
@@ -569,13 +569,13 @@ describe('POST /api/analysis-results', () => {
 
   // --- SSE broadcast on review-level key ---
 
-  it('should broadcast on local-${reviewId} key for local mode', async () => {
+  it('should broadcast on review-${reviewId} key for local mode', async () => {
     const { progressClients } = require('../../src/routes/shared');
 
     // We'll capture messages by registering a fake SSE client before the request
     // First, make the request to discover the reviewId
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/sse-project',
         headSha: 'ssesha1',
@@ -591,11 +591,11 @@ describe('POST /api/analysis-results', () => {
     // Now register a fake client and make a second request to verify broadcast
     const messages = [];
     const fakeClient = { write: (msg) => messages.push(msg) };
-    const key = `local-${reviewId}`;
+    const key = `review-${reviewId}`;
     progressClients.set(key, new Set([fakeClient]));
 
     const response2 = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         path: '/tmp/sse-project',
         headSha: 'ssesha1',
@@ -622,7 +622,7 @@ describe('POST /api/analysis-results', () => {
 
     // First request to discover reviewId
     const response = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         repo: 'owner/repo',
         prNumber: 77,
@@ -642,7 +642,7 @@ describe('POST /api/analysis-results', () => {
     progressClients.set(key, new Set([fakeClient]));
 
     const response2 = await request(app)
-      .post('/api/analysis-results')
+      .post('/api/analyses/results')
       .send({
         repo: 'owner/repo',
         prNumber: 77,

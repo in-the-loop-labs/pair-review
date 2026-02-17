@@ -63,7 +63,7 @@ async function triggerAnalysisAndWait(page) {
 async function seedAISuggestions(page) {
   // Make a direct POST request to trigger analysis and verify success
   const result = await page.evaluate(async () => {
-    const response = await fetch('/api/analyze/test-owner/test-repo/1', {
+    const response = await fetch('/api/pr/test-owner/test-repo/1/analyses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
@@ -81,7 +81,9 @@ async function seedAISuggestions(page) {
   // Wait for analysis to complete by polling the status endpoint
   await page.waitForFunction(
     async () => {
-      const response = await fetch('/api/pr/test-owner/test-repo/1/analysis-status');
+      const reviewId = window.prManager?.currentPR?.id;
+      if (!reviewId) return false;
+      const response = await fetch(`/api/reviews/${reviewId}/analyses/status`);
       const status = await response.json();
       return !status.running;
     },
@@ -1147,7 +1149,7 @@ test.describe('API Integration', () => {
 
     // Set up response listener
     const responsePromise = page.waitForResponse(
-      response => response.url().includes('/api/analyze/') && response.status() === 200,
+      response => response.url().includes('/api/pr/test-owner/test-repo/1/analyses') && response.status() === 200,
       { timeout: 10000 }
     );
 
@@ -1168,7 +1170,7 @@ test.describe('API Integration', () => {
 
     // Set up response listener for suggestions endpoint
     const responsePromise = page.waitForResponse(
-      response => response.url().includes('/ai-suggestions') && response.status() === 200,
+      response => response.url().includes('/suggestions') && !response.url().includes('/check') && response.status() === 200,
       { timeout: 10000 }
     );
 

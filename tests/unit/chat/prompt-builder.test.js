@@ -46,6 +46,42 @@ describe('buildChatPrompt', () => {
     });
   });
 
+  describe('reviewId in prompt', () => {
+    it('should include reviewId in prompt when review has an id', () => {
+      const prompt = buildChatPrompt({
+        review: { id: 42, repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).toContain('The review ID for this session is: 42');
+      expect(prompt).toContain('/api/reviews/42/comments');
+    });
+
+    it('should not include reviewId section when review has no id', () => {
+      const prompt = buildChatPrompt({
+        review: { repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).not.toContain('The review ID for this session is');
+    });
+
+    it('should not include reviewId section when review is null', () => {
+      const prompt = buildChatPrompt({ review: null });
+
+      expect(prompt).not.toContain('The review ID for this session is');
+    });
+  });
+
+  describe('port not in system prompt', () => {
+    it('should not include a localhost URL with port in the system prompt', () => {
+      const prompt = buildChatPrompt({
+        review: { id: 1, repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).not.toMatch(/http:\/\/localhost:\d+/);
+      expect(prompt).toContain('server port is provided once at the start of each session');
+    });
+  });
+
   describe('general prompt structure', () => {
     it('should always include role and instructions', () => {
       const prompt = buildChatPrompt({
@@ -66,6 +102,15 @@ describe('buildChatPrompt', () => {
       expect(prompt).not.toContain('specific suggestion');
       expect(prompt).not.toContain('Relevant diff');
       expect(prompt).not.toContain('AI analysis has been run');
+    });
+
+    it('should include API capability section', () => {
+      const prompt = buildChatPrompt({
+        review: { id: 5, repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).toContain('pair-review API');
+      expect(prompt).toContain('pair-review-api skill');
     });
   });
 });
@@ -244,30 +289,8 @@ describe('buildInitialContext', () => {
     });
   });
 
-  describe('with port', () => {
-    it('should include server URL when port is provided', () => {
-      const context = buildInitialContext({ suggestions: [], port: 7247 });
-
-      expect(context).toContain('http://localhost:7247');
-    });
-
-    it('should place server URL before suggestions', () => {
-      const suggestions = [
-        {
-          id: 1, file: 'a.js', line_start: 1, type: 'bug',
-          title: 'Bug A', body: 'Body A', reasoning: null,
-          status: 'active', ai_confidence: 0.5, is_file_level: 0
-        }
-      ];
-
-      const context = buildInitialContext({ suggestions, port: 9000 });
-
-      const portIndex = context.indexOf('http://localhost:9000');
-      const suggestionsIndex = context.indexOf('AI suggestion');
-      expect(portIndex).toBeLessThan(suggestionsIndex);
-    });
-
-    it('should not include server URL when port is not provided', () => {
+  describe('port not included (injected at session start by chat route)', () => {
+    it('should not include server URL even when suggestions are present', () => {
       const context = buildInitialContext({
         suggestions: [{
           id: 1, file: 'a.js', line_start: 1, type: 'bug',

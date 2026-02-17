@@ -380,13 +380,12 @@ class CommentManager {
       const reviewId = this.prManager?.currentPR?.id;
       const headSha = this.prManager?.currentPR?.head_sha;
 
-      const response = await fetch('/api/user-comment', {
+      const response = await fetch(`/api/reviews/${reviewId}/comments`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          review_id: reviewId,
           file: fileName,
           line_start: lineNumber,
           line_end: endLineNumber,

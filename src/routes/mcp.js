@@ -13,9 +13,7 @@ const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
 const {
   activeAnalyses,
-  prToAnalysisId,
-  localReviewToAnalysisId,
-  getLocalReviewKey,
+  reviewToAnalysisId,
   determineCompletionInfo,
   broadcastProgress,
   createProgressCallback
@@ -443,10 +441,9 @@ function createMCPServer(db, options = {}) {
         .describe('Analysis tier: fast (surface), balanced (standard), or thorough (deep)'),
     },
     async (args) => {
-      // Track analysisId and key for cleanup in catch block (must be outside try scope)
+      // Track analysisId and reviewId for cleanup in catch block (must be outside try scope)
       let analysisId = null;
-      let trackingKey = null;
-      let trackingMap = null;
+      let trackingReviewId = null;
 
       try {
         const reviewRepo = new ReviewRepository(db);
@@ -514,8 +511,7 @@ function createMCPServer(db, options = {}) {
           });
 
           // Concurrent analysis guard: check if one is already running
-          const reviewKey = getLocalReviewKey(reviewId);
-          const existingAnalysisId = localReviewToAnalysisId.get(reviewKey);
+          const existingAnalysisId = reviewToAnalysisId.get(reviewId);
           if (existingAnalysisId && activeAnalyses.get(existingAnalysisId)?.status === 'running') {
             return {
               content: [{
@@ -540,8 +536,7 @@ function createMCPServer(db, options = {}) {
           // Create unified run/analysis ID and DB record immediately
           const runId = uuidv4();
           analysisId = runId;
-          trackingKey = reviewKey;
-          trackingMap = localReviewToAnalysisId;
+          trackingReviewId = reviewId;
 
           const requestInstructions = args.customInstructions?.trim() || null;
           const repoInstructions = repoSettings?.default_instructions || null;
@@ -566,8 +561,8 @@ function createMCPServer(db, options = {}) {
           };
           activeAnalyses.set(analysisId, initialStatus);
 
-          // Store local review to analysis ID mapping
-          localReviewToAnalysisId.set(reviewKey, analysisId);
+          // Store review to analysis ID mapping (unified map)
+          reviewToAnalysisId.set(reviewId, analysisId);
 
           broadcastProgress(analysisId, initialStatus);
 
@@ -618,7 +613,7 @@ function createMCPServer(db, options = {}) {
             }))
             .catch(error => handleAnalysisFailure(analysisId, error, `local review #${reviewId}`))
             .finally(() => {
-              localReviewToAnalysisId.delete(reviewKey);
+              reviewToAnalysisId.delete(reviewId);
             });
 
           return {
@@ -645,18 +640,16 @@ function createMCPServer(db, options = {}) {
           const repository = normalizeRepository(owner, repo);
 
           // Concurrent analysis guard: check if one is already running
-          // Use normalized repository to ensure case-insensitive matching
-          const prKey = `${repository}/${prNumber}`;
-          const existingAnalysisId = prToAnalysisId.get(prKey);
+          // First need the review to get the integer reviewId for the unified map
+          const existingReviewForGuard = await reviewRepo.getReviewByPR(prNumber, repository);
+          const existingAnalysisId = existingReviewForGuard ? reviewToAnalysisId.get(existingReviewForGuard.id) : null;
           if (existingAnalysisId && activeAnalyses.get(existingAnalysisId)?.status === 'running') {
-            // Look up the review to return its ID
-            const existingReview = await reviewRepo.getReviewByPR(prNumber, repository);
             return {
               content: [{
                 type: 'text',
                 text: JSON.stringify({
                   analysisId: existingAnalysisId,
-                  reviewId: existingReview?.id || null,
+                  reviewId: existingReviewForGuard?.id || null,
                   status: 'already_running',
                   message: 'An analysis is already running for this PR'
                 }, null, 2)
@@ -689,8 +682,7 @@ function createMCPServer(db, options = {}) {
           // Create unified run/analysis ID and DB record immediately
           const runId = uuidv4();
           analysisId = runId;
-          trackingKey = prKey;
-          trackingMap = prToAnalysisId;
+          trackingReviewId = review.id;
 
           // Save custom instructions if provided
           const requestInstructions = args.customInstructions?.trim() || null;
@@ -702,6 +694,7 @@ function createMCPServer(db, options = {}) {
 
           const initialStatus = {
             id: analysisId,
+            reviewId: review.id,
             prNumber,
             repository,
             reviewType: 'pr',
@@ -719,7 +712,7 @@ function createMCPServer(db, options = {}) {
           };
           activeAnalyses.set(analysisId, initialStatus);
 
-          prToAnalysisId.set(prKey, analysisId);
+          reviewToAnalysisId.set(review.id, analysisId);
 
           broadcastProgress(analysisId, initialStatus);
 
@@ -752,7 +745,7 @@ function createMCPServer(db, options = {}) {
             }))
             .catch(error => handleAnalysisFailure(analysisId, error, `PR #${prNumber}`))
             .finally(() => {
-              prToAnalysisId.delete(prKey);
+              reviewToAnalysisId.delete(review.id);
             });
 
           return {
@@ -790,8 +783,8 @@ function createMCPServer(db, options = {}) {
             await analysisRunRepo.update(analysisId, { status: 'failed' });
           } catch (_) { /* record may not exist yet */ }
         }
-        if (trackingKey && trackingMap) {
-          trackingMap.delete(trackingKey);
+        if (trackingReviewId != null) {
+          reviewToAnalysisId.delete(trackingReviewId);
         }
 
         logger.error(`MCP start_analysis error: ${error.message}`);

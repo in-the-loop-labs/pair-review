@@ -12,12 +12,13 @@ const logger = require('../utils/logger');
 /**
  * Build a lean system prompt for chat sessions.
  * Contains only role, review context, and behavioral instructions.
+ * The port is NOT included here because it can change between server restarts;
+ * it is injected once per session via the initial context instead.
  * @param {Object} options
- * @param {Object} options.review - Review metadata {pr_number, repository, review_type, local_path, name}
- * @param {number} [options.port] - The port the pair-review web server is running on
+ * @param {Object} options.review - Review metadata {id, pr_number, repository, review_type, local_path, name}
  * @returns {string} System prompt for the chat agent
  */
-function buildChatPrompt({ review, port }) {
+function buildChatPrompt({ review }) {
   const sections = [];
 
   // Role
@@ -26,13 +27,19 @@ function buildChatPrompt({ review, port }) {
   // Review context
   sections.push(buildReviewContext(review));
 
-  // API capability
-  if (port) {
+  // Review ID (stable for the session lifetime, used in API URLs)
+  if (review && review.id) {
     sections.push(
-      `You can interact with the pair-review API at http://localhost:${port} to take actions on this review. ` +
-      'Use the pair-review-api skill for endpoint details. You can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.'
+      `The review ID for this session is: ${review.id}. Use this in API calls like /api/reviews/${review.id}/comments.`
     );
   }
+
+  // API capability (port is injected once in the initial context at session start, not here)
+  sections.push(
+    'You can interact with the pair-review API to take actions on this review. ' +
+    'The server port is provided once at the start of each session in the initial context. ' +
+    'Use the pair-review-api skill for endpoint details. You can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.'
+  );
 
   // Instructions
   sections.push(
@@ -114,15 +121,10 @@ function formatSuggestionForContext(s) {
  * @param {Object} options
  * @param {Array} options.suggestions - All AI suggestions from the latest run
  * @param {Object} [options.focusedSuggestion] - The specific suggestion that triggered chat (full DB row)
- * @param {number} [options.port] - The port the pair-review web server is running on
  * @returns {string|null} Context text to prepend to first message, or null if no context
  */
-function buildInitialContext({ suggestions, focusedSuggestion, port }) {
+function buildInitialContext({ suggestions, focusedSuggestion }) {
   const sections = [];
-
-  if (port) {
-    sections.push(`The pair-review web server is running at http://localhost:${port}`);
-  }
 
   if (suggestions && suggestions.length > 0) {
     const formatted = suggestions.map(formatSuggestionForContext);

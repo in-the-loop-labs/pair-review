@@ -249,9 +249,9 @@ async function startServer(sharedDb = null) {
     // API routes - split into focused modules
     // Order matters: more specific routes must be mounted before general ones
     // to ensure proper route matching
-    const analysisRoutes = require('./routes/analysis');
+    const analysisRoutes = require('./routes/analyses');
     const worktreesRoutes = require('./routes/worktrees');
-    const commentsRoutes = require('./routes/comments');
+    const reviewsRoutes = require('./routes/reviews');
     const configRoutes = require('./routes/config');
     const prRoutes = require('./routes/pr');
     const localRoutes = require('./routes/local');
@@ -269,7 +269,7 @@ async function startServer(sharedDb = null) {
     app.use('/', chatRoutes);
     app.use('/', analysisRoutes);
     app.use('/', councilRoutes);
-    app.use('/', commentsRoutes);
+    app.use('/', reviewsRoutes);
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);
     app.use('/', localRoutes);

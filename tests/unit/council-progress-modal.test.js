@@ -106,8 +106,6 @@ function createTestCouncilProgressModal() {
   modal.isRunningInBackground = false;
   modal.councilConfig = null;
   modal._voiceStates = {};
-  modal._useLocalEndpoint = false;
-  modal._localReviewId = null;
 
   return { modal, modalContainer };
 }
