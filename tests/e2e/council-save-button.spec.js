@@ -52,7 +52,7 @@ async function openConfigModalTab(page, tabId) {
 // Valid voice-centric council config
 const voiceCouncilConfig = {
   voices: [
-    { provider: 'claude', model: 'sonnet', role: 'Reviewer' }
+    { provider: 'claude', model: 'sonnet-4.6', role: 'Reviewer' }
   ],
   levels: { 1: true, 2: true, 3: false }
 };
@@ -60,8 +60,8 @@ const voiceCouncilConfig = {
 // Valid advanced (level-centric) council config
 const advancedCouncilConfig = {
   levels: {
-    1: { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] },
-    2: { enabled: true, voices: [{ provider: 'claude', model: 'sonnet' }] },
+    1: { enabled: true, voices: [{ provider: 'claude', model: 'sonnet-4.6' }] },
+    2: { enabled: true, voices: [{ provider: 'claude', model: 'sonnet-4.6' }] },
     3: { enabled: false, voices: [] }
   }
 };

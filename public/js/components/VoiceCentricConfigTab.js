@@ -860,11 +860,11 @@ class VoiceCentricConfigTab {
     const orchCustomInstructions = orchInstrInput?.value?.trim() || undefined;
     const consolidation = orchRow ? {
       provider: orchRow.querySelector('.voice-provider')?.value || 'claude',
-      model: orchRow.querySelector('.voice-model')?.value || 'sonnet',
+      model: orchRow.querySelector('.voice-model')?.value || 'sonnet-4.6',
       tier: orchRow.querySelector('.voice-tier')?.value || 'balanced',
       timeout: orchTimeout,
       ...(orchCustomInstructions ? { customInstructions: orchCustomInstructions } : {})
-    } : { provider: 'claude', model: 'sonnet', tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT };
+    } : { provider: 'claude', model: 'sonnet-4.6', tier: 'balanced', timeout: VoiceCentricConfigTab.DEFAULT_TIMEOUT };
 
     return { voices, levels, consolidation };
   }

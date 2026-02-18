@@ -30,23 +30,24 @@ const CLAUDE_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
-    id: 'sonnet',
+    id: 'sonnet-4.5',
+    cli_model: 'claude-sonnet-4.5',
     name: 'Sonnet 4.5',
+    tier: 'balanced',
+    tagline: 'Previous Gen',
+    description: 'Sonnet 4.5 — previous generation balanced model',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-balanced'
+  },
+  {
+    id: 'sonnet-4.6',
+    cli_model: 'claude-sonnet-4-6',
+    name: 'Sonnet 4.6',
     tier: 'balanced',
     tagline: 'Best Balance',
     description: 'Recommended for most reviews',
     badge: 'Standard',
     badgeClass: 'badge-recommended'
-  },
-  {
-    id: 'opus-4.5',
-    cli_model: 'claude-opus-4-5-20251101',
-    name: 'Opus 4.5',
-    tier: 'balanced',
-    tagline: 'Deep Thinker',
-    description: 'Extended thinking for complex analysis',
-    badge: 'Previous Gen',
-    badgeClass: 'badge-power'
   },
   {
     id: 'opus-4.6-low',
@@ -90,6 +91,16 @@ const CLAUDE_MODELS = [
     tagline: 'Extended Context',
     description: 'Opus 4.6 high effort with 1M token context window',
     badge: 'More Context',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'opus-4.5',
+    cli_model: 'claude-opus-4-5-20251101',
+    name: 'Opus 4.5',
+    tier: 'thorough',
+    tagline: 'Deep Thinker',
+    description: 'Extended thinking for complex analysis',
+    badge: 'Previous Gen',
     badgeClass: 'badge-power'
   }
 ];
