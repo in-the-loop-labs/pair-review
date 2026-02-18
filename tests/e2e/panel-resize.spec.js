@@ -7,7 +7,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { waitForDiffToRender } from './helpers.js';
+import { waitForDiffToRender, dragResizeHandle } from './helpers.js';
 
 test.describe('Panel Resize - PR Mode', () => {
   test.beforeEach(async ({ page }) => {
@@ -146,21 +146,9 @@ test.describe('Panel Resize - PR Mode', () => {
       // Get initial width
       const initialWidth = await aiPanel.evaluate(el => el.offsetWidth);
 
-      // Get handle position
-      const handleBox = await resizeHandle.boundingBox();
-      expect(handleBox).not.toBeNull();
-
       // Drag the handle 100px to the left (increases AI panel width)
       // For AI panel (right side), dragging left increases width
-      const startX = handleBox.x + handleBox.width / 2;
-      const startY = handleBox.y + handleBox.height / 2;
-      await page.mouse.move(startX, startY);
-      await page.mouse.down();
-      // Move in small increments to ensure mousemove events fire
-      for (let i = 1; i <= 10; i++) {
-        await page.mouse.move(startX - (i * 10), startY);
-      }
-      await page.mouse.up();
+      await dragResizeHandle(page, resizeHandle, -100);
 
       // Verify width increased
       const newWidth = await aiPanel.evaluate(el => el.offsetWidth);
@@ -174,15 +162,8 @@ test.describe('Panel Resize - PR Mode', () => {
       // Get initial width (may vary based on viewport/media queries)
       const initialWidth = await aiPanel.evaluate(el => el.offsetWidth);
 
-      // Get handle position
-      const handleBox = await resizeHandle.boundingBox();
-      expect(handleBox).not.toBeNull();
-
       // Drag the handle 30px to the left (increase width)
-      await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(handleBox.x - 30, handleBox.y + handleBox.height / 2);
-      await page.mouse.up();
+      await dragResizeHandle(page, resizeHandle, -30);
 
       // Check localStorage
       const savedWidth = await page.evaluate(() => localStorage.getItem('ai-panel-width'));
@@ -195,15 +176,8 @@ test.describe('Panel Resize - PR Mode', () => {
       const aiPanel = page.locator('#ai-panel');
       const resizeHandle = page.locator('.resize-handle[data-panel="ai-panel"]');
 
-      // Get handle position
-      const handleBox = await resizeHandle.boundingBox();
-      expect(handleBox).not.toBeNull();
-
       // Drag the handle 200px to the right (way past minimum)
-      await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(handleBox.x + 200, handleBox.y + handleBox.height / 2);
-      await page.mouse.up();
+      await dragResizeHandle(page, resizeHandle, 200);
 
       // Verify width is at minimum (200px)
       const newWidth = await aiPanel.evaluate(el => el.offsetWidth);
@@ -214,15 +188,8 @@ test.describe('Panel Resize - PR Mode', () => {
       const aiPanel = page.locator('#ai-panel');
       const resizeHandle = page.locator('.resize-handle[data-panel="ai-panel"]');
 
-      // Get handle position
-      const handleBox = await resizeHandle.boundingBox();
-      expect(handleBox).not.toBeNull();
-
       // Drag the handle 400px to the left (way past maximum)
-      await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(handleBox.x - 400, handleBox.y + handleBox.height / 2);
-      await page.mouse.up();
+      await dragResizeHandle(page, resizeHandle, -400);
 
       // Verify width is at maximum (600px)
       const newWidth = await aiPanel.evaluate(el => el.offsetWidth);
