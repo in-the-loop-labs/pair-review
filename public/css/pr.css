@@ -6540,6 +6540,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   overflow: visible;
   flex-shrink: 0;
   transition: width var(--transition-default), opacity var(--transition-default);
+  position: relative; /* Needed for absolute resize-handle positioning (see "Resize Handles" section below) */
 }
 
 .ai-panel.collapsed {
@@ -6580,8 +6581,18 @@ body:not([data-theme="dark"]) .theme-icon-light {
   position: relative;
 }
 
-.ai-panel {
+/* Ensure AI panel content children stack below the resize handle.
+   overflow-y:auto on children like .findings-summary creates implicit stacking
+   contexts that can paint over the absolutely-positioned resize-handle (z-index:10).
+   Explicitly place content children at z-index:1 so the handle stays on top. */
+.ai-panel > *:not(.resize-handle) {
   position: relative;
+  z-index: 1;
+}
+
+/* Dropdown must overlay sibling panel sections */
+.ai-panel > .analysis-context {
+  z-index: 2;
 }
 
 /* Prevent text selection during drag */
