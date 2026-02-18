@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.1
+
+### Patch Changes
+
+- c9d8788: Fix council config immediately showing as dirty when selecting a saved council from the dropdown
+
 ## 1.6.0
 
 ### Minor Changes
