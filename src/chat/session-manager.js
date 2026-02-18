@@ -7,11 +7,14 @@
  * and event dispatch (delta, complete, tool_use) to registered listeners.
  */
 
+const fs = require('fs');
 const path = require('path');
 const PiBridge = require('./pi-bridge');
 const logger = require('../utils/logger');
 
 const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
+
+const CHAT_TOOLS = 'read,bash,grep,find,ls';
 
 class ChatSessionManager {
   /**
@@ -57,7 +60,7 @@ class ChatSessionManager {
       model,
       cwd,
       systemPrompt,
-      tools: 'read,bash,grep,find,ls',
+      tools: CHAT_TOOLS,
       skills: [pairReviewSkillPath]
     });
 
@@ -73,96 +76,7 @@ class ChatSessionManager {
     this._sessions.set(sessionId, { bridge, listeners, initialContext: initialContext || null });
 
     // Wire up bridge events
-    bridge.on('delta', (data) => {
-      for (const cb of listeners.delta) {
-        try {
-          cb(data);
-        } catch (err) {
-          logger.error(`[ChatSession] Delta listener error: ${err.message}`);
-        }
-      }
-    });
-
-    bridge.on('complete', (data) => {
-      logger.debug(`[ChatSession] Session ${sessionId} complete: ${(data.fullText || '').length} chars, ${listeners.complete.size} listener(s)`);
-      // Store assistant message in DB
-      const fullText = data.fullText || '';
-      let messageId = null;
-      if (fullText) {
-        try {
-          const msgStmt = this._db.prepare(`
-            INSERT INTO chat_messages (session_id, role, type, content)
-            VALUES (?, 'assistant', 'message', ?)
-          `);
-          const msgResult = msgStmt.run(sessionId, fullText);
-          messageId = Number(msgResult.lastInsertRowid);
-        } catch (err) {
-          logger.error(`[ChatSession] Failed to store assistant message: ${err.message}`);
-        }
-      }
-
-      for (const cb of listeners.complete) {
-        try {
-          cb({ fullText, messageId });
-        } catch (err) {
-          logger.error(`[ChatSession] Complete listener error: ${err.message}`);
-        }
-      }
-    });
-
-    bridge.on('tool_use', (data) => {
-      for (const cb of listeners.toolUse) {
-        try {
-          cb(data);
-        } catch (err) {
-          logger.error(`[ChatSession] ToolUse listener error: ${err.message}`);
-        }
-      }
-    });
-
-    bridge.on('status', (data) => {
-      for (const cb of listeners.status) {
-        try {
-          cb(data);
-        } catch (err) {
-          logger.error(`[ChatSession] Status listener error: ${err.message}`);
-        }
-      }
-    });
-
-    bridge.on('error', (data) => {
-      logger.error(`[ChatSession] Bridge error for session ${sessionId}: ${data.error?.message || 'unknown'}`);
-      for (const cb of listeners.error) {
-        try {
-          cb({ message: data.error?.message || 'Agent encountered an error' });
-        } catch (err) {
-          logger.error(`[ChatSession] Error listener error: ${err.message}`);
-        }
-      }
-    });
-
-    bridge.on('close', () => {
-      // If the bridge closes unexpectedly (not via closeSession), update DB
-      if (this._sessions.has(sessionId)) {
-        for (const cb of listeners.error) {
-          try {
-            cb({ message: 'Agent process ended unexpectedly' });
-          } catch (err) {
-            logger.error(`[ChatSession] Error listener error: ${err.message}`);
-          }
-        }
-        try {
-          this._db.prepare(`
-            UPDATE chat_sessions SET status = 'closed', updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND status = 'active'
-          `).run(sessionId);
-        } catch (err) {
-          logger.error(`[ChatSession] Failed to update session status on close: ${err.message}`);
-        }
-        this._sessions.delete(sessionId);
-        logger.warn(`[ChatSession] Session ${sessionId} closed unexpectedly`);
-      }
-    });
+    this._wireBridgeEvents(sessionId, bridge, listeners);
 
     // Start the bridge process
     try {
@@ -419,6 +333,228 @@ class ChatSessionManager {
     return this._db.prepare(
       'SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id ASC'
     ).all(sessionId);
+  }
+
+  /**
+   * Resume a previously closed chat session by re-spawning the Pi bridge
+   * with the stored session file path.
+   * @param {number} sessionId
+   * @param {Object} options
+   * @param {string} [options.systemPrompt] - System prompt text
+   * @param {string} [options.cwd] - Working directory for agent
+   * @returns {Promise<{id: number, status: string}>}
+   */
+  async resumeSession(sessionId, { systemPrompt, cwd } = {}) {
+    // Already active — return immediately
+    if (this._sessions.has(sessionId)) {
+      return { id: sessionId, status: 'active' };
+    }
+
+    // Load session row from DB
+    const row = this._db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(sessionId);
+    if (!row) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+
+    if (!row.agent_session_id) {
+      throw new Error(`Session ${sessionId} has no session file — cannot resume`);
+    }
+
+    // Verify file exists on disk
+    if (!fs.existsSync(row.agent_session_id)) {
+      // Null out the stale path
+      this._db.prepare('UPDATE chat_sessions SET agent_session_id = NULL WHERE id = ?').run(sessionId);
+      throw new Error(`Session file not found on disk: ${row.agent_session_id}`);
+    }
+
+    logger.info(`[ChatSession] Resuming session ${sessionId} from ${row.agent_session_id}`);
+
+    // Create bridge with session path for resumption
+    const bridge = new PiBridge({
+      provider: row.provider,
+      model: row.model,
+      cwd,
+      systemPrompt,
+      tools: CHAT_TOOLS,
+      skills: [pairReviewSkillPath],
+      sessionPath: row.agent_session_id
+    });
+
+    const listeners = {
+      delta: new Set(),
+      complete: new Set(),
+      toolUse: new Set(),
+      status: new Set(),
+      error: new Set()
+    };
+
+    this._sessions.set(sessionId, { bridge, listeners, initialContext: null });
+    this._wireBridgeEvents(sessionId, bridge, listeners);
+
+    // Start the bridge process
+    try {
+      await bridge.start();
+    } catch (err) {
+      this._sessions.delete(sessionId);
+      this._db.prepare(`
+        UPDATE chat_sessions SET status = 'error', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(sessionId);
+      logger.error(`[ChatSession] Failed to resume bridge for session ${sessionId}: ${err.message}`);
+      throw err;
+    }
+
+    // Update DB status back to active
+    this._db.prepare(`
+      UPDATE chat_sessions SET status = 'active', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(sessionId);
+
+    logger.info(`[ChatSession] Session ${sessionId} resumed`);
+    return { id: sessionId, status: 'active' };
+  }
+
+  /**
+   * Get the most recently updated session for a review.
+   * @param {number} reviewId
+   * @returns {Object|null}
+   */
+  getMRUSession(reviewId) {
+    return this._db.prepare(
+      'SELECT * FROM chat_sessions WHERE review_id = ? ORDER BY updated_at DESC LIMIT 1'
+    ).get(reviewId) || null;
+  }
+
+  /**
+   * Get sessions for a review with message counts (for session list UI).
+   * @param {number} reviewId
+   * @returns {Array<Object>}
+   */
+  getSessionsWithMessageCount(reviewId) {
+    return this._db.prepare(`
+      SELECT s.*, COUNT(m.id) AS message_count
+      FROM chat_sessions s
+      LEFT JOIN chat_messages m ON m.session_id = s.id AND m.type = 'message'
+      WHERE s.review_id = ?
+      GROUP BY s.id
+      ORDER BY s.updated_at DESC
+    `).all(reviewId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private methods
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Wire up bridge event handlers that dispatch to the session's listener sets
+   * and handle DB persistence (e.g., storing assistant messages on completion).
+   * @param {number} sessionId
+   * @param {PiBridge} bridge
+   * @param {Object} listeners - Listener sets keyed by event type
+   */
+  _wireBridgeEvents(sessionId, bridge, listeners) {
+    bridge.on('delta', (data) => {
+      for (const cb of listeners.delta) {
+        try {
+          cb(data);
+        } catch (err) {
+          logger.error(`[ChatSession] Delta listener error: ${err.message}`);
+        }
+      }
+    });
+
+    bridge.on('complete', (data) => {
+      logger.debug(`[ChatSession] Session ${sessionId} complete: ${(data.fullText || '').length} chars, ${listeners.complete.size} listener(s)`);
+      // Store assistant message in DB
+      const fullText = data.fullText || '';
+      let messageId = null;
+      if (fullText) {
+        try {
+          const msgStmt = this._db.prepare(`
+            INSERT INTO chat_messages (session_id, role, type, content)
+            VALUES (?, 'assistant', 'message', ?)
+          `);
+          const msgResult = msgStmt.run(sessionId, fullText);
+          messageId = Number(msgResult.lastInsertRowid);
+        } catch (err) {
+          logger.error(`[ChatSession] Failed to store assistant message: ${err.message}`);
+        }
+      }
+
+      for (const cb of listeners.complete) {
+        try {
+          cb({ fullText, messageId });
+        } catch (err) {
+          logger.error(`[ChatSession] Complete listener error: ${err.message}`);
+        }
+      }
+    });
+
+    bridge.on('tool_use', (data) => {
+      for (const cb of listeners.toolUse) {
+        try {
+          cb(data);
+        } catch (err) {
+          logger.error(`[ChatSession] ToolUse listener error: ${err.message}`);
+        }
+      }
+    });
+
+    bridge.on('status', (data) => {
+      for (const cb of listeners.status) {
+        try {
+          cb(data);
+        } catch (err) {
+          logger.error(`[ChatSession] Status listener error: ${err.message}`);
+        }
+      }
+    });
+
+    bridge.on('error', (data) => {
+      logger.error(`[ChatSession] Bridge error for session ${sessionId}: ${data.error?.message || 'unknown'}`);
+      for (const cb of listeners.error) {
+        try {
+          cb({ message: data.error?.message || 'Agent encountered an error' });
+        } catch (err) {
+          logger.error(`[ChatSession] Error listener error: ${err.message}`);
+        }
+      }
+    });
+
+    bridge.on('close', () => {
+      // If the bridge closes unexpectedly (not via closeSession), update DB
+      if (this._sessions.has(sessionId)) {
+        for (const cb of listeners.error) {
+          try {
+            cb({ message: 'Agent process ended unexpectedly' });
+          } catch (err) {
+            logger.error(`[ChatSession] Error listener error: ${err.message}`);
+          }
+        }
+        try {
+          this._db.prepare(`
+            UPDATE chat_sessions SET status = 'closed', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND status = 'active'
+          `).run(sessionId);
+        } catch (err) {
+          logger.error(`[ChatSession] Failed to update session status on close: ${err.message}`);
+        }
+        this._sessions.delete(sessionId);
+        logger.warn(`[ChatSession] Session ${sessionId} closed unexpectedly`);
+      }
+    });
+
+    bridge.on('session', (event) => {
+      if (event.sessionFile) {
+        try {
+          this._db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?')
+            .run(event.sessionFile, sessionId);
+          logger.info(`[ChatSession] Session ${sessionId} session file: ${event.sessionFile}`);
+        } catch (err) {
+          logger.warn(`[ChatSession] Failed to store session file: ${err.message}`);
+        }
+      }
+    });
   }
 
   /**

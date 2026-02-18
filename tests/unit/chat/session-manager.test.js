@@ -531,6 +531,143 @@ describe('ChatSessionManager', () => {
     });
   });
 
+  describe('resumeSession', () => {
+    it('should return immediately if session is already active', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const result = await manager.resumeSession(session.id);
+      expect(result).toEqual({ id: session.id, status: 'active' });
+    });
+
+    it('should throw when session does not exist', async () => {
+      await expect(manager.resumeSession(999)).rejects.toThrow('Session 999 not found');
+    });
+
+    it('should throw when session has no agent_session_id', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      await manager.closeSession(session.id);
+
+      await expect(manager.resumeSession(session.id)).rejects.toThrow('has no session file');
+    });
+
+    it('should throw when session file does not exist on disk', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      // Manually set agent_session_id to a non-existent path
+      db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?')
+        .run('/tmp/nonexistent-session-file-xyz.json', session.id);
+      await manager.closeSession(session.id);
+
+      await expect(manager.resumeSession(session.id)).rejects.toThrow('Session file not found on disk');
+
+      // Should have nulled out the stale path
+      const row = db.prepare('SELECT agent_session_id FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.agent_session_id).toBeNull();
+    });
+
+    it('should resume session with valid session file', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const sessionFilePath = '/tmp/test-resume-session.json';
+
+      // Write a temporary file so existsSync returns true
+      const fs = require('fs');
+      fs.writeFileSync(sessionFilePath, '{}');
+
+      try {
+        db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?')
+          .run(sessionFilePath, session.id);
+        await manager.closeSession(session.id);
+
+        const result = await manager.resumeSession(session.id, { systemPrompt: 'test', cwd: '/tmp' });
+        expect(result).toEqual({ id: session.id, status: 'active' });
+        expect(manager.isSessionActive(session.id)).toBe(true);
+
+        // DB should show active status
+        const row = db.prepare('SELECT status FROM chat_sessions WHERE id = ?').get(session.id);
+        expect(row.status).toBe('active');
+      } finally {
+        try { fs.unlinkSync(sessionFilePath); } catch { /* ignore */ }
+      }
+    });
+  });
+
+  describe('getMRUSession', () => {
+    it('should return the most recently updated session', async () => {
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const second = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      // Update the second session's timestamp to make it MRU
+      db.prepare("UPDATE chat_sessions SET updated_at = datetime('now', '+1 second') WHERE id = ?").run(second.id);
+
+      const mru = manager.getMRUSession(1);
+      expect(mru).toBeDefined();
+      expect(mru.id).toBe(second.id);
+    });
+
+    it('should return null when no sessions exist', () => {
+      const mru = manager.getMRUSession(999);
+      expect(mru).toBeNull();
+    });
+  });
+
+  describe('getSessionsWithMessageCount', () => {
+    it('should return sessions with message_count', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      await manager.sendMessage(session.id, 'hello');
+      await manager.sendMessage(session.id, 'world');
+
+      const sessions = manager.getSessionsWithMessageCount(1);
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].message_count).toBe(2);
+    });
+
+    it('should return 0 message_count for sessions with no messages', async () => {
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      const sessions = manager.getSessionsWithMessageCount(1);
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].message_count).toBe(0);
+    });
+
+    it('should only count message-type rows (not context)', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      await manager.sendMessage(session.id, 'hello', {
+        contextData: { type: 'bug', title: 'test' }
+      });
+
+      const sessions = manager.getSessionsWithMessageCount(1);
+      expect(sessions).toHaveLength(1);
+      // Should count only the 'message' row, not the 'context' row
+      expect(sessions[0].message_count).toBe(1);
+    });
+
+    it('should return empty array when no sessions exist', () => {
+      const sessions = manager.getSessionsWithMessageCount(999);
+      expect(sessions).toEqual([]);
+    });
+  });
+
+  describe('session file persistence via session event', () => {
+    it('should store agent_session_id when bridge emits session event', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[_createdBridges.length - 1];
+
+      // Simulate Pi emitting a session event with the session file path
+      bridge.emit('session', { sessionFile: '/tmp/pi-session-abc.json' });
+
+      const row = db.prepare('SELECT agent_session_id FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.agent_session_id).toBe('/tmp/pi-session-abc.json');
+    });
+
+    it('should not update DB when session event has no sessionFile', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[_createdBridges.length - 1];
+
+      bridge.emit('session', { type: 'session' });
+
+      const row = db.prepare('SELECT agent_session_id FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.agent_session_id).toBeNull();
+    });
+  });
+
   describe('sendMessage busy guard', () => {
     it('should throw when bridge is busy', async () => {
       const session = await manager.createSession({ provider: 'pi', reviewId: 1 });

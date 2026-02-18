@@ -31,6 +31,7 @@ class PiBridge extends EventEmitter {
    * @param {string} [options.tools] - Comma-separated tool list (default: 'read,grep,find,ls')
    * @param {string} [options.piCommand] - Override Pi command (default: 'pi')
    * @param {string[]} [options.skills] - Array of skill file paths to load via --skill
+   * @param {string} [options.sessionPath] - Path to a session file for resumption
    */
   constructor(options = {}) {
     super();
@@ -41,12 +42,12 @@ class PiBridge extends EventEmitter {
     this.tools = options.tools || 'read,grep,find,ls';
     this.piCommand = options.piCommand || process.env.PAIR_REVIEW_PI_CMD || 'pi';
     this.skills = options.skills || [];
+    this.sessionPath = options.sessionPath || null;
 
     this._process = null;
     this._readline = null;
     this._ready = false;
     this._closing = false;
-
     // Accumulate text across streaming deltas for each turn
     this._accumulatedText = '';
     this._inMessage = false;
@@ -247,6 +248,10 @@ class PiBridge extends EventEmitter {
   _buildArgs() {
     const args = ['--mode', 'rpc', '--tools', this.tools];
 
+    if (this.sessionPath) {
+      args.push('--session', this.sessionPath);
+    }
+
     if (this.provider) {
       args.push('--provider', this.provider);
     }
@@ -344,10 +349,12 @@ class PiBridge extends EventEmitter {
         break;
 
       case 'response':
-        // Response to a command (prompt, abort, get_state)
+        // Response to a command (prompt, abort)
         if (!event.success) {
           logger.error(`[PiBridge] Command failed: ${event.error}`);
           this.emit('error', { error: new Error(event.error || 'Unknown command error') });
+        } else {
+          logger.debug(`[PiBridge] Command acknowledged: ${JSON.stringify(event).substring(0, 200)}`);
         }
         break;
 
@@ -361,7 +368,11 @@ class PiBridge extends EventEmitter {
         this.emit('status', { status: 'turn_complete' });
         break;
       case 'session':
-        logger.debug(`[PiBridge] ${type}`);
+        logger.debug(`[PiBridge] ${type}: ${JSON.stringify(event).substring(0, 200)}`);
+        if (event.sessionFile) {
+          this.sessionPath = event.sessionFile;
+        }
+        this.emit('session', event);
         break;
 
       default:

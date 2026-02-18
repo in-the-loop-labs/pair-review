@@ -34,6 +34,9 @@ function createMockSessionManager(db) {
       const row = db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(id);
       return !!row;
     }),
+    resumeSession: vi.fn().mockResolvedValue({ id: 1, status: 'active' }),
+    getMRUSession: vi.fn().mockReturnValue(null),
+    getSessionsWithMessageCount: vi.fn().mockReturnValue([]),
     getSessionsForReview: vi.fn().mockReturnValue([]),
     getMessages: vi.fn().mockReturnValue([]),
     onDelta: vi.fn().mockReturnValue(() => {}),
@@ -459,27 +462,224 @@ describe('Chat Routes', () => {
   describe('GET /api/review/:reviewId/chat/sessions', () => {
     it('should list sessions for a review', async () => {
       const mockSessions = [
-        { id: 1, review_id: 1, provider: 'pi', status: 'active' },
-        { id: 2, review_id: 1, provider: 'pi', status: 'closed' }
+        { id: 1, review_id: 1, provider: 'pi', status: 'active', agent_session_id: null },
+        { id: 2, review_id: 1, provider: 'pi', status: 'closed', agent_session_id: null }
       ];
-      mockManager.getSessionsForReview.mockReturnValue(mockSessions);
+      mockManager.getSessionsWithMessageCount.mockReturnValue(mockSessions);
+      mockManager.isSessionActive.mockReturnValue(false);
 
       const res = await request(app)
         .get('/api/review/1/chat/sessions');
 
       expect(res.status).toBe(200);
-      expect(res.body.data.sessions).toEqual(mockSessions);
-      expect(mockManager.getSessionsForReview).toHaveBeenCalledWith(1);
+      expect(res.body.data.sessions).toHaveLength(2);
+      expect(mockManager.getSessionsWithMessageCount).toHaveBeenCalledWith(1);
     });
 
     it('should return empty array when no sessions exist', async () => {
-      mockManager.getSessionsForReview.mockReturnValue([]);
+      mockManager.getSessionsWithMessageCount.mockReturnValue([]);
 
       const res = await request(app)
         .get('/api/review/42/chat/sessions');
 
       expect(res.status).toBe(200);
       expect(res.body.data.sessions).toEqual([]);
+    });
+  });
+
+  describe('POST /api/chat/session/:id/message (auto-resume)', () => {
+    it('should auto-resume when session has agent_session_id', async () => {
+      db.prepare(
+        "INSERT INTO chat_sessions (id, review_id, provider, status, agent_session_id) VALUES (5, 1, 'pi', 'closed', '/tmp/session.json')"
+      ).run();
+
+      // Session is NOT active in memory
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue({
+        id: 5,
+        review_id: 1,
+        agent_session_id: '/tmp/session.json',
+        status: 'closed'
+      });
+      // After resume, sendMessage should work
+      mockManager.resumeSession.mockResolvedValue({ id: 5, status: 'active' });
+
+      const res = await request(app)
+        .post('/api/chat/session/5/message')
+        .send({ content: 'hello after restart' });
+
+      expect(res.status).toBe(200);
+      expect(mockManager.resumeSession).toHaveBeenCalledWith(5, expect.objectContaining({
+        systemPrompt: expect.any(String),
+      }));
+      expect(mockManager.sendMessage).toHaveBeenCalled();
+    });
+
+    it('should return 404 when review is not found during auto-resume', async () => {
+      // Use mock getSession (no DB insert needed — review_id 999 intentionally missing)
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue({
+        id: 8,
+        review_id: 999,
+        agent_session_id: '/tmp/session.json',
+        status: 'closed'
+      });
+
+      const res = await request(app)
+        .post('/api/chat/session/8/message')
+        .send({ content: 'hello' });
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toContain('Review not found');
+    });
+
+    it('should return 410 when session has no agent_session_id', async () => {
+      db.prepare(
+        "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (6, 1, 'pi', 'closed')"
+      ).run();
+
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue({
+        id: 6,
+        review_id: 1,
+        agent_session_id: null,
+        status: 'closed'
+      });
+
+      const res = await request(app)
+        .post('/api/chat/session/6/message')
+        .send({ content: 'hello' });
+
+      expect(res.status).toBe(410);
+      expect(res.body.error).toContain('not resumable');
+    });
+
+    it('should return 410 when resume fails', async () => {
+      db.prepare(
+        "INSERT INTO chat_sessions (id, review_id, provider, status, agent_session_id) VALUES (7, 1, 'pi', 'closed', '/tmp/session.json')"
+      ).run();
+
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue({
+        id: 7,
+        review_id: 1,
+        agent_session_id: '/tmp/session.json',
+        status: 'closed'
+      });
+      mockManager.resumeSession.mockRejectedValue(new Error('Session file not found'));
+
+      const res = await request(app)
+        .post('/api/chat/session/7/message')
+        .send({ content: 'hello' });
+
+      expect(res.status).toBe(410);
+      expect(res.body.error).toContain('Session file not found');
+    });
+  });
+
+  describe('POST /api/chat/session/:id/resume', () => {
+    it('should return active if already active', async () => {
+      mockManager.isSessionActive.mockReturnValue(true);
+
+      const res = await request(app)
+        .post('/api/chat/session/1/resume');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ id: 1, status: 'active' });
+      expect(mockManager.resumeSession).not.toHaveBeenCalled();
+    });
+
+    it('should resume a resumable session', async () => {
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue({
+        id: 1,
+        review_id: 1,
+        agent_session_id: '/tmp/session.json',
+        status: 'closed'
+      });
+
+      const res = await request(app)
+        .post('/api/chat/session/1/resume');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ id: 1, status: 'active' });
+      expect(mockManager.resumeSession).toHaveBeenCalledWith(1, expect.any(Object));
+    });
+
+    it('should return 404 for unknown session', async () => {
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue(null);
+
+      const res = await request(app)
+        .post('/api/chat/session/999/resume');
+
+      expect(res.status).toBe(404);
+    });
+
+    it('should return 404 when review not found during resume', async () => {
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue({
+        id: 1,
+        review_id: 999,
+        agent_session_id: '/tmp/session.json',
+        status: 'closed'
+      });
+
+      const res = await request(app)
+        .post('/api/chat/session/1/resume');
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toContain('Review not found');
+    });
+
+    it('should return 410 for non-resumable session', async () => {
+      mockManager.isSessionActive.mockReturnValue(false);
+      mockManager.getSession.mockReturnValue({
+        id: 1,
+        review_id: 1,
+        agent_session_id: null,
+        status: 'closed'
+      });
+
+      const res = await request(app)
+        .post('/api/chat/session/1/resume');
+
+      expect(res.status).toBe(410);
+      expect(res.body.error).toContain('not resumable');
+    });
+  });
+
+  describe('GET /api/review/:reviewId/chat/sessions (enhanced)', () => {
+    it('should return sessions with message_count, isActive, and isResumable', async () => {
+      const mockSessions = [
+        { id: 1, review_id: 1, provider: 'pi', status: 'active', agent_session_id: '/tmp/s1.json', message_count: 5 },
+        { id: 2, review_id: 1, provider: 'pi', status: 'closed', agent_session_id: '/tmp/s2.json', message_count: 3 },
+        { id: 3, review_id: 1, provider: 'pi', status: 'closed', agent_session_id: null, message_count: 0 }
+      ];
+      mockManager.getSessionsWithMessageCount.mockReturnValue(mockSessions);
+      mockManager.isSessionActive.mockImplementation((id) => id === 1);
+
+      const res = await request(app)
+        .get('/api/review/1/chat/sessions');
+
+      expect(res.status).toBe(200);
+      const sessions = res.body.data.sessions;
+      expect(sessions).toHaveLength(3);
+
+      // Session 1: active, not resumable
+      expect(sessions[0].isActive).toBe(true);
+      expect(sessions[0].isResumable).toBe(false);
+      expect(sessions[0].message_count).toBe(5);
+
+      // Session 2: not active, resumable (has agent_session_id)
+      expect(sessions[1].isActive).toBe(false);
+      expect(sessions[1].isResumable).toBe(true);
+      expect(sessions[1].message_count).toBe(3);
+
+      // Session 3: not active, not resumable (no agent_session_id)
+      expect(sessions[2].isActive).toBe(false);
+      expect(sessions[2].isResumable).toBe(false);
+      expect(sessions[2].message_count).toBe(0);
     });
   });
 });

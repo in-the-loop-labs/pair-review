@@ -77,6 +77,16 @@ describe('PiBridge', () => {
       expect(bridge.piCommand).toBe('/usr/local/bin/pi');
     });
 
+    it('should accept sessionPath option', () => {
+      const bridge = new PiBridge({ sessionPath: '/tmp/session.json' });
+      expect(bridge.sessionPath).toBe('/tmp/session.json');
+    });
+
+    it('should default sessionPath to null', () => {
+      const bridge = new PiBridge();
+      expect(bridge.sessionPath).toBeNull();
+    });
+
     it('should use PAIR_REVIEW_PI_CMD env var when set', () => {
       const orig = process.env.PAIR_REVIEW_PI_CMD;
       process.env.PAIR_REVIEW_PI_CMD = '/custom/pi';
@@ -149,6 +159,19 @@ describe('PiBridge', () => {
       const bridge = new PiBridge();
       const args = bridge._buildArgs();
       expect(args).not.toContain('--append-system-prompt');
+    });
+
+    it('should include --session when sessionPath is set', () => {
+      const bridge = new PiBridge({ sessionPath: '/tmp/session.json' });
+      const args = bridge._buildArgs();
+      expect(args).toContain('--session');
+      expect(args).toContain('/tmp/session.json');
+    });
+
+    it('should not include --session when sessionPath is null', () => {
+      const bridge = new PiBridge();
+      const args = bridge._buildArgs();
+      expect(args).not.toContain('--session');
     });
   });
 
@@ -253,6 +276,23 @@ describe('PiBridge', () => {
       });
       expect(handler.mock.calls[0][0].error.message).toBe('Command failed');
     });
+
+    it('should store sessionFile from session event and emit session event', () => {
+      const bridge = new PiBridge();
+      const handler = vi.fn();
+      bridge.on('session', handler);
+
+      bridge._handleLine(JSON.stringify({
+        type: 'session',
+        sessionFile: '/tmp/pi-session.json'
+      }));
+
+      expect(bridge.sessionPath).toBe('/tmp/pi-session.json');
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionFile: '/tmp/pi-session.json' })
+      );
+    });
+
   });
 
   describe('_handleMessageUpdate', () => {

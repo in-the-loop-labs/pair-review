@@ -253,12 +253,12 @@ class ChatPanel {
     this.panel.classList.remove('chat-panel--closed');
     this.panel.classList.add('chat-panel--open');
 
-    // Eagerly create session if we don't have one
-    const result = await this._ensureConnected();
-    if (!result) return;
+    // Ensure SSE is connected (but don't create a session yet — lazy creation)
+    this._ensureGlobalSSE();
 
-    if (result.sessionData) {
-      this._showAnalysisContextIfPresent(result.sessionData);
+    // Load MRU session with message history (if any previous sessions exist)
+    if (!this.currentSessionId) {
+      await this._loadMRUSession();
     }
 
     // If opening with suggestion context, inject it as a context card
@@ -325,6 +325,76 @@ class ChatPanel {
   }
 
   /**
+   * Load the most recently used session for the current review.
+   * Fetches the session list, picks the MRU, and loads its message history
+   * so the user sees their previous conversation when reopening the panel.
+   */
+  async _loadMRUSession() {
+    if (!this.reviewId) return;
+
+    try {
+      const response = await fetch(`/api/review/${this.reviewId}/chat/sessions`);
+      if (!response.ok) return;
+
+      const result = await response.json();
+      const sessions = result.data?.sessions || [];
+      if (sessions.length === 0) return;
+
+      // Pick the MRU session (list is already sorted by updated_at DESC)
+      const mru = sessions[0];
+      this.currentSessionId = mru.id;
+      console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
+
+      // Load message history if the session has messages
+      if (mru.message_count > 0) {
+        await this._loadMessageHistory(mru.id);
+      }
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to load MRU session:', err);
+    }
+  }
+
+  /**
+   * Load and render message history for a session.
+   * Fetches messages from the API and renders context cards and message bubbles.
+   * @param {number} sessionId
+   */
+  async _loadMessageHistory(sessionId) {
+    try {
+      const response = await fetch(`/api/chat/session/${sessionId}/messages`);
+      if (!response.ok) return;
+
+      const result = await response.json();
+      const messages = result.data?.messages || [];
+      if (messages.length === 0) return;
+
+      // Remove empty state
+      const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+      if (emptyState) emptyState.remove();
+
+      for (const msg of messages) {
+        if (msg.type === 'context') {
+          // Render context card from stored context data
+          try {
+            const ctxData = JSON.parse(msg.content);
+            if (ctxData.source === 'user') {
+              this._addCommentContextCard(ctxData);
+            } else {
+              this._addContextCard(ctxData);
+            }
+          } catch {
+            // Not JSON — skip malformed context
+          }
+        } else if (msg.type === 'message') {
+          this.addMessage(msg.role, msg.content, msg.id);
+        }
+      }
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to load message history:', err);
+    }
+  }
+
+  /**
    * Clear all messages from the display and show empty state
    */
   _clearMessages() {
@@ -339,26 +409,13 @@ class ChatPanel {
   }
 
   /**
-   * Ensure we have an active session and global SSE connection.
-   * Creates a new session if needed and establishes the multiplexed SSE stream.
-   * @returns {Promise<{sessionData: Object|null}|null>} Object with sessionData on success
-   *   (sessionData is non-null only when a NEW session was created), or null on failure.
+   * Ensure the global SSE connection is active.
+   * No longer creates sessions — that happens lazily on first message.
+   * @returns {{sessionData: null}}
    */
-  async _ensureConnected() {
-    try {
-      this._ensureGlobalSSE();
-
-      let sessionData = null;
-      if (!this.currentSessionId) {
-        sessionData = await this.createSession();
-        if (!sessionData) { this._showError('Failed to start chat session'); return null; }
-      }
-      return { sessionData };
-    } catch (err) {
-      console.error('[ChatPanel] Connection failed:', err);
-      this._showError('Failed to connect to chat stream. ' + err.message);
-      return null;
-    }
+  _ensureConnected() {
+    this._ensureGlobalSSE();
+    return { sessionData: null };
   }
 
   /**
@@ -423,13 +480,14 @@ class ChatPanel {
     // Display user message (just the user's actual text)
     this.addMessage('user', content);
 
-    // Ensure we have a session and SSE is connected
-    const connectResult = await this._ensureConnected();
-    if (!connectResult) return;
-
-    if (connectResult.sessionData) {
-      this._showAnalysisContextIfPresent(connectResult.sessionData);
+    // Lazy session creation: create on first message, not on panel open
+    if (!this.currentSessionId) {
+      this._ensureGlobalSSE();
+      const sessionData = await this.createSession();
+      if (!sessionData) return;
+      this._showAnalysisContextIfPresent(sessionData);
     }
+    // If currentSessionId is set (from MRU), just send — server auto-resumes
 
     // Prepare streaming UI
     this.isStreaming = true;

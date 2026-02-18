@@ -224,7 +224,7 @@ router.post('/api/chat/session', async (req, res) => {
 });
 
 /**
- * Send a user message to a chat session
+ * Send a user message to a chat session (auto-resumes if needed)
  */
 router.post('/api/chat/session/:id/message', async (req, res) => {
   try {
@@ -236,8 +236,36 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
     }
 
     const chatSessionManager = req.app.chatSessionManager;
+    const db = req.app.get('db');
+
+    // Auto-resume: if session is not active in memory, try to resume it
     if (!chatSessionManager.isSessionActive(sessionId)) {
-      return res.status(404).json({ error: 'Chat session not found or not active' });
+      const session = chatSessionManager.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ error: 'Chat session not found' });
+      }
+
+      if (!session.agent_session_id) {
+        return res.status(410).json({ error: 'Session is not resumable (no session file)' });
+      }
+
+      // Build system prompt and cwd from the review
+      const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [session.review_id]);
+      if (!review) {
+        return res.status(404).json({ error: 'Review not found for session' });
+      }
+      const systemPrompt = buildChatPrompt({ review });
+      const cwd = review?.local_path || null;
+
+      try {
+        await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
+        unregisterSSEBroadcast(sessionId);
+        registerSSEBroadcast(chatSessionManager, sessionId);
+        logger.info(`[ChatRoute] Auto-resumed session ${sessionId} for message delivery`);
+      } catch (err) {
+        logger.error(`[ChatRoute] Failed to auto-resume session ${sessionId}: ${err.message}`);
+        return res.status(410).json({ error: 'Failed to resume session: ' + err.message });
+      }
     }
 
     logger.debug(`[ChatRoute] Forwarding message to session ${sessionId} (${content.length} chars)`);
@@ -320,6 +348,52 @@ router.get('/api/chat/session/:id/messages', (req, res) => {
 });
 
 /**
+ * Explicitly resume a chat session (pre-warm the bridge before sending a message)
+ */
+router.post('/api/chat/session/:id/resume', async (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id, 10);
+    const chatSessionManager = req.app.chatSessionManager;
+    const db = req.app.get('db');
+
+    // Already active
+    if (chatSessionManager.isSessionActive(sessionId)) {
+      return res.json({ data: { id: sessionId, status: 'active' } });
+    }
+
+    const session = chatSessionManager.getSession(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Chat session not found' });
+    }
+
+    if (!session.agent_session_id) {
+      return res.status(410).json({ error: 'Session is not resumable (no session file)' });
+    }
+
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [session.review_id]);
+    if (!review) {
+      return res.status(404).json({ error: 'Review not found for session' });
+    }
+
+    // Pi's --session replays the original conversation; --append-system-prompt
+    // re-injects the review context so the agent retains awareness of the codebase
+    // even if the system prompt was only in the initial session's context.
+    const systemPrompt = buildChatPrompt({ review });
+    const cwd = review?.local_path || null;
+
+    await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
+    unregisterSSEBroadcast(sessionId);
+    registerSSEBroadcast(chatSessionManager, sessionId);
+
+    logger.info(`[ChatRoute] Explicitly resumed session ${sessionId}`);
+    res.json({ data: { id: sessionId, status: 'active' } });
+  } catch (error) {
+    logger.error(`Error resuming chat session: ${error.message}`);
+    res.status(500).json({ error: 'Failed to resume session: ' + error.message });
+  }
+});
+
+/**
  * Close a chat session
  */
 router.delete('/api/chat/session/:id', async (req, res) => {
@@ -340,15 +414,23 @@ router.delete('/api/chat/session/:id', async (req, res) => {
 });
 
 /**
- * List chat sessions for a review
+ * List chat sessions for a review (with message counts and live state annotations)
  */
 router.get('/api/review/:reviewId/chat/sessions', (req, res) => {
   try {
     const { reviewId } = req.params;
     const chatSessionManager = req.app.chatSessionManager;
 
-    const sessions = chatSessionManager.getSessionsForReview(parseInt(reviewId, 10));
-    res.json({ data: { sessions } });
+    const sessions = chatSessionManager.getSessionsWithMessageCount(parseInt(reviewId, 10));
+
+    // Annotate each session with live state
+    const annotated = sessions.map((s) => ({
+      ...s,
+      isActive: chatSessionManager.isSessionActive(s.id),
+      isResumable: !chatSessionManager.isSessionActive(s.id) && !!s.agent_session_id
+    }));
+
+    res.json({ data: { sessions: annotated } });
   } catch (error) {
     logger.error(`Error fetching chat sessions: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch chat sessions' });
