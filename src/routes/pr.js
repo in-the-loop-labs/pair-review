@@ -14,15 +14,29 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, WorktreeRepository, ReviewRepository, GitHubReviewRepository } = require('../database');
+const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewRepository, GitHubReviewRepository, RepoSettingsRepository, AnalysisRunRepository, PRMetadataRepository, CouncilRepository } = require('../database');
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { normalizeRepository } = require('../utils/paths');
+const { mergeInstructions } = require('../utils/instructions');
+const Analyzer = require('../ai/analyzer');
+const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
 const simpleGit = require('simple-git');
+const {
+  activeAnalyses,
+  reviewToAnalysisId,
+  getModel,
+  determineCompletionInfo,
+  broadcastProgress,
+  createProgressCallback,
+  parseEnabledLevels
+} = require('./shared');
+const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
+const analysesRouter = require('./analyses');
 
 const router = express.Router();
 
@@ -670,57 +684,6 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
     console.error('Error fetching PR diff:', error);
     res.status(500).json({
       error: 'Internal server error while fetching diff data'
-    });
-  }
-});
-
-/**
- * Get PR comments
- */
-router.get('/api/pr/:owner/:repo/:number/comments', async (req, res) => {
-  try {
-    const { owner, repo, number } = req.params;
-    const prNumber = parseInt(number);
-
-    if (isNaN(prNumber) || prNumber <= 0) {
-      return res.status(400).json({
-        error: 'Invalid pull request number'
-      });
-    }
-
-    const repository = normalizeRepository(owner, repo);
-
-    // Get review ID first
-    const review = await queryOne(req.app.get('db'), `
-      SELECT id FROM reviews
-      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-    `, [prNumber, repository]);
-
-    if (!review) {
-      return res.json({ comments: [] });
-    }
-
-    // Get comments for this review
-    const comments = await query(req.app.get('db'), `
-      SELECT
-        id,
-        file_path,
-        line_number,
-        comment_text,
-        comment_type,
-        status,
-        created_at
-      FROM comments
-      WHERE review_id = ?
-      ORDER BY file_path, line_number, created_at
-    `, [review.id]);
-
-    res.json({ comments });
-
-  } catch (error) {
-    console.error('Error fetching PR comments:', error);
-    res.status(500).json({
-      error: 'Internal server error while fetching comments'
     });
   }
 });
@@ -1387,6 +1350,397 @@ router.post('/api/parse-pr-url', (req, res) => {
     error: 'Invalid PR URL. Please enter a GitHub or Graphite PR URL.',
     valid: false
   });
+});
+
+// ==========================================================================
+// PR Analysis Routes
+// ==========================================================================
+
+/**
+ * Trigger AI analysis for a PR
+ */
+router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+
+    const { provider: requestProvider, model: requestModel, tier: requestTier, customInstructions: rawInstructions, skipLevel3: requestSkipLevel3, enabledLevels: requestEnabledLevels } = req.body || {};
+
+    const MAX_INSTRUCTIONS_LENGTH = 5000;
+    let requestInstructions = rawInstructions?.trim() || null;
+    if (requestInstructions && requestInstructions.length > MAX_INSTRUCTIONS_LENGTH) {
+      return res.status(400).json({
+        error: `Custom instructions exceed maximum length of ${MAX_INSTRUCTIONS_LENGTH} characters`
+      });
+    }
+
+    const VALID_TIERS = ['fast', 'balanced', 'thorough', 'free', 'standard', 'premium'];
+    if (requestTier && !VALID_TIERS.includes(requestTier)) {
+      return res.status(400).json({
+        error: `Invalid tier: "${requestTier}". Valid tiers: ${VALID_TIERS.join(', ')}`
+      });
+    }
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({
+        error: 'Invalid pull request number'
+      });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+
+    const db = req.app.get('db');
+    const reviewRepo = new ReviewRepository(db);
+    const prMetadataRepo = new PRMetadataRepository(db);
+    const prMetadata = await prMetadataRepo.getByPR(prNumber, repository);
+
+    if (!prMetadata) {
+      return res.status(404).json({
+        error: `Pull request #${prNumber} not found. Please load the PR first.`
+      });
+    }
+
+    const worktreeManager = new GitWorktreeManager(db);
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+
+    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+      return res.status(404).json({
+        error: 'Worktree not found for this PR. Please reload the PR.'
+      });
+    }
+
+    const { provider, model, repoInstructions, combinedInstructions } = await withTransaction(db, async () => {
+      const repoSettingsRepo = new RepoSettingsRepository(db);
+      const fetchedRepoSettings = await repoSettingsRepo.getRepoSettings(repository);
+
+      let selectedProvider;
+      if (requestProvider) {
+        selectedProvider = requestProvider;
+      } else if (fetchedRepoSettings && fetchedRepoSettings.default_provider) {
+        selectedProvider = fetchedRepoSettings.default_provider;
+      } else {
+        const config = req.app.get('config') || {};
+        selectedProvider = config.default_provider || config.provider || 'claude';
+      }
+
+      let selectedModel;
+      if (requestModel) {
+        selectedModel = requestModel;
+      } else if (fetchedRepoSettings && fetchedRepoSettings.default_model) {
+        selectedModel = fetchedRepoSettings.default_model;
+      } else {
+        selectedModel = getModel(req);
+      }
+
+      const fetchedRepoInstructions = fetchedRepoSettings?.default_instructions || null;
+      const mergedInstructions = mergeInstructions(fetchedRepoInstructions, requestInstructions);
+
+      if (requestInstructions) {
+        await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
+      }
+
+      return {
+        provider: selectedProvider,
+        model: selectedModel,
+        repoInstructions: fetchedRepoInstructions,
+        combinedInstructions: mergedInstructions
+      };
+    });
+
+    const runId = uuidv4();
+    const analysisId = runId;
+
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);
+    await analysisRunRepo.create({
+      id: runId,
+      reviewId: review.id,
+      provider,
+      model,
+      repoInstructions,
+      requestInstructions,
+      headSha: prMetadata.head_sha || null,
+      configType: 'single',
+      levelsConfig
+    });
+
+    const initialStatus = {
+      id: analysisId,
+      runId,
+      reviewId: review.id,
+      prNumber,
+      repository,
+      reviewType: 'pr',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      progress: 'Starting analysis...',
+      levels: {
+        1: levelsConfig[1] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+        2: levelsConfig[2] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+        3: levelsConfig[3] ? { status: 'running', progress: 'Starting...' } : { status: 'skipped', progress: 'Skipped' },
+        4: { status: 'pending', progress: 'Pending' }
+      },
+      filesAnalyzed: 0,
+      filesRemaining: 0
+    };
+    activeAnalyses.set(analysisId, initialStatus);
+
+    // Store review to analysis ID mapping (unified map using integer reviewId)
+    reviewToAnalysisId.set(review.id, analysisId);
+
+    broadcastProgress(analysisId, initialStatus);
+
+    const analyzer = new Analyzer(req.app.get('db'), model, provider);
+
+    logger.section(`AI Analysis Request - PR #${prNumber}`);
+    logger.log('API', `Repository: ${repository}`, 'magenta');
+    logger.log('API', `Worktree: ${worktreePath}`, 'magenta');
+    logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
+    logger.log('API', `Review ID: ${review.id}`, 'magenta');
+    logger.log('API', `Provider: ${provider}`, 'cyan');
+    logger.log('API', `Model: ${model}`, 'cyan');
+    const tier = requestTier || 'balanced';
+    logger.log('API', `Tier: ${tier}`, 'cyan');
+    if (combinedInstructions) {
+      logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');
+    }
+
+    const progressCallback = createProgressCallback(analysisId);
+
+    analyzer.analyzeLevel1(review.id, worktreePath, prMetadata, progressCallback, { repoInstructions, requestInstructions }, null, { analysisId, runId, skipRunCreation: true, tier, skipLevel3: requestSkipLevel3, enabledLevels: levelsConfig })
+      .then(async result => {
+        logger.section('Analysis Results');
+        logger.success(`Analysis complete for PR #${prNumber}`);
+        logger.success(`Found ${result.suggestions.length} suggestions:`);
+
+        try {
+          await prMetadataRepo.updateLastAiRunId(prMetadata.id, result.runId);
+          logger.info(`Updated pr_metadata with last_ai_run_id: ${result.runId}`);
+        } catch (updateError) {
+          logger.warn(`Failed to update pr_metadata with last_ai_run_id: ${updateError.message}`);
+        }
+
+        if (result.summary) {
+          try {
+            await reviewRepo.upsertSummary(prNumber, repository, result.summary);
+            logger.info(`Saved analysis summary to review record`);
+            logger.section('Analysis Summary');
+            logger.info(result.summary);
+          } catch (summaryError) {
+            logger.warn(`Failed to save analysis summary: ${summaryError.message}`);
+          }
+        }
+        result.suggestions.forEach(s => {
+          const icon = s.type === 'bug' ? '\uD83D\uDC1B' :
+                       s.type === 'praise' ? '\u2B50' :
+                       s.type === 'improvement' ? '\uD83D\uDCA1' :
+                       s.type === 'security' ? '\uD83D\uDD12' :
+                       s.type === 'performance' ? '\u26A1' :
+                       s.type === 'design' ? '\uD83D\uDCD0' :
+                       s.type === 'suggestion' ? '\uD83D\uDCAC' :
+                       s.type === 'code-style' || s.type === 'style' ? '\uD83E\uDDF9' : '\uD83D\uDCDD';
+          logger.log('Result', `${icon} ${s.type}: ${s.title} (${s.file}:${s.line_start})`, 'green');
+        });
+
+        const completionInfo = determineCompletionInfo(result);
+
+        const currentStatus = activeAnalyses.get(analysisId);
+        if (!currentStatus) {
+          logger.warn('Analysis already completed or removed:', analysisId);
+          return;
+        }
+
+        if (currentStatus.status === 'cancelled') {
+          logger.info(`Analysis ${analysisId} was cancelled, skipping completion update`);
+          return;
+        }
+
+        for (let i = 1; i <= completionInfo.completedLevel; i++) {
+          currentStatus.levels[i] = {
+            status: 'completed',
+            progress: `Level ${i} complete`
+          };
+        }
+
+        currentStatus.levels[4] = {
+          status: 'completed',
+          progress: 'Results finalized'
+        };
+
+        const completedStatus = {
+          ...currentStatus,
+          status: 'completed',
+          level: completionInfo.completedLevel,
+          completedLevel: completionInfo.completedLevel,
+          completedAt: new Date().toISOString(),
+          result,
+          progress: completionInfo.progressMessage,
+          suggestionsCount: completionInfo.totalSuggestions,
+          filesAnalyzed: currentStatus?.filesAnalyzed || 0,
+          filesRemaining: 0,
+          currentFile: currentStatus?.totalFiles || 0,
+          totalFiles: currentStatus?.totalFiles || 0
+        };
+        activeAnalyses.set(analysisId, completedStatus);
+
+        broadcastProgress(analysisId, completedStatus);
+      })
+      .catch(error => {
+        const currentStatus = activeAnalyses.get(analysisId);
+        if (!currentStatus) {
+          logger.warn('Analysis status not found during error handling:', analysisId);
+          return;
+        }
+
+        if (error.isCancellation) {
+          logger.info(`Analysis cancelled for PR #${prNumber}`);
+          return;
+        }
+
+        logger.error(`Analysis failed for PR #${prNumber}: ${error.message}`);
+
+        for (let i = 1; i <= 4; i++) {
+          currentStatus.levels[i] = {
+            status: 'failed',
+            progress: 'Failed'
+          };
+        }
+
+        const failedStatus = {
+          ...currentStatus,
+          status: 'failed',
+          level: 1,
+          completedAt: new Date().toISOString(),
+          error: error.message,
+          progress: 'Analysis failed'
+        };
+        activeAnalyses.set(analysisId, failedStatus);
+
+        broadcastProgress(analysisId, failedStatus);
+      })
+      .finally(() => {
+        // Clean up review to analysis ID mapping (unified map)
+        reviewToAnalysisId.delete(review.id);
+      });
+
+    res.json({
+      analysisId,
+      runId,
+      status: 'started',
+      message: 'AI analysis started in background'
+    });
+
+  } catch (error) {
+    logger.error('Error starting AI analysis:', error);
+    res.status(500).json({
+      error: 'Failed to start AI analysis'
+    });
+  }
+});
+
+/**
+ * Trigger council analysis for a PR
+ */
+router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) => {
+  try {
+    const { owner, repo, number } = req.params;
+    const prNumber = parseInt(number);
+    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions, configType: requestConfigType } = req.body || {};
+
+    if (isNaN(prNumber) || prNumber <= 0) {
+      return res.status(400).json({ error: 'Invalid pull request number' });
+    }
+
+    if (!councilId && !inlineConfig) {
+      return res.status(400).json({ error: 'Either councilId or councilConfig is required' });
+    }
+
+    const repository = normalizeRepository(owner, repo);
+    const db = req.app.get('db');
+
+    let councilConfig;
+    let configType;
+    if (councilId) {
+      const councilRepo = new CouncilRepository(db);
+      const council = await councilRepo.getById(councilId);
+      if (!council) {
+        return res.status(404).json({ error: 'Council not found' });
+      }
+      councilConfig = council.config;
+      configType = requestConfigType || council.type || 'advanced';
+    } else {
+      councilConfig = inlineConfig;
+      configType = requestConfigType || 'advanced';
+    }
+
+    councilConfig = normalizeCouncilConfig(councilConfig, configType);
+
+    const configError = validateCouncilConfig(councilConfig, configType);
+    if (configError) {
+      return res.status(400).json({ error: `Invalid council config: ${configError}` });
+    }
+
+    const prMetadataRepo = new PRMetadataRepository(db);
+    const prMetadata = await prMetadataRepo.getByPR(prNumber, repository);
+    if (!prMetadata) {
+      return res.status(404).json({ error: `Pull request #${prNumber} not found. Please load the PR first.` });
+    }
+
+    const worktreeManager = new GitWorktreeManager(db);
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+      return res.status(404).json({ error: 'Worktree not found for this PR. Please reload the PR.' });
+    }
+
+    const reviewRepo = new ReviewRepository(db);
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const repoSettings = await repoSettingsRepo.getRepoSettings(repository);
+    const repoInstructions = repoSettings?.default_instructions || null;
+    const requestInstructions = rawInstructions?.trim() || null;
+
+    const review = await reviewRepo.getOrCreate({ prNumber, repository });
+
+    if (requestInstructions) {
+      await reviewRepo.upsertCustomInstructions(prNumber, repository, requestInstructions);
+    }
+
+    const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
+      db,
+      {
+        reviewId: review.id,
+        worktreePath,
+        prMetadata,
+        changedFiles: null,
+        repository,
+        headSha: prMetadata.head_sha,
+        logLabel: `PR #${prNumber}`,
+        initialStatusExtra: { prNumber, reviewType: 'pr' },
+        extraBroadcastKeys: null,
+        onSuccess: async (result) => {
+          if (result.summary) {
+            await reviewRepo.upsertSummary(prNumber, repository, result.summary);
+          }
+        }
+      },
+      councilConfig,
+      councilId,
+      { repoInstructions, requestInstructions },
+      configType
+    );
+
+    res.json({
+      analysisId,
+      runId,
+      status: 'started',
+      message: 'Council analysis started in background',
+      isCouncil: true
+    });
+  } catch (error) {
+    logger.error('Error starting council analysis:', error);
+    res.status(500).json({ error: 'Failed to start council analysis' });
+  }
 });
 
 module.exports = router;

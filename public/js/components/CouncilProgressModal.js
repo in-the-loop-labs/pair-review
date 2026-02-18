@@ -22,9 +22,6 @@ class CouncilProgressModal {
 
     // Track per-voice completion state
     this._voiceStates = {};
-    // Track SSE endpoint mode
-    this._useLocalEndpoint = false;
-    this._localReviewId = null;
 
     this._createModal();
     this._setupEventListeners();
@@ -132,7 +129,7 @@ class CouncilProgressModal {
     }
 
     try {
-      await fetch(`/api/analyze/cancel/${this.currentAnalysisId}`, { method: 'POST' });
+      await fetch(`/api/analyses/${this.currentAnalysisId}/cancel`, { method: 'POST' });
     } catch (error) {
       console.warn('Cancel not available on server:', error.message);
     }
@@ -149,20 +146,21 @@ class CouncilProgressModal {
   }
 
   /**
-   * Configure for local mode SSE endpoint.
-   * @param {string|number} reviewId
+   * Configure for local mode.
+   * Retained as a public method since callers invoke it, but the SSE endpoint
+   * is now unified so no per-mode state is needed.
    */
-  setLocalMode(reviewId) {
-    this._useLocalEndpoint = true;
-    this._localReviewId = reviewId;
+  setLocalMode(_reviewId) {
+    // no-op: SSE endpoint is unified
   }
 
   /**
-   * Configure for PR mode SSE endpoint (default).
+   * Configure for PR mode (default).
+   * Retained as a public method since callers invoke it, but the SSE endpoint
+   * is now unified so no per-mode state is needed.
    */
   setPRMode() {
-    this._useLocalEndpoint = false;
-    this._localReviewId = null;
+    // no-op: SSE endpoint is unified
   }
 
   // ---------------------------------------------------------------------------
@@ -175,9 +173,7 @@ class CouncilProgressModal {
     }
     if (!this.currentAnalysisId) return;
 
-    const sseUrl = this._useLocalEndpoint
-      ? `/api/local/${this._localReviewId}/ai-suggestions/status`
-      : `/api/pr/${this.currentAnalysisId}/ai-suggestions/status`;
+    const sseUrl = `/api/analyses/${this.currentAnalysisId}/progress`;
 
     this.eventSource = new EventSource(sseUrl);
 
@@ -229,7 +225,7 @@ class CouncilProgressModal {
     this.statusCheckInterval = setInterval(async () => {
       if (!this.currentAnalysisId) return;
       try {
-        const response = await fetch(`/api/analyze/status/${this.currentAnalysisId}`);
+        const response = await fetch(`/api/analyses/${this.currentAnalysisId}/status`);
         if (!response.ok) throw new Error('Failed to fetch status');
         const status = await response.json();
         this.updateProgress(status);

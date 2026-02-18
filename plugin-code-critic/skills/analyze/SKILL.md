@@ -104,12 +104,13 @@ Push the orchestrated JSON to the pair-review web UI so suggestions appear inlin
 2. **Build the POST body** from the orchestrated output:
    - For local mode: set `path` (absolute working directory from `pwd`) and `headSha` (from `git rev-parse HEAD`)
    - For PR mode: set `repo` (`owner/repo`) and `prNumber`
-   - Include `provider`, `model`, `summary`, `suggestions`, and `fileLevelSuggestions` from the orchestrated JSON
+   - Set `provider` and `model` to describe what ran the analysis (e.g., the AI provider and model used)
+   - Include `summary`, `suggestions`, and `fileLevelSuggestions` from the orchestrated JSON
 
-3. **POST via `curl`** to `${SERVER_URL}/api/analysis-results`:
+3. **POST via `curl`** to `${SERVER_URL}/api/analyses/results`:
    ```
    curl -s --connect-timeout 3 --max-time 10 \
-     -X POST "${SERVER_URL}/api/analysis-results" \
+     -X POST "${SERVER_URL}/api/analyses/results" \
      -H "Content-Type: application/json" \
      -d @- <<'PAYLOAD'
    { ... }

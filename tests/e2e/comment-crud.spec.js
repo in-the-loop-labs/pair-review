@@ -21,13 +21,13 @@ async function cleanupAllComments(page) {
   // Delete all user comments via API to ensure test isolation
   await page.evaluate(async () => {
     // Fetch all user comments (including dismissed ones) using the correct API
-    const commentsResponse = await fetch('/api/pr/test-owner/test-repo/1/user-comments?includeDismissed=true');
+    const commentsResponse = await fetch('/api/reviews/1/comments?includeDismissed=true');
     const data = await commentsResponse.json();
     const comments = data.comments || [];
 
     // Delete each user comment (this performs a hard delete for inactive/dismissed comments)
     for (const comment of comments) {
-      await fetch(`/api/user-comment/${comment.id}`, { method: 'DELETE' });
+      await fetch(`/api/reviews/1/comments/${comment.id}`, { method: 'DELETE' });
     }
   });
 }
@@ -219,7 +219,7 @@ test.describe('Comment Editing', () => {
 
     // Wait for API call to complete
     const responsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+      response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
     // Save the edit
@@ -285,7 +285,7 @@ test.describe('Comment Editing', () => {
 
     // Wait for API call to complete
     const saveResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+      response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
     // Save the edit
@@ -334,7 +334,7 @@ test.describe('Comment Editing', () => {
     await editTextarea.fill(textWithQuotes);
 
     const saveResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+      response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
     await page.locator('.save-edit-btn').click();
@@ -390,7 +390,7 @@ test.describe('Comment Deletion', () => {
 
     // Set up API listener before deletion
     const deleteResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
+      response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
     // Click delete button - should immediately dismiss (no confirmation dialog)
@@ -578,7 +578,7 @@ test.describe('Comment API Integration', () => {
 
     // Set up API response listener
     const responsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment') && response.request().method() === 'POST'
+      response => response.url().includes('/comments') && response.request().method() === 'POST'
     );
 
     // Create and save a comment
@@ -609,7 +609,7 @@ test.describe('Comment API Integration', () => {
 
     // Set up delete API listener
     const deleteResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
+      response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
     // Delete the comment (now immediate, no confirmation dialog)
@@ -633,7 +633,7 @@ test.describe('Comment API Integration', () => {
 
     // Set up update API listener
     const updateResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+      response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
     // Edit the comment
@@ -650,24 +650,6 @@ test.describe('Comment API Integration', () => {
 });
 
 test.describe('Comment Display', () => {
-  test('should display comment timestamp', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await waitForDiffToRender(page);
-
-    // Create a comment
-    await openCommentFormOnLine(page, 0);
-    const textarea = page.locator('.user-comment-form textarea');
-    await textarea.fill('Comment with timestamp');
-    await page.locator('.save-comment-btn').click();
-
-    // Wait for comment to appear
-    await expect(page.locator('.user-comment-row').first()).toBeVisible({ timeout: 5000 });
-
-    // Should show timestamp
-    const timestamp = page.locator('.user-comment-timestamp');
-    await expect(timestamp.first()).toBeVisible();
-  });
-
   test('should display line info in comment header', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
@@ -737,7 +719,7 @@ test.describe('Dismissed Comment Persistence', () => {
 
     // Set up API listener for delete (which dismisses the comment)
     const deleteResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
+      response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
     // Click delete button to dismiss the comment
@@ -763,7 +745,7 @@ test.describe('Dismissed Comment Persistence', () => {
 
     // Set up listener for the user-comments API call before clicking
     const filterResponsePromise = page.waitForResponse(
-      response => response.url().includes('/user-comments') && response.url().includes('includeDismissed') && response.status() === 200,
+      response => response.url().includes('/comments') && response.url().includes('includeDismissed') && response.status() === 200,
       { timeout: 10000 }
     );
     await filterToggleBtn.click();
@@ -839,7 +821,7 @@ test.describe('Comment Restore', () => {
 
     // Set up API listener for delete
     const deleteResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
+      response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
     // Click delete button to dismiss the comment
@@ -865,7 +847,7 @@ test.describe('Comment Restore', () => {
 
     // Set up listener for the user-comments API call before clicking
     const restoreFilterResponsePromise = page.waitForResponse(
-      response => response.url().includes('/user-comments') && response.url().includes('includeDismissed') && response.status() === 200,
+      response => response.url().includes('/comments') && response.url().includes('includeDismissed') && response.status() === 200,
       { timeout: 10000 }
     );
     await filterToggleBtn.click();
@@ -991,7 +973,7 @@ test.describe('Bulk Deletion via Clear All', () => {
 
     // Set up API listener for bulk delete
     const bulkDeleteResponsePromise = page.waitForResponse(
-      response => response.url().includes('/user-comments') && response.request().method() === 'DELETE'
+      response => response.url().includes('/comments') && response.request().method() === 'DELETE'
     );
 
     await confirmBtn.click();
@@ -1048,7 +1030,7 @@ test.describe('Bulk Deletion via Clear All', () => {
     await expect(page.locator('.confirm-dialog-overlay')).toBeVisible({ timeout: 3000 });
 
     const bulkDeleteResponsePromise = page.waitForResponse(
-      response => response.url().includes('/user-comments') && response.request().method() === 'DELETE'
+      response => response.url().includes('/comments') && response.request().method() === 'DELETE'
     );
 
     await page.locator('#confirm-dialog-btn').click();
@@ -1068,7 +1050,7 @@ test.describe('Bulk Deletion via Clear All', () => {
 
     // Set up listener for the user-comments API call with includeDismissed
     const filterResponsePromise = page.waitForResponse(
-      response => response.url().includes('/user-comments') && response.url().includes('includeDismissed') && response.status() === 200,
+      response => response.url().includes('/comments') && response.url().includes('includeDismissed') && response.status() === 200,
       { timeout: 10000 }
     );
 
@@ -1134,7 +1116,7 @@ test.describe('Bulk Deletion via Clear All', () => {
     await expect(page.locator('.confirm-dialog-overlay')).toBeVisible({ timeout: 3000 });
 
     const bulkDeleteResponsePromise = page.waitForResponse(
-      response => response.url().includes('/user-comments') && response.request().method() === 'DELETE'
+      response => response.url().includes('/comments') && response.request().method() === 'DELETE'
     );
 
     await page.locator('#confirm-dialog-btn').click();

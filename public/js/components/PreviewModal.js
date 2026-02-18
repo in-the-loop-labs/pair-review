@@ -154,15 +154,10 @@ class PreviewModal {
         return;
       }
 
-      // Determine the correct API endpoint based on mode
+      // Use unified review comments API (works for both PR and local mode)
+      const reviewId = pr.id;
       let response;
-      if (window.PAIR_REVIEW_LOCAL_MODE && window.localManager?.reviewId) {
-        // Local mode - use local API endpoint
-        response = await fetch(`/api/local/${window.localManager.reviewId}/user-comments`);
-      } else {
-        // PR mode - use PR API endpoint
-        response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/user-comments`);
-      }
+      response = await fetch(`/api/reviews/${reviewId}/comments`);
 
       if (!response.ok) {
         throw new Error('Failed to load comments');

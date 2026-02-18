@@ -17,7 +17,7 @@ import { waitForDiffToRender } from './helpers.js';
 async function seedAISuggestionsWithSummary(page) {
   // Make a direct POST request to trigger analysis
   const result = await page.evaluate(async () => {
-    const response = await fetch('/api/analyze/test-owner/test-repo/1', {
+    const response = await fetch('/api/pr/test-owner/test-repo/1/analyses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
@@ -35,7 +35,9 @@ async function seedAISuggestionsWithSummary(page) {
   // Wait for analysis to complete
   await page.waitForFunction(
     async () => {
-      const response = await fetch('/api/pr/test-owner/test-repo/1/analysis-status');
+      const reviewId = window.prManager?.currentPR?.id;
+      if (!reviewId) return false;
+      const response = await fetch(`/api/reviews/${reviewId}/analyses/status`);
       const status = await response.json();
       return !status.running;
     },

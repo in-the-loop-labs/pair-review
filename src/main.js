@@ -554,7 +554,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
             await new Promise(resolve => setTimeout(resolve, retryDelay * attempt));
           }
 
-          const response = await fetch(`http://localhost:${port}/api/analyze/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`, {
+          const response = await fetch(`http://localhost:${port}/api/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}/analyses`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }
           });
@@ -734,6 +734,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
     let worktreePath;
     let diff;
     let changedFiles;
+    const repository = normalizeRepository(prInfo.owner, prInfo.repo);
 
     // Determine working directory: --use-checkout uses current directory
     if (flags.useCheckout) {
@@ -803,7 +804,6 @@ async function performHeadlessReview(args, config, db, flags, options) {
       } else {
         // Current directory is not the target repository - find or clone it
         console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);
-        const repository = normalizeRepository(prInfo.owner, prInfo.repo);
         const result = await findRepositoryPath({
           db,
           owner: prInfo.owner,

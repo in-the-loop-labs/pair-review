@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 19;
+const CURRENT_SCHEMA_VERSION = 21;
 
 /**
  * Database schema SQL statements
@@ -203,6 +203,34 @@ const SCHEMA_SQL = {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  chat_sessions: `
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      context_comment_id INTEGER,
+      agent_session_id TEXT, -- Reserved: agent session ID for future reconnection support
+      provider TEXT NOT NULL,
+      model TEXT,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'closed', 'error')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id),
+      FOREIGN KEY (context_comment_id) REFERENCES comments(id)
+    )
+  `,
+
+  chat_messages: `
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      type TEXT DEFAULT 'message',
+      content TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+    )
   `
 };
 
@@ -233,7 +261,10 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_councils_name ON councils(name)',
   // Voice tracking indexes
   'CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)',
-  'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)'
+  'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)',
+  // Chat indexes
+  'CREATE INDEX IF NOT EXISTS idx_chat_sessions_review ON chat_sessions(review_id)',
+  'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)'
 ];
 
 /**
@@ -942,6 +973,83 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 19 complete');
+  },
+
+  // Migration to version 20: adds chat_sessions and chat_messages tables
+  20: (db) => {
+    console.log('Running migration to schema version 20...');
+
+    // Create chat_sessions table if it doesn't exist
+    if (!tableExists(db, 'chat_sessions')) {
+      db.exec(`
+        CREATE TABLE chat_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          review_id INTEGER NOT NULL,
+          context_comment_id INTEGER,
+          agent_session_id TEXT, -- Reserved: agent session ID for future reconnection support
+          provider TEXT NOT NULL,
+          model TEXT,
+          status TEXT DEFAULT 'active' CHECK(status IN ('active', 'closed', 'error')),
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (review_id) REFERENCES reviews(id),
+          FOREIGN KEY (context_comment_id) REFERENCES comments(id)
+        )
+      `);
+      console.log('  Created chat_sessions table');
+
+      // Create index
+      db.exec('CREATE INDEX IF NOT EXISTS idx_chat_sessions_review ON chat_sessions(review_id)');
+      console.log('  Created index for chat_sessions table');
+    } else {
+      console.log('  Table chat_sessions already exists');
+    }
+
+    // Create chat_messages table if it doesn't exist
+    if (!tableExists(db, 'chat_messages')) {
+      db.exec(`
+        CREATE TABLE chat_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id INTEGER NOT NULL,
+          role TEXT NOT NULL,
+          type TEXT DEFAULT 'message',
+          content TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+        )
+      `);
+      console.log('  Created chat_messages table');
+
+      // Create index
+      db.exec('CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)');
+      console.log('  Created index for chat_messages table');
+    } else {
+      console.log('  Table chat_messages already exists');
+    }
+
+    console.log('Migration to schema version 20 complete');
+  },
+
+  // Migration to version 21: adds type column to chat_messages for distinguishing context vs message
+  21: (db) => {
+    console.log('Running migration to schema version 21...');
+
+    const hasType = columnExists(db, 'chat_messages', 'type');
+    if (!hasType) {
+      try {
+        db.prepare(`ALTER TABLE chat_messages ADD COLUMN type TEXT DEFAULT 'message'`).run();
+        console.log('  Added type column to chat_messages');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column type already exists (race condition)');
+      }
+    } else {
+      console.log('  Column type already exists');
+    }
+
+    console.log('Migration to schema version 21 complete');
   }
 };
 

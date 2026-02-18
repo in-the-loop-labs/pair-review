@@ -123,8 +123,8 @@ const { query, queryOne, run, WorktreeRepository, RepoSettingsRepository, Review
 
 // Load the route modules once (will use the mocked modules)
 // Order matters: more specific routes must be mounted before general ones
-const analysisRoutes = require('../../src/routes/analysis');
-const commentsRoutes = require('../../src/routes/comments');
+const analysisRoutes = require('../../src/routes/analyses');
+const reviewsRoutes = require('../../src/routes/reviews');
 const configRoutes = require('../../src/routes/config');
 const worktreesRoutes = require('../../src/routes/worktrees');
 const prRoutes = require('../../src/routes/pr');
@@ -150,7 +150,7 @@ function createTestApp(db) {
   // Mount routes in the same order as server.js
   // More specific routes first to ensure proper route matching
   app.use('/', analysisRoutes);
-  app.use('/', commentsRoutes);
+  app.use('/', reviewsRoutes);
   app.use('/', configRoutes);
   app.use('/', worktreesRoutes);
   app.use('/', localRoutes);
@@ -832,18 +832,17 @@ describe('User Comment Endpoints', () => {
   describe('POST /api/user-comment', () => {
     it('should return 400 when required fields are missing', async () => {
       const response = await request(app)
-        .post('/api/user-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({ review_id: prId });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Missing required fields');
     });
 
-    it('should return 404 when PR not found', async () => {
+    it('should return 404 when review not found', async () => {
       const response = await request(app)
-        .post('/api/user-comment')
+        .post(`/api/reviews/9999/comments`)
         .send({
-          review_id: 9999,
           file: 'file.js',
           line_start: 10,
           body: 'Test comment'
@@ -854,9 +853,8 @@ describe('User Comment Endpoints', () => {
 
     it('should create user comment successfully', async () => {
       const response = await request(app)
-        .post('/api/user-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
-          review_id: prId,
           file: 'file.js',
           line_start: 10,
           line_end: 15,
@@ -870,7 +868,7 @@ describe('User Comment Endpoints', () => {
 
     it('should create comment with optional fields', async () => {
       const response = await request(app)
-        .post('/api/user-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'file.js',
@@ -896,18 +894,17 @@ describe('User Comment Endpoints', () => {
   describe('POST /api/file-comment', () => {
     it('should return 400 when required fields are missing', async () => {
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({ review_id: prId });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Missing required fields');
     });
 
-    it('should return 404 when PR not found', async () => {
+    it('should return 404 when review not found', async () => {
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/9999/comments`)
         .send({
-          review_id: 9999,
           file: 'file.js',
           body: 'Test file-level comment'
         });
@@ -917,9 +914,8 @@ describe('User Comment Endpoints', () => {
 
     it('should create file-level comment successfully', async () => {
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
-          review_id: prId,
           file: 'file.js',
           body: 'This is a file-level comment'
         });
@@ -932,7 +928,7 @@ describe('User Comment Endpoints', () => {
 
     it('should create file-level comment with is_file_level=1 and NULL line fields', async () => {
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'file.js',
@@ -953,7 +949,7 @@ describe('User Comment Endpoints', () => {
 
     it('should create file-level comment with optional commit_sha', async () => {
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'file.js',
@@ -980,7 +976,7 @@ describe('User Comment Endpoints', () => {
 
       // Now adopt it as a file-level comment with metadata
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'file.js',
@@ -1013,7 +1009,7 @@ describe('User Comment Endpoints', () => {
 
       // Create a file-level comment with all metadata
       const createResponse = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'test.js',
@@ -1040,7 +1036,7 @@ describe('User Comment Endpoints', () => {
     it('should allow regular user comments without metadata', async () => {
       // Regular user file-level comment without parent_id, type, or title
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'file.js',
@@ -1068,7 +1064,7 @@ describe('User Comment Endpoints', () => {
 
       // Simulate adopting an AI suggestion and saving it
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'file.js',
@@ -1083,7 +1079,7 @@ describe('User Comment Endpoints', () => {
 
       // Simulate page reload by fetching user comments
       const getResponse = await request(app)
-        .get('/api/pr/owner/repo/1/user-comments');
+        .get(`/api/reviews/${prId}/comments`);
 
       expect(getResponse.status).toBe(200);
       expect(getResponse.body.comments).toBeDefined();
@@ -1099,7 +1095,7 @@ describe('User Comment Endpoints', () => {
 
     it('should handle partial metadata (only type)', async () => {
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'file.js',
@@ -1117,7 +1113,7 @@ describe('User Comment Endpoints', () => {
 
     it('should handle partial metadata (only title)', async () => {
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'file.js',
@@ -1135,7 +1131,7 @@ describe('User Comment Endpoints', () => {
 
     it('should default type to "comment" when not provided', async () => {
       const response = await request(app)
-        .post('/api/file-comment')
+        .post(`/api/reviews/${prId}/comments`)
         .send({
           review_id: prId,
           file: 'file.js',
@@ -1152,7 +1148,7 @@ describe('User Comment Endpoints', () => {
   describe('GET /api/pr/:owner/:repo/:number/user-comments', () => {
     it('should return empty array when no comments exist', async () => {
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/user-comments');
+        .get(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments).toEqual([]);
@@ -1166,7 +1162,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/user-comments');
+        .get(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1185,7 +1181,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/user-comments');
+        .get(`/api/reviews/${prId}/comments`);
 
       expect(response.body.comments.length).toBe(1);
       expect(response.body.comments[0].body).toBe('Active comment');
@@ -1204,7 +1200,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/user-comments');
+        .get(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments.length).toBe(2);
@@ -1225,7 +1221,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .put(`/api/user-comment/${lastID}`)
+        .put(`/api/reviews/${prId}/comments/${lastID}`)
         .send({ body: '' });
 
       expect(response.status).toBe(400);
@@ -1234,7 +1230,7 @@ describe('User Comment Endpoints', () => {
 
     it('should return 404 for non-existent comment', async () => {
       const response = await request(app)
-        .put('/api/user-comment/9999')
+        .put(`/api/reviews/${prId}/comments/9999`)
         .send({ body: 'Updated' });
 
       expect(response.status).toBe(404);
@@ -1247,7 +1243,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .put(`/api/user-comment/${lastID}`)
+        .put(`/api/reviews/${prId}/comments/${lastID}`)
         .send({ body: 'Updated' });
 
       expect(response.status).toBe(404);
@@ -1261,7 +1257,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .put(`/api/user-comment/${lastID}`)
+        .put(`/api/reviews/${prId}/comments/${lastID}`)
         .send({ body: 'Updated comment' });
 
       expect(response.status).toBe(200);
@@ -1276,7 +1272,7 @@ describe('User Comment Endpoints', () => {
   describe('DELETE /api/user-comment/:id', () => {
     it('should return 404 for non-existent comment', async () => {
       const response = await request(app)
-        .delete('/api/user-comment/9999');
+        .delete(`/api/reviews/${prId}/comments/9999`);
 
       expect(response.status).toBe(404);
     });
@@ -1288,7 +1284,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .delete(`/api/user-comment/${lastID}`);
+        .delete(`/api/reviews/${prId}/comments/${lastID}`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1313,7 +1309,7 @@ describe('User Comment Endpoints', () => {
       `, [prId, suggestionId]);
 
       const response = await request(app)
-        .delete(`/api/user-comment/${commentResult.lastID}`);
+        .delete(`/api/reviews/${prId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1332,7 +1328,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .delete(`/api/user-comment/${commentResult.lastID}`);
+        .delete(`/api/reviews/${prId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1343,7 +1339,7 @@ describe('User Comment Endpoints', () => {
   describe('PUT /api/user-comment/:id/restore', () => {
     it('should return 404 for non-existent comment', async () => {
       const response = await request(app)
-        .put('/api/user-comment/9999/restore');
+        .put(`/api/reviews/${prId}/comments/9999/restore`);
 
       expect(response.status).toBe(404);
       expect(response.body.error).toContain('not found');
@@ -1357,7 +1353,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .put(`/api/user-comment/${lastID}/restore`);
+        .put(`/api/reviews/${prId}/comments/${lastID}/restore`);
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('not dismissed');
@@ -1371,7 +1367,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .put(`/api/user-comment/${lastID}/restore`);
+        .put(`/api/reviews/${prId}/comments/${lastID}/restore`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1399,7 +1395,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/user-comments');
+        .get(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments).toHaveLength(1);
@@ -1420,7 +1416,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/user-comments?includeDismissed=true');
+        .get(`/api/reviews/${prId}/comments?includeDismissed=true`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments).toHaveLength(2);
@@ -1444,7 +1440,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/user-comments?includeDismissed=false');
+        .get(`/api/reviews/${prId}/comments?includeDismissed=false`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments).toHaveLength(1);
@@ -1452,11 +1448,18 @@ describe('User Comment Endpoints', () => {
     });
   });
 
-  describe('DELETE /api/pr/:owner/:repo/:number/user-comments', () => {
-    it('should return 200 with 0 deletions for non-existent PR', async () => {
-      // If no review exists for this PR, there are no comments to delete
+  describe('DELETE /api/reviews/:reviewId/comments', () => {
+    it('should return 404 for non-existent review ID', async () => {
       const response = await request(app)
-        .delete('/api/pr/owner/repo/999/user-comments');
+        .delete('/api/reviews/99999/comments');
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toMatch(/Review #99999 not found/);
+    });
+
+    it('should return 200 with 0 deletions when review has no comments', async () => {
+      const response = await request(app)
+        .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1476,7 +1479,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .delete('/api/pr/owner/repo/1/user-comments');
+        .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1504,7 +1507,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .delete('/api/pr/owner/repo/1/user-comments');
+        .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1543,7 +1546,7 @@ describe('User Comment Endpoints', () => {
       `, [prId, suggestion2Id]);
 
       const response = await request(app)
-        .delete('/api/pr/owner/repo/1/user-comments');
+        .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1573,7 +1576,7 @@ describe('User Comment Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .delete('/api/pr/owner/repo/1/user-comments');
+        .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1583,7 +1586,7 @@ describe('User Comment Endpoints', () => {
 
     it('should return 0 deletedCount and empty dismissedSuggestionIds when no comments exist', async () => {
       const response = await request(app)
-        .delete('/api/pr/owner/repo/1/user-comments');
+        .delete(`/api/reviews/${prId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -1616,17 +1619,17 @@ describe('AI Suggestion Endpoints', () => {
     vi.clearAllMocks();
   });
 
-  describe('GET /api/pr/:owner/:repo/:number/ai-suggestions', () => {
-    it('should return 404 for non-existent PR', async () => {
+  describe('GET /api/reviews/:reviewId/suggestions', () => {
+    it('should return 404 for non-existent review', async () => {
       const response = await request(app)
-        .get('/api/pr/owner/repo/999/ai-suggestions');
+        .get('/api/reviews/99999/suggestions');
 
       expect(response.status).toBe(404);
     });
 
     it('should return empty array when no suggestions exist', async () => {
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
       expect(response.body.suggestions).toEqual([]);
@@ -1640,7 +1643,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
       expect(response.body.suggestions.length).toBe(1);
@@ -1665,7 +1668,7 @@ describe('AI Suggestion Endpoints', () => {
 
       // Filter for level 1 only
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/ai-suggestions?levels=1');
+        .get(`/api/reviews/${prId}/suggestions?levels=1`);
 
       expect(response.status).toBe(200);
       expect(response.body.suggestions.length).toBe(1);
@@ -1684,7 +1687,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, runId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.body.suggestions.length).toBe(1);
       expect(response.body.suggestions[0].body).toBe('Final');
@@ -1712,7 +1715,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, newTime]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions`);
 
       // Should only return the suggestion from run-2 (the latest run based on created_at)
       expect(response.status).toBe(200);
@@ -1735,7 +1738,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, runId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
       // Filter by our test run ID to ensure test isolation
@@ -1765,7 +1768,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, runId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
       // Filter by our test run ID to ensure test isolation
@@ -1792,7 +1795,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, sameLine, runId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
       // Filter by our test run ID
@@ -1828,7 +1831,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, runId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions`);
 
       expect(response.status).toBe(200);
       const testSuggestions = response.body.suggestions.filter(s => s.ai_run_id === runId);
@@ -1844,7 +1847,7 @@ describe('AI Suggestion Endpoints', () => {
     });
   });
 
-  describe('POST /api/ai-suggestion/:id/status', () => {
+  describe('POST /api/reviews/:reviewId/suggestions/:id/status', () => {
     it('should return 400 for invalid status', async () => {
       const { lastID } = await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, body, status)
@@ -1852,7 +1855,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .post(`/api/ai-suggestion/${lastID}/status`)
+        .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
         .send({ status: 'invalid_status' });
 
       expect(response.status).toBe(400);
@@ -1861,7 +1864,7 @@ describe('AI Suggestion Endpoints', () => {
 
     it('should return 404 for non-existent suggestion', async () => {
       const response = await request(app)
-        .post('/api/ai-suggestion/9999/status')
+        .post(`/api/reviews/${prId}/suggestions/9999/status`)
         .send({ status: 'dismissed' });
 
       expect(response.status).toBe(404);
@@ -1874,7 +1877,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .post(`/api/ai-suggestion/${lastID}/status`)
+        .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
         .send({ status: 'dismissed' });
 
       expect(response.status).toBe(200);
@@ -1892,7 +1895,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .post(`/api/ai-suggestion/${lastID}/status`)
+        .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
         .send({ status: 'adopted' });
 
       expect(response.status).toBe(200);
@@ -1918,7 +1921,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [adoptedCommentId, suggestionId]);
 
       const response = await request(app)
-        .post(`/api/ai-suggestion/${suggestionId}/status`)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/status`)
         .send({ status: 'active' });
 
       expect(response.status).toBe(200);
@@ -1929,10 +1932,10 @@ describe('AI Suggestion Endpoints', () => {
     });
   });
 
-  describe('GET /api/pr/:owner/:repo/:number/has-ai-suggestions', () => {
+  describe('GET /api/reviews/:reviewId/suggestions/check', () => {
     it('should return false when no suggestions exist and no analysis run', async () => {
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/has-ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(response.status).toBe(200);
       expect(response.body.hasSuggestions).toBe(false);
@@ -1946,7 +1949,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/has-ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(response.status).toBe(200);
       expect(response.body.hasSuggestions).toBe(true);
@@ -1961,7 +1964,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/has-ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(response.status).toBe(200);
       expect(response.body.hasSuggestions).toBe(false);
@@ -2013,7 +2016,7 @@ describe('AI Suggestion Endpoints', () => {
       `, [prId, newTime]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/has-ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(response.status).toBe(200);
       expect(response.body.hasSuggestions).toBe(true);
@@ -2042,21 +2045,21 @@ describe('AI Suggestion Endpoints', () => {
 
       // Without runId, should return latest (run-2) summary
       const responseLatest = await request(app)
-        .get('/api/pr/owner/repo/1/has-ai-suggestions');
+        .get(`/api/reviews/${prId}/suggestions/check`);
 
       expect(responseLatest.status).toBe(200);
       expect(responseLatest.body.summary).toBe('Summary from second run');
 
       // With runId=run-1, should return first run summary
       const responseRun1 = await request(app)
-        .get('/api/pr/owner/repo/1/has-ai-suggestions?runId=run-1');
+        .get(`/api/reviews/${prId}/suggestions/check?runId=run-1`);
 
       expect(responseRun1.status).toBe(200);
       expect(responseRun1.body.summary).toBe('Summary from first run');
 
       // With runId=run-2, should return second run summary
       const responseRun2 = await request(app)
-        .get('/api/pr/owner/repo/1/has-ai-suggestions?runId=run-2');
+        .get(`/api/reviews/${prId}/suggestions/check?runId=run-2`);
 
       expect(responseRun2.status).toBe(200);
       expect(responseRun2.body.summary).toBe('Summary from second run');
@@ -2070,7 +2073,7 @@ describe('AI Suggestion Endpoints', () => {
 
       // Request with non-existent runId should fall back to review summary
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/has-ai-suggestions?runId=non-existent-run');
+        .get(`/api/reviews/${prId}/suggestions/check?runId=non-existent-run`);
 
       expect(response.status).toBe(200);
       expect(response.body.summary).toBe('Review fallback summary');
@@ -2803,7 +2806,7 @@ describe('Error Handling', () => {
 
   it('should handle malformed JSON gracefully', async () => {
     const response = await request(app)
-      .post('/api/user-comment')
+      .post('/api/reviews/1/comments')
       .set('Content-Type', 'application/json')
       .send('not valid json');
 
@@ -2840,10 +2843,17 @@ describe('Analysis Status Endpoints', () => {
     vi.clearAllMocks();
   });
 
-  describe('GET /api/pr/:owner/:repo/:number/analysis-status', () => {
+  describe('GET /api/reviews/:reviewId/analyses/status (PR mode)', () => {
     it('should return not running when no analysis in progress', async () => {
+      // Insert a review record for the PR so the endpoint can find it
+      const reviewResult = await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type)
+        VALUES (1, 'owner/repo', 'draft', 'pr')
+      `);
+      const reviewId = reviewResult.lastID;
+
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/analysis-status');
+        .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
       expect(response.body.running).toBe(false);
@@ -2866,7 +2876,7 @@ describe('Analysis Status Endpoints', () => {
       `, [analysisId, reviewId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/analysis-status');
+        .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
       expect(response.body.running).toBe(true);
@@ -2874,8 +2884,7 @@ describe('Analysis Status Endpoints', () => {
       expect(response.body.status).toBeDefined();
       expect(response.body.status.id).toBe(analysisId);
       expect(response.body.status.status).toBe('running');
-      expect(response.body.status.prNumber).toBe(1);
-      expect(response.body.status.repository).toBe('owner/repo');
+      expect(response.body.status.reviewId).toBe(reviewId);
       expect(response.body.status.progress).toBe('Analysis in progress...');
       expect(response.body.status.filesAnalyzed).toBe(3);
       expect(response.body.status.levels).toBeDefined();
@@ -2898,7 +2907,7 @@ describe('Analysis Status Endpoints', () => {
       `, ['db-fallback-completed-pr', reviewId]);
 
       const response = await request(app)
-        .get('/api/pr/owner/repo/1/analysis-status');
+        .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
       expect(response.body.running).toBe(false);
@@ -2906,20 +2915,20 @@ describe('Analysis Status Endpoints', () => {
     });
   });
 
-  describe('GET /api/analyze/status/:id', () => {
+  describe('GET /api/analyses/:id/status', () => {
     it('should return 404 for non-existent analysis', async () => {
       const response = await request(app)
-        .get('/api/analyze/status/non-existent-id');
+        .get('/api/analyses/non-existent-id/status');
 
       expect(response.status).toBe(404);
       expect(response.body.error).toContain('not found');
     });
   });
 
-  describe('POST /api/analyze/cancel/:id', () => {
+  describe('POST /api/analyses/:id/cancel', () => {
     it('should return 404 for non-existent analysis', async () => {
       const response = await request(app)
-        .post('/api/analyze/cancel/non-existent-id');
+        .post('/api/analyses/non-existent-id/cancel');
 
       expect(response.status).toBe(404);
       expect(response.body.error).toContain('not found');
@@ -2927,14 +2936,15 @@ describe('Analysis Status Endpoints', () => {
 
     it('should cancel a running analysis', async () => {
       // Import the shared module to set up an active analysis
-      const { activeAnalyses, prToAnalysisId, getPRKey } = require('../../src/routes/shared');
+      const { activeAnalyses, reviewToAnalysisId } = require('../../src/routes/shared');
 
       const analysisId = 'test-cancel-analysis-id';
-      const prKey = getPRKey('owner', 'repo', 1);
+      const reviewId = 42;
 
       // Set up an active analysis
       activeAnalyses.set(analysisId, {
         id: analysisId,
+        reviewId,
         prNumber: 1,
         repository: 'owner/repo',
         status: 'running',
@@ -2947,11 +2957,11 @@ describe('Analysis Status Endpoints', () => {
           4: { status: 'pending', progress: 'Pending' }
         }
       });
-      prToAnalysisId.set(prKey, analysisId);
+      reviewToAnalysisId.set(reviewId, analysisId);
 
       try {
         const response = await request(app)
-          .post(`/api/analyze/cancel/${analysisId}`);
+          .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);
@@ -2967,8 +2977,8 @@ describe('Analysis Status Endpoints', () => {
         expect(updatedAnalysis.levels[2].status).toBe('cancelled');
         expect(updatedAnalysis.levels[3].status).toBe('cancelled');
 
-        // Verify prToAnalysisId mapping was cleaned up
-        expect(prToAnalysisId.has(prKey)).toBe(false);
+        // Verify reviewToAnalysisId mapping was cleaned up
+        expect(reviewToAnalysisId.has(reviewId)).toBe(false);
       } finally {
         // Cleanup always runs
         activeAnalyses.delete(analysisId);
@@ -2991,7 +3001,7 @@ describe('Analysis Status Endpoints', () => {
 
       try {
         const response = await request(app)
-          .post(`/api/analyze/cancel/${analysisId}`);
+          .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);
@@ -3018,7 +3028,7 @@ describe('Analysis Status Endpoints', () => {
 
       try {
         const response = await request(app)
-          .post(`/api/analyze/cancel/${analysisId}`);
+          .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);
@@ -3054,7 +3064,7 @@ describe('Analysis Status Endpoints', () => {
 
       try {
         const response = await request(app)
-          .post(`/api/analyze/cancel/${analysisId}`);
+          .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);
@@ -3114,7 +3124,7 @@ describe('Analysis Status Endpoints', () => {
 
       try {
         const response = await request(app)
-          .post(`/api/analyze/cancel/${analysisId}`);
+          .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(response.status).toBe(200);
         expect(response.body.success).toBe(true);
@@ -3168,7 +3178,7 @@ describe('Analysis Status Endpoints', () => {
 
         // Step 2: Cancel the analysis via the cancel endpoint
         const cancelResponse = await request(app)
-          .post(`/api/analyze/cancel/${analysisId}`);
+          .post(`/api/analyses/${analysisId}/cancel`);
 
         expect(cancelResponse.status).toBe(200);
         expect(cancelResponse.body.status).toBe('cancelled');
@@ -3198,7 +3208,7 @@ describe('Analysis Status Endpoints', () => {
     });
   });
 
-  describe('GET /api/local/:reviewId/analysis-status', () => {
+  describe('GET /api/reviews/:reviewId/analyses/status (local mode)', () => {
     it('should return running when DB has a running analysis for local review', async () => {
       // Insert a local review record
       const reviewResult = await run(db, `
@@ -3215,7 +3225,7 @@ describe('Analysis Status Endpoints', () => {
       `, [analysisId, reviewId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/analysis-status`);
+        .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
       expect(response.body.running).toBe(true);
@@ -3223,7 +3233,6 @@ describe('Analysis Status Endpoints', () => {
       expect(response.body.status).toBeDefined();
       expect(response.body.status.id).toBe(analysisId);
       expect(response.body.status.reviewId).toBe(reviewId);
-      expect(response.body.status.reviewType).toBe('local');
       expect(response.body.status.status).toBe('running');
       expect(response.body.status.progress).toBe('Analysis in progress...');
       expect(response.body.status.filesAnalyzed).toBe(5);
@@ -3247,7 +3256,7 @@ describe('Analysis Status Endpoints', () => {
       `, ['db-fallback-completed-local', reviewId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/analysis-status`);
+        .get(`/api/reviews/${reviewId}/analyses/status`);
 
       expect(response.status).toBe(200);
       expect(response.body.running).toBe(false);
@@ -3774,7 +3783,7 @@ describe('File Content Endpoints', () => {
         .query({ owner: 'local', repo: 'test-repo', number: '999' });
 
       expect(response.status).toBe(404);
-      expect(response.body.error).toContain('Local review not found');
+      expect(response.body.error).toContain('not found');
     });
 
     it('should return 404 when review exists but local_path is NULL', async () => {
@@ -4209,7 +4218,7 @@ describe('Local Review File-Level Comments', () => {
   describe('POST /api/local/:reviewId/file-comment', () => {
     it('should return 400 when required fields are missing', async () => {
       const response = await request(app)
-        .post(`/api/local/${reviewId}/file-comment`)
+        .post(`/api/reviews/${reviewId}/comments`)
         .send({ file: 'test.js' });
 
       expect(response.status).toBe(400);
@@ -4218,7 +4227,7 @@ describe('Local Review File-Level Comments', () => {
 
     it('should return 400 when body is empty', async () => {
       const response = await request(app)
-        .post(`/api/local/${reviewId}/file-comment`)
+        .post(`/api/reviews/${reviewId}/comments`)
         .send({
           file: 'test.js',
           body: '   '
@@ -4230,19 +4239,19 @@ describe('Local Review File-Level Comments', () => {
 
     it('should return 404 when review not found', async () => {
       const response = await request(app)
-        .post('/api/local/9999/file-comment')
+        .post('/api/reviews/9999/comments')
         .send({
           file: 'test.js',
           body: 'File-level comment'
         });
 
       expect(response.status).toBe(404);
-      expect(response.body.error).toContain('Local review not found');
+      expect(response.body.error).toContain('not found');
     });
 
     it('should create file-level comment successfully', async () => {
       const response = await request(app)
-        .post(`/api/local/${reviewId}/file-comment`)
+        .post(`/api/reviews/${reviewId}/comments`)
         .send({
           file: 'test.js',
           body: 'This is a file-level comment'
@@ -4256,7 +4265,7 @@ describe('Local Review File-Level Comments', () => {
 
     it('should create file-level comment with is_file_level=1 and NULL line fields', async () => {
       const response = await request(app)
-        .post(`/api/local/${reviewId}/file-comment`)
+        .post(`/api/reviews/${reviewId}/comments`)
         .send({
           file: 'test.js',
           body: 'File-level comment'
@@ -4285,7 +4294,7 @@ describe('Local Review File-Level Comments', () => {
 
       // Now adopt it as a file-level comment with metadata
       const response = await request(app)
-        .post(`/api/local/${reviewId}/file-comment`)
+        .post(`/api/reviews/${reviewId}/comments`)
         .send({
           file: 'test.js',
           body: 'AI suggestion',
@@ -4310,25 +4319,25 @@ describe('Local Review File-Level Comments', () => {
   describe('PUT /api/local/:reviewId/file-comment/:commentId', () => {
     it('should return 400 for invalid review ID', async () => {
       const response = await request(app)
-        .put('/api/local/invalid/file-comment/1')
+        .put('/api/reviews/invalid/comments/1')
         .send({ body: 'Updated comment' });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Invalid review ID');
     });
 
-    it('should return 400 for invalid comment ID', async () => {
+    it('should return 404 for invalid comment ID', async () => {
       const response = await request(app)
-        .put(`/api/local/${reviewId}/file-comment/invalid`)
+        .put(`/api/reviews/${reviewId}/comments/invalid`)
         .send({ body: 'Updated comment' });
 
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('Invalid comment ID');
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
     });
 
     it('should return 400 when body is empty', async () => {
       const response = await request(app)
-        .put(`/api/local/${reviewId}/file-comment/1`)
+        .put(`/api/reviews/${reviewId}/comments/1`)
         .send({ body: '   ' });
 
       expect(response.status).toBe(400);
@@ -4337,14 +4346,14 @@ describe('Local Review File-Level Comments', () => {
 
     it('should return 404 when file-level comment not found', async () => {
       const response = await request(app)
-        .put(`/api/local/${reviewId}/file-comment/9999`)
+        .put(`/api/reviews/${reviewId}/comments/9999`)
         .send({ body: 'Updated comment' });
 
       expect(response.status).toBe(404);
-      expect(response.body.error).toContain('File-level comment not found');
+      expect(response.body.error).toContain('not found');
     });
 
-    it('should not update line-level comment via file-comment endpoint', async () => {
+    it('should update line-level comment via unified comment endpoint', async () => {
       // Create a line-level comment
       const lineCommentResult = await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, body, status, is_file_level)
@@ -4352,11 +4361,11 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .put(`/api/local/${reviewId}/file-comment/${lineCommentResult.lastID}`)
+        .put(`/api/reviews/${reviewId}/comments/${lineCommentResult.lastID}`)
         .send({ body: 'Updated comment' });
 
-      expect(response.status).toBe(404);
-      expect(response.body.error).toContain('File-level comment not found');
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
     });
 
     it('should update file-level comment successfully', async () => {
@@ -4367,12 +4376,12 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .put(`/api/local/${reviewId}/file-comment/${fileCommentResult.lastID}`)
+        .put(`/api/reviews/${reviewId}/comments/${fileCommentResult.lastID}`)
         .send({ body: 'Updated file-level comment' });
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
-      expect(response.body.message).toContain('File-level comment updated');
+      expect(response.body.message).toContain('updated');
 
       // Verify the update
       const comment = await queryOne(db, `
@@ -4386,29 +4395,29 @@ describe('Local Review File-Level Comments', () => {
   describe('DELETE /api/local/:reviewId/file-comment/:commentId', () => {
     it('should return 400 for invalid review ID', async () => {
       const response = await request(app)
-        .delete('/api/local/invalid/file-comment/1');
+        .delete('/api/reviews/invalid/comments/1');
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Invalid review ID');
     });
 
-    it('should return 400 for invalid comment ID', async () => {
+    it('should return 404 for invalid comment ID', async () => {
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/file-comment/invalid`);
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('Invalid comment ID');
-    });
-
-    it('should return 404 when file-level comment not found', async () => {
-      const response = await request(app)
-        .delete(`/api/local/${reviewId}/file-comment/9999`);
+        .delete(`/api/reviews/${reviewId}/comments/invalid`);
 
       expect(response.status).toBe(404);
-      expect(response.body.error).toContain('File-level comment not found');
+      expect(response.body.error).toContain('not found');
     });
 
-    it('should not delete line-level comment via file-comment endpoint', async () => {
+    it('should return 404 when comment not found', async () => {
+      const response = await request(app)
+        .delete(`/api/reviews/${reviewId}/comments/9999`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should delete line-level comment via unified comment endpoint', async () => {
       // Create a line-level comment
       const lineCommentResult = await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, body, status, is_file_level)
@@ -4416,10 +4425,10 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/file-comment/${lineCommentResult.lastID}`);
+        .delete(`/api/reviews/${reviewId}/comments/${lineCommentResult.lastID}`);
 
-      expect(response.status).toBe(404);
-      expect(response.body.error).toContain('File-level comment not found');
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
     });
 
     it('should soft delete file-level comment successfully', async () => {
@@ -4430,11 +4439,11 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/file-comment/${fileCommentResult.lastID}`);
+        .delete(`/api/reviews/${reviewId}/comments/${fileCommentResult.lastID}`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
-      expect(response.body.message).toContain('File-level comment deleted');
+      expect(response.body.message).toContain('deleted');
 
       // Verify the soft delete
       const comment = await queryOne(db, `
@@ -4459,7 +4468,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId, suggestionId]);
 
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/file-comment/${commentResult.lastID}`);
+        .delete(`/api/reviews/${reviewId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -4478,7 +4487,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/file-comment/${commentResult.lastID}`);
+        .delete(`/api/reviews/${reviewId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -4495,7 +4504,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/user-comments`);
+        .get(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments).toHaveLength(1);
@@ -4517,7 +4526,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/user-comments`);
+        .get(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments).toHaveLength(2);
@@ -4543,7 +4552,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/user-comments`);
+        .get(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments).toHaveLength(1);
@@ -4564,7 +4573,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/user-comments?includeDismissed=true`);
+        .get(`/api/reviews/${reviewId}/comments?includeDismissed=true`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments).toHaveLength(2);
@@ -4588,7 +4597,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/user-comments?includeDismissed=false`);
+        .get(`/api/reviews/${reviewId}/comments?includeDismissed=false`);
 
       expect(response.status).toBe(200);
       expect(response.body.comments).toHaveLength(1);
@@ -4596,7 +4605,7 @@ describe('Local Review File-Level Comments', () => {
     });
   });
 
-  describe('GET /api/local/:reviewId/suggestions', () => {
+  describe('GET /api/reviews/:reviewId/suggestions (local mode)', () => {
     it('should return file-level AI suggestions with is_file_level=1', async () => {
       // Create a file-level AI suggestion
       await run(db, `
@@ -4605,7 +4614,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/suggestions`);
+        .get(`/api/reviews/${reviewId}/suggestions`);
 
       expect(response.status).toBe(200);
       expect(response.body.suggestions).toHaveLength(1);
@@ -4627,7 +4636,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/suggestions`);
+        .get(`/api/reviews/${reviewId}/suggestions`);
 
       expect(response.status).toBe(200);
       expect(response.body.suggestions).toHaveLength(2);
@@ -4650,7 +4659,7 @@ describe('Local Review File-Level Comments', () => {
       `, [reviewId, runId]);
 
       const response = await request(app)
-        .get(`/api/local/${reviewId}/suggestions`);
+        .get(`/api/reviews/${reviewId}/suggestions`);
 
       expect(response.status).toBe(200);
       const testSuggestions = response.body.suggestions.filter(s => s.ai_run_id === runId);
@@ -4671,7 +4680,7 @@ describe('Local Review File-Level Comments', () => {
 // Local Mode Has-AI-Suggestions Endpoint Tests
 // ============================================================================
 
-describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
+describe('GET /api/reviews/:reviewId/suggestions/check (local mode)', () => {
   let app, db, reviewId;
 
   beforeEach(async () => {
@@ -4694,7 +4703,7 @@ describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
 
   it('should return false when no suggestions exist', async () => {
     const response = await request(app)
-      .get(`/api/local/${reviewId}/has-ai-suggestions`);
+      .get(`/api/reviews/${reviewId}/suggestions/check`);
 
     expect(response.status).toBe(200);
     expect(response.body.hasSuggestions).toBe(false);
@@ -4707,7 +4716,7 @@ describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
     `, [reviewId]);
 
     const response = await request(app)
-      .get(`/api/local/${reviewId}/has-ai-suggestions`);
+      .get(`/api/reviews/${reviewId}/suggestions/check`);
 
     expect(response.status).toBe(200);
     expect(response.body.hasSuggestions).toBe(true);
@@ -4758,7 +4767,7 @@ describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
     `, [reviewId, newTime]);
 
     const response = await request(app)
-      .get(`/api/local/${reviewId}/has-ai-suggestions`);
+      .get(`/api/reviews/${reviewId}/suggestions/check`);
 
     expect(response.status).toBe(200);
     expect(response.body.hasSuggestions).toBe(true);
@@ -4773,7 +4782,7 @@ describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
 
   it('should return 404 for non-existent review', async () => {
     const response = await request(app)
-      .get('/api/local/99999/has-ai-suggestions');
+      .get('/api/reviews/99999/suggestions/check');
 
     expect(response.status).toBe(404);
   });
@@ -4794,21 +4803,21 @@ describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
 
     // Without runId, should return latest (run-2) summary
     const responseLatest = await request(app)
-      .get(`/api/local/${reviewId}/has-ai-suggestions`);
+      .get(`/api/reviews/${reviewId}/suggestions/check`);
 
     expect(responseLatest.status).toBe(200);
     expect(responseLatest.body.summary).toBe('Summary from second run');
 
     // With runId=run-1, should return first run summary
     const responseRun1 = await request(app)
-      .get(`/api/local/${reviewId}/has-ai-suggestions?runId=run-1`);
+      .get(`/api/reviews/${reviewId}/suggestions/check?runId=run-1`);
 
     expect(responseRun1.status).toBe(200);
     expect(responseRun1.body.summary).toBe('Summary from first run');
 
     // With runId=run-2, should return second run summary
     const responseRun2 = await request(app)
-      .get(`/api/local/${reviewId}/has-ai-suggestions?runId=run-2`);
+      .get(`/api/reviews/${reviewId}/suggestions/check?runId=run-2`);
 
     expect(responseRun2.status).toBe(200);
     expect(responseRun2.body.summary).toBe('Summary from second run');
@@ -4822,7 +4831,7 @@ describe('GET /api/local/:reviewId/has-ai-suggestions', () => {
 
     // Request with non-existent runId should fall back to review summary
     const response = await request(app)
-      .get(`/api/local/${reviewId}/has-ai-suggestions?runId=non-existent-run`);
+      .get(`/api/reviews/${reviewId}/suggestions/check?runId=non-existent-run`);
 
     expect(response.status).toBe(200);
     expect(response.body.summary).toBe('Review fallback summary');
@@ -4870,7 +4879,7 @@ describe('Local Routes Dismissal Response Structure', () => {
       `, [reviewId, suggestionId]);
 
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/user-comments/${commentResult.lastID}`);
+        .delete(`/api/reviews/${reviewId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -4889,7 +4898,7 @@ describe('Local Routes Dismissal Response Structure', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/user-comments/${commentResult.lastID}`);
+        .delete(`/api/reviews/${reviewId}/comments/${commentResult.lastID}`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -4898,23 +4907,23 @@ describe('Local Routes Dismissal Response Structure', () => {
 
     it('should return 404 for non-existent comment', async () => {
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/user-comments/9999`);
+        .delete(`/api/reviews/${reviewId}/comments/9999`);
 
       expect(response.status).toBe(404);
     });
 
     it('should return 400 for invalid review ID', async () => {
       const response = await request(app)
-        .delete('/api/local/invalid/user-comments/1');
+        .delete('/api/reviews/invalid/comments/1');
 
       expect(response.status).toBe(400);
     });
 
-    it('should return 400 for invalid comment ID', async () => {
+    it('should return 404 for invalid comment ID', async () => {
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/user-comments/invalid`);
+        .delete(`/api/reviews/${reviewId}/comments/invalid`);
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(404);
     });
   });
 
@@ -4945,7 +4954,7 @@ describe('Local Routes Dismissal Response Structure', () => {
       `, [reviewId, suggestion2Id]);
 
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/user-comments`);
+        .delete(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -4987,7 +4996,7 @@ describe('Local Routes Dismissal Response Structure', () => {
       `, [reviewId, suggestionId]);
 
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/user-comments`);
+        .delete(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -5014,7 +5023,7 @@ describe('Local Routes Dismissal Response Structure', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/user-comments`);
+        .delete(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -5024,7 +5033,7 @@ describe('Local Routes Dismissal Response Structure', () => {
 
     it('should return 0 deletedCount and empty dismissedSuggestionIds when no comments exist', async () => {
       const response = await request(app)
-        .delete(`/api/local/${reviewId}/user-comments`);
+        .delete(`/api/reviews/${reviewId}/comments`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -5034,14 +5043,14 @@ describe('Local Routes Dismissal Response Structure', () => {
 
     it('should return 404 for non-existent review', async () => {
       const response = await request(app)
-        .delete('/api/local/9999/user-comments');
+        .delete('/api/reviews/9999/comments');
 
       expect(response.status).toBe(404);
     });
 
     it('should return 400 for invalid review ID', async () => {
       const response = await request(app)
-        .delete('/api/local/invalid/user-comments');
+        .delete('/api/reviews/invalid/comments');
 
       expect(response.status).toBe(400);
     });
@@ -5050,7 +5059,7 @@ describe('Local Routes Dismissal Response Structure', () => {
   describe('PUT /api/local/:reviewId/user-comments/:commentId/restore', () => {
     it('should return 404 for non-existent comment', async () => {
       const response = await request(app)
-        .put(`/api/local/${reviewId}/user-comments/9999/restore`);
+        .put(`/api/reviews/${reviewId}/comments/9999/restore`);
 
       expect(response.status).toBe(404);
       expect(response.body.error).toContain('not found');
@@ -5064,7 +5073,7 @@ describe('Local Routes Dismissal Response Structure', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .put(`/api/local/${reviewId}/user-comments/${commentResult.lastID}/restore`);
+        .put(`/api/reviews/${reviewId}/comments/${commentResult.lastID}/restore`);
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('not dismissed');
@@ -5078,7 +5087,7 @@ describe('Local Routes Dismissal Response Structure', () => {
       `, [reviewId]);
 
       const response = await request(app)
-        .put(`/api/local/${reviewId}/user-comments/${commentResult.lastID}/restore`);
+        .put(`/api/reviews/${reviewId}/comments/${commentResult.lastID}/restore`);
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -5092,7 +5101,7 @@ describe('Local Routes Dismissal Response Structure', () => {
 
     it('should return 400 for invalid review ID', async () => {
       const response = await request(app)
-        .put('/api/local/invalid/user-comments/1/restore');
+        .put('/api/reviews/invalid/comments/1/restore');
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Invalid review ID');
@@ -5100,7 +5109,7 @@ describe('Local Routes Dismissal Response Structure', () => {
 
     it('should return 400 for invalid comment ID', async () => {
       const response = await request(app)
-        .put(`/api/local/${reviewId}/user-comments/invalid/restore`);
+        .put(`/api/reviews/${reviewId}/comments/invalid/restore`);
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Invalid comment ID');
@@ -5133,7 +5142,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
     }
   });
 
-  describe('POST /api/local/:reviewId/ai-suggestion/:suggestionId/status', () => {
+  describe('POST /api/reviews/:reviewId/suggestions/:id/status (local mode)', () => {
     it('should update suggestion status to adopted', async () => {
       // Create an AI suggestion
       const suggestionResult = await run(db, `
@@ -5143,7 +5152,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       const suggestionId = suggestionResult.lastID;
 
       const response = await request(app)
-        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'adopted' });
 
       expect(response.status).toBe(200);
@@ -5164,7 +5173,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       const suggestionId = suggestionResult.lastID;
 
       const response = await request(app)
-        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'dismissed' });
 
       expect(response.status).toBe(200);
@@ -5185,7 +5194,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       const suggestionId = suggestionResult.lastID;
 
       const response = await request(app)
-        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'active' });
 
       expect(response.status).toBe(200);
@@ -5199,7 +5208,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
 
     it('should return 404 when suggestion not found', async () => {
       const response = await request(app)
-        .post(`/api/local/${reviewId}/ai-suggestion/9999/status`)
+        .post(`/api/reviews/${reviewId}/suggestions/9999/status`)
         .send({ status: 'adopted' });
 
       expect(response.status).toBe(404);
@@ -5223,7 +5232,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
 
       // Try to update the suggestion using the wrong review ID
       const response = await request(app)
-        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'adopted' });
 
       expect(response.status).toBe(403);
@@ -5239,7 +5248,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       const suggestionId = suggestionResult.lastID;
 
       const response = await request(app)
-        .post(`/api/local/${reviewId}/ai-suggestion/${suggestionId}/status`)
+        .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'invalid-status' });
 
       expect(response.status).toBe(400);
@@ -5248,20 +5257,11 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
 
     it('should return 400 for invalid review ID', async () => {
       const response = await request(app)
-        .post('/api/local/invalid/ai-suggestion/1/status')
+        .post('/api/reviews/invalid/suggestions/1/status')
         .send({ status: 'adopted' });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Invalid review ID');
-    });
-
-    it('should return 400 for invalid suggestion ID', async () => {
-      const response = await request(app)
-        .post(`/api/local/${reviewId}/ai-suggestion/invalid/status`)
-        .send({ status: 'adopted' });
-
-      expect(response.status).toBe(400);
-      expect(response.body.error).toContain('Invalid suggestion ID');
     });
   });
 });

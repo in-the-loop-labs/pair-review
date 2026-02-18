@@ -9,6 +9,7 @@ const logger = require('./utils/logger');
 
 let db = null;
 let server = null;
+let chatSessionManager = null;
 
 /**
  * Request logging middleware (disabled for cleaner output)
@@ -248,20 +249,27 @@ async function startServer(sharedDb = null) {
     // API routes - split into focused modules
     // Order matters: more specific routes must be mounted before general ones
     // to ensure proper route matching
-    const analysisRoutes = require('./routes/analysis');
+    const analysisRoutes = require('./routes/analyses');
     const worktreesRoutes = require('./routes/worktrees');
-    const commentsRoutes = require('./routes/comments');
+    const reviewsRoutes = require('./routes/reviews');
     const configRoutes = require('./routes/config');
     const prRoutes = require('./routes/pr');
     const localRoutes = require('./routes/local');
     const setupRoutes = require('./routes/setup');
     const mcpRoutes = require('./routes/mcp');
     const councilRoutes = require('./routes/councils');
+    const chatRoutes = require('./routes/chat');
+
+    // Initialize chat session manager
+    const ChatSessionManager = require('./chat/session-manager');
+    chatSessionManager = new ChatSessionManager(db);
+    app.chatSessionManager = chatSessionManager;
 
     // Mount specific routes first to ensure they match before general PR routes
+    app.use('/', chatRoutes);
     app.use('/', analysisRoutes);
     app.use('/', councilRoutes);
-    app.use('/', commentsRoutes);
+    app.use('/', reviewsRoutes);
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);
     app.use('/', localRoutes);
@@ -318,9 +326,18 @@ async function startServer(sharedDb = null) {
 /**
  * Graceful shutdown handler
  */
-function gracefulShutdown(signal) {
+async function gracefulShutdown(signal) {
   console.log('\nServer shutting down...');
-  
+
+  // Close all active chat sessions
+  if (chatSessionManager) {
+    try {
+      await chatSessionManager.closeAll();
+    } catch (error) {
+      console.error('Error closing chat sessions:', error.message);
+    }
+  }
+
   if (server) {
     server.close(() => {
       if (db) {

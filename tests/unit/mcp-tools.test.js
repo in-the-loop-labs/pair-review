@@ -6,7 +6,7 @@ import { createTestDatabase, closeTestDatabase } from '../utils/schema';
 
 const { ReviewRepository, CommentRepository, AnalysisRunRepository, run } = require('../../src/database.js');
 const { resolveReview, createMCPServer } = require('../../src/routes/mcp');
-const { activeAnalyses, localReviewToAnalysisId, prToAnalysisId, getLocalReviewKey, getPRKey } = require('../../src/routes/shared');
+const { activeAnalyses, reviewToAnalysisId } = require('../../src/routes/shared');
 const Analyzer = require('../../src/ai/analyzer');
 const { GitWorktreeManager } = require('../../src/git/worktree');
 
@@ -601,8 +601,7 @@ describe('start_analysis tool', () => {
     if (db) closeTestDatabase(db);
     // Clean up any active analyses and tracking maps left by tests
     activeAnalyses.clear();
-    localReviewToAnalysisId.clear();
-    prToAnalysisId.clear();
+    reviewToAnalysisId.clear();
     vi.restoreAllMocks();
   });
 
@@ -872,8 +871,7 @@ describe('start_analysis tool', () => {
     expect(rawText).toContain('git failed');
 
     // Tracking state should be cleaned up
-    const reviewKey = getLocalReviewKey(reviewId);
-    expect(localReviewToAnalysisId.has(reviewKey)).toBe(false);
+    expect(reviewToAnalysisId.has(reviewId)).toBe(false);
     // activeAnalyses should also be cleaned up
     for (const [, status] of activeAnalyses) {
       if (status.reviewId === reviewId) {

@@ -431,7 +431,7 @@ class PRManager {
     if (!reviewId) return;
 
     this._externalResultsSource = new EventSource(
-      `/api/pr/review-${reviewId}/ai-suggestions/status`
+      `/api/analyses/review-${reviewId}/progress`
     );
 
     this._externalResultsSource.onmessage = (event) => {
@@ -1791,7 +1791,7 @@ class PRManager {
       let currentText = bodyDiv.dataset.originalMarkdown || '';
 
       if (!currentText) {
-        const response = await fetch(`/api/user-comment/${commentId}`);
+        const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`);
         if (response.ok) {
           const data = await response.json();
           currentText = data.body || bodyDiv.textContent.trim();
@@ -1894,7 +1894,7 @@ class PRManager {
         return;
       }
 
-      const response = await fetch(`/api/user-comment/${commentId}`, {
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body: editedText })
@@ -1919,9 +1919,6 @@ class PRManager {
 
       if (editFormEl) editFormEl.remove();
       commentDiv.classList.remove('editing-mode');
-
-      const timestamp = commentDiv.querySelector('.user-comment-timestamp');
-      if (timestamp) timestamp.textContent = new Date().toLocaleString();
 
       // Notify AI Panel about the updated comment body
       if (window.aiPanel?.updateComment) {
@@ -1953,11 +1950,6 @@ class PRManager {
     bodyDiv.style.display = '';
     if (editForm) editForm.remove();
     commentDiv.classList.remove('editing-mode');
-
-    const timestamp = commentDiv.querySelector('.user-comment-timestamp');
-    if (timestamp && timestamp.textContent === 'Editing comment...') {
-      timestamp.textContent = 'Draft';
-    }
   }
 
   /**
@@ -1970,7 +1962,7 @@ class PRManager {
    */
   async deleteUserComment(commentId) {
     try {
-      const response = await fetch(`/api/user-comment/${commentId}`, { method: 'DELETE' });
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, { method: 'DELETE' });
       if (!response.ok) throw new Error('Failed to delete comment');
 
       const apiResult = await response.json();
@@ -2029,7 +2021,7 @@ class PRManager {
    */
   async restoreUserComment(commentId) {
     try {
-      const response = await fetch(`/api/user-comment/${commentId}/restore`, { method: 'PUT' });
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}/restore`, { method: 'PUT' });
       if (!response.ok) throw new Error('Failed to restore comment');
 
       // Reload comments to update both the diff view and AI panel
@@ -2091,7 +2083,7 @@ class PRManager {
     if (dialogResult !== 'confirm') return;
 
     try {
-      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments`, {
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments`, {
         method: 'DELETE'
       });
 
@@ -2156,7 +2148,7 @@ class PRManager {
 
     try {
       const queryParam = includeDismissed ? '?includeDismissed=true' : '';
-      const response = await fetch(`/api/pr/${this.currentPR.owner}/${this.currentPR.repo}/${this.currentPR.number}/user-comments${queryParam}`);
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments${queryParam}`);
       if (!response.ok) return;
 
       const data = await response.json();
@@ -2243,7 +2235,8 @@ class PRManager {
       // First, check if analysis has been run for this PR and get summary for the selected run
       let analysisHasRun = false;
       try {
-        let checkUrl = `/api/pr/${owner}/${repo}/${number}/has-ai-suggestions`;
+        const id = this.currentPR.id;
+        let checkUrl = `/api/reviews/${id}/suggestions/check`;
         if (filterRunId) {
           checkUrl += `?runId=${filterRunId}`;
         }
@@ -2270,7 +2263,7 @@ class PRManager {
         window.aiPanel.setAnalysisState(analysisHasRun ? 'complete' : 'unknown');
       }
 
-      let url = `/api/pr/${owner}/${repo}/${number}/ai-suggestions?levels=${filterLevel}`;
+      let url = `/api/reviews/${this.currentPR.id}/suggestions?levels=${filterLevel}`;
       if (filterRunId) {
         url += `&runId=${filterRunId}`;
       }
@@ -2480,7 +2473,7 @@ class PRManager {
         return;
       }
 
-      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/suggestions/${suggestionId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'dismissed' })
@@ -2536,7 +2529,7 @@ class PRManager {
         return;
       }
 
-      const response = await fetch(`/api/ai-suggestion/${suggestionId}/status`, {
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/suggestions/${suggestionId}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'active' })
@@ -2815,15 +2808,10 @@ class PRManager {
         return;
       }
 
-      // Determine the correct API endpoint based on mode
+      // Use unified review comments API (works for both PR and local mode)
+      const reviewId = pr.id;
       let response;
-      if (window.PAIR_REVIEW_LOCAL_MODE && window.localManager?.reviewId) {
-        // Local mode - use local API endpoint
-        response = await fetch(`/api/local/${window.localManager.reviewId}/user-comments`);
-      } else {
-        // PR mode - use PR API endpoint
-        response = await fetch(`/api/pr/${pr.owner}/${pr.repo}/${pr.number}/user-comments`);
-      }
+      response = await fetch(`/api/reviews/${reviewId}/comments`);
 
       if (!response.ok) {
         throw new Error('Failed to load comments');
@@ -3377,8 +3365,9 @@ class PRManager {
     if (!this.currentPR) return;
 
     try {
-      const { owner, repo, number } = this.currentPR;
-      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/analysis-status`);
+      const reviewId = this.currentPR.id;
+      if (!reviewId) return;
+      const response = await fetch(`/api/reviews/${reviewId}/analyses/status`);
 
       if (!response.ok) {
         console.warn('Could not check analysis status:', response.statusText);
@@ -3670,7 +3659,7 @@ class PRManager {
       // Determine endpoint and body based on whether this is a council analysis
       let analyzeUrl, analyzeBody;
       if (config.isCouncil) {
-        analyzeUrl = `/api/analyze/council/${owner}/${repo}/${number}`;
+        analyzeUrl = `/api/pr/${owner}/${repo}/${number}/analyses/council`;
         analyzeBody = {
           councilId: config.councilId || undefined,
           councilConfig: config.councilConfig || undefined,
@@ -3678,7 +3667,7 @@ class PRManager {
           customInstructions: config.customInstructions || null
         };
       } else {
-        analyzeUrl = `/api/analyze/${owner}/${repo}/${number}`;
+        analyzeUrl = `/api/pr/${owner}/${repo}/${number}/analyses`;
         analyzeBody = {
           provider: config.provider || 'claude',
           model: config.model || 'opus',

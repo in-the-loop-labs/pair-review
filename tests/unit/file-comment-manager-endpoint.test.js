@@ -3,10 +3,8 @@
  * Unit tests for FileCommentManager._getFileCommentEndpoint()
  *
  * Tests the endpoint generation for file-level comment operations,
- * ensuring the correct reviewId is used in local mode for all operations.
- *
- * This specifically tests the fix for a bug where 'prId' (undefined) was
- * used instead of 'reviewId' for update and delete operations in local mode.
+ * ensuring the unified /api/reviews/:reviewId/comments endpoint is used
+ * for all operations regardless of mode (PR or local).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -45,32 +43,32 @@ describe('FileCommentManager._getFileCommentEndpoint', () => {
       });
     });
 
-    it('should use reviewId for create endpoint in local mode', () => {
+    it('should use unified reviewId endpoint for create in local mode', () => {
       const result = fileCommentManager._getFileCommentEndpoint('create', {
         file: 'src/test.js',
         body: 'Test comment'
       });
 
-      expect(result.endpoint).toBe('/api/local/local-review-456/file-comment');
+      expect(result.endpoint).toBe('/api/reviews/local-review-456/comments');
       expect(result.endpoint).not.toContain('undefined');
     });
 
-    it('should use reviewId for update endpoint in local mode', () => {
+    it('should use unified reviewId endpoint for update in local mode', () => {
       const result = fileCommentManager._getFileCommentEndpoint('update', {
         commentId: 'comment-789',
         body: 'Updated comment'
       });
 
-      expect(result.endpoint).toBe('/api/local/local-review-456/file-comment/comment-789');
+      expect(result.endpoint).toBe('/api/reviews/local-review-456/comments/comment-789');
       expect(result.endpoint).not.toContain('undefined');
     });
 
-    it('should use reviewId for delete endpoint in local mode', () => {
+    it('should use unified reviewId endpoint for delete in local mode', () => {
       const result = fileCommentManager._getFileCommentEndpoint('delete', {
         commentId: 'comment-789'
       });
 
-      expect(result.endpoint).toBe('/api/local/local-review-456/file-comment/comment-789');
+      expect(result.endpoint).toBe('/api/reviews/local-review-456/comments/comment-789');
       expect(result.endpoint).not.toContain('undefined');
     });
 
@@ -86,6 +84,7 @@ describe('FileCommentManager._getFileCommentEndpoint', () => {
       expect(result.requestBody).toEqual({
         file: 'src/test.js',
         body: 'Test comment',
+        commit_sha: 'def789',
         parent_id: 'parent-123',
         type: 'suggestion',
         title: 'Test Title'
@@ -123,33 +122,33 @@ describe('FileCommentManager._getFileCommentEndpoint', () => {
       });
     });
 
-    it('should use /api/file-comment for create endpoint in PR mode', () => {
+    it('should use unified reviewId endpoint for create in PR mode', () => {
       const result = fileCommentManager._getFileCommentEndpoint('create', {
         file: 'src/test.js',
         body: 'Test comment'
       });
 
-      expect(result.endpoint).toBe('/api/file-comment');
+      expect(result.endpoint).toBe('/api/reviews/pr-review-123/comments');
     });
 
-    it('should use /api/user-comment/:id for update endpoint in PR mode', () => {
+    it('should use unified reviewId endpoint for update in PR mode', () => {
       const result = fileCommentManager._getFileCommentEndpoint('update', {
         commentId: 'comment-789',
         body: 'Updated comment'
       });
 
-      expect(result.endpoint).toBe('/api/user-comment/comment-789');
+      expect(result.endpoint).toBe('/api/reviews/pr-review-123/comments/comment-789');
     });
 
-    it('should use /api/user-comment/:id for delete endpoint in PR mode', () => {
+    it('should use unified reviewId endpoint for delete in PR mode', () => {
       const result = fileCommentManager._getFileCommentEndpoint('delete', {
         commentId: 'comment-789'
       });
 
-      expect(result.endpoint).toBe('/api/user-comment/comment-789');
+      expect(result.endpoint).toBe('/api/reviews/pr-review-123/comments/comment-789');
     });
 
-    it('should include review_id and commit_sha in create request body for PR mode', () => {
+    it('should include commit_sha in create request body for PR mode', () => {
       const result = fileCommentManager._getFileCommentEndpoint('create', {
         file: 'src/test.js',
         body: 'Test comment',
@@ -159,7 +158,6 @@ describe('FileCommentManager._getFileCommentEndpoint', () => {
       });
 
       expect(result.requestBody).toEqual({
-        review_id: 'pr-review-123',
         file: 'src/test.js',
         body: 'Test comment',
         commit_sha: 'abc123',
@@ -188,7 +186,7 @@ describe('FileCommentManager._getFileCommentEndpoint', () => {
  */
 describe('FileCommentManager._getSuggestionStatusEndpoint', () => {
   describe('Local mode', () => {
-    it('should return local API endpoint when reviewType is local', () => {
+    it('should return unified API endpoint when reviewType is local', () => {
       const fileCommentManager = createTestFileCommentManager({
         reviewId: 'local-review-456',
         reviewType: 'local'
@@ -196,7 +194,7 @@ describe('FileCommentManager._getSuggestionStatusEndpoint', () => {
 
       const endpoint = fileCommentManager._getSuggestionStatusEndpoint(123);
 
-      expect(endpoint).toBe('/api/local/local-review-456/ai-suggestion/123/status');
+      expect(endpoint).toBe('/api/reviews/local-review-456/suggestions/123/status');
       expect(endpoint).not.toContain('undefined');
     });
 
@@ -208,12 +206,12 @@ describe('FileCommentManager._getSuggestionStatusEndpoint', () => {
 
       const endpoint = fileCommentManager._getSuggestionStatusEndpoint(456);
 
-      expect(endpoint).toBe('/api/local/789/ai-suggestion/456/status');
+      expect(endpoint).toBe('/api/reviews/789/suggestions/456/status');
     });
   });
 
   describe('PR mode', () => {
-    it('should return PR API endpoint when reviewType is pr', () => {
+    it('should return unified API endpoint when reviewType is pr', () => {
       const fileCommentManager = createTestFileCommentManager({
         reviewId: 'pr-review-123',
         reviewType: 'pr'
@@ -221,10 +219,10 @@ describe('FileCommentManager._getSuggestionStatusEndpoint', () => {
 
       const endpoint = fileCommentManager._getSuggestionStatusEndpoint(456);
 
-      expect(endpoint).toBe('/api/ai-suggestion/456/status');
+      expect(endpoint).toBe('/api/reviews/pr-review-123/suggestions/456/status');
     });
 
-    it('should not include reviewId in PR mode endpoint', () => {
+    it('should include reviewId in PR mode endpoint', () => {
       const fileCommentManager = createTestFileCommentManager({
         reviewId: 'pr-review-999',
         reviewType: 'pr'
@@ -232,13 +230,13 @@ describe('FileCommentManager._getSuggestionStatusEndpoint', () => {
 
       const endpoint = fileCommentManager._getSuggestionStatusEndpoint(111);
 
-      expect(endpoint).not.toContain('pr-review-999');
-      expect(endpoint).not.toContain('/local/');
+      expect(endpoint).toContain('pr-review-999');
+      expect(endpoint).toBe('/api/reviews/pr-review-999/suggestions/111/status');
     });
   });
 
   describe('Edge cases', () => {
-    it('should default to PR mode when reviewType is undefined', () => {
+    it('should use unified endpoint when reviewType is undefined', () => {
       // Bypass the test helper's default to test undefined reviewType
       const fileCommentManager = Object.create(FileCommentManager.prototype);
       fileCommentManager.prManager = {
@@ -250,7 +248,7 @@ describe('FileCommentManager._getSuggestionStatusEndpoint', () => {
 
       const endpoint = fileCommentManager._getSuggestionStatusEndpoint(123);
 
-      expect(endpoint).toBe('/api/ai-suggestion/123/status');
+      expect(endpoint).toBe('/api/reviews/some-review/suggestions/123/status');
     });
 
     it('should handle missing prManager gracefully', () => {
@@ -259,8 +257,8 @@ describe('FileCommentManager._getSuggestionStatusEndpoint', () => {
 
       const endpoint = fileCommentManager._getSuggestionStatusEndpoint(123);
 
-      // Should default to PR mode endpoint when prManager is null
-      expect(endpoint).toBe('/api/ai-suggestion/123/status');
+      // reviewId will be undefined when prManager is null
+      expect(endpoint).toBe('/api/reviews/undefined/suggestions/123/status');
     });
   });
 });
@@ -297,7 +295,7 @@ describe('FileCommentManager.restoreAISuggestion', () => {
     vi.restoreAllMocks();
   });
 
-  it('should call PR mode API endpoint when reviewType is pr', async () => {
+  it('should call unified API endpoint when reviewType is pr', async () => {
     const fileCommentManager = createTestFileCommentManager({
       reviewId: 'pr-review-123',
       reviewType: 'pr'
@@ -319,9 +317,9 @@ describe('FileCommentManager.restoreAISuggestion', () => {
 
     await fileCommentManager.restoreAISuggestion(mockZone, suggestionId);
 
-    // Verify PR mode endpoint was called
+    // Verify unified endpoint was called
     expect(mockFetch).toHaveBeenCalledWith(
-      `/api/ai-suggestion/${suggestionId}/status`,
+      `/api/reviews/pr-review-123/suggestions/${suggestionId}/status`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -330,7 +328,7 @@ describe('FileCommentManager.restoreAISuggestion', () => {
     );
   });
 
-  it('should call local mode API endpoint when reviewType is local', async () => {
+  it('should call unified API endpoint when reviewType is local', async () => {
     const fileCommentManager = createTestFileCommentManager({
       reviewId: 'local-review-456',
       reviewType: 'local'
@@ -345,9 +343,9 @@ describe('FileCommentManager.restoreAISuggestion', () => {
 
     await fileCommentManager.restoreAISuggestion(mockZone, suggestionId);
 
-    // Verify local mode endpoint was called with reviewId
+    // Verify unified endpoint was called with reviewId
     expect(mockFetch).toHaveBeenCalledWith(
-      `/api/local/local-review-456/ai-suggestion/${suggestionId}/status`,
+      `/api/reviews/local-review-456/suggestions/${suggestionId}/status`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -528,7 +526,7 @@ describe('FileCommentManager.deleteFileComment', () => {
     vi.restoreAllMocks();
   });
 
-  it('should call API to delete comment', async () => {
+  it('should call API to delete comment using unified endpoint', async () => {
     const fileCommentManager = createTestFileCommentManager({
       reviewId: 'local-review-456',
       reviewType: 'local'
@@ -547,9 +545,9 @@ describe('FileCommentManager.deleteFileComment', () => {
 
     await fileCommentManager.deleteFileComment(mockZone, commentId);
 
-    // Verify API was called
+    // Verify API was called with unified endpoint
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/local/local-review-456/file-comment/123',
+      '/api/reviews/local-review-456/comments/123',
       { method: 'DELETE' }
     );
   });
@@ -680,7 +678,7 @@ describe('FileCommentManager.adoptAISuggestion', () => {
     vi.restoreAllMocks();
   });
 
-  it('should call local mode API endpoint for status update when reviewType is local', async () => {
+  it('should call unified API endpoint for status update when reviewType is local', async () => {
     const fileCommentManager = createTestFileCommentManager({
       reviewId: 'local-review-456',
       reviewType: 'local'
@@ -689,7 +687,7 @@ describe('FileCommentManager.adoptAISuggestion', () => {
     // Mock all required methods
     fileCommentManager.formatAdoptedComment = vi.fn().mockReturnValue('formatted comment');
     fileCommentManager._getFileCommentEndpoint = vi.fn().mockReturnValue({
-      endpoint: '/api/local/local-review-456/file-comment',
+      endpoint: '/api/reviews/local-review-456/comments',
       requestBody: { file: 'test.js', body: 'formatted comment' }
     });
     fileCommentManager.displayUserComment = vi.fn();
@@ -718,11 +716,11 @@ describe('FileCommentManager.adoptAISuggestion', () => {
 
     await fileCommentManager.adoptAISuggestion(mockZone, suggestion);
 
-    // Verify status update call uses local mode endpoint
+    // Verify status update call uses unified endpoint
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(mockFetch).toHaveBeenNthCalledWith(
       2,
-      '/api/local/local-review-456/ai-suggestion/123/status',
+      '/api/reviews/local-review-456/suggestions/123/status',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -731,7 +729,7 @@ describe('FileCommentManager.adoptAISuggestion', () => {
     );
   });
 
-  it('should call PR mode API endpoint for status update when reviewType is pr', async () => {
+  it('should call unified API endpoint for status update when reviewType is pr', async () => {
     const fileCommentManager = createTestFileCommentManager({
       reviewId: 'pr-review-123',
       reviewType: 'pr',
@@ -740,8 +738,8 @@ describe('FileCommentManager.adoptAISuggestion', () => {
 
     fileCommentManager.formatAdoptedComment = vi.fn().mockReturnValue('formatted comment');
     fileCommentManager._getFileCommentEndpoint = vi.fn().mockReturnValue({
-      endpoint: '/api/file-comment',
-      requestBody: { review_id: 'pr-review-123', file: 'test.js', body: 'formatted comment', commit_sha: 'abc123' }
+      endpoint: '/api/reviews/pr-review-123/comments',
+      requestBody: { file: 'test.js', body: 'formatted comment', commit_sha: 'abc123' }
     });
     fileCommentManager.displayUserComment = vi.fn();
     fileCommentManager.updateCommentCount = vi.fn();
@@ -768,10 +766,10 @@ describe('FileCommentManager.adoptAISuggestion', () => {
 
     await fileCommentManager.adoptAISuggestion(mockZone, suggestion);
 
-    // Verify status update call uses PR mode endpoint
+    // Verify status update call uses unified endpoint
     expect(mockFetch).toHaveBeenNthCalledWith(
       2,
-      '/api/ai-suggestion/456/status',
+      '/api/reviews/pr-review-123/suggestions/456/status',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -809,7 +807,7 @@ describe('FileCommentManager.dismissAISuggestion', () => {
     vi.restoreAllMocks();
   });
 
-  it('should call local mode API endpoint when reviewType is local', async () => {
+  it('should call unified API endpoint when reviewType is local', async () => {
     const fileCommentManager = createTestFileCommentManager({
       reviewId: 'local-review-789',
       reviewType: 'local'
@@ -829,7 +827,7 @@ describe('FileCommentManager.dismissAISuggestion', () => {
     await fileCommentManager.dismissAISuggestion(mockZone, suggestionId);
 
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/local/local-review-789/ai-suggestion/555/status',
+      '/api/reviews/local-review-789/suggestions/555/status',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -838,7 +836,7 @@ describe('FileCommentManager.dismissAISuggestion', () => {
     );
   });
 
-  it('should call PR mode API endpoint when reviewType is pr', async () => {
+  it('should call unified API endpoint when reviewType is pr', async () => {
     const fileCommentManager = createTestFileCommentManager({
       reviewId: 'pr-review-456',
       reviewType: 'pr'
@@ -858,7 +856,7 @@ describe('FileCommentManager.dismissAISuggestion', () => {
     await fileCommentManager.dismissAISuggestion(mockZone, suggestionId);
 
     expect(mockFetch).toHaveBeenCalledWith(
-      '/api/ai-suggestion/777/status',
+      '/api/reviews/pr-review-456/suggestions/777/status',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

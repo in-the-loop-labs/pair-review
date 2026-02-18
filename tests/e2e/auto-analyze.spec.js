@@ -13,7 +13,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
   test('should auto-trigger analysis when ?analyze=true is present', async ({ page }) => {
     // Intercept the analyze POST request to verify it fires
     const analyzeRequest = page.waitForRequest(
-      request => request.url().includes('/api/analyze/test-owner/test-repo/1') &&
+      request => request.url().includes('/api/pr/test-owner/test-repo/1/analyses') &&
                  request.method() === 'POST',
       { timeout: 10000 }
     );
@@ -32,7 +32,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
     // which would prevent the auto-analyze flow from executing.
     // This is necessary because a prior test may have left the mock server's
     // analysisRunning flag in a stale state.
-    await page.route('**/api/pr/**/analysis-status', route => {
+    await page.route('**/api/reviews/*/analyses/status', route => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -42,7 +42,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
 
     // Intercept the analyze POST to confirm it fires
     const analyzeRequest = page.waitForRequest(
-      request => request.url().includes('/api/analyze/test-owner/test-repo/1') &&
+      request => request.url().includes('/api/pr/test-owner/test-repo/1/analyses') &&
                  request.method() === 'POST',
       { timeout: 10000 }
     );
@@ -70,7 +70,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
     let analyzeRequested = false;
 
     page.on('request', request => {
-      if (request.url().includes('/api/analyze/') && request.method() === 'POST') {
+      if (request.url().includes('/analyses') && request.method() === 'POST') {
         analyzeRequested = true;
       }
     });
@@ -88,7 +88,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
     let analyzeRequested = false;
 
     page.on('request', request => {
-      if (request.url().includes('/api/analyze/') && request.method() === 'POST') {
+      if (request.url().includes('/analyses') && request.method() === 'POST') {
         analyzeRequested = true;
       }
     });

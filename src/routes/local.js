@@ -15,21 +15,19 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs').promises;
-const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, CommentRepository, AnalysisRunRepository } = require('../database');
+const { queryOne, run, ReviewRepository, RepoSettingsRepository, AnalysisRunRepository, CouncilRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const { mergeInstructions } = require('../utils/instructions');
-const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
+const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
 const {
   activeAnalyses,
-  progressClients,
   localReviewDiffs,
-  localReviewToAnalysisId,
+  reviewToAnalysisId,
   getModel,
-  getLocalReviewKey,
   determineCompletionInfo,
   broadcastProgress,
   CancellationError,
@@ -38,6 +36,27 @@ const {
 } = require('./shared');
 
 const router = express.Router();
+
+// ---------------------------------------------------------------------------
+// Helpers – type-safe wrappers around localReviewDiffs Map
+// JavaScript Maps use strict equality for keys.  reviewId values arrive from
+// req.params as strings, but every other code path stores them as integers.
+// These helpers coerce once so callers never hit a string/int mismatch.
+// ---------------------------------------------------------------------------
+function toIntKey(reviewId) {
+  const key = typeof reviewId === 'number' ? reviewId : parseInt(reviewId, 10);
+  if (isNaN(key)) throw new Error(`Invalid reviewId for diff cache: ${reviewId}`);
+  return key;
+}
+function getLocalReviewDiff(reviewId) {
+  return localReviewDiffs.get(toIntKey(reviewId));
+}
+function setLocalReviewDiff(reviewId, value) {
+  localReviewDiffs.set(toIntKey(reviewId), value);
+}
+function deleteLocalReviewDiff(reviewId) {
+  localReviewDiffs.delete(toIntKey(reviewId));
+}
 
 /**
  * Open native OS directory picker dialog and return the selected path.
@@ -184,7 +203,7 @@ router.delete('/api/local/sessions/:reviewId', async (req, res) => {
     }
 
     // Clean up in-memory diff cache to avoid stale data
-    localReviewDiffs.delete(reviewId);
+    deleteLocalReviewDiff(reviewId);
 
     logger.success(`Deleted local review session #${reviewId}`);
 
@@ -268,7 +287,7 @@ router.post('/api/local/start', async (req, res) => {
     const digest = await computeLocalDiffDigest(repoPath);
 
     // Persist to in-memory Map
-    localReviewDiffs.set(sessionId, { diff, stats, digest });
+    setLocalReviewDiff(sessionId, { diff, stats, digest });
 
     // Persist to database
     await reviewRepo.saveLocalDiff(sessionId, { diff, stats, digest });
@@ -445,7 +464,7 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
     }
 
     // Get diff from module-level storage, falling back to database
-    let diffData = localReviewDiffs.get(reviewId);
+    let diffData = getLocalReviewDiff(reviewId);
 
     if (!diffData) {
       // Try loading from database
@@ -453,7 +472,7 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       if (persistedDiff) {
         diffData = persistedDiff;
         // Cache-warm the in-memory Map
-        localReviewDiffs.set(reviewId, diffData);
+        setLocalReviewDiff(reviewId, diffData);
         logger.log('API', `Loaded persisted diff from DB for review #${reviewId}`, 'cyan');
       } else {
         diffData = { diff: '', stats: {} };
@@ -536,13 +555,13 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
     }
 
     // Get stored diff data (in-memory first, then fall back to DB)
-    let storedDiffData = localReviewDiffs.get(reviewId);
+    let storedDiffData = getLocalReviewDiff(reviewId);
     if (!storedDiffData) {
       const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
       if (persistedDiff) {
         storedDiffData = persistedDiff;
         // Cache-warm the in-memory Map
-        localReviewDiffs.set(reviewId, storedDiffData);
+        setLocalReviewDiff(reviewId, storedDiffData);
         logger.log('API', `Loaded persisted diff from DB for staleness check on review #${reviewId}`, 'cyan');
       } else {
         return res.json({
@@ -593,7 +612,7 @@ router.get('/api/local/:reviewId/check-stale', async (req, res) => {
 /**
  * Start Level 1 AI analysis for local review
  */
-router.post('/api/local/:reviewId/analyze', async (req, res) => {
+router.post('/api/local/:reviewId/analyses', async (req, res) => {
   try {
     const reviewId = parseInt(req.params.reviewId);
 
@@ -720,9 +739,8 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
     };
     activeAnalyses.set(analysisId, initialStatus);
 
-    // Store local review to analysis ID mapping
-    const reviewKey = getLocalReviewKey(reviewId);
-    localReviewToAnalysisId.set(reviewKey, analysisId);
+    // Store review to analysis ID mapping (unified map)
+    reviewToAnalysisId.set(reviewId, analysisId);
 
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
@@ -867,9 +885,8 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
         broadcastProgress(analysisId, failedStatus);
       })
       .finally(() => {
-        // Clean up local review to analysis ID mapping
-        const reviewKey = getLocalReviewKey(reviewId);
-        localReviewToAnalysisId.delete(reviewKey);
+        // Clean up review to analysis ID mapping (unified map)
+        reviewToAnalysisId.delete(reviewId);
       });
 
     // Return analysis ID immediately (runId added for unified ID)
@@ -888,1000 +905,6 @@ router.post('/api/local/:reviewId/analyze', async (req, res) => {
   }
 });
 
-/**
- * Get AI suggestions for a local review
- */
-router.get('/api/local/:reviewId/suggestions', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify review exists
-    const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getLocalReviewById(reviewId);
-
-    if (!review) {
-      return res.status(404).json({
-        error: `Local review #${reviewId} not found`
-      });
-    }
-
-    // Parse levels query parameter (e.g., ?levels=final,1,2)
-    // Default to 'final' (orchestrated suggestions only) if not specified
-    const levelsParam = req.query.levels || 'final';
-    const requestedLevels = levelsParam.split(',').map(l => l.trim());
-
-    // Parse optional runId query parameter to fetch suggestions from a specific analysis run
-    // If not provided, defaults to the latest run
-    const runIdParam = req.query.runId;
-
-    // Build level filter clause
-    const levelConditions = [];
-    requestedLevels.forEach(level => {
-      if (level === 'final') {
-        levelConditions.push('ai_level IS NULL');
-      } else if (['1', '2', '3'].includes(level)) {
-        levelConditions.push(`ai_level = ${parseInt(level)}`);
-      }
-    });
-
-    // If no valid levels specified, default to final
-    const levelFilter = levelConditions.length > 0
-      ? `(${levelConditions.join(' OR ')})`
-      : 'ai_level IS NULL';
-
-    // Build the run ID filter clause
-    // If a specific runId is provided, use it directly; otherwise use subquery for latest
-    let runIdFilter;
-    let queryParams;
-    if (runIdParam) {
-      runIdFilter = 'ai_run_id = ?';
-      queryParams = [reviewId, runIdParam];
-    } else {
-      // Get AI suggestions from the comments table
-      // For local reviews, review_id stores the review ID
-      // Only return suggestions from the latest analysis run (ai_run_id)
-      // This preserves history while showing only the most recent results
-      //
-      // Note: If no AI suggestions exist (subquery returns NULL), the ai_run_id = NULL
-      // comparison returns no rows. This is intentional - we only show suggestions
-      // when there's a matching analysis run.
-      //
-      // Note: reviewId is passed twice because SQLite requires separate parameters
-      // for the outer WHERE clause and the subquery. A CTE could consolidate this but
-      // adds complexity without meaningful benefit here.
-      runIdFilter = `ai_run_id = (
-          SELECT ai_run_id FROM comments
-          WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
-          ORDER BY created_at DESC
-          LIMIT 1
-        )`;
-      queryParams = [reviewId, reviewId];
-    }
-
-    const rows = await query(db, `
-      SELECT
-        id,
-        source,
-        author,
-        ai_run_id,
-        ai_level,
-        ai_confidence,
-        file,
-        line_start,
-        line_end,
-        side,
-        type,
-        title,
-        body,
-        reasoning,
-        status,
-        is_file_level,
-        created_at,
-        updated_at
-      FROM comments
-      WHERE review_id = ?
-        AND source = 'ai'
-        AND ${levelFilter}
-        AND status IN ('active', 'dismissed', 'adopted', 'draft', 'submitted')
-        AND (is_raw = 0 OR is_raw IS NULL)
-        AND ${runIdFilter}
-      ORDER BY
-        CASE
-          WHEN ai_level IS NULL THEN 0
-          WHEN ai_level = 1 THEN 1
-          WHEN ai_level = 2 THEN 2
-          WHEN ai_level = 3 THEN 3
-          ELSE 4
-        END,
-        is_file_level DESC,
-        file,
-        line_start
-    `, queryParams);
-
-    const suggestions = rows.map(row => ({
-      ...row,
-      reasoning: row.reasoning ? JSON.parse(row.reasoning) : null
-    }));
-
-    res.json({ suggestions });
-
-  } catch (error) {
-    logger.error('Error fetching local review suggestions:', error);
-    res.status(500).json({
-      error: 'Failed to fetch AI suggestions'
-    });
-  }
-});
-
-/**
- * Get user comments for a local review
- * Uses CommentRepository.getUserComments() for consistency with PR mode
- */
-router.get('/api/local/:reviewId/user-comments', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify review exists
-    const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getLocalReviewById(reviewId);
-
-    if (!review) {
-      return res.json({
-        success: true,
-        comments: []
-      });
-    }
-
-    // Use CommentRepository for consistency with PR mode
-    // This ensures both modes use the same query logic and include the same columns
-    const commentRepo = new CommentRepository(db);
-    const { includeDismissed } = req.query;
-    const comments = await commentRepo.getUserComments(reviewId, {
-      includeDismissed: includeDismissed === 'true'
-    });
-
-    res.json({
-      success: true,
-      comments: comments || []
-    });
-
-  } catch (error) {
-    logger.error('Error fetching local review user comments:', error);
-    res.status(500).json({
-      error: 'Failed to fetch user comments'
-    });
-  }
-});
-
-/**
- * Add user comment to a local review
- */
-router.post('/api/local/:reviewId/user-comments', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    const { file, line_start, line_end, diff_position, side, body, parent_id, type, title } = req.body;
-
-    if (!file || !line_start || !body) {
-      return res.status(400).json({
-        error: 'Missing required fields: file, line_start, body'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify review exists
-    const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getLocalReviewById(reviewId);
-
-    if (!review) {
-      return res.status(404).json({
-        error: 'Local review not found'
-      });
-    }
-
-    // Create line-level comment using repository
-    const commentRepo = new CommentRepository(db);
-    const commentId = await commentRepo.createLineComment({
-      review_id: reviewId,
-      file,
-      line_start,
-      line_end,
-      diff_position,
-      side,
-      body,
-      parent_id,
-      type,
-      title
-    });
-
-    res.json({
-      success: true,
-      commentId,
-      message: 'Comment saved successfully'
-    });
-
-  } catch (error) {
-    logger.error('Error creating local review user comment:', error);
-    res.status(500).json({
-      error: error.message || 'Failed to create comment'
-    });
-  }
-});
-
-/**
- * Create file-level user comment for a local review
- * File-level comments are about an entire file, not tied to specific lines
- */
-router.post('/api/local/:reviewId/file-comment', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    const { file, body, parent_id, type, title } = req.body;
-
-    if (!file || !body) {
-      return res.status(400).json({
-        error: 'Missing required fields: file, body'
-      });
-    }
-
-    // Validate body is not just whitespace
-    const trimmedBody = body.trim();
-    if (trimmedBody.length === 0) {
-      return res.status(400).json({
-        error: 'Comment body cannot be empty or whitespace only'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify review exists
-    const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getLocalReviewById(reviewId);
-
-    if (!review) {
-      return res.status(404).json({
-        error: 'Local review not found'
-      });
-    }
-
-    // Create file-level comment using repository
-    const commentRepo = new CommentRepository(db);
-    const commentId = await commentRepo.createFileComment({
-      review_id: reviewId,
-      file,
-      body: trimmedBody,
-      type,
-      title,
-      parent_id
-    });
-
-    res.json({
-      success: true,
-      commentId,
-      message: 'File-level comment saved successfully'
-    });
-
-  } catch (error) {
-    logger.error('Error creating file-level comment:', error);
-    res.status(500).json({
-      error: error.message || 'Failed to create file-level comment'
-    });
-  }
-});
-
-/**
- * Update file-level comment in a local review
- */
-router.put('/api/local/:reviewId/file-comment/:commentId', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-    const commentId = parseInt(req.params.commentId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    if (isNaN(commentId) || commentId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid comment ID'
-      });
-    }
-
-    const { body } = req.body;
-
-    if (!body || !body.trim()) {
-      return res.status(400).json({
-        error: 'Comment body cannot be empty'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify the comment exists, belongs to this review, and is a file-level comment
-    const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user' AND is_file_level = 1
-    `, [commentId, reviewId]);
-
-    if (!comment) {
-      return res.status(404).json({
-        error: 'File-level comment not found'
-      });
-    }
-
-    // Update comment
-    await run(db, `
-      UPDATE comments
-      SET body = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [body.trim(), commentId]);
-
-    res.json({
-      success: true,
-      message: 'File-level comment updated successfully'
-    });
-
-  } catch (error) {
-    logger.error('Error updating file-level comment:', error);
-    res.status(500).json({
-      error: 'Failed to update comment'
-    });
-  }
-});
-
-/**
- * Delete file-level comment from a local review
- */
-router.delete('/api/local/:reviewId/file-comment/:commentId', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-    const commentId = parseInt(req.params.commentId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    if (isNaN(commentId) || commentId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid comment ID'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify the comment exists, belongs to this review, and is a file-level comment
-    const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user' AND is_file_level = 1
-    `, [commentId, reviewId]);
-
-    if (!comment) {
-      return res.status(404).json({
-        error: 'File-level comment not found'
-      });
-    }
-
-    // Use CommentRepository to delete (also dismisses parent AI suggestion if applicable)
-    const commentRepo = new CommentRepository(db);
-    const result = await commentRepo.deleteComment(commentId);
-
-    res.json({
-      success: true,
-      message: 'File-level comment deleted successfully',
-      dismissedSuggestionId: result.dismissedSuggestionId
-    });
-
-  } catch (error) {
-    logger.error('Error deleting file-level comment:', error);
-    res.status(500).json({
-      error: 'Failed to delete comment'
-    });
-  }
-});
-
-/**
- * Update AI suggestion status for a local review
- * Sets status to 'adopted', 'dismissed', or 'active' (restored)
- */
-router.post('/api/local/:reviewId/ai-suggestion/:suggestionId/status', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-    const suggestionId = parseInt(req.params.suggestionId);
-    const { status } = req.body;
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    if (isNaN(suggestionId) || suggestionId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid suggestion ID'
-      });
-    }
-
-    if (!['adopted', 'dismissed', 'active'].includes(status)) {
-      return res.status(400).json({
-        error: 'Invalid status. Must be "adopted", "dismissed", or "active"'
-      });
-    }
-
-    const db = req.app.get('db');
-    const commentRepo = new CommentRepository(db);
-
-    // Get the suggestion and verify it belongs to this review
-    const suggestion = await commentRepo.getComment(suggestionId, 'ai');
-
-    if (!suggestion) {
-      return res.status(404).json({
-        error: 'AI suggestion not found'
-      });
-    }
-
-    if (suggestion.review_id !== reviewId) {
-      return res.status(403).json({
-        error: 'Suggestion does not belong to this review'
-      });
-    }
-
-    // Update suggestion status using repository
-    await commentRepo.updateSuggestionStatus(suggestionId, status);
-
-    res.json({
-      success: true,
-      status
-    });
-
-  } catch (error) {
-    logger.error('Error updating AI suggestion status:', error);
-    res.status(500).json({
-      error: error.message || 'Failed to update suggestion status'
-    });
-  }
-});
-
-/**
- * Get a single user comment from a local review
- */
-router.get('/api/local/:reviewId/user-comments/:commentId', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-    const commentId = parseInt(req.params.commentId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    if (isNaN(commentId) || commentId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid comment ID'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Get the comment and verify it belongs to this review
-    const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user'
-    `, [commentId, reviewId]);
-
-    if (!comment) {
-      return res.status(404).json({
-        error: 'User comment not found'
-      });
-    }
-
-    res.json({
-      id: comment.id,
-      file: comment.file,
-      line_start: comment.line_start,
-      line_end: comment.line_end,
-      body: comment.body,
-      type: comment.type,
-      title: comment.title,
-      status: comment.status,
-      created_at: comment.created_at,
-      updated_at: comment.updated_at
-    });
-
-  } catch (error) {
-    logger.error('Error fetching local review user comment:', error);
-    res.status(500).json({
-      error: 'Failed to fetch comment'
-    });
-  }
-});
-
-/**
- * Update user comment in a local review
- */
-router.put('/api/local/:reviewId/user-comments/:commentId', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-    const commentId = parseInt(req.params.commentId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    if (isNaN(commentId) || commentId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid comment ID'
-      });
-    }
-
-    const { body } = req.body;
-
-    if (!body || !body.trim()) {
-      return res.status(400).json({
-        error: 'Comment body cannot be empty'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify the comment exists and belongs to this review
-    const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user'
-    `, [commentId, reviewId]);
-
-    if (!comment) {
-      return res.status(404).json({
-        error: 'User comment not found'
-      });
-    }
-
-    // Update comment
-    await run(db, `
-      UPDATE comments
-      SET body = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [body.trim(), commentId]);
-
-    res.json({
-      success: true,
-      message: 'Comment updated successfully'
-    });
-
-  } catch (error) {
-    logger.error('Error updating local review user comment:', error);
-    res.status(500).json({
-      error: 'Failed to update comment'
-    });
-  }
-});
-
-/**
- * Bulk delete all user comments for a local review
- * Also dismisses any AI suggestions that were parents of the deleted comments.
- */
-router.delete('/api/local/:reviewId/user-comments', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify review exists
-    const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getLocalReviewById(reviewId);
-
-    if (!review) {
-      return res.status(404).json({
-        error: `Local review #${reviewId} not found`
-      });
-    }
-
-    // Begin transaction to ensure atomicity
-    await run(db, 'BEGIN TRANSACTION');
-
-    try {
-      // Bulk delete using repository (also dismisses parent AI suggestions)
-      const commentRepo = new CommentRepository(db);
-      const result = await commentRepo.bulkDeleteComments(reviewId);
-
-      // Commit transaction
-      await run(db, 'COMMIT');
-
-      res.json({
-        success: true,
-        deletedCount: result.deletedCount,
-        dismissedSuggestionIds: result.dismissedSuggestionIds,
-        message: `Deleted ${result.deletedCount} user comment${result.deletedCount !== 1 ? 's' : ''}`
-      });
-
-    } catch (transactionError) {
-      // Rollback transaction on error
-      await run(db, 'ROLLBACK');
-      throw transactionError;
-    }
-
-  } catch (error) {
-    logger.error('Error deleting all local review user comments:', error);
-    res.status(500).json({
-      error: 'Failed to delete comments'
-    });
-  }
-});
-
-/**
- * Delete user comment from a local review
- * If the comment was adopted from an AI suggestion, the parent suggestion
- * is automatically transitioned to 'dismissed' state.
- */
-router.delete('/api/local/:reviewId/user-comments/:commentId', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-    const commentId = parseInt(req.params.commentId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    if (isNaN(commentId) || commentId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid comment ID'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify the comment exists and belongs to this review
-    const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user'
-    `, [commentId, reviewId]);
-
-    if (!comment) {
-      return res.status(404).json({
-        error: 'User comment not found'
-      });
-    }
-
-    // Use CommentRepository to delete (also dismisses parent AI suggestion if applicable)
-    const commentRepo = new CommentRepository(db);
-    const result = await commentRepo.deleteComment(commentId);
-
-    res.json({
-      success: true,
-      message: 'Comment deleted successfully',
-      dismissedSuggestionId: result.dismissedSuggestionId
-    });
-
-  } catch (error) {
-    logger.error('Error deleting local review user comment:', error);
-    res.status(500).json({
-      error: 'Failed to delete comment'
-    });
-  }
-});
-
-/**
- * Restore a dismissed user comment in a local review
- * Sets status from 'inactive' back to 'active'
- */
-router.put('/api/local/:reviewId/user-comments/:commentId/restore', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-    const commentId = parseInt(req.params.commentId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    if (isNaN(commentId) || commentId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid comment ID'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify the comment exists and belongs to this review
-    const comment = await queryOne(db, `
-      SELECT * FROM comments WHERE id = ? AND review_id = ? AND source = 'user'
-    `, [commentId, reviewId]);
-
-    if (!comment) {
-      return res.status(404).json({
-        error: 'User comment not found'
-      });
-    }
-
-    if (comment.status !== 'inactive') {
-      return res.status(400).json({
-        error: 'Comment is not dismissed'
-      });
-    }
-
-    // Restore the comment using CommentRepository
-    const commentRepo = new CommentRepository(db);
-    await commentRepo.restoreComment(commentId);
-
-    // Get the restored comment to return
-    const restoredComment = await commentRepo.getComment(commentId, 'user');
-
-    res.json({
-      success: true,
-      message: 'Comment restored successfully',
-      comment: restoredComment
-    });
-
-  } catch (error) {
-    logger.error('Error restoring local review user comment:', error);
-    res.status(500).json({
-      error: error.message || 'Failed to restore comment'
-    });
-  }
-});
-
-/**
- * Check if analysis is running for a local review
- */
-router.get('/api/local/:reviewId/analysis-status', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    const reviewKey = getLocalReviewKey(reviewId);
-    const analysisId = localReviewToAnalysisId.get(reviewKey);
-
-    if (analysisId) {
-      const analysis = activeAnalyses.get(analysisId);
-
-      if (analysis) {
-        return res.json({
-          running: true,
-          analysisId,
-          status: analysis
-        });
-      }
-
-      // Clean up stale mapping
-      localReviewToAnalysisId.delete(reviewKey);
-    }
-
-    // Fall back to database — an analysis may have been started externally (e.g. via MCP)
-    const db = req.app.get('db');
-    const analysisRunRepo = new AnalysisRunRepository(db);
-    const latestRun = await analysisRunRepo.getLatestByReviewId(reviewId);
-
-    if (latestRun && latestRun.status === 'running') {
-      return res.json({
-        running: true,
-        analysisId: latestRun.id,
-        status: {
-          id: latestRun.id,
-          reviewId,
-          reviewType: 'local',
-          status: 'running',
-          startedAt: latestRun.started_at,
-          progress: 'Analysis in progress...',
-          levels: {
-            1: { status: 'running', progress: 'Running...' },
-            2: { status: 'running', progress: 'Running...' },
-            3: { status: 'running', progress: 'Running...' },
-            4: { status: 'pending', progress: 'Pending' }
-          },
-          filesAnalyzed: latestRun.files_analyzed || 0,
-          filesRemaining: 0
-        }
-      });
-    }
-
-    res.json({
-      running: false,
-      analysisId: null,
-      status: null
-    });
-
-  } catch (error) {
-    logger.error('Error checking local review analysis status:', error);
-    res.status(500).json({
-      error: 'Failed to check analysis status'
-    });
-  }
-});
-
-/**
- * Check if a local review has existing AI suggestions
- */
-router.get('/api/local/:reviewId/has-ai-suggestions', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId);
-    const { runId } = req.query;
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({
-        error: 'Invalid review ID'
-      });
-    }
-
-    const db = req.app.get('db');
-
-    // Verify review exists
-    const reviewRepo = new ReviewRepository(db);
-    const review = await reviewRepo.getLocalReviewById(reviewId);
-
-    if (!review) {
-      return res.status(404).json({
-        error: `Local review #${reviewId} not found`
-      });
-    }
-
-    // Check if any AI suggestions exist for this review
-    // Exclude raw council voice suggestions (is_raw=1) — only count final/consolidated suggestions
-    const result = await queryOne(db, `
-      SELECT EXISTS(
-        SELECT 1 FROM comments
-        WHERE review_id = ? AND source = 'ai' AND (is_raw = 0 OR is_raw IS NULL)
-      ) as has_suggestions
-    `, [reviewId]);
-
-    const hasSuggestions = result?.has_suggestions === 1;
-
-    // Check if any analysis has been run using analysis_runs table
-    let analysisHasRun = hasSuggestions;
-    const analysisRunRepo = new AnalysisRunRepository(db);
-    let selectedRun = null;
-    try {
-      // If runId is provided, fetch that specific run; otherwise get the latest
-      if (runId) {
-        selectedRun = await analysisRunRepo.getById(runId);
-      } else {
-        selectedRun = await analysisRunRepo.getLatestByReviewId(reviewId);
-      }
-      analysisHasRun = !!(selectedRun || hasSuggestions);
-    } catch (e) {
-      // Log the error at debug level before falling back
-      logger.debug('analysis_runs query failed in local mode, falling back to hasSuggestions:', e.message);
-      // Fall back to using hasSuggestions if analysis_runs table doesn't exist
-      analysisHasRun = hasSuggestions;
-    }
-
-    // Get AI summary from the selected analysis run if available, otherwise fall back to review summary
-    const summary = selectedRun?.summary || review?.summary || null;
-
-    // Get stats for AI suggestions (issues/suggestions/praise for final level only)
-    // Filter by runId if provided, otherwise use the latest analysis run
-    let stats = { issues: 0, suggestions: 0, praise: 0 };
-    if (hasSuggestions) {
-      try {
-        const statsQuery = getStatsQuery(runId);
-        const statsResult = await query(db, statsQuery.query, statsQuery.params(reviewId));
-        stats = calculateStats(statsResult);
-      } catch (e) {
-        logger.warn('Error fetching AI suggestion stats:', e);
-      }
-    }
-
-    res.json({
-      hasSuggestions: hasSuggestions,
-      analysisHasRun: analysisHasRun,
-      summary: summary,
-      stats: stats
-    });
-
-  } catch (error) {
-    logger.error('Error checking for AI suggestions:', error);
-    res.status(500).json({
-      error: 'Failed to check for AI suggestions'
-    });
-  }
-});
-
-/**
- * Server-Sent Events endpoint for local review AI analysis progress
- */
-router.get('/api/local/:reviewId/ai-suggestions/status', (req, res) => {
-  const reviewId = parseInt(req.params.reviewId);
-
-  // Find the analysis ID for this local review
-  const reviewKey = getLocalReviewKey(reviewId);
-  const analysisId = localReviewToAnalysisId.get(reviewKey);
-
-  // Set up SSE headers
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Cache-Control'
-  });
-
-  // Send initial connection message
-  res.write('data: {"type":"connected","message":"Connected to progress stream"}\n\n');
-
-  // If we have an analysis ID, use it; otherwise use a placeholder
-  const trackingId = analysisId || `local-${reviewId}`;
-
-  // Store client for this analysis
-  if (!progressClients.has(trackingId)) {
-    progressClients.set(trackingId, new Set());
-  }
-  progressClients.get(trackingId).add(res);
-
-  // Send current status if analysis exists
-  if (analysisId) {
-    const currentStatus = activeAnalyses.get(analysisId);
-    if (currentStatus) {
-      res.write(`data: ${JSON.stringify({
-        type: 'progress',
-        ...currentStatus
-      })}\n\n`);
-    }
-  }
-
-  // Handle client disconnect
-  req.on('close', () => {
-    const clients = progressClients.get(trackingId);
-    if (clients) {
-      clients.delete(res);
-      if (clients.size === 0) {
-        progressClients.delete(trackingId);
-      }
-    }
-  });
-
-  req.on('error', () => {
-    const clients = progressClients.get(trackingId);
-    if (clients) {
-      clients.delete(res);
-      if (clients.size === 0) {
-        progressClients.delete(trackingId);
-      }
-    }
-  });
-});
 
 /**
  * Refresh the diff for a local review
@@ -1962,7 +985,7 @@ router.post('/api/local/:reviewId/refresh', async (req, res) => {
 
     // Update the stored diff data for the appropriate session
     const targetSessionId = sessionChanged ? newSessionId : reviewId;
-    localReviewDiffs.set(targetSessionId, { diff, stats, digest });
+    setLocalReviewDiff(targetSessionId, { diff, stats, digest });
 
     // Persist diff to database for future session recovery
     try {
@@ -2090,53 +1113,119 @@ router.post('/api/local/:reviewId/review-settings', async (req, res) => {
 });
 
 /**
- * Get all analysis runs for a local review
+ * Trigger council analysis for a local review
  */
-router.get('/api/local/:reviewId/analysis-runs', async (req, res) => {
+router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
   try {
     const reviewId = parseInt(req.params.reviewId, 10);
+    const { councilId, councilConfig: inlineConfig, customInstructions: rawInstructions, configType: requestConfigType } = req.body || {};
 
     if (isNaN(reviewId) || reviewId <= 0) {
       return res.status(400).json({ error: 'Invalid review ID' });
     }
 
-    const db = req.app.get('db');
-    const analysisRunRepo = new AnalysisRunRepository(db);
-    const runs = await analysisRunRepo.getByReviewId(reviewId);
-
-    res.json({ runs: runs.map(r => ({
-      ...r,
-      levels_config: r.levels_config ? JSON.parse(r.levels_config) : null
-    })) });
-  } catch (error) {
-    logger.error('Error fetching analysis runs:', error);
-    res.status(500).json({ error: 'Failed to fetch analysis runs' });
-  }
-});
-
-/**
- * Get the most recent analysis run for a local review
- */
-router.get('/api/local/:reviewId/analysis-runs/latest', async (req, res) => {
-  try {
-    const reviewId = parseInt(req.params.reviewId, 10);
-
-    if (isNaN(reviewId) || reviewId <= 0) {
-      return res.status(400).json({ error: 'Invalid review ID' });
+    if (!councilId && !inlineConfig) {
+      return res.status(400).json({ error: 'Either councilId or councilConfig is required' });
     }
 
     const db = req.app.get('db');
-    const analysisRunRepo = new AnalysisRunRepository(db);
-    const run = await analysisRunRepo.getLatestByReviewId(reviewId);
 
-    if (!run) {
-      return res.status(404).json({ error: 'No analysis runs found' });
+    // Get review record
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ? AND review_type = ?', [reviewId, 'local']);
+    if (!review) {
+      return res.status(404).json({ error: 'Local review not found' });
     }
 
-    res.json({ run });
+    // Resolve council config and determine config type
+    let councilConfig;
+    let configType;
+    if (councilId) {
+      const councilRepo = new CouncilRepository(db);
+      const council = await councilRepo.getById(councilId);
+      if (!council) {
+        return res.status(404).json({ error: 'Council not found' });
+      }
+      councilConfig = council.config;
+      configType = requestConfigType || council.type || 'advanced';
+    } else {
+      councilConfig = inlineConfig;
+      configType = requestConfigType || 'advanced';
+    }
+
+    councilConfig = normalizeCouncilConfig(councilConfig, configType);
+
+    const configError = validateCouncilConfig(councilConfig, configType);
+    if (configError) {
+      return res.status(400).json({ error: `Invalid council config: ${configError}` });
+    }
+
+    const localPath = review.local_path;
+
+    const prMetadata = {
+      reviewType: 'local',
+      repository: review.repository,
+      title: review.name || 'Local changes',
+      description: '',
+      head_sha: review.local_head_sha
+    };
+
+    const analyzer = new Analyzer(db, 'council', 'council');
+    const changedFiles = await analyzer.getLocalChangedFiles(localPath);
+
+    // Generate and cache diff
+    try {
+      const diffResult = await generateLocalDiff(localPath);
+      const digest = await computeLocalDiffDigest(localPath);
+      setLocalReviewDiff(reviewId, { diff: diffResult.diff, stats: diffResult.stats, digest });
+    } catch (diffError) {
+      logger.warn(`Could not generate diff for local council review ${reviewId}: ${diffError.message}`);
+    }
+
+    // Resolve instructions
+    const repoSettingsRepo = new RepoSettingsRepository(db);
+    const reviewRepo = new ReviewRepository(db);
+    const repoSettings = await repoSettingsRepo.getRepoSettings(review.repository);
+    const repoInstructions = repoSettings?.default_instructions || null;
+    const requestInstructions = rawInstructions?.trim() || null;
+
+    if (requestInstructions) {
+      await reviewRepo.updateReview(reviewId, {
+        customInstructions: requestInstructions
+      });
+    }
+
+    // Import launchCouncilAnalysis from analyses.js
+    const analysesRouter = require('./analyses');
+    const { analysisId, runId } = await analysesRouter.launchCouncilAnalysis(
+      db,
+      {
+        reviewId,
+        worktreePath: localPath,
+        prMetadata,
+        changedFiles,
+        repository: review.repository,
+        headSha: review.local_head_sha,
+        logLabel: `local review #${reviewId}`,
+        initialStatusExtra: { reviewId, reviewType: 'local' },
+        extraBroadcastKeys: [`review-${reviewId}`],
+        runUpdateExtra: { filesAnalyzed: changedFiles.length }
+      },
+      councilConfig,
+      councilId,
+      { repoInstructions, requestInstructions },
+      configType
+    );
+
+    res.json({
+      analysisId,
+      runId,
+      status: 'started',
+      message: 'Council analysis started in background',
+      isCouncil: true
+    });
   } catch (error) {
-    logger.error('Error fetching latest analysis run:', error);
-    res.status(500).json({ error: 'Failed to fetch latest analysis run' });
+    logger.error('Error starting local council analysis:', error);
+    res.status(500).json({ error: 'Failed to start council analysis' });
   }
 });
 

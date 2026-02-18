@@ -62,6 +62,14 @@ function createTestPRManager() {
     updateSuggestions: vi.fn()
   };
 
+  // Initialize currentPR with a review id for unified comment API endpoints
+  prManager.currentPR = {
+    id: 'test-review-1',
+    owner: 'test-owner',
+    repo: 'test-repo',
+    number: 1
+  };
+
   return prManager;
 }
 
@@ -94,7 +102,7 @@ describe('PRManager Suggestion Status', () => {
       await prManager.dismissSuggestion(suggestionId);
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `/api/ai-suggestion/${suggestionId}/status`,
+        `/api/reviews/test-review-1/suggestions/${suggestionId}/status`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -202,7 +210,7 @@ describe('PRManager Suggestion Status', () => {
       await prManager.restoreSuggestion(suggestionId);
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `/api/ai-suggestion/${suggestionId}/status`,
+        `/api/reviews/test-review-1/suggestions/${suggestionId}/status`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -485,7 +493,7 @@ describe('PRManager Suggestion Status', () => {
 
       // API SHOULD be called since adoption was deleted
       expect(mockFetch).toHaveBeenCalledWith(
-        `/api/ai-suggestion/${suggestionId}/status`,
+        `/api/reviews/test-review-1/suggestions/${suggestionId}/status`,
         expect.objectContaining({
           body: JSON.stringify({ status: 'dismissed' })
         })
@@ -543,7 +551,7 @@ describe('PRManager Suggestion Status', () => {
 
       // Verify API was called with DELETE method
       expect(mockFetch).toHaveBeenCalledWith(
-        `/api/user-comment/${commentId}`,
+        `/api/reviews/test-review-1/comments/${commentId}`,
         { method: 'DELETE' }
       );
 
@@ -852,7 +860,7 @@ describe('PRManager Suggestion Status', () => {
 
       // Verify API was called with correct endpoint and method
       expect(mockFetch).toHaveBeenCalledWith(
-        `/api/user-comment/${commentId}/restore`,
+        `/api/reviews/test-review-1/comments/${commentId}/restore`,
         { method: 'PUT' }
       );
     });
