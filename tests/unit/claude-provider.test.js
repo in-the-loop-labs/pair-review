@@ -63,12 +63,13 @@ describe('ClaudeProvider', () => {
     it('should return array of models with expected structure', () => {
       const models = ClaudeProvider.getModels();
       expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBe(7);
+      expect(models.length).toBe(8);
 
       // Check that we have haiku, sonnet, and opus variants
       const modelIds = models.map(m => m.id);
       expect(modelIds).toContain('haiku');
-      expect(modelIds).toContain('sonnet');
+      expect(modelIds).toContain('sonnet-4.5');
+      expect(modelIds).toContain('sonnet-4.6');
       expect(modelIds).toContain('opus-4.5');
       expect(modelIds).toContain('opus-4.6-low');
       expect(modelIds).toContain('opus-4.6-medium');
@@ -84,15 +85,17 @@ describe('ClaudeProvider', () => {
         default: true
       });
 
-      // sonnet should NOT have default: true anymore
-      const sonnet = models.find(m => m.id === 'sonnet');
+      // sonnet-4.5 should NOT have default: true
+      const sonnet = models.find(m => m.id === 'sonnet-4.5');
       expect(sonnet.default).toBeUndefined();
 
       // Check opus variants have correct tiers
-      for (const id of ['opus-4.5', 'opus-4.6-low', 'opus-4.6-medium', 'opus-4.6-1m']) {
+      for (const id of ['opus-4.6-low', 'opus-4.6-medium', 'opus-4.6-1m']) {
         const model = models.find(m => m.id === id);
         expect(model.tier).toBe('balanced');
       }
+      // opus-4.5 is now thorough
+      expect(models.find(m => m.id === 'opus-4.5').tier).toBe('thorough');
       // opus itself is thorough
       expect(opus.tier).toBe('thorough');
     });
@@ -235,7 +238,7 @@ describe('ClaudeProvider', () => {
       });
 
       it('should fall back to id when no cli_model is defined', () => {
-        // sonnet has no cli_model in built-in definition
+        // 'sonnet' is not in CLAUDE_MODELS, so it falls back to the model id
         const provider = new ClaudeProvider('sonnet');
         const modelIdx = provider.args.indexOf('--model');
         expect(modelIdx).not.toBe(-1);
