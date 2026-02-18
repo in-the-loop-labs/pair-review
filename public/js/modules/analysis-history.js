@@ -847,6 +847,7 @@ class AnalysisHistoryManager {
     const modelTiers = {
       // Claude models
       'haiku': 'fast',
+      'sonnet': 'balanced',
       'sonnet-4.5': 'balanced',
       'sonnet-4.6': 'balanced',
       'opus': 'thorough',
