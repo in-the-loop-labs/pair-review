@@ -80,16 +80,21 @@ class ChatPanel {
         </div>
         <div class="chat-panel__input-area">
           <textarea class="chat-panel__input" placeholder="Ask about this review..." rows="1"></textarea>
-          <button class="chat-panel__send-btn" title="Send" disabled>
-            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-              <path d="M.989 8 .064 2.68a1.342 1.342 0 0 1 1.85-1.462l13.402 5.744a1.13 1.13 0 0 1 0 2.076L1.913 14.782a1.343 1.343 0 0 1-1.85-1.463L.99 8Zm.603-4.776L2.296 7.25h5.954a.75.75 0 0 1 0 1.5H2.296l-.704 4.026L13.788 8Z"/>
-            </svg>
-          </button>
-          <button class="chat-panel__stop-btn" title="Stop" style="display: none;">
-            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-              <path d="M4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5v-7A2.5 2.5 0 0 0 11.5 2h-7Z"/>
-            </svg>
-          </button>
+          <div class="chat-panel__input-footer">
+            <span class="chat-panel__input-hint">${navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to send</span>
+            <div class="chat-panel__input-actions">
+              <button class="chat-panel__send-btn" title="Send" disabled>
+                <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                  <path d="M.989 8 .064 2.68a1.342 1.342 0 0 1 1.85-1.462l13.402 5.744a1.13 1.13 0 0 1 0 2.076L1.913 14.782a1.343 1.343 0 0 1-1.85-1.463L.99 8Zm.603-4.776L2.296 7.25h5.954a.75.75 0 0 1 0 1.5H2.296l-.704 4.026L13.788 8Z"/>
+                </svg>
+              </button>
+              <button class="chat-panel__stop-btn" title="Stop" style="display: none;">
+                <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                  <path d="M4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5v-7A2.5 2.5 0 0 0 11.5 2h-7Z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -137,7 +142,7 @@ class ChatPanel {
 
     // Keyboard shortcuts
     this.inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         if (this.inputEl.value.trim() && !this.isStreaming) {
           this.sendMessage();
@@ -507,6 +512,14 @@ class ChatPanel {
       payload.contextData = this._pendingContextData;
       this._pendingContext = [];
       this._pendingContextData = [];
+
+      // Lock context cards — remove close buttons and index attributes
+      const removableCards = this.messagesEl.querySelectorAll('.chat-panel__context-card[data-context-index]');
+      removableCards.forEach((card) => {
+        const btn = card.querySelector('.chat-panel__context-remove');
+        if (btn) btn.remove();
+        delete card.dataset.contextIndex;
+      });
     }
 
     // Send to API
@@ -527,6 +540,8 @@ class ChatPanel {
       // Restore pending context so it's not lost
       this._pendingContext = savedContext;
       this._pendingContextData = savedContextData;
+      // Restore removability on context cards that were locked before the failed send
+      this._restoreRemovableCards();
       console.error('[ChatPanel] Error sending message:', error);
       this._showError('Failed to send message. ' + error.message);
       this._finalizeStreaming();
@@ -541,17 +556,6 @@ class ChatPanel {
    * @param {Object} ctx - Suggestion context {title, type, file, line_start, line_end, body}
    */
   _sendContextMessage(ctx) {
-    // Cap pending context items to avoid unbounded accumulation
-    const MAX_CONTEXT_ITEMS = 5;
-    if (this._pendingContext.length >= MAX_CONTEXT_ITEMS) {
-      // Replace oldest — remove first item from arrays
-      this._pendingContext.shift();
-      this._pendingContextData.shift();
-      // Remove oldest context card from UI
-      const oldestCard = this.messagesEl.querySelector('.chat-panel__context-card');
-      if (oldestCard) oldestCard.remove();
-    }
-
     // Remove empty state if present
     const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
@@ -585,7 +589,7 @@ class ChatPanel {
     this._pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
-    this._addContextCard(ctx);
+    this._addContextCard(ctx, { removable: true });
   }
 
   /**
@@ -596,15 +600,6 @@ class ChatPanel {
    * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, source, isFileLevel}
    */
   _sendCommentContextMessage(ctx) {
-    // Cap pending context items to avoid unbounded accumulation
-    const MAX_CONTEXT_ITEMS = 5;
-    if (this._pendingContext.length >= MAX_CONTEXT_ITEMS) {
-      this._pendingContext.shift();
-      this._pendingContextData.shift();
-      const oldestCard = this.messagesEl.querySelector('.chat-panel__context-card');
-      if (oldestCard) oldestCard.remove();
-    }
-
     // Remove empty state if present
     const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
@@ -640,18 +635,18 @@ class ChatPanel {
     this._pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
-    this._addCommentContextCard(ctx);
+    this._addCommentContextCard(ctx, { removable: true });
   }
 
   /**
    * Add a compact context card for a user comment to the messages area.
    * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, isFileLevel}
    */
-  _addCommentContextCard(ctx) {
+  _addCommentContextCard(ctx, { removable = false } = {}) {
     const card = document.createElement('div');
     card.className = 'chat-panel__context-card';
 
-    const label = ctx.isFileLevel ? 'file comment' : 'your comment';
+    const label = ctx.isFileLevel ? 'file comment' : 'comment';
     const fileInfo = ctx.file
       ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}`
       : '';
@@ -665,6 +660,20 @@ class ChatPanel {
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
 
+    if (removable) {
+      const idx = this._pendingContextData.length - 1;
+      card.dataset.contextIndex = idx;
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'chat-panel__context-remove';
+      removeBtn.title = 'Remove context';
+      removeBtn.innerHTML = '\u00d7';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._removeContextCard(card);
+      });
+      card.appendChild(removeBtn);
+    }
+
     this.messagesEl.appendChild(card);
     this.scrollToBottom();
   }
@@ -675,7 +684,7 @@ class ChatPanel {
    * without taking up space as a full message bubble.
    * @param {Object} ctx - Suggestion context {title, type, file, line_start, line_end, body}
    */
-  _addContextCard(ctx) {
+  _addContextCard(ctx, { removable = false } = {}) {
     const card = document.createElement('div');
     card.className = 'chat-panel__context-card';
 
@@ -691,8 +700,74 @@ class ChatPanel {
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
 
+    if (removable) {
+      const idx = this._pendingContextData.length - 1;
+      card.dataset.contextIndex = idx;
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'chat-panel__context-remove';
+      removeBtn.title = 'Remove context';
+      removeBtn.innerHTML = '\u00d7';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._removeContextCard(card);
+      });
+      card.appendChild(removeBtn);
+    }
+
     this.messagesEl.appendChild(card);
     this.scrollToBottom();
+  }
+
+  /**
+   * Restore remove buttons and data-context-index on all pending context cards.
+   * Called after a failed send to unlock cards that were locked prematurely.
+   */
+  _restoreRemovableCards() {
+    const cards = this.messagesEl.querySelectorAll('.chat-panel__context-card:not([data-analysis])');
+    let idx = 0;
+    cards.forEach((card) => {
+      // Only restore cards that don't already have a remove button
+      if (!card.querySelector('.chat-panel__context-remove')) {
+        card.dataset.contextIndex = idx;
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'chat-panel__context-remove';
+        removeBtn.title = 'Remove context';
+        removeBtn.innerHTML = '\u00d7';
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this._removeContextCard(card);
+        });
+        card.appendChild(removeBtn);
+      } else {
+        card.dataset.contextIndex = idx;
+      }
+      idx++;
+    });
+  }
+
+  /**
+   * Remove a pending context card from the UI and data arrays.
+   * Re-indexes remaining cards so data-context-index stays in sync.
+   * @param {HTMLElement} cardEl - The context card element to remove
+   */
+  _removeContextCard(cardEl) {
+    const idx = parseInt(cardEl.dataset.contextIndex, 10);
+    if (!isNaN(idx) && idx >= 0 && idx < this._pendingContext.length) {
+      this._pendingContext.splice(idx, 1);
+      this._pendingContextData.splice(idx, 1);
+    }
+    cardEl.remove();
+
+    // Re-index remaining removable context cards
+    const remainingCards = this.messagesEl.querySelectorAll('.chat-panel__context-card[data-context-index]');
+    remainingCards.forEach((card, i) => {
+      card.dataset.contextIndex = i;
+    });
+
+    // If no pending context and no messages, restore empty state
+    if (this._pendingContext.length === 0 && this.messages.length === 0) {
+      this._clearMessages();
+    }
   }
 
   /**
@@ -715,16 +790,18 @@ class ChatPanel {
    */
   _addAnalysisContextCard(context) {
     const card = document.createElement('div');
-    card.className = 'chat-panel__analysis-context-card';
+    card.className = 'chat-panel__context-card';
+    card.dataset.analysis = 'true';
 
     const count = context.suggestionCount;
-    const label = count === 1 ? '1 suggestion' : `${count} suggestions`;
+    const title = count === 1 ? '1 suggestion loaded' : `${count} suggestions loaded`;
 
     card.innerHTML = `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12">
         <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
       </svg>
-      <span>Analysis context loaded &mdash; ${this._escapeHtml(label)}</span>
+      <span class="chat-panel__context-label">analysis run</span>
+      <span class="chat-panel__context-title">${this._escapeHtml(title)}</span>
     `;
 
     this.messagesEl.appendChild(card);

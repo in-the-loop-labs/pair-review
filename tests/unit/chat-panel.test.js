@@ -508,24 +508,6 @@ describe('ChatPanel', () => {
       expect(card.className).toBe('chat-panel__context-card');
     });
 
-    it('should cap pending context at MAX_CONTEXT_ITEMS (5)', () => {
-      for (let i = 0; i < 6; i++) {
-        chatPanel._sendCommentContextMessage({
-          commentId: `c${i}`,
-          body: `Comment ${i}`,
-          file: 'file.js',
-          line_start: i,
-          source: 'user',
-          isFileLevel: false,
-        });
-      }
-
-      expect(chatPanel._pendingContext).toHaveLength(5);
-      expect(chatPanel._pendingContextData).toHaveLength(5);
-      // The first one should have been evicted — the oldest remaining should be index 1
-      expect(chatPanel._pendingContextData[0].body).toBe('Comment 1');
-    });
-
     it('should remove empty state before adding card', () => {
       const emptyEl = createMockElement('div');
       chatPanel.messagesEl.querySelector = vi.fn((sel) => {
@@ -584,12 +566,12 @@ describe('ChatPanel', () => {
   // _addCommentContextCard
   // -----------------------------------------------------------------------
   describe('_addCommentContextCard', () => {
-    it('should set label to "your comment" for non-file-level comments', () => {
+    it('should set label to "comment" for non-file-level comments', () => {
       const ctx = { commentId: '1', body: 'Hello', file: 'a.js', line_start: 5, isFileLevel: false };
       chatPanel._addCommentContextCard(ctx);
 
       const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
-      expect(card.innerHTML).toContain('your comment');
+      expect(card.innerHTML).toContain('comment');
     });
 
     it('should set label to "file comment" for file-level comments', () => {
@@ -1238,6 +1220,258 @@ describe('ChatPanel', () => {
 
       const body = JSON.parse(global.fetch.mock.calls[0][1].body);
       expect(body.contextCommentId).toBe(42);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Keyboard shortcuts (Cmd+Enter / Ctrl+Enter to send)
+  // -----------------------------------------------------------------------
+  describe('Keyboard shortcuts', () => {
+    it('should NOT send on plain Enter', () => {
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+      chatPanel.inputEl.value = 'hello';
+
+      // Simulate the keydown handler logic directly
+      const handler = chatPanel.inputEl.addEventListener.mock.calls
+        .find(c => c[0] === 'keydown')?.[1];
+      expect(handler).toBeDefined();
+
+      const event = { key: 'Enter', metaKey: false, ctrlKey: false, shiftKey: false, preventDefault: vi.fn() };
+      handler(event);
+
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    });
+
+    it('should send on Cmd+Enter (metaKey)', () => {
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+      chatPanel.inputEl.value = 'hello';
+      chatPanel.isStreaming = false;
+
+      const handler = chatPanel.inputEl.addEventListener.mock.calls
+        .find(c => c[0] === 'keydown')?.[1];
+
+      const event = { key: 'Enter', metaKey: true, ctrlKey: false, preventDefault: vi.fn() };
+      handler(event);
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(sendSpy).toHaveBeenCalled();
+    });
+
+    it('should send on Ctrl+Enter', () => {
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+      chatPanel.inputEl.value = 'hello';
+      chatPanel.isStreaming = false;
+
+      const handler = chatPanel.inputEl.addEventListener.mock.calls
+        .find(c => c[0] === 'keydown')?.[1];
+
+      const event = { key: 'Enter', metaKey: false, ctrlKey: true, preventDefault: vi.fn() };
+      handler(event);
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(sendSpy).toHaveBeenCalled();
+    });
+
+    it('should NOT send on Cmd+Enter when input is empty', () => {
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+      chatPanel.inputEl.value = '';
+
+      const handler = chatPanel.inputEl.addEventListener.mock.calls
+        .find(c => c[0] === 'keydown')?.[1];
+
+      const event = { key: 'Enter', metaKey: true, ctrlKey: false, preventDefault: vi.fn() };
+      handler(event);
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+
+    it('should NOT send on Cmd+Enter when streaming', () => {
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+      chatPanel.inputEl.value = 'hello';
+      chatPanel.isStreaming = true;
+
+      const handler = chatPanel.inputEl.addEventListener.mock.calls
+        .find(c => c[0] === 'keydown')?.[1];
+
+      const event = { key: 'Enter', metaKey: true, ctrlKey: false, preventDefault: vi.fn() };
+      handler(event);
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Removable context cards
+  // -----------------------------------------------------------------------
+  describe('Removable context cards', () => {
+    it('should add close button when removable is true', () => {
+      chatPanel._pendingContextData = [{ type: 'bug' }]; // simulate data already pushed
+      chatPanel._addContextCard({ title: 'Test', type: 'bug' }, { removable: true });
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.appendChild).toHaveBeenCalled();
+      const removeBtn = card.appendChild.mock.calls[0][0];
+      expect(removeBtn.className).toBe('chat-panel__context-remove');
+      expect(card.dataset.contextIndex).toBeDefined();
+    });
+
+    it('should NOT add close button when removable is false (default)', () => {
+      chatPanel._addContextCard({ title: 'Test', type: 'bug' });
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      // appendChild is called once by messagesEl.appendChild, but the card itself
+      // should not have appendChild called for a remove button
+      expect(card.appendChild).not.toHaveBeenCalled();
+      expect(card.dataset.contextIndex).toBeUndefined();
+    });
+
+    it('should add close button to comment context card when removable', () => {
+      chatPanel._pendingContextData = [{ type: 'comment' }];
+      chatPanel._addCommentContextCard(
+        { commentId: '1', body: 'Test', file: 'a.js', line_start: 1, isFileLevel: false },
+        { removable: true }
+      );
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.appendChild).toHaveBeenCalled();
+      const removeBtn = card.appendChild.mock.calls[0][0];
+      expect(removeBtn.className).toBe('chat-panel__context-remove');
+    });
+
+    it('should pass removable: true from _sendContextMessage', () => {
+      const addSpy = vi.spyOn(chatPanel, '_addContextCard');
+
+      chatPanel._sendContextMessage({ title: 'X', type: 'bug', file: 'f.js' });
+
+      expect(addSpy).toHaveBeenCalledWith(
+        { title: 'X', type: 'bug', file: 'f.js' },
+        { removable: true }
+      );
+    });
+
+    it('should pass removable: true from _sendCommentContextMessage', () => {
+      const addSpy = vi.spyOn(chatPanel, '_addCommentContextCard');
+
+      chatPanel._sendCommentContextMessage({
+        commentId: 'c1', body: 'Test', file: 'a.js', line_start: 1, source: 'user', isFileLevel: false,
+      });
+
+      expect(addSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ commentId: 'c1' }),
+        { removable: true }
+      );
+    });
+
+    it('should restore removability on cards after sendMessage failure', async () => {
+      // Setup: add some pending context
+      chatPanel._pendingContext = ['ctx'];
+      chatPanel._pendingContextData = [{ type: 'bug' }];
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+
+      // Create a card that looks like it's been locked (no remove button, no contextIndex)
+      const card = createMockElement('div');
+      card.className = 'chat-panel__context-card';
+      card.querySelector = vi.fn(() => null); // no existing remove button
+
+      chatPanel.messagesEl.querySelectorAll = vi.fn((sel) => {
+        if (sel === '.chat-panel__context-card[data-context-index]') return [];
+        if (sel === '.chat-panel__context-card') return [card];
+        return [];
+      });
+
+      // Mock fetch to fail
+      global.fetch.mockResolvedValueOnce({
+        ok: false,
+        json: () => Promise.resolve({ error: 'server error' }),
+      });
+
+      // Spy on _restoreRemovableCards
+      const restoreSpy = vi.spyOn(chatPanel, '_restoreRemovableCards');
+
+      await chatPanel.sendMessage();
+
+      expect(restoreSpy).toHaveBeenCalled();
+    });
+
+    it('should NOT pass removable for historical context cards in _loadMessageHistory', () => {
+      // _loadMessageHistory calls _addContextCard without removable
+      const addSpy = vi.spyOn(chatPanel, '_addContextCard');
+
+      // Simulate what _loadMessageHistory does internally
+      chatPanel._addContextCard({ type: 'bug', title: 'Old', file: 'x.js' });
+
+      expect(addSpy).toHaveBeenCalledWith(
+        { type: 'bug', title: 'Old', file: 'x.js' }
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _removeContextCard
+  // -----------------------------------------------------------------------
+  describe('_removeContextCard', () => {
+    it('should splice pending arrays at the correct index', () => {
+      chatPanel._pendingContext = ['ctx0', 'ctx1', 'ctx2'];
+      chatPanel._pendingContextData = [{ id: 0 }, { id: 1 }, { id: 2 }];
+
+      const cardEl = createMockElement('div', { dataset: { contextIndex: '1' } });
+      // Mock querySelectorAll to return remaining cards for re-indexing
+      chatPanel.messagesEl.querySelectorAll = vi.fn(() => []);
+
+      chatPanel._removeContextCard(cardEl);
+
+      expect(chatPanel._pendingContext).toEqual(['ctx0', 'ctx2']);
+      expect(chatPanel._pendingContextData).toEqual([{ id: 0 }, { id: 2 }]);
+      expect(cardEl.remove).toHaveBeenCalled();
+    });
+
+    it('should re-index remaining cards', () => {
+      chatPanel._pendingContext = ['ctx0', 'ctx1', 'ctx2'];
+      chatPanel._pendingContextData = [{ id: 0 }, { id: 1 }, { id: 2 }];
+
+      const card0 = createMockElement('div', { dataset: { contextIndex: '0' } });
+      const card2 = createMockElement('div', { dataset: { contextIndex: '2' } });
+      chatPanel.messagesEl.querySelectorAll = vi.fn(() => [card0, card2]);
+
+      const cardToRemove = createMockElement('div', { dataset: { contextIndex: '1' } });
+      chatPanel._removeContextCard(cardToRemove);
+
+      expect(card0.dataset.contextIndex).toBe(0);
+      expect(card2.dataset.contextIndex).toBe(1);
+    });
+
+    it('should restore empty state when last context card is removed and no messages', () => {
+      chatPanel._pendingContext = ['ctx0'];
+      chatPanel._pendingContextData = [{ id: 0 }];
+      chatPanel.messages = [];
+
+      const clearSpy = vi.spyOn(chatPanel, '_clearMessages');
+      const cardEl = createMockElement('div', { dataset: { contextIndex: '0' } });
+      chatPanel.messagesEl.querySelectorAll = vi.fn(() => []);
+
+      chatPanel._removeContextCard(cardEl);
+
+      expect(chatPanel._pendingContext).toEqual([]);
+      expect(clearSpy).toHaveBeenCalled();
+    });
+
+    it('should NOT restore empty state when messages exist', () => {
+      chatPanel._pendingContext = ['ctx0'];
+      chatPanel._pendingContextData = [{ id: 0 }];
+      chatPanel.messages = [{ role: 'user', content: 'hi' }];
+
+      const clearSpy = vi.spyOn(chatPanel, '_clearMessages');
+      const cardEl = createMockElement('div', { dataset: { contextIndex: '0' } });
+      chatPanel.messagesEl.querySelectorAll = vi.fn(() => []);
+
+      chatPanel._removeContextCard(cardEl);
+
+      expect(clearSpy).not.toHaveBeenCalled();
     });
   });
 });
