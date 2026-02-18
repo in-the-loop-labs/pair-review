@@ -3561,8 +3561,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       }
     }
 
-    // Fallback to claude/sonnet
-    return { provider: 'claude', model: 'sonnet', tier: 'balanced' };
+    // Fallback to claude/sonnet-4.6
+    return { provider: 'claude', model: 'sonnet-4.6', tier: 'balanced' };
   }
 
   /**
@@ -3581,7 +3581,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         tier: voices[0].tier || 'balanced'
       };
     }
-    return { provider: 'claude', model: 'sonnet', tier: 'balanced' };
+    return { provider: 'claude', model: 'sonnet-4.6', tier: 'balanced' };
   }
 
   /**
