@@ -27,13 +27,14 @@ async function cleanupAllFileComments(page) {
     if (!prId) return;
 
     // Fetch comments
-    const commentsResponse = await fetch(`/api/pr/${prId}/comments`);
-    const comments = await commentsResponse.json();
+    const commentsResponse = await fetch(`/api/reviews/${prId}/comments`);
+    const data = await commentsResponse.json();
+    const comments = data.comments || [];
 
     // Delete each file-level user comment
     for (const comment of comments) {
       if (comment.source === 'user' && comment.is_file_level === 1) {
-        await fetch(`/api/user-comment/${comment.id}`, { method: 'DELETE' });
+        await fetch(`/api/reviews/${prId}/comments/${comment.id}`, { method: 'DELETE' });
       }
     }
   });
@@ -63,7 +64,7 @@ async function createFileComment(page, text) {
 
   // Wait for API response to get comment ID
   const responsePromise = page.waitForResponse(
-    response => response.url().includes('/api/file-comment') && response.request().method() === 'POST'
+    response => response.url().includes('/comments') && response.request().method() === 'POST'
   );
 
   await saveBtn.click();
@@ -293,7 +294,7 @@ test.describe('Creating File Comments', () => {
 
     // Set up API listener to get the comment ID
     const responsePromise = page.waitForResponse(
-      response => response.url().includes('/api/file-comment') && response.request().method() === 'POST'
+      response => response.url().includes('/comments') && response.request().method() === 'POST'
     );
 
     // Use keyboard shortcut
@@ -326,7 +327,7 @@ test.describe('Creating File Comments', () => {
   test('should call API when saving file comment', async ({ page }) => {
     // Set up API response listener
     const responsePromise = page.waitForResponse(
-      response => response.url().includes('/api/file-comment') && response.request().method() === 'POST'
+      response => response.url().includes('/comments') && response.request().method() === 'POST'
     );
 
     const fileCommentBtn = await getFileCommentButton(page);
@@ -399,7 +400,7 @@ test.describe('Editing File Comments', () => {
 
     // Set up API listener
     const responsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+      response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
     // Clear and type new text
@@ -465,7 +466,7 @@ test.describe('Editing File Comments', () => {
 
     // Set up API listener
     const saveResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+      response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
     // Save the edit
@@ -512,7 +513,7 @@ test.describe('Editing File Comments', () => {
     await editTextarea.fill(textWithQuotes);
 
     const saveResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'PUT'
+      response => response.url().includes('/comments/') && response.request().method() === 'PUT'
     );
 
     const saveEditBtn = card.locator('.save-edit-btn');
@@ -562,7 +563,7 @@ test.describe('Deleting File Comments', () => {
 
     // Set up API listener
     const deleteResponsePromise = page.waitForResponse(
-      response => response.url().includes('/api/user-comment/') && response.request().method() === 'DELETE'
+      response => response.url().includes('/comments/') && response.request().method() === 'DELETE'
     );
 
     // Click delete - deletion happens immediately without confirmation dialog

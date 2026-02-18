@@ -564,13 +564,15 @@ test.describe('Suggestion Actions', () => {
     // Wait for suggestions
     await page.waitForSelector('.ai-suggestion', { timeout: 5000 });
 
-    // Find an ai-suggestion-row that contains multiple suggestions
+    // Find an ai-suggestion-row that contains multiple NON-collapsed suggestions
     // (suggestions on the same line share the same <tr class="ai-suggestion-row">)
+    // We filter out collapsed suggestions because earlier tests in this suite may have
+    // dismissed/adopted suggestions that share the page's database state.
     const rowsWithMultipleSuggestions = await page.evaluate(() => {
       const rows = document.querySelectorAll('.ai-suggestion-row');
       const result = [];
       for (const row of rows) {
-        const suggestions = row.querySelectorAll('.ai-suggestion');
+        const suggestions = row.querySelectorAll('.ai-suggestion:not(.collapsed)');
         if (suggestions.length >= 2) {
           result.push({
             suggestionIds: Array.from(suggestions).map(s => s.dataset.suggestionId)
@@ -579,6 +581,9 @@ test.describe('Suggestion Actions', () => {
       }
       return result;
     });
+
+    // Verify we found at least one row with multiple active suggestions
+    expect(rowsWithMultipleSuggestions.length).toBeGreaterThan(0);
 
     // Get the first and second suggestion IDs from the same row
     const [firstId, secondId] = rowsWithMultipleSuggestions[0].suggestionIds;
