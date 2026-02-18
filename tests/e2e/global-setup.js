@@ -263,6 +263,42 @@ async function globalSetup() {
   GitWorktreeManager.prototype.createWorktreeForPR = async () => mockWorktreeResponses.getWorktreePath;
   GitWorktreeManager.prototype.pathExists = async () => true;
 
+  // Mock AI provider for chat service
+  const aiModule = require('../../src/ai');
+  const originalCreateProvider = aiModule.createProvider;
+  aiModule.createProvider = (providerName, modelName) => {
+    return {
+      execute: async (prompt, options = {}) => {
+        // Simulate streaming if onStreamEvent callback is provided
+        const mockResponse = 'This is a mock AI response for testing the chat feature. The code looks good overall.';
+        if (options.onStreamEvent) {
+          // Simulate streaming chunks
+          const words = mockResponse.split(' ');
+          for (let i = 0; i < words.length; i++) {
+            const text = (i === 0 ? '' : ' ') + words[i];
+            options.onStreamEvent({ type: 'assistant_text', text });
+          }
+        }
+        return { raw: mockResponse, parsed: false };
+      }
+    };
+  };
+
+  // Mock fs.readFile for code snippet reads in ChatService (worktree doesn't exist)
+  const fsPromises = require('fs').promises;
+  const originalReadFile = fsPromises.readFile;
+  fsPromises.readFile = async (filePath, encoding) => {
+    // Mock file content for worktree paths
+    if (typeof filePath === 'string' && filePath.startsWith('/tmp/worktree/')) {
+      const lines = [];
+      for (let i = 1; i <= 60; i++) {
+        lines.push(`// Line ${i} of mock file`);
+      }
+      return lines.join('\n');
+    }
+    return originalReadFile.call(fsPromises, filePath, encoding);
+  };
+
   // Mock config (port is set dynamically after server starts via E2E_PORT env var)
   configModule.loadConfig = async () => ({
     github_token: 'test-token-e2e',
@@ -527,6 +563,7 @@ async function globalSetup() {
   const configRoutes = require('../../src/routes/config');
   const prRoutes = require('../../src/routes/pr');
   const councilRoutes = require('../../src/routes/councils');
+  const chatRoutes = require('../../src/routes/chat');
 
   app.use('/', analysisRoutes);
   app.use('/', commentsRoutes);
@@ -534,6 +571,7 @@ async function globalSetup() {
   app.use('/', worktreesRoutes);
   app.use('/', prRoutes);
   app.use('/', councilRoutes);
+  app.use('/', chatRoutes);
 
   // Error handling
   app.use((error, req, res, next) => {

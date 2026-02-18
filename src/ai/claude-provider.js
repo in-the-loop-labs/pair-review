@@ -161,7 +161,7 @@ class ClaudeProvider extends AIProvider {
         'Bash(find *)',
         'Bash(rg *)',
       ].join(',');
-      permissionArgs = ['--allowedTools', allowedTools];
+      permissionArgs = ['--allowedTools', allowedTools, '--permission-mode', 'dontAsk'];
     }
     const baseArgs = ['-p', '--verbose', ...cliModelArgs, '--output-format', 'stream-json', ...permissionArgs];
     if (maxBudget) {
@@ -241,7 +241,7 @@ class ClaudeProvider extends AIProvider {
    */
   async execute(prompt, options = {}) {
     return new Promise((resolve, reject) => {
-      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix } = options;
+      const { cwd = process.cwd(), timeout = 300000, level = 'unknown', analysisId, registerProcess, onStreamEvent, logPrefix, skipJsonExtraction = false } = options;
 
       const levelPrefix = logPrefix || `[Level ${level}]`;
       logger.info(`${levelPrefix} Executing Claude CLI...`);
@@ -360,6 +360,15 @@ class ClaudeProvider extends AIProvider {
 
         // Parse the Claude JSONL stream response
         const parsed = this.parseClaudeResponse(stdout, level, levelPrefix);
+
+        // If skipJsonExtraction is set, return raw text content directly (used for chat)
+        if (skipJsonExtraction) {
+          const textContent = parsed.textContent || stdout;
+          logger.info(`${levelPrefix} Skipping JSON extraction, returning raw text (${textContent.length} chars)`);
+          settle(resolve, { raw: textContent, parsed: false });
+          return;
+        }
+
         if (parsed.success) {
           logger.success(`${levelPrefix} Successfully parsed JSON response`);
           // Dump the parsed data for debugging

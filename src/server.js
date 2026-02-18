@@ -251,6 +251,7 @@ async function startServer(sharedDb = null) {
     const analysisRoutes = require('./routes/analysis');
     const worktreesRoutes = require('./routes/worktrees');
     const commentsRoutes = require('./routes/comments');
+    const chatRoutes = require('./routes/chat');
     const configRoutes = require('./routes/config');
     const prRoutes = require('./routes/pr');
     const localRoutes = require('./routes/local');
@@ -262,6 +263,7 @@ async function startServer(sharedDb = null) {
     app.use('/', analysisRoutes);
     app.use('/', councilRoutes);
     app.use('/', commentsRoutes);
+    app.use('/', chatRoutes);
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);
     app.use('/', localRoutes);

@@ -144,6 +144,7 @@ class PRManager {
     this.lineTracker = new window.LineTracker();
     this.commentManager = new window.CommentManager(this);
     this.suggestionManager = new window.SuggestionManager(this);
+    this.chatPanelManager = window.ChatPanelManager ? new window.ChatPanelManager(this) : null;
     this.fileCommentManager = window.FileCommentManager ? new window.FileCommentManager(this) : null;
 
     // Line range selection state - delegate to lineTracker
@@ -2219,6 +2220,11 @@ class PRManager {
       }
 
       this.updateCommentCount();
+
+      // Refresh chat indicators now that comment elements are in the DOM
+      if (this.chatPanelManager && this.currentPR?.id) {
+        this.chatPanelManager.loadChatIndicators(this.currentPR.id);
+      }
     } catch (error) {
       console.error('Error loading user comments:', error);
     }
@@ -2298,7 +2304,11 @@ class PRManager {
   }
 
   async displayAISuggestions(suggestions) {
-    return this.suggestionManager.displayAISuggestions(suggestions);
+    await this.suggestionManager.displayAISuggestions(suggestions);
+    // Refresh chat indicators now that suggestion elements are in the DOM
+    if (this.chatPanelManager && this.currentPR?.id) {
+      this.chatPanelManager.loadChatIndicators(this.currentPR.id);
+    }
   }
 
   createSuggestionRow(suggestions) {
@@ -2389,6 +2399,8 @@ class PRManager {
       }
 
       this.updateCommentCount();
+
+      return newComment;
     } catch (error) {
       console.error('Error adopting and editing suggestion:', error);
       alert(`Failed to adopt suggestion: ${error.message}`);

@@ -15,7 +15,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs').promises;
-const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, CommentRepository, AnalysisRunRepository } = require('../database');
+const { query, queryOne, run, ReviewRepository, RepoSettingsRepository, CommentRepository, AnalysisRunRepository, ChatRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
@@ -23,6 +23,7 @@ const { mergeInstructions } = require('../utils/instructions');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
+const { ChatService } = require('../services/chat-service');
 const {
   activeAnalyses,
   progressClients,
@@ -2137,6 +2138,511 @@ router.get('/api/local/:reviewId/analysis-runs/latest', async (req, res) => {
   } catch (error) {
     logger.error('Error fetching latest analysis run:', error);
     res.status(500).json({ error: 'Failed to fetch latest analysis run' });
+  }
+});
+
+// ============================================================================
+// CHAT ROUTES (Local Mode)
+// ============================================================================
+
+// Store active SSE clients for each chat session (local mode)
+const localChatStreamClients = new Map();
+
+/**
+ * Start a new chat session about a comment (Local Mode)
+ * POST /api/local/:reviewId/chat/start
+ * Body: { commentId, provider?, model? }
+ */
+router.post('/api/local/:reviewId/chat/start', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const { commentId, provider, model } = req.body;
+
+    if (isNaN(reviewId)) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    if (!commentId) {
+      return res.status(400).json({
+        error: 'commentId is required'
+      });
+    }
+
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+    const commentRepo = new CommentRepository(db);
+    const analysisRunRepo = new AnalysisRunRepository(db);
+
+    // Get the comment to verify it belongs to this review
+    const comment = await commentRepo.getComment(commentId);
+    if (!comment) {
+      return res.status(404).json({
+        error: 'Comment not found'
+      });
+    }
+
+    if (comment.review_id !== reviewId) {
+      return res.status(400).json({
+        error: 'Comment does not belong to this review'
+      });
+    }
+
+    // Get the review to find the local path
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
+    if (!review) {
+      return res.status(404).json({
+        error: 'Review not found'
+      });
+    }
+
+    if (review.review_type !== 'local') {
+      return res.status(400).json({
+        error: 'Review is not a local review'
+      });
+    }
+
+    // For local mode, the worktree path is the local_path
+    const worktreePath = review.local_path;
+    if (!worktreePath) {
+      return res.status(400).json({
+        error: 'No local path found for this review'
+      });
+    }
+
+    // Create the chat service
+    const chatService = new ChatService(db, chatRepo, commentRepo, analysisRunRepo);
+
+    // Start the session
+    const session = await chatService.startChatSession(
+      commentId,
+      worktreePath,
+      { provider, model }
+    );
+
+    logger.info(`Local chat session started: ${session.id} for comment ${commentId}`);
+
+    res.json({
+      success: true,
+      chatId: session.id,
+      provider: session.provider,
+      model: session.model,
+      comment: session.comment
+    });
+
+  } catch (error) {
+    logger.error('Error starting local chat session:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to start chat session'
+    });
+  }
+});
+
+/**
+ * Send a message in a chat session (Local Mode)
+ * POST /api/local/:reviewId/chat/:chatId/message
+ * Body: { content }
+ */
+router.post('/api/local/:reviewId/chat/:chatId/message', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const { chatId } = req.params;
+    const { content } = req.body;
+
+    if (isNaN(reviewId)) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({
+        error: 'Message content is required'
+      });
+    }
+
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+    const commentRepo = new CommentRepository(db);
+    const analysisRunRepo = new AnalysisRunRepository(db);
+
+    // Get session
+    const session = await chatRepo.getSession(chatId);
+    if (!session) {
+      return res.status(404).json({
+        error: 'Chat session not found'
+      });
+    }
+
+    // Get the comment to verify review ID
+    const comment = await commentRepo.getComment(session.comment_id);
+    if (!comment) {
+      return res.status(404).json({
+        error: 'Comment not found'
+      });
+    }
+
+    if (comment.review_id !== reviewId) {
+      return res.status(400).json({
+        error: 'Comment does not belong to this review'
+      });
+    }
+
+    // Get the review for local path
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
+    if (!review) {
+      return res.status(404).json({
+        error: 'Review not found'
+      });
+    }
+
+    const worktreePath = review.local_path;
+    if (!worktreePath) {
+      return res.status(400).json({
+        error: 'No local path found for this review'
+      });
+    }
+
+    // Create the chat service
+    const chatService = new ChatService(db, chatRepo, commentRepo, analysisRunRepo);
+
+    // Send the message (will stream to SSE clients if any are connected)
+    const clients = localChatStreamClients.get(chatId) || new Set();
+
+    let streamedResponse = '';
+    const result = await chatService.sendMessage(
+      chatId,
+      content,
+      worktreePath,
+      {
+        onStreamEvent: (event) => {
+          // Stream to all connected SSE clients
+          if (event.type === 'assistant_text' && event.text) {
+            streamedResponse += event.text;
+            clients.forEach(client => {
+              try {
+                client.write(`data: ${JSON.stringify({ type: 'chunk', content: event.text })}\n\n`);
+              } catch (e) {
+                clients.delete(client);
+              }
+            });
+          }
+        }
+      }
+    );
+
+    // Send completion event to SSE clients
+    clients.forEach(client => {
+      try {
+        client.write(`data: ${JSON.stringify({ type: 'done', messageId: result.messageId })}\n\n`);
+      } catch (e) {
+        clients.delete(client);
+      }
+    });
+
+    logger.info(`Local chat message sent in session ${chatId}`);
+
+    res.json({
+      success: true,
+      messageId: result.messageId,
+      response: result.response
+    });
+
+  } catch (error) {
+    logger.error('Error sending local chat message:', error);
+
+    // Send error event to SSE clients
+    const clients = localChatStreamClients.get(req.params.chatId) || new Set();
+    clients.forEach(client => {
+      try {
+        client.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+      } catch (e) {
+        clients.delete(client);
+      }
+    });
+
+    res.status(500).json({
+      error: error.message || 'Failed to send message'
+    });
+  }
+});
+
+/**
+ * Get messages for a chat session (Local Mode)
+ * GET /api/local/:reviewId/chat/:chatId/messages
+ */
+router.get('/api/local/:reviewId/chat/:chatId/messages', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const { chatId } = req.params;
+
+    if (isNaN(reviewId)) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+
+    const sessionWithMessages = await chatRepo.getSessionWithMessages(chatId);
+
+    if (!sessionWithMessages) {
+      return res.status(404).json({
+        error: 'Chat session not found'
+      });
+    }
+
+    // Verify session belongs to this review
+    const commentRepo = new CommentRepository(db);
+    const comment = await commentRepo.getComment(sessionWithMessages.comment_id);
+    if (comment && comment.review_id !== reviewId) {
+      return res.status(400).json({
+        error: 'Chat session does not belong to this review'
+      });
+    }
+
+    res.json({
+      success: true,
+      session: sessionWithMessages
+    });
+
+  } catch (error) {
+    logger.error('Error fetching local chat messages:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to fetch messages'
+    });
+  }
+});
+
+/**
+ * Server-Sent Events (SSE) stream for chat responses (Local Mode)
+ * GET /api/local/:reviewId/chat/:chatId/stream
+ */
+router.get('/api/local/:reviewId/chat/:chatId/stream', async (req, res) => {
+  const reviewId = parseInt(req.params.reviewId);
+  const { chatId } = req.params;
+
+  if (isNaN(reviewId)) {
+    return res.status(400).json({
+      error: 'Invalid review ID'
+    });
+  }
+
+  try {
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+
+    // Verify session exists
+    const session = await chatRepo.getSession(chatId);
+    if (!session) {
+      return res.status(404).json({
+        error: 'Chat session not found'
+      });
+    }
+
+    // Verify session belongs to this review
+    const commentRepo = new CommentRepository(db);
+    const comment = await commentRepo.getComment(session.comment_id);
+    if (comment && comment.review_id !== reviewId) {
+      return res.status(400).json({
+        error: 'Chat session does not belong to this review'
+      });
+    }
+
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // Add this client to the set for this chat session
+    if (!localChatStreamClients.has(chatId)) {
+      localChatStreamClients.set(chatId, new Set());
+    }
+    localChatStreamClients.get(chatId).add(res);
+
+    logger.info(`Local SSE client connected for chat session ${chatId}`);
+
+    // Send initial connection event
+    res.write(`data: ${JSON.stringify({ type: 'connected', chatId })}\n\n`);
+
+    // Handle client disconnect
+    req.on('close', () => {
+      const clients = localChatStreamClients.get(chatId);
+      if (clients) {
+        clients.delete(res);
+        if (clients.size === 0) {
+          localChatStreamClients.delete(chatId);
+        }
+      }
+      logger.info(`Local SSE client disconnected from chat session ${chatId}`);
+    });
+
+  } catch (error) {
+    logger.error('Error setting up local SSE stream:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to set up stream'
+    });
+  }
+});
+
+/**
+ * Generate a refined suggestion based on chat conversation and adopt it (Local Mode)
+ * POST /api/local/:reviewId/chat/:chatId/adopt
+ */
+router.post('/api/local/:reviewId/chat/:chatId/adopt', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const { chatId } = req.params;
+
+    if (isNaN(reviewId)) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+    const commentRepo = new CommentRepository(db);
+    const analysisRunRepo = new AnalysisRunRepository(db);
+
+    // Get session
+    const session = await chatRepo.getSession(chatId);
+    if (!session) {
+      return res.status(404).json({
+        error: 'Chat session not found'
+      });
+    }
+
+    // Get the comment to verify review ownership
+    const comment = await commentRepo.getComment(session.comment_id);
+    if (!comment) {
+      return res.status(404).json({
+        error: 'Comment not found'
+      });
+    }
+
+    // Verify comment belongs to this review
+    if (comment.review_id !== reviewId) {
+      return res.status(400).json({
+        error: 'Comment does not belong to this review'
+      });
+    }
+
+    // Get review to find the worktree path
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
+    if (!review) {
+      return res.status(404).json({
+        error: 'Review not found'
+      });
+    }
+
+    // For local mode, the worktree path is stored in the review
+    const worktreePath = review.local_path || process.cwd();
+
+    // Create the chat service and generate refined suggestion
+    const chatService = new ChatService(db, chatRepo, commentRepo, analysisRunRepo);
+    const result = await chatService.generateRefinedSuggestion(chatId, worktreePath);
+
+    logger.info(`Generated refined suggestion for local chat ${chatId}`);
+
+    res.json({
+      success: true,
+      refinedText: result.refinedText,
+      commentId: comment.id
+    });
+
+  } catch (error) {
+    logger.error('Error generating refined suggestion (local):', error);
+    res.status(500).json({
+      error: error.message || 'Failed to generate refined suggestion'
+    });
+  }
+});
+
+/**
+ * Get all chat sessions for a comment (Local Mode)
+ * GET /api/local/:reviewId/chat/comment/:commentId/sessions
+ */
+router.get('/api/local/:reviewId/chat/comment/:commentId/sessions', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+    const commentId = parseInt(req.params.commentId);
+
+    if (isNaN(reviewId) || isNaN(commentId)) {
+      return res.status(400).json({
+        error: 'Invalid review ID or comment ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+    const commentRepo = new CommentRepository(db);
+
+    // Verify comment exists and belongs to this review
+    const comment = await commentRepo.getComment(commentId);
+    if (!comment) {
+      return res.status(404).json({
+        error: 'Comment not found'
+      });
+    }
+
+    if (comment.review_id !== reviewId) {
+      return res.status(400).json({
+        error: 'Comment does not belong to this review'
+      });
+    }
+
+    const chatService = new ChatService(db, chatRepo, commentRepo, new AnalysisRunRepository(db));
+    const { sessions } = await chatService.getChatSessions(commentId);
+
+    res.json({
+      success: true,
+      sessions,
+      comment
+    });
+
+  } catch (error) {
+    logger.error('Error fetching local chat sessions:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to fetch chat sessions'
+    });
+  }
+});
+
+/**
+ * Get comment IDs that have chat history (at least one message) for a local review.
+ * Used for displaying chat indicator dots on comments/suggestions.
+ * GET /api/local/:reviewId/chat/comment-sessions
+ * Returns: { commentIds: [number] }
+ */
+router.get('/api/local/:reviewId/chat/comment-sessions', async (req, res) => {
+  try {
+    const reviewId = parseInt(req.params.reviewId);
+
+    if (isNaN(reviewId) || reviewId <= 0) {
+      return res.status(400).json({
+        error: 'Invalid review ID'
+      });
+    }
+
+    const db = req.app.get('db');
+    const chatRepo = new ChatRepository(db);
+
+    const rows = await chatRepo.getCommentsWithChatHistory(reviewId);
+    const commentIds = rows.map(r => r.comment_id);
+
+    res.json({
+      success: true,
+      commentIds
+    });
+
+  } catch (error) {
+    logger.error('Error fetching local review chat sessions:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to fetch review chat sessions'
+    });
   }
 });
 

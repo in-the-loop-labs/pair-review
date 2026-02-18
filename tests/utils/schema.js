@@ -173,6 +173,35 @@ const SCHEMA_SQL = {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
+  `,
+
+  chat_sessions: `
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      comment_id INTEGER NOT NULL,
+      analysis_run_id TEXT,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      status TEXT DEFAULT 'active' CHECK(status IN ('active', 'completed', 'error')),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+      FOREIGN KEY (analysis_run_id) REFERENCES analysis_runs(id)
+    )
+  `,
+
+  chat_messages: `
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_session_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+      content TEXT NOT NULL,
+      token_count INTEGER,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (chat_session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+    )
   `
 };
 
@@ -205,7 +234,12 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_comments_voice ON comments(voice_id)',
   'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)',
   // Voice-centric council indexes
-  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_parent ON analysis_runs(parent_run_id)'
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_parent ON analysis_runs(parent_run_id)',
+  // Chat sessions indexes
+  'CREATE INDEX IF NOT EXISTS idx_chat_sessions_comment ON chat_sessions(comment_id)',
+  'CREATE INDEX IF NOT EXISTS idx_chat_sessions_analysis_run ON chat_sessions(analysis_run_id)',
+  // Chat messages indexes
+  'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(chat_session_id, created_at)'
 ];
 
 /**

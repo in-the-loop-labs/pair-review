@@ -116,6 +116,12 @@ class LocalManager {
       manager.viewedFiles = new Set();
     }
 
+    // Set chat panel to local mode if it exists
+    if (manager.chatPanelManager) {
+      manager.chatPanelManager.isLocalMode = true;
+      manager.chatPanelManager.prManager.reviewId = reviewId;
+    }
+
     // Override saveViewedState to use localStorage with scoped key
     manager.saveViewedState = function() {
       if (!manager.currentPR || !manager.currentPR.localPath || !manager.currentPR.head_sha) return;
@@ -241,6 +247,11 @@ class LocalManager {
         }
 
         manager.updateCommentCount();
+
+        // Refresh chat indicators now that comment elements are in the DOM
+        if (manager.chatPanelManager && reviewId) {
+          manager.chatPanelManager.loadChatIndicators(reviewId);
+        }
       } catch (error) {
         console.error('Error loading user comments:', error);
       }
@@ -295,6 +306,11 @@ class LocalManager {
           await manager.displayAISuggestions(data.suggestions);
         } else {
           await manager.displayAISuggestions([]);
+        }
+
+        // Refresh chat indicators now that suggestion elements are in the DOM
+        if (manager.chatPanelManager && reviewId) {
+          manager.chatPanelManager.loadChatIndicators(reviewId);
         }
       } catch (error) {
         console.error('Error loading AI suggestions:', error);

@@ -93,6 +93,9 @@ global.document = {
 // Set up global.window
 global.window = global.window || {};
 
+// Stub CommentManager global (FileCommentManager references CommentManager.CHAT_ICON_SVG)
+global.CommentManager = { CHAT_ICON_SVG: '<svg></svg>' };
+
 // Import the actual production classes
 const { SuggestionManager } = require('../../public/js/modules/suggestion-manager.js');
 const { FileCommentManager } = require('../../public/js/modules/file-comment-manager.js');
