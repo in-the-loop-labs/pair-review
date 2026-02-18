@@ -28,8 +28,8 @@ async function cleanupAllFileComments(page) {
 
     // Fetch comments
     const commentsResponse = await fetch(`/api/reviews/${prId}/comments`);
-    const data = await commentsResponse.json();
-    const comments = data.comments || [];
+    const commentsData = await commentsResponse.json();
+    const comments = commentsData.comments || [];
 
     // Delete each file-level user comment
     for (const comment of comments) {
