@@ -5069,6 +5069,12 @@ tr.line-range-start .d2h-code-line-ctn {
   border: 1px solid #bf8700;
 }
 
+.toast-info {
+  background-color: #0969da;
+  color: white;
+  border: 1px solid #0550ae;
+}
+
 .toast-content {
   display: flex;
   align-items: center;
@@ -5109,6 +5115,11 @@ tr.line-range-start .d2h-code-line-ctn {
 [data-theme="dark"] .toast-warning {
   background-color: #9e6a03;
   border-color: #d29922;
+}
+
+[data-theme="dark"] .toast-info {
+  background-color: #1f6feb;
+  border-color: #58a6ff;
 }
 
 /* Loading spinner for buttons */
