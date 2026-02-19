@@ -10,6 +10,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const logger = require('../utils/logger');
 const { extractJSON } = require('../utils/json-extractor');
+const { TIERS, TIER_ALIASES } = require('./prompts/config');
 
 // Directory containing bin scripts (git-diff-lines, etc.)
 const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
@@ -346,22 +347,9 @@ function prettifyModelId(id) {
 }
 
 /**
- * Canonical model tiers
- */
-const CANONICAL_TIERS = ['fast', 'balanced', 'thorough'];
-
-/**
- * Tier aliases that map to canonical tiers
- */
-const TIER_ALIASES = {
-  free: 'fast',
-  premium: 'thorough'
-};
-
-/**
  * All valid tier values (canonical + aliases)
  */
-const VALID_TIERS = [...CANONICAL_TIERS, ...Object.keys(TIER_ALIASES)];
+const VALID_TIERS = [...TIERS, ...Object.keys(TIER_ALIASES)];
 
 /**
  * Normalize a tier to its canonical form
@@ -604,27 +592,6 @@ function createProvider(providerId, model = null) {
 }
 
 /**
- * Get tier for a specific model from a provider
- * Queries the provider's model definitions (or config overrides) to find the tier
- * @param {string} providerId - Provider ID (e.g., 'claude', 'gemini')
- * @param {string} modelId - Model ID (e.g., 'sonnet', 'gemini-2.5-pro')
- * @returns {string|null} Tier name or null if provider or model not found
- */
-function getTierForModel(providerId, modelId) {
-  const ProviderClass = providerRegistry.get(providerId);
-  if (!ProviderClass) {
-    return null;
-  }
-
-  // Merge config models with built-in models
-  const overrides = providerConfigOverrides.get(providerId);
-  const models = mergeModels(ProviderClass.getModels(), overrides?.models);
-
-  const model = models.find(m => m.id === modelId);
-  return model?.tier || null;
-}
-
-/**
  * Test availability of a provider with timeout
  * @param {string} providerId - Provider ID
  * @param {number} timeout - Timeout in milliseconds (default 10 seconds)
@@ -656,6 +623,27 @@ async function testProviderAvailability(providerId, timeout = 10000) {
   }
 }
 
+/**
+ * Get tier for a specific model from a provider
+ * Queries the provider's model definitions (or config overrides) to find the tier
+ * @param {string} providerId - Provider ID (e.g., 'claude', 'gemini')
+ * @param {string} modelId - Model ID (e.g., 'sonnet', 'gemini-2.5-pro')
+ * @returns {string|null} Tier name or null if provider or model not found
+ */
+function getTierForModel(providerId, modelId) {
+  const ProviderClass = providerRegistry.get(providerId);
+  if (!ProviderClass) {
+    return null;
+  }
+
+  // Merge config models with built-in models
+  const overrides = providerConfigOverrides.get(providerId);
+  const models = mergeModels(ProviderClass.getModels(), overrides?.models);
+
+  const model = models.find(m => m.id === modelId);
+  return model?.tier || null;
+}
+
 module.exports = {
   AIProvider,
   MODEL_TIERS,
@@ -665,12 +653,12 @@ module.exports = {
   getRegisteredProviderIds,
   getAllProvidersInfo,
   createProvider,
-  getTierForModel,
   testProviderAvailability,
   // Config override support
   applyConfigOverrides,
   getProviderConfigOverrides,
   inferModelDefaults,
   resolveDefaultModel,
-  prettifyModelId
+  prettifyModelId,
+  getTierForModel
 };

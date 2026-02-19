@@ -4,7 +4,7 @@
  *
  * Defines tier mappings for the prompt system.
  * Note: Provider-specific model-to-tier mappings are defined in each provider's
- * getModels() method. Use getTierForModel() from src/ai/provider.js to query them.
+ * getModels() method. The tier is persisted on each analysis_runs record at creation time.
  */
 
 /**
@@ -20,6 +20,11 @@ const TIER_ALIASES = {
  * Internal capability tiers
  */
 const TIERS = ['fast', 'balanced', 'thorough'];
+
+/**
+ * All accepted tier values (internal tiers + user-facing aliases)
+ */
+const VALID_TIERS = [...TIERS, ...Object.keys(TIER_ALIASES)];
 
 /**
  * Prompt types (analysis levels)
@@ -44,6 +49,7 @@ function resolveTier(tierOrAlias) {
 module.exports = {
   TIER_ALIASES,
   TIERS,
+  VALID_TIERS,
   PROMPT_TYPES,
   resolveTier
 };

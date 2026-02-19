@@ -7,6 +7,8 @@ const { v4: uuidv4 } = require('uuid');
 const { ReviewRepository, CommentRepository, AnalysisRunRepository, RepoSettingsRepository, PRMetadataRepository, query } = require('../database');
 const { renderPromptForSkill } = require('../ai/prompts/render-for-skill');
 const Analyzer = require('../ai/analyzer');
+const { getTierForModel } = require('../ai/provider');
+const { TIERS, TIER_ALIASES, resolveTier } = require('../ai/prompts/config');
 const { GitWorktreeManager } = require('../git/worktree');
 const path = require('path');
 const { normalizeRepository } = require('../utils/paths');
@@ -18,6 +20,9 @@ const {
   broadcastProgress,
   createProgressCallback
 } = require('./shared');
+
+// All valid tier values: canonical tiers + aliases (for Zod enum validation)
+const ALL_TIER_VALUES = /** @type {[string, ...string[]]} */ ([...TIERS, ...Object.keys(TIER_ALIASES)]);
 
 const router = express.Router();
 
@@ -193,14 +198,15 @@ function createMCPServer(db, options = {}) {
     {
       promptType: z.enum(['level1', 'level2', 'level3', 'orchestration'])
         .describe('Analysis level'),
-      tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced')
+      tier: z.enum(ALL_TIER_VALUES).default('balanced')
         .describe('Prompt tier — fast (surface), balanced (standard), or thorough (deep)'),
       customInstructions: z.string().max(5000).optional()
         .describe('Optional repo or user-specific review instructions to include'),
     },
     async (args) => {
       try {
-        const rendered = renderPromptForSkill(args.promptType, args.tier, {
+        const tier = resolveTier(args.tier);
+        const rendered = renderPromptForSkill(args.promptType, tier, {
           customInstructions: args.customInstructions,
         });
         return { content: [{ type: 'text', text: rendered }] };
@@ -298,6 +304,8 @@ function createMCPServer(db, options = {}) {
               id: r.id,
               provider: r.provider,
               model: r.model,
+              // Enrich historical runs that predate the tier column (migration 22)
+              tier: r.tier ?? (r.provider && r.model ? getTierForModel(r.provider, r.model) : null),
               status: r.status,
               summary: r.summary,
               head_sha: r.head_sha,
@@ -437,7 +445,7 @@ function createMCPServer(db, options = {}) {
         .describe('Optional repo or user-specific review instructions'),
       skipLevel3: z.boolean().default(false)
         .describe('Whether to skip Level 3 (codebase context) analysis'),
-      tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced')
+      tier: z.enum(ALL_TIER_VALUES).default('balanced')
         .describe('Analysis tier: fast (surface), balanced (standard), or thorough (deep)'),
     },
     async (args) => {
@@ -587,7 +595,7 @@ function createMCPServer(db, options = {}) {
           }
 
           const progressCallback = createProgressCallback(analysisId);
-          const tier = args.tier;
+          const tier = resolveTier(args.tier);
 
           logger.log('MCP', `Starting local analysis: review #${reviewId}, runId=${runId}`, 'magenta');
 
@@ -599,6 +607,7 @@ function createMCPServer(db, options = {}) {
             reviewId,
             provider,
             model,
+            tier,
             repoInstructions,
             requestInstructions,
             headSha: localHeadSha
@@ -718,7 +727,7 @@ function createMCPServer(db, options = {}) {
 
           const analyzer = new Analyzer(db, model, provider);
           const progressCallback = createProgressCallback(analysisId);
-          const tier = args.tier;
+          const tier = resolveTier(args.tier);
 
           logger.log('MCP', `Starting PR analysis: PR #${prNumber} in ${repository}, runId=${runId}`, 'magenta');
 
@@ -730,6 +739,7 @@ function createMCPServer(db, options = {}) {
             reviewId: review.id,
             provider,
             model,
+            tier,
             repoInstructions,
             requestInstructions,
             headSha: prMetadata.head_sha || null

@@ -403,8 +403,7 @@ class AnalysisHistoryManager {
     const duration = this.formatDuration(run.started_at, run.completed_at);
     const suggestionCount = run.total_suggestions || 0;
 
-    // Get the tier for this analysis run's model
-    const tier = this.getTierForModel(run.model);
+    const tier = run.tier || null;
 
     // Format HEAD SHA - show abbreviated version with full SHA in title
     const headSha = run.head_sha;
@@ -440,7 +439,7 @@ class AnalysisHistoryManager {
       </div>
       <div class="analysis-preview-row">
         <span class="analysis-preview-label">Tier</span>
-        <span class="analysis-preview-value">${this.escapeHtml(tier || 'unknown')}</span>
+        <span class="analysis-preview-value">${this.escapeHtml(this.formatTierDisplayName(tier) || 'unknown')}</span>
       </div>`;
     }
 
@@ -832,57 +831,6 @@ class AnalysisHistoryManager {
       'cancelled': { text: 'cancelled', cssClass: 'analysis-preview-status-cancelled' }
     };
     return statusMap[status] || { text: status || 'unknown', cssClass: 'analysis-preview-status-unknown' };
-  }
-
-  /**
-   * Get the tier for a given model ID
-   * Maps model IDs to their corresponding tiers (fast, balanced, thorough)
-   * @param {string} modelId - The model identifier (e.g., 'haiku', 'sonnet', 'opus', 'flash', 'pro')
-   * @returns {string|null} The tier name or null if unknown
-   */
-  getTierForModel(modelId) {
-    if (!modelId) return null;
-
-    // Model to tier mapping (matches backend provider definitions)
-    const modelTiers = {
-      // Claude models
-      'haiku': 'fast',
-      'sonnet': 'balanced',
-      'sonnet-4.5': 'balanced',
-      'sonnet-4.6': 'balanced',
-      'opus': 'thorough',
-      'opus-4.5': 'thorough',
-      'opus-4.6-low': 'balanced',
-      'opus-4.6-medium': 'balanced',
-      'opus-4.6-1m': 'balanced',
-      // Gemini models
-      'flash': 'fast',
-      'pro': 'balanced',
-      'ultra': 'thorough',
-      // Codex/OpenAI models
-      'gpt-4o-mini': 'fast',
-      'gpt-4o': 'balanced',
-      'o1': 'thorough',
-      'o1-mini': 'balanced',
-      // Copilot models
-      'gpt-4': 'balanced',
-      // Pi models
-      'default': 'balanced',
-      'multi-model': 'thorough',
-      'review-roulette': 'thorough'
-    };
-
-    return modelTiers[modelId] || null;
-  }
-
-  /**
-   * Format a tier name for display (uppercase, used for badges)
-   * @param {string} tier - The tier identifier (e.g., 'fast', 'balanced', 'thorough')
-   * @returns {string} Display name in uppercase
-   */
-  formatTierName(tier) {
-    if (!tier) return '';
-    return tier.toUpperCase();
   }
 
   /**

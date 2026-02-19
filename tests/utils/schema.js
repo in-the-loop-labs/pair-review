@@ -120,6 +120,7 @@ const SCHEMA_SQL = {
       review_id INTEGER NOT NULL,
       provider TEXT,
       model TEXT,
+      tier TEXT,
       custom_instructions TEXT,
       repo_instructions TEXT,
       request_instructions TEXT,

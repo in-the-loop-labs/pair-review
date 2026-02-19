@@ -17,6 +17,7 @@ const {
   buildAnalysisLineNumberGuidance,
   buildOrchestrationLineNumberGuidance: buildOrchestrationGuidance,
 } = require('./prompts/line-number-guidance');
+const { resolveTier } = require('./prompts/config');
 const { registerProcess, isAnalysisCancelled, CancellationError } = require('../routes/shared');
 const { AnalysisRunRepository, CommentRepository } = require('../database');
 const { mergeInstructions } = require('../utils/instructions');
@@ -175,6 +176,7 @@ class Analyzer {
           reviewId: prId,  // prId is actually review.id (works for both PR and local modes)
           provider: this.provider,
           model: this.model,
+          tier: options.tier ? resolveTier(options.tier) : 'balanced',
           customInstructions: mergedInstructions,  // Keep for backward compat
           repoInstructions,
           requestInstructions,
@@ -212,7 +214,7 @@ class Analyzer {
       if (mergedInstructions) {
         logger.info(`${logPrefix}Custom instructions provided: ${mergedInstructions.length} chars`);
       }
-      const tier = options.tier || 'balanced';
+      const tier = options.tier ? resolveTier(options.tier) : 'balanced';
 
       // Build the promises array for each level based on enabledLevels
       const levelAnalyzers = [
@@ -2664,6 +2666,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           reviewId,
           provider: 'council',
           model: 'voice-centric',
+          tier: null,
           customInstructions: mergedInstructions,
           repoInstructions: instructions?.repoInstructions || null,
           requestInstructions: instructions?.requestInstructions || null,
@@ -2760,6 +2763,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
           reviewId,
           provider: voice.provider,
           model: voice.model,
+          tier: voiceTier,
           customInstructions: mergedInstructions,
           repoInstructions: instructions?.repoInstructions || null,
           requestInstructions: instructions?.requestInstructions || null,
