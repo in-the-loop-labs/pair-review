@@ -11,7 +11,7 @@ import { test, expect } from '@playwright/test';
 test.describe('Help Modal', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
   });
 
   test('should open modal when help button is clicked', async ({ page }) => {

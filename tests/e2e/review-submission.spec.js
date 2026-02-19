@@ -14,7 +14,7 @@ import { waitForDiffToRender } from './helpers.js';
 
 // Helper to open the review modal
 async function openReviewModal(page) {
-  await page.waitForLoadState('networkidle');
+  await waitForDiffToRender(page);
   const reviewBtn = page.locator('.split-button-main').first();
   await reviewBtn.click();
   await page.waitForSelector('.review-modal-overlay', { timeout: 5000 });

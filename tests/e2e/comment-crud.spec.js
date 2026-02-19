@@ -556,7 +556,7 @@ test.describe('Comment Persistence', () => {
 
     // Navigate away and come back
     await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Go back to the PR page
     await page.goto('/pr/test-owner/test-repo/1');

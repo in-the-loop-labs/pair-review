@@ -212,7 +212,7 @@ test.describe('AI Summary Modal - Local Mode', () => {
   test('should have AI summary button in local mode panel', async ({ page }) => {
     // First create a local review
     await page.goto('/local');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Check if we're on a local review page or need to create one
     const reviewLink = page.locator('a[href^="/local/"]').first();

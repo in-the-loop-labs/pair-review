@@ -87,7 +87,7 @@ test.describe('Comment Creation', () => {
 test.describe('Review Modal', () => {
   test('should show review button in toolbar', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Should have a submit review button (SplitButton with Review text)
     const reviewBtn = page.locator('button:has-text("Review"), .split-button-main:has-text("Submit"), #submit-review-btn');
@@ -97,7 +97,7 @@ test.describe('Review Modal', () => {
 
   test('should open review modal when clicking review button', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Click the submit review button
     const reviewBtn = page.locator('button:has-text("Review"), .split-button-main, #submit-review-btn').first();
@@ -110,7 +110,7 @@ test.describe('Review Modal', () => {
 
   test('should have review event options (Approve, Comment, Request Changes)', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Open review modal
     await page.locator('button:has-text("Review"), .split-button-main, #submit-review-btn').first().click();
@@ -131,7 +131,7 @@ test.describe('Review Modal', () => {
 
   test('should close review modal on cancel', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Open review modal
     await page.locator('.split-button-main').click();
@@ -178,7 +178,7 @@ test.describe('API Integration', () => {
   test('should handle API errors gracefully', async ({ page }) => {
     // Try to load a PR that doesn't exist
     await page.goto('/pr/nonexistent/repo/999');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Page should still load without crashing
     const pageContent = await page.textContent('body');
@@ -194,7 +194,7 @@ test.describe('API Integration', () => {
 test.describe('UI State Management', () => {
   test('should update UI after data loads', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // After loading, the PR title should be visible
     const pageContent = await page.textContent('body');
@@ -231,7 +231,7 @@ test.describe('UI State Management', () => {
 test.describe('Accessibility', () => {
   test('should have proper heading structure', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Should have at least one heading
     const headings = page.locator('h1, h2, h3');
@@ -241,7 +241,7 @@ test.describe('Accessibility', () => {
 
   test('should have accessible buttons', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Test specific known buttons that must have accessible names
     // These are the key interactive elements in the PR page
@@ -270,7 +270,7 @@ test.describe('Accessibility', () => {
 
   test('should support keyboard navigation', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Tab should move focus to an interactive element
     await page.keyboard.press('Tab');
