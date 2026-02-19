@@ -336,6 +336,29 @@ class ChatSessionManager {
   }
 
   /**
+   * Save a context message to an existing session.
+   * Used to persist analysis context cards (and potentially other context types)
+   * immediately, without waiting for the next user message.
+   * @param {number} sessionId
+   * @param {Object|string} contextData - Context data to persist (will be JSON-stringified if object)
+   * @returns {{ id: number }} The stored message ID
+   */
+  saveContextMessage(sessionId, contextData) {
+    const session = this._db.prepare('SELECT id FROM chat_sessions WHERE id = ?').get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+
+    const content = typeof contextData === 'string' ? contextData : JSON.stringify(contextData);
+    const stmt = this._db.prepare(`
+      INSERT INTO chat_messages (session_id, role, type, content)
+      VALUES (?, 'user', 'context', ?)
+    `);
+    const result = stmt.run(sessionId, content);
+    return { id: Number(result.lastInsertRowid) };
+  }
+
+  /**
    * Resume a previously closed chat session by re-spawning the Pi bridge
    * with the stored session file path.
    * @param {number} sessionId

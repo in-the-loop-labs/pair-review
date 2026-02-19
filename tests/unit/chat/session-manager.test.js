@@ -678,4 +678,67 @@ describe('ChatSessionManager', () => {
         .rejects.toThrow('currently processing a message');
     });
   });
+
+  describe('saveContextMessage', () => {
+    it('should save a context message with object data', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      const contextData = { type: 'analysis', suggestionCount: 5, aiRunId: 'run-abc' };
+      const result = manager.saveContextMessage(session.id, contextData);
+
+      expect(result).toHaveProperty('id');
+      expect(typeof result.id).toBe('number');
+
+      // Verify DB record
+      const msg = db.prepare('SELECT * FROM chat_messages WHERE id = ?').get(result.id);
+      expect(msg).toBeDefined();
+      expect(msg.role).toBe('user');
+      expect(msg.type).toBe('context');
+      expect(msg.session_id).toBe(session.id);
+      expect(JSON.parse(msg.content)).toEqual(contextData);
+    });
+
+    it('should save a context message with string data', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      const contextString = '{"type":"analysis","suggestionCount":3}';
+      const result = manager.saveContextMessage(session.id, contextString);
+
+      const msg = db.prepare('SELECT * FROM chat_messages WHERE id = ?').get(result.id);
+      expect(msg.content).toBe(contextString);
+    });
+
+    it('should throw when session does not exist', () => {
+      expect(() => manager.saveContextMessage(999, { type: 'analysis' }))
+        .toThrow('Session 999 not found');
+    });
+
+    it('should be visible in getMessages results', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      const contextData = { type: 'analysis', suggestionCount: 2 };
+      manager.saveContextMessage(session.id, contextData);
+
+      // Also send a regular message
+      await manager.sendMessage(session.id, 'hello');
+
+      const messages = manager.getMessages(session.id);
+      expect(messages).toHaveLength(2);
+      expect(messages[0].type).toBe('context');
+      expect(JSON.parse(messages[0].content)).toEqual(contextData);
+      expect(messages[1].type).toBe('message');
+      expect(messages[1].content).toBe('hello');
+    });
+
+    it('should not count context messages in getSessionsWithMessageCount', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      manager.saveContextMessage(session.id, { type: 'analysis', suggestionCount: 5 });
+
+      const sessions = manager.getSessionsWithMessageCount(1);
+      expect(sessions).toHaveLength(1);
+      // Context messages are NOT counted (only type='message' rows)
+      expect(sessions[0].message_count).toBe(0);
+    });
+  });
 });

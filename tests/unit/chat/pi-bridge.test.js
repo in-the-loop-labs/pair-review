@@ -334,7 +334,7 @@ describe('PiBridge', () => {
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('should not emit delta for non text_delta event types', () => {
+    it('should not emit delta for non text_delta event types when no prior text', () => {
       const bridge = new PiBridge();
       const handler = vi.fn();
       bridge.on('delta', handler);
@@ -350,6 +350,72 @@ describe('PiBridge', () => {
       });
 
       expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should inject paragraph separator on text_start when there is prior accumulated text', () => {
+      const bridge = new PiBridge();
+      const handler = vi.fn();
+      bridge.on('delta', handler);
+
+      // Simulate first text block
+      bridge._handleMessageUpdate({
+        assistantMessageEvent: { type: 'text_start' }
+      });
+      bridge._handleMessageUpdate({
+        assistantMessageEvent: { type: 'text_delta', delta: 'First paragraph.' }
+      });
+      bridge._handleMessageUpdate({
+        assistantMessageEvent: { type: 'text_end' }
+      });
+
+      // Second text block starts - should inject separator
+      bridge._handleMessageUpdate({
+        assistantMessageEvent: { type: 'text_start' }
+      });
+      bridge._handleMessageUpdate({
+        assistantMessageEvent: { type: 'text_delta', delta: 'Second paragraph.' }
+      });
+
+      expect(bridge._accumulatedText).toBe('First paragraph.\n\nSecond paragraph.');
+      // Delta calls: 'First paragraph.', '\n\n', 'Second paragraph.'
+      expect(handler).toHaveBeenCalledTimes(3);
+      expect(handler).toHaveBeenNthCalledWith(1, { text: 'First paragraph.' });
+      expect(handler).toHaveBeenNthCalledWith(2, { text: '\n\n' });
+      expect(handler).toHaveBeenNthCalledWith(3, { text: 'Second paragraph.' });
+    });
+
+    it('should not inject separator on first text_start when no accumulated text', () => {
+      const bridge = new PiBridge();
+      const handler = vi.fn();
+      bridge.on('delta', handler);
+
+      bridge._handleMessageUpdate({
+        assistantMessageEvent: { type: 'text_start' }
+      });
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(bridge._accumulatedText).toBe('');
+    });
+
+    it('should handle three consecutive text blocks with proper separators', () => {
+      const bridge = new PiBridge();
+
+      // Block 1
+      bridge._handleMessageUpdate({ assistantMessageEvent: { type: 'text_start' } });
+      bridge._handleMessageUpdate({ assistantMessageEvent: { type: 'text_delta', delta: 'A' } });
+      bridge._handleMessageUpdate({ assistantMessageEvent: { type: 'text_end' } });
+
+      // Block 2
+      bridge._handleMessageUpdate({ assistantMessageEvent: { type: 'text_start' } });
+      bridge._handleMessageUpdate({ assistantMessageEvent: { type: 'text_delta', delta: 'B' } });
+      bridge._handleMessageUpdate({ assistantMessageEvent: { type: 'text_end' } });
+
+      // Block 3
+      bridge._handleMessageUpdate({ assistantMessageEvent: { type: 'text_start' } });
+      bridge._handleMessageUpdate({ assistantMessageEvent: { type: 'text_delta', delta: 'C' } });
+      bridge._handleMessageUpdate({ assistantMessageEvent: { type: 'text_end' } });
+
+      expect(bridge._accumulatedText).toBe('A\n\nB\n\nC');
     });
 
     it('should emit error on streaming error event', () => {

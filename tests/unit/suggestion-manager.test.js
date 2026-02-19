@@ -776,3 +776,198 @@ describe('SuggestionManager.collapseAISuggestion()', () => {
     expect(mockRow.querySelector).toHaveBeenCalledWith('[data-suggestion-id="123"]');
   });
 });
+
+describe('SuggestionManager chat button event delegation', () => {
+  let suggestionManager;
+  let clickHandlers;
+  let mockChatPanel;
+
+  beforeEach(() => {
+    clickHandlers = [];
+    // Capture all click handlers registered via document.addEventListener
+    global.document = {
+      addEventListener: vi.fn((event, handler) => {
+        if (event === 'click') clickHandlers.push(handler);
+      }),
+      querySelector: vi.fn(() => null),
+      querySelectorAll: vi.fn(() => []),
+      createElement: vi.fn(() => ({
+        className: '', innerHTML: '', textContent: '',
+        appendChild: vi.fn(), remove: vi.fn(),
+        querySelector: vi.fn(() => null),
+      })),
+    };
+
+    mockChatPanel = {
+      open: vi.fn(),
+    };
+    global.window.chatPanel = mockChatPanel;
+
+    suggestionManager = new SuggestionManager({
+      currentPR: { id: 'review-1' },
+      escapeHtml: (s) => s,
+    });
+  });
+
+  afterEach(() => {
+    global.window.chatPanel = undefined;
+    global.document = undefined;
+  });
+
+  /**
+   * Build a mock DOM tree simulating a click on the Chat button
+   * within a line-level AI suggestion (not in a file-comments-zone).
+   */
+  function buildLineLevelChatClick() {
+    // The chat button element
+    const chatBtn = {
+      dataset: {
+        suggestionId: '42',
+        file: 'src/utils.js',
+        title: 'Consider null check',
+      },
+      closest: vi.fn((selector) => {
+        if (selector === '.ai-action-chat') return chatBtn;
+        if (selector === '.file-comments-zone') return null; // NOT in file-comments-zone
+        if (selector === '.ai-suggestion') return suggestionDiv;
+        return null;
+      }),
+    };
+
+    // The parent .ai-suggestion div
+    const suggestionDiv = {
+      dataset: {
+        originalBody: JSON.stringify('Add a null check before accessing .length'),
+        lineNumber: '15',
+      },
+      querySelector: vi.fn((selector) => {
+        if (selector === '.ai-suggestion-badge, .praise-badge') {
+          return { dataset: { type: 'bug' }, classList: { contains: () => false } };
+        }
+        if (selector === '.ai-title') {
+          return { textContent: 'Consider null check' };
+        }
+        return null;
+      }),
+    };
+
+    return { chatBtn, suggestionDiv };
+  }
+
+  it('should call chatPanel.open with suggestionContext when chat button is clicked on a line-level suggestion', () => {
+    const { chatBtn } = buildLineLevelChatClick();
+
+    // Build a mock event where e.target.closest('.ai-action-chat') returns chatBtn
+    const mockEvent = {
+      target: {
+        closest: vi.fn((selector) => {
+          if (selector === '.ai-action-chat') return chatBtn;
+          if (selector === '.btn-reasoning-toggle') return null;
+          if (selector === '.reasoning-popover') return null;
+          return null;
+        }),
+      },
+      stopPropagation: vi.fn(),
+      preventDefault: vi.fn(),
+    };
+
+    // The first click handler registered should be the chat button handler
+    expect(clickHandlers.length).toBeGreaterThanOrEqual(1);
+    const chatHandler = clickHandlers[0];
+    chatHandler(mockEvent);
+
+    expect(mockEvent.stopPropagation).toHaveBeenCalled();
+    expect(mockChatPanel.open).toHaveBeenCalledTimes(1);
+
+    const openArgs = mockChatPanel.open.mock.calls[0][0];
+    expect(openArgs.reviewId).toBe('review-1');
+    expect(openArgs.suggestionId).toBe('42');
+    expect(openArgs.suggestionContext).toBeDefined();
+    expect(openArgs.suggestionContext.title).toBe('Consider null check');
+    expect(openArgs.suggestionContext.body).toBe('Add a null check before accessing .length');
+    expect(openArgs.suggestionContext.type).toBe('bug');
+    expect(openArgs.suggestionContext.file).toBe('src/utils.js');
+    expect(openArgs.suggestionContext.line_start).toBe(15);
+  });
+
+  it('should NOT handle click if button is inside .file-comments-zone (handled by FileCommentManager)', () => {
+    const { chatBtn } = buildLineLevelChatClick();
+    // Override closest to return a zone for .file-comments-zone
+    chatBtn.closest = vi.fn((selector) => {
+      if (selector === '.ai-action-chat') return chatBtn;
+      if (selector === '.file-comments-zone') return {}; // IS in file-comments-zone
+      return null;
+    });
+
+    const mockEvent = {
+      target: {
+        closest: vi.fn((selector) => {
+          if (selector === '.ai-action-chat') return chatBtn;
+          return null;
+        }),
+      },
+      stopPropagation: vi.fn(),
+      preventDefault: vi.fn(),
+    };
+
+    const chatHandler = clickHandlers[0];
+    chatHandler(mockEvent);
+
+    expect(mockChatPanel.open).not.toHaveBeenCalled();
+  });
+
+  it('should NOT handle click if chatPanel is not available', () => {
+    global.window.chatPanel = undefined;
+
+    const { chatBtn } = buildLineLevelChatClick();
+    const mockEvent = {
+      target: {
+        closest: vi.fn((selector) => {
+          if (selector === '.ai-action-chat') return chatBtn;
+          return null;
+        }),
+      },
+      stopPropagation: vi.fn(),
+    };
+
+    const chatHandler = clickHandlers[0];
+    chatHandler(mockEvent);
+
+    // Should not throw, just silently do nothing
+    expect(mockEvent.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  it('should handle missing suggestion data gracefully', () => {
+    // Chat button with no data attributes
+    const chatBtn = {
+      dataset: {},
+      closest: vi.fn((selector) => {
+        if (selector === '.ai-action-chat') return chatBtn;
+        if (selector === '.file-comments-zone') return null;
+        if (selector === '.ai-suggestion') return null; // No parent suggestion div
+        return null;
+      }),
+    };
+
+    const mockEvent = {
+      target: {
+        closest: vi.fn((selector) => {
+          if (selector === '.ai-action-chat') return chatBtn;
+          return null;
+        }),
+      },
+      stopPropagation: vi.fn(),
+    };
+
+    const chatHandler = clickHandlers[0];
+    chatHandler(mockEvent);
+
+    expect(mockChatPanel.open).toHaveBeenCalledTimes(1);
+    const openArgs = mockChatPanel.open.mock.calls[0][0];
+    // Should have empty/default values rather than undefined
+    expect(openArgs.suggestionContext.title).toBe('');
+    expect(openArgs.suggestionContext.body).toBe('');
+    expect(openArgs.suggestionContext.type).toBe('');
+    expect(openArgs.suggestionContext.file).toBe('');
+  });
+});

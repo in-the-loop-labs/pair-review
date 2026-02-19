@@ -114,17 +114,75 @@ function formatSuggestionForContext(s) {
 }
 
 /**
+ * Format analysis run metadata into a compact summary for the chat agent.
+ * Includes run configuration, model info, timing, and the summary text.
+ * @param {Object} run - Analysis run record from the database
+ * @returns {string} Formatted run metadata section
+ */
+function formatAnalysisRunContext(run) {
+  const lines = ['## Analysis Run Metadata'];
+
+  lines.push(`- **Run ID**: ${run.id}`);
+  if (run.provider) lines.push(`- **Provider**: ${run.provider}`);
+  if (run.model) lines.push(`- **Model**: ${run.model}`);
+  lines.push(`- **Status**: ${run.status}`);
+  if (run.started_at) lines.push(`- **Started**: ${run.started_at}`);
+  if (run.completed_at) lines.push(`- **Completed**: ${run.completed_at}`);
+  if (run.config_type) lines.push(`- **Config type**: ${run.config_type}`);
+  if (run.parent_run_id) lines.push(`- **Parent run (council)**: ${run.parent_run_id}`);
+  if (run.head_sha) lines.push(`- **Head SHA**: ${run.head_sha}`);
+  if (run.total_suggestions != null) lines.push(`- **Total suggestions**: ${run.total_suggestions}`);
+  if (run.files_analyzed != null) lines.push(`- **Files analyzed**: ${run.files_analyzed}`);
+
+  // Parse and display levels config if present
+  if (run.levels_config) {
+    try {
+      const levels = typeof run.levels_config === 'string'
+        ? JSON.parse(run.levels_config)
+        : run.levels_config;
+      lines.push(`- **Levels config**: ${JSON.stringify(levels)}`);
+    } catch {
+      // Malformed JSON — skip
+    }
+  }
+
+  // Include the summary text if available
+  if (run.summary) {
+    lines.push('');
+    lines.push('### Analysis Summary');
+    lines.push(run.summary);
+  }
+
+  if (run.repo_instructions) {
+    lines.push('');
+    lines.push('### Repository Instructions');
+    lines.push(run.repo_instructions);
+  }
+  if (run.request_instructions) {
+    lines.push('');
+    lines.push('### Custom Instructions (this run)');
+    lines.push(run.request_instructions);
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Build initial context to prepend to the first user message.
- * Contains all AI suggestions from the latest analysis run, and optionally
- * highlights a specific suggestion that triggered the chat.
+ * Contains analysis run metadata and all AI suggestions from the latest run.
  *
  * @param {Object} options
  * @param {Array} options.suggestions - All AI suggestions from the latest run
- * @param {Object} [options.focusedSuggestion] - The specific suggestion that triggered chat (full DB row)
+ * @param {Object} [options.analysisRun] - Analysis run record with metadata (provider, model, summary, etc.)
  * @returns {string|null} Context text to prepend to first message, or null if no context
  */
-function buildInitialContext({ suggestions, focusedSuggestion }) {
+function buildInitialContext({ suggestions, analysisRun }) {
   const sections = [];
+
+  // Analysis run metadata and summary (if available)
+  if (analysisRun) {
+    sections.push(formatAnalysisRunContext(analysisRun));
+  }
 
   if (suggestions && suggestions.length > 0) {
     const formatted = suggestions.map(formatSuggestionForContext);
@@ -136,15 +194,6 @@ function buildInitialContext({ suggestions, focusedSuggestion }) {
     );
   }
 
-  if (focusedSuggestion) {
-    const focused = formatSuggestionForContext(focusedSuggestion);
-
-    sections.push(
-      'The user is asking about this specific suggestion:\n' +
-      '```json\n' + JSON.stringify(focused, null, 2) + '\n```'
-    );
-  }
-
   if (sections.length === 0) {
     return null;
   }
@@ -152,4 +201,4 @@ function buildInitialContext({ suggestions, focusedSuggestion }) {
   return sections.join('\n\n');
 }
 
-module.exports = { buildChatPrompt, buildInitialContext };
+module.exports = { buildChatPrompt, buildInitialContext, formatAnalysisRunContext };

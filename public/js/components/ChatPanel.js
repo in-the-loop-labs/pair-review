@@ -22,6 +22,9 @@ class ChatPanel {
     this._contextSource = null;   // 'suggestion' or 'user' — set when opened with context
     this._contextItemId = null;   // suggestion ID or comment ID from context
     this._resizeConfig = { min: 300, max: 800, default: 400, storageKey: 'chat-panel-width' };
+    this._analysisContextRemoved = false;
+    this._sessionAnalysisRunId = null; // tracks which AI run ID's context is loaded in the current session
+    this._openPromise = null; // concurrency guard for open()
 
     this._render();
     this._bindEvents();
@@ -41,7 +44,7 @@ class ChatPanel {
             <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
               <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
             </svg>
-            Chat with AI
+            Chat &middot; Pi
           </span>
           <div class="chat-panel__actions">
             <button class="chat-panel__new-btn" title="New conversation">
@@ -80,16 +83,21 @@ class ChatPanel {
         </div>
         <div class="chat-panel__input-area">
           <textarea class="chat-panel__input" placeholder="Ask about this review..." rows="1"></textarea>
-          <button class="chat-panel__send-btn" title="Send" disabled>
-            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-              <path d="M.989 8 .064 2.68a1.342 1.342 0 0 1 1.85-1.462l13.402 5.744a1.13 1.13 0 0 1 0 2.076L1.913 14.782a1.343 1.343 0 0 1-1.85-1.463L.99 8Zm.603-4.776L2.296 7.25h5.954a.75.75 0 0 1 0 1.5H2.296l-.704 4.026L13.788 8Z"/>
-            </svg>
-          </button>
-          <button class="chat-panel__stop-btn" title="Stop" style="display: none;">
-            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-              <path d="M4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5v-7A2.5 2.5 0 0 0 11.5 2h-7Z"/>
-            </svg>
-          </button>
+          <div class="chat-panel__input-footer">
+            <span class="chat-panel__input-hint">${typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to send</span>
+            <div class="chat-panel__input-actions">
+              <button class="chat-panel__send-btn" title="Send" disabled>
+                <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                  <path d="M.989 8 .064 2.68a1.342 1.342 0 0 1 1.85-1.462l13.402 5.744a1.13 1.13 0 0 1 0 2.076L1.913 14.782a1.343 1.343 0 0 1-1.85-1.463L.99 8Zm.603-4.776L2.296 7.25h5.954a.75.75 0 0 1 0 1.5H2.296l-.704 4.026L13.788 8Z"/>
+                </svg>
+              </button>
+              <button class="chat-panel__stop-btn" title="Stop" style="display: none;">
+                <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                  <path d="M4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5v-7A2.5 2.5 0 0 0 11.5 2h-7Z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -105,6 +113,7 @@ class ChatPanel {
     this.actionBar = this.container.querySelector('.chat-panel__action-bar');
     this.adoptBtn = this.container.querySelector('.chat-panel__action-btn--adopt');
     this.updateBtn = this.container.querySelector('.chat-panel__action-btn--update');
+    this.titleEl = this.container.querySelector('.chat-panel__title');
   }
 
   /**
@@ -137,7 +146,7 @@ class ChatPanel {
 
     // Keyboard shortcuts
     this.inputEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         if (this.inputEl.value.trim() && !this.isStreaming) {
           this.sendMessage();
@@ -207,13 +216,41 @@ class ChatPanel {
   }
 
   /**
-   * Auto-resize textarea based on content
+   * Auto-resize textarea based on content.
+   * Grows with content up to maxHeight, then switches to scrollable overflow.
+   * Shrinks back down when content is deleted.
    */
   _autoResizeTextarea() {
     const el = this.inputEl;
-    el.style.height = 'auto';
     const maxHeight = 120;
-    el.style.height = Math.min(el.scrollHeight, maxHeight) + 'px';
+
+    // Collapse to auto so scrollHeight reflects actual content height
+    el.style.height = 'auto';
+    el.style.overflowY = 'hidden';
+
+    const contentHeight = el.scrollHeight;
+    if (contentHeight > maxHeight) {
+      el.style.height = maxHeight + 'px';
+      el.style.overflowY = 'auto';
+    } else {
+      el.style.height = contentHeight + 'px';
+    }
+  }
+
+  /**
+   * Update the chat panel title with provider and model info.
+   * @param {string} [provider='Pi'] - Provider display name
+   * @param {string} [model] - Model ID or display name (e.g. 'default', 'multi-model')
+   */
+  _updateTitle(provider = 'Pi', model) {
+    if (!this.titleEl) return;
+    const svg = this.titleEl.querySelector('svg')?.outerHTML || '';
+    const modelDisplay = model && model !== 'default'
+      ? model.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+      : null;
+    const parts = ['Chat', provider];
+    if (modelDisplay) parts.push(modelDisplay);
+    this.titleEl.innerHTML = `${svg}\n            ${this._escapeHtml(parts.join(' \u00b7 '))}`;
   }
 
   /**
@@ -232,6 +269,30 @@ class ChatPanel {
    * @param {boolean} options.commentContext.isFileLevel - True if file-level comment
    */
   async open(options = {}) {
+    // Concurrency guard: if a previous open() is still loading MRU / messages,
+    // wait for it to finish before proceeding.  This prevents a race where a
+    // second open() call sees `currentSessionId` already set (by the first
+    // call's _loadMRUSession midway through) and skips MRU loading, causing
+    // _ensureAnalysisContext to run before message history is rendered.
+    if (this._openPromise) {
+      await this._openPromise;
+    }
+
+    // Wrap the async body in a tracked promise so subsequent callers can wait
+    this._openPromise = this._openInner(options);
+    try {
+      await this._openPromise;
+    } finally {
+      this._openPromise = null;
+    }
+  }
+
+  /**
+   * Inner implementation of open(), separated so the concurrency guard in
+   * open() can track the full async lifecycle.
+   * @param {Object} options - Same options as open()
+   */
+  async _openInner(options) {
     // Resolve reviewId from options or from prManager
     if (options.reviewId) {
       this.reviewId = options.reviewId;
@@ -261,6 +322,11 @@ class ChatPanel {
       await this._loadMRUSession();
     }
 
+    // Ensure analysis context is added on every expand — not just when opening
+    // with suggestion/comment context. This detects new analysis runs that
+    // completed while the panel was closed and adds them as pending context.
+    this._ensureAnalysisContext();
+
     // If opening with suggestion context, inject it as a context card
     if (options.suggestionContext) {
       this._sendContextMessage(options.suggestionContext);
@@ -271,6 +337,11 @@ class ChatPanel {
       this._sendCommentContextMessage(options.commentContext);
       this._contextSource = 'user';
       this._contextItemId = options.commentContext.commentId || null;
+    } else if (options.fileContext) {
+      // If opening with file context, inject it as a context card
+      this._sendFileContextMessage(options.fileContext);
+      this._contextSource = 'file';
+      this._contextItemId = null;
     }
 
     this._updateActionButtons();
@@ -294,6 +365,10 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;
     this._contextItemId = null;
+    // Preserve _analysisContextRemoved and _sessionAnalysisRunId across
+    // close/reopen so _ensureAnalysisContext can detect NEW runs on the next
+    // expand. These are reset by _startNewConversation() or when a new run
+    // is detected in _ensureAnalysisContext().
   }
 
   /**
@@ -309,8 +384,16 @@ class ChatPanel {
 
   /**
    * Start a new conversation (reset session)
+   * Preserves any unsent pending context cards and re-adds them to the new conversation.
    */
   async _startNewConversation() {
+    // 1. Snapshot pending context before clearing (these are unsent context cards)
+    const savedContext = this._pendingContext.slice();
+    const savedContextData = this._pendingContextData.slice();
+    const savedContextSource = this._contextSource;
+    const savedContextItemId = this._contextItemId;
+
+    // 2. Clear everything as normal
     this._finalizeStreaming();
     this.currentSessionId = null;
     this.messages = [];
@@ -319,9 +402,43 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;
     this._contextItemId = null;
+    this._analysisContextRemoved = false;
+    this._sessionAnalysisRunId = null;
     this._clearMessages();
     this._updateActionButtons();
+    this._updateTitle(); // Reset title for new conversation
     // SSE stays connected — it's multiplexed and will filter by sessionId
+
+    // 3. Re-add analysis context (appears first, handled separately from pending arrays)
+    this._ensureAnalysisContext();
+
+    // 4. Re-add saved pending context cards (if any were unsent)
+    if (savedContext.length > 0) {
+      // Remove empty state since we're about to add context cards
+      const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+      if (emptyState) emptyState.remove();
+
+      // Restore context metadata
+      this._contextSource = savedContextSource;
+      this._contextItemId = savedContextItemId;
+
+      for (let i = 0; i < savedContextData.length; i++) {
+        const ctxData = savedContextData[i];
+        this._pendingContext.push(savedContext[i]);
+        this._pendingContextData.push(ctxData);
+
+        // Render the appropriate card type based on the context data
+        if (ctxData.type === 'file') {
+          this._addFileContextCard(ctxData, { removable: true });
+        } else if (ctxData.type === 'comment') {
+          this._addCommentContextCard(ctxData, { removable: true });
+        } else {
+          this._addContextCard(ctxData, { removable: true });
+        }
+      }
+
+      this._updateActionButtons();
+    }
   }
 
   /**
@@ -344,6 +461,12 @@ class ChatPanel {
       const mru = sessions[0];
       this.currentSessionId = mru.id;
       console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
+
+      // Update title with provider/model from the session
+      if (mru.provider) {
+        const providerName = mru.provider.charAt(0).toUpperCase() + mru.provider.slice(1);
+        this._updateTitle(providerName, mru.model);
+      }
 
       // Load message history if the session has messages
       if (mru.message_count > 0) {
@@ -377,7 +500,11 @@ class ChatPanel {
           // Render context card from stored context data
           try {
             const ctxData = JSON.parse(msg.content);
-            if (ctxData.source === 'user') {
+            if (ctxData.type === 'analysis') {
+              this._addAnalysisContextCard(ctxData);
+            } else if (ctxData.type === 'file') {
+              this._addFileContextCard(ctxData);
+            } else if (ctxData.type === 'comment') {
               this._addCommentContextCard(ctxData);
             } else {
               this._addContextCard(ctxData);
@@ -436,6 +563,9 @@ class ChatPanel {
       };
       if (contextCommentId) {
         body.contextCommentId = contextCommentId;
+      }
+      if (this._analysisContextRemoved) {
+        body.skipAnalysisContext = true;
       }
 
       console.debug('[ChatPanel] Creating session for review', this.reviewId);
@@ -507,7 +637,19 @@ class ChatPanel {
       payload.contextData = this._pendingContextData;
       this._pendingContext = [];
       this._pendingContextData = [];
+
+      // Lock context cards — remove close buttons and index attributes
+      const removableCards = this.messagesEl.querySelectorAll('.chat-panel__context-card[data-context-index]');
+      removableCards.forEach((card) => {
+        const btn = card.querySelector('.chat-panel__context-remove');
+        if (btn) btn.remove();
+        delete card.dataset.contextIndex;
+      });
     }
+
+    // Lock analysis context card (not indexed, handled separately from pending context)
+    const analysisRemoveBtn = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis] .chat-panel__context-remove');
+    if (analysisRemoveBtn) analysisRemoveBtn.remove();
 
     // Send to API
     try {
@@ -527,6 +669,8 @@ class ChatPanel {
       // Restore pending context so it's not lost
       this._pendingContext = savedContext;
       this._pendingContextData = savedContextData;
+      // Restore removability on context cards that were locked before the failed send
+      this._restoreRemovableCards();
       console.error('[ChatPanel] Error sending message:', error);
       this._showError('Failed to send message. ' + error.message);
       this._finalizeStreaming();
@@ -541,17 +685,6 @@ class ChatPanel {
    * @param {Object} ctx - Suggestion context {title, type, file, line_start, line_end, body}
    */
   _sendContextMessage(ctx) {
-    // Cap pending context items to avoid unbounded accumulation
-    const MAX_CONTEXT_ITEMS = 5;
-    if (this._pendingContext.length >= MAX_CONTEXT_ITEMS) {
-      // Replace oldest — remove first item from arrays
-      this._pendingContext.shift();
-      this._pendingContextData.shift();
-      // Remove oldest context card from UI
-      const oldestCard = this.messagesEl.querySelector('.chat-panel__context-card');
-      if (oldestCard) oldestCard.remove();
-    }
-
     // Remove empty state if present
     const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
@@ -585,7 +718,7 @@ class ChatPanel {
     this._pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
-    this._addContextCard(ctx);
+    this._addContextCard(ctx, { removable: true });
   }
 
   /**
@@ -596,15 +729,6 @@ class ChatPanel {
    * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, source, isFileLevel}
    */
   _sendCommentContextMessage(ctx) {
-    // Cap pending context items to avoid unbounded accumulation
-    const MAX_CONTEXT_ITEMS = 5;
-    if (this._pendingContext.length >= MAX_CONTEXT_ITEMS) {
-      this._pendingContext.shift();
-      this._pendingContextData.shift();
-      const oldestCard = this.messagesEl.querySelector('.chat-panel__context-card');
-      if (oldestCard) oldestCard.remove();
-    }
-
     // Remove empty state if present
     const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
@@ -640,18 +764,278 @@ class ChatPanel {
     this._pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
-    this._addCommentContextCard(ctx);
+    this._addCommentContextCard(ctx, { removable: true });
+  }
+
+  /**
+   * Send a file context message to the chat panel.
+   * Called when the user clicks "Chat about file" on a file header.
+   * @param {Object} fileContext - File context data
+   * @param {string} fileContext.file - File path
+   */
+  _sendFileContextMessage(fileContext) {
+    const contextText = `The user wants to discuss ${fileContext.file}`;
+
+    // Check for duplicate context
+    const isDuplicate = this._pendingContext.some(c => c === contextText) ||
+      this.messages.some(m => m.role === 'context' && m.content === contextText);
+    if (isDuplicate) return;
+
+    // Remove empty state if present
+    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    // Store structured context data for DB persistence
+    const contextData = {
+      type: 'file',
+      title: fileContext.file,
+      file: fileContext.file,
+      line_start: null,
+      line_end: null,
+      body: null
+    };
+    this._pendingContextData.push(contextData);
+
+    this._pendingContext.push(contextText);
+
+    // Render the compact context card in the UI
+    this._addFileContextCard(contextData, { removable: true });
+  }
+
+  /**
+   * Make a context card removable by adding a data-context-index and a remove button.
+   * Shared helper used by _addContextCard, _addCommentContextCard, and _addFileContextCard.
+   * @param {HTMLElement} card - The context card element
+   */
+  _makeCardRemovable(card) {
+    const idx = this._pendingContextData.length - 1;
+    card.dataset.contextIndex = idx;
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'chat-panel__context-remove';
+    removeBtn.title = 'Remove context';
+    removeBtn.innerHTML = '\u00d7';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._removeContextCard(card);
+    });
+    card.appendChild(removeBtn);
+  }
+
+  /**
+   * Add a compact file context card to the messages area.
+   * @param {Object} ctx - File context data { file, title }
+   * @param {Object} [options] - Options
+   * @param {boolean} [options.removable=false] - Whether the card should have a remove button
+   */
+  _addFileContextCard(ctx, { removable = false } = {}) {
+    const card = document.createElement('div');
+    card.className = 'chat-panel__context-card';
+
+    const filePath = ctx.file || ctx.title || '';
+
+    card.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+        <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
+      </svg>
+      <span class="chat-panel__context-label"><strong>FILE</strong></span>
+      <span class="chat-panel__context-title">${this._escapeHtml(filePath)}</span>
+    `;
+
+    if (removable) this._makeCardRemovable(card);
+
+    this.messagesEl.appendChild(card);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Ensure the latest AI analysis context is added as the first context item.
+   * Called on every panel expand (not just when opening with specific context).
+   * Detects new analysis runs by comparing the latest completed run ID
+   * against the one already loaded in the session. Only adds if suggestions exist.
+   */
+  _ensureAnalysisContext() {
+    // Determine the latest completed run ID from the analysis history manager or prManager
+    const currentRunId = this._getLatestCompletedRunId();
+
+    // Detect whether a NEW analysis run has appeared since we last loaded context.
+    // If the run ID changed, we need to replace the old card with a new one.
+    // This handles the case where _sessionAnalysisRunId was explicitly set.
+    const isNewRunVsSession = currentRunId && this._sessionAnalysisRunId &&
+      String(currentRunId) !== String(this._sessionAnalysisRunId);
+
+    if (isNewRunVsSession) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: new run detected:', currentRunId, '(was:', this._sessionAnalysisRunId + ')');
+      // Remove the old analysis card from the DOM (if present)
+      const oldCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+      if (oldCard) oldCard.remove();
+      // Reset flags — the user removed the OLD run's context, but this is a different run
+      this._analysisContextRemoved = false;
+      this._sessionAnalysisRunId = null;
+    }
+
+    // Check for an existing card in the DOM (e.g., loaded from MRU session history).
+    // If _sessionAnalysisRunId is not set, this card may be stale — compare its
+    // stamped run ID against the latest completed run to detect new analyses that
+    // completed while the panel was closed.
+    const existingCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+    if (existingCard) {
+      if (!this._sessionAnalysisRunId && currentRunId) {
+        const cardRunId = existingCard.dataset.analysisRunId || null;
+        if (cardRunId && String(cardRunId) === String(currentRunId)) {
+          // Card matches the latest run — adopt its run ID so future opens can detect changes
+          console.debug('[ChatPanel] _ensureAnalysisContext: adopting existing card runId:', cardRunId);
+          this._sessionAnalysisRunId = String(currentRunId);
+          return;
+        }
+        // Card has no run ID stamp or a different run ID — it's stale.
+        // Remove it so a fresh card for the current run is added below.
+        console.debug('[ChatPanel] _ensureAnalysisContext: replacing stale DOM card (card:', cardRunId, 'latest:', currentRunId + ')');
+        existingCard.remove();
+        this._analysisContextRemoved = false;
+      } else {
+        console.debug('[ChatPanel] _ensureAnalysisContext: skipped — card already in DOM');
+        return;
+      }
+    }
+
+    // Skip if the current session already has analysis context loaded (by run ID)
+    // and no new run was detected (handled above)
+    if (this._sessionAnalysisRunId) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — runId already set:', this._sessionAnalysisRunId);
+      return;
+    }
+
+    // Skip if analysis context was explicitly removed in this conversation
+    if (this._analysisContextRemoved) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — explicitly removed');
+      return;
+    }
+
+    // Count suggestions from the DOM (from the latest analysis run)
+    const suggestionEls = typeof document !== 'undefined' && document.querySelectorAll
+      ? document.querySelectorAll('.ai-suggestion[data-suggestion-id]')
+      : [];
+    const count = suggestionEls.length;
+    if (count === 0) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — no suggestions in DOM');
+      return;
+    }
+    console.debug('[ChatPanel] _ensureAnalysisContext: adding card with', count, 'suggestions');
+
+    // Remove empty state
+    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    // Render the analysis context card (removable).
+    // Prepend only when the messages area is empty (fresh conversation) so the card
+    // appears first.  When re-opening an existing chat that already has messages,
+    // append instead so the card lands at the bottom where the user can see it
+    // (prepending + scrollToBottom would hide it above the fold).
+    // Note: analysis card is NOT added to _pendingContext/_pendingContextData —
+    // the backend includes full suggestion data via initialContext at session creation.
+    // The card is a visual indicator that controls whether the backend includes it.
+    const hasExistingMessages = this.messagesEl.querySelectorAll('.chat-panel__message').length > 0;
+    const contextData = this._buildAnalysisContextData(currentRunId, count);
+    this._addAnalysisContextCard(contextData, { removable: true, prepend: !hasExistingMessages });
+
+    // Persist to DB so the card is restored on session reload
+    this._persistAnalysisContext(contextData);
+
+    // Mark that analysis context is loaded for this session.
+    // Use the actual run ID if available, otherwise fall back to 'dom'.
+    this._sessionAnalysisRunId = currentRunId || 'dom';
+  }
+
+  /**
+   * Build enriched analysis context data for the card.
+   * Pulls metadata (provider, model, summary, configType) from the
+   * cached runs in analysisHistoryManager so the card's tooltip
+   * shows rich info even before a session is created.
+   * @param {string|null} runId - The run ID to look up metadata for
+   * @param {number} count - Number of suggestions in the DOM
+   * @returns {Object} Context data with type, suggestionCount, and optional metadata
+   */
+  _buildAnalysisContextData(runId, count) {
+    const contextData = { type: 'analysis', suggestionCount: count };
+
+    if (!runId) return contextData;
+
+    // Look up the run in the cached analysisHistoryManager.runs array
+    const mgr = window.prManager;
+    const historyMgr = mgr?.analysisHistoryManager;
+    if (!historyMgr?.runs?.length) return contextData;
+
+    const run = historyMgr.runs.find(r => String(r.id) === String(runId));
+    if (!run) return contextData;
+
+    // Enrich with available metadata
+    if (run.provider) contextData.provider = run.provider;
+    if (run.model) contextData.model = run.model;
+    if (run.summary) contextData.summary = run.summary;
+    if (run.config_type) contextData.configType = run.config_type;
+    if (run.completed_at) contextData.completedAt = run.completed_at;
+    contextData.aiRunId = String(run.id);
+
+    return contextData;
+  }
+
+  /**
+   * Get the ID of the latest completed (successful) analysis run.
+   * Looks at the cached runs in analysisHistoryManager (sorted by date DESC)
+   * and returns the first one with status 'completed'.
+   * Falls back to the selected run ID or prManager.selectedRunId for
+   * backward compatibility when the runs array is not available.
+   * @returns {string|null}
+   */
+  _getLatestCompletedRunId() {
+    const mgr = window.prManager;
+    if (!mgr) return null;
+
+    // Prefer the analysisHistoryManager's runs array — find latest completed run
+    const historyMgr = mgr.analysisHistoryManager;
+    if (historyMgr?.runs?.length > 0) {
+      // Runs are sorted by date DESC; find the first completed one
+      const completedRun = historyMgr.runs.find(r => r.status === 'completed');
+      if (completedRun) return String(completedRun.id);
+    }
+
+    // Fall back to selectedRunId on the history manager (for cases where
+    // runs array is empty but a selection exists)
+    if (historyMgr?.getSelectedRunId) {
+      const id = historyMgr.getSelectedRunId();
+      if (id) return String(id);
+    }
+
+    // Fall back to prManager.selectedRunId
+    if (mgr.selectedRunId) return String(mgr.selectedRunId);
+    return null;
+  }
+
+  /**
+   * Remove the analysis context card and mark it as explicitly removed.
+   * When removed, the backend will skip including analysis suggestions in the session.
+   * @param {HTMLElement} cardEl - The analysis context card element
+   */
+  _removeAnalysisContextCard(cardEl) {
+    this._analysisContextRemoved = true;
+    cardEl.remove();
+
+    // If no pending context, no messages, and no other context cards, restore empty state
+    if (this._pendingContext.length === 0 && this.messages.length === 0 &&
+        !this.messagesEl.querySelector('.chat-panel__context-card')) {
+      this._clearMessages();
+    }
   }
 
   /**
    * Add a compact context card for a user comment to the messages area.
    * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, isFileLevel}
    */
-  _addCommentContextCard(ctx) {
+  _addCommentContextCard(ctx, { removable = false } = {}) {
     const card = document.createElement('div');
     card.className = 'chat-panel__context-card';
 
-    const label = ctx.isFileLevel ? 'file comment' : 'your comment';
+    const label = ctx.isFileLevel ? 'file comment' : 'comment';
     const fileInfo = ctx.file
       ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}`
       : '';
@@ -665,6 +1049,8 @@ class ChatPanel {
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
 
+    if (removable) this._makeCardRemovable(card);
+
     this.messagesEl.appendChild(card);
     this.scrollToBottom();
   }
@@ -675,7 +1061,7 @@ class ChatPanel {
    * without taking up space as a full message bubble.
    * @param {Object} ctx - Suggestion context {title, type, file, line_start, line_end, body}
    */
-  _addContextCard(ctx) {
+  _addContextCard(ctx, { removable = false } = {}) {
     const card = document.createElement('div');
     card.className = 'chat-panel__context-card';
 
@@ -691,8 +1077,77 @@ class ChatPanel {
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
 
+    if (removable) this._makeCardRemovable(card);
+
     this.messagesEl.appendChild(card);
     this.scrollToBottom();
+  }
+
+  /**
+   * Restore remove buttons and data-context-index on all pending context cards.
+   * Called after a failed send to unlock cards that were locked prematurely.
+   */
+  _restoreRemovableCards() {
+    // Restore analysis context card if it was locked
+    const analysisCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+    if (analysisCard && !analysisCard.querySelector('.chat-panel__context-remove')) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'chat-panel__context-remove';
+      removeBtn.title = 'Remove context';
+      removeBtn.innerHTML = '\u00d7';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._removeAnalysisContextCard(analysisCard);
+      });
+      analysisCard.appendChild(removeBtn);
+    }
+
+    const cards = this.messagesEl.querySelectorAll('.chat-panel__context-card:not([data-analysis])');
+    let idx = 0;
+    cards.forEach((card) => {
+      // Only restore cards that don't already have a remove button
+      if (!card.querySelector('.chat-panel__context-remove')) {
+        card.dataset.contextIndex = idx;
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'chat-panel__context-remove';
+        removeBtn.title = 'Remove context';
+        removeBtn.innerHTML = '\u00d7';
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this._removeContextCard(card);
+        });
+        card.appendChild(removeBtn);
+      } else {
+        card.dataset.contextIndex = idx;
+      }
+      idx++;
+    });
+  }
+
+  /**
+   * Remove a pending context card from the UI and data arrays.
+   * Re-indexes remaining cards so data-context-index stays in sync.
+   * @param {HTMLElement} cardEl - The context card element to remove
+   */
+  _removeContextCard(cardEl) {
+    const idx = parseInt(cardEl.dataset.contextIndex, 10);
+    if (!isNaN(idx) && idx >= 0 && idx < this._pendingContext.length) {
+      this._pendingContext.splice(idx, 1);
+      this._pendingContextData.splice(idx, 1);
+    }
+    cardEl.remove();
+
+    // Re-index remaining removable context cards
+    const remainingCards = this.messagesEl.querySelectorAll('.chat-panel__context-card[data-context-index]');
+    remainingCards.forEach((card, i) => {
+      card.dataset.contextIndex = i;
+    });
+
+    // If no pending context, no messages, and no other context cards, restore empty state
+    if (this._pendingContext.length === 0 && this.messages.length === 0 &&
+        !this.messagesEl.querySelector('.chat-panel__context-card')) {
+      this._clearMessages();
+    }
   }
 
   /**
@@ -702,33 +1157,159 @@ class ChatPanel {
    */
   _showAnalysisContextIfPresent(sessionData) {
     if (sessionData.context && sessionData.context.suggestionCount > 0) {
-      const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
-      if (emptyState) emptyState.remove();
-      this._addAnalysisContextCard(sessionData.context);
+      const existingCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+      if (existingCard) {
+        // Upgrade a bare-bones card (no metadata) with richer data from the backend.
+        // Update IN-PLACE to preserve the card's DOM position (avoids jumping below user message).
+        const hasRicherContext = !existingCard.dataset.hasMetadata &&
+          (sessionData.context.provider || sessionData.context.model || sessionData.context.summary);
+        if (!hasRicherContext) return;
+        this._updateAnalysisCardContent(existingCard, sessionData.context);
+      } else {
+        const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+        if (emptyState) emptyState.remove();
+        this._addAnalysisContextCard(sessionData.context);
+      }
+
+      // Persist richer analysis context to DB (includes provider, model, summary, etc.)
+      const contextData = { type: 'analysis', ...sessionData.context };
+      this._persistAnalysisContext(contextData);
+
+      // Track which run's context is loaded so _ensureAnalysisContext can skip if already present
+      this._sessionAnalysisRunId = sessionData.context.aiRunId || 'session';
+    }
+  }
+
+  /**
+   * Build the inner HTML string for an analysis context card.
+   * Shared by _addAnalysisContextCard (new card) and _updateAnalysisCardContent (in-place upgrade).
+   * @param {Object} context - Context metadata { suggestionCount, provider, model, summary, configType }
+   * @returns {string} HTML string for the card's content (SVG icon + label + title span)
+   */
+  _buildAnalysisCardInnerHTML(context) {
+    const count = context.suggestionCount;
+    const title = count === 1 ? '1 suggestion loaded' : `${count} suggestions loaded`;
+
+    // Build metadata details string (model/provider info)
+    const metaParts = [];
+    if (context.provider) metaParts.push(this._escapeHtml(context.provider));
+    if (context.model) metaParts.push(this._escapeHtml(context.model));
+    const metaStr = metaParts.length > 0 ? ` (${metaParts.join(' / ')})` : '';
+
+    // Build tooltip with provider, model, config, and summary (no title, no completedAt here since it's formatted for display)
+    const tooltipParts = [];
+    if (context.provider || context.model) {
+      tooltipParts.push(`Provider: ${context.provider || 'unknown'}, Model: ${context.model || 'unknown'}`);
+    }
+    if (context.configType) tooltipParts.push(`Config: ${context.configType}`);
+    if (context.summary) tooltipParts.push(`Summary: ${context.summary}`);
+    if (context.completedAt) {
+      const completedDate = new Date(context.completedAt);
+      tooltipParts.push(`Completed: ${completedDate.toLocaleString()}`);
+    }
+    const tooltip = tooltipParts.join('\n');
+
+    return `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12">
+        <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+      </svg>
+      <span class="chat-panel__context-label">analysis run</span>
+      <span class="chat-panel__context-title" title="${window.escapeHtmlAttribute(tooltip)}">${this._escapeHtml(title)}${metaStr}</span>
+    `;
+  }
+
+  /**
+   * Update an existing analysis context card's content and dataset in-place.
+   * Preserves the card's DOM position (avoids remove+recreate which causes ordering bugs).
+   * @param {HTMLElement} card - The existing analysis context card element
+   * @param {Object} context - Richer context metadata from the backend
+   */
+  _updateAnalysisCardContent(card, context) {
+    // Preserve existing remove button (if card is removable) before replacing innerHTML
+    const removeBtn = card.querySelector('.chat-panel__context-remove');
+
+    // Rebuild card innerHTML with richer metadata
+    card.innerHTML = this._buildAnalysisCardInnerHTML(context);
+
+    // Re-append the remove button if it existed
+    if (removeBtn) {
+      card.appendChild(removeBtn);
+    }
+
+    // Update dataset attributes
+    if (context.aiRunId) {
+      card.dataset.analysisRunId = context.aiRunId;
+    }
+    if (context.provider || context.model || context.summary) {
+      card.dataset.hasMetadata = 'true';
     }
   }
 
   /**
    * Add a compact analysis context card to the messages area.
    * Visually indicates that the agent has analysis suggestions loaded as context.
-   * @param {Object} context - Context metadata { suggestionCount }
+   * Displays run metadata (model, provider, summary) when available.
+   * @param {Object} context - Context metadata { suggestionCount, aiRunId, provider, model, summary, completedAt, configType, parentRunId }
    */
-  _addAnalysisContextCard(context) {
+  _addAnalysisContextCard(context, { removable = false, prepend = false } = {}) {
     const card = document.createElement('div');
-    card.className = 'chat-panel__analysis-context-card';
+    card.className = 'chat-panel__context-card';
+    card.dataset.analysis = 'true';
+    if (context.aiRunId) {
+      card.dataset.analysisRunId = context.aiRunId;
+    }
+    if (context.provider || context.model || context.summary) {
+      card.dataset.hasMetadata = 'true';
+    }
 
-    const count = context.suggestionCount;
-    const label = count === 1 ? '1 suggestion' : `${count} suggestions`;
+    card.innerHTML = this._buildAnalysisCardInnerHTML(context);
 
-    card.innerHTML = `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
-        <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-      </svg>
-      <span>Analysis context loaded &mdash; ${this._escapeHtml(label)}</span>
-    `;
+    if (removable) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'chat-panel__context-remove';
+      removeBtn.title = 'Remove context';
+      removeBtn.innerHTML = '\u00d7';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._removeAnalysisContextCard(card);
+      });
+      card.appendChild(removeBtn);
+    }
 
-    this.messagesEl.appendChild(card);
+    if (prepend) {
+      const firstChild = this.messagesEl.firstChild;
+      if (firstChild) {
+        this.messagesEl.insertBefore(card, firstChild);
+      } else {
+        this.messagesEl.appendChild(card);
+      }
+    } else {
+      this.messagesEl.appendChild(card);
+    }
     this.scrollToBottom();
+  }
+
+  /**
+   * Persist an analysis context card to the backend as a 'context' message.
+   * Called immediately when an analysis context card is added, so it appears
+   * in the conversation history on reload.
+   * @param {Object} contextData - Analysis context metadata (type, suggestionCount, etc.)
+   */
+  async _persistAnalysisContext(contextData) {
+    if (!this.currentSessionId) return;
+
+    try {
+      const response = await fetch(`/api/chat/session/${this.currentSessionId}/context`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contextData })
+      });
+      if (!response.ok) {
+        console.warn('[ChatPanel] Failed to persist analysis context:', response.status);
+      }
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to persist analysis context:', err);
+    }
   }
 
   /**
@@ -997,7 +1578,7 @@ class ChatPanel {
         <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
           <path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
         </svg>
-        <span>${this._escapeHtml(toolName)}</span>${argSummary ? `<span class="chat-panel__tool-args" title="${this._escapeHtml(argSummary)}">${this._escapeHtml(argSummary)}</span>` : ''}
+        <span>${this._escapeHtml(toolName)}</span>${argSummary ? `<span class="chat-panel__tool-args" title="${window.escapeHtmlAttribute(argSummary)}">${this._escapeHtml(argSummary)}</span>` : ''}
         <span class="chat-panel__tool-spinner"></span>
       `;
       // Insert before the bubble so tool calls stack above the response text
