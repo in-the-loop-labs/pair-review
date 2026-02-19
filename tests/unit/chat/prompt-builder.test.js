@@ -96,7 +96,7 @@ describe('buildChatPrompt', () => {
         review: { id: 42, repository: 'owner/repo', pr_number: 1 }
       });
 
-      expect(prompt).toContain('The review ID for this session is: **42**');
+      expect(prompt).toContain('The review ID for this session is: 42');
       expect(prompt).toContain('/api/reviews/42/comments');
     });
 

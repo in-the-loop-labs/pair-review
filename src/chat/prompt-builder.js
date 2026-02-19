@@ -39,7 +39,7 @@ function buildChatPrompt({ review, chatInstructions }) {
     '- **Review ID** is a stable integer identifying this review session, used in all API calls.'
   ];
   if (review && review.id) {
-    domainLines.push(`- The review ID for this session is: **${review.id}** (e.g. \`/api/reviews/${review.id}/comments\`).`);
+    domainLines.push(`- The review ID for this session is: ${review.id} (e.g. \`/api/reviews/${review.id}/comments\`).`);
   }
   sections.push(domainLines.join('\n'));
 
