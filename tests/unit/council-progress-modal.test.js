@@ -1027,4 +1027,70 @@ describe('CouncilProgressModal', () => {
       expect(setStreamTextSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe('_updateConsolidation — streaming snippet', () => {
+    function createConsolidationDOM(modal) {
+      const snippetEl = createMockElement('div');
+      snippetEl.className = 'council-level-snippet';
+      snippetEl.style.display = 'none';
+
+      const iconEl = createMockElement('span');
+      iconEl.className = 'council-level-icon pending';
+      const statusEl = createMockElement('span');
+      statusEl.className = 'council-level-status pending';
+
+      const section = createMockElement('div');
+      section.className = 'council-consolidation council-level';
+      section.querySelector = vi.fn().mockImplementation((sel) => {
+        if (sel === '.council-level-snippet') return snippetEl;
+        if (sel === '.council-level-icon') return iconEl;
+        if (sel === '.council-level-status') return statusEl;
+        return null;
+      });
+      section.querySelectorAll = vi.fn().mockReturnValue([]);
+
+      modal.modal.querySelector = vi.fn().mockImplementation((sel) => {
+        if (sel === '.council-consolidation') return section;
+        return null;
+      });
+
+      return { section, snippetEl, iconEl, statusEl };
+    }
+
+    it('displays streamEvent text in consolidation snippet when running', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const { snippetEl } = createConsolidationDOM(modal);
+
+      modal._updateConsolidation({
+        status: 'running',
+        steps: { orchestration: { status: 'running', progress: 'Finalizing...' } },
+        streamEvent: { type: 'assistant_text', text: 'Analyzing cross-level patterns...', timestamp: Date.now() }
+      });
+
+      expect(snippetEl.style.display).toBe('block');
+      expect(snippetEl.textContent).toBe('Analyzing cross-level patterns...');
+    });
+
+    it('hides consolidation snippet when completed', () => {
+      const { modal } = createTestCouncilProgressModal();
+      const { snippetEl } = createConsolidationDOM(modal);
+
+      // First show streaming
+      modal._updateConsolidation({
+        status: 'running',
+        steps: { orchestration: { status: 'running', progress: 'Finalizing...' } },
+        streamEvent: { type: 'assistant_text', text: 'Working...', timestamp: Date.now() }
+      });
+
+      expect(snippetEl.style.display).toBe('block');
+
+      // Then complete
+      modal._updateConsolidation({
+        status: 'completed',
+        steps: { orchestration: { status: 'completed', progress: 'Done' } }
+      });
+
+      expect(snippetEl.style.display).toBe('none');
+    });
+  });
 });
