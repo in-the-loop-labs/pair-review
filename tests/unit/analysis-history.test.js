@@ -1285,7 +1285,7 @@ describe('AnalysisHistoryManager', () => {
       const result = await manager.refresh({ switchToNew: false });
 
       // Even though switchToNew=false, should switch because there's no previous selection
-      // This ensures the ProgressModal will call loadAISuggestions() for first-ever runs
+      // This ensures the progress modal will call loadAISuggestions() for first-ever runs
       expect(result.didSwitch).toBe(true);
       expect(manager.selectedRunId).toBe('first-run');
       expect(manager.selectedRun.model).toBe('opus');

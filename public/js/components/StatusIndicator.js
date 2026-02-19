@@ -235,8 +235,8 @@ class StatusIndicator {
    * Reopen modal from status indicator
    */
   reopenModal() {
-    if (this.currentAnalysisId && window.progressModal) {
-      window.progressModal.reopenFromBackground();
+    if (this.currentAnalysisId && window.councilProgressModal) {
+      window.councilProgressModal.reopenFromBackground();
     }
   }
 

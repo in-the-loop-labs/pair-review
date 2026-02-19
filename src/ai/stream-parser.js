@@ -3,7 +3,7 @@
  * Stream Parser - Side-channel parser for real-time AI streaming events
  *
  * Reads stdout data incrementally from provider processes and emits normalized
- * events for display in the ProgressModal. This is a read-only side channel;
+ * events for display in the progress modal. This is a read-only side channel;
  * the existing stdout buffering and final JSON extraction remain untouched.
  *
  * Normalized event shape:
