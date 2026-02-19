@@ -472,15 +472,18 @@ class PRManager {
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) return;
       if (this._dirtyComments) { this._dirtyComments = false; this.loadUserComments(); }
-      if (this._dirtySuggestions) { this._dirtySuggestions = false; this.loadAISuggestions(); }
       if (this._dirtyAnalysis) {
         this._dirtyAnalysis = false;
+        this._dirtySuggestions = false; // analysis refresh includes suggestion reload
         if (this.analysisHistoryManager) {
           this.analysisHistoryManager.refresh({ switchToNew: true })
             .then(() => this.loadAISuggestions());
         } else {
           this.loadAISuggestions();
         }
+      } else if (this._dirtySuggestions) {
+        this._dirtySuggestions = false;
+        this.loadAISuggestions();
       }
     });
   }
