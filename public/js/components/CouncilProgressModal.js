@@ -7,8 +7,7 @@
  *   - Voice participants as child rows under each level
  *   - Consolidation section at the bottom
  *
- * Replaces ProgressModal when a council analysis is running.
- * The existing ProgressModal remains for single-model analysis.
+ * Handles both council and single-model analysis modes.
  */
 class CouncilProgressModal {
   constructor() {

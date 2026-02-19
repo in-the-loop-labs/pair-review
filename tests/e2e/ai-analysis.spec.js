@@ -52,7 +52,7 @@ async function triggerAnalysisAndWait(page) {
   await handleAnalysisModals(page);
 
   // Wait for the progress modal to appear
-  const progressModal = page.locator('#progress-modal');
+  const progressModal = page.locator('#council-progress-modal');
   await progressModal.waitFor({ state: 'visible', timeout: 5000 });
 
   // Wait for analysis to complete by watching for modal to close

@@ -3331,7 +3331,7 @@ class PRManager {
 
     // Map levels to dot phases
     const phaseMap = {
-      4: 'orchestration', // Orchestration/finalization is level 4 in ProgressModal
+      4: 'orchestration', // Orchestration/finalization is level 4 in progress modal
       1: 'level1',
       2: 'level2',
       3: 'level3'
@@ -3399,18 +3399,17 @@ class PRManager {
         this.setButtonAnalyzing(data.analysisId);
 
         // Show the appropriate progress modal
-        if (data.status?.isCouncil && window.councilProgressModal && data.status?.councilConfig) {
+        if (window.councilProgressModal) {
           window.councilProgressModal.setPRMode();
           window.councilProgressModal.show(
             data.analysisId,
-            data.status.councilConfig,
+            data.status?.isCouncil ? data.status.councilConfig : null,
             null,
-            { configType: data.status.configType || 'advanced' }
+            {
+              configType: data.status?.isCouncil ? (data.status.configType || 'advanced') : 'single',
+              enabledLevels: data.status?.enabledLevels || [1, 2, 3]
+            }
           );
-        } else if (window.progressModal) {
-          window.progressModal.show(data.analysisId);
-        } else {
-          console.warn('Progress modal not yet initialized');
         }
       }
     } catch (error) {
@@ -3422,17 +3421,12 @@ class PRManager {
   /**
    * Reopen progress modal when button is clicked during analysis
    */
-  reopenProgressModal() {
+  reopenModal() {
     if (!this.currentAnalysisId) return;
 
-    // If the council modal was used for this analysis, reopen it
+    // Reopen the progress modal if it was tracking this analysis
     if (window.councilProgressModal && window.councilProgressModal.currentAnalysisId === this.currentAnalysisId) {
       window.councilProgressModal.reopenFromBackground();
-      return;
-    }
-
-    if (window.progressModal) {
-      window.progressModal.show(this.currentAnalysisId);
     }
   }
 
@@ -3490,7 +3484,7 @@ class PRManager {
   async triggerAIAnalysis() {
     // If analysis is already running, just reopen the progress modal
     if (this.isAnalyzing) {
-      this.reopenProgressModal();
+      this.reopenModal();
       return;
     }
 
@@ -3729,9 +3723,6 @@ class PRManager {
             enabledLevels: config.enabledLevels || [1, 2, 3]
           }
         );
-      } else if (window.progressModal) {
-        // Fallback to old progress modal if unified modal not available
-        window.progressModal.show(result.analysisId);
       }
 
     } catch (error) {

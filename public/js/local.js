@@ -308,7 +308,7 @@ class LocalManager {
       const STALE_TIMEOUT = 2000;
 
       if (manager.isAnalyzing) {
-        manager.reopenProgressModal();
+        manager.reopenModal();
         return;
       }
 
@@ -450,18 +450,17 @@ class LocalManager {
           manager.setButtonAnalyzing(data.analysisId);
 
           // Show the appropriate progress modal
-          if (data.status?.isCouncil && window.councilProgressModal && data.status?.councilConfig) {
+          if (window.councilProgressModal) {
             window.councilProgressModal.setLocalMode(reviewId);
             window.councilProgressModal.show(
               data.analysisId,
-              data.status.councilConfig,
+              data.status?.isCouncil ? data.status.councilConfig : null,
               null,
-              { configType: data.status.configType || 'advanced' }
+              {
+                configType: data.status?.isCouncil ? (data.status.configType || 'advanced') : 'single',
+                enabledLevels: data.status?.enabledLevels || [1, 2, 3]
+              }
             );
-          } else if (window.progressModal) {
-            // Update the SSE endpoint for progress modal
-            self.patchProgressModalForLocal();
-            window.progressModal.show(data.analysisId);
           }
         }
       } catch (error) {
@@ -1031,58 +1030,6 @@ class LocalManager {
   }
 
   /**
-   * Patch ProgressModal to use local SSE endpoint
-   */
-  patchProgressModalForLocal() {
-    const modal = window.progressModal;
-    if (!modal) return;
-
-    const reviewId = this.reviewId;
-    const originalStartMonitoring = modal.startProgressMonitoring.bind(modal);
-
-    modal.startProgressMonitoring = function() {
-      if (modal.eventSource) {
-        modal.eventSource.close();
-      }
-
-      if (!modal.currentAnalysisId) return;
-
-      // Use local SSE endpoint
-      modal.eventSource = new EventSource(`/api/local/${reviewId}/ai-suggestions/status`);
-
-      modal.eventSource.onopen = () => {
-        console.log('Connected to local progress stream');
-      };
-
-      modal.eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-
-          if (data.type === 'connected') {
-            console.log('Local SSE connection established');
-            return;
-          }
-
-          if (data.type === 'progress') {
-            modal.updateProgress(data);
-
-            if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
-              modal.stopProgressMonitoring();
-            }
-          }
-        } catch (error) {
-          console.error('Error parsing SSE data:', error);
-        }
-      };
-
-      modal.eventSource.onerror = (error) => {
-        console.error('SSE connection error:', error);
-        modal.fallbackToPolling();
-      };
-    };
-  }
-
-  /**
    * Start local AI analysis
    */
   async startLocalAnalysis(btn, config) {
@@ -1158,12 +1105,6 @@ class LocalManager {
             enabledLevels: config.enabledLevels || [1, 2, 3]
           }
         );
-      } else {
-        // Fallback to old progress modal if unified modal not available
-        this.patchProgressModalForLocal();
-        if (window.progressModal) {
-          window.progressModal.show(result.analysisId);
-        }
       }
 
     } catch (error) {
@@ -1847,7 +1788,7 @@ class LocalManager {
 
     // Map levels to dot phases
     const phaseMap = {
-      4: 'orchestration', // Orchestration/finalization is level 4 in ProgressModal
+      4: 'orchestration', // Orchestration/finalization is level 4 in progress modal
       1: 'level1',
       2: 'level2',
       3: 'level3'

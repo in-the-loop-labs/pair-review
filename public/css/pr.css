@@ -2481,7 +2481,7 @@ tr.newly-expanded .d2h-code-line-ctn {
   background-color: var(--color-bg-secondary);
 }
 
-/* Progress Modal Styles */
+/* Modal Styles */
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -2554,102 +2554,6 @@ tr.newly-expanded .d2h-code-line-ctn {
   padding: 16px 24px;
   flex: 1;
   overflow-y: auto;
-}
-
-.progress-levels {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.progress-level {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.level-icon {
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 2px;
-}
-
-.level-icon .icon {
-  font-size: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-}
-
-.level-icon .icon.pending {
-  color: #656d76;
-}
-
-.level-icon .icon.active {
-  color: var(--ai-primary, #d97706);
-}
-
-.level-icon .icon.completed {
-  color: #1a7f37;
-}
-
-.level-icon .icon.error {
-  color: #cf222e;
-}
-
-.level-icon .icon.cancelled {
-  color: #9e6a03;
-}
-
-.level-content {
-  flex: 1;
-  min-width: 0;
-}
-
-.level-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text-primary, #24292f);
-  margin-bottom: 4px;
-}
-
-.level-status {
-  font-size: 13px;
-  color: var(--color-text-secondary, #656d76);
-  margin-bottom: 6px;
-}
-
-.level-stream-snippet {
-  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
-  font-size: 12px;
-  color: var(--color-text-tertiary, #8b949e);
-  background: var(--color-bg-subtle, #f6f8fa);
-  border-radius: 4px;
-  padding: 3px 6px;
-  margin-top: 4px;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.level-files {
-  display: flex;
-  gap: 16px;
-  font-size: 13px;
-}
-
-.files-analyzed {
-  color: #1a7f37;
-}
-
-.files-remaining {
-  color: #656d76;
 }
 
 .modal-footer {
