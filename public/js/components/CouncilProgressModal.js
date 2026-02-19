@@ -673,6 +673,17 @@ class CouncilProgressModal {
 
     // Derive the parent header state from children
     this._refreshConsolidationHeader(iconEl, statusEl, state);
+
+    // Show stream event text in the snippet element (mirrors _updateSingleModelLevel logic)
+    const snippetEl = section.querySelector('.council-level-snippet');
+    if (snippetEl) {
+      if (state === 'running' && level4Status.streamEvent?.text) {
+        snippetEl.textContent = level4Status.streamEvent.text;
+        snippetEl.style.display = 'block';
+      } else if (state !== 'running') {
+        snippetEl.style.display = 'none';
+      }
+    }
   }
 
   /**
@@ -1128,6 +1139,7 @@ class CouncilProgressModal {
           <span class="council-level-title">Cross-Reviewer Consolidation</span>
           <span class="council-level-status pending">Pending</span>
         </div>
+        <div class="council-level-snippet" style="display: none;"></div>
       </div>
     `;
 
@@ -1188,6 +1200,7 @@ class CouncilProgressModal {
           <span class="council-level-title">Consolidation</span>
           <span class="council-level-status pending">Pending</span>
         </div>
+        <div class="council-level-snippet" style="display: none;"></div>
       </div>
     `;
 
@@ -1327,6 +1340,7 @@ class CouncilProgressModal {
             <span class="council-level-title">Consolidation</span>
             <span class="council-level-status pending">Pending</span>
           </div>
+          <div class="council-level-snippet" style="display: none;"></div>
         </div>
       `;
     }
@@ -1338,6 +1352,7 @@ class CouncilProgressModal {
           <span class="council-level-title">Consolidation</span>
           <span class="council-level-status pending">Pending</span>
         </div>
+        <div class="council-level-snippet" style="display: none;"></div>
         <div class="council-level-children">
     `;
 

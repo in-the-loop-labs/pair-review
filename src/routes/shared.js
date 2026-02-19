@@ -379,7 +379,7 @@ function createProgressCallback(analysisId) {
       currentStatus.levels[4] = {
         status: derivedStatus,
         progress: progressUpdate.progress || (consolidationMatch ? 'Consolidating...' : 'Finalizing results...'),
-        streamEvent: undefined,
+        streamEvent: existing.streamEvent,
         consolidationStep: step,
         steps,
         voices: existingVoices
