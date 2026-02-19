@@ -166,6 +166,38 @@ Examples:
                         </div>
                     </section>
 
+                    <!-- Chat Instructions Section -->
+                    <section class="settings-section">
+                        <div class="section-header">
+                            <h2>
+                                Chat Instructions
+                            </h2>
+                            <p class="section-description">
+                                These instructions will be appended to the system prompt when starting chat sessions for this repository.
+                                Use this for guiding the chat assistant's behavior, tone, or focus areas.
+                            </p>
+                        </div>
+                        <div class="instructions-wrapper">
+                            <textarea
+                                id="chat-instructions"
+                                name="default_chat_instructions"
+                                class="instructions-textarea"
+                                placeholder="Enter instructions for chat sessions...
+
+Examples:
+• Always reference the project's coding standards when answering
+• Focus on explaining the reasoning behind suggestions
+• When discussing tests, prefer integration tests over unit tests
+• Use concise responses unless asked for detail"
+                                rows="6"
+                            ></textarea>
+                            <div class="textarea-footer">
+                                <span class="char-count"><span id="chat-char-count">0</span> characters</span>
+                                <span class="textarea-hint">Markdown supported</span>
+                            </div>
+                        </div>
+                    </section>
+
                     <!-- Repository Location Section -->
                     <section class="settings-section" id="local-path-section">
                         <div class="section-header">

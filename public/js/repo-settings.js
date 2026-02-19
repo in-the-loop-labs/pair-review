@@ -200,6 +200,16 @@ class RepoSettingsPage {
       });
     }
 
+    // Chat instructions textarea
+    const chatTextarea = document.getElementById('chat-instructions');
+    if (chatTextarea) {
+      chatTextarea.addEventListener('input', () => {
+        this.currentSettings.default_chat_instructions = chatTextarea.value;
+        this.updateChatCharCount(chatTextarea.value.length);
+        this.checkForChanges();
+      });
+    }
+
     // Analysis mode segmented control
     const modeToggle = document.getElementById('analysis-mode-toggle');
     if (modeToggle) {
@@ -814,7 +824,8 @@ class RepoSettingsPage {
         default_tab: settings.default_tab || 'single',
         default_council_id: settings.default_council_id || null,
         default_instructions: settings.default_instructions || '',
-        local_path: settings.local_path || null
+        local_path: settings.local_path || null,
+        default_chat_instructions: settings.default_chat_instructions || ''
       };
 
       // Set current settings
@@ -832,7 +843,8 @@ class RepoSettingsPage {
         default_tab: 'single',
         default_council_id: null,
         default_instructions: '',
-        local_path: null
+        local_path: null,
+        default_chat_instructions: ''
       };
       this.currentSettings = { ...this.originalSettings };
       this.updateUI();
@@ -887,6 +899,13 @@ class RepoSettingsPage {
       this.updateCharCount(textarea.value.length);
     }
 
+    // Update chat instructions textarea
+    const chatTextarea = document.getElementById('chat-instructions');
+    if (chatTextarea) {
+      chatTextarea.value = this.currentSettings.default_chat_instructions || '';
+      this.updateChatCharCount(chatTextarea.value.length);
+    }
+
     // Update local path display
     this.updateLocalPathDisplay();
   }
@@ -923,6 +942,13 @@ class RepoSettingsPage {
     }
   }
 
+  updateChatCharCount(count) {
+    const charCountEl = document.getElementById('chat-char-count');
+    if (charCountEl) {
+      charCountEl.textContent = count;
+    }
+  }
+
   checkForChanges() {
     // Use nullish coalescing to normalize null/undefined for consistent comparison
     const providerChanged = (this.currentSettings.default_provider ?? null) !== (this.originalSettings.default_provider ?? null);
@@ -930,8 +956,9 @@ class RepoSettingsPage {
     const tabChanged = (this.currentSettings.default_tab ?? 'single') !== (this.originalSettings.default_tab ?? 'single');
     const councilChanged = (this.currentSettings.default_council_id ?? null) !== (this.originalSettings.default_council_id ?? null);
     const instructionsChanged = (this.currentSettings.default_instructions ?? '') !== (this.originalSettings.default_instructions ?? '');
+    const chatInstructionsChanged = (this.currentSettings.default_chat_instructions ?? '') !== (this.originalSettings.default_chat_instructions ?? '');
 
-    this.hasUnsavedChanges = providerChanged || modelChanged || tabChanged || councilChanged || instructionsChanged;
+    this.hasUnsavedChanges = providerChanged || modelChanged || tabChanged || councilChanged || instructionsChanged || chatInstructionsChanged;
 
     // Show/hide action bar
     const actionBar = document.getElementById('action-bar');
@@ -965,7 +992,8 @@ class RepoSettingsPage {
           default_model: this.currentSettings.default_model,
           default_tab: this.currentSettings.default_tab,
           default_council_id: this.currentSettings.default_council_id,
-          default_instructions: this.currentSettings.default_instructions
+          default_instructions: this.currentSettings.default_instructions,
+          default_chat_instructions: this.currentSettings.default_chat_instructions
         })
       });
 
@@ -1039,7 +1067,8 @@ class RepoSettingsPage {
           default_tab: null,
           default_council_id: null,
           default_instructions: '',
-          local_path: null
+          local_path: null,
+          default_chat_instructions: ''
         })
       });
 
@@ -1054,7 +1083,8 @@ class RepoSettingsPage {
         default_tab: 'single',
         default_council_id: null,
         default_instructions: '',
-        local_path: null
+        local_path: null,
+        default_chat_instructions: ''
       };
       this.currentSettings = { ...this.originalSettings };
       this.hasUnsavedChanges = false;
