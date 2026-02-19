@@ -18,6 +18,7 @@
 const express = require('express');
 const { queryOne, withTransaction, ReviewRepository, CommentRepository, AnalysisRunRepository, CouncilRepository } = require('../database');
 const Analyzer = require('../ai/analyzer');
+const { getTierForModel } = require('../ai/provider');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 const path = require('path');
@@ -33,8 +34,22 @@ const {
 } = require('./shared');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
+const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 
 const router = express.Router();
+
+/**
+ * Enrich a raw analysis run record for API responses.
+ * Applies backward-compatible tier fallback and parses levels_config JSON.
+ */
+function enrichRun(run) {
+  if (!run) return null;
+  return {
+    ...run,
+    levels_config: run.levels_config ? JSON.parse(run.levels_config) : null,
+    tier: run.tier ?? (run.provider && run.model ? getTierForModel(run.provider, run.model) : null)
+  };
+}
 
 // ==========================================================================
 // Static path routes — registered BEFORE :id param routes to avoid clashes
@@ -56,10 +71,7 @@ router.get('/api/analyses/runs', async (req, res) => {
     const analysisRunRepo = new AnalysisRunRepository(db);
     const runs = await analysisRunRepo.getByReviewId(reviewId);
 
-    res.json({ runs: runs.map(r => ({
-      ...r,
-      levels_config: r.levels_config ? JSON.parse(r.levels_config) : null
-    })) });
+    res.json({ runs: runs.map(enrichRun) });
   } catch (error) {
     logger.error('Error fetching analysis runs:', error);
     res.status(500).json({ error: 'Failed to fetch analysis runs' });
@@ -86,7 +98,7 @@ router.get('/api/analyses/runs/latest', async (req, res) => {
       return res.status(404).json({ error: 'No analysis runs found' });
     }
 
-    res.json({ run });
+    res.json({ run: enrichRun(run) });
   } catch (error) {
     logger.error('Error fetching latest analysis run:', error);
     res.status(500).json({ error: 'Failed to fetch latest analysis run' });
@@ -108,7 +120,7 @@ router.get('/api/analyses/runs/:runId', async (req, res) => {
       return res.status(404).json({ error: 'Analysis run not found' });
     }
 
-    res.json({ run });
+    res.json({ run: enrichRun(run) });
   } catch (error) {
     logger.error('Error fetching analysis run:', error);
     res.status(500).json({ error: 'Failed to fetch analysis run' });
@@ -133,8 +145,20 @@ router.post('/api/analyses/results', async (req, res) => {
       model = null,
       summary = null,
       suggestions = [],
-      fileLevelSuggestions = []
+      fileLevelSuggestions = [],
+      tier = null
     } = req.body || {};
+
+    // --- Validate tier ---
+    let resolvedTier = tier;
+    if (tier != null) {
+      if (!VALID_TIERS.includes(tier)) {
+        return res.status(400).json({
+          error: `Invalid tier: "${tier}". Valid tiers: ${VALID_TIERS.join(', ')}`
+        });
+      }
+      resolvedTier = resolveTier(tier);
+    }
 
     // --- Validate identification pair ---
     const hasLocal = localPath && headSha;
@@ -236,6 +260,7 @@ router.post('/api/analyses/results', async (req, res) => {
         reviewId,
         provider,
         model,
+        tier: resolvedTier,
         headSha: headSha || null,
         status: 'completed'
       });
@@ -544,6 +569,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     reviewId,
     provider: 'council',
     model: councilId || 'inline-config',
+    tier: null,
     repoInstructions,
     requestInstructions,
     headSha: headSha || null,

@@ -755,95 +755,29 @@ describe('AnalysisHistoryManager', () => {
     });
   });
 
-  describe('getTierForModel()', () => {
-    it('should return fast tier for fast models', () => {
+  describe('formatTierDisplayName()', () => {
+    it('should return title-case tier name', () => {
       const manager = new AnalysisHistoryManager({
         reviewId: 1,
         mode: 'pr',
         onSelectionChange: vi.fn()
       });
 
-      expect(manager.getTierForModel('haiku')).toBe('fast');
-      expect(manager.getTierForModel('flash')).toBe('fast');
-      expect(manager.getTierForModel('gpt-4o-mini')).toBe('fast');
+      expect(manager.formatTierDisplayName('fast')).toBe('Fast');
+      expect(manager.formatTierDisplayName('balanced')).toBe('Balanced');
+      expect(manager.formatTierDisplayName('thorough')).toBe('Thorough');
     });
 
-    it('should return balanced tier for balanced models', () => {
+    it('should return empty string for null, undefined, or empty string', () => {
       const manager = new AnalysisHistoryManager({
         reviewId: 1,
         mode: 'pr',
         onSelectionChange: vi.fn()
       });
 
-      expect(manager.getTierForModel('sonnet')).toBe('balanced');
-      expect(manager.getTierForModel('pro')).toBe('balanced');
-      expect(manager.getTierForModel('gpt-4o')).toBe('balanced');
-      expect(manager.getTierForModel('gpt-4')).toBe('balanced');
-      expect(manager.getTierForModel('o1-mini')).toBe('balanced');
-      expect(manager.getTierForModel('default')).toBe('balanced');
-    });
-
-    it('should return thorough tier for thorough models', () => {
-      const manager = new AnalysisHistoryManager({
-        reviewId: 1,
-        mode: 'pr',
-        onSelectionChange: vi.fn()
-      });
-
-      expect(manager.getTierForModel('opus')).toBe('thorough');
-      expect(manager.getTierForModel('ultra')).toBe('thorough');
-      expect(manager.getTierForModel('o1')).toBe('thorough');
-      expect(manager.getTierForModel('multi-model')).toBe('thorough');
-      expect(manager.getTierForModel('review-roulette')).toBe('thorough');
-    });
-
-    it('should return null for unknown models', () => {
-      const manager = new AnalysisHistoryManager({
-        reviewId: 1,
-        mode: 'pr',
-        onSelectionChange: vi.fn()
-      });
-
-      expect(manager.getTierForModel('unknown-model')).toBe(null);
-      expect(manager.getTierForModel('custom-model')).toBe(null);
-    });
-
-    it('should return null for null or undefined input', () => {
-      const manager = new AnalysisHistoryManager({
-        reviewId: 1,
-        mode: 'pr',
-        onSelectionChange: vi.fn()
-      });
-
-      expect(manager.getTierForModel(null)).toBe(null);
-      expect(manager.getTierForModel(undefined)).toBe(null);
-      expect(manager.getTierForModel('')).toBe(null);
-    });
-  });
-
-  describe('formatTierName()', () => {
-    it('should return uppercase tier name', () => {
-      const manager = new AnalysisHistoryManager({
-        reviewId: 1,
-        mode: 'pr',
-        onSelectionChange: vi.fn()
-      });
-
-      expect(manager.formatTierName('fast')).toBe('FAST');
-      expect(manager.formatTierName('balanced')).toBe('BALANCED');
-      expect(manager.formatTierName('thorough')).toBe('THOROUGH');
-    });
-
-    it('should return empty string for null or undefined', () => {
-      const manager = new AnalysisHistoryManager({
-        reviewId: 1,
-        mode: 'pr',
-        onSelectionChange: vi.fn()
-      });
-
-      expect(manager.formatTierName(null)).toBe('');
-      expect(manager.formatTierName(undefined)).toBe('');
-      expect(manager.formatTierName('')).toBe('');
+      expect(manager.formatTierDisplayName(null)).toBe('');
+      expect(manager.formatTierDisplayName(undefined)).toBe('');
+      expect(manager.formatTierDisplayName('')).toBe('');
     });
   });
 
@@ -856,11 +790,12 @@ describe('AnalysisHistoryManager', () => {
       });
       manager.init();
 
-      // Set up runs with a known model
+      // Set up runs with a known model and tier from the database
       manager.runs = [{
         id: 'run-123',
         model: 'sonnet',
         provider: 'claude',
+        tier: 'balanced',
         started_at: '2024-01-15T10:00:00Z',
         completed_at: '2024-01-15T10:01:00Z',
         total_suggestions: 5
@@ -868,9 +803,9 @@ describe('AnalysisHistoryManager', () => {
 
       manager.updatePreviewPanel('run-123');
 
-      // Check that the HTML includes the tier (lowercase per code review feedback)
+      // Check that the HTML includes the tier in title-case via formatTierDisplayName
       const previewPanel = mockDocument._elements['analysis-context-preview'];
-      expect(previewPanel.innerHTML).toContain('balanced');
+      expect(previewPanel.innerHTML).toContain('Balanced');
     });
 
     it('should include fast tier for fast models', () => {
@@ -885,6 +820,7 @@ describe('AnalysisHistoryManager', () => {
         id: 'run-123',
         model: 'haiku',
         provider: 'claude',
+        tier: 'fast',
         started_at: '2024-01-15T10:00:00Z',
         completed_at: '2024-01-15T10:01:00Z',
         total_suggestions: 3
@@ -893,7 +829,7 @@ describe('AnalysisHistoryManager', () => {
       manager.updatePreviewPanel('run-123');
 
       const previewPanel = mockDocument._elements['analysis-context-preview'];
-      expect(previewPanel.innerHTML).toContain('fast');
+      expect(previewPanel.innerHTML).toContain('Fast');
     });
 
     it('should include thorough tier for thorough models', () => {
@@ -908,6 +844,7 @@ describe('AnalysisHistoryManager', () => {
         id: 'run-123',
         model: 'opus',
         provider: 'claude',
+        tier: 'thorough',
         started_at: '2024-01-15T10:00:00Z',
         completed_at: '2024-01-15T10:01:00Z',
         total_suggestions: 8
@@ -916,7 +853,7 @@ describe('AnalysisHistoryManager', () => {
       manager.updatePreviewPanel('run-123');
 
       const previewPanel = mockDocument._elements['analysis-context-preview'];
-      expect(previewPanel.innerHTML).toContain('thorough');
+      expect(previewPanel.innerHTML).toContain('Thorough');
     });
 
     it('should show unknown tier for unknown models', () => {

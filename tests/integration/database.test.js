@@ -1915,13 +1915,15 @@ describe('AnalysisRunRepository', () => {
         reviewId: testReview.id,
         provider: 'claude',
         model: 'sonnet',
-        customInstructions: 'Focus on security issues'
+        customInstructions: 'Focus on security issues',
+        tier: 'balanced'
       });
 
       expect(result.id).toBe(runId);
       expect(result.provider).toBe('claude');
       expect(result.model).toBe('sonnet');
       expect(result.custom_instructions).toBe('Focus on security issues');
+      expect(result.tier).toBe('balanced');
     });
 
     it('should create an analysis run with head_sha for traceability', async () => {
@@ -1948,6 +1950,33 @@ describe('AnalysisRunRepository', () => {
 
       expect(result.id).toBe(runId);
       expect(result.head_sha).toBeNull();
+    });
+
+    it('should create an analysis run with tier field', async () => {
+      const runId = 'test-run-with-tier';
+      const result = await analysisRunRepo.create({
+        id: runId,
+        reviewId: testReview.id,
+        provider: 'claude',
+        model: 'opus',
+        tier: 'thorough'
+      });
+
+      expect(result.id).toBe(runId);
+      expect(result.tier).toBe('thorough');
+    });
+
+    it('should default tier to null when not provided', async () => {
+      const runId = 'test-run-no-tier';
+      const result = await analysisRunRepo.create({
+        id: runId,
+        reviewId: testReview.id,
+        provider: 'claude',
+        model: 'sonnet'
+      });
+
+      expect(result.id).toBe(runId);
+      expect(result.tier).toBeNull();
     });
   });
 

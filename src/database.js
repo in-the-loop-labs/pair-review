@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 21;
+const CURRENT_SCHEMA_VERSION = 22;
 
 /**
  * Database schema SQL statements
@@ -150,6 +150,7 @@ const SCHEMA_SQL = {
       review_id INTEGER NOT NULL,
       provider TEXT,
       model TEXT,
+      tier TEXT,
       custom_instructions TEXT,
       repo_instructions TEXT,
       request_instructions TEXT,
@@ -1050,6 +1051,27 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 21 complete');
+  },
+
+  22: (db) => {
+    console.log('Migrating to schema version 22: Add tier column to analysis_runs');
+
+    const columns = db.prepare('PRAGMA table_info(analysis_runs)').all();
+    if (!columns.some(c => c.name === 'tier')) {
+      try {
+        db.prepare('ALTER TABLE analysis_runs ADD COLUMN tier TEXT').run();
+        console.log('  Added tier column to analysis_runs');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column tier already exists (race condition)');
+      }
+    } else {
+      console.log('  Column tier already exists');
+    }
+
+    console.log('Migration to schema version 22 complete');
   }
 };
 
@@ -2739,14 +2761,14 @@ class AnalysisRunRepository {
    * @param {string} [runInfo.status='running'] - Initial status (default 'running'; pass 'completed' for externally-produced results)
    * @returns {Promise<Object>} Created analysis run record
    */
-  async create({ id, reviewId, provider = null, model = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, status = 'running', parentRunId = null, configType = 'single', levelsConfig = null }) {
+  async create({ id, reviewId, provider = null, model = null, tier = null, customInstructions = null, repoInstructions = null, requestInstructions = null, headSha = null, status = 'running', parentRunId = null, configType = 'single', levelsConfig = null }) {
     const isTerminal = ['completed', 'failed', 'cancelled'].includes(status);
     const completedAt = isTerminal ? 'CURRENT_TIMESTAMP' : 'NULL';
     const levelsConfigJson = levelsConfig ? JSON.stringify(levelsConfig) : null;
     await run(this.db, `
-      INSERT INTO analysis_runs (id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions, head_sha, status, completed_at, parent_run_id, config_type, levels_config)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt}, ?, ?, ?)
-    `, [id, reviewId, provider, model, customInstructions, repoInstructions, requestInstructions, headSha, status, parentRunId, configType, levelsConfigJson]);
+      INSERT INTO analysis_runs (id, review_id, provider, model, tier, custom_instructions, repo_instructions, request_instructions, head_sha, status, completed_at, parent_run_id, config_type, levels_config)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${completedAt}, ?, ?, ?)
+    `, [id, reviewId, provider, model, tier, customInstructions, repoInstructions, requestInstructions, headSha, status, parentRunId, configType, levelsConfigJson]);
 
     // Query back the inserted row to return actual database values (including timestamps)
     return await this.getById(id);
@@ -2821,7 +2843,7 @@ class AnalysisRunRepository {
    */
   async getById(id) {
     const row = await queryOne(this.db, `
-      SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+      SELECT id, review_id, provider, model, tier, custom_instructions, repo_instructions, request_instructions,
              head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
              parent_run_id, config_type, levels_config
       FROM analysis_runs
@@ -2842,7 +2864,7 @@ class AnalysisRunRepository {
   async getByReviewId(reviewId, { limit } = {}) {
     const params = [reviewId];
     let sql = `
-      SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+      SELECT id, review_id, provider, model, tier, custom_instructions, repo_instructions, request_instructions,
              head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
              parent_run_id, config_type, levels_config
       FROM analysis_runs
@@ -2872,7 +2894,7 @@ class AnalysisRunRepository {
    */
   async getChildRuns(parentRunId) {
     return query(this.db, `
-      SELECT id, review_id, provider, model, custom_instructions, repo_instructions, request_instructions,
+      SELECT id, review_id, provider, model, tier, custom_instructions, repo_instructions, request_instructions,
              head_sha, summary, status, total_suggestions, files_analyzed, started_at, completed_at,
              parent_run_id, config_type, levels_config
       FROM analysis_runs

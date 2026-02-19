@@ -36,6 +36,7 @@ const {
   parseEnabledLevels
 } = require('./shared');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
+const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const analysesRouter = require('./analyses');
 
 const router = express.Router();
@@ -1374,7 +1375,6 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
       });
     }
 
-    const VALID_TIERS = ['fast', 'balanced', 'thorough', 'free', 'standard', 'premium'];
     if (requestTier && !VALID_TIERS.includes(requestTier)) {
       return res.status(400).json({
         error: `Invalid tier: "${requestTier}". Valid tiers: ${VALID_TIERS.join(', ')}`
@@ -1454,11 +1454,13 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
 
     const analysisRunRepo = new AnalysisRunRepository(db);
     const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);
+    const tier = requestTier ? resolveTier(requestTier) : 'balanced';
     await analysisRunRepo.create({
       id: runId,
       reviewId: review.id,
       provider,
       model,
+      tier,
       repoInstructions,
       requestInstructions,
       headSha: prMetadata.head_sha || null,
@@ -1501,7 +1503,6 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     logger.log('API', `Review ID: ${review.id}`, 'magenta');
     logger.log('API', `Provider: ${provider}`, 'cyan');
     logger.log('API', `Model: ${model}`, 'cyan');
-    const tier = requestTier || 'balanced';
     logger.log('API', `Tier: ${tier}`, 'cyan');
     if (combinedInstructions) {
       logger.log('API', `Custom instructions: ${combinedInstructions.length} chars`, 'cyan');

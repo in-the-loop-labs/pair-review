@@ -171,6 +171,73 @@ describe('POST /api/analyses/results', () => {
     expect(response.body.error).toContain('Invalid pull request number');
   });
 
+  it('should return 400 when tier is provided but invalid', async () => {
+    const response = await request(app)
+      .post('/api/analyses/results')
+      .send({
+        path: '/tmp/project',
+        headSha: 'abc123',
+        tier: 'invalid-tier',
+        suggestions: []
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain('Invalid tier');
+    expect(response.body.error).toContain('invalid-tier');
+  });
+
+  it('should accept canonical tier values', async () => {
+    for (const tier of ['fast', 'balanced', 'thorough']) {
+      const response = await request(app)
+        .post('/api/analyses/results')
+        .send({
+          path: '/tmp/project',
+          headSha: `sha-tier-${tier}`,
+          tier,
+          suggestions: []
+        });
+
+      expect(response.status).toBe(201);
+
+      const { queryOne } = require('../../src/database');
+      const run = await queryOne(db, 'SELECT tier FROM analysis_runs WHERE id = ?', [response.body.runId]);
+      expect(run.tier).toBe(tier);
+    }
+  });
+
+  it('should normalize tier aliases to canonical form', async () => {
+    const response = await request(app)
+      .post('/api/analyses/results')
+      .send({
+        path: '/tmp/project',
+        headSha: 'sha-alias',
+        tier: 'premium',
+        suggestions: []
+      });
+
+    expect(response.status).toBe(201);
+
+    const { queryOne } = require('../../src/database');
+    const run = await queryOne(db, 'SELECT tier FROM analysis_runs WHERE id = ?', [response.body.runId]);
+    expect(run.tier).toBe('thorough');
+  });
+
+  it('should allow null/undefined tier (external imports may omit it)', async () => {
+    const response = await request(app)
+      .post('/api/analyses/results')
+      .send({
+        path: '/tmp/project',
+        headSha: 'sha-no-tier',
+        suggestions: []
+      });
+
+    expect(response.status).toBe(201);
+
+    const { queryOne } = require('../../src/database');
+    const run = await queryOne(db, 'SELECT tier FROM analysis_runs WHERE id = ?', [response.body.runId]);
+    expect(run.tier).toBeNull();
+  });
+
   it('should return 400 when a file-level suggestion is missing required fields', async () => {
     const response = await request(app)
       .post('/api/analyses/results')

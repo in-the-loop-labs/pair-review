@@ -23,6 +23,7 @@ const { mergeInstructions } = require('../utils/instructions');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
 const { validateCouncilConfig, normalizeCouncilConfig } = require('./councils');
+const { TIERS, TIER_ALIASES, VALID_TIERS, resolveTier } = require('../ai/prompts/config');
 const {
   activeAnalyses,
   localReviewDiffs,
@@ -635,7 +636,6 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     }
 
     // Validate tier
-    const VALID_TIERS = ['fast', 'balanced', 'thorough', 'free', 'standard', 'premium'];
     if (requestTier && !VALID_TIERS.includes(requestTier)) {
       return res.status(400).json({
         error: `Invalid tier: "${requestTier}". Valid tiers: ${VALID_TIERS.join(', ')}`
@@ -701,12 +701,14 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     // Create DB analysis_runs record immediately so it's queryable for polling
     const analysisRunRepo = new AnalysisRunRepository(db);
     const levelsConfig = parseEnabledLevels(requestEnabledLevels, requestSkipLevel3);
+    const tier = requestTier ? resolveTier(requestTier) : 'balanced';
     try {
       await analysisRunRepo.create({
         id: runId,
         reviewId,
         provider: selectedProvider,
         model: selectedModel,
+        tier,
         repoInstructions,
         requestInstructions,
         headSha: review.local_head_sha || null,
@@ -772,8 +774,6 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
     logger.log('API', `Analysis ID: ${analysisId}`, 'magenta');
     logger.log('API', `Provider: ${selectedProvider}`, 'cyan');
     logger.log('API', `Model: ${selectedModel}`, 'cyan');
-    // Determine tier: request body > default ('balanced')
-    const tier = requestTier || 'balanced';
     logger.log('API', `Tier: ${tier}`, 'cyan');
     logger.log('API', `Changed files: ${changedFiles.length}`, 'cyan');
     if (combinedInstructions) {
