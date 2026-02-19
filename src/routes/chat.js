@@ -118,7 +118,7 @@ function unregisterSSEBroadcast(sessionId) {
  */
 router.post('/api/chat/session', async (req, res) => {
   try {
-    const { provider, model, contextCommentId, systemPrompt, cwd } = req.body || {};
+    const { provider, model, contextCommentId, systemPrompt, cwd, skipAnalysisContext } = req.body || {};
     const reviewId = parseInt(req.body?.reviewId, 10);
 
     if (!provider || !reviewId || isNaN(reviewId)) {
@@ -150,33 +150,35 @@ router.post('/api/chat/session', async (req, res) => {
 
       finalSystemPrompt = buildChatPrompt({ review });
 
-      // Fetch all AI suggestions from the latest analysis run
-      suggestions = await query(db, `
-        SELECT
-          id, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, type, title, body,
-          reasoning, status, is_file_level
-        FROM comments
-        WHERE review_id = ?
-          AND source = 'ai'
-          -- ai_level IS NULL = orchestrated/final suggestions only
-          -- TODO: If single-level results can be saved without orchestration,
-          -- we may need an \`is_final\` flag to identify displayable suggestions.
-          AND ai_level IS NULL
-          AND (is_raw = 0 OR is_raw IS NULL)
-          AND ai_run_id = (
-            SELECT ai_run_id FROM comments
-            WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
-            ORDER BY created_at DESC
-            LIMIT 1
-          )
-        ORDER BY file, line_start
-      `, [reviewId, reviewId]);
+      if (!skipAnalysisContext) {
+        // Fetch all AI suggestions from the latest analysis run
+        suggestions = await query(db, `
+          SELECT
+            id, ai_run_id, ai_level, ai_confidence,
+            file, line_start, line_end, type, title, body,
+            reasoning, status, is_file_level
+          FROM comments
+          WHERE review_id = ?
+            AND source = 'ai'
+            -- ai_level IS NULL = orchestrated/final suggestions only
+            -- TODO: If single-level results can be saved without orchestration,
+            -- we may need an \`is_final\` flag to identify displayable suggestions.
+            AND ai_level IS NULL
+            AND (is_raw = 0 OR is_raw IS NULL)
+            AND ai_run_id = (
+              SELECT ai_run_id FROM comments
+              WHERE review_id = ? AND source = 'ai' AND ai_run_id IS NOT NULL
+              ORDER BY created_at DESC
+              LIMIT 1
+            )
+          ORDER BY file, line_start
+        `, [reviewId, reviewId]);
 
-      initialContext = buildInitialContext({
-        suggestions,
-        focusedSuggestion
-      });
+        initialContext = buildInitialContext({
+          suggestions,
+          focusedSuggestion
+        });
+      }
     }
 
     // Resolve cwd: explicit from request body, or local_path from review record
@@ -212,7 +214,8 @@ router.post('/api/chat/session', async (req, res) => {
     // Include analysis context metadata so the frontend can show a context indicator
     if (initialContext && suggestions && suggestions.length > 0) {
       responseData.context = {
-        suggestionCount: suggestions.length
+        suggestionCount: suggestions.length,
+        aiRunId: suggestions[0].ai_run_id || null
       };
     }
 

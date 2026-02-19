@@ -22,6 +22,8 @@ class ChatPanel {
     this._contextSource = null;   // 'suggestion' or 'user' — set when opened with context
     this._contextItemId = null;   // suggestion ID or comment ID from context
     this._resizeConfig = { min: 300, max: 800, default: 400, storageKey: 'chat-panel-width' };
+    this._analysisContextRemoved = false;
+    this._sessionAnalysisRunId = null; // tracks which AI run ID's context is loaded in the current session
 
     this._render();
     this._bindEvents();
@@ -41,7 +43,7 @@ class ChatPanel {
             <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
               <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
             </svg>
-            Chat with AI
+            Chat &middot; Pi
           </span>
           <div class="chat-panel__actions">
             <button class="chat-panel__new-btn" title="New conversation">
@@ -110,6 +112,7 @@ class ChatPanel {
     this.actionBar = this.container.querySelector('.chat-panel__action-bar');
     this.adoptBtn = this.container.querySelector('.chat-panel__action-btn--adopt');
     this.updateBtn = this.container.querySelector('.chat-panel__action-btn--update');
+    this.titleEl = this.container.querySelector('.chat-panel__title');
   }
 
   /**
@@ -222,6 +225,22 @@ class ChatPanel {
   }
 
   /**
+   * Update the chat panel title with provider and model info.
+   * @param {string} [provider='Pi'] - Provider display name
+   * @param {string} [model] - Model ID or display name (e.g. 'default', 'multi-model')
+   */
+  _updateTitle(provider = 'Pi', model) {
+    if (!this.titleEl) return;
+    const svg = this.titleEl.querySelector('svg')?.outerHTML || '';
+    const modelDisplay = model && model !== 'default'
+      ? model.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+      : null;
+    const parts = ['Chat', provider];
+    if (modelDisplay) parts.push(modelDisplay);
+    this.titleEl.innerHTML = `${svg}\n            ${this._escapeHtml(parts.join(' \u00b7 '))}`;
+  }
+
+  /**
    * Open the chat panel
    * @param {Object} options - Optional context
    * @param {number} options.reviewId - Review ID
@@ -266,6 +285,11 @@ class ChatPanel {
       await this._loadMRUSession();
     }
 
+    // If opening with context, ensure analysis context is added first
+    if (options.suggestionContext || options.commentContext) {
+      this._ensureAnalysisContext();
+    }
+
     // If opening with suggestion context, inject it as a context card
     if (options.suggestionContext) {
       this._sendContextMessage(options.suggestionContext);
@@ -276,6 +300,11 @@ class ChatPanel {
       this._sendCommentContextMessage(options.commentContext);
       this._contextSource = 'user';
       this._contextItemId = options.commentContext.commentId || null;
+    } else if (options.fileContext) {
+      // If opening with file context, inject it as a context card
+      this._sendFileContextMessage(options.fileContext);
+      this._contextSource = 'file';
+      this._contextItemId = null;
     }
 
     this._updateActionButtons();
@@ -299,6 +328,8 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;
     this._contextItemId = null;
+    this._analysisContextRemoved = false;
+    this._sessionAnalysisRunId = null;
   }
 
   /**
@@ -324,8 +355,11 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;
     this._contextItemId = null;
+    this._analysisContextRemoved = false;
+    this._sessionAnalysisRunId = null;
     this._clearMessages();
     this._updateActionButtons();
+    this._updateTitle(); // Reset title for new conversation
     // SSE stays connected — it's multiplexed and will filter by sessionId
   }
 
@@ -349,6 +383,12 @@ class ChatPanel {
       const mru = sessions[0];
       this.currentSessionId = mru.id;
       console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
+
+      // Update title with provider/model from the session
+      if (mru.provider) {
+        const providerName = mru.provider.charAt(0).toUpperCase() + mru.provider.slice(1);
+        this._updateTitle(providerName, mru.model);
+      }
 
       // Load message history if the session has messages
       if (mru.message_count > 0) {
@@ -442,6 +482,9 @@ class ChatPanel {
       if (contextCommentId) {
         body.contextCommentId = contextCommentId;
       }
+      if (this._analysisContextRemoved) {
+        body.skipAnalysisContext = true;
+      }
 
       console.debug('[ChatPanel] Creating session for review', this.reviewId);
       const response = await fetch('/api/chat/session', {
@@ -521,6 +564,10 @@ class ChatPanel {
         delete card.dataset.contextIndex;
       });
     }
+
+    // Lock analysis context card (not indexed, handled separately from pending context)
+    const analysisRemoveBtn = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis] .chat-panel__context-remove');
+    if (analysisRemoveBtn) analysisRemoveBtn.remove();
 
     // Send to API
     try {
@@ -639,6 +686,118 @@ class ChatPanel {
   }
 
   /**
+   * Send a file context message to the chat panel.
+   * Called when the user clicks "Chat about file" on a file header.
+   * @param {Object} fileContext - File context data
+   * @param {string} fileContext.file - File path
+   */
+  _sendFileContextMessage(fileContext) {
+    const contextText = `The user wants to discuss ${fileContext.file}`;
+
+    // Check for duplicate context
+    const isDuplicate = this._pendingContext.some(c => c === contextText) ||
+      this.messages.some(m => m.role === 'context' && m.content === contextText);
+    if (isDuplicate) return;
+
+    // Remove empty state if present
+    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    // Store structured context data for DB persistence
+    const contextData = {
+      type: 'file',
+      title: fileContext.file,
+      file: fileContext.file,
+      line_start: null,
+      line_end: null,
+      body: null
+    };
+    this._pendingContextData.push(contextData);
+
+    this._pendingContext.push(contextText);
+
+    // Render the compact context card in the UI
+    const card = document.createElement('div');
+    card.className = 'chat-panel__context-card';
+
+    const idx = this._pendingContextData.length - 1;
+    card.dataset.contextIndex = idx;
+
+    card.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+        <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
+      </svg>
+      <span class="chat-panel__context-label"><strong>FILE</strong></span>
+      <span class="chat-panel__context-title">${this._escapeHtml(fileContext.file)}</span>
+    `;
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'chat-panel__context-remove';
+    removeBtn.title = 'Remove context';
+    removeBtn.innerHTML = '\u00d7';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._removeContextCard(card);
+    });
+    card.appendChild(removeBtn);
+
+    this.messagesEl.appendChild(card);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Ensure the latest AI analysis context is added as the first context item.
+   * Called when opening the chat with specific context (suggestion or comment).
+   * Only adds if not already present and suggestions exist.
+   */
+  _ensureAnalysisContext() {
+    // Skip if analysis context card already exists in the DOM
+    if (this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]')) return;
+
+    // Skip if the current session already has analysis context loaded (by run ID)
+    if (this._sessionAnalysisRunId) return;
+
+    // Skip if analysis context was explicitly removed in this conversation
+    if (this._analysisContextRemoved) return;
+
+    // Count suggestions from the DOM (from the latest analysis run)
+    const suggestionEls = typeof document !== 'undefined' && document.querySelectorAll
+      ? document.querySelectorAll('.ai-suggestion[data-suggestion-id]')
+      : [];
+    const count = suggestionEls.length;
+    if (count === 0) return;
+
+    // Remove empty state
+    const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    // Render the analysis context card (removable, prepended at the top)
+    // Note: analysis card is NOT added to _pendingContext/_pendingContextData —
+    // the backend includes full suggestion data via initialContext at session creation.
+    // The card is a visual indicator that controls whether the backend includes it.
+    this._addAnalysisContextCard({ suggestionCount: count }, { removable: true, prepend: true });
+
+    // Mark that analysis context is loaded for this session (prevents re-adding on reopen)
+    this._sessionAnalysisRunId = 'dom';
+  }
+
+  /**
+   * Remove the analysis context card and mark it as explicitly removed.
+   * When removed, the backend will skip including analysis suggestions in the session.
+   * @param {HTMLElement} cardEl - The analysis context card element
+   */
+  _removeAnalysisContextCard(cardEl) {
+    this._analysisContextRemoved = true;
+    cardEl.remove();
+
+    // If no pending context, no messages, and no other context cards, restore empty state
+    if (this._pendingContext.length === 0 && this.messages.length === 0 &&
+        !this.messagesEl.querySelector('.chat-panel__context-card')) {
+      this._clearMessages();
+    }
+  }
+
+  /**
    * Add a compact context card for a user comment to the messages area.
    * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, isFileLevel}
    */
@@ -723,6 +882,20 @@ class ChatPanel {
    * Called after a failed send to unlock cards that were locked prematurely.
    */
   _restoreRemovableCards() {
+    // Restore analysis context card if it was locked
+    const analysisCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+    if (analysisCard && !analysisCard.querySelector('.chat-panel__context-remove')) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'chat-panel__context-remove';
+      removeBtn.title = 'Remove context';
+      removeBtn.innerHTML = '\u00d7';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._removeAnalysisContextCard(analysisCard);
+      });
+      analysisCard.appendChild(removeBtn);
+    }
+
     const cards = this.messagesEl.querySelectorAll('.chat-panel__context-card:not([data-analysis])');
     let idx = 0;
     cards.forEach((card) => {
@@ -764,8 +937,9 @@ class ChatPanel {
       card.dataset.contextIndex = i;
     });
 
-    // If no pending context and no messages, restore empty state
-    if (this._pendingContext.length === 0 && this.messages.length === 0) {
+    // If no pending context, no messages, and no other context cards, restore empty state
+    if (this._pendingContext.length === 0 && this.messages.length === 0 &&
+        !this.messagesEl.querySelector('.chat-panel__context-card')) {
       this._clearMessages();
     }
   }
@@ -777,9 +951,14 @@ class ChatPanel {
    */
   _showAnalysisContextIfPresent(sessionData) {
     if (sessionData.context && sessionData.context.suggestionCount > 0) {
+      // Skip if analysis context card already exists (e.g. added by _ensureAnalysisContext on open)
+      if (this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]')) return;
       const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
       if (emptyState) emptyState.remove();
       this._addAnalysisContextCard(sessionData.context);
+
+      // Track which run's context is loaded so _ensureAnalysisContext can skip if already present
+      this._sessionAnalysisRunId = sessionData.context.aiRunId || 'session';
     }
   }
 
@@ -788,10 +967,13 @@ class ChatPanel {
    * Visually indicates that the agent has analysis suggestions loaded as context.
    * @param {Object} context - Context metadata { suggestionCount }
    */
-  _addAnalysisContextCard(context) {
+  _addAnalysisContextCard(context, { removable = false, prepend = false } = {}) {
     const card = document.createElement('div');
     card.className = 'chat-panel__context-card';
     card.dataset.analysis = 'true';
+    if (context.aiRunId) {
+      card.dataset.analysisRunId = context.aiRunId;
+    }
 
     const count = context.suggestionCount;
     const title = count === 1 ? '1 suggestion loaded' : `${count} suggestions loaded`;
@@ -804,7 +986,28 @@ class ChatPanel {
       <span class="chat-panel__context-title">${this._escapeHtml(title)}</span>
     `;
 
-    this.messagesEl.appendChild(card);
+    if (removable) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'chat-panel__context-remove';
+      removeBtn.title = 'Remove context';
+      removeBtn.innerHTML = '\u00d7';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._removeAnalysisContextCard(card);
+      });
+      card.appendChild(removeBtn);
+    }
+
+    if (prepend) {
+      const firstChild = this.messagesEl.firstChild;
+      if (firstChild) {
+        this.messagesEl.insertBefore(card, firstChild);
+      } else {
+        this.messagesEl.appendChild(card);
+      }
+    } else {
+      this.messagesEl.appendChild(card);
+    }
     this.scrollToBottom();
   }
 

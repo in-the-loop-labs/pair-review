@@ -650,6 +650,14 @@ describe('ChatPanel', () => {
       expect(chatPanel._contextItemId).toBeNull();
     });
 
+    it('should reset _sessionAnalysisRunId', () => {
+      chatPanel._sessionAnalysisRunId = 'run-123';
+
+      chatPanel.close();
+
+      expect(chatPanel._sessionAnalysisRunId).toBeNull();
+    });
+
     it('should NOT close the global SSE connection', () => {
       const mockES = new global.EventSource('/api/chat/stream');
       chatPanel.eventSource = mockES;
@@ -738,6 +746,14 @@ describe('ChatPanel', () => {
 
       expect(chatPanel._contextSource).toBeNull();
       expect(chatPanel._contextItemId).toBeNull();
+    });
+
+    it('should reset _sessionAnalysisRunId', async () => {
+      chatPanel._sessionAnalysisRunId = 'run-456';
+
+      await chatPanel._startNewConversation();
+
+      expect(chatPanel._sessionAnalysisRunId).toBeNull();
     });
 
     it('should call _updateActionButtons after reset', async () => {
@@ -1412,6 +1428,72 @@ describe('ChatPanel', () => {
   });
 
   // -----------------------------------------------------------------------
+  // _sendContextMessage (full integration: stores context + creates card)
+  // -----------------------------------------------------------------------
+  describe('_sendContextMessage', () => {
+    it('should store context text and structured data', () => {
+      const ctx = { title: 'Null check', type: 'bug', file: 'src/app.js', line_start: 42, body: 'Check for null' };
+
+      chatPanel._sendContextMessage(ctx);
+
+      expect(chatPanel._pendingContext).toHaveLength(1);
+      expect(chatPanel._pendingContext[0]).toContain('Null check');
+      expect(chatPanel._pendingContext[0]).toContain('bug');
+      expect(chatPanel._pendingContext[0]).toContain('src/app.js');
+      expect(chatPanel._pendingContext[0]).toContain('line 42');
+      expect(chatPanel._pendingContext[0]).toContain('Check for null');
+
+      expect(chatPanel._pendingContextData).toHaveLength(1);
+      expect(chatPanel._pendingContextData[0].type).toBe('bug');
+      expect(chatPanel._pendingContextData[0].title).toBe('Null check');
+      expect(chatPanel._pendingContextData[0].file).toBe('src/app.js');
+      expect(chatPanel._pendingContextData[0].line_start).toBe(42);
+      expect(chatPanel._pendingContextData[0].body).toBe('Check for null');
+    });
+
+    it('should create a context card and append to messages', () => {
+      const ctx = { title: 'Test', type: 'suggestion', file: 'a.js' };
+
+      chatPanel._sendContextMessage(ctx);
+
+      expect(chatPanel.messagesEl.appendChild).toHaveBeenCalled();
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.className).toBe('chat-panel__context-card');
+    });
+
+    it('should handle context with no file gracefully', () => {
+      const ctx = { title: 'General', type: 'improvement', file: null, line_start: null, body: 'Improve this' };
+
+      chatPanel._sendContextMessage(ctx);
+
+      expect(chatPanel._pendingContext).toHaveLength(1);
+      expect(chatPanel._pendingContext[0]).not.toContain('File:');
+      expect(chatPanel._pendingContextData[0].file).toBeNull();
+    });
+
+    it('should handle context with empty title and type', () => {
+      const ctx = { title: '', type: '', file: '', body: '' };
+
+      chatPanel._sendContextMessage(ctx);
+
+      expect(chatPanel._pendingContextData[0].type).toBe('general');
+      expect(chatPanel._pendingContextData[0].title).toBe('Untitled');
+    });
+
+    it('should remove empty state before adding card', () => {
+      const emptyEl = createMockElement('div');
+      chatPanel.messagesEl.querySelector = vi.fn((sel) => {
+        if (sel === '.chat-panel__empty') return emptyEl;
+        return null;
+      });
+
+      chatPanel._sendContextMessage({ title: 'T', type: 'bug' });
+
+      expect(emptyEl.remove).toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // _removeContextCard
   // -----------------------------------------------------------------------
   describe('_removeContextCard', () => {
@@ -1472,6 +1554,207 @@ describe('ChatPanel', () => {
       chatPanel._removeContextCard(cardEl);
 
       expect(clearSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _ensureAnalysisContext
+  // -----------------------------------------------------------------------
+  describe('_ensureAnalysisContext', () => {
+    it('should skip when _sessionAnalysisRunId is already set', () => {
+      chatPanel._sessionAnalysisRunId = 'run-abc';
+      chatPanel.messages = [{ role: 'user', content: 'hello' }];
+
+      // Mock querySelectorAll to return some suggestions in the DOM
+      global.document.querySelectorAll = vi.fn(() => [createMockElement('div')]);
+
+      const addCardSpy = vi.spyOn(chatPanel, '_addAnalysisContextCard');
+
+      chatPanel._ensureAnalysisContext();
+
+      expect(addCardSpy).not.toHaveBeenCalled();
+    });
+
+    it('should proceed when messages exist but _sessionAnalysisRunId is null', () => {
+      chatPanel._sessionAnalysisRunId = null;
+      chatPanel.messages = [{ role: 'user', content: 'hello' }];
+
+      // Mock: no analysis card in DOM, suggestions exist
+      chatPanel.messagesEl.querySelector = vi.fn((sel) => {
+        if (sel === '.chat-panel__context-card[data-analysis]') return null;
+        if (sel === '.chat-panel__empty') return null;
+        return null;
+      });
+      global.document.querySelectorAll = vi.fn(() => [createMockElement('div'), createMockElement('div')]);
+
+      const addCardSpy = vi.spyOn(chatPanel, '_addAnalysisContextCard');
+
+      chatPanel._ensureAnalysisContext();
+
+      expect(addCardSpy).toHaveBeenCalledWith({ suggestionCount: 2 }, { removable: true, prepend: true });
+    });
+
+    it('should set _sessionAnalysisRunId to "dom" after creating the card', () => {
+      chatPanel._sessionAnalysisRunId = null;
+      chatPanel.messages = [];
+
+      chatPanel.messagesEl.querySelector = vi.fn((sel) => {
+        if (sel === '.chat-panel__context-card[data-analysis]') return null;
+        if (sel === '.chat-panel__empty') return null;
+        return null;
+      });
+      global.document.querySelectorAll = vi.fn(() => [createMockElement('div')]);
+
+      chatPanel._ensureAnalysisContext();
+
+      expect(chatPanel._sessionAnalysisRunId).toBe('dom');
+    });
+
+    it('should skip when analysis card already exists in the DOM', () => {
+      chatPanel._sessionAnalysisRunId = null;
+      const analysisCard = createMockElement('div', { dataset: { analysis: 'true' } });
+      chatPanel.messagesEl.querySelector = vi.fn((sel) => {
+        if (sel === '.chat-panel__context-card[data-analysis]') return analysisCard;
+        return null;
+      });
+      global.document.querySelectorAll = vi.fn(() => [createMockElement('div')]);
+
+      const addCardSpy = vi.spyOn(chatPanel, '_addAnalysisContextCard');
+      chatPanel._ensureAnalysisContext();
+
+      expect(addCardSpy).not.toHaveBeenCalled();
+    });
+
+    it('should skip when _analysisContextRemoved is true', () => {
+      chatPanel._sessionAnalysisRunId = null;
+      chatPanel._analysisContextRemoved = true;
+
+      chatPanel.messagesEl.querySelector = vi.fn(() => null);
+      global.document.querySelectorAll = vi.fn(() => [createMockElement('div')]);
+
+      const addCardSpy = vi.spyOn(chatPanel, '_addAnalysisContextCard');
+      chatPanel._ensureAnalysisContext();
+
+      expect(addCardSpy).not.toHaveBeenCalled();
+    });
+
+    it('should skip when no suggestions exist in the DOM', () => {
+      chatPanel._sessionAnalysisRunId = null;
+
+      chatPanel.messagesEl.querySelector = vi.fn(() => null);
+      global.document.querySelectorAll = vi.fn(() => []);
+
+      const addCardSpy = vi.spyOn(chatPanel, '_addAnalysisContextCard');
+      chatPanel._ensureAnalysisContext();
+
+      expect(addCardSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _showAnalysisContextIfPresent
+  // -----------------------------------------------------------------------
+  describe('_showAnalysisContextIfPresent', () => {
+    it('should set _sessionAnalysisRunId from context.aiRunId', () => {
+      chatPanel.messagesEl.querySelector = vi.fn(() => null);
+
+      chatPanel._showAnalysisContextIfPresent({
+        context: { suggestionCount: 3, aiRunId: 'run-xyz' }
+      });
+
+      expect(chatPanel._sessionAnalysisRunId).toBe('run-xyz');
+    });
+
+    it('should set _sessionAnalysisRunId to "session" when aiRunId is missing', () => {
+      chatPanel.messagesEl.querySelector = vi.fn(() => null);
+
+      chatPanel._showAnalysisContextIfPresent({
+        context: { suggestionCount: 2 }
+      });
+
+      expect(chatPanel._sessionAnalysisRunId).toBe('session');
+    });
+
+    it('should not set _sessionAnalysisRunId when suggestionCount is 0', () => {
+      chatPanel._sessionAnalysisRunId = null;
+
+      chatPanel._showAnalysisContextIfPresent({
+        context: { suggestionCount: 0 }
+      });
+
+      expect(chatPanel._sessionAnalysisRunId).toBeNull();
+    });
+
+    it('should not set _sessionAnalysisRunId when context is missing', () => {
+      chatPanel._sessionAnalysisRunId = null;
+
+      chatPanel._showAnalysisContextIfPresent({});
+
+      expect(chatPanel._sessionAnalysisRunId).toBeNull();
+    });
+
+    it('should skip when analysis card already exists in the DOM', () => {
+      const existingCard = createMockElement('div');
+      chatPanel.messagesEl.querySelector = vi.fn((sel) => {
+        if (sel === '.chat-panel__context-card[data-analysis]') return existingCard;
+        return null;
+      });
+
+      const addCardSpy = vi.spyOn(chatPanel, '_addAnalysisContextCard');
+      chatPanel._showAnalysisContextIfPresent({
+        context: { suggestionCount: 5, aiRunId: 'run-abc' }
+      });
+
+      expect(addCardSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _addAnalysisContextCard — data-analysis-run-id stamp
+  // -----------------------------------------------------------------------
+  describe('_addAnalysisContextCard', () => {
+    it('should stamp data-analysis-run-id when aiRunId is provided', () => {
+      chatPanel._addAnalysisContextCard({ suggestionCount: 3, aiRunId: 'run-42' });
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.dataset.analysis).toBe('true');
+      expect(card.dataset.analysisRunId).toBe('run-42');
+    });
+
+    it('should not stamp data-analysis-run-id when aiRunId is missing', () => {
+      chatPanel._addAnalysisContextCard({ suggestionCount: 2 });
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.dataset.analysis).toBe('true');
+      expect(card.dataset.analysisRunId).toBeUndefined();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _loadMRUSession — provider name (dead code removal)
+  // -----------------------------------------------------------------------
+  describe('_loadMRUSession — provider name', () => {
+    it('should capitalize provider name without dead fallback', async () => {
+      chatPanel.reviewId = 1;
+      const updateTitleSpy = vi.spyOn(chatPanel, '_updateTitle');
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            sessions: [{
+              id: 'sess-1',
+              provider: 'claude',
+              model: 'sonnet',
+              message_count: 0,
+            }]
+          }
+        }),
+      });
+
+      await chatPanel._loadMRUSession();
+
+      expect(updateTitleSpy).toHaveBeenCalledWith('Claude', 'sonnet');
     });
   });
 });
