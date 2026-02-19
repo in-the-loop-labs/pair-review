@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.6.2
+
+### Patch Changes
+
+- 37c2bb3: Add Sonnet 4.6 model to Claude provider and fix model definitions
+
+  - Add `sonnet-4.6` entry with pinned `cli_model: 'claude-sonnet-4-6'`
+  - Rename `sonnet` entry to `sonnet-4.5` with pinned `cli_model: 'claude-sonnet-4.5'`
+  - Move `opus-4.5` to end of model list so Opus 4.6 variants appear together
+  - Fix `opus-4.5` tier from `balanced` to `thorough`
+  - Fix `sonnet-4.5` badgeClass to `badge-balanced` to match its positioning
+
+- 4287107: Add missing `showInfo()` method to Toast component
+
+  The Toast class only defined `showSuccess`, `showError`, and `showWarning`, but `showInfo` was called in three places, causing runtime errors. Added the method with a GitHub-style info icon and blue styling for both light and dark themes.
+
+- ee88013: Fix consolidation/orchestration streaming text not appearing in the progress modal during analysis
+- 135008a: Fix progress modal not appearing on page refresh during single-model analysis
+
 ## 1.6.1
 
 ### Patch Changes
