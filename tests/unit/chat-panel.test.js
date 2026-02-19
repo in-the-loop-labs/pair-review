@@ -603,6 +603,109 @@ describe('ChatPanel', () => {
   });
 
   // -----------------------------------------------------------------------
+  // _addFileContextCard
+  // -----------------------------------------------------------------------
+  describe('_addFileContextCard', () => {
+    it('should render card with file icon and FILE label', () => {
+      const ctx = { file: 'src/app.js', type: 'file' };
+      chatPanel._addFileContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.innerHTML).toContain('<svg');
+      expect(card.innerHTML).toContain('FILE');
+      expect(card.innerHTML).toContain('src/app.js');
+    });
+
+    it('should use ctx.file for display', () => {
+      const ctx = { file: 'src/app.js', type: 'file' };
+      chatPanel._addFileContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.innerHTML).toContain('src/app.js');
+    });
+
+    it('should fall back to ctx.title when ctx.file is missing', () => {
+      const ctx = { title: 'some-title', type: 'file' };
+      chatPanel._addFileContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.innerHTML).toContain('some-title');
+    });
+
+    it('should fall back to empty string when both file and title missing', () => {
+      const ctx = { type: 'file' };
+      chatPanel._addFileContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      // Should render without error; the title span will be empty
+      expect(card.className).toBe('chat-panel__context-card');
+      expect(card.innerHTML).toContain('FILE');
+    });
+
+    it('should not be removable by default', () => {
+      const ctx = { file: 'src/app.js', type: 'file' };
+      chatPanel._addFileContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      // No remove button should have been appended to the card
+      expect(card.appendChild).not.toHaveBeenCalled();
+    });
+
+    it('should be removable when option set', () => {
+      chatPanel._pendingContextData = [{ type: 'file' }]; // pre-push data so _makeCardRemovable has an index
+      const ctx = { file: 'src/app.js', type: 'file' };
+      chatPanel._addFileContextCard(ctx, { removable: true });
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      // _makeCardRemovable appends a remove button to the card
+      expect(card.appendChild).toHaveBeenCalled();
+      const removeBtn = card.appendChild.mock.calls[0][0];
+      expect(removeBtn.className).toBe('chat-panel__context-remove');
+      expect(removeBtn.title).toBe('Remove context');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _makeCardRemovable
+  // -----------------------------------------------------------------------
+  describe('_makeCardRemovable', () => {
+    it('should set data-context-index from pending array length', () => {
+      chatPanel._pendingContextData = [{ id: 0 }, { id: 1 }];
+      const card = createMockElement('div');
+      chatPanel._makeCardRemovable(card);
+
+      // Index should be length - 1 = 1
+      expect(card.dataset.contextIndex).toBe(1);
+    });
+
+    it('should create remove button with correct class and title', () => {
+      chatPanel._pendingContextData = [{ id: 0 }];
+      const card = createMockElement('div');
+      chatPanel._makeCardRemovable(card);
+
+      const removeBtn = card.appendChild.mock.calls[0][0];
+      expect(removeBtn.className).toBe('chat-panel__context-remove');
+      expect(removeBtn.title).toBe('Remove context');
+    });
+
+    it('should call _removeContextCard on click', () => {
+      chatPanel._pendingContextData = [{ id: 0 }];
+      const card = createMockElement('div');
+      const removeCardSpy = vi.spyOn(chatPanel, '_removeContextCard').mockImplementation(() => {});
+      chatPanel._makeCardRemovable(card);
+
+      const removeBtn = card.appendChild.mock.calls[0][0];
+      // The real DOM would use addEventListener; our mock captures it
+      // Simulate the click by finding the listener and calling it
+      const clickCall = removeBtn.addEventListener.mock.calls.find(([evt]) => evt === 'click');
+      expect(clickCall).toBeDefined();
+      clickCall[1]({ stopPropagation: vi.fn() }); // invoke the handler
+
+      expect(removeCardSpy).toHaveBeenCalledWith(card);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // close()
   // -----------------------------------------------------------------------
   describe('close()', () => {
@@ -728,9 +831,19 @@ describe('ChatPanel', () => {
       expect(chatPanel._streamingContent).toBe('');
     });
 
-    it('should clear pending context', async () => {
+    it('should preserve pending context across new conversation', async () => {
       chatPanel._pendingContext = ['ctx'];
-      chatPanel._pendingContextData = [{ type: 'suggestion' }];
+      chatPanel._pendingContextData = [{ type: 'suggestion', title: 'Test', file: 'a.js' }];
+
+      await chatPanel._startNewConversation();
+
+      expect(chatPanel._pendingContext).toEqual(['ctx']);
+      expect(chatPanel._pendingContextData).toEqual([{ type: 'suggestion', title: 'Test', file: 'a.js' }]);
+    });
+
+    it('should clear pending context arrays when they are empty', async () => {
+      chatPanel._pendingContext = [];
+      chatPanel._pendingContextData = [];
 
       await chatPanel._startNewConversation();
 
@@ -738,9 +851,23 @@ describe('ChatPanel', () => {
       expect(chatPanel._pendingContextData).toEqual([]);
     });
 
-    it('should reset context source and item ID', async () => {
+    it('should preserve context source and item ID when pending context exists', async () => {
       chatPanel._contextSource = 'user';
       chatPanel._contextItemId = 77;
+      chatPanel._pendingContext = ['ctx'];
+      chatPanel._pendingContextData = [{ type: 'comment', source: 'user', body: 'Test' }];
+
+      await chatPanel._startNewConversation();
+
+      expect(chatPanel._contextSource).toBe('user');
+      expect(chatPanel._contextItemId).toBe(77);
+    });
+
+    it('should reset context source and item ID when no pending context', async () => {
+      chatPanel._contextSource = 'user';
+      chatPanel._contextItemId = 77;
+      chatPanel._pendingContext = [];
+      chatPanel._pendingContextData = [];
 
       await chatPanel._startNewConversation();
 
@@ -770,6 +897,125 @@ describe('ChatPanel', () => {
       await chatPanel._startNewConversation();
 
       expect(clearSpy).toHaveBeenCalled();
+    });
+
+    it('should call _ensureAnalysisContext to re-add analysis card', async () => {
+      const ensureSpy = vi.spyOn(chatPanel, '_ensureAnalysisContext');
+
+      await chatPanel._startNewConversation();
+
+      expect(ensureSpy).toHaveBeenCalled();
+    });
+
+    it('should re-add suggestion context cards as removable', async () => {
+      chatPanel._pendingContext = ['The user wants to discuss this specific suggestion:\n- Type: bug\n- Title: Fix null'];
+      chatPanel._pendingContextData = [{ type: 'bug', title: 'Fix null', file: 'app.js', line_start: 10, line_end: 10, body: 'Check for null' }];
+      chatPanel._contextSource = 'suggestion';
+      chatPanel._contextItemId = 42;
+
+      const addCardSpy = vi.spyOn(chatPanel, '_addContextCard');
+
+      await chatPanel._startNewConversation();
+
+      expect(addCardSpy).toHaveBeenCalledWith(
+        { type: 'bug', title: 'Fix null', file: 'app.js', line_start: 10, line_end: 10, body: 'Check for null' },
+        { removable: true }
+      );
+      expect(chatPanel._pendingContext).toHaveLength(1);
+      expect(chatPanel._pendingContextData).toHaveLength(1);
+      expect(chatPanel._contextSource).toBe('suggestion');
+      expect(chatPanel._contextItemId).toBe(42);
+    });
+
+    it('should re-add comment context cards as removable', async () => {
+      chatPanel._pendingContext = ['The user wants to discuss their own review comment:\n- File: b.js (line 5)'];
+      chatPanel._pendingContextData = [{ type: 'comment', source: 'user', title: 'Comment on line 5', file: 'b.js', line_start: 5, line_end: 5, body: 'Needs refactor' }];
+      chatPanel._contextSource = 'user';
+      chatPanel._contextItemId = 99;
+
+      const addCommentCardSpy = vi.spyOn(chatPanel, '_addCommentContextCard');
+
+      await chatPanel._startNewConversation();
+
+      expect(addCommentCardSpy).toHaveBeenCalledWith(
+        { type: 'comment', source: 'user', title: 'Comment on line 5', file: 'b.js', line_start: 5, line_end: 5, body: 'Needs refactor' },
+        { removable: true }
+      );
+      expect(chatPanel._contextSource).toBe('user');
+      expect(chatPanel._contextItemId).toBe(99);
+    });
+
+    it('should re-add file context cards as removable', async () => {
+      chatPanel._pendingContext = ['The user wants to discuss src/utils.js'];
+      chatPanel._pendingContextData = [{ type: 'file', title: 'src/utils.js', file: 'src/utils.js', line_start: null, line_end: null, body: null }];
+
+      const addFileCardSpy = vi.spyOn(chatPanel, '_addFileContextCard');
+
+      await chatPanel._startNewConversation();
+
+      expect(addFileCardSpy).toHaveBeenCalledWith(
+        { type: 'file', title: 'src/utils.js', file: 'src/utils.js', line_start: null, line_end: null, body: null },
+        { removable: true }
+      );
+    });
+
+    it('should re-add multiple context cards in order', async () => {
+      chatPanel._pendingContext = ['ctx1', 'ctx2'];
+      chatPanel._pendingContextData = [
+        { type: 'bug', title: 'Bug 1', file: 'a.js' },
+        { type: 'file', title: 'b.js', file: 'b.js', line_start: null, line_end: null, body: null }
+      ];
+
+      const addCardSpy = vi.spyOn(chatPanel, '_addContextCard');
+      const addFileCardSpy = vi.spyOn(chatPanel, '_addFileContextCard');
+
+      await chatPanel._startNewConversation();
+
+      expect(addCardSpy).toHaveBeenCalledTimes(1);
+      expect(addFileCardSpy).toHaveBeenCalledTimes(1);
+      expect(chatPanel._pendingContext).toHaveLength(2);
+      expect(chatPanel._pendingContextData).toHaveLength(2);
+    });
+
+    it('should not re-add cards when pending arrays were empty', async () => {
+      chatPanel._pendingContext = [];
+      chatPanel._pendingContextData = [];
+
+      const addCardSpy = vi.spyOn(chatPanel, '_addContextCard');
+      const addCommentCardSpy = vi.spyOn(chatPanel, '_addCommentContextCard');
+      const addFileCardSpy = vi.spyOn(chatPanel, '_addFileContextCard');
+
+      await chatPanel._startNewConversation();
+
+      expect(addCardSpy).not.toHaveBeenCalled();
+      expect(addCommentCardSpy).not.toHaveBeenCalled();
+      expect(addFileCardSpy).not.toHaveBeenCalled();
+    });
+
+    it('should remove empty state when re-adding saved context cards', async () => {
+      chatPanel._pendingContext = ['ctx'];
+      chatPanel._pendingContextData = [{ type: 'bug', title: 'Test' }];
+
+      const emptyEl = createMockElement('div');
+      chatPanel.messagesEl.querySelector = vi.fn((sel) => {
+        if (sel === '.chat-panel__empty') return emptyEl;
+        if (sel === '.chat-panel__context-card[data-analysis]') return null;
+        return null;
+      });
+
+      await chatPanel._startNewConversation();
+
+      expect(emptyEl.remove).toHaveBeenCalled();
+    });
+
+    it('should reset _analysisContextRemoved so analysis card reappears', async () => {
+      chatPanel._analysisContextRemoved = true;
+      chatPanel._pendingContext = [];
+      chatPanel._pendingContextData = [];
+
+      await chatPanel._startNewConversation();
+
+      expect(chatPanel._analysisContextRemoved).toBe(false);
     });
   });
 

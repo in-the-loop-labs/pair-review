@@ -345,8 +345,16 @@ class ChatPanel {
 
   /**
    * Start a new conversation (reset session)
+   * Preserves any unsent pending context cards and re-adds them to the new conversation.
    */
   async _startNewConversation() {
+    // 1. Snapshot pending context before clearing (these are unsent context cards)
+    const savedContext = this._pendingContext.slice();
+    const savedContextData = this._pendingContextData.slice();
+    const savedContextSource = this._contextSource;
+    const savedContextItemId = this._contextItemId;
+
+    // 2. Clear everything as normal
     this._finalizeStreaming();
     this.currentSessionId = null;
     this.messages = [];
@@ -361,6 +369,37 @@ class ChatPanel {
     this._updateActionButtons();
     this._updateTitle(); // Reset title for new conversation
     // SSE stays connected — it's multiplexed and will filter by sessionId
+
+    // 3. Re-add analysis context (appears first, handled separately from pending arrays)
+    this._ensureAnalysisContext();
+
+    // 4. Re-add saved pending context cards (if any were unsent)
+    if (savedContext.length > 0) {
+      // Remove empty state since we're about to add context cards
+      const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+      if (emptyState) emptyState.remove();
+
+      // Restore context metadata
+      this._contextSource = savedContextSource;
+      this._contextItemId = savedContextItemId;
+
+      for (let i = 0; i < savedContextData.length; i++) {
+        const ctxData = savedContextData[i];
+        this._pendingContext.push(savedContext[i]);
+        this._pendingContextData.push(ctxData);
+
+        // Render the appropriate card type based on the context data
+        if (ctxData.type === 'file') {
+          this._addFileContextCard(ctxData, { removable: true });
+        } else if (ctxData.type === 'comment') {
+          this._addCommentContextCard(ctxData, { removable: true });
+        } else {
+          this._addContextCard(ctxData, { removable: true });
+        }
+      }
+
+      this._updateActionButtons();
+    }
   }
 
   /**
@@ -422,7 +461,9 @@ class ChatPanel {
           // Render context card from stored context data
           try {
             const ctxData = JSON.parse(msg.content);
-            if (ctxData.source === 'user') {
+            if (ctxData.type === 'file') {
+              this._addFileContextCard(ctxData);
+            } else if (ctxData.type === 'comment') {
               this._addCommentContextCard(ctxData);
             } else {
               this._addContextCard(ctxData);
@@ -717,20 +758,17 @@ class ChatPanel {
     this._pendingContext.push(contextText);
 
     // Render the compact context card in the UI
-    const card = document.createElement('div');
-    card.className = 'chat-panel__context-card';
+    this._addFileContextCard(contextData, { removable: true });
+  }
 
+  /**
+   * Make a context card removable by adding a data-context-index and a remove button.
+   * Shared helper used by _addContextCard, _addCommentContextCard, and _addFileContextCard.
+   * @param {HTMLElement} card - The context card element
+   */
+  _makeCardRemovable(card) {
     const idx = this._pendingContextData.length - 1;
     card.dataset.contextIndex = idx;
-
-    card.innerHTML = `
-      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-        <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
-      </svg>
-      <span class="chat-panel__context-label"><strong>FILE</strong></span>
-      <span class="chat-panel__context-title">${this._escapeHtml(fileContext.file)}</span>
-    `;
-
     const removeBtn = document.createElement('button');
     removeBtn.className = 'chat-panel__context-remove';
     removeBtn.title = 'Remove context';
@@ -740,6 +778,29 @@ class ChatPanel {
       this._removeContextCard(card);
     });
     card.appendChild(removeBtn);
+  }
+
+  /**
+   * Add a compact file context card to the messages area.
+   * @param {Object} ctx - File context data { file, title }
+   * @param {Object} [options] - Options
+   * @param {boolean} [options.removable=false] - Whether the card should have a remove button
+   */
+  _addFileContextCard(ctx, { removable = false } = {}) {
+    const card = document.createElement('div');
+    card.className = 'chat-panel__context-card';
+
+    const filePath = ctx.file || ctx.title || '';
+
+    card.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+        <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
+      </svg>
+      <span class="chat-panel__context-label"><strong>FILE</strong></span>
+      <span class="chat-panel__context-title">${this._escapeHtml(filePath)}</span>
+    `;
+
+    if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
     this.scrollToBottom();
@@ -752,20 +813,33 @@ class ChatPanel {
    */
   _ensureAnalysisContext() {
     // Skip if analysis context card already exists in the DOM
-    if (this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]')) return;
+    if (this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]')) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — card already in DOM');
+      return;
+    }
 
     // Skip if the current session already has analysis context loaded (by run ID)
-    if (this._sessionAnalysisRunId) return;
+    if (this._sessionAnalysisRunId) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — runId already set:', this._sessionAnalysisRunId);
+      return;
+    }
 
     // Skip if analysis context was explicitly removed in this conversation
-    if (this._analysisContextRemoved) return;
+    if (this._analysisContextRemoved) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — explicitly removed');
+      return;
+    }
 
     // Count suggestions from the DOM (from the latest analysis run)
     const suggestionEls = typeof document !== 'undefined' && document.querySelectorAll
       ? document.querySelectorAll('.ai-suggestion[data-suggestion-id]')
       : [];
     const count = suggestionEls.length;
-    if (count === 0) return;
+    if (count === 0) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — no suggestions in DOM');
+      return;
+    }
+    console.debug('[ChatPanel] _ensureAnalysisContext: adding card with', count, 'suggestions');
 
     // Remove empty state
     const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
@@ -819,19 +893,7 @@ class ChatPanel {
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
 
-    if (removable) {
-      const idx = this._pendingContextData.length - 1;
-      card.dataset.contextIndex = idx;
-      const removeBtn = document.createElement('button');
-      removeBtn.className = 'chat-panel__context-remove';
-      removeBtn.title = 'Remove context';
-      removeBtn.innerHTML = '\u00d7';
-      removeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this._removeContextCard(card);
-      });
-      card.appendChild(removeBtn);
-    }
+    if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
     this.scrollToBottom();
@@ -859,19 +921,7 @@ class ChatPanel {
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
 
-    if (removable) {
-      const idx = this._pendingContextData.length - 1;
-      card.dataset.contextIndex = idx;
-      const removeBtn = document.createElement('button');
-      removeBtn.className = 'chat-panel__context-remove';
-      removeBtn.title = 'Remove context';
-      removeBtn.innerHTML = '\u00d7';
-      removeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this._removeContextCard(card);
-      });
-      card.appendChild(removeBtn);
-    }
+    if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
     this.scrollToBottom();
