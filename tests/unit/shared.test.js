@@ -511,16 +511,16 @@ describe('createProgressCallback', () => {
       expect(status.levels[4].progress).toBe('Finalizing results...');
     });
 
-    it('should clear streamEvent on orchestration update', () => {
-      baseStatus.levels[4].streamEvent = { type: 'tool_use', name: 'old_event' };
+    it('should preserve existing streamEvent on orchestration status update', () => {
+      baseStatus.levels[4].streamEvent = { type: 'assistant_text', text: 'still streaming' };
       activeAnalyses.set(analysisId, baseStatus);
 
       const callback = createProgressCallback(analysisId);
 
-      callback({ level: 'orchestration', status: 'completed' });
+      callback({ level: 'orchestration', status: 'running' });
 
       const status = activeAnalyses.get(analysisId);
-      expect(status.levels[4].streamEvent).toBeUndefined();
+      expect(status.levels[4].streamEvent).toEqual({ type: 'assistant_text', text: 'still streaming' });
     });
   });
 
@@ -866,6 +866,34 @@ describe('createProgressCallback', () => {
 
       const status = activeAnalyses.get(analysisId);
       expect(status.levels[4].voices).toBeUndefined();
+    });
+
+    it('should preserve streamEvent when a different consolidation sub-step sends a status update', () => {
+      const callback = createProgressCallback(analysisId);
+
+      // Orchestration starts running (registers in steps map)
+      callback({ level: 'orchestration', status: 'running' });
+
+      // Orchestration streams text
+      callback({
+        level: 'orchestration',
+        streamEvent: { type: 'assistant_text', text: 'Analyzing cross-level patterns...' }
+      });
+
+      // A different sub-step (L1 consolidation) completes — must not destroy the active stream
+      callback({
+        level: 'consolidation-L1',
+        status: 'completed',
+        progress: 'Done'
+      });
+
+      const status = activeAnalyses.get(analysisId);
+      expect(status.levels[4].streamEvent).toEqual({
+        type: 'assistant_text',
+        text: 'Analyzing cross-level patterns...'
+      });
+      // Overall status should remain running since orchestration step is still running
+      expect(status.levels[4].status).toBe('running');
     });
   });
 
