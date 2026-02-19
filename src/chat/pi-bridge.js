@@ -398,8 +398,16 @@ class PiBridge extends EventEmitter {
         break;
       }
       case 'text_start':
+        // When a new text block starts and we already have accumulated text
+        // from a previous block, inject paragraph separation so the markdown
+        // renderer doesn't smash the blocks together (e.g., "it.Done").
+        if (this._accumulatedText) {
+          this._accumulatedText += '\n\n';
+          this.emit('delta', { text: '\n\n' });
+        }
+        break;
       case 'text_end':
-        // Boundary markers - no action needed
+        // Boundary marker - no action needed
         break;
       case 'thinking_start':
       case 'thinking_delta':

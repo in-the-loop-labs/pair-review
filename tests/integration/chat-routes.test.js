@@ -159,8 +159,14 @@ describe('Chat Routes', () => {
     });
 
     it('should pass initialContext with port and suggestion content when AI suggestions exist', async () => {
-      // Insert AI suggestions for the review
+      // Insert analysis run record
       const runId = 'test-run-123';
+      db.prepare(`
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, summary, total_suggestions, files_analyzed, config_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(runId, 1, 'council', 'claude-sonnet-4', 'completed', 'Found 2 issues in review.', 2, 2, 'advanced');
+
+      // Insert AI suggestions for the review
       db.prepare(`
         INSERT INTO comments (id, review_id, source, ai_run_id, ai_level, ai_confidence, file, line_start, line_end, type, title, body, status, is_file_level, is_raw)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -180,12 +186,24 @@ describe('Chat Routes', () => {
       expect(callArgs.initialContext).toBeTypeOf('string');
       // Port context is prepended before suggestion context
       expect(callArgs.initialContext).toMatch(/\[Server port: \d+\]/);
+      // Analysis run metadata should be included
+      expect(callArgs.initialContext).toContain('Analysis Run Metadata');
+      expect(callArgs.initialContext).toContain('test-run-123');
+      expect(callArgs.initialContext).toContain('council');
+      expect(callArgs.initialContext).toContain('claude-sonnet-4');
+      expect(callArgs.initialContext).toContain('Found 2 issues in review.');
+      // Suggestions should still be included
       expect(callArgs.initialContext).toContain('Null check missing');
       expect(callArgs.initialContext).toContain('Use const');
 
-      // Response should include context metadata with suggestion count
+      // Response should include context metadata with suggestion count and run metadata
       expect(res.body.data.context).toBeDefined();
       expect(res.body.data.context.suggestionCount).toBe(2);
+      expect(res.body.data.context.aiRunId).toBe('test-run-123');
+      expect(res.body.data.context.provider).toBe('council');
+      expect(res.body.data.context.model).toBe('claude-sonnet-4');
+      expect(res.body.data.context.summary).toBe('Found 2 issues in review.');
+      expect(res.body.data.context.configType).toBe('advanced');
     });
 
     it('should not include context metadata when no AI suggestions exist (port is in initialContext but not in response)', async () => {
@@ -646,6 +664,60 @@ describe('Chat Routes', () => {
 
       expect(res.status).toBe(410);
       expect(res.body.error).toContain('not resumable');
+    });
+  });
+
+  describe('POST /api/chat/session/:id/context', () => {
+    it('should save context and return messageId', async () => {
+      db.prepare(
+        "INSERT INTO chat_sessions (id, review_id, provider, status) VALUES (1, 1, 'pi', 'active')"
+      ).run();
+
+      const contextData = { type: 'analysis', suggestionCount: 5, aiRunId: 'run-abc' };
+      mockManager.saveContextMessage = vi.fn().mockReturnValue({ id: 200 });
+
+      const res = await request(app)
+        .post('/api/chat/session/1/context')
+        .send({ contextData });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toHaveProperty('messageId', 200);
+      expect(mockManager.saveContextMessage).toHaveBeenCalledWith(1, contextData);
+    });
+
+    it('should return 400 when contextData is missing', async () => {
+      const res = await request(app)
+        .post('/api/chat/session/1/context')
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('contextData');
+    });
+
+    it('should return 404 when session is not found', async () => {
+      mockManager.saveContextMessage = vi.fn().mockImplementation(() => {
+        throw new Error('Session 999 not found');
+      });
+
+      const res = await request(app)
+        .post('/api/chat/session/999/context')
+        .send({ contextData: { type: 'analysis', suggestionCount: 1 } });
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toContain('not found');
+    });
+
+    it('should return 500 on unexpected error', async () => {
+      mockManager.saveContextMessage = vi.fn().mockImplementation(() => {
+        throw new Error('database locked');
+      });
+
+      const res = await request(app)
+        .post('/api/chat/session/1/context')
+        .send({ contextData: { type: 'analysis', suggestionCount: 1 } });
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain('Failed to save context');
     });
   });
 

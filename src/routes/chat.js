@@ -12,7 +12,7 @@
  */
 
 const express = require('express');
-const { queryOne, query } = require('../database');
+const { queryOne, query, AnalysisRunRepository } = require('../database');
 const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
 const logger = require('../utils/logger');
 
@@ -118,6 +118,7 @@ function unregisterSSEBroadcast(sessionId) {
  */
 router.post('/api/chat/session', async (req, res) => {
   try {
+    // contextCommentId: stored in session metadata (no longer used for prompt enrichment)
     const { provider, model, contextCommentId, systemPrompt, cwd, skipAnalysisContext } = req.body || {};
     const reviewId = parseInt(req.body?.reviewId, 10);
 
@@ -134,18 +135,13 @@ router.post('/api/chat/session', async (req, res) => {
     let finalSystemPrompt = systemPrompt;
     let initialContext = null;
     let suggestions = null;
+    let analysisRun = null;
     let review = null;
 
     if (!finalSystemPrompt) {
       review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
       if (!review) {
         return res.status(404).json({ error: 'Review not found' });
-      }
-
-      // Focused suggestion (if chat was triggered from a specific suggestion)
-      let focusedSuggestion = null;
-      if (contextCommentId) {
-        focusedSuggestion = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [contextCommentId]);
       }
 
       finalSystemPrompt = buildChatPrompt({ review });
@@ -174,9 +170,15 @@ router.post('/api/chat/session', async (req, res) => {
           ORDER BY file, line_start
         `, [reviewId, reviewId]);
 
+        // Fetch the analysis run record for metadata and summary
+        if (suggestions && suggestions.length > 0 && suggestions[0].ai_run_id) {
+          const analysisRunRepo = new AnalysisRunRepository(db);
+          analysisRun = await analysisRunRepo.getById(suggestions[0].ai_run_id);
+        }
+
         initialContext = buildInitialContext({
           suggestions,
-          focusedSuggestion
+          analysisRun
         });
       }
     }
@@ -217,6 +219,15 @@ router.post('/api/chat/session', async (req, res) => {
         suggestionCount: suggestions.length,
         aiRunId: suggestions[0].ai_run_id || null
       };
+      // Attach run metadata for richer frontend display
+      if (analysisRun) {
+        responseData.context.provider = analysisRun.provider || null;
+        responseData.context.model = analysisRun.model || null;
+        responseData.context.summary = analysisRun.summary || null;
+        responseData.context.completedAt = analysisRun.completed_at || null;
+        responseData.context.configType = analysisRun.config_type || null;
+        responseData.context.parentRunId = analysisRun.parent_run_id || null;
+      }
     }
 
     res.json({ data: responseData });
@@ -347,6 +358,31 @@ router.get('/api/chat/session/:id/messages', (req, res) => {
   } catch (error) {
     logger.error(`Error fetching chat messages: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch messages' });
+  }
+});
+
+/**
+ * Save a context message to a chat session (e.g., analysis context card).
+ * Used to persist context cards immediately without waiting for the next user message.
+ */
+router.post('/api/chat/session/:id/context', (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id, 10);
+    const { contextData } = req.body || {};
+
+    if (!contextData) {
+      return res.status(400).json({ error: 'Missing required field: contextData' });
+    }
+
+    const chatSessionManager = req.app.chatSessionManager;
+    const result = chatSessionManager.saveContextMessage(sessionId, contextData);
+    res.json({ data: { messageId: result.id } });
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    logger.error(`Error saving context message: ${error.message}`);
+    res.status(500).json({ error: 'Failed to save context message' });
   }
 });
 

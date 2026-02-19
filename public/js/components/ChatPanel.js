@@ -24,6 +24,7 @@ class ChatPanel {
     this._resizeConfig = { min: 300, max: 800, default: 400, storageKey: 'chat-panel-width' };
     this._analysisContextRemoved = false;
     this._sessionAnalysisRunId = null; // tracks which AI run ID's context is loaded in the current session
+    this._openPromise = null; // concurrency guard for open()
 
     this._render();
     this._bindEvents();
@@ -268,6 +269,30 @@ class ChatPanel {
    * @param {boolean} options.commentContext.isFileLevel - True if file-level comment
    */
   async open(options = {}) {
+    // Concurrency guard: if a previous open() is still loading MRU / messages,
+    // wait for it to finish before proceeding.  This prevents a race where a
+    // second open() call sees `currentSessionId` already set (by the first
+    // call's _loadMRUSession midway through) and skips MRU loading, causing
+    // _ensureAnalysisContext to run before message history is rendered.
+    if (this._openPromise) {
+      await this._openPromise;
+    }
+
+    // Wrap the async body in a tracked promise so subsequent callers can wait
+    this._openPromise = this._openInner(options);
+    try {
+      await this._openPromise;
+    } finally {
+      this._openPromise = null;
+    }
+  }
+
+  /**
+   * Inner implementation of open(), separated so the concurrency guard in
+   * open() can track the full async lifecycle.
+   * @param {Object} options - Same options as open()
+   */
+  async _openInner(options) {
     // Resolve reviewId from options or from prManager
     if (options.reviewId) {
       this.reviewId = options.reviewId;
@@ -297,10 +322,10 @@ class ChatPanel {
       await this._loadMRUSession();
     }
 
-    // If opening with context, ensure analysis context is added first
-    if (options.suggestionContext || options.commentContext) {
-      this._ensureAnalysisContext();
-    }
+    // Ensure analysis context is added on every expand — not just when opening
+    // with suggestion/comment context. This detects new analysis runs that
+    // completed while the panel was closed and adds them as pending context.
+    this._ensureAnalysisContext();
 
     // If opening with suggestion context, inject it as a context card
     if (options.suggestionContext) {
@@ -340,8 +365,10 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;
     this._contextItemId = null;
-    this._analysisContextRemoved = false;
-    this._sessionAnalysisRunId = null;
+    // Preserve _analysisContextRemoved and _sessionAnalysisRunId across
+    // close/reopen so _ensureAnalysisContext can detect NEW runs on the next
+    // expand. These are reset by _startNewConversation() or when a new run
+    // is detected in _ensureAnalysisContext().
   }
 
   /**
@@ -473,7 +500,9 @@ class ChatPanel {
           // Render context card from stored context data
           try {
             const ctxData = JSON.parse(msg.content);
-            if (ctxData.type === 'file') {
+            if (ctxData.type === 'analysis') {
+              this._addAnalysisContextCard(ctxData);
+            } else if (ctxData.type === 'file') {
               this._addFileContextCard(ctxData);
             } else if (ctxData.type === 'comment') {
               this._addCommentContextCard(ctxData);
@@ -820,17 +849,57 @@ class ChatPanel {
 
   /**
    * Ensure the latest AI analysis context is added as the first context item.
-   * Called when opening the chat with specific context (suggestion or comment).
-   * Only adds if not already present and suggestions exist.
+   * Called on every panel expand (not just when opening with specific context).
+   * Detects new analysis runs by comparing the latest completed run ID
+   * against the one already loaded in the session. Only adds if suggestions exist.
    */
   _ensureAnalysisContext() {
-    // Skip if analysis context card already exists in the DOM
-    if (this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]')) {
-      console.debug('[ChatPanel] _ensureAnalysisContext: skipped — card already in DOM');
-      return;
+    // Determine the latest completed run ID from the analysis history manager or prManager
+    const currentRunId = this._getLatestCompletedRunId();
+
+    // Detect whether a NEW analysis run has appeared since we last loaded context.
+    // If the run ID changed, we need to replace the old card with a new one.
+    // This handles the case where _sessionAnalysisRunId was explicitly set.
+    const isNewRunVsSession = currentRunId && this._sessionAnalysisRunId &&
+      String(currentRunId) !== String(this._sessionAnalysisRunId);
+
+    if (isNewRunVsSession) {
+      console.debug('[ChatPanel] _ensureAnalysisContext: new run detected:', currentRunId, '(was:', this._sessionAnalysisRunId + ')');
+      // Remove the old analysis card from the DOM (if present)
+      const oldCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+      if (oldCard) oldCard.remove();
+      // Reset flags — the user removed the OLD run's context, but this is a different run
+      this._analysisContextRemoved = false;
+      this._sessionAnalysisRunId = null;
+    }
+
+    // Check for an existing card in the DOM (e.g., loaded from MRU session history).
+    // If _sessionAnalysisRunId is not set, this card may be stale — compare its
+    // stamped run ID against the latest completed run to detect new analyses that
+    // completed while the panel was closed.
+    const existingCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+    if (existingCard) {
+      if (!this._sessionAnalysisRunId && currentRunId) {
+        const cardRunId = existingCard.dataset.analysisRunId || null;
+        if (cardRunId && String(cardRunId) === String(currentRunId)) {
+          // Card matches the latest run — adopt its run ID so future opens can detect changes
+          console.debug('[ChatPanel] _ensureAnalysisContext: adopting existing card runId:', cardRunId);
+          this._sessionAnalysisRunId = String(currentRunId);
+          return;
+        }
+        // Card has no run ID stamp or a different run ID — it's stale.
+        // Remove it so a fresh card for the current run is added below.
+        console.debug('[ChatPanel] _ensureAnalysisContext: replacing stale DOM card (card:', cardRunId, 'latest:', currentRunId + ')');
+        existingCard.remove();
+        this._analysisContextRemoved = false;
+      } else {
+        console.debug('[ChatPanel] _ensureAnalysisContext: skipped — card already in DOM');
+        return;
+      }
     }
 
     // Skip if the current session already has analysis context loaded (by run ID)
+    // and no new run was detected (handled above)
     if (this._sessionAnalysisRunId) {
       console.debug('[ChatPanel] _ensureAnalysisContext: skipped — runId already set:', this._sessionAnalysisRunId);
       return;
@@ -857,14 +926,89 @@ class ChatPanel {
     const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
-    // Render the analysis context card (removable, prepended at the top)
+    // Render the analysis context card (removable).
+    // Prepend only when the messages area is empty (fresh conversation) so the card
+    // appears first.  When re-opening an existing chat that already has messages,
+    // append instead so the card lands at the bottom where the user can see it
+    // (prepending + scrollToBottom would hide it above the fold).
     // Note: analysis card is NOT added to _pendingContext/_pendingContextData —
     // the backend includes full suggestion data via initialContext at session creation.
     // The card is a visual indicator that controls whether the backend includes it.
-    this._addAnalysisContextCard({ suggestionCount: count }, { removable: true, prepend: true });
+    const hasExistingMessages = this.messagesEl.querySelectorAll('.chat-panel__message').length > 0;
+    const contextData = this._buildAnalysisContextData(currentRunId, count);
+    this._addAnalysisContextCard(contextData, { removable: true, prepend: !hasExistingMessages });
 
-    // Mark that analysis context is loaded for this session (prevents re-adding on reopen)
-    this._sessionAnalysisRunId = 'dom';
+    // Persist to DB so the card is restored on session reload
+    this._persistAnalysisContext(contextData);
+
+    // Mark that analysis context is loaded for this session.
+    // Use the actual run ID if available, otherwise fall back to 'dom'.
+    this._sessionAnalysisRunId = currentRunId || 'dom';
+  }
+
+  /**
+   * Build enriched analysis context data for the card.
+   * Pulls metadata (provider, model, summary, configType) from the
+   * cached runs in analysisHistoryManager so the card's tooltip
+   * shows rich info even before a session is created.
+   * @param {string|null} runId - The run ID to look up metadata for
+   * @param {number} count - Number of suggestions in the DOM
+   * @returns {Object} Context data with type, suggestionCount, and optional metadata
+   */
+  _buildAnalysisContextData(runId, count) {
+    const contextData = { type: 'analysis', suggestionCount: count };
+
+    if (!runId) return contextData;
+
+    // Look up the run in the cached analysisHistoryManager.runs array
+    const mgr = window.prManager;
+    const historyMgr = mgr?.analysisHistoryManager;
+    if (!historyMgr?.runs?.length) return contextData;
+
+    const run = historyMgr.runs.find(r => String(r.id) === String(runId));
+    if (!run) return contextData;
+
+    // Enrich with available metadata
+    if (run.provider) contextData.provider = run.provider;
+    if (run.model) contextData.model = run.model;
+    if (run.summary) contextData.summary = run.summary;
+    if (run.config_type) contextData.configType = run.config_type;
+    if (run.completed_at) contextData.completedAt = run.completed_at;
+    contextData.aiRunId = String(run.id);
+
+    return contextData;
+  }
+
+  /**
+   * Get the ID of the latest completed (successful) analysis run.
+   * Looks at the cached runs in analysisHistoryManager (sorted by date DESC)
+   * and returns the first one with status 'completed'.
+   * Falls back to the selected run ID or prManager.selectedRunId for
+   * backward compatibility when the runs array is not available.
+   * @returns {string|null}
+   */
+  _getLatestCompletedRunId() {
+    const mgr = window.prManager;
+    if (!mgr) return null;
+
+    // Prefer the analysisHistoryManager's runs array — find latest completed run
+    const historyMgr = mgr.analysisHistoryManager;
+    if (historyMgr?.runs?.length > 0) {
+      // Runs are sorted by date DESC; find the first completed one
+      const completedRun = historyMgr.runs.find(r => r.status === 'completed');
+      if (completedRun) return String(completedRun.id);
+    }
+
+    // Fall back to selectedRunId on the history manager (for cases where
+    // runs array is empty but a selection exists)
+    if (historyMgr?.getSelectedRunId) {
+      const id = historyMgr.getSelectedRunId();
+      if (id) return String(id);
+    }
+
+    // Fall back to prManager.selectedRunId
+    if (mgr.selectedRunId) return String(mgr.selectedRunId);
+    return null;
   }
 
   /**
@@ -1013,11 +1157,23 @@ class ChatPanel {
    */
   _showAnalysisContextIfPresent(sessionData) {
     if (sessionData.context && sessionData.context.suggestionCount > 0) {
-      // Skip if analysis context card already exists (e.g. added by _ensureAnalysisContext on open)
-      if (this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]')) return;
-      const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
-      if (emptyState) emptyState.remove();
-      this._addAnalysisContextCard(sessionData.context);
+      const existingCard = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis]');
+      if (existingCard) {
+        // Upgrade a bare-bones card (no metadata) with richer data from the backend.
+        // Update IN-PLACE to preserve the card's DOM position (avoids jumping below user message).
+        const hasRicherContext = !existingCard.dataset.hasMetadata &&
+          (sessionData.context.provider || sessionData.context.model || sessionData.context.summary);
+        if (!hasRicherContext) return;
+        this._updateAnalysisCardContent(existingCard, sessionData.context);
+      } else {
+        const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
+        if (emptyState) emptyState.remove();
+        this._addAnalysisContextCard(sessionData.context);
+      }
+
+      // Persist richer analysis context to DB (includes provider, model, summary, etc.)
+      const contextData = { type: 'analysis', ...sessionData.context };
+      this._persistAnalysisContext(contextData);
 
       // Track which run's context is loaded so _ensureAnalysisContext can skip if already present
       this._sessionAnalysisRunId = sessionData.context.aiRunId || 'session';
@@ -1025,9 +1181,75 @@ class ChatPanel {
   }
 
   /**
+   * Build the inner HTML string for an analysis context card.
+   * Shared by _addAnalysisContextCard (new card) and _updateAnalysisCardContent (in-place upgrade).
+   * @param {Object} context - Context metadata { suggestionCount, provider, model, summary, configType }
+   * @returns {string} HTML string for the card's content (SVG icon + label + title span)
+   */
+  _buildAnalysisCardInnerHTML(context) {
+    const count = context.suggestionCount;
+    const title = count === 1 ? '1 suggestion loaded' : `${count} suggestions loaded`;
+
+    // Build metadata details string (model/provider info)
+    const metaParts = [];
+    if (context.provider) metaParts.push(this._escapeHtml(context.provider));
+    if (context.model) metaParts.push(this._escapeHtml(context.model));
+    const metaStr = metaParts.length > 0 ? ` (${metaParts.join(' / ')})` : '';
+
+    // Build tooltip with provider, model, config, and summary (no title, no completedAt here since it's formatted for display)
+    const tooltipParts = [];
+    if (context.provider || context.model) {
+      tooltipParts.push(`Provider: ${context.provider || 'unknown'}, Model: ${context.model || 'unknown'}`);
+    }
+    if (context.configType) tooltipParts.push(`Config: ${context.configType}`);
+    if (context.summary) tooltipParts.push(`Summary: ${context.summary}`);
+    if (context.completedAt) {
+      const completedDate = new Date(context.completedAt);
+      tooltipParts.push(`Completed: ${completedDate.toLocaleString()}`);
+    }
+    const tooltip = tooltipParts.join('\n');
+
+    return `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12">
+        <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+      </svg>
+      <span class="chat-panel__context-label">analysis run</span>
+      <span class="chat-panel__context-title" title="${window.escapeHtmlAttribute(tooltip)}">${this._escapeHtml(title)}${metaStr}</span>
+    `;
+  }
+
+  /**
+   * Update an existing analysis context card's content and dataset in-place.
+   * Preserves the card's DOM position (avoids remove+recreate which causes ordering bugs).
+   * @param {HTMLElement} card - The existing analysis context card element
+   * @param {Object} context - Richer context metadata from the backend
+   */
+  _updateAnalysisCardContent(card, context) {
+    // Preserve existing remove button (if card is removable) before replacing innerHTML
+    const removeBtn = card.querySelector('.chat-panel__context-remove');
+
+    // Rebuild card innerHTML with richer metadata
+    card.innerHTML = this._buildAnalysisCardInnerHTML(context);
+
+    // Re-append the remove button if it existed
+    if (removeBtn) {
+      card.appendChild(removeBtn);
+    }
+
+    // Update dataset attributes
+    if (context.aiRunId) {
+      card.dataset.analysisRunId = context.aiRunId;
+    }
+    if (context.provider || context.model || context.summary) {
+      card.dataset.hasMetadata = 'true';
+    }
+  }
+
+  /**
    * Add a compact analysis context card to the messages area.
    * Visually indicates that the agent has analysis suggestions loaded as context.
-   * @param {Object} context - Context metadata { suggestionCount }
+   * Displays run metadata (model, provider, summary) when available.
+   * @param {Object} context - Context metadata { suggestionCount, aiRunId, provider, model, summary, completedAt, configType, parentRunId }
    */
   _addAnalysisContextCard(context, { removable = false, prepend = false } = {}) {
     const card = document.createElement('div');
@@ -1036,17 +1258,11 @@ class ChatPanel {
     if (context.aiRunId) {
       card.dataset.analysisRunId = context.aiRunId;
     }
+    if (context.provider || context.model || context.summary) {
+      card.dataset.hasMetadata = 'true';
+    }
 
-    const count = context.suggestionCount;
-    const title = count === 1 ? '1 suggestion loaded' : `${count} suggestions loaded`;
-
-    card.innerHTML = `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12">
-        <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-      </svg>
-      <span class="chat-panel__context-label">analysis run</span>
-      <span class="chat-panel__context-title">${this._escapeHtml(title)}</span>
-    `;
+    card.innerHTML = this._buildAnalysisCardInnerHTML(context);
 
     if (removable) {
       const removeBtn = document.createElement('button');
@@ -1071,6 +1287,29 @@ class ChatPanel {
       this.messagesEl.appendChild(card);
     }
     this.scrollToBottom();
+  }
+
+  /**
+   * Persist an analysis context card to the backend as a 'context' message.
+   * Called immediately when an analysis context card is added, so it appears
+   * in the conversation history on reload.
+   * @param {Object} contextData - Analysis context metadata (type, suggestionCount, etc.)
+   */
+  async _persistAnalysisContext(contextData) {
+    if (!this.currentSessionId) return;
+
+    try {
+      const response = await fetch(`/api/chat/session/${this.currentSessionId}/context`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contextData })
+      });
+      if (!response.ok) {
+        console.warn('[ChatPanel] Failed to persist analysis context:', response.status);
+      }
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to persist analysis context:', err);
+    }
   }
 
   /**
@@ -1339,7 +1578,7 @@ class ChatPanel {
         <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
           <path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
         </svg>
-        <span>${this._escapeHtml(toolName)}</span>${argSummary ? `<span class="chat-panel__tool-args" title="${this._escapeHtml(argSummary)}">${this._escapeHtml(argSummary)}</span>` : ''}
+        <span>${this._escapeHtml(toolName)}</span>${argSummary ? `<span class="chat-panel__tool-args" title="${window.escapeHtmlAttribute(argSummary)}">${this._escapeHtml(argSummary)}</span>` : ''}
         <span class="chat-panel__tool-spinner"></span>
       `;
       // Insert before the bubble so tool calls stack above the response text
