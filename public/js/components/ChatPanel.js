@@ -215,13 +215,25 @@ class ChatPanel {
   }
 
   /**
-   * Auto-resize textarea based on content
+   * Auto-resize textarea based on content.
+   * Grows with content up to maxHeight, then switches to scrollable overflow.
+   * Shrinks back down when content is deleted.
    */
   _autoResizeTextarea() {
     const el = this.inputEl;
-    el.style.height = 'auto';
     const maxHeight = 120;
-    el.style.height = Math.min(el.scrollHeight, maxHeight) + 'px';
+
+    // Collapse to auto so scrollHeight reflects actual content height
+    el.style.height = 'auto';
+    el.style.overflowY = 'hidden';
+
+    const contentHeight = el.scrollHeight;
+    if (contentHeight > maxHeight) {
+      el.style.height = maxHeight + 'px';
+      el.style.overflowY = 'auto';
+    } else {
+      el.style.height = contentHeight + 'px';
+    }
   }
 
   /**

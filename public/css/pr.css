@@ -10898,7 +10898,6 @@ body.resizing * {
 }
 
 .chat-panel__input {
-  flex: 1;
   min-height: 36px;
   max-height: 120px;
   padding: 8px 12px 4px;
@@ -10910,6 +10909,8 @@ body.resizing * {
   line-height: 1.4;
   resize: none;
   outline: none;
+  overflow-y: hidden;
+  box-sizing: border-box;
 }
 
 .chat-panel__input::placeholder {
