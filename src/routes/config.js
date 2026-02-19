@@ -111,7 +111,8 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
         default_model: null,
         local_path: null,
         default_council_id: null,
-        default_tab: null
+        default_tab: null,
+        default_chat_instructions: null
       });
     }
 
@@ -123,6 +124,7 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
       local_path: settings.local_path,
       default_council_id: settings.default_council_id,
       default_tab: settings.default_tab,
+      default_chat_instructions: settings.default_chat_instructions,
       created_at: settings.created_at,
       updated_at: settings.updated_at
     });
@@ -142,14 +144,14 @@ router.get('/api/repos/:owner/:repo/settings', async (req, res) => {
 router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
   try {
     const { owner, repo } = req.params;
-    const { default_instructions, default_provider, default_model, local_path, default_council_id, default_tab } = req.body;
+    const { default_instructions, default_provider, default_model, local_path, default_council_id, default_tab, default_chat_instructions } = req.body;
     const repository = normalizeRepository(owner, repo);
     const db = req.app.get('db');
 
     // Validate that at least one setting is provided
-    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined && default_council_id === undefined && default_tab === undefined) {
+    if (default_instructions === undefined && default_provider === undefined && default_model === undefined && local_path === undefined && default_council_id === undefined && default_tab === undefined && default_chat_instructions === undefined) {
       return res.status(400).json({
-        error: 'At least one setting (default_instructions, default_provider, default_model, local_path, default_council_id, or default_tab) must be provided'
+        error: 'At least one setting (default_instructions, default_provider, default_model, local_path, default_council_id, default_tab, or default_chat_instructions) must be provided'
       });
     }
 
@@ -160,7 +162,8 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
       default_model,
       local_path,
       default_council_id,
-      default_tab
+      default_tab,
+      default_chat_instructions
     });
 
     logger.info(`Saved repo settings for ${repository}`);
@@ -175,6 +178,7 @@ router.post('/api/repos/:owner/:repo/settings', async (req, res) => {
         local_path: settings.local_path,
         default_council_id: settings.default_council_id,
         default_tab: settings.default_tab,
+        default_chat_instructions: settings.default_chat_instructions,
         updated_at: settings.updated_at
       }
     });

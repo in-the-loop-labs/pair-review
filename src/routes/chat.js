@@ -12,7 +12,7 @@
  */
 
 const express = require('express');
-const { queryOne, query, AnalysisRunRepository } = require('../database');
+const { queryOne, query, AnalysisRunRepository, RepoSettingsRepository } = require('../database');
 const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
 const logger = require('../utils/logger');
 
@@ -114,6 +114,19 @@ function unregisterSSEBroadcast(sessionId) {
 }
 
 /**
+ * Fetch chat instructions from repo settings for a review.
+ * @param {Database} db - Database instance
+ * @param {Object} review - Review record with repository field
+ * @returns {Promise<string|null>} Chat instructions or null
+ */
+async function getChatInstructions(db, review) {
+  if (!review || !review.repository) return null;
+  const repoSettingsRepo = new RepoSettingsRepository(db);
+  const repoSettings = await repoSettingsRepo.getRepoSettings(review.repository);
+  return repoSettings ? repoSettings.default_chat_instructions : null;
+}
+
+/**
  * Create a new chat session
  */
 router.post('/api/chat/session', async (req, res) => {
@@ -144,7 +157,9 @@ router.post('/api/chat/session', async (req, res) => {
         return res.status(404).json({ error: 'Review not found' });
       }
 
-      finalSystemPrompt = buildChatPrompt({ review });
+      const chatInstructions = await getChatInstructions(db, review);
+
+      finalSystemPrompt = buildChatPrompt({ review, chatInstructions });
 
       if (!skipAnalysisContext) {
         // Fetch all AI suggestions from the latest analysis run
@@ -268,7 +283,9 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       if (!review) {
         return res.status(404).json({ error: 'Review not found for session' });
       }
-      const systemPrompt = buildChatPrompt({ review });
+      const chatInstructions = await getChatInstructions(db, review);
+
+      const systemPrompt = buildChatPrompt({ review, chatInstructions });
       const cwd = review?.local_path || null;
 
       try {
@@ -417,7 +434,9 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     // Pi's --session replays the original conversation; --append-system-prompt
     // re-injects the review context so the agent retains awareness of the codebase
     // even if the system prompt was only in the initial session's context.
-    const systemPrompt = buildChatPrompt({ review });
+    const chatInstructions = await getChatInstructions(db, review);
+
+    const systemPrompt = buildChatPrompt({ review, chatInstructions });
     const cwd = review?.local_path || null;
 
     await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });

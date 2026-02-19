@@ -82,6 +82,44 @@ describe('buildChatPrompt', () => {
     });
   });
 
+  describe('chatInstructions', () => {
+    it('should append custom instructions section when chatInstructions is provided', () => {
+      const prompt = buildChatPrompt({
+        review: { repository: 'owner/repo', pr_number: 1 },
+        chatInstructions: 'Focus on security issues and performance.'
+      });
+
+      expect(prompt).toContain('## Custom Instructions');
+      expect(prompt).toContain('Focus on security issues and performance.');
+    });
+
+    it('should not include custom instructions section when chatInstructions is null', () => {
+      const prompt = buildChatPrompt({
+        review: { repository: 'owner/repo', pr_number: 1 },
+        chatInstructions: null
+      });
+
+      expect(prompt).not.toContain('Custom Instructions');
+    });
+
+    it('should not include custom instructions section when chatInstructions is empty string', () => {
+      const prompt = buildChatPrompt({
+        review: { repository: 'owner/repo', pr_number: 1 },
+        chatInstructions: ''
+      });
+
+      expect(prompt).not.toContain('Custom Instructions');
+    });
+
+    it('should not include custom instructions section when chatInstructions is undefined', () => {
+      const prompt = buildChatPrompt({
+        review: { repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).not.toContain('Custom Instructions');
+    });
+  });
+
   describe('general prompt structure', () => {
     it('should always include role and instructions', () => {
       const prompt = buildChatPrompt({

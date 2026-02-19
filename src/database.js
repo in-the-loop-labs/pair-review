@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 22;
+const CURRENT_SCHEMA_VERSION = 23;
 
 /**
  * Database schema SQL statements
@@ -138,6 +138,7 @@ const SCHEMA_SQL = {
       default_model TEXT,
       default_council_id TEXT,
       default_tab TEXT,
+      default_chat_instructions TEXT,
       local_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -1072,6 +1073,27 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 22 complete');
+  },
+
+  23: (db) => {
+    console.log('Migrating to schema version 23: Add default_chat_instructions to repo_settings');
+
+    const columns = db.prepare('PRAGMA table_info(repo_settings)').all();
+    if (!columns.some(c => c.name === 'default_chat_instructions')) {
+      try {
+        db.prepare('ALTER TABLE repo_settings ADD COLUMN default_chat_instructions TEXT').run();
+        console.log('  Added default_chat_instructions column to repo_settings');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column default_chat_instructions already exists (race condition)');
+      }
+    } else {
+      console.log('  Column default_chat_instructions already exists');
+    }
+
+    console.log('Migration to schema version 23 complete');
   }
 };
 
@@ -1571,7 +1593,7 @@ class RepoSettingsRepository {
    */
   async getRepoSettings(repository) {
     const row = await queryOne(this.db, `
-      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, local_path, created_at, updated_at
+      SELECT id, repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, created_at, updated_at
       FROM repo_settings
       WHERE repository = ? COLLATE NOCASE
     `, [repository]);
@@ -1628,7 +1650,7 @@ class RepoSettingsRepository {
    * @returns {Promise<Object>} Saved settings object
    */
   async saveRepoSettings(repository, settings) {
-    const { default_instructions, default_provider, default_model, default_council_id, default_tab, local_path } = settings;
+    const { default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path } = settings;
     const now = new Date().toISOString();
 
     // Check if settings already exist
@@ -1643,6 +1665,7 @@ class RepoSettingsRepository {
             default_model = ?,
             default_council_id = ?,
             default_tab = ?,
+            default_chat_instructions = ?,
             local_path = ?,
             updated_at = ?
         WHERE repository = ? COLLATE NOCASE
@@ -1652,6 +1675,7 @@ class RepoSettingsRepository {
         default_model !== undefined ? default_model : existing.default_model,
         default_council_id !== undefined ? default_council_id : existing.default_council_id,
         default_tab !== undefined ? default_tab : existing.default_tab,
+        default_chat_instructions !== undefined ? default_chat_instructions : existing.default_chat_instructions,
         local_path !== undefined ? local_path : existing.local_path,
         now,
         repository
@@ -1664,15 +1688,16 @@ class RepoSettingsRepository {
         default_model: default_model !== undefined ? default_model : existing.default_model,
         default_council_id: default_council_id !== undefined ? default_council_id : existing.default_council_id,
         default_tab: default_tab !== undefined ? default_tab : existing.default_tab,
+        default_chat_instructions: default_chat_instructions !== undefined ? default_chat_instructions : existing.default_chat_instructions,
         local_path: local_path !== undefined ? local_path : existing.local_path,
         updated_at: now
       };
     } else {
       // Insert new settings
       const result = await run(this.db, `
-        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, default_tab, local_path, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, default_tab || null, local_path || null, now, now]);
+        INSERT INTO repo_settings (repository, default_instructions, default_provider, default_model, default_council_id, default_tab, default_chat_instructions, local_path, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [repository, default_instructions || null, default_provider || null, default_model || null, default_council_id || null, default_tab || null, default_chat_instructions || null, local_path || null, now, now]);
 
       return {
         id: result.lastID,
@@ -1682,6 +1707,7 @@ class RepoSettingsRepository {
         default_model: default_model || null,
         default_council_id: default_council_id || null,
         default_tab: default_tab || null,
+        default_chat_instructions: default_chat_instructions || null,
         local_path: local_path || null,
         created_at: now,
         updated_at: now

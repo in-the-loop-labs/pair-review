@@ -16,9 +16,10 @@ const logger = require('../utils/logger');
  * it is injected once per session via the initial context instead.
  * @param {Object} options
  * @param {Object} options.review - Review metadata {id, pr_number, repository, review_type, local_path, name}
+ * @param {string} [options.chatInstructions] - Custom instructions from repo settings to append to system prompt
  * @returns {string} System prompt for the chat agent
  */
-function buildChatPrompt({ review }) {
+function buildChatPrompt({ review, chatInstructions }) {
   const sections = [];
 
   // Role
@@ -46,6 +47,11 @@ function buildChatPrompt({ review }) {
     'Answer questions about this review, the code changes, and any AI suggestions. ' +
     'Be concise and helpful. Use markdown formatting in your responses.'
   );
+
+  // Custom chat instructions from repo settings
+  if (chatInstructions) {
+    sections.push('## Custom Instructions\n\nThe following instructions take precedence over previous guidance.\n\n' + chatInstructions);
+  }
 
   const prompt = sections.join('\n\n');
   logger.debug(`Chat system prompt built: ${prompt.length} chars`);

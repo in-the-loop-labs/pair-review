@@ -108,6 +108,7 @@ const SCHEMA_SQL = {
       default_model TEXT,
       default_council_id TEXT,
       default_tab TEXT,
+      default_chat_instructions TEXT,
       local_path TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
