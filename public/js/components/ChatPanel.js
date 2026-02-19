@@ -28,6 +28,7 @@ class ChatPanel {
 
     this._render();
     this._bindEvents();
+    this._initContextTooltip();
   }
 
   /**
@@ -1036,6 +1037,7 @@ class ChatPanel {
     card.className = 'chat-panel__context-card';
 
     const label = ctx.isFileLevel ? 'file comment' : 'comment';
+    const bodyPreview = ctx.body ? (ctx.body.length > 60 ? ctx.body.substring(0, 60) + '...' : ctx.body) : 'Comment';
     const fileInfo = ctx.file
       ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}`
       : '';
@@ -1045,9 +1047,12 @@ class ChatPanel {
         <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
       </svg>
       <span class="chat-panel__context-label">${this._escapeHtml(label)}</span>
-      <span class="chat-panel__context-title">${this._escapeHtml(ctx.body ? (ctx.body.length > 60 ? ctx.body.substring(0, 60) + '...' : ctx.body) : 'Comment')}</span>
+      <span class="chat-panel__context-title">${this._renderInlineMarkdown(bodyPreview)}</span>
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
+
+    // Store tooltip data for rich hover preview
+    if (ctx.body) card.dataset.tooltipBody = ctx.body;
 
     if (removable) this._makeCardRemovable(card);
 
@@ -1072,10 +1077,15 @@ class ChatPanel {
       <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
         <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/>
       </svg>
-      <span class="chat-panel__context-label">${this._escapeHtml(typeLabel)}</span>
-      <span class="chat-panel__context-title">${this._escapeHtml(ctx.title || 'Untitled')}</span>
+      <span class="chat-panel__context-label">${this._renderInlineMarkdown(typeLabel)}</span>
+      <span class="chat-panel__context-title">${this._renderInlineMarkdown(ctx.title || 'Untitled')}</span>
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
+
+    // Store tooltip data for rich hover preview
+    if (ctx.body) card.dataset.tooltipBody = ctx.body;
+    if (ctx.type) card.dataset.tooltipType = ctx.type;
+    if (ctx.title) card.dataset.tooltipTitle = ctx.title;
 
     if (removable) this._makeCardRemovable(card);
 
@@ -1477,6 +1487,10 @@ class ChatPanel {
     const streamingMsg = document.getElementById('chat-streaming-msg');
     if (!streamingMsg) return;
 
+    // Remove transient tool badge when real text arrives
+    const transient = streamingMsg.querySelector('.chat-panel__tool-badge--transient');
+    if (transient) transient.remove();
+
     const bubble = streamingMsg.querySelector('.chat-panel__bubble');
     if (bubble) {
       bubble.innerHTML = this.renderMarkdown(text) + '<span class="chat-panel__cursor"></span>';
@@ -1500,6 +1514,10 @@ class ChatPanel {
       if (cursor) cursor.remove();
       const thinking = streamingMsg.querySelector('.chat-panel__thinking');
       if (thinking) thinking.remove();
+
+      // Remove transient tool badge
+      const transientBadge = streamingMsg.querySelector('.chat-panel__tool-badge--transient');
+      if (transientBadge) transientBadge.remove();
 
       // Remove any active tool spinners (e.g. abort mid-tool-execution)
       const spinners = streamingMsg.querySelectorAll('.chat-panel__tool-spinner');
@@ -1566,31 +1584,56 @@ class ChatPanel {
     const streamingMsg = document.getElementById('chat-streaming-msg');
     if (!streamingMsg) return;
 
+    const isTask = toolName.toLowerCase() === 'task';
+
     if (status === 'start') {
       this._hideThinkingIndicator();
       const argSummary = this._summarizeToolInput(toolName, toolInput);
 
-      // Add tool badge before the bubble content
-      const badge = document.createElement('div');
-      badge.className = 'chat-panel__tool-badge';
-      badge.dataset.tool = toolName;
-      badge.innerHTML = `
+      const badgeHTML = `
         <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
           <path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
         </svg>
         <span>${this._escapeHtml(toolName)}</span>${argSummary ? `<span class="chat-panel__tool-args" title="${window.escapeHtmlAttribute(argSummary)}">${this._escapeHtml(argSummary)}</span>` : ''}
         <span class="chat-panel__tool-spinner"></span>
       `;
-      // Insert before the bubble so tool calls stack above the response text
-      const bubble = streamingMsg.querySelector('.chat-panel__bubble');
-      streamingMsg.insertBefore(badge, bubble);
+
+      if (isTask) {
+        // Task tools get persistent badges (meaningful delegated work)
+        const badge = document.createElement('div');
+        badge.className = 'chat-panel__tool-badge';
+        badge.dataset.tool = toolName;
+        badge.innerHTML = badgeHTML;
+        const bubble = streamingMsg.querySelector('.chat-panel__bubble');
+        streamingMsg.insertBefore(badge, bubble);
+      } else {
+        // Non-Task tools reuse a single transient badge
+        let badge = streamingMsg.querySelector('.chat-panel__tool-badge--transient');
+        if (!badge) {
+          badge = document.createElement('div');
+          badge.className = 'chat-panel__tool-badge chat-panel__tool-badge--transient';
+          const bubble = streamingMsg.querySelector('.chat-panel__bubble');
+          streamingMsg.insertBefore(badge, bubble);
+        }
+        badge.dataset.tool = toolName;
+        badge.innerHTML = badgeHTML;
+      }
     } else {
-      // Remove spinner from completed tool
-      const badges = streamingMsg.querySelectorAll(`.chat-panel__tool-badge[data-tool="${toolName}"]`);
-      badges.forEach(b => {
-        const spinner = b.querySelector('.chat-panel__tool-spinner');
-        if (spinner) spinner.remove();
-      });
+      if (isTask) {
+        // Remove spinner from completed Task badge
+        const badges = streamingMsg.querySelectorAll('.chat-panel__tool-badge[data-tool="Task"]:not(.chat-panel__tool-badge--transient)');
+        badges.forEach(b => {
+          const spinner = b.querySelector('.chat-panel__tool-spinner');
+          if (spinner) spinner.remove();
+        });
+      } else {
+        // Remove spinner from transient badge (badge stays until text arrives or next tool starts)
+        const transient = streamingMsg.querySelector('.chat-panel__tool-badge--transient');
+        if (transient) {
+          const spinner = transient.querySelector('.chat-panel__tool-spinner');
+          if (spinner) spinner.remove();
+        }
+      }
       this._showThinkingIndicator();
     }
   }
@@ -1719,6 +1762,18 @@ class ChatPanel {
   }
 
   /**
+   * Render markdown to inline HTML (strips outer <p> wrapper).
+   * Useful for context card labels/titles where block-level wrapping is unwanted.
+   * @param {string} text - Markdown text
+   * @returns {string} Inline HTML string
+   */
+  _renderInlineMarkdown(text) {
+    if (!text) return '';
+    const html = this.renderMarkdown(text);
+    return html.replace(/^<p>([\s\S]*?)<\/p>\s*$/, '$1');
+  }
+
+  /**
    * Escape HTML special characters
    * @param {string} text - Raw text
    * @returns {string} Escaped text
@@ -1780,12 +1835,87 @@ class ChatPanel {
   }
 
   /**
+   * Initialize the shared context tooltip with event delegation on the messages area.
+   * Uses mouseenter/mouseleave with a short delay to avoid flickering.
+   */
+  _initContextTooltip() {
+    this._ctxTooltipEl = document.createElement('div');
+    this._ctxTooltipEl.className = 'chat-panel__ctx-tooltip';
+    this._ctxTooltipEl.style.display = 'none';
+    document.body.appendChild(this._ctxTooltipEl);
+    this._ctxTooltipTimer = null;
+
+    if (!this.messagesEl) return;
+
+    this._onCtxCardEnter = (e) => {
+      const card = e.target.closest('.chat-panel__context-card[data-tooltip-body]');
+      if (!card) return;
+      clearTimeout(this._ctxTooltipTimer);
+      this._ctxTooltipTimer = setTimeout(() => this._showContextTooltip(card), 200);
+    };
+
+    this._onCtxCardLeave = (e) => {
+      const card = e.target.closest('.chat-panel__context-card[data-tooltip-body]');
+      if (!card) return;
+      clearTimeout(this._ctxTooltipTimer);
+      this._ctxTooltipEl.style.display = 'none';
+    };
+
+    this.messagesEl.addEventListener('mouseenter', this._onCtxCardEnter, true);
+    this.messagesEl.addEventListener('mouseleave', this._onCtxCardLeave, true);
+  }
+
+  /**
+   * Show the context tooltip positioned relative to a context card element.
+   * @param {HTMLElement} card - The context card to show tooltip for
+   */
+  _showContextTooltip(card) {
+    const body = card.dataset.tooltipBody;
+    if (!body) return;
+
+    const type = card.dataset.tooltipType;
+    const title = card.dataset.tooltipTitle;
+
+    let headerHTML = '';
+    if (type || title) {
+      headerHTML = `<div class="chat-panel__ctx-tooltip-header">${type ? `<span class="chat-panel__ctx-tooltip-type">${this._renderInlineMarkdown(type)}</span>` : ''}${title ? `<span class="chat-panel__ctx-tooltip-title">${this._renderInlineMarkdown(title)}</span>` : ''}</div>`;
+    }
+
+    this._ctxTooltipEl.innerHTML = `${headerHTML}<div class="chat-panel__ctx-tooltip-body">${this.renderMarkdown(body)}</div>`;
+
+    const rect = card.getBoundingClientRect();
+    const tooltipHeight = 300; // max-height
+    const spaceBelow = window.innerHeight - rect.bottom;
+
+    this._ctxTooltipEl.style.display = '';
+    this._ctxTooltipEl.style.left = `${rect.left}px`;
+
+    if (spaceBelow >= tooltipHeight || spaceBelow >= rect.top) {
+      // Show below
+      this._ctxTooltipEl.style.top = `${rect.bottom + 4}px`;
+      this._ctxTooltipEl.style.bottom = '';
+    } else {
+      // Flip above
+      this._ctxTooltipEl.style.top = '';
+      this._ctxTooltipEl.style.bottom = `${window.innerHeight - rect.top + 4}px`;
+    }
+  }
+
+  /**
    * Clean up on page unload
    */
   destroy() {
     document.removeEventListener('keydown', this._onKeydown);
     this._closeGlobalSSE();
     this.messages = [];
+
+    // Clean up context tooltip
+    clearTimeout(this._ctxTooltipTimer);
+    if (this._ctxTooltipEl && this._ctxTooltipEl.parentNode) {
+      this._ctxTooltipEl.parentNode.removeChild(this._ctxTooltipEl);
+    }
+    this._ctxTooltipEl = null;
+
     if (this.container) {
       this.container.innerHTML = '';
     }

@@ -10720,6 +10720,98 @@ body.resizing * {
   color: #ffffff;
 }
 
+.chat-panel__context-title code {
+  padding: 1px 4px;
+  background: var(--color-bg-secondary);
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace);
+}
+
+/* Context card tooltip */
+.chat-panel__ctx-tooltip {
+  position: fixed;
+  z-index: 9999;
+  width: 300px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--color-bg-primary, #0d1117);
+  border: 1px solid var(--color-border-primary, rgba(255, 255, 255, 0.1));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+}
+
+.chat-panel__ctx-tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-secondary, rgba(255, 255, 255, 0.06));
+}
+
+.chat-panel__ctx-tooltip-type {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary, #6e7681);
+}
+
+.chat-panel__ctx-tooltip-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #e6edf3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-panel__ctx-tooltip-body {
+  padding: 8px 12px;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary, #8b949e);
+}
+
+.chat-panel__ctx-tooltip-body p {
+  margin: 0 0 6px;
+}
+
+.chat-panel__ctx-tooltip-body p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-panel__ctx-tooltip-body code {
+  padding: 2px 6px;
+  background: var(--color-bg-tertiary, rgba(255, 255, 255, 0.04));
+  border-radius: 3px;
+  font-size: 0.75rem;
+}
+
+.chat-panel__ctx-tooltip-body pre {
+  margin: 6px 0;
+  padding: 6px 10px;
+  background: var(--color-bg-tertiary, rgba(255, 255, 255, 0.04));
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.chat-panel__ctx-tooltip-body pre code {
+  padding: 0;
+  background: none;
+}
+
+.chat-panel__ctx-tooltip-body ul,
+.chat-panel__ctx-tooltip-body ol {
+  margin: 4px 0 6px;
+  padding-left: 20px;
+}
+
+.chat-panel__ctx-tooltip-body li {
+  margin: 2px 0;
+}
+
 /* Chat Action Bar */
 .chat-panel__action-bar {
   display: flex;

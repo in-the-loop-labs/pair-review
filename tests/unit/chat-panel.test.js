@@ -194,6 +194,8 @@ documentListeners = {};
 global.document = {
   body: {
     classList: { add: vi.fn(), remove: vi.fn() },
+    appendChild: vi.fn(),
+    removeChild: vi.fn(),
   },
   createElement: vi.fn((tag) => createMockElement(tag)),
   getElementById: vi.fn((id) => {
@@ -3222,6 +3224,181 @@ describe('ChatPanel', () => {
       expect(addAnalysisSpy).toHaveBeenCalledWith(analysisData);
       // Verify it was NOT called with removable: true
       expect(addAnalysisSpy).not.toHaveBeenCalledWith(analysisData, expect.objectContaining({ removable: true }));
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _renderInlineMarkdown
+  // -----------------------------------------------------------------------
+  describe('_renderInlineMarkdown', () => {
+    it('should strip outer <p> wrapper from rendered markdown', () => {
+      const result = chatPanel._renderInlineMarkdown('**Bold**');
+      // window.renderMarkdown returns <p>**Bold**</p> in our mock
+      // _renderInlineMarkdown strips the <p>...</p> wrapper
+      expect(result).toBe('**Bold**');
+      expect(result).not.toContain('<p>');
+    });
+
+    it('should return empty string for null/empty input', () => {
+      expect(chatPanel._renderInlineMarkdown(null)).toBe('');
+      expect(chatPanel._renderInlineMarkdown('')).toBe('');
+      expect(chatPanel._renderInlineMarkdown(undefined)).toBe('');
+    });
+
+    it('should delegate to renderMarkdown', () => {
+      const spy = vi.spyOn(chatPanel, 'renderMarkdown');
+      chatPanel._renderInlineMarkdown('test');
+      expect(spy).toHaveBeenCalledWith('test');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Rolling transient tool badge
+  // -----------------------------------------------------------------------
+  describe('_showToolUse rolling transient badge', () => {
+    let streamingMsg;
+    let bubble;
+
+    beforeEach(() => {
+      bubble = createMockElement('div');
+      bubble.className = 'chat-panel__bubble';
+
+      streamingMsg = createMockElement('div', { id: 'chat-streaming-msg' });
+      streamingMsg.querySelector = vi.fn((sel) => {
+        if (sel === '.chat-panel__bubble') return bubble;
+        if (sel === '.chat-panel__tool-badge--transient') return null;
+        if (sel === '.chat-panel__thinking') return null;
+        if (sel === '.chat-panel__typing-indicator') return null;
+        return null;
+      });
+      streamingMsg.querySelectorAll = vi.fn(() => []);
+
+      elementRegistry['chat-streaming-msg'] = streamingMsg;
+    });
+
+    afterEach(() => {
+      delete elementRegistry['chat-streaming-msg'];
+    });
+
+    it('should create a transient badge for non-Task tools', () => {
+      chatPanel._showToolUse('Read', 'start', { file_path: 'test.js' });
+
+      expect(streamingMsg.insertBefore).toHaveBeenCalled();
+      const badge = streamingMsg.insertBefore.mock.calls[0][0];
+      expect(badge.className).toContain('chat-panel__tool-badge--transient');
+      expect(badge.dataset.tool).toBe('Read');
+    });
+
+    it('should create a persistent badge for Task tools', () => {
+      chatPanel._showToolUse('Task', 'start', { description: 'do stuff' });
+
+      expect(streamingMsg.insertBefore).toHaveBeenCalled();
+      const badge = streamingMsg.insertBefore.mock.calls[0][0];
+      expect(badge.className).toBe('chat-panel__tool-badge');
+      expect(badge.className).not.toContain('transient');
+      expect(badge.dataset.tool).toBe('Task');
+    });
+
+    it('should reuse existing transient badge on subsequent non-Task tool calls', () => {
+      // First call creates badge
+      chatPanel._showToolUse('Read', 'start', { file_path: 'a.js' });
+      const firstBadge = streamingMsg.insertBefore.mock.calls[0][0];
+
+      // Make the transient badge findable for the next call
+      streamingMsg.querySelector = vi.fn((sel) => {
+        if (sel === '.chat-panel__tool-badge--transient') return firstBadge;
+        if (sel === '.chat-panel__bubble') return bubble;
+        if (sel === '.chat-panel__thinking') return null;
+        if (sel === '.chat-panel__typing-indicator') return null;
+        return null;
+      });
+
+      // Second call should reuse, not create new
+      chatPanel._showToolUse('Grep', 'start', { pattern: 'foo' });
+
+      // insertBefore should have been called only once (for the first badge)
+      expect(streamingMsg.insertBefore).toHaveBeenCalledTimes(1);
+      // Badge content updated in place
+      expect(firstBadge.dataset.tool).toBe('Grep');
+      expect(firstBadge.innerHTML).toContain('Grep');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Context card tooltip data attributes
+  // -----------------------------------------------------------------------
+  describe('Context card tooltip data attributes', () => {
+    it('should set tooltip data attributes on suggestion context cards', () => {
+      const ctx = { title: 'Fix bug', type: 'bug', file: 'a.js', body: 'Detailed explanation' };
+      chatPanel._addContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.dataset.tooltipBody).toBe('Detailed explanation');
+      expect(card.dataset.tooltipType).toBe('bug');
+      expect(card.dataset.tooltipTitle).toBe('Fix bug');
+    });
+
+    it('should NOT set tooltip data when body is absent', () => {
+      const ctx = { title: 'No body', type: 'info', file: 'b.js' };
+      chatPanel._addContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.dataset.tooltipBody).toBeUndefined();
+    });
+
+    it('should set tooltipBody on comment context cards', () => {
+      const ctx = { commentId: '1', body: 'Comment body', file: 'a.js', line_start: 5, isFileLevel: false };
+      chatPanel._addCommentContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.dataset.tooltipBody).toBe('Comment body');
+    });
+
+    it('should NOT set tooltipBody on comment cards when body is null', () => {
+      const ctx = { commentId: '1', body: null, file: 'a.js', line_start: 5, isFileLevel: false };
+      chatPanel._addCommentContextCard(ctx);
+
+      const card = chatPanel.messagesEl.appendChild.mock.calls[0][0];
+      expect(card.dataset.tooltipBody).toBeUndefined();
+    });
+
+    it('should use _renderInlineMarkdown for context card type and title', () => {
+      const spy = vi.spyOn(chatPanel, '_renderInlineMarkdown');
+      const ctx = { title: '**Bold title**', type: '**Bug**', file: 'a.js' };
+      chatPanel._addContextCard(ctx);
+
+      expect(spy).toHaveBeenCalledWith('**Bug**');
+      expect(spy).toHaveBeenCalledWith('**Bold title**');
+    });
+
+    it('should use _renderInlineMarkdown for comment card body preview', () => {
+      const spy = vi.spyOn(chatPanel, '_renderInlineMarkdown');
+      const ctx = { commentId: '1', body: '**bold** text', file: 'a.js', line_start: 1, isFileLevel: false };
+      chatPanel._addCommentContextCard(ctx);
+
+      expect(spy).toHaveBeenCalledWith('**bold** text');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Context tooltip initialization and cleanup
+  // -----------------------------------------------------------------------
+  describe('Context tooltip lifecycle', () => {
+    it('should create tooltip element on construction', () => {
+      expect(chatPanel._ctxTooltipEl).toBeTruthy();
+      expect(chatPanel._ctxTooltipEl.className).toBe('chat-panel__ctx-tooltip');
+      expect(document.body.appendChild).toHaveBeenCalled();
+    });
+
+    it('should clean up tooltip element on destroy', () => {
+      const tooltipEl = chatPanel._ctxTooltipEl;
+      // Give it a parentNode so removeChild path is taken
+      tooltipEl.parentNode = document.body;
+
+      chatPanel.destroy();
+
+      expect(document.body.removeChild).toHaveBeenCalledWith(tooltipEl);
+      expect(chatPanel._ctxTooltipEl).toBeNull();
     });
   });
 });
