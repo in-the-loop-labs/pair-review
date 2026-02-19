@@ -1352,6 +1352,14 @@ class ChatPanel {
           return;
         }
 
+        // Route review-scoped events to document as CustomEvents
+        if (data.reviewId && data.type?.startsWith('review:')) {
+          document.dispatchEvent(new CustomEvent(data.type, {
+            detail: { reviewId: data.reviewId }
+          }));
+          return;
+        }
+
         // Filter: only process events for the active session
         if (data.sessionId !== this.currentSessionId) return;
 

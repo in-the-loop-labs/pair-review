@@ -798,8 +798,10 @@ class LocalManager {
       // Check for running analysis
       await manager.checkRunningAnalysis();
 
-      // Open persistent SSE connection to detect externally-imported results
-      this.startExternalResultsListener();
+      // Listen for review mutation events via multiplexed SSE
+      if (window.prManager?._initReviewEventListeners) {
+        window.prManager._initReviewEventListeners();
+      }
 
     } catch (error) {
       console.error('Error loading local review:', error);
@@ -809,44 +811,6 @@ class LocalManager {
     }
   }
 
-  /**
-   * Listen for externally-imported analysis results via SSE.
-   * When the POST /api/analysis-results endpoint stores new suggestions,
-   * it broadcasts on the `local-${reviewId}` key. This listener picks
-   * that up and refreshes suggestions automatically.
-   */
-  startExternalResultsListener() {
-    if (this._externalResultsSource) return;
-    const reviewId = this.reviewId;
-
-    this._externalResultsSource = new EventSource(
-      `/api/analyses/review-${reviewId}/progress`
-    );
-
-    this._externalResultsSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'progress' && data.status === 'completed' && data.source === 'external') {
-          console.log('External analysis results detected, refreshing suggestions');
-          const manager = window.prManager;
-          if (manager?.analysisHistoryManager) {
-            manager.analysisHistoryManager.refresh({ switchToNew: true })
-              .then(() => manager.loadAISuggestions());
-          } else if (manager?.loadAISuggestions) {
-            manager.loadAISuggestions();
-          }
-        }
-      } catch (e) { /* ignore parse errors */ }
-    };
-
-    // Clean up on page unload
-    window.addEventListener('beforeunload', () => {
-      if (this._externalResultsSource) {
-        this._externalResultsSource.close();
-        this._externalResultsSource = null;
-      }
-    });
-  }
 
   /**
    * Initialize inline name editing for the review title in the header

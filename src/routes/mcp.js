@@ -13,6 +13,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const path = require('path');
 const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
+const { broadcastReviewEvent } = require('../sse/review-events');
 const {
   activeAnalyses,
   reviewToAnalysisId,
@@ -64,6 +65,9 @@ async function handleAnalysisCompletion(analysisId, runId, result, savePersisten
   };
   activeAnalyses.set(analysisId, completedStatus);
   broadcastProgress(analysisId, completedStatus);
+  if (currentStatus.reviewId) {
+    broadcastReviewEvent(currentStatus.reviewId, { type: 'review:analysis_completed' });
+  }
 
   // Auto-cleanup after 30 minutes
   setTimeout(() => activeAnalyses.delete(analysisId), 30 * 60 * 1000);

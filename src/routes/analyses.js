@@ -21,6 +21,7 @@ const Analyzer = require('../ai/analyzer');
 const { getTierForModel } = require('../ai/provider');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
+const { broadcastReviewEvent } = require('../sse/review-events');
 const path = require('path');
 const { normalizeRepository } = require('../utils/paths');
 const {
@@ -293,6 +294,8 @@ router.post('/api/analyses/results', async (req, res) => {
 
     // Broadcast on the review-level key so the frontend auto-refreshes.
     broadcastProgress(`review-${reviewId}`, { ...completionEvent, source: 'external' });
+
+    broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
 
     logger.success(`Imported ${totalSuggestions} external analysis suggestions (run ${runId})`);
 
@@ -676,6 +679,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
       }
       activeAnalyses.set(analysisId, completedStatus);
       broadcastProgress(analysisId, completedStatus);
+      broadcastReviewEvent(initialStatus.reviewId, { type: 'review:analysis_completed' });
 
       if (extraBroadcastKeys) {
         for (const key of extraBroadcastKeys) {
