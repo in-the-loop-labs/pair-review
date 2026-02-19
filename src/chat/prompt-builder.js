@@ -23,23 +23,29 @@ function buildChatPrompt({ review, chatInstructions }) {
   const sections = [];
 
   // Role
-  sections.push('You are a code review assistant helping with a code review. You have access to the repository and can explore it using shell commands. Do not modify any files.');
+  sections.push('You are a code review assistant helping within the chat feature of an app named pair-review. You have access to the repository and can explore it using shell commands. Do not modify any files.');
 
   // Review context
   sections.push(buildReviewContext(review));
 
-  // Review ID (stable for the session lifetime, used in API URLs)
+  // Domain model — ambient conceptual grounding for every turn
+  const domainLines = [
+    '## pair-review app domain model',
+    '',
+    '- **Comments** are human-curated review findings (created by the reviewer).',
+    '- **Suggestions** are AI-generated findings from analysis runs.',
+    '- **Workflow**: AI generates suggestions → reviewer triages (adopt, edit, or dismiss) → adopted suggestions become comments.',
+    '- **Analysis runs** are the process that produces suggestions. Each run has a provider, model, tier, and status.',
+    '- **Review ID** is a stable integer identifying this review session, used in all API calls.'
+  ];
   if (review && review.id) {
-    sections.push(
-      `The review ID for this session is: ${review.id}. Use this in API calls like /api/reviews/${review.id}/comments.`
-    );
+    domainLines.push(`- The review ID for this session is: **${review.id}** (e.g. \`/api/reviews/${review.id}/comments\`).`);
   }
+  sections.push(domainLines.join('\n'));
 
-  // API capability (port is injected once in the initial context at session start, not here)
+  // API capability — MUST load the skill for endpoint details
   sections.push(
-    'You can interact with the pair-review API to take actions on this review. ' +
-    'The server port is provided once at the start of each session in the initial context. ' +
-    'Use the pair-review-api skill for endpoint details. You can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.'
+    'You MUST load the pair-review-api skill for endpoint details. With it you can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.'
   );
 
   // Instructions

@@ -46,17 +46,61 @@ describe('buildChatPrompt', () => {
     });
   });
 
+  describe('domain model', () => {
+    it('should include domain model section with Comments and human-curated', () => {
+      const prompt = buildChatPrompt({
+        review: { id: 1, repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).toContain('## pair-review app domain model');
+      expect(prompt).toContain('**Comments** are human-curated review findings');
+    });
+
+    it('should include Suggestions and AI-generated', () => {
+      const prompt = buildChatPrompt({
+        review: { id: 1, repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).toContain('**Suggestions** are AI-generated findings');
+    });
+
+    it('should include workflow with adopt', () => {
+      const prompt = buildChatPrompt({
+        review: { id: 1, repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).toContain('adopt');
+      expect(prompt).toContain('dismiss');
+    });
+
+    it('should include Analysis runs concept', () => {
+      const prompt = buildChatPrompt({
+        review: { id: 1, repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).toContain('**Analysis runs**');
+    });
+
+    it('should include Review ID conceptual text', () => {
+      const prompt = buildChatPrompt({
+        review: { id: 1, repository: 'owner/repo', pr_number: 1 }
+      });
+
+      expect(prompt).toContain('**Review ID** is a stable integer');
+    });
+  });
+
   describe('reviewId in prompt', () => {
-    it('should include reviewId in prompt when review has an id', () => {
+    it('should include reviewId in domain model when review has an id', () => {
       const prompt = buildChatPrompt({
         review: { id: 42, repository: 'owner/repo', pr_number: 1 }
       });
 
-      expect(prompt).toContain('The review ID for this session is: 42');
+      expect(prompt).toContain('The review ID for this session is: **42**');
       expect(prompt).toContain('/api/reviews/42/comments');
     });
 
-    it('should not include reviewId section when review has no id', () => {
+    it('should not include reviewId value when review has no id', () => {
       const prompt = buildChatPrompt({
         review: { repository: 'owner/repo', pr_number: 1 }
       });
@@ -64,7 +108,7 @@ describe('buildChatPrompt', () => {
       expect(prompt).not.toContain('The review ID for this session is');
     });
 
-    it('should not include reviewId section when review is null', () => {
+    it('should not include reviewId value when review is null', () => {
       const prompt = buildChatPrompt({ review: null });
 
       expect(prompt).not.toContain('The review ID for this session is');
@@ -78,7 +122,6 @@ describe('buildChatPrompt', () => {
       });
 
       expect(prompt).not.toMatch(/http:\/\/localhost:\d+/);
-      expect(prompt).toContain('server port is provided once at the start of each session');
     });
   });
 
@@ -147,7 +190,6 @@ describe('buildChatPrompt', () => {
         review: { id: 5, repository: 'owner/repo', pr_number: 1 }
       });
 
-      expect(prompt).toContain('pair-review API');
       expect(prompt).toContain('pair-review-api skill');
     });
   });

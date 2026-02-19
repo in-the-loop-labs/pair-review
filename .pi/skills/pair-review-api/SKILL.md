@@ -1,24 +1,12 @@
 # Pair-Review API Skill
 
-You have **read-only access to the filesystem**. To modify the review (create comments, adopt suggestions, trigger analysis), you MUST use the pair-review API via `curl`.
+You have **read-only access to the filesystem**. To modify the review (create comments, adopt suggestions, trigger analysis) or interact with the pair-review app, you MUST use the pair-review API via `curl`.
 
 The pair-review server base URL (including port) is provided **per-turn** in the message context (e.g., `[Server port: 7247] The pair-review API is at http://localhost:7247`). The port may change between server restarts, so always use the port from the most recent message context. All endpoints accept and return JSON.
 
-## Key Concepts
-
-**Comments** are human-curated review findings. **Suggestions** are produced by AI analysis. The typical workflow is: AI generates suggestions → the reviewer adopts, edits, or dismisses them → adopted suggestions become comments. Use the comment endpoints to create or manage the reviewer's findings, and the suggestion endpoints to interact with AI-generated results.
-
-### Review ID
-
-All comment and suggestion endpoints use a **unified `reviewId`** (an integer). This is the same ID for both PR mode and local mode — it comes from the `reviews` table and is available in the page context. You do not need to know whether the review is a PR or a local review to interact with comments, suggestions, or analysis status.
-
-The `reviewId` is provided in your system prompt context.
-
----
-
 ## Comments
 
-All comment operations use a single set of unified endpoints. These work identically for both PR and local reviews.
+All comment operations use a single set of unified endpoints.
 
 ### List all comments
 
@@ -352,4 +340,3 @@ The `type` field on comments and suggestions can be one of:
 - `ANALYSIS_ID` and `RUN_ID` are UUIDs returned when an analysis is launched.
 - All POST/PUT/DELETE endpoints return `{ "success": true, ... }` on success.
 - Error responses have the shape `{ "error": "description" }` with appropriate HTTP status codes.
-- The review ID and review type (local vs PR) are provided in your system prompt context.
