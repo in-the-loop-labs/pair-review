@@ -84,7 +84,7 @@ class ChatPanel {
         <div class="chat-panel__input-area">
           <textarea class="chat-panel__input" placeholder="Ask about this review..." rows="1"></textarea>
           <div class="chat-panel__input-footer">
-            <span class="chat-panel__input-hint">${navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to send</span>
+            <span class="chat-panel__input-hint">${typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to send</span>
             <div class="chat-panel__input-actions">
               <button class="chat-panel__send-btn" title="Send" disabled>
                 <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
