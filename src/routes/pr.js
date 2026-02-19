@@ -25,6 +25,7 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
+const { broadcastReviewEvent } = require('../sse/review-events');
 const simpleGit = require('simple-git');
 const {
   activeAnalyses,
@@ -1587,6 +1588,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
         activeAnalyses.set(analysisId, completedStatus);
 
         broadcastProgress(analysisId, completedStatus);
+        broadcastReviewEvent(review.id, { type: 'review:analysis_completed' });
       })
       .catch(error => {
         const currentStatus = activeAnalyses.get(analysisId);
