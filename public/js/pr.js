@@ -139,6 +139,11 @@ class PRManager {
     this.selectedRunId = null;
     // Keyboard shortcuts manager
     this.keyboardShortcuts = null;
+    // Unique client ID for self-echo suppression on SSE review events.
+    // Sent as X-Client-Id header on mutation requests; the server echoes
+    // it back in the SSE broadcast so this tab can skip its own events.
+    this._clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    this._installFetchInterceptor();
 
     // Initialize modules
     this.lineTracker = new window.LineTracker();
@@ -182,6 +187,48 @@ class PRManager {
     if (!window.PAIR_REVIEW_LOCAL_MODE) {
       this.init();
     }
+  }
+
+  /**
+   * Install a global fetch interceptor that adds X-Client-Id to all
+   * mutation requests (POST/PUT/DELETE) targeting the review API.
+   * This is the SINGLE SOURCE of X-Client-Id injection — no individual
+   * fetch call site should manually set this header.
+   * This ensures that even direct fetch() calls (e.g. from page.evaluate
+   * in tests, or any code that bypasses PRManager methods) carry the
+   * client ID so the server can tag the SSE broadcast for self-echo
+   * suppression.
+   */
+  _installFetchInterceptor() {
+    if (window._prFetchIntercepted) return;
+    window._prFetchIntercepted = true;
+
+    const originalFetch = window.fetch;
+    const prManager = this;
+
+    window.fetch = function(input, init) {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      const method = (init?.method || 'GET').toUpperCase();
+
+      // Only intercept mutations to the reviews API
+      if ((method === 'POST' || method === 'PUT' || method === 'DELETE') &&
+          url.includes('/api/reviews/') && prManager._clientId) {
+        init = init || {};
+        // Merge X-Client-Id into existing headers
+        if (init.headers instanceof Headers) {
+          if (!init.headers.has('X-Client-Id')) {
+            init.headers.set('X-Client-Id', prManager._clientId);
+          }
+        } else if (typeof init.headers === 'object' && init.headers !== null) {
+          if (!init.headers['X-Client-Id']) {
+            init.headers['X-Client-Id'] = prManager._clientId;
+          }
+        } else {
+          init.headers = { 'X-Client-Id': prManager._clientId };
+        }
+      }
+      return originalFetch.call(this, input, init);
+    };
   }
 
   /**
@@ -446,12 +493,16 @@ class PRManager {
 
     document.addEventListener('review:comments_changed', (e) => {
       if (e.detail?.reviewId !== reviewId()) return;
+      // Suppress self-echo: if this tab originated the mutation, skip reload
+      if (e.detail?.sourceClientId === this._clientId) return;
       if (document.hidden) { this._dirtyComments = true; return; }
       debounced('comments', () => this.loadUserComments());
     });
 
     document.addEventListener('review:suggestions_changed', (e) => {
       if (e.detail?.reviewId !== reviewId()) return;
+      // Suppress self-echo for suggestion mutations too
+      if (e.detail?.sourceClientId === this._clientId) return;
       if (document.hidden) { this._dirtySuggestions = true; return; }
       debounced('suggestions', () => this.loadAISuggestions());
     });
@@ -2013,7 +2064,9 @@ class PRManager {
    */
   async deleteUserComment(commentId) {
     try {
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, { method: 'DELETE' });
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, {
+        method: 'DELETE'
+      });
       if (!response.ok) throw new Error('Failed to delete comment');
 
       const apiResult = await response.json();
@@ -2072,7 +2125,9 @@ class PRManager {
    */
   async restoreUserComment(commentId) {
     try {
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}/restore`, { method: 'PUT' });
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}/restore`, {
+        method: 'PUT'
+      });
       if (!response.ok) throw new Error('Failed to restore comment');
 
       // Reload comments to update both the diff view and AI panel

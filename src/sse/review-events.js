@@ -18,11 +18,20 @@ const sseClients = new Set();
 
 /**
  * Broadcast a review-scoped SSE event to all connected clients.
+ * Optionally includes a `sourceClientId` so the originating browser tab
+ * can recognise (and skip) its own echo.
+ *
  * @param {number} reviewId - Review ID to include in the event
  * @param {Object} payload - Event data (must include at minimum a `type` field)
+ * @param {Object} [options]
+ * @param {string} [options.sourceClientId] - Client ID of the tab that triggered the mutation
  */
-function broadcastReviewEvent(reviewId, payload) {
-  const data = JSON.stringify({ ...payload, reviewId });
+function broadcastReviewEvent(reviewId, payload, options = {}) {
+  const envelope = { ...payload, reviewId };
+  if (options.sourceClientId) {
+    envelope.sourceClientId = options.sourceClientId;
+  }
+  const data = JSON.stringify(envelope);
   for (const client of sseClients) {
     try {
       client.write(`data: ${data}\n\n`);

@@ -131,7 +131,7 @@ router.post('/api/reviews/:reviewId/comments', validateReviewId, async (req, res
       commentId,
       message: line_start ? 'Comment saved successfully' : 'File-level comment saved successfully'
     });
-    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' });
+    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') });
   } catch (error) {
     logger.error('Error creating comment:', error);
     res.status(500).json({
@@ -202,7 +202,7 @@ router.put('/api/reviews/:reviewId/comments/:id', validateReviewId, async (req, 
       success: true,
       message: 'Comment updated successfully'
     });
-    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' });
+    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') });
   } catch (error) {
     logger.error('Error updating comment:', error);
 
@@ -244,9 +244,9 @@ router.delete('/api/reviews/:reviewId/comments/:id', validateReviewId, async (re
       message: 'Comment deleted successfully',
       dismissedSuggestionId: result.dismissedSuggestionId
     });
-    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' });
+    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') });
     if (result.dismissedSuggestionId) {
-      broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' });
+      broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });
     }
   } catch (error) {
     logger.error('Error deleting comment:', error);
@@ -300,7 +300,7 @@ router.put('/api/reviews/:reviewId/comments/:id/restore', validateReviewId, asyn
       message: 'Comment restored successfully',
       comment: restoredComment
     });
-    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' });
+    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') });
   } catch (error) {
     logger.error('Error restoring comment:', error);
 
@@ -342,9 +342,9 @@ router.delete('/api/reviews/:reviewId/comments', validateReviewId, async (req, r
         dismissedSuggestionIds: result.dismissedSuggestionIds,
         message: `Deleted ${result.deletedCount} user comment${result.deletedCount !== 1 ? 's' : ''}`
       });
-      broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' });
+      broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') });
       if (result.dismissedSuggestionIds.length > 0) {
-        broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' });
+        broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });
       }
     } catch (transactionError) {
       await run(db, 'ROLLBACK');
@@ -592,7 +592,7 @@ router.post('/api/reviews/:reviewId/suggestions/:id/status', validateReviewId, a
       success: true,
       status
     });
-    broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' });
+    broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });
 
   } catch (error) {
     logger.error('Error updating suggestion status:', error);
@@ -653,8 +653,8 @@ router.post('/api/reviews/:reviewId/suggestions/:id/edit', validateReviewId, asy
       userCommentId,
       message: 'Suggestion edited and adopted as user comment'
     });
-    broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' });
-    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' });
+    broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });
+    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') });
 
   } catch (error) {
     logger.error('Error editing suggestion:', error);

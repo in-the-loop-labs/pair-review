@@ -103,11 +103,10 @@ describe('PRManager Suggestion Status', () => {
 
       expect(mockFetch).toHaveBeenCalledWith(
         `/api/reviews/test-review-1/suggestions/${suggestionId}/status`,
-        {
+        expect.objectContaining({
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'dismissed' })
-        }
+        })
       );
     });
 
@@ -552,7 +551,7 @@ describe('PRManager Suggestion Status', () => {
       // Verify API was called with DELETE method
       expect(mockFetch).toHaveBeenCalledWith(
         `/api/reviews/test-review-1/comments/${commentId}`,
-        { method: 'DELETE' }
+        expect.objectContaining({ method: 'DELETE' })
       );
 
       // Verify AIPanel removeComment was called
@@ -861,7 +860,7 @@ describe('PRManager Suggestion Status', () => {
       // Verify API was called with correct endpoint and method
       expect(mockFetch).toHaveBeenCalledWith(
         `/api/reviews/test-review-1/comments/${commentId}/restore`,
-        { method: 'PUT' }
+        expect.objectContaining({ method: 'PUT' })
       );
     });
 

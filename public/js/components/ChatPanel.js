@@ -1355,7 +1355,7 @@ class ChatPanel {
         // Route review-scoped events to document as CustomEvents
         if (data.reviewId && data.type?.startsWith('review:')) {
           document.dispatchEvent(new CustomEvent(data.type, {
-            detail: { reviewId: data.reviewId }
+            detail: { reviewId: data.reviewId, sourceClientId: data.sourceClientId }
           }));
           return;
         }
