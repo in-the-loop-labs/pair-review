@@ -110,6 +110,7 @@ function createMockElement(tag = 'div', overrides = {}) {
     closest: vi.fn(() => null),
 
     focus: vi.fn(),
+    blur: vi.fn(),
 
     // Allow property spreading from overrides
     ...overrides
@@ -192,11 +193,15 @@ global.EventSource = class MockEventSource {
 documentListeners = {};
 
 global.document = {
+  documentElement: {
+    style: { setProperty: vi.fn(), getPropertyValue: vi.fn(() => '') },
+  },
   body: {
     classList: { add: vi.fn(), remove: vi.fn() },
     appendChild: vi.fn(),
     removeChild: vi.fn(),
   },
+  activeElement: null,
   createElement: vi.fn((tag) => createMockElement(tag)),
   getElementById: vi.fn((id) => {
     if (id === 'chat-container') return elementRegistry['chat-container'];
@@ -214,6 +219,7 @@ global.document = {
 global.fetch = vi.fn();
 global.clearTimeout = vi.fn();
 global.setTimeout = vi.fn((cb) => { cb(); return 99; });
+global.requestAnimationFrame = vi.fn((cb) => { cb(); return 0; });
 
 // Now require the production ChatPanel module
 const { ChatPanel } = require('../../public/js/components/ChatPanel.js');
@@ -1138,6 +1144,38 @@ describe('ChatPanel', () => {
   });
 
   // -----------------------------------------------------------------------
+  // open() — suppressFocus option
+  // -----------------------------------------------------------------------
+  describe('open() with suppressFocus option', () => {
+    beforeEach(() => {
+      vi.spyOn(chatPanel, '_ensureConnected').mockResolvedValue({ sessionData: null });
+    });
+
+    it('should focus input by default when suppressFocus is not set', async () => {
+      chatPanel.inputEl.focus.mockClear();
+
+      await chatPanel.open({});
+
+      expect(chatPanel.inputEl.focus).toHaveBeenCalled();
+    });
+
+    it('should not focus input when suppressFocus is true', async () => {
+      chatPanel.inputEl.focus.mockClear();
+
+      await chatPanel.open({ suppressFocus: true });
+
+      expect(chatPanel.inputEl.focus).not.toHaveBeenCalled();
+    });
+
+    it('should still open the panel when suppressFocus is true', async () => {
+      await chatPanel.open({ suppressFocus: true });
+
+      expect(chatPanel.isOpen).toBe(true);
+      expect(chatPanel.panel.classList.add).toHaveBeenCalledWith('chat-panel--open');
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Background SSE accumulation (isOpen === false)
   // -----------------------------------------------------------------------
   describe('Background SSE accumulation', () => {
@@ -1580,6 +1618,72 @@ describe('ChatPanel', () => {
 
       expect(event.preventDefault).toHaveBeenCalled();
       expect(sendSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Escape key — two-step behavior
+  // -----------------------------------------------------------------------
+  describe('Escape key two-step behavior', () => {
+    /**
+     * Helper: find the document-level keydown handler that ChatPanel registered
+     * during _bindEvents (captured by our mock addEventListener).
+     */
+    function getEscapeHandler() {
+      const call = global.document.addEventListener.mock.calls.find(c => c[0] === 'keydown');
+      expect(call).toBeDefined();
+      return call[1];
+    }
+
+    it('should blur textarea on first Escape when textarea is focused', () => {
+      chatPanel.isOpen = true;
+      chatPanel.isStreaming = false;
+      // Simulate textarea being the active element
+      global.document.activeElement = chatPanel.inputEl;
+
+      const handler = getEscapeHandler();
+      handler({ key: 'Escape' });
+
+      expect(chatPanel.inputEl.blur).toHaveBeenCalled();
+      // Panel should still be open
+      expect(chatPanel.isOpen).toBe(true);
+    });
+
+    it('should close panel on Escape when textarea is not focused', () => {
+      chatPanel.isOpen = true;
+      chatPanel.isStreaming = false;
+      global.document.activeElement = null;
+
+      const closeSpy = vi.spyOn(chatPanel, 'close');
+      const handler = getEscapeHandler();
+      handler({ key: 'Escape' });
+
+      expect(closeSpy).toHaveBeenCalled();
+    });
+
+    it('should stop agent on Escape when streaming, regardless of focus', () => {
+      chatPanel.isOpen = true;
+      chatPanel.isStreaming = true;
+      global.document.activeElement = chatPanel.inputEl;
+
+      const stopSpy = vi.spyOn(chatPanel, '_stopAgent').mockImplementation(() => {});
+      const handler = getEscapeHandler();
+      handler({ key: 'Escape' });
+
+      expect(stopSpy).toHaveBeenCalled();
+      expect(chatPanel.inputEl.blur).not.toHaveBeenCalled();
+    });
+
+    it('should do nothing when panel is not open', () => {
+      chatPanel.isOpen = false;
+      global.document.activeElement = chatPanel.inputEl;
+
+      const closeSpy = vi.spyOn(chatPanel, 'close');
+      const handler = getEscapeHandler();
+      handler({ key: 'Escape' });
+
+      expect(closeSpy).not.toHaveBeenCalled();
+      expect(chatPanel.inputEl.blur).not.toHaveBeenCalled();
     });
   });
 
@@ -3399,6 +3503,400 @@ describe('ChatPanel', () => {
 
       expect(document.body.removeChild).toHaveBeenCalledWith(tooltipEl);
       expect(chatPanel._ctxTooltipEl).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _lateBindReview — race condition fix for PanelGroup auto-restore
+  // -----------------------------------------------------------------------
+  describe('_lateBindReview', () => {
+    it('should set reviewId when not already bound', async () => {
+      chatPanel.reviewId = null;
+
+      await chatPanel._lateBindReview(42);
+
+      expect(chatPanel.reviewId).toBe(42);
+    });
+
+    it('should not overwrite an existing reviewId', async () => {
+      chatPanel.reviewId = 100;
+
+      await chatPanel._lateBindReview(42);
+
+      expect(chatPanel.reviewId).toBe(100);
+    });
+
+    it('should no-op when called with null reviewId', async () => {
+      chatPanel.reviewId = null;
+
+      await chatPanel._lateBindReview(null);
+
+      expect(chatPanel.reviewId).toBeNull();
+    });
+
+    it('should load MRU session when panel is open and no session exists', async () => {
+      chatPanel.reviewId = null;
+      chatPanel.isOpen = true;
+      chatPanel.currentSessionId = null;
+
+      const loadMRUSpy = vi.spyOn(chatPanel, '_loadMRUSession').mockResolvedValue(undefined);
+      const ensureAnalysisSpy = vi.spyOn(chatPanel, '_ensureAnalysisContext').mockImplementation(() => {});
+
+      await chatPanel._lateBindReview(42);
+
+      expect(chatPanel.reviewId).toBe(42);
+      expect(loadMRUSpy).toHaveBeenCalled();
+      expect(ensureAnalysisSpy).toHaveBeenCalled();
+    });
+
+    it('should not load MRU session when panel is closed', async () => {
+      chatPanel.reviewId = null;
+      chatPanel.isOpen = false;
+      chatPanel.currentSessionId = null;
+
+      const loadMRUSpy = vi.spyOn(chatPanel, '_loadMRUSession').mockResolvedValue(undefined);
+
+      await chatPanel._lateBindReview(42);
+
+      expect(chatPanel.reviewId).toBe(42);
+      expect(loadMRUSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not load MRU session when session already exists', async () => {
+      chatPanel.reviewId = null;
+      chatPanel.isOpen = true;
+      chatPanel.currentSessionId = 'existing-session';
+
+      const loadMRUSpy = vi.spyOn(chatPanel, '_loadMRUSession').mockResolvedValue(undefined);
+
+      await chatPanel._lateBindReview(42);
+
+      expect(chatPanel.reviewId).toBe(42);
+      expect(loadMRUSpy).not.toHaveBeenCalled();
+    });
+
+    it('should call _ensureAnalysisContext after loading MRU session', async () => {
+      chatPanel.reviewId = null;
+      chatPanel.isOpen = true;
+      chatPanel.currentSessionId = null;
+
+      const callOrder = [];
+      vi.spyOn(chatPanel, '_loadMRUSession').mockImplementation(async () => {
+        callOrder.push('loadMRU');
+      });
+      vi.spyOn(chatPanel, '_ensureAnalysisContext').mockImplementation(() => {
+        callOrder.push('ensureAnalysis');
+      });
+
+      await chatPanel._lateBindReview(42);
+
+      expect(callOrder).toEqual(['loadMRU', 'ensureAnalysis']);
+    });
+
+    it('should re-enable input after late-binding reviewId', async () => {
+      chatPanel.reviewId = null;
+      chatPanel.isOpen = true;
+      chatPanel.inputEl.disabled = true;
+      chatPanel.inputEl.placeholder = 'Connecting to review\u2026';
+
+      vi.spyOn(chatPanel, '_loadMRUSession').mockResolvedValue(undefined);
+      vi.spyOn(chatPanel, '_ensureAnalysisContext').mockImplementation(() => {});
+
+      await chatPanel._lateBindReview(42);
+
+      expect(chatPanel.inputEl.disabled).toBe(false);
+      expect(chatPanel.inputEl.placeholder).not.toBe('Connecting to review\u2026');
+    });
+
+    it('should not re-enable input if already enabled', async () => {
+      chatPanel.reviewId = null;
+      chatPanel.isOpen = false;
+      chatPanel.inputEl.disabled = false;
+      chatPanel.inputEl.placeholder = 'Ask about this review...';
+
+      const enableSpy = vi.spyOn(chatPanel, '_enableInput');
+
+      await chatPanel._lateBindReview(42);
+
+      expect(enableSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _disableInput / _enableInput — input gating helpers
+  // -----------------------------------------------------------------------
+  describe('_disableInput / _enableInput', () => {
+    it('should disable textarea and send button', () => {
+      chatPanel.inputEl.placeholder = 'Ask about this review...';
+
+      chatPanel._disableInput();
+
+      expect(chatPanel.inputEl.disabled).toBe(true);
+      expect(chatPanel.sendBtn.disabled).toBe(true);
+      expect(chatPanel.inputEl.placeholder).toBe('Connecting to review\u2026');
+    });
+
+    it('should save and restore original placeholder', () => {
+      chatPanel.inputEl.placeholder = 'Custom placeholder';
+
+      chatPanel._disableInput();
+      expect(chatPanel.inputEl.placeholder).toBe('Connecting to review\u2026');
+
+      chatPanel._enableInput();
+      expect(chatPanel.inputEl.placeholder).toBe('Custom placeholder');
+    });
+
+    it('should re-enable textarea and update send button state', () => {
+      chatPanel.inputEl.value = 'hello';
+      chatPanel.isStreaming = false;
+
+      chatPanel._disableInput();
+      chatPanel._enableInput();
+
+      expect(chatPanel.inputEl.disabled).toBe(false);
+      expect(chatPanel.sendBtn.disabled).toBe(false);
+    });
+
+    it('should keep send button disabled when input is empty', () => {
+      chatPanel.inputEl.value = '';
+      chatPanel.isStreaming = false;
+
+      chatPanel._disableInput();
+      chatPanel._enableInput();
+
+      expect(chatPanel.sendBtn.disabled).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // open() — input gating when reviewId is null
+  // -----------------------------------------------------------------------
+  describe('open() input gating', () => {
+    beforeEach(() => {
+      vi.spyOn(chatPanel, '_ensureConnected').mockResolvedValue({ sessionData: null });
+    });
+
+    it('should disable input when reviewId is null on open', async () => {
+      chatPanel.reviewId = null;
+      global.window.prManager = null;
+
+      const disableSpy = vi.spyOn(chatPanel, '_disableInput');
+
+      await chatPanel.open({});
+
+      expect(disableSpy).toHaveBeenCalled();
+    });
+
+    it('should not disable input when reviewId is available', async () => {
+      chatPanel.reviewId = null;
+
+      const disableSpy = vi.spyOn(chatPanel, '_disableInput');
+
+      await chatPanel.open({ reviewId: 42 });
+
+      expect(disableSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // sendMessage — error recovery when createSession returns null
+  // -----------------------------------------------------------------------
+  describe('sendMessage error recovery on createSession failure', () => {
+    it('should restore input text when createSession returns null', async () => {
+      chatPanel.currentSessionId = null;
+      chatPanel.reviewId = null; // will cause createSession to return null
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'my important message';
+
+      await chatPanel.sendMessage();
+
+      expect(chatPanel.inputEl.value).toBe('my important message');
+    });
+
+    it('should remove phantom message bubble when createSession returns null', async () => {
+      chatPanel.currentSessionId = null;
+      chatPanel.reviewId = null;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'test message';
+
+      // Track the element created by addMessage
+      const mockMsgEl = createMockElement('div');
+      vi.spyOn(chatPanel, 'addMessage').mockReturnValue(mockMsgEl);
+
+      await chatPanel.sendMessage();
+
+      expect(mockMsgEl.remove).toHaveBeenCalled();
+    });
+
+    it('should pop the last message from messages array on failure', async () => {
+      chatPanel.currentSessionId = null;
+      chatPanel.reviewId = null;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'test message';
+      chatPanel.messages = [];
+
+      await chatPanel.sendMessage();
+
+      // addMessage pushes, but error recovery should pop
+      expect(chatPanel.messages).toHaveLength(0);
+    });
+
+    it('should show error message when createSession fails', async () => {
+      chatPanel.currentSessionId = null;
+      chatPanel.reviewId = null;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'test';
+
+      const errorSpy = vi.spyOn(chatPanel, '_showError');
+
+      await chatPanel.sendMessage();
+
+      expect(errorSpy).toHaveBeenCalledWith('Unable to start chat session. Please try again.');
+    });
+
+    it('should re-enable send button when createSession fails', async () => {
+      chatPanel.currentSessionId = null;
+      chatPanel.reviewId = null;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'test';
+
+      await chatPanel.sendMessage();
+
+      expect(chatPanel.sendBtn.disabled).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // sendMessage — 410 retry (non-resumable session)
+  // -----------------------------------------------------------------------
+  describe('sendMessage 410 retry', () => {
+    it('should retry with a new session when the API returns 410', async () => {
+      chatPanel.currentSessionId = 'stale-sess';
+      chatPanel.reviewId = 1;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+
+      // First fetch returns 410 (session not resumable)
+      // Second fetch (createSession) returns a new session
+      // Third fetch (retry message) returns 200
+      global.fetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 410,
+          json: () => Promise.resolve({ error: 'Session is not resumable' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 'new-sess', status: 'active' } }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({}),
+        });
+
+      const showErrorSpy = vi.spyOn(chatPanel, '_showError');
+
+      await chatPanel.sendMessage();
+
+      // Should have cleared the stale session and created a new one
+      expect(chatPanel.currentSessionId).toBe('new-sess');
+
+      // Should NOT show an error to the user
+      expect(showErrorSpy).not.toHaveBeenCalled();
+
+      // Should have made 3 fetch calls: message (410), createSession, retry message
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+
+      // The retry message should be sent to the new session
+      const retryCall = global.fetch.mock.calls[2];
+      expect(retryCall[0]).toBe('/api/chat/session/new-sess/message');
+    });
+
+    it('should show error when createSession fails during 410 retry', async () => {
+      chatPanel.currentSessionId = 'stale-sess';
+      chatPanel.reviewId = 1;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+
+      // First fetch returns 410
+      // Second fetch (createSession) fails
+      global.fetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 410,
+          json: () => Promise.resolve({ error: 'Session is not resumable' }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          json: () => Promise.resolve({ error: 'Failed to create session' }),
+        });
+
+      const showErrorSpy = vi.spyOn(chatPanel, '_showError');
+
+      await chatPanel.sendMessage();
+
+      // createSession returns null on failure, so sendMessage should show an error
+      expect(showErrorSpy).toHaveBeenCalled();
+    });
+
+    it('should not retry on non-410 errors', async () => {
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel.reviewId = 1;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+
+      // Fetch returns 500 (not 410)
+      global.fetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: 'Internal server error' }),
+      });
+
+      const createSessionSpy = vi.spyOn(chatPanel, 'createSession');
+      const showErrorSpy = vi.spyOn(chatPanel, '_showError');
+
+      await chatPanel.sendMessage();
+
+      // Should NOT attempt to create a new session
+      expect(createSessionSpy).not.toHaveBeenCalled();
+
+      // Should show an error normally
+      expect(showErrorSpy).toHaveBeenCalled();
+    });
+
+    it('should only retry once (not loop) on 410', async () => {
+      chatPanel.currentSessionId = 'stale-sess';
+      chatPanel.reviewId = 1;
+      chatPanel.isStreaming = false;
+      chatPanel.inputEl.value = 'hello';
+
+      // First fetch: 410
+      // Second fetch: createSession succeeds
+      // Third fetch: retry message also returns 410 — should NOT retry again
+      global.fetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 410,
+          json: () => Promise.resolve({ error: 'not resumable' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: { id: 'new-sess', status: 'active' } }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 410,
+          json: () => Promise.resolve({ error: 'still not resumable' }),
+        });
+
+      const showErrorSpy = vi.spyOn(chatPanel, '_showError');
+
+      await chatPanel.sendMessage();
+
+      // Should show the error from the second 410 (no further retry)
+      expect(showErrorSpy).toHaveBeenCalled();
+      // Should have made exactly 3 calls, not more
+      expect(global.fetch).toHaveBeenCalledTimes(3);
     });
   });
 });

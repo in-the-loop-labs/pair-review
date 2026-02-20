@@ -23,6 +23,7 @@ window.PanelResizer = (function() {
       storageKey: 'ai-panel-width',
       cssVar: '--ai-panel-width'
     }
+    // Note: chat-panel resize is handled by ChatPanel itself (see ChatPanel._bindResizeEvents)
   };
 
   // State
@@ -115,7 +116,9 @@ window.PanelResizer = (function() {
     const panelName = handle.dataset.panel;
     const panelEl = panelName === 'sidebar'
       ? document.getElementById('files-sidebar')
-      : document.getElementById('ai-panel');
+      : panelName === 'chat-panel'
+        ? document.querySelector('.chat-panel')
+        : document.getElementById('ai-panel');
 
     // Don't allow resize if panel is collapsed
     if (panelEl && panelEl.classList.contains('collapsed')) {
@@ -180,6 +183,9 @@ window.PanelResizer = (function() {
       handle.classList.remove('dragging');
     }
     document.body.classList.remove('resizing');
+
+    // Notify PanelGroup so --right-panel-group-width stays in sync
+    window.panelGroup?._updateRightPanelGroupWidth();
 
     isDragging = false;
     currentPanel = null;

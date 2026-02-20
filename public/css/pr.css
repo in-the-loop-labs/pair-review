@@ -629,6 +629,12 @@
   --ai-border: rgba(217, 119, 6, 0.3);
   --ai-text: #92400e;
 
+  /* Chat Identity - Blue accent for chat panel */
+  --chat-primary: #2563eb;
+  --chat-subtle: rgba(37, 99, 235, 0.08);
+  --chat-border: rgba(37, 99, 235, 0.2);
+  --chat-text: #1e40af;
+
   /* Category colors for AI suggestions */
   --category-bug: #dc2626;
   --category-bug-bg: #fef2f2;
@@ -719,6 +725,12 @@
   --ai-glow: rgba(245, 158, 11, 0.2);
   --ai-border: rgba(245, 158, 11, 0.3);
   --ai-text: #fcd34d;
+
+  /* Chat Identity - Blue accent for dark theme */
+  --chat-primary: #60a5fa;
+  --chat-subtle: rgba(96, 165, 250, 0.1);
+  --chat-border: rgba(96, 165, 250, 0.2);
+  --chat-text: #93c5fd;
 
   /* Category colors for dark theme */
   --category-bug: #f87171;
@@ -1740,8 +1752,9 @@ tr.newly-expanded .d2h-code-line-ctn {
   animation: slideUp 0.3s ease;
   overflow: visible;
   word-break: break-word;
-  /* Viewport-based max-width: total viewport minus sidebar, AI panel, and minimal padding */
-  max-width: calc(100vw - var(--sidebar-width) - var(--ai-panel-width) - 64px);
+  /* Viewport-based max-width: total viewport minus sidebar, right panel group, and padding.
+     --right-panel-group-width is set by PanelGroup.js (sum for horizontal, max for vertical). */
+  max-width: calc(100vw - var(--sidebar-width) - var(--right-panel-group-width, 0px) - 64px);
   box-sizing: border-box;
 }
 
@@ -3907,8 +3920,9 @@ tr.line-range-start .d2h-code-line-ctn {
   position: relative;
   overflow: hidden;
   word-break: break-word;
-  /* Viewport-based max-width: total viewport minus sidebar, AI panel, and minimal padding */
-  max-width: calc(100vw - var(--sidebar-width) - var(--ai-panel-width) - 64px);
+  /* Viewport-based max-width: total viewport minus sidebar, right panel group, and padding.
+     --right-panel-group-width is set by PanelGroup.js (sum for horizontal, max for vertical). */
+  max-width: calc(100vw - var(--sidebar-width) - var(--right-panel-group-width, 0px) - 64px);
   box-sizing: border-box;
 }
 
@@ -5573,6 +5587,7 @@ tr.line-range-start .d2h-code-line-ctn {
   --header-height: 64px;
   --sidebar-width: 260px;
   --ai-panel-width: 320px;
+  --chat-panel-width: 0px;
 
   /* Transitions */
   --transition-fast: 0.1s ease;
@@ -6020,6 +6035,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
   gap: 10px;
   flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .toolbar-separator {
@@ -6395,72 +6411,52 @@ body:not([data-theme="dark"]) .theme-icon-light {
   color: #1c1917;
 }
 
-/* Chat Button - Cool blue/purple conversation CTA */
-#chat-toggle-btn {
-  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
-  border: 1px solid #93c5fd;
-  color: #1d4ed8;
-  font-weight: 600;
-  position: relative;
-  overflow: hidden;
-  transition: all 0.3s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+/* Review panel toggle button - orange/amber AI identity */
+#ai-panel-toggle svg {
+  color: var(--ai-primary, #d97706);
 }
 
-#chat-toggle-btn::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.4) 50%,
-    transparent 100%
-  );
-  transition: left 0.5s ease;
+#ai-panel-toggle:hover {
+  background: var(--ai-subtle, rgba(217, 119, 6, 0.08));
+  border-color: var(--ai-border, rgba(217, 119, 6, 0.3));
+  color: var(--ai-primary, #d97706);
 }
 
-#chat-toggle-btn:hover {
-  background: linear-gradient(135deg, #bfdbfe 0%, #93c5fd 100%);
-  border-color: #60a5fa;
-  box-shadow: 0 0 16px rgba(59, 130, 246, 0.4), 0 0 32px rgba(59, 130, 246, 0.2);
-  transform: translateY(-1px);
+[data-theme="dark"] #ai-panel-toggle svg {
+  color: var(--ai-primary, #f59e0b);
 }
 
-#chat-toggle-btn:hover::before {
-  left: 100%;
+[data-theme="dark"] #ai-panel-toggle:hover {
+  background: var(--ai-subtle, rgba(245, 158, 11, 0.1));
+  border-color: var(--ai-border, rgba(245, 158, 11, 0.3));
+  color: var(--ai-primary, #f59e0b);
 }
 
+/* Chat toggle button - icon-only, blue chat identity */
 #chat-toggle-btn .chat-icon {
-  color: #2563eb;
-  filter: drop-shadow(0 0 2px rgba(37, 99, 235, 0.5));
+  color: #3b82f6;
 }
 
-#chat-toggle-btn:hover .chat-icon {
-  animation: sparkle-float 0.6s ease-in-out infinite;
-}
-
-/* Dark theme adjustments for Chat button */
-[data-theme="dark"] #chat-toggle-btn {
-  background: linear-gradient(135deg, #1e3a5f 0%, #1e40af 100%);
+#chat-toggle-btn.active {
+  background: rgba(59, 130, 246, 0.1);
   border-color: #3b82f6;
-  color: #93c5fd;
 }
 
-[data-theme="dark"] #chat-toggle-btn:hover {
-  background: linear-gradient(135deg, #1e40af 0%, #2563eb 100%);
-  border-color: #60a5fa;
-  box-shadow: 0 0 16px rgba(59, 130, 246, 0.5), 0 0 32px rgba(59, 130, 246, 0.3);
+#chat-toggle-btn.active .chat-icon {
+  color: #2563eb;
 }
 
 [data-theme="dark"] #chat-toggle-btn .chat-icon {
   color: #60a5fa;
-  filter: drop-shadow(0 0 2px rgba(96, 165, 250, 0.5));
+}
+
+[data-theme="dark"] #chat-toggle-btn.active {
+  background: rgba(59, 130, 246, 0.15);
+  border-color: #3b82f6;
+}
+
+[data-theme="dark"] #chat-toggle-btn.active .chat-icon {
+  color: #60a5fa;
 }
 
 .main-layout .diff-container {
@@ -6492,6 +6488,13 @@ body:not([data-theme="dark"]) .theme-icon-light {
   overflow: hidden;
 }
 
+.right-panel-group[class*="layout-v-"] .ai-panel.collapsed {
+  flex: 0 0 0;
+  height: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* --------------------------------------------------------------------------
    Resize Handles for Panels
    -------------------------------------------------------------------------- */
@@ -6508,7 +6511,7 @@ body:not([data-theme="dark"]) .theme-icon-light {
 
 .resize-handle:hover,
 .resize-handle.dragging {
-  background: var(--border-color);
+  background: var(--color-border-primary);
 }
 
 .resize-handle-right {
@@ -6558,11 +6561,269 @@ body.resizing * {
   display: flex;
 }
 
-/* Ensure toggle button shows when panel is collapsed via responsive rules */
+/* Hide Chat panel toggle button when panel is visible */
+#chat-toggle-btn {
+  display: none;
+}
+
+.main-layout:has(.chat-panel--closed) #chat-toggle-btn {
+  display: flex;
+}
+
+/* Ensure toggle buttons show when panels are collapsed via responsive rules */
 @media (max-width: 900px) {
-  #ai-panel-toggle {
+  #ai-panel-toggle,
+  #chat-toggle-btn {
     display: flex;
   }
+}
+
+/* --------------------------------------------------------------------------
+   Right Panel Group (Review + Chat)
+   -------------------------------------------------------------------------- */
+.right-panel-group {
+  display: flex;
+  flex-direction: row;
+  flex-shrink: 0;
+  height: 100%;
+  overflow: visible;
+  position: relative;
+}
+
+/* Make the container wrapper transparent to flex layout so .chat-panel
+   becomes a direct flex child — required for order and flex rules to work. */
+#chat-panel-container {
+  display: contents;
+}
+
+/* When both panels are hidden */
+.right-panel-group.group-collapsed {
+  width: 0;
+  overflow: hidden;
+}
+
+/* Horizontal layouts */
+.right-panel-group.layout-h-review-chat { flex-direction: row; }
+.right-panel-group.layout-h-review-chat .ai-panel { order: 1; }
+.right-panel-group.layout-h-review-chat .chat-panel { order: 2; }
+
+.right-panel-group.layout-h-chat-review { flex-direction: row; }
+.right-panel-group.layout-h-chat-review .ai-panel { order: 2; }
+.right-panel-group.layout-h-chat-review .chat-panel { order: 1; }
+
+/* Vertical layouts — group takes the wider of the two panel widths,
+   so collapsing one panel doesn't hide the other. */
+.right-panel-group.layout-v-review-chat,
+.right-panel-group.layout-v-chat-review {
+  flex-direction: column;
+  width: max(var(--ai-panel-width), var(--chat-panel-width));
+}
+
+.right-panel-group.layout-v-review-chat .ai-panel { order: 0; }
+.right-panel-group.layout-v-review-chat .panel-group-divider { order: 1; }
+.right-panel-group.layout-v-review-chat .chat-panel { order: 2; }
+.right-panel-group.layout-v-chat-review .ai-panel { order: 2; }
+.right-panel-group.layout-v-chat-review .panel-group-divider { order: 1; }
+.right-panel-group.layout-v-chat-review .chat-panel { order: 0; }
+
+/* In vertical mode, children fill width and split height */
+.right-panel-group[class*="layout-v-"] .ai-panel,
+.right-panel-group[class*="layout-v-"] .chat-panel {
+  width: 100% !important;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* In vertical mode, chat panel has top border instead of left */
+.right-panel-group[class*="layout-v-"] .chat-panel {
+  border-left: none;
+  border-top: 1px solid var(--color-border-primary);
+}
+
+/* Hide per-panel horizontal resize handles in vertical mode (group handle replaces them) */
+.right-panel-group[class*="layout-v-"] .chat-panel__resize-handle {
+  display: none;
+}
+
+.right-panel-group[class*="layout-v-"] .ai-panel > .resize-handle {
+  display: none;
+}
+
+/* Full-height group resize handle (shown only in vertical layouts) */
+.panel-group-resize-handle {
+  display: none;
+}
+
+.right-panel-group[class*="layout-v-"] .panel-group-resize-handle {
+  display: block;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+/* Vertical resize divider between panels (hidden by default in horizontal layouts) */
+.panel-group-divider {
+  display: none;
+  height: 6px;
+  cursor: row-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background-color var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.panel-group-divider:hover,
+.panel-group-divider.dragging {
+  background: var(--color-border-primary);
+}
+
+/* Show vertical divider only in vertical layouts */
+.right-panel-group[class*="layout-v-"] .panel-group-divider {
+  display: block;
+}
+
+/* Layout Popover */
+.layout-popover {
+  position: fixed;
+  z-index: 1100;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.12);
+  padding: 8px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+.layout-popover--visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.layout-popover__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.layout-popover__thumb {
+  position: relative;
+  width: 80px;
+  height: 52px;
+  padding: 0;
+  background: var(--color-bg-subtle);
+  border: 2px solid var(--color-border-default);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.layout-popover__thumb:hover {
+  border-color: var(--color-text-secondary);
+}
+
+.layout-popover__thumb--active {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+.layout-popover__badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-primary);
+  border-radius: 3px;
+  line-height: 1;
+  z-index: 1;
+}
+
+.layout-popover__preview {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+  gap: 1px;
+}
+
+.layout-popover__preview--h {
+  flex-direction: row;
+}
+
+.layout-popover__preview--v {
+  flex-direction: column;
+}
+
+.layout-popover__pane {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.layout-popover__pane--review {
+  background: rgba(245, 158, 11, 0.1);
+  border-left: 2px solid #f59e0b;
+}
+
+.layout-popover__preview--v .layout-popover__pane--review {
+  border-left: none;
+  border-top: 2px solid #f59e0b;
+}
+
+.layout-popover__pane--chat {
+  background: rgba(59, 130, 246, 0.1);
+  border-left: 2px solid #3b82f6;
+}
+
+.layout-popover__preview--v .layout-popover__pane--chat {
+  border-left: none;
+  border-top: 2px solid #3b82f6;
+}
+
+.layout-popover__pane--review svg {
+  color: #f59e0b;
+}
+
+.layout-popover__pane--chat svg {
+  color: #3b82f6;
+}
+
+/* Dark theme adjustments */
+[data-theme="dark"] .layout-popover {
+  background: #0d1117;
+  border-color: #30363d;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.4);
+}
+
+[data-theme="dark"] .layout-popover__thumb {
+  background: #161b22;
+  border-color: #30363d;
+}
+
+[data-theme="dark"] .layout-popover__thumb:hover {
+  border-color: #8b949e;
+}
+
+[data-theme="dark"] .layout-popover__thumb--active {
+  border-color: #58a6ff;
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.4);
+}
+
+[data-theme="dark"] .layout-popover__badge {
+  background: #0d1117;
+  color: #8b949e;
 }
 
 /* Dark theme toolbar button overrides */
@@ -8145,7 +8406,9 @@ body.resizing * {
 }
 
 @media (max-width: 900px) {
-  .ai-panel {
+  .right-panel-group,
+  .ai-panel,
+  .chat-panel {
     display: none;
   }
 
@@ -9261,8 +9524,8 @@ body.resizing * {
 }
 
 .btn-icon:hover {
-  color: var(--danger-fg, #cf222e);
-  border-color: var(--danger-fg, #cf222e);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-secondary);
 }
 
 .btn-ghost {
@@ -9624,8 +9887,8 @@ body.resizing * {
 
 [data-theme="dark"] .btn-icon:hover {
   background: var(--color-bg-elevated, #1e2329);
-  color: var(--color-danger, #f85149);
-  border-color: var(--color-danger, #f85149);
+  color: var(--color-text-primary, #e6edf3);
+  border-color: var(--color-border-secondary, #484f58);
 }
 
 [data-theme="dark"] .add-voice-btn {
@@ -10316,19 +10579,15 @@ body.resizing * {
    ========================================================================== */
 
 .chat-panel {
-  position: fixed;
-  top: 0;
-  right: 0;
-  width: 400px;
-  height: 100vh;
+  width: var(--chat-panel-width, 400px);
+  height: 100%;
   background: var(--color-bg-primary);
   border-left: 1px solid var(--color-border-primary);
-  display: flex;
+  display: none;
   flex-direction: column;
-  z-index: 1000;
-  transform: translateX(100%);
-  transition: transform 0.2s ease, width 0.15s ease;
-  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.08);
+  flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
 }
 
 /* Chat Panel Resize Handle */
@@ -10339,27 +10598,26 @@ body.resizing * {
   width: 6px;
   height: 100%;
   cursor: col-resize;
-  z-index: 1001;
-  transition: background 0.15s ease;
+  z-index: 10;
+  transition: background-color var(--transition-fast);
 }
 
 .chat-panel__resize-handle:hover,
 .chat-panel__resize-handle.dragging {
-  background: var(--color-accent-primary);
+  background: var(--color-border-primary);
 }
 
 /* Disable width transition during active resize drag */
 .chat-panel--resizing {
-  transition: transform 0.2s ease;
+  transition: none;
 }
 
 .chat-panel--open {
-  transform: translateX(0);
+  display: flex;
 }
 
 .chat-panel--closed {
-  transform: translateX(100%);
-  pointer-events: none;
+  display: none;
 }
 
 /* Chat Panel Header */
@@ -10368,8 +10626,8 @@ body.resizing * {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border-primary);
-  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--chat-border);
+  background: linear-gradient(to bottom, var(--chat-subtle), transparent);
   flex-shrink: 0;
 }
 
@@ -10379,11 +10637,11 @@ body.resizing * {
   gap: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--chat-text);
 }
 
 .chat-panel__title svg {
-  color: var(--color-text-tertiary);
+  color: var(--chat-primary);
 }
 
 .chat-panel__actions {
@@ -10404,10 +10662,21 @@ body.resizing * {
   color: var(--color-text-tertiary);
   border-radius: 6px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.chat-panel__new-btn:hover,
+.chat-panel__new-btn {
+  border: 1px solid var(--color-border-primary);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+
+.chat-panel__new-btn:hover {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-text-tertiary);
+  color: var(--color-text-primary);
+}
+
 .chat-panel__close-btn:hover {
   background: var(--color-bg-tertiary);
   color: var(--color-text-primary);
