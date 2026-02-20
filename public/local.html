@@ -364,16 +364,19 @@
                             </svg>
                             <span class="btn-text">Analyze</span>
                         </button>
-                        <button class="btn btn-sm btn-secondary" id="chat-toggle-btn" title="Chat about review">
+                        <button class="btn btn-sm btn-icon" id="chat-toggle-btn" title="Toggle Chat panel">
                             <svg class="chat-icon" viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
                                 <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
                             </svg>
-                            <span class="btn-text">Chat</span>
+                        </button>
+                        <button class="btn btn-sm btn-icon" id="panel-layout-toggle" title="Switch panel layout" style="display: none;">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                                <path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25ZM1.5 1.75v12.5c0 .138.112.25.25.25H7.5v-13H1.75a.25.25 0 0 0-.25.25ZM8.5 14.5h5.75a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H8.5Z"/>
+                            </svg>
                         </button>
                         <button class="btn btn-sm btn-icon" id="ai-panel-toggle" title="Toggle Review panel">
-                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                                <path d="M6.823 7.823a.25.25 0 0 1 0 .354l-2.396 2.396A.25.25 0 0 1 4 10.396V5.604a.25.25 0 0 1 .427-.177Z"></path>
-                                <path d="M1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0 1 14.25 16H1.75A1.75 1.75 0 0 1 0 14.25V1.75C0 .784.784 0 1.75 0ZM1.5 1.75v12.5c0 .138.112.25.25.25H9.5v-13H1.75a.25.25 0 0 0-.25.25ZM11 14.5h3.25a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25H11Z"></path>
+                            <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">
+                                <path d="M2 2h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm4.655 8.595a.75.75 0 0 1 0 1.06L4.03 14.28a.75.75 0 0 1-1.06 0l-1.5-1.5a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l.97.97 2.095-2.095a.75.75 0 0 1 1.06 0ZM9.75 2.5h5.5a.75.75 0 0 1 0 1.5h-5.5a.75.75 0 0 1 0-1.5Zm0 5h5.5a.75.75 0 0 1 0 1.5h-5.5a.75.75 0 0 1 0-1.5Zm0 5h5.5a.75.75 0 0 1 0 1.5h-5.5a.75.75 0 0 1 0-1.5Zm-7.25-9v3h3v-3Z"/>
                             </svg>
                         </button>
                     </div>
@@ -383,86 +386,90 @@
                 </div>
             </main>
 
-            <!-- AI Analysis Panel (Right) -->
-            <aside class="ai-panel" id="ai-panel">
-                <div class="resize-handle resize-handle-left" data-panel="ai-panel"></div>
-                <div class="ai-panel-header">
-                    <div class="ai-panel-title">
-                        <button class="ai-avatar-small ai-summary-btn" id="ai-summary-btn" aria-label="View AI summary" title="View AI Summary">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
+            <!-- Right Panel Group (AI Panel + Chat) -->
+            <div class="right-panel-group" id="right-panel-group">
+                <!-- AI Analysis Panel (Right) -->
+                <aside class="ai-panel" id="ai-panel">
+                    <div class="resize-handle resize-handle-left" data-panel="ai-panel"></div>
+                    <div class="ai-panel-header">
+                        <div class="ai-panel-title">
+                            <button class="ai-avatar-small ai-summary-btn" id="ai-summary-btn" aria-label="View AI summary" title="View AI Summary">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="14" height="14">
+                                    <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+                                    <path d="M18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/>
+                                </svg>
+                            </button>
+                            <span>Review</span>
+                        </div>
+                        <button class="ai-panel-close" id="ai-panel-close" title="Close panel">
+                            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                                <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <!-- Analysis Context Section -->
+                    <div class="analysis-context" id="analysis-context">
+                        <!-- Empty state -->
+                        <div class="analysis-context-empty" id="analysis-context-empty">
+                            <svg class="analysis-context-empty-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-                                <path d="M18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z"/>
                             </svg>
-                        </button>
-                        <span>Review</span>
-                    </div>
-                    <button class="ai-panel-close" id="ai-panel-close" title="Close panel">
-                        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                            <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
-                        </svg>
-                    </button>
-                </div>
-
-                <!-- Analysis Context Section -->
-                <div class="analysis-context" id="analysis-context">
-                    <!-- Empty state -->
-                    <div class="analysis-context-empty" id="analysis-context-empty">
-                        <svg class="analysis-context-empty-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-                        </svg>
-                        <span>No AI analysis yet</span>
-                    </div>
-
-                    <!-- Selector (hidden until analysis exists) -->
-                    <div class="analysis-context-selector" id="analysis-context-selector" style="display: none;">
-                        <button class="analysis-context-btn" id="analysis-context-btn">
-                            <span class="analysis-context-label" id="analysis-context-label">--</span>
-                            <svg class="dropdown-caret" width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
-                                <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-                            </svg>
-                        </button>
-                    </div>
-
-                    <!-- Split-panel dropdown (hidden by default) -->
-                    <div class="analysis-context-dropdown" id="analysis-context-dropdown">
-                        <div class="analysis-run-list" id="analysis-context-list">
-                            <!-- Populated by JavaScript -->
+                            <span>No AI analysis yet</span>
                         </div>
-                        <div class="analysis-preview-panel" id="analysis-context-preview">
-                            <!-- Populated by JavaScript on hover -->
+
+                        <!-- Selector (hidden until analysis exists) -->
+                        <div class="analysis-context-selector" id="analysis-context-selector" style="display: none;">
+                            <button class="analysis-context-btn" id="analysis-context-btn">
+                                <span class="analysis-context-label" id="analysis-context-label">--</span>
+                                <svg class="dropdown-caret" width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
+                                    <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                        </div>
+
+                        <!-- Split-panel dropdown (hidden by default) -->
+                        <div class="analysis-context-dropdown" id="analysis-context-dropdown">
+                            <div class="analysis-run-list" id="analysis-context-list">
+                                <!-- Populated by JavaScript -->
+                            </div>
+                            <div class="analysis-preview-panel" id="analysis-context-preview">
+                                <!-- Populated by JavaScript on hover -->
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Segment Control -->
-                <div class="segment-control" id="segment-control">
-                    <div class="segment-control-inner">
-                        <button class="segment-btn active" data-segment="ai">AI <span class="segment-count">(0)</span></button>
-                        <button class="segment-btn" data-segment="comments">User <span class="segment-count">(0)</span></button>
-                        <button class="segment-btn" data-segment="all">All <span class="segment-count">(0)</span></button>
-                    </div>
-                </div>
-
-                <!-- Level Filter -->
-                <div class="level-filter" id="level-filter">
-                    <button class="level-pill active" data-level="final" title="Curated suggestions from all levels">Overall</button>
-                    <button class="level-pill" data-level="1" title="Line-level analysis">Line</button>
-                    <button class="level-pill" data-level="2" title="File-level analysis">File</button>
-                    <button class="level-pill" data-level="3" title="Codebase-level analysis">Codebase</button>
-                </div>
-
-                <!-- Findings Summary -->
-                <div class="findings-summary" id="findings-summary">
-                    <div class="findings-header">
-                        <span class="findings-count" id="findings-count">0 items</span>
-                    </div>
-                    <div class="findings-list" id="findings-list">
-                        <div class="findings-empty">
-                            <p>No AI analysis yet. Click "Analyze" to get started.</p>
+                    <!-- Segment Control -->
+                    <div class="segment-control" id="segment-control">
+                        <div class="segment-control-inner">
+                            <button class="segment-btn active" data-segment="ai">AI <span class="segment-count">(0)</span></button>
+                            <button class="segment-btn" data-segment="comments">User <span class="segment-count">(0)</span></button>
+                            <button class="segment-btn" data-segment="all">All <span class="segment-count">(0)</span></button>
                         </div>
                     </div>
-                </div>
-            </aside>
+
+                    <!-- Level Filter -->
+                    <div class="level-filter" id="level-filter">
+                        <button class="level-pill active" data-level="final" title="Curated suggestions from all levels">Overall</button>
+                        <button class="level-pill" data-level="1" title="Line-level analysis">Line</button>
+                        <button class="level-pill" data-level="2" title="File-level analysis">File</button>
+                        <button class="level-pill" data-level="3" title="Codebase-level analysis">Codebase</button>
+                    </div>
+
+                    <!-- Findings Summary -->
+                    <div class="findings-summary" id="findings-summary">
+                        <div class="findings-header">
+                            <span class="findings-count" id="findings-count">0 items</span>
+                        </div>
+                        <div class="findings-list" id="findings-list">
+                            <div class="findings-empty">
+                                <p>No AI analysis yet. Click "Analyze" to get started.</p>
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+                <div id="chat-panel-container"></div>
+            </div>
         </div>
     </div>
 
@@ -522,6 +529,9 @@
     <!-- Chat Panel Component -->
     <script src="/js/components/ChatPanel.js"></script>
 
+    <!-- Panel Group Component -->
+    <script src="/js/components/PanelGroup.js"></script>
+
     <!-- Local Mode Configuration -->
     <script>
         // Set local mode flag before loading main JS
@@ -533,19 +543,5 @@
 
     <!-- Local Mode JavaScript -->
     <script src="/js/local.js"></script>
-
-    <!-- Chat Panel Container -->
-    <div id="chat-panel-container"></div>
-
-    <script>
-        // Initialize chat panel and toggle button
-        (function() {
-            window.chatPanel = new ChatPanel('chat-panel-container');
-            const toggleBtn = document.getElementById('chat-toggle-btn');
-            if (toggleBtn) {
-                toggleBtn.addEventListener('click', () => window.chatPanel.toggle());
-            }
-        })();
-    </script>
 </body>
 </html>

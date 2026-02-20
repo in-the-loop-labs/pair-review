@@ -233,6 +233,22 @@ function insertTestData() {
     INSERT INTO chat_messages (id, session_id, role, content, created_at)
     VALUES (2, 1, 'assistant', 'The computeValue() function computes a derived value. Based on the diff, it was introduced to replace a bare return null with a more meaningful computation.', ?)
   `).run(now);
+
+  // Insert local review for Local mode E2E tests
+  db.prepare(`
+    INSERT INTO reviews (repository, status, review_type, local_path, local_head_sha, created_at, updated_at)
+    VALUES ('test-repo', 'draft', 'local', '/tmp/test-local-repo', 'abc123localhead', ?, ?)
+  `).run(now, now);
+
+  // Insert a minimal diff for the local review (id=2)
+  db.prepare(`
+    INSERT INTO local_diffs (review_id, diff_text, stats, captured_at)
+    VALUES (2, ?, ?, ?)
+  `).run(
+    mockWorktreeResponses.generateUnifiedDiff,
+    JSON.stringify({ files_changed: 1, additions: 25, deletions: 10 }),
+    now
+  );
 }
 
 /**
@@ -306,6 +322,7 @@ async function globalSetup() {
   app.get('/', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
   app.get('/pr/:owner/:repo/:number', (req, res) => res.sendFile(path.join(publicDir, 'pr.html')));
   app.get('/settings/:owner/:repo', (req, res) => res.sendFile(path.join(publicDir, 'repo-settings.html')));
+  app.get('/local/:reviewId', (req, res) => res.sendFile(path.join(publicDir, 'local.html')));
   app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
   // Store database and config (port is set after server starts — see port retry block below)
@@ -588,6 +605,7 @@ async function globalSetup() {
   const prRoutes = require('../../src/routes/pr');
   const councilRoutes = require('../../src/routes/councils');
   const chatRoutes = require('../../src/routes/chat');
+  const localRoutes = require('../../src/routes/local');
 
   // Mock chat session manager for E2E (reads from DB, no real bridge)
   app.chatSessionManager = {
@@ -615,6 +633,7 @@ async function globalSetup() {
   app.use('/', prRoutes);
   app.use('/', councilRoutes);
   app.use('/', chatRoutes);
+  app.use('/', localRoutes);
 
   // Error handling
   app.use((error, req, res, next) => {

@@ -142,6 +142,7 @@ class KeyboardShortcuts {
     const groups = {
       navigation: { title: 'Navigation', shortcuts: [] },
       comments: { title: 'Comments', shortcuts: [] },
+      panels: { title: 'Panels', shortcuts: [] },
       general: { title: 'General', shortcuts: [] }
     };
 
@@ -154,6 +155,8 @@ class KeyboardShortcuts {
         groups.navigation.shortcuts.push(item);
       } else if (keys[0] === 'c') {
         groups.comments.shortcuts.push(item);
+      } else if (keys[0] === 'p') {
+        groups.panels.shortcuts.push(item);
       } else {
         groups.general.shortcuts.push(item);
       }

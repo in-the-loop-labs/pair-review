@@ -274,6 +274,7 @@ class AIPanel {
         }
         // Set CSS variable to 0 so width calculations don't reserve space
         document.documentElement.style.setProperty('--ai-panel-width', '0px');
+        window.panelGroup?._onReviewVisibilityChanged(false);
     }
 
     expand() {
@@ -283,6 +284,7 @@ class AIPanel {
         }
         // Restore CSS variable from saved width or default
         document.documentElement.style.setProperty('--ai-panel-width', `${this.getEffectivePanelWidth()}px`);
+        window.panelGroup?._onReviewVisibilityChanged(true);
     }
 
     /**

@@ -477,6 +477,12 @@ class PRManager {
     // Eagerly connect chat SSE so review events flow even before chat opens
     window.chatPanel?._ensureGlobalSSE();
 
+    // Late-bind reviewId to ChatPanel if it was auto-opened by PanelGroup
+    // before prManager was ready (DOMContentLoaded race condition)
+    if (this.currentPR?.id) {
+      window.chatPanel?._lateBindReview(this.currentPR.id).catch(err => console.warn('[ChatPanel] Late-bind failed:', err));
+    }
+
     // Dirty flags for stale-tab recovery
     this._dirtyComments = false;
     this._dirtySuggestions = false;

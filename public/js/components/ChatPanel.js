@@ -155,11 +155,13 @@ class ChatPanel {
       }
     });
 
-    // Escape: stop agent if streaming, otherwise close panel
+    // Escape: stop agent if streaming, blur textarea if focused, otherwise close panel
     this._onKeydown = (e) => {
       if (e.key === 'Escape' && this.isOpen) {
         if (this.isStreaming) {
           this._stopAgent();
+        } else if (document.activeElement === this.inputEl) {
+          this.inputEl.blur();
         } else {
           this.close();
         }
@@ -186,7 +188,7 @@ class ChatPanel {
       // Panel is right-anchored, so dragging left (decreasing clientX) should increase width
       const delta = startX - e.clientX;
       const newWidth = Math.max(min, Math.min(max, startWidth + delta));
-      this.panel.style.width = newWidth + 'px';
+      document.documentElement.style.setProperty('--chat-panel-width', newWidth + 'px');
     };
 
     const onMouseUp = () => {
@@ -200,6 +202,9 @@ class ChatPanel {
 
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
+
+      // Notify PanelGroup so --right-panel-group-width stays in sync
+      window.panelGroup?._updateRightPanelGroupWidth();
     };
 
     handle.addEventListener('mousedown', (e) => {
@@ -239,6 +244,28 @@ class ChatPanel {
   }
 
   /**
+   * Disable chat input and send button (e.g. while reviewId is unavailable).
+   * Saves the original placeholder so _enableInput() can restore it.
+   */
+  _disableInput() {
+    this._savedPlaceholder = this.inputEl.placeholder;
+    this.inputEl.disabled = true;
+    this.inputEl.placeholder = 'Connecting to review\u2026';
+    this.sendBtn.disabled = true;
+  }
+
+  /**
+   * Re-enable chat input and send button after reviewId becomes available.
+   * Restores the original placeholder saved by _disableInput().
+   */
+  _enableInput() {
+    this.inputEl.disabled = false;
+    this.inputEl.placeholder = this._savedPlaceholder || 'Ask about this review...';
+    this._savedPlaceholder = null;
+    this.sendBtn.disabled = !this.inputEl.value.trim() || this.isStreaming;
+  }
+
+  /**
    * Update the chat panel title with provider and model info.
    * @param {string} [provider='Pi'] - Provider display name
    * @param {string} [model] - Model ID or display name (e.g. 'default', 'multi-model')
@@ -246,7 +273,7 @@ class ChatPanel {
   _updateTitle(provider = 'Pi', model) {
     if (!this.titleEl) return;
     const svg = this.titleEl.querySelector('svg')?.outerHTML || '';
-    const modelDisplay = model && model !== 'default'
+    const modelDisplay = model
       ? model.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
       : null;
     const parts = ['Chat', provider];
@@ -301,14 +328,18 @@ class ChatPanel {
       this.reviewId = window.prManager.currentPR.id;
     }
 
-    // Restore persisted width before opening
-    const { min, max, storageKey } = this._resizeConfig;
+    // Restore persisted width before opening (mirrors AIPanel.expand pattern)
+    const { min, max, default: defaultWidth, storageKey } = this._resizeConfig;
     const savedWidth = localStorage.getItem(storageKey);
     if (savedWidth) {
       const width = parseInt(savedWidth, 10);
       if (width >= min && width <= max) {
-        this.panel.style.width = width + 'px';
+        document.documentElement.style.setProperty('--chat-panel-width', width + 'px');
+      } else {
+        document.documentElement.style.setProperty('--chat-panel-width', defaultWidth + 'px');
       }
+    } else {
+      document.documentElement.style.setProperty('--chat-panel-width', defaultWidth + 'px');
     }
 
     this.isOpen = true;
@@ -345,8 +376,16 @@ class ChatPanel {
       this._contextItemId = null;
     }
 
+    // Gate input when reviewId is not yet available (PanelGroup auto-restore race)
+    if (!this.reviewId) {
+      this._disableInput();
+    }
+
     this._updateActionButtons();
-    this.inputEl.focus();
+    window.panelGroup?._onChatVisibilityChanged(true);
+    if (!options.suppressFocus) {
+      this.inputEl.focus();
+    }
   }
 
   /**
@@ -366,10 +405,13 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;
     this._contextItemId = null;
+    // Zero out CSS variable so max-width calcs don't reserve space (mirrors AIPanel.collapse)
+    document.documentElement.style.setProperty('--chat-panel-width', '0px');
     // Preserve _analysisContextRemoved and _sessionAnalysisRunId across
     // close/reopen so _ensureAnalysisContext can detect NEW runs on the next
     // expand. These are reset by _startNewConversation() or when a new run
     // is detected in _ensureAnalysisContext().
+    window.panelGroup?._onChatVisibilityChanged(false);
   }
 
   /**
@@ -547,6 +589,33 @@ class ChatPanel {
   }
 
   /**
+   * Late-bind a reviewId after the panel has already been opened.
+   * Called by PRManager._initReviewEventListeners() (or equivalent in local.js)
+   * to handle the race condition where PanelGroup auto-restores an open chat
+   * panel during DOMContentLoaded, before prManager has loaded the review.
+   * If the panel is open and has no reviewId yet, this sets it and loads
+   * the MRU session so the user sees their previous conversation.
+   * @param {number} reviewId - The review ID from prManager
+   */
+  async _lateBindReview(reviewId) {
+    if (!reviewId) return;
+    if (this.reviewId) return; // already bound
+    this.reviewId = reviewId;
+    console.debug('[ChatPanel] Late-bound reviewId:', reviewId);
+
+    // Re-enable input now that reviewId is available
+    if (this.inputEl.disabled) {
+      this._enableInput();
+    }
+
+    // If the panel is already open, load the MRU session now
+    if (this.isOpen && !this.currentSessionId) {
+      await this._loadMRUSession();
+      this._ensureAnalysisContext();
+    }
+  }
+
+  /**
    * Create a new chat session via API
    * @param {number} contextCommentId - Optional AI suggestion ID for context
    * @returns {Object|null} Session data ({ id, status, context? }) or null on failure
@@ -599,6 +668,9 @@ class ChatPanel {
     const content = this.inputEl.value.trim();
     if (!content || this.isStreaming) return;
 
+    // Save message text before clearing (for error recovery)
+    const messageText = content;
+
     // Clear input
     this.inputEl.value = '';
     this._autoResizeTextarea();
@@ -609,13 +681,24 @@ class ChatPanel {
     if (emptyState) emptyState.remove();
 
     // Display user message (just the user's actual text)
-    this.addMessage('user', content);
+    const msgElRef = this.addMessage('user', content);
 
     // Lazy session creation: create on first message, not on panel open
     if (!this.currentSessionId) {
       this._ensureGlobalSSE();
       const sessionData = await this.createSession();
-      if (!sessionData) return;
+      if (!sessionData) {
+        // Restore the user's message text into the input
+        this.inputEl.value = messageText;
+        this._autoResizeTextarea();
+        this.sendBtn.disabled = false;
+        // Remove the phantom message bubble
+        if (msgElRef) msgElRef.remove();
+        this.messages.pop();
+        // Show error
+        this._showError('Unable to start chat session. Please try again.');
+        return;
+      }
       this._showAnalysisContextIfPresent(sessionData);
     }
     // If currentSessionId is set (from MRU), just send — server auto-resumes
@@ -655,11 +738,28 @@ class ChatPanel {
     // Send to API
     try {
       console.debug('[ChatPanel] Sending message to session', this.currentSessionId);
-      const response = await fetch(`/api/chat/session/${this.currentSessionId}/message`, {
+      let response = await fetch(`/api/chat/session/${this.currentSessionId}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+
+      // Handle 410 Gone: session is not resumable — transparently create a new one and retry once
+      if (response.status === 410) {
+        console.debug('[ChatPanel] Session not resumable (410), creating new session and retrying');
+        this.currentSessionId = null;
+        this._ensureGlobalSSE();
+        const sessionData = await this.createSession();
+        if (!sessionData) {
+          throw new Error('Failed to create replacement session');
+        }
+
+        response = await fetch(`/api/chat/session/${this.currentSessionId}/message`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
@@ -845,7 +945,7 @@ class ChatPanel {
     if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
-    this.scrollToBottom();
+    requestAnimationFrame(() => this.scrollToBottom());
   }
 
   /**
@@ -1057,7 +1157,7 @@ class ChatPanel {
     if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
-    this.scrollToBottom();
+    requestAnimationFrame(() => this.scrollToBottom());
   }
 
   /**
@@ -1090,7 +1190,7 @@ class ChatPanel {
     if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
-    this.scrollToBottom();
+    requestAnimationFrame(() => this.scrollToBottom());
   }
 
   /**
@@ -1296,7 +1396,7 @@ class ChatPanel {
     } else {
       this.messagesEl.appendChild(card);
     }
-    this.scrollToBottom();
+    requestAnimationFrame(() => this.scrollToBottom());
   }
 
   /**
@@ -1447,6 +1547,7 @@ class ChatPanel {
    * @param {string} role - 'user' or 'assistant'
    * @param {string} content - Message text
    * @param {number} id - Optional message ID
+   * @returns {HTMLElement} The message element that was appended
    */
   addMessage(role, content, id) {
     const msg = { role, content, id };
@@ -1469,6 +1570,7 @@ class ChatPanel {
     msgEl.appendChild(bubble);
     this.messagesEl.appendChild(msgEl);
     this.scrollToBottom();
+    return msgEl;
   }
 
   /**
