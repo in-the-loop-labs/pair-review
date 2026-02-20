@@ -135,13 +135,13 @@ test.describe('Panel Resize - PR Mode', () => {
 
   test.describe('AI Panel Resize', () => {
     test('should have a resize handle on the AI panel', async ({ page }) => {
-      const resizeHandle = page.locator('.resize-handle[data-panel="ai-panel"]');
+      const resizeHandle = page.locator('#ai-panel > .resize-handle[data-panel="ai-panel"]');
       await expect(resizeHandle).toBeVisible();
     });
 
     test('should change AI panel width when dragging the resize handle', async ({ page }) => {
       const aiPanel = page.locator('#ai-panel');
-      const resizeHandle = page.locator('.resize-handle[data-panel="ai-panel"]');
+      const resizeHandle = page.locator('#ai-panel > .resize-handle[data-panel="ai-panel"]');
 
       // Get initial width
       const initialWidth = await aiPanel.evaluate(el => el.offsetWidth);
@@ -157,7 +157,7 @@ test.describe('Panel Resize - PR Mode', () => {
 
     test('should persist AI panel width to localStorage', async ({ page }) => {
       const aiPanel = page.locator('#ai-panel');
-      const resizeHandle = page.locator('.resize-handle[data-panel="ai-panel"]');
+      const resizeHandle = page.locator('#ai-panel > .resize-handle[data-panel="ai-panel"]');
 
       // Get initial width (may vary based on viewport/media queries)
       const initialWidth = await aiPanel.evaluate(el => el.offsetWidth);
@@ -174,7 +174,7 @@ test.describe('Panel Resize - PR Mode', () => {
 
     test('should respect minimum AI panel width constraint', async ({ page }) => {
       const aiPanel = page.locator('#ai-panel');
-      const resizeHandle = page.locator('.resize-handle[data-panel="ai-panel"]');
+      const resizeHandle = page.locator('#ai-panel > .resize-handle[data-panel="ai-panel"]');
 
       // Drag the handle 200px to the right (way past minimum)
       await dragResizeHandle(page, resizeHandle, 200);
@@ -186,7 +186,7 @@ test.describe('Panel Resize - PR Mode', () => {
 
     test('should respect maximum AI panel width constraint', async ({ page }) => {
       const aiPanel = page.locator('#ai-panel');
-      const resizeHandle = page.locator('.resize-handle[data-panel="ai-panel"]');
+      const resizeHandle = page.locator('#ai-panel > .resize-handle[data-panel="ai-panel"]');
 
       // Drag the handle 400px to the left (way past maximum)
       await dragResizeHandle(page, resizeHandle, -400);
@@ -284,7 +284,7 @@ test.describe('Panel Resize - Local Mode', () => {
 
       // Verify resize handles exist
       const sidebarHandle = page.locator('.resize-handle[data-panel="sidebar"]');
-      const aiPanelHandle = page.locator('.resize-handle[data-panel="ai-panel"]');
+      const aiPanelHandle = page.locator('#ai-panel > .resize-handle[data-panel="ai-panel"]');
 
       await expect(sidebarHandle).toBeVisible();
       await expect(aiPanelHandle).toBeVisible();

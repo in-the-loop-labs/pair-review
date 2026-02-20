@@ -39,6 +39,7 @@ test.describe('Panel Group - PR Mode', () => {
   test('chat button toggles chat panel visibility', async ({ page }) => {
     const chatBtn = page.locator('#chat-toggle-btn');
     const chatPanel = page.locator('.chat-panel');
+    const chatCloseBtn = page.locator('.chat-panel__close-btn');
 
     // Chat panel should be hidden initially
     await expect(chatPanel).not.toBeVisible();
@@ -47,13 +48,14 @@ test.describe('Panel Group - PR Mode', () => {
     await chatBtn.click();
     await expect(chatPanel).toBeVisible();
 
-    // Click again to close
-    await chatBtn.click();
+    // Toggle button is hidden when chat is open; use close button instead
+    await chatCloseBtn.click();
     await expect(chatPanel).not.toBeVisible();
   });
 
   test('chat button shows active state when chat is open', async ({ page }) => {
     const chatBtn = page.locator('#chat-toggle-btn');
+    const chatCloseBtn = page.locator('.chat-panel__close-btn');
 
     // Should not be active initially
     await expect(chatBtn).not.toHaveClass(/active/);
@@ -62,8 +64,8 @@ test.describe('Panel Group - PR Mode', () => {
     await chatBtn.click();
     await expect(chatBtn).toHaveClass(/active/);
 
-    // Close chat
-    await chatBtn.click();
+    // Toggle button is hidden when chat is open; use close button instead
+    await chatCloseBtn.click();
     await expect(chatBtn).not.toHaveClass(/active/);
   });
 
@@ -236,6 +238,7 @@ test.describe('Panel Group - Local Mode', () => {
   test('chat button toggles chat panel visibility', async ({ page }) => {
     const chatBtn = page.locator('#chat-toggle-btn');
     const chatPanel = page.locator('.chat-panel');
+    const chatCloseBtn = page.locator('.chat-panel__close-btn');
 
     // Chat panel should be hidden initially
     await expect(chatPanel).not.toBeVisible();
@@ -244,8 +247,8 @@ test.describe('Panel Group - Local Mode', () => {
     await chatBtn.click();
     await expect(chatPanel).toBeVisible();
 
-    // Click again to close
-    await chatBtn.click();
+    // Toggle button is hidden when chat is open; use close button instead
+    await chatCloseBtn.click();
     await expect(chatPanel).not.toBeVisible();
   });
 
