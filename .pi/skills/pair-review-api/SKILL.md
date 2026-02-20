@@ -333,9 +333,65 @@ The `type` field on comments and suggestions can be one of:
 
 ---
 
+## Context Files
+
+Add non-diff files to the review's diff panel for reference during discussion. Each context file shows a specific line range from a file that isn't part of the PR/local changes.
+
+### Add a context file
+
+```bash
+curl -s -X POST http://localhost:PORT/api/reviews/REVIEW_ID/context-files \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "file": "src/utils/helpers.js",
+    "line_start": 42,
+    "line_end": 78,
+    "label": "Helper function used by the changed code"
+  }'
+```
+
+**Response (HTTP 201):** `{ "success": true, "contextFile": { "id": 1, "review_id": 1, "file": "...", "line_start": 42, "line_end": 78, "label": "..." } }`
+
+Required fields: `file` (must be a relative path without `..` segments), `line_start`, `line_end`.
+Optional fields: `label`.
+
+### List context files
+
+```bash
+curl -s http://localhost:PORT/api/reviews/REVIEW_ID/context-files
+```
+
+**Response:** `{ "success": true, "contextFiles": [...] }`
+
+### Remove a context file
+
+```bash
+curl -s -X DELETE http://localhost:PORT/api/reviews/REVIEW_ID/context-files/CONTEXT_FILE_ID
+```
+
+**Response:** `{ "success": true, "message": "Context file removed" }`
+
+### Remove all context files
+
+```bash
+curl -s -X DELETE http://localhost:PORT/api/reviews/REVIEW_ID/context-files
+```
+
+**Response:** `{ "success": true, "deletedCount": 3, "message": "Removed 3 context files" }`
+
+### Guidelines
+
+- Use judiciously -- only add files that are directly relevant to the discussion.
+- Keep ranges focused on specific functions/blocks (max 500 lines).
+- Use the `label` field to explain why the file is relevant.
+- Context files appear in the diff panel below the actual changes.
+- Reference context files in chat using backtick notation: `` `src/utils/helpers.js:42-78` ``.
+
+---
+
 ## Notes
 
-- Replace `PORT`, `REVIEW_ID`, `OWNER`, `REPO`, `PR_NUMBER`, `COMMENT_ID`, `SUGGESTION_ID`, `ANALYSIS_ID`, and `RUN_ID` with actual values from the review context.
+- Replace `PORT`, `REVIEW_ID`, `OWNER`, `REPO`, `PR_NUMBER`, `COMMENT_ID`, `SUGGESTION_ID`, `ANALYSIS_ID`, `RUN_ID`, and `CONTEXT_FILE_ID` with actual values from the review context.
 - `REVIEW_ID` is the integer review ID from the `reviews` table. It is the same for both PR and local reviews and is provided in your system prompt context.
 - `ANALYSIS_ID` and `RUN_ID` are UUIDs returned when an analysis is launched.
 - All POST/PUT/DELETE endpoints return `{ "success": true, ... }` on success.

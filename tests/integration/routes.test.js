@@ -129,6 +129,7 @@ const configRoutes = require('../../src/routes/config');
 const worktreesRoutes = require('../../src/routes/worktrees');
 const prRoutes = require('../../src/routes/pr');
 const localRoutes = require('../../src/routes/local');
+const contextFilesRoutes = require('../../src/routes/context-files');
 
 /**
  * Create a test Express app with all route modules
@@ -155,6 +156,7 @@ function createTestApp(db) {
   app.use('/', worktreesRoutes);
   app.use('/', localRoutes);
   app.use('/', prRoutes);
+  app.use('/', contextFilesRoutes);
 
   return app;
 }
@@ -5417,6 +5419,329 @@ describe('Worktree Tiered Discovery', () => {
 
       const localPath = await repoSettingsRepo.getLocalPath('owner/repo');
       expect(localPath).toBe('/my/repo/path');
+    });
+  });
+});
+
+// ============================================================================
+// Context Files Endpoint Tests
+// ============================================================================
+
+describe('Context Files Endpoints', () => {
+  let db;
+  let app;
+  let reviewId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+
+    // Insert a review record for context file tests
+    const result = await run(db, `
+      INSERT INTO reviews (pr_number, repository, status)
+      VALUES (?, ?, ?)
+    `, [1, 'owner/repo', 'draft']);
+    reviewId = result.lastID;
+
+    // Insert pr_metadata for diff overlap testing
+    await run(db, `
+      INSERT INTO pr_metadata (pr_number, repository, pr_data)
+      VALUES (?, ?, ?)
+    `, [1, 'owner/repo', JSON.stringify({
+      changed_files: [
+        { file: 'src/existing-diff-file.js', insertions: 5, deletions: 2 },
+        { file: 'src/another-changed.js', insertions: 3, deletions: 1 }
+      ]
+    })]);
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+  });
+
+  describe('POST /api/reviews/:reviewId/context-files', () => {
+    it('should create a context file with valid data', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
+
+      expect(response.status).toBe(201);
+      expect(response.body.success).toBe(true);
+      expect(response.body.contextFile).toBeDefined();
+      expect(response.body.contextFile.file).toBe('src/utils.js');
+      expect(response.body.contextFile.line_start).toBe(10);
+      expect(response.body.contextFile.line_end).toBe(25);
+      expect(response.body.contextFile.label).toBeNull();
+      expect(response.body.contextFile.id).toBeGreaterThan(0);
+      expect(response.body.contextFile.review_id).toBe(reviewId);
+    });
+
+    it('should create a context file with optional label', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 1, line_end: 50, label: 'helper functions' });
+
+      expect(response.status).toBe(201);
+      expect(response.body.success).toBe(true);
+      expect(response.body.contextFile.label).toBe('helper functions');
+    });
+
+    it('should return 400 when file is missing', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ line_start: 10, line_end: 25 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('file is required');
+    });
+
+    it('should return 400 when file is empty string', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: '  ', line_start: 10, line_end: 25 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('file is required');
+    });
+
+    it('should return 400 when line_start is missing', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_end: 25 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('line_start must be a positive integer');
+    });
+
+    it('should return 400 when line_start is invalid', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: -1, line_end: 25 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('line_start must be a positive integer');
+    });
+
+    it('should return 400 when line_end < line_start', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 25, line_end: 10 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('line_end must be >= line_start');
+    });
+
+    it('should return 400 when range exceeds 500 lines', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 1, line_end: 502 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Range cannot exceed 500 lines');
+    });
+
+    it('should allow exactly 500 lines', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 1, line_end: 500 });
+
+      expect(response.status).toBe(201);
+      expect(response.body.success).toBe(true);
+    });
+
+    it('should return 400 for path traversal in file', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: '../../etc/passwd', line_start: 1, line_end: 10 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('relative path');
+    });
+
+    it('should return 400 for absolute path in file', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: '/etc/passwd', line_start: 1, line_end: 10 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('relative path');
+    });
+
+    it('should return 400 for invalid reviewId', async () => {
+      const response = await request(app)
+        .post('/api/reviews/invalid/context-files')
+        .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid review ID');
+    });
+
+    it('should return 404 for non-existent reviewId', async () => {
+      const response = await request(app)
+        .post('/api/reviews/99999/context-files')
+        .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
+    it('should return 400 when file is already in the diff', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/existing-diff-file.js', line_start: 1, line_end: 10 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('already part of the diff');
+    });
+
+    it('should allow files not in the diff', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/not-in-diff.js', line_start: 1, line_end: 10 });
+
+      expect(response.status).toBe(201);
+      expect(response.body.success).toBe(true);
+    });
+  });
+
+  describe('GET /api/reviews/:reviewId/context-files', () => {
+    it('should return all context files for a review', async () => {
+      // Add context files directly via POST
+      await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/a.js', line_start: 1, line_end: 10 });
+
+      await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/b.js', line_start: 20, line_end: 30, label: 'section B' });
+
+      const response = await request(app)
+        .get(`/api/reviews/${reviewId}/context-files`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.contextFiles).toHaveLength(2);
+      expect(response.body.contextFiles[0].file).toBe('src/a.js');
+      expect(response.body.contextFiles[1].file).toBe('src/b.js');
+      expect(response.body.contextFiles[1].label).toBe('section B');
+    });
+
+    it('should return empty array when none exist', async () => {
+      const response = await request(app)
+        .get(`/api/reviews/${reviewId}/context-files`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.contextFiles).toEqual([]);
+    });
+  });
+
+  describe('DELETE /api/reviews/:reviewId/context-files/:id', () => {
+    it('should remove a specific context file', async () => {
+      const createResponse = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
+
+      const contextFileId = createResponse.body.contextFile.id;
+
+      const deleteResponse = await request(app)
+        .delete(`/api/reviews/${reviewId}/context-files/${contextFileId}`);
+
+      expect(deleteResponse.status).toBe(200);
+      expect(deleteResponse.body.success).toBe(true);
+      expect(deleteResponse.body.message).toBe('Context file removed');
+
+      // Verify it's gone
+      const listResponse = await request(app)
+        .get(`/api/reviews/${reviewId}/context-files`);
+
+      expect(listResponse.body.contextFiles).toHaveLength(0);
+    });
+
+    it('should return 404 for non-existent id', async () => {
+      const response = await request(app)
+        .delete(`/api/reviews/${reviewId}/context-files/99999`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('Context file not found');
+    });
+
+    it('should return 400 for invalid id', async () => {
+      const response = await request(app)
+        .delete(`/api/reviews/${reviewId}/context-files/invalid`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid context file ID');
+    });
+
+    it('should return 404 when trying to delete context file from wrong review', async () => {
+      // Create a second review
+      const result = await run(db, `
+        INSERT INTO reviews (pr_number, repository, status)
+        VALUES (?, ?, ?)
+      `, [2, 'owner/other-repo', 'draft']);
+      const otherReviewId = result.lastID;
+
+      // Create a context file under the other review
+      const createResponse = await request(app)
+        .post(`/api/reviews/${otherReviewId}/context-files`)
+        .send({ file: 'src/secret.js', line_start: 1, line_end: 10 });
+
+      const contextFileId = createResponse.body.contextFile.id;
+
+      // Attempt to delete it via the first review's URL
+      const deleteResponse = await request(app)
+        .delete(`/api/reviews/${reviewId}/context-files/${contextFileId}`);
+
+      expect(deleteResponse.status).toBe(404);
+      expect(deleteResponse.body.error).toContain('Context file not found');
+
+      // Verify the context file still exists under the correct review
+      const listResponse = await request(app)
+        .get(`/api/reviews/${otherReviewId}/context-files`);
+
+      expect(listResponse.body.contextFiles).toHaveLength(1);
+    });
+  });
+
+  describe('DELETE /api/reviews/:reviewId/context-files', () => {
+    it('should remove all context files for a review', async () => {
+      // Add multiple context files
+      await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/a.js', line_start: 1, line_end: 10 });
+
+      await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/b.js', line_start: 20, line_end: 30 });
+
+      await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/c.js', line_start: 40, line_end: 50 });
+
+      const deleteResponse = await request(app)
+        .delete(`/api/reviews/${reviewId}/context-files`);
+
+      expect(deleteResponse.status).toBe(200);
+      expect(deleteResponse.body.success).toBe(true);
+      expect(deleteResponse.body.deletedCount).toBe(3);
+
+      // Verify they are all gone
+      const listResponse = await request(app)
+        .get(`/api/reviews/${reviewId}/context-files`);
+
+      expect(listResponse.body.contextFiles).toHaveLength(0);
+    });
+
+    it('should return 0 count when no context files exist', async () => {
+      const response = await request(app)
+        .delete(`/api/reviews/${reviewId}/context-files`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.deletedCount).toBe(0);
     });
   });
 });

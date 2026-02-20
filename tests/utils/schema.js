@@ -203,6 +203,19 @@ const SCHEMA_SQL = {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
     )
+  `,
+
+  context_files: `
+    CREATE TABLE IF NOT EXISTS context_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      file TEXT NOT NULL,
+      line_start INTEGER NOT NULL,
+      line_end INTEGER NOT NULL,
+      label TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
   `
 };
 
@@ -238,7 +251,9 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_parent ON analysis_runs(parent_run_id)',
   // Chat indexes
   'CREATE INDEX IF NOT EXISTS idx_chat_sessions_review ON chat_sessions(review_id)',
-  'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)'
+  'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)',
+  // Context files indexes
+  'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)'
 ];
 
 /**

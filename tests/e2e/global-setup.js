@@ -597,6 +597,30 @@ async function globalSetup() {
     });
   });
 
+  // New reviewId-centric file content endpoint (mirrors the legacy mock above)
+  app.get('/api/reviews/:reviewId/file-content/:fileName(*)', (req, res) => {
+    const fileName = decodeURIComponent(req.params.fileName);
+
+    if (fileName === 'src/utils.js') {
+      const lines = [];
+      for (let i = 1; i <= 60; i++) {
+        if (i === 30) {
+          lines.push('function exportSection() {');
+        } else if (i <= 8) {
+          lines.push(`// Line ${i} of utils.js`);
+        } else if (i >= 50) {
+          lines.push(`// Line ${i} of utils.js - export section`);
+        } else {
+          lines.push(`// Line ${i} - gap content`);
+        }
+      }
+      return res.json({ fileName, lines, totalLines: lines.length });
+    }
+
+    const lines = Array.from({ length: 30 }, (_, i) => `// Line ${i + 1} of ${fileName}`);
+    res.json({ fileName, lines, totalLines: lines.length });
+  });
+
   // Load API routes
   const analysisRoutes = require('../../src/routes/analyses');
   const worktreesRoutes = require('../../src/routes/worktrees');
@@ -606,6 +630,7 @@ async function globalSetup() {
   const councilRoutes = require('../../src/routes/councils');
   const chatRoutes = require('../../src/routes/chat');
   const localRoutes = require('../../src/routes/local');
+  const contextFilesRoutes = require('../../src/routes/context-files');
 
   // Mock chat session manager for E2E (reads from DB, no real bridge)
   app.chatSessionManager = {
@@ -634,6 +659,7 @@ async function globalSetup() {
   app.use('/', councilRoutes);
   app.use('/', chatRoutes);
   app.use('/', localRoutes);
+  app.use('/', contextFilesRoutes);
 
   // Error handling
   app.use((error, req, res, next) => {

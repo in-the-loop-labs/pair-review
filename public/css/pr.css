@@ -10843,6 +10843,64 @@ body.resizing * {
   padding-left: 20px;
 }
 
+/* Chat file links (auto-linked file:line references in assistant messages) */
+.chat-file-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--color-accent, #0969da);
+  text-decoration: none;
+  background: var(--color-bg-tertiary);
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.chat-file-link:hover {
+  background: var(--color-bg-accent-subtle, rgba(9, 105, 218, 0.1));
+  text-decoration: underline;
+}
+
+.chat-file-link__icon {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+/* Highlight flash when navigating to a line from a chat file link */
+.chat-file-link--highlight {
+  animation: chat-file-link-flash 2s ease-out;
+}
+
+@keyframes chat-file-link-flash {
+  0% { background-color: rgba(227, 179, 65, 0.25); }
+  100% { background-color: transparent; }
+}
+
+/* Gutter arrow for "already here" micro-feedback */
+.chat-gutter-arrow {
+  position: absolute;
+  left: -2px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #e3b341;
+  font-size: 20px;
+  font-weight: bold;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  z-index: 2;
+}
+
+.chat-gutter-arrow--fade {
+  opacity: 0;
+}
+
+[data-theme="dark"] .chat-gutter-arrow {
+  color: #e3b341;
+}
+
 /* Error bubble */
 .chat-panel__error-bubble {
   display: flex;
@@ -11297,4 +11355,151 @@ body.resizing * {
   .chat-panel {
     width: 100% !important;
   }
+}
+
+/* ==========================================================================
+   Context Files
+   Pinned non-diff file ranges shown below the diff for review context
+   ========================================================================== */
+
+/* Context badge for sidebar and diff header */
+.context-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #bf6a02;
+  border: 1px solid #bf6a02;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .context-badge {
+  color: #e09b3d;
+  border-color: #e09b3d;
+}
+
+/* Smaller context badge in file navigator */
+.file-item .context-badge {
+  font-size: 9px;
+  padding: 0px 4px;
+  opacity: 0.7;
+}
+
+/* Smaller context badge in diff panel header */
+.context-file-header .context-badge {
+  font-size: 9px;
+  padding: 0px 4px;
+}
+
+.d2h-file-wrapper.context-file {
+  border-left: 3px solid var(--color-accent-primary, #0969da);
+  margin-bottom: 24px;
+  overflow-x: auto;
+  max-width: 100%;
+  background: var(--color-bg-subtle, #f6f8fa);
+}
+
+.context-file-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--color-bg-secondary);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-primary);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+/* Override flex: 1 so the file name doesn't push the badge away */
+.context-file-header .d2h-file-name {
+  flex: none;
+}
+
+/* Push viewed checkbox (and everything after it) to the right */
+.context-file-header .file-viewed-label {
+  margin-left: auto;
+}
+
+.context-file-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-accent-primary, #0969da);
+  background: var(--color-accent-lighter, rgba(9, 105, 218, 0.08));
+  border-radius: 12px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  white-space: nowrap;
+}
+
+/* Label is now a tooltip on the CONTEXT badge (title attribute) */
+
+.context-file-dismiss {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--color-text-tertiary);
+  transition: background-color 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+
+.context-file-dismiss:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-danger, #cf222e);
+}
+
+.file-item.context-file-item .file-name {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+/* Highlight flash animation for scroll-to-line targeting */
+.highlight-flash {
+  animation: highlightFlash 1.5s ease-out;
+}
+
+@keyframes highlightFlash {
+  0% {
+    background-color: var(--color-selection, #fff8c5);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* Dark theme overrides for context files */
+[data-theme="dark"] .d2h-file-wrapper.context-file {
+  border-left-color: var(--color-accent-primary, #58a6ff);
+  background: var(--color-bg-subtle, #161b22);
+}
+
+[data-theme="dark"] .context-file-badge {
+  color: var(--color-accent-primary, #58a6ff);
+  background: var(--color-accent-lighter, rgba(88, 166, 255, 0.08));
+}
+
+[data-theme="dark"] .context-file-dismiss:hover {
+  color: var(--color-danger, #f85149);
+}
+
+[data-theme="dark"] .chat-file-link {
+  color: var(--color-accent-primary, #58a6ff);
+  background: var(--color-bg-tertiary);
+}
+
+[data-theme="dark"] .chat-file-link:hover {
+  color: var(--color-accent-hover, #1f6feb);
+  background: var(--color-bg-accent-subtle, rgba(88, 166, 255, 0.1));
 }
