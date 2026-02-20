@@ -273,14 +273,14 @@ test.describe('Panel Resize - Local Mode', () => {
   test('should have resize handles in local mode HTML', async ({ page }) => {
     // Navigate to the local mode index page
     await page.goto('/local');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Check if there's a local review we can navigate to
     const reviewLink = page.locator('a[href^="/local/"]').first();
     if (await reviewLink.isVisible({ timeout: 2000 }).catch(() => false)) {
       // Navigate to the review page
       await reviewLink.click();
-      await page.waitForLoadState('networkidle');
+      await waitForDiffToRender(page);
 
       // Verify resize handles exist
       const sidebarHandle = page.locator('.resize-handle[data-panel="sidebar"]');
@@ -303,7 +303,7 @@ test.describe('Panel Resize - Local Mode', () => {
   test('should share localStorage between PR and local modes', async ({ page }) => {
     // Set a sidebar width in PR mode
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Set a custom width via localStorage
     await page.evaluate(() => {
@@ -312,7 +312,7 @@ test.describe('Panel Resize - Local Mode', () => {
 
     // Navigate to local mode index
     await page.goto('/local');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Verify localStorage is shared (same origin)
     const savedWidth = await page.evaluate(() => {

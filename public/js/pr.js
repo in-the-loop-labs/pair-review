@@ -139,6 +139,11 @@ class PRManager {
     this.selectedRunId = null;
     // Keyboard shortcuts manager
     this.keyboardShortcuts = null;
+    // Unique client ID for self-echo suppression on SSE review events.
+    // Sent as X-Client-Id header on mutation requests; the server echoes
+    // it back in the SSE broadcast so this tab can skip its own events.
+    this._clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    this._installFetchInterceptor();
 
     // Initialize modules
     this.lineTracker = new window.LineTracker();
@@ -182,6 +187,48 @@ class PRManager {
     if (!window.PAIR_REVIEW_LOCAL_MODE) {
       this.init();
     }
+  }
+
+  /**
+   * Install a global fetch interceptor that adds X-Client-Id to all
+   * mutation requests (POST/PUT/DELETE) targeting the review API.
+   * This is the SINGLE SOURCE of X-Client-Id injection — no individual
+   * fetch call site should manually set this header.
+   * This ensures that even direct fetch() calls (e.g. from page.evaluate
+   * in tests, or any code that bypasses PRManager methods) carry the
+   * client ID so the server can tag the SSE broadcast for self-echo
+   * suppression.
+   */
+  _installFetchInterceptor() {
+    if (window._prFetchIntercepted) return;
+    window._prFetchIntercepted = true;
+
+    const originalFetch = window.fetch;
+    const prManager = this;
+
+    window.fetch = function(input, init) {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      const method = (init?.method || 'GET').toUpperCase();
+
+      // Only intercept mutations to the reviews API
+      if ((method === 'POST' || method === 'PUT' || method === 'DELETE') &&
+          url.includes('/api/reviews/') && prManager._clientId) {
+        init = init || {};
+        // Merge X-Client-Id into existing headers
+        if (init.headers instanceof Headers) {
+          if (!init.headers.has('X-Client-Id')) {
+            init.headers.set('X-Client-Id', prManager._clientId);
+          }
+        } else if (typeof init.headers === 'object' && init.headers !== null) {
+          if (!init.headers['X-Client-Id']) {
+            init.headers['X-Client-Id'] = prManager._clientId;
+          }
+        } else {
+          init.headers = { 'X-Client-Id': prManager._clientId };
+        }
+      }
+      return originalFetch.call(this, input, init);
+    };
   }
 
   /**
@@ -408,8 +455,8 @@ class PRManager {
       // Check if AI analysis is currently running
       await this.checkRunningAnalysis();
 
-      // Listen for externally-imported analysis results via SSE
-      this.startExternalResultsListener();
+      // Listen for review mutation events via multiplexed SSE
+      this._initReviewEventListeners();
 
     } catch (error) {
       console.error('Error loading PR:', error);
@@ -420,39 +467,74 @@ class PRManager {
   }
 
   /**
-   * Listen for externally-imported analysis results via SSE.
-   * When POST /api/analysis-results stores new suggestions for this review,
-   * it broadcasts on `review-${reviewId}`. This listener picks that up
-   * and refreshes suggestions automatically.
+   * Listen for review-scoped CustomEvents dispatched by ChatPanel's
+   * multiplexed SSE connection. Replaces the old per-review EventSource.
    */
-  startExternalResultsListener() {
-    if (this._externalResultsSource) return;
-    const reviewId = this.currentPR?.id;
-    if (!reviewId) return;
+  _initReviewEventListeners() {
+    if (this._reviewEventsBound) return;
+    this._reviewEventsBound = true;
 
-    this._externalResultsSource = new EventSource(
-      `/api/analyses/review-${reviewId}/progress`
-    );
+    // Eagerly connect chat SSE so review events flow even before chat opens
+    window.chatPanel?._ensureGlobalSSE();
 
-    this._externalResultsSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'progress' && data.status === 'completed' && data.source === 'external') {
-          console.log('External analysis results detected, refreshing suggestions');
-          if (this.analysisHistoryManager) {
-            this.analysisHistoryManager.refresh({ switchToNew: true })
-              .then(() => this.loadAISuggestions());
-          } else {
-            this.loadAISuggestions();
-          }
-        }
-      } catch (e) { /* ignore parse errors */ }
+    // Dirty flags for stale-tab recovery
+    this._dirtyComments = false;
+    this._dirtySuggestions = false;
+    this._dirtyAnalysis = false;
+
+    // Simple debounce helper
+    const timers = {};
+    const debounced = (key, fn, ms = 300) => {
+      clearTimeout(timers[key]);
+      timers[key] = setTimeout(fn, ms);
     };
 
-    window.addEventListener('beforeunload', () => {
-      if (this._externalResultsSource) {
-        this._externalResultsSource.close();
-        this._externalResultsSource = null;
+    const reviewId = () => this.currentPR?.id;
+
+    document.addEventListener('review:comments_changed', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      // Suppress self-echo: if this tab originated the mutation, skip reload
+      if (e.detail?.sourceClientId === this._clientId) return;
+      if (document.hidden) { this._dirtyComments = true; return; }
+      debounced('comments', () => this.loadUserComments());
+    });
+
+    document.addEventListener('review:suggestions_changed', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      // Suppress self-echo for suggestion mutations too
+      if (e.detail?.sourceClientId === this._clientId) return;
+      if (document.hidden) { this._dirtySuggestions = true; return; }
+      debounced('suggestions', () => this.loadAISuggestions());
+    });
+
+    document.addEventListener('review:analysis_completed', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      if (document.hidden) { this._dirtyAnalysis = true; return; }
+      debounced('analysis', () => {
+        if (this.analysisHistoryManager) {
+          this.analysisHistoryManager.refresh({ switchToNew: true })
+            .then(() => this.loadAISuggestions());
+        } else {
+          this.loadAISuggestions();
+        }
+      });
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      if (this._dirtyComments) { this._dirtyComments = false; this.loadUserComments(); }
+      if (this._dirtyAnalysis) {
+        this._dirtyAnalysis = false;
+        this._dirtySuggestions = false; // analysis refresh includes suggestion reload
+        if (this.analysisHistoryManager) {
+          this.analysisHistoryManager.refresh({ switchToNew: true })
+            .then(() => this.loadAISuggestions());
+        } else {
+          this.loadAISuggestions();
+        }
+      } else if (this._dirtySuggestions) {
+        this._dirtySuggestions = false;
+        this.loadAISuggestions();
       }
     });
   }
@@ -1982,7 +2064,9 @@ class PRManager {
    */
   async deleteUserComment(commentId) {
     try {
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, { method: 'DELETE' });
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}`, {
+        method: 'DELETE'
+      });
       if (!response.ok) throw new Error('Failed to delete comment');
 
       const apiResult = await response.json();
@@ -2041,7 +2125,9 @@ class PRManager {
    */
   async restoreUserComment(commentId) {
     try {
-      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}/restore`, { method: 'PUT' });
+      const response = await fetch(`/api/reviews/${this.currentPR.id}/comments/${commentId}/restore`, {
+        method: 'PUT'
+      });
       if (!response.ok) throw new Error('Failed to restore comment');
 
       // Reload comments to update both the diff view and AI panel

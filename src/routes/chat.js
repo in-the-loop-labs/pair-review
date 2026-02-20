@@ -15,14 +15,9 @@ const express = require('express');
 const { queryOne, query, AnalysisRunRepository, RepoSettingsRepository } = require('../database');
 const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
 const logger = require('../utils/logger');
+const { sseClients } = require('../sse/review-events');
 
 const router = express.Router();
-
-/**
- * Connected SSE clients for the multiplexed chat stream.
- * Each entry is an Express response object with an open SSE connection.
- */
-const sseClients = new Set();
 
 /**
  * Unsubscribe functions for SSE broadcast listeners, keyed by session ID.

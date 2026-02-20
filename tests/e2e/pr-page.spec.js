@@ -13,7 +13,7 @@ test.describe('PR Page', () => {
   test.describe('Page Load', () => {
     test('should load the PR page successfully', async ({ page }) => {
       await page.goto('/pr/test-owner/test-repo/1');
-      await page.waitForLoadState('networkidle');
+      await waitForDiffToRender(page);
 
       // Verify page title contains PR info
       await expect(page).toHaveTitle(/Pair Review|PR/);
@@ -25,7 +25,7 @@ test.describe('PR Page', () => {
 
     test('should display PR metadata', async ({ page }) => {
       await page.goto('/pr/test-owner/test-repo/1');
-      await page.waitForLoadState('networkidle');
+      await waitForDiffToRender(page);
 
       // Wait for PR data to load
       await page.waitForSelector('[data-testid="pr-title"], .pr-title, h1', { timeout: 10000 });
@@ -37,7 +37,7 @@ test.describe('PR Page', () => {
 
     test('should display file list', async ({ page }) => {
       await page.goto('/pr/test-owner/test-repo/1');
-      await page.waitForLoadState('networkidle');
+      await waitForDiffToRender(page);
 
       // Wait for file list to populate using the correct selector
       await page.waitForSelector('.file-item', { timeout: 10000 });
@@ -55,7 +55,7 @@ test.describe('PR Page', () => {
 
     test('should show file statistics', async ({ page }) => {
       await page.goto('/pr/test-owner/test-repo/1');
-      await page.waitForLoadState('networkidle');
+      await waitForDiffToRender(page);
 
       // Should show additions/deletions
       const pageContent = await page.textContent('body');
@@ -265,7 +265,7 @@ test.describe('PR Page', () => {
   test.describe('File Navigation', () => {
     test('should highlight file when clicked in file list', async ({ page }) => {
       await page.goto('/pr/test-owner/test-repo/1');
-      await page.waitForLoadState('networkidle');
+      await waitForDiffToRender(page);
 
       // Wait for file list
       await page.waitForSelector('.file-item', { timeout: 10000 });
@@ -304,7 +304,7 @@ test.describe('PR Page', () => {
   test.describe('Error Handling', () => {
     test('should show error for non-existent PR', async ({ page }) => {
       await page.goto('/pr/test-owner/test-repo/999');
-      await page.waitForLoadState('networkidle');
+      await page.waitForLoadState('domcontentloaded');
 
       // Should show error state
       const pageContent = await page.textContent('body');
@@ -318,7 +318,7 @@ test.describe('PR Page', () => {
 
     test('should handle invalid PR number gracefully', async ({ page }) => {
       await page.goto('/pr/test-owner/test-repo/invalid');
-      await page.waitForLoadState('networkidle');
+      await page.waitForLoadState('domcontentloaded');
 
       // Should handle gracefully - the page should show an error or "Invalid"
       // This depends on whether the client or server handles the invalid PR
@@ -333,7 +333,7 @@ test.describe('PR Page', () => {
 test.describe('AI Features', () => {
   test('should show AI analysis button', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Verify the actual Analyze button exists and is visible
     const analyzeBtn = page.locator('#analyze-btn, button:has-text("Analyze")');
@@ -344,7 +344,7 @@ test.describe('AI Features', () => {
 test.describe('Home Page', () => {
   test('should load the home page', async ({ page }) => {
     await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Should show the app interface
     await expect(page).toHaveTitle(/Pair Review/);
@@ -352,7 +352,7 @@ test.describe('Home Page', () => {
 
   test('should have PR input functionality', async ({ page }) => {
     await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Should have some way to enter a PR
     const pageContent = await page.textContent('body');

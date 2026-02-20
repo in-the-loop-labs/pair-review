@@ -718,9 +718,7 @@ class SuggestionManager {
     const reviewId = this.prManager?.currentPR?.id;
     const response = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status })
     });
 
@@ -780,9 +778,7 @@ class SuggestionManager {
 
     const createResponse = await fetch(`/api/reviews/${reviewId}/comments`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         file: fileName,
         line_start: parseInt(lineNumber),

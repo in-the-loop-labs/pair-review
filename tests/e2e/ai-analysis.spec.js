@@ -104,7 +104,7 @@ async function seedAISuggestions(page) {
 test.describe('AI Analysis Button', () => {
   test('should show Analyze button in toolbar', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Should have an analyze button
     const analyzeBtn = page.locator('#analyze-btn, button:has-text("Analyze")');
@@ -113,7 +113,7 @@ test.describe('AI Analysis Button', () => {
 
   test('should have AI-related UI elements visible', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
-    await page.waitForLoadState('networkidle');
+    await waitForDiffToRender(page);
 
     // Check for AI panel or segment control
     const pageContent = await page.textContent('body');
@@ -1191,7 +1191,7 @@ test.describe('API Integration', () => {
 test.describe('Error Handling', () => {
   test('should handle analysis on non-existent PR gracefully', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/999');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Page should show error state
     const pageContent = await page.textContent('body');

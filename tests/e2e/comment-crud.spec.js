@@ -48,6 +48,11 @@ async function openCommentFormOnLine(page, lineIndex = 0) {
 }
 
 test.describe('Comment Creation and Submission', () => {
+  test.afterEach(async ({ page }) => {
+    // Clean up comments created during the test to avoid state pollution
+    await cleanupAllComments(page);
+  });
+
   test('should type text in comment textarea and submit', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
@@ -556,7 +561,7 @@ test.describe('Comment Persistence', () => {
 
     // Navigate away and come back
     await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     // Go back to the PR page
     await page.goto('/pr/test-owner/test-repo/1');

@@ -19,6 +19,7 @@ const { queryOne, run, ReviewRepository, RepoSettingsRepository, AnalysisRunRepo
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
+const { broadcastReviewEvent } = require('../sse/review-events');
 const { mergeInstructions } = require('../utils/instructions');
 const { generateLocalDiff, computeLocalDiffDigest } = require('../local-review');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
@@ -846,6 +847,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
         // Broadcast completion status
         broadcastProgress(analysisId, completedStatus);
+        broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
       })
       .catch(error => {
         const currentStatus = activeAnalyses.get(analysisId);
