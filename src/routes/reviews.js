@@ -13,6 +13,11 @@ const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { activeAnalyses, reviewToAnalysisId } = require('./shared');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../sse/review-events');
+const path = require('path');
+const fs = require('fs').promises;
+const simpleGit = require('simple-git');
+const { GitWorktreeManager } = require('../git/worktree');
+const { normalizeRepository } = require('../utils/paths');
 
 const router = express.Router();
 
@@ -736,6 +741,130 @@ router.get('/api/reviews/:reviewId/analyses/status', validateReviewId, async (re
     res.status(500).json({
       error: 'Failed to check analysis status'
     });
+  }
+});
+
+/**
+ * GET /api/reviews/:reviewId/file-content/:fileName(*)
+ * Fetch file content for context expansion and context files.
+ * Replaces the legacy /api/file-content-original/ endpoint by using
+ * the review record to determine local vs PR mode.
+ */
+router.get('/api/reviews/:reviewId/file-content/:fileName(*)', validateReviewId, async (req, res) => {
+  try {
+    const fileName = decodeURIComponent(req.params.fileName);
+    const review = req.review;
+    const db = req.app.get('db');
+
+    // Local mode: use local_path + local_head_sha
+    if (review.review_type === 'local' || review.local_path) {
+      const localPath = review.local_path;
+      if (!localPath) {
+        return res.status(404).json({ error: 'Local review missing path' });
+      }
+
+      const localHeadSha = review.local_head_sha;
+
+      // Try git show for HEAD version (correct line numbers for diff)
+      if (localHeadSha) {
+        try {
+          const git = simpleGit(localPath);
+          const content = await git.show([`${localHeadSha}:${fileName}`]);
+          const lines = content.split('\n');
+          return res.json({ fileName, lines, totalLines: lines.length });
+        } catch (gitError) {
+          logger.debug(`Could not read file ${fileName} from HEAD: ${gitError.message}, falling back to working directory`);
+        }
+      }
+
+      // Fallback: read from filesystem
+      const filePath = path.join(localPath, fileName);
+      try {
+        const realFilePath = await fs.realpath(filePath);
+        const realLocalPath = await fs.realpath(localPath);
+        if (!realFilePath.startsWith(realLocalPath + path.sep) && realFilePath !== realLocalPath) {
+          return res.status(403).json({ error: 'Access denied: path outside repository' });
+        }
+        const content = await fs.readFile(realFilePath, 'utf8');
+        const lines = content.split('\n');
+        return res.json({ fileName, lines, totalLines: lines.length });
+      } catch (fileError) {
+        if (fileError.code === 'ENOENT') {
+          return res.status(404).json({ error: 'File not found in local repository' });
+        } else if (fileError.code === 'EISDIR') {
+          return res.status(400).json({ error: 'Path is a directory, not a file' });
+        }
+        throw fileError;
+      }
+    }
+
+    // PR mode: use pr_number + repository to find worktree
+    const prNumber = review.pr_number;
+    const repository = review.repository;
+
+    if (!prNumber || !repository) {
+      return res.status(400).json({ error: 'Review missing PR metadata' });
+    }
+
+    const [owner, repo] = repository.split('/');
+    const worktreeManager = new GitWorktreeManager(db);
+    const worktreePath = await worktreeManager.getWorktreePath({ owner, repo, number: prNumber });
+
+    if (!await worktreeManager.worktreeExists({ owner, repo, number: prNumber })) {
+      return res.status(404).json({ error: 'Worktree not found for this PR. The PR may need to be reloaded.' });
+    }
+
+    // Get base_sha from stored PR data
+    const normalizedRepo = normalizeRepository(owner, repo);
+    const prRecord = await queryOne(db, `
+      SELECT pr_data FROM pr_metadata
+      WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+    `, [prNumber, normalizedRepo]);
+
+    let baseSha = null;
+    if (prRecord?.pr_data) {
+      try {
+        const prData = JSON.parse(prRecord.pr_data);
+        baseSha = prData.base_sha;
+      } catch (parseError) {
+        logger.warn('Could not parse pr_data for base_sha:', parseError.message);
+      }
+    }
+
+    // Try git show for BASE version (correct line numbers for diff)
+    if (baseSha) {
+      try {
+        const git = simpleGit(worktreePath);
+        const content = await git.show([`${baseSha}:${fileName}`]);
+        const lines = content.split('\n');
+        return res.json({ fileName, lines, totalLines: lines.length });
+      } catch (gitError) {
+        logger.debug(`Could not read file ${fileName} from base commit: ${gitError.message}, falling back to HEAD`);
+      }
+    }
+
+    // Fallback: read from filesystem
+    const filePath = path.join(worktreePath, fileName);
+    try {
+      const realFilePath = await fs.realpath(filePath);
+      const realWorktreePath = await fs.realpath(worktreePath);
+      if (!realFilePath.startsWith(realWorktreePath + path.sep) && realFilePath !== realWorktreePath) {
+        return res.status(403).json({ error: 'Access denied: path outside repository' });
+      }
+      const content = await fs.readFile(realFilePath, 'utf8');
+      const lines = content.split('\n');
+      return res.json({ fileName, lines, totalLines: lines.length });
+    } catch (fileError) {
+      if (fileError.code === 'ENOENT') {
+        return res.status(404).json({ error: 'File not found in worktree' });
+      } else if (fileError.code === 'EISDIR') {
+        return res.status(400).json({ error: 'Path is a directory, not a file' });
+      }
+      throw fileError;
+    }
+  } catch (error) {
+    logger.error('Error retrieving file content:', error);
+    res.status(500).json({ error: 'Internal server error while retrieving file content' });
   }
 });
 

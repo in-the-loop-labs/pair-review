@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 23;
+const CURRENT_SCHEMA_VERSION = 24;
 
 /**
  * Database schema SQL statements
@@ -233,6 +233,19 @@ const SCHEMA_SQL = {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
     )
+  `,
+
+  context_files: `
+    CREATE TABLE IF NOT EXISTS context_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      review_id INTEGER NOT NULL,
+      file TEXT NOT NULL,
+      line_start INTEGER NOT NULL,
+      line_end INTEGER NOT NULL,
+      label TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+    )
   `
 };
 
@@ -266,7 +279,9 @@ const INDEX_SQL = [
   'CREATE INDEX IF NOT EXISTS idx_comments_is_raw ON comments(is_raw)',
   // Chat indexes
   'CREATE INDEX IF NOT EXISTS idx_chat_sessions_review ON chat_sessions(review_id)',
-  'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)'
+  'CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)',
+  // Context files indexes
+  'CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)'
 ];
 
 /**
@@ -1094,6 +1109,32 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 23 complete');
+  },
+
+  // Migration to version 24: adds context_files table for pinning non-diff file ranges to the diff panel
+  24: (db) => {
+    console.log('Migrating to schema version 24: Add context_files table');
+
+    if (!tableExists(db, 'context_files')) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS context_files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          review_id INTEGER NOT NULL,
+          file TEXT NOT NULL,
+          line_start INTEGER NOT NULL,
+          line_end INTEGER NOT NULL,
+          label TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE
+        )
+      `);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_context_files_review ON context_files(review_id)');
+      console.log('  Created context_files table');
+    } else {
+      console.log('  Table context_files already exists');
+    }
+
+    console.log('Migration to schema version 24 complete');
   }
 };
 
@@ -2315,7 +2356,8 @@ class ReviewRepository {
   async getReview(id) {
     const row = await queryOne(this.db, `
       SELECT id, pr_number, repository, status, review_id,
-             created_at, updated_at, submitted_at, review_data, custom_instructions, summary
+             created_at, updated_at, submitted_at, review_data, custom_instructions, summary,
+             review_type, local_path, local_head_sha
       FROM reviews
       WHERE id = ?
     `, [id]);
@@ -3284,6 +3326,84 @@ class CouncilRepository {
   }
 }
 
+/**
+ * ContextFileRepository class for managing context file range records.
+ * Context files allow pinning specific line ranges from non-diff files
+ * into the diff panel for review.
+ */
+class ContextFileRepository {
+  /**
+   * Create a new ContextFileRepository instance
+   * @param {Database} db - Database instance
+   */
+  constructor(db) {
+    this.db = db;
+  }
+
+  /**
+   * Add a context file range for a review
+   * @param {number} reviewId - Review ID
+   * @param {string} file - File path
+   * @param {number} lineStart - Start line number
+   * @param {number} lineEnd - End line number
+   * @param {string|null} [label=null] - Optional label for the range
+   * @returns {Promise<Object>} The newly created context file record
+   */
+  async add(reviewId, file, lineStart, lineEnd, label = null) {
+    const result = await run(this.db, `
+      INSERT INTO context_files (review_id, file, line_start, line_end, label)
+      VALUES (?, ?, ?, ?, ?)
+    `, [reviewId, file, lineStart, lineEnd, label]);
+
+    return queryOne(this.db, `
+      SELECT id, review_id, file, line_start, line_end, label, created_at
+      FROM context_files
+      WHERE id = ?
+    `, [result.lastID]);
+  }
+
+  /**
+   * Get all context file ranges for a review, ordered by id
+   * @param {number} reviewId - Review ID
+   * @returns {Promise<Array<Object>>} Array of context file records
+   */
+  async getByReviewId(reviewId) {
+    return query(this.db, `
+      SELECT id, review_id, file, line_start, line_end, label, created_at
+      FROM context_files
+      WHERE review_id = ?
+      ORDER BY id
+    `, [reviewId]);
+  }
+
+  /**
+   * Remove a context file range by ID, scoped to a specific review
+   * @param {number} id - Context file record ID
+   * @param {number} reviewId - Review ID (ensures deletion is scoped to the correct review)
+   * @returns {Promise<boolean>} True if record was deleted
+   */
+  async remove(id, reviewId) {
+    const result = await run(this.db, `
+      DELETE FROM context_files WHERE id = ? AND review_id = ?
+    `, [id, reviewId]);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Remove all context file ranges for a review
+   * @param {number} reviewId - Review ID
+   * @returns {Promise<number>} Number of records deleted
+   */
+  async removeAll(reviewId) {
+    const result = await run(this.db, `
+      DELETE FROM context_files WHERE review_id = ?
+    `, [reviewId]);
+
+    return result.changes;
+  }
+}
+
 module.exports = {
   initializeDatabase,
   closeDatabase,
@@ -3306,6 +3426,7 @@ module.exports = {
   AnalysisRunRepository,
   GitHubReviewRepository,
   CouncilRepository,
+  ContextFileRepository,
   generateWorktreeId,
   migrateExistingWorktrees
 };

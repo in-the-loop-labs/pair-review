@@ -169,6 +169,15 @@ class ChatPanel {
     };
     document.addEventListener('keydown', this._onKeydown);
 
+    // Chat file link click handler (event delegation)
+    this.messagesEl?.addEventListener('click', (e) => {
+      const link = e.target.closest('.chat-file-link');
+      if (link) {
+        e.preventDefault();
+        this._handleFileLinkClick(link);
+      }
+    });
+
     this._bindResizeEvents();
   }
 
@@ -1562,6 +1571,7 @@ class ChatPanel {
 
     if (role === 'assistant') {
       bubble.innerHTML = this.renderMarkdown(content);
+      this._linkifyFileReferences(bubble);
       bubble.appendChild(this._createCopyButton(content));
     } else {
       bubble.textContent = content;
@@ -1677,6 +1687,7 @@ class ChatPanel {
       if (bubble) {
         if (this._streamingContent) {
           bubble.innerHTML = this.renderMarkdown(this._streamingContent);
+          this._linkifyFileReferences(bubble);
           bubble.appendChild(this._createCopyButton(this._streamingContent));
         } else {
           // Empty response - show a subtle message
@@ -1894,6 +1905,210 @@ class ChatPanel {
     `;
     this.messagesEl.appendChild(errorEl);
     this.scrollToBottom();
+  }
+
+  /**
+   * Post-process a container element to convert [[file:...]] tokens into
+   * clickable links that scroll to the file in the diff.
+   *
+   * Supported formats:
+   *   [[file:path/to/file.ext]]           -> file only
+   *   [[file:path/to/file.ext:42]]        -> file + line
+   *   [[file:path/to/file.ext:42-78]]     -> file + line range
+   *
+   * Tokens inside <pre> blocks are left untouched.
+   *
+   * @param {HTMLElement} container - Element whose text nodes to scan
+   */
+  _linkifyFileReferences(container) {
+    if (!container || typeof document.createTreeWalker !== 'function') return;
+
+    const FILE_TOKEN = /\[\[file:([^\]]+?)(?::(\d+)(?:-(\d+))?)?\]\]/g;
+
+    // Collect text nodes that contain tokens (avoid mutating during traversal)
+    // NodeFilter.SHOW_TEXT === 4; use literal for environments without NodeFilter global
+    const SHOW_TEXT = typeof NodeFilter !== 'undefined' ? NodeFilter.SHOW_TEXT : 4;
+    const walker = document.createTreeWalker(container, SHOW_TEXT);
+    const candidates = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      // Skip anything inside a <pre> (code block)
+      if (node.parentElement?.closest('pre')) continue;
+      FILE_TOKEN.lastIndex = 0;
+      if (FILE_TOKEN.test(node.textContent)) {
+        candidates.push(node);
+      }
+    }
+
+    for (const node of candidates) {
+      const fragment = document.createDocumentFragment();
+      const text = node.textContent;
+      let lastIndex = 0;
+
+      FILE_TOKEN.lastIndex = 0;
+      let match;
+      while ((match = FILE_TOKEN.exec(text)) !== null) {
+        // Add any text before this match
+        if (match.index > lastIndex) {
+          fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+        }
+
+        const filePath = match[1];
+        const lineStart = match[2] || null;
+        const lineEnd = match[3] || null;
+
+        // Build the clickable link
+        const link = document.createElement('a');
+        link.className = 'chat-file-link';
+        link.dataset.file = filePath;
+        if (lineStart) link.dataset.lineStart = lineStart;
+        if (lineEnd) link.dataset.lineEnd = lineEnd;
+        link.title = 'View in diff';
+
+        // File icon SVG
+        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        icon.setAttribute('viewBox', '0 0 16 16');
+        icon.setAttribute('fill', 'currentColor');
+        icon.setAttribute('width', '12');
+        icon.setAttribute('height', '12');
+        icon.classList.add('chat-file-link__icon');
+        const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        pathEl.setAttribute('d', 'M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z');
+        icon.appendChild(pathEl);
+
+        // Display text: show the file reference naturally
+        let displayText = filePath;
+        if (lineStart && lineEnd) {
+          displayText += `:${lineStart}-${lineEnd}`;
+        } else if (lineStart) {
+          displayText += `:${lineStart}`;
+        }
+
+        link.appendChild(icon);
+        link.appendChild(document.createTextNode(' ' + displayText));
+
+        fragment.appendChild(link);
+        lastIndex = match.index + match[0].length;
+      }
+
+      // Add any remaining text after the last match
+      if (lastIndex < text.length) {
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+      }
+
+      node.parentNode.replaceChild(fragment, node);
+    }
+  }
+
+  /**
+   * Handle click on a chat file link. Scrolls to the referenced file and line
+   * in the diff view.
+   * @param {HTMLElement} linkEl - The clicked .chat-file-link element
+   */
+  _handleFileLinkClick(linkEl) {
+    const file = linkEl.dataset.file;
+    if (!file) return;
+
+    const lineStart = linkEl.dataset.lineStart ? parseInt(linkEl.dataset.lineStart, 10) : null;
+
+    if (!window.prManager) return;
+
+    if (lineStart) {
+      // When a line is specified, scroll directly to the target row (skip file-level scroll
+      // to avoid double-scroll bounce from two competing scrollIntoView calls)
+      const escaped = CSS.escape(file);
+      const fileWrapper = document.querySelector(`[data-file-name="${escaped}"]`) ||
+        document.querySelector(`[data-file-name$="/${escaped}"]`);
+      if (!fileWrapper) {
+        // File not visible yet — fall back to file-level scroll and retry
+        window.prManager.scrollToFile(file);
+        setTimeout(() => this._scrollToLine(file, lineStart), 400);
+        return;
+      }
+
+      this._scrollToLine(file, lineStart, fileWrapper);
+    } else {
+      window.prManager.scrollToFile(file);
+    }
+  }
+
+  /**
+   * Scroll to a specific line within a file wrapper, with micro-feedback
+   * when the target is already visible.
+   * @param {string} file - File path
+   * @param {number} lineStart - Target line number
+   * @param {HTMLElement} [fileWrapper] - Pre-resolved file wrapper element
+   */
+  _scrollToLine(file, lineStart, fileWrapper) {
+    if (!fileWrapper) {
+      const escaped = CSS.escape(file);
+      fileWrapper = document.querySelector(`[data-file-name="${escaped}"]`) ||
+        document.querySelector(`[data-file-name$="/${escaped}"]`);
+    }
+    if (!fileWrapper) return;
+
+    // Find the target row by line number
+    const lineNums = fileWrapper.querySelectorAll('.line-num2');
+    let targetRow = null;
+    for (const ln of lineNums) {
+      if (ln.textContent.trim() === String(lineStart)) {
+        targetRow = ln.closest('tr');
+        break;
+      }
+    }
+    if (!targetRow) return;
+
+    // Check if the target row is already visible in the viewport
+    const rect = targetRow.getBoundingClientRect();
+    const isVisible = rect.top >= 0 && rect.bottom <= window.innerHeight;
+
+    if (isVisible) {
+      // Already visible — provide micro-feedback instead of scrolling
+      this._showLineFeedback(targetRow, lineStart);
+    } else {
+      // Scroll to the row, then apply highlight
+      targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      targetRow.classList.add('chat-file-link--highlight');
+      setTimeout(() => targetRow.classList.remove('chat-file-link--highlight'), 2000);
+    }
+  }
+
+  /**
+   * Show micro-feedback when a target line is already visible:
+   * 1. A brief hop animation (scroll nudge)
+   * 2. A temporary gutter arrow indicator
+   * @param {HTMLElement} row - The target table row
+   * @param {number} lineNum - The line number
+   */
+  _showLineFeedback(row, lineNum) {
+    // Highlight the row
+    row.classList.add('chat-file-link--highlight');
+    setTimeout(() => row.classList.remove('chat-file-link--highlight'), 2000);
+
+    // Inject a temporary gutter arrow
+    const lineNumCell = row.querySelector('.d2h-code-linenumber');
+    if (lineNumCell) {
+      const arrow = document.createElement('span');
+      arrow.className = 'chat-gutter-arrow';
+      arrow.textContent = '\u2192'; // →
+      lineNumCell.appendChild(arrow);
+      // Fade out and remove after 1.5s
+      setTimeout(() => {
+        arrow.classList.add('chat-gutter-arrow--fade');
+        arrow.addEventListener('transitionend', () => arrow.remove(), { once: true });
+        // Safety cleanup in case transitionend doesn't fire
+        setTimeout(() => arrow.remove(), 500);
+      }, 1500);
+    }
+
+    // Hop animation — small vertical nudge
+    const scrollContainer = document.getElementById('diff-container') ||
+      row.closest('.d2h-wrapper') || document.documentElement;
+    const currentScroll = scrollContainer.scrollTop;
+    scrollContainer.scrollTo({ top: currentScroll - 30, behavior: 'smooth' });
+    setTimeout(() => {
+      scrollContainer.scrollTo({ top: currentScroll, behavior: 'smooth' });
+    }, 150);
   }
 
   /**

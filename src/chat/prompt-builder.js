@@ -48,6 +48,20 @@ function buildChatPrompt({ review, chatInstructions }) {
     'You MUST load the pair-review-api skill for endpoint details. With it you can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.'
   );
 
+  // File reference syntax and context files
+  sections.push(
+    '## File references\n\n' +
+    'When referencing source files, use the syntax [[file:path/to/file.js]] or ' +
+    '[[file:path/to/file.js:42]] (with line number) or [[file:path/to/file.js:42-50]] (with line range). ' +
+    'These become clickable links in the UI. Do NOT use backtick code spans for file references you want to be clickable.\n\n' +
+    'Files in the diff can be referenced freely. Files **outside** the diff can also be referenced, ' +
+    'but to make them visible in the diff panel you should add them as context files via the API first ' +
+    '(POST /api/reviews/:reviewId/context-files with file, line_start, line_end, and optional label). ' +
+    'Context files appear interleaved with diff files in natural path order, visually distinguished ' +
+    'with a [CONTEXT] badge. Add context files judiciously — only when directly relevant to the ' +
+    'discussion, with focused line ranges (not entire files).'
+  );
+
   // Instructions
   sections.push(
     'Answer questions about this review, the code changes, and any AI suggestions. ' +

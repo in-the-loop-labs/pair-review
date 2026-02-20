@@ -131,6 +131,8 @@ class PRManager {
     this.collapsedFiles = new Set();
     // File viewed state - tracks which files are marked as viewed
     this.viewedFiles = new Set();
+    // Context files - pinned non-diff file ranges
+    this.contextFiles = [];
     // Canonical file order - sorted file paths for consistent ordering across components
     this.canonicalFileOrder = new Map();
     // Analysis history manager - for switching between analysis runs
@@ -487,6 +489,7 @@ class PRManager {
     this._dirtyComments = false;
     this._dirtySuggestions = false;
     this._dirtyAnalysis = false;
+    this._dirtyContextFiles = false;
 
     // Simple debounce helper
     const timers = {};
@@ -526,6 +529,13 @@ class PRManager {
       });
     });
 
+    document.addEventListener('review:context_files_changed', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      if (e.detail?.sourceClientId === this._clientId) return;
+      if (document.hidden) { this._dirtyContextFiles = true; return; }
+      debounced('contextFiles', () => this.loadContextFiles());
+    });
+
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) return;
       if (this._dirtyComments) { this._dirtyComments = false; this.loadUserComments(); }
@@ -541,6 +551,10 @@ class PRManager {
       } else if (this._dirtySuggestions) {
         this._dirtySuggestions = false;
         this.loadAISuggestions();
+      }
+      if (this._dirtyContextFiles) {
+        this._dirtyContextFiles = false;
+        this.loadContextFiles();
       }
     });
   }
@@ -867,6 +881,9 @@ class PRManager {
     } else {
       diffContainer.innerHTML = '<div class="no-diff">No files changed</div>';
     }
+
+    // Load context files after diff is rendered
+    this.loadContextFiles();
   }
 
   /**
@@ -1357,11 +1374,11 @@ class PRManager {
    * @returns {Promise<{lines: string[]}|null>} File content with lines array, or null on error
    */
   async fetchFileContent(fileName) {
-    if (!this.currentPR) return null;
+    const reviewId = this.currentPR?.id;
+    if (!reviewId) return null;
 
-    const { owner, repo, number } = this.currentPR;
     const response = await fetch(
-      `/api/file-content-original/${encodeURIComponent(fileName)}?owner=${owner}&repo=${repo}&number=${number}`
+      `/api/reviews/${reviewId}/file-content/${encodeURIComponent(fileName)}`
     );
     const data = await response.json();
 
@@ -3024,6 +3041,11 @@ class PRManager {
         generated: file.generated || false,
         renamed: file.renamed || false,
         renamedFrom: file.renamedFrom || null,
+        contextFile: file.contextFile || false,
+        contextId: file.contextId || null,
+        label: file.label || null,
+        lineStart: file.lineStart || null,
+        lineEnd: file.lineEnd || null,
       });
     });
 
@@ -3037,6 +3059,9 @@ class PRManager {
   updateFileList(files) {
     const fileListContainer = document.getElementById('file-list');
     if (!fileListContainer) return;
+
+    // Store diff-only files for merging with context files later
+    this.diffFiles = files.filter(f => !f.contextFile);
 
     // Update sidebar file count badge
     const fileCountEl = document.getElementById('sidebar-file-count');
@@ -3108,6 +3133,7 @@ class PRManager {
     item.dataset.status = file.status;
 
     if (file.generated) item.classList.add('generated');
+    if (file.contextFile) item.classList.add('context-file-item');
     if (file.renamed && file.renamedFrom) {
       item.title = `Renamed from: ${file.renamedFrom}`;
       const renameIcon = document.createElement('span');
@@ -3123,7 +3149,13 @@ class PRManager {
     const changes = document.createElement('span');
     changes.className = 'file-changes';
 
-    if (file.binary) {
+    if (file.contextFile) {
+      const badge = document.createElement('span');
+      badge.className = 'context-badge';
+      badge.textContent = 'CONTEXT';
+      if (file.label) badge.title = file.label;
+      changes.appendChild(badge);
+    } else if (file.binary) {
       changes.textContent = 'BIN';
     } else {
       if (file.additions > 0) {
@@ -3145,7 +3177,11 @@ class PRManager {
 
     item.addEventListener('click', (e) => {
       e.preventDefault();
-      this.scrollToFile(file.fullPath);
+      if (file.contextFile) {
+        this.scrollToContextFile(file.fullPath, file.lineStart, file.contextId);
+      } else {
+        this.scrollToFile(file.fullPath);
+      }
       this.setActiveFileItem(file.fullPath);
     });
 
@@ -3940,6 +3976,350 @@ class PRManager {
       }
     }
   }
+
+  // ─── Context Files ──────────────────────────────────────────────
+
+  /**
+   * Load context files for the current review and render them in the diff panel.
+   * Called after renderDiff() and on SSE context_files_changed events.
+   */
+  async loadContextFiles() {
+    const reviewId = this.currentPR?.id;
+    if (!reviewId) return;
+
+    try {
+      const response = await fetch(`/api/reviews/${reviewId}/context-files`);
+      if (!response.ok) return;
+
+      const data = await response.json();
+      const newFiles = data.contextFiles || [];
+
+      const oldIds = new Set((this.contextFiles || []).map(f => f.id));
+      const newIds = new Set(newFiles.map(f => f.id));
+
+      // Remove only deleted context files
+      for (const old of this.contextFiles || []) {
+        if (!newIds.has(old.id)) {
+          const el = document.querySelector(`.context-file[data-context-id="${old.id}"]`);
+          if (el) el.remove();
+        }
+      }
+
+      // Add only new context files
+      for (const cf of newFiles) {
+        if (!oldIds.has(cf.id)) {
+          await this.renderContextFile(cf);
+        }
+      }
+
+      this.contextFiles = newFiles;
+
+      // Rebuild sidebar with context files interleaved in natural path order
+      this.rebuildFileListWithContext();
+    } catch (error) {
+      console.error('Error loading context files:', error);
+    }
+  }
+
+  /**
+   * Rebuild the sidebar file list with context files interleaved in natural path order.
+   * Merges stored diff files with current context files and re-renders the sidebar.
+   */
+  rebuildFileListWithContext() {
+    const merged = [...(this.diffFiles || [])];
+
+    // Add context files as file-like objects
+    for (const cf of (this.contextFiles || [])) {
+      merged.push({
+        file: cf.file,
+        contextFile: true,
+        contextId: cf.id,
+        label: cf.label,
+        lineStart: cf.line_start,
+        lineEnd: cf.line_end,
+      });
+    }
+
+    // Sort by file path (context files interleave naturally)
+    merged.sort((a, b) => a.file.localeCompare(b.file));
+
+    this.updateFileList(merged);
+  }
+
+  /**
+   * Render a single context file range in the diff panel.
+   * @param {Object} contextFile - { id, review_id, file, line_start, line_end, label }
+   */
+  async renderContextFile(contextFile) {
+    const diffContainer = document.getElementById('diff-container');
+    if (!diffContainer) return;
+
+    // Fetch file content
+    const data = await this.fetchFileContent(contextFile.file);
+    if (!data || !data.lines) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'd2h-file-wrapper context-file';
+    wrapper.dataset.fileName = contextFile.file;
+    wrapper.dataset.contextId = contextFile.id;
+
+    // Build file header — matches regular diff headers (chevron, viewed, comment btn, chat btn)
+    const header = document.createElement('div');
+    header.className = 'd2h-file-header context-file-header';
+
+    // Chevron toggle for expand/collapse
+    const chevronBtn = document.createElement('button');
+    chevronBtn.className = 'file-collapse-toggle';
+    chevronBtn.title = 'Collapse file';
+    chevronBtn.innerHTML = window.DiffRenderer.CHEVRON_DOWN_ICON;
+    chevronBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleFileCollapse(contextFile.file);
+    });
+    header.appendChild(chevronBtn);
+
+    const fileName = document.createElement('span');
+    fileName.className = 'd2h-file-name';
+    fileName.textContent = contextFile.file;
+    header.appendChild(fileName);
+
+    const contextLabel = document.createElement('span');
+    contextLabel.className = 'context-badge';
+    contextLabel.textContent = 'CONTEXT';
+    if (contextFile.label) contextLabel.title = contextFile.label;
+    header.appendChild(contextLabel);
+
+    // Viewed checkbox (right-aligned group start)
+    const viewedLabel = document.createElement('label');
+    viewedLabel.className = 'file-viewed-label';
+    viewedLabel.title = 'Mark file as viewed';
+    const viewedCheckbox = document.createElement('input');
+    viewedCheckbox.type = 'checkbox';
+    viewedCheckbox.className = 'file-viewed-checkbox';
+    viewedCheckbox.checked = this.viewedFiles.has(contextFile.file);
+    viewedCheckbox.addEventListener('change', (e) => {
+      e.stopPropagation();
+      this.toggleFileViewed(contextFile.file, viewedCheckbox.checked);
+    });
+    viewedLabel.appendChild(viewedCheckbox);
+    viewedLabel.appendChild(document.createTextNode('Viewed'));
+    header.appendChild(viewedLabel);
+
+    // File comment button
+    if (this.fileCommentManager) {
+      const fileCommentsZone = this.fileCommentManager.createFileCommentsZone(contextFile.file);
+      wrapper._fileCommentsZone = fileCommentsZone;
+
+      const fileCommentBtn = document.createElement('button');
+      fileCommentBtn.className = 'file-header-comment-btn';
+      fileCommentBtn.title = 'Add file comment';
+      fileCommentBtn.dataset.file = contextFile.file;
+      fileCommentBtn.innerHTML = `
+        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
+        </svg>
+        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
+          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
+        </svg>
+      `;
+      fileCommentBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.fileCommentManager.showCommentForm(fileCommentsZone, contextFile.file);
+      });
+      header.appendChild(fileCommentBtn);
+      fileCommentsZone.headerButton = fileCommentBtn;
+    }
+
+    // Chat/discussion button
+    const fileChatBtn = document.createElement('button');
+    fileChatBtn.className = 'file-header-chat-btn';
+    fileChatBtn.title = 'Chat about file';
+    fileChatBtn.dataset.file = contextFile.file;
+    fileChatBtn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+        <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
+      </svg>
+    `;
+    fileChatBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (window.chatPanel) {
+        window.chatPanel.open({ fileContext: { file: contextFile.file } });
+      }
+    });
+    header.appendChild(fileChatBtn);
+
+    // Dismiss button (context-file specific — remove the pinned range)
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'context-file-dismiss';
+    dismissBtn.title = 'Remove context file';
+    dismissBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
+    dismissBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.removeContextFile(contextFile.id);
+    });
+    header.appendChild(dismissBtn);
+
+    // Click anywhere on header to toggle collapse (except interactive controls)
+    header.addEventListener('click', (e) => {
+      if (e.target.closest('.file-viewed-label') || e.target.closest('.file-collapse-toggle') ||
+          e.target.closest('.file-header-comment-btn') || e.target.closest('.file-header-chat-btn') ||
+          e.target.closest('.context-file-dismiss')) {
+        return;
+      }
+      this.toggleFileCollapse(contextFile.file);
+    });
+
+    wrapper.appendChild(header);
+
+    // Insert file comments zone between header and diff content
+    if (wrapper._fileCommentsZone) {
+      wrapper.appendChild(wrapper._fileCommentsZone);
+    }
+
+    // Build code table
+    const table = document.createElement('table');
+    table.className = 'd2h-diff-table';
+    const tbody = document.createElement('tbody');
+    tbody.className = 'd2h-diff-tbody';
+
+    const lineStart = contextFile.line_start;
+    const lineEnd = Math.min(contextFile.line_end, data.lines.length);
+
+    // Add expand-up gap row if there are lines above the context range
+    if (lineStart > 1) {
+      const gapAboveSize = lineStart - 1;
+      const gapAbove = window.HunkParser.createGapRowElement(
+        contextFile.file,
+        1,              // startLine (old coords)
+        lineStart - 1,  // endLine (old coords)
+        gapAboveSize,
+        'above',
+        this.expandGapContext.bind(this),
+        1               // startLineNew (same as old for context files — no diff offset)
+      );
+      tbody.appendChild(gapAbove);
+    }
+
+    for (let i = lineStart; i <= lineEnd; i++) {
+      const lineContent = data.lines[i - 1] || '';
+      const row = document.createElement('tr');
+      row.className = 'd2h-cntx';
+      row.dataset.lineNumber = i;
+      row.dataset.fileName = contextFile.file;
+
+      const lineNumCell = document.createElement('td');
+      lineNumCell.className = 'd2h-code-linenumber';
+      const lineNumContent = document.createElement('div');
+      lineNumContent.className = 'line-number-content';
+      lineNumContent.innerHTML = `<span class="line-num1">${i}</span><span class="line-num2">${i}</span>`;
+      lineNumCell.appendChild(lineNumContent);
+
+      const contentCell = document.createElement('td');
+      contentCell.className = 'd2h-code-line-ctn';
+
+      // Apply syntax highlighting if available
+      if (window.hljs && contextFile.file) {
+        try {
+          const language = window.DiffRenderer?.detectLanguage(contextFile.file) || 'plaintext';
+          const highlighted = window.hljs.highlight(lineContent, { language, ignoreIllegals: true });
+          contentCell.innerHTML = highlighted.value;
+        } catch (e) {
+          contentCell.textContent = lineContent;
+        }
+      } else {
+        contentCell.textContent = lineContent;
+      }
+
+      row.appendChild(lineNumCell);
+      row.appendChild(contentCell);
+      tbody.appendChild(row);
+    }
+
+    // Add expand-down gap row if there are lines below the context range
+    const totalLines = data.lines.length;
+    if (lineEnd < totalLines) {
+      const gapBelowSize = totalLines - lineEnd;
+      const gapBelow = window.HunkParser.createGapRowElement(
+        contextFile.file,
+        lineEnd + 1,    // startLine (old coords)
+        totalLines,     // endLine (old coords)
+        gapBelowSize,
+        'below',
+        this.expandGapContext.bind(this),
+        lineEnd + 1     // startLineNew (same as old)
+      );
+      tbody.appendChild(gapBelow);
+    }
+
+    table.appendChild(tbody);
+    wrapper.appendChild(table);
+
+    // Insert in sorted path order among existing file wrappers
+    const allWrappers = [...diffContainer.querySelectorAll('.d2h-file-wrapper')];
+    const insertBefore = allWrappers.find(w => w.dataset.fileName > contextFile.file);
+    if (insertBefore) {
+      diffContainer.insertBefore(wrapper, insertBefore);
+    } else {
+      diffContainer.appendChild(wrapper);
+    }
+  }
+
+  /**
+   * Remove a context file by ID.
+   * @param {number} contextFileId
+   */
+  async removeContextFile(contextFileId) {
+    const reviewId = this.currentPR?.id;
+    if (!reviewId) return;
+
+    try {
+      const resp = await fetch(`/api/reviews/${reviewId}/context-files/${contextFileId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!resp.ok) {
+        console.error('Failed to remove context file:', resp.status);
+        return;
+      }
+      // Refresh immediately — SSE self-echo is suppressed by the client ID filter
+      await this.loadContextFiles();
+    } catch (error) {
+      console.error('Error removing context file:', error);
+    }
+  }
+
+  /**
+   * Scroll to a context file (or diff file) in the diff panel.
+   * @param {string} file - File path
+   * @param {number} [lineStart] - Optional line number to highlight
+   */
+  scrollToContextFile(file, lineStart, contextId) {
+    // Use contextId to disambiguate when the same file has multiple context ranges
+    let wrapper;
+    if (contextId) {
+      wrapper = document.querySelector(`.d2h-file-wrapper.context-file[data-context-id="${CSS.escape(contextId)}"]`);
+    }
+    if (!wrapper) {
+      wrapper = document.querySelector(`.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(file)}"]`);
+    }
+    if (!wrapper) return;
+
+    wrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    if (lineStart) {
+      // Brief delay to let scroll settle, then highlight the target line
+      setTimeout(() => {
+        const row = wrapper.querySelector(`tr[data-line-number="${lineStart}"]`);
+        if (row) {
+          row.classList.add('highlight-flash');
+          row.addEventListener('animationend', () => {
+            row.classList.remove('highlight-flash');
+          }, { once: true });
+        }
+      }, 400);
+    }
+  }
+
 }
 
 // Initialize PR manager when DOM is loaded (browser environment only)

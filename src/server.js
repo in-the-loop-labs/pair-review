@@ -259,6 +259,7 @@ async function startServer(sharedDb = null) {
     const mcpRoutes = require('./routes/mcp');
     const councilRoutes = require('./routes/councils');
     const chatRoutes = require('./routes/chat');
+    const contextFilesRoutes = require('./routes/context-files');
 
     // Initialize chat session manager
     const ChatSessionManager = require('./chat/session-manager');
@@ -270,6 +271,7 @@ async function startServer(sharedDb = null) {
     app.use('/', analysisRoutes);
     app.use('/', councilRoutes);
     app.use('/', reviewsRoutes);
+    app.use('/', contextFilesRoutes);
     app.use('/', configRoutes);
     app.use('/', worktreesRoutes);
     app.use('/', localRoutes);
