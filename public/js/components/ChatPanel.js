@@ -1453,6 +1453,7 @@ class ChatPanel {
 
     if (role === 'assistant') {
       bubble.innerHTML = this.renderMarkdown(content);
+      bubble.appendChild(this._createCopyButton(content));
     } else {
       bubble.textContent = content;
     }
@@ -1460,6 +1461,44 @@ class ChatPanel {
     msgEl.appendChild(bubble);
     this.messagesEl.appendChild(msgEl);
     this.scrollToBottom();
+  }
+
+  /**
+   * Create a copy-to-clipboard button for an assistant message bubble.
+   * @param {string} rawContent - Raw markdown to copy
+   * @returns {HTMLButtonElement}
+   */
+  _createCopyButton(rawContent) {
+    const btn = document.createElement('button');
+    btn.className = 'chat-panel__copy-btn';
+    btn.title = 'Copy message';
+    const clipboardIcon = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
+      <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
+    </svg>`;
+    const checkIcon = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
+    </svg>`;
+    btn.innerHTML = clipboardIcon;
+
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(rawContent);
+        btn.innerHTML = checkIcon;
+        btn.classList.add('chat-panel__copy-btn--success');
+        setTimeout(() => {
+          btn.innerHTML = clipboardIcon;
+          btn.classList.remove('chat-panel__copy-btn--success');
+        }, 2000);
+      } catch (err) {
+        console.error('[ChatPanel] Copy failed:', err);
+        btn.title = 'Copy failed';
+        setTimeout(() => { btn.title = 'Copy message'; }, 2000);
+      }
+    });
+
+    return btn;
   }
 
   /**
@@ -1528,6 +1567,7 @@ class ChatPanel {
       if (bubble) {
         if (this._streamingContent) {
           bubble.innerHTML = this.renderMarkdown(this._streamingContent);
+          bubble.appendChild(this._createCopyButton(this._streamingContent));
         } else {
           // Empty response - show a subtle message
           bubble.innerHTML = '<em class="chat-panel__empty-response">No response generated.</em>';
