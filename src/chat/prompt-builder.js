@@ -54,12 +54,9 @@ function buildChatPrompt({ review, chatInstructions }) {
     'When referencing source files, use the syntax [[file:path/to/file.js]] or ' +
     '[[file:path/to/file.js:42]] (with line number) or [[file:path/to/file.js:42-50]] (with line range). ' +
     'These become clickable links in the UI. Do NOT use backtick code spans for file references you want to be clickable.\n\n' +
-    'Files in the diff can be referenced freely. Files **outside** the diff can also be referenced, ' +
-    'but to make them visible in the diff panel you should add them as context files via the API first ' +
-    '(POST /api/reviews/:reviewId/context-files with file, line_start, line_end, and optional label). ' +
-    'Context files appear interleaved with diff files in natural path order, visually distinguished ' +
-    'with a [CONTEXT] badge. Add context files judiciously — only when directly relevant to the ' +
-    'discussion, with focused line ranges (not entire files).'
+    'Files in the diff can be referenced freely. Files outside the diff can also be referenced; ' +
+    'to make them visible in the diff panel, add them as context files via the API (see skill). ' +
+    'Add context files judiciously — only when directly relevant, with focused line ranges.'
   );
 
   // Instructions
