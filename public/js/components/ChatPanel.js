@@ -979,7 +979,8 @@ class ChatPanel {
       model: data.run.model,
       summary: data.run.summary,
       suggestionCount: data.suggestionCount,
-      configType: data.run.configType
+      configType: data.run.configType,
+      completedAt: data.run.completedAt
     };
     this._pendingContextData.push(contextData);
 
@@ -1407,11 +1408,11 @@ class ChatPanel {
       tooltipParts.push(`Provider: ${context.provider || 'unknown'}, Model: ${context.model || 'unknown'}`);
     }
     if (context.configType) tooltipParts.push(`Config: ${context.configType}`);
-    if (context.summary) tooltipParts.push(`Summary: ${context.summary}`);
     if (context.completedAt) {
       const completedDate = new Date(context.completedAt);
       tooltipParts.push(`Completed: ${completedDate.toLocaleString()}`);
     }
+    if (context.summary) tooltipParts.push(`Summary: ${context.summary}`);
     const tooltip = tooltipParts.join('\n');
 
     return `
@@ -1466,17 +1467,7 @@ class ChatPanel {
     card.dataset.analysisRunId = ctxData.aiRunId;
     card.innerHTML = this._buildAnalysisCardInnerHTML(ctxData);
 
-    if (removable) {
-      const removeBtn = document.createElement('button');
-      removeBtn.className = 'chat-panel__context-remove';
-      removeBtn.title = 'Remove context';
-      removeBtn.innerHTML = '\u00d7';
-      removeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this._removeContextCard(card);
-      });
-      card.appendChild(removeBtn);
-    }
+    if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
     requestAnimationFrame(() => this.scrollToBottom());
