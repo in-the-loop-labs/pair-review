@@ -393,7 +393,7 @@ curl -s -X DELETE http://localhost:PORT/api/reviews/REVIEW_ID/context-files
 
 ## Diff Hunk Expansion
 
-Expand collapsed diff gaps to reveal hidden lines. Useful when you need to comment on or reference lines that are inside a collapsed hunk. This is a transient UI command — expansions are not persisted.
+Expand collapsed diff gaps to reveal hidden lines. Useful when you need to show the user lines that are inside a collapsed hunk. This is a transient UI command — expansions are not persisted.
 
 ### Expand a hunk
 
@@ -417,12 +417,6 @@ curl -X POST http://localhost:PORT/api/reviews/REVIEW_ID/expand-hunk \
 - `side` (string): `"left"` or `"right"` (default: `"right"`)
 
 **Response:** `{ "success": true }`
-
-### Guidelines
-
-- Use this before creating comments on lines that may be inside collapsed gaps.
-- The expansion is broadcast to the UI via SSE and takes effect immediately.
-- Expansions are lost on page reload.
 
 ---
 
