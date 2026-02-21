@@ -743,6 +743,44 @@ class AIPanel {
             });
         });
 
+        // Bind chat button events for AI suggestions and comments
+        this.findingsList.querySelectorAll('.quick-action-chat').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent triggering item click
+                if (!window.chatPanel) return;
+
+                const findingId = btn.dataset.findingId ? parseInt(btn.dataset.findingId, 10) : null;
+                const commentId = btn.dataset.commentId ? parseInt(btn.dataset.commentId, 10) : null;
+                const file = btn.dataset.findingFile || '';
+                const title = btn.dataset.findingTitle || '';
+
+                // Build context from the finding data
+                let suggestionContext = { title, file };
+
+                if (findingId && this.findings) {
+                    const finding = this.findings.find(f => f.id === findingId);
+                    if (finding) {
+                        suggestionContext = {
+                            title: finding.title || title,
+                            body: finding.body || '',
+                            type: finding.type || '',
+                            file: finding.file || file,
+                            line_start: finding.line_start || null,
+                            line_end: finding.line_end || null,
+                            side: 'RIGHT',
+                            reasoning: null
+                        };
+                    }
+                }
+
+                window.chatPanel.open({
+                    reviewId: window.prManager?.currentPR?.id,
+                    suggestionId: findingId ? String(findingId) : (commentId ? String(commentId) : undefined),
+                    suggestionContext
+                });
+            });
+        });
+
         // Restore active state if we have a current index
         this.highlightCurrentItem();
     }
@@ -1103,6 +1141,18 @@ class AIPanel {
         `;
         }
 
+        // Chat button for active and dismissed findings (upper-right corner)
+        let chatAction = '';
+        if (finding.status !== 'adopted' && document.documentElement.getAttribute('data-chat') === 'available') {
+            chatAction = `
+            <div class="finding-chat-action">
+                <button class="quick-action-btn quick-action-chat" data-finding-id="${finding.id}" data-finding-file="${finding.file || ''}" data-finding-title="${this.escapeHtml(title)}" title="Chat" aria-label="Chat about suggestion">
+                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
+                </button>
+            </div>
+        `;
+        }
+
         return `
             <div class="finding-item-wrapper">
                 <button class="finding-item finding-${type} ${statusClass}" data-index="${index}" data-id="${finding.id || ''}" data-file="${finding.file || ''}" data-line="${lineNum || ''}" data-item-type="finding" title="${fullLocation}">
@@ -1114,6 +1164,7 @@ class AIPanel {
                     </div>
                 </button>
                 ${quickActions}
+                ${chatAction}
             </div>
         `;
     }
@@ -1165,6 +1216,18 @@ class AIPanel {
             `;
         }
 
+        // Chat button for active AI-originated comments
+        let chatAction = '';
+        if (!isDismissed && comment.parent_id && document.documentElement.getAttribute('data-chat') === 'available') {
+            chatAction = `
+            <div class="finding-chat-action">
+                <button class="quick-action-btn quick-action-chat" data-comment-id="${comment.id}" data-finding-file="${comment.file || ''}" data-finding-title="${this.escapeHtml(title)}" title="Chat" aria-label="Chat about comment">
+                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
+                </button>
+            </div>
+        `;
+        }
+
         return `
             <div class="finding-item-wrapper">
                 <button class="finding-item finding-comment ${comment.parent_id ? 'comment-ai-origin' : 'comment-user-origin'}${isFileLevel ? ' file-level' : ''}${dismissedClass}" data-index="${index}" data-id="${comment.id || ''}" data-file="${comment.file || ''}" data-line="${lineNum || ''}" data-is-file-level="${isFileLevel ? '1' : '0'}" data-item-type="comment" title="${fullLocation}">
@@ -1175,6 +1238,7 @@ class AIPanel {
                     </div>
                 </button>
                 ${actionButton}
+                ${chatAction}
             </div>
         `;
     }
