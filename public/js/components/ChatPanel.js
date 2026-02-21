@@ -373,8 +373,11 @@ class ChatPanel {
     // Ensure SSE is connected (but don't create a session yet — lazy creation)
     this._ensureGlobalSSE();
 
-    // Load MRU session with message history (if any previous sessions exist)
-    if (!this.currentSessionId) {
+    // Load MRU session with message history (if any previous sessions exist).
+    // Skip when opening with explicit context (suggestion/comment/file) — the
+    // user wants a *new* conversation about that item, not to resume the last one.
+    const hasExplicitContext = !!(options.suggestionContext || options.commentContext || options.fileContext);
+    if (!this.currentSessionId && !hasExplicitContext) {
       await this._loadMRUSession();
     }
 
@@ -1275,6 +1278,10 @@ class ChatPanel {
       this._pendingContext.splice(idx, 1);
       this._pendingContextData.splice(idx, 1);
     }
+    // Hide context tooltip – mouseleave won't fire on a removed element
+    clearTimeout(this._ctxTooltipTimer);
+    if (this._ctxTooltipEl) this._ctxTooltipEl.style.display = 'none';
+
     cardEl.remove();
 
     // Re-index remaining removable context cards
