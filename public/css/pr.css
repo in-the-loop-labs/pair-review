@@ -10670,20 +10670,6 @@ body.resizing * {
   background: linear-gradient(to bottom, var(--chat-subtle), transparent);
   flex-shrink: 0;
 }
-
-.chat-panel__title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--chat-text);
-}
-
-.chat-panel__title svg {
-  color: var(--chat-primary);
-}
-
 /* Session picker wrapper */
 .chat-panel__session-picker {
   position: relative;

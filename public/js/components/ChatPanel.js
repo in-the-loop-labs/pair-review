@@ -529,11 +529,6 @@ class ChatPanel {
   }
 
   /**
-   * Load the most recently used session for the current review.
-   * Fetches the session list, picks the MRU, and loads its message history
-   * so the user sees their previous conversation when reopening the panel.
-   */
-  /**
    * Fetch sessions for the current review.
    * Extracted from _loadMRUSession for reuse by the session picker dropdown.
    * @returns {Promise<Array>} Array of session objects with message_count and first_message
@@ -551,6 +546,10 @@ class ChatPanel {
     }
   }
 
+  /**
+   * Load the most recently used session for the current review.
+   * Picks the first session (MRU) and loads its message history.
+   */
   async _loadMRUSession() {
     if (!this.reviewId) return;
 
