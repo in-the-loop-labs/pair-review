@@ -949,8 +949,8 @@ class AnalysisConfigModal {
       tabBar.className = 'analysis-tab-bar';
       tabBar.innerHTML = `
         <button class="analysis-tab active" data-tab="single">Single Model</button>
-        <button class="analysis-tab" data-tab="council">Council <span class="beta-badge">BETA</span></button>
-        <button class="analysis-tab" data-tab="advanced">Advanced <span class="beta-badge">BETA</span></button>
+        <button class="analysis-tab" data-tab="council">Council</button>
+        <button class="analysis-tab" data-tab="advanced">Advanced</button>
       `;
 
       // Assemble
