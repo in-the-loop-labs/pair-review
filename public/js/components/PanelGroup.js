@@ -77,22 +77,24 @@ class PanelGroup {
     // Apply initial layout
     this._applyLayout(this._layout);
 
-    // Restore chat visibility from last session
-    const savedChatVisible = localStorage.getItem(PanelGroup.CHAT_VISIBLE_KEY);
-    if (savedChatVisible === 'true') {
-      // Set immediately so synchronous state reads (_updateGroupState, etc.) see the correct value.
-      // The async _onChatVisibilityChanged callback no-ops via optional chaining because
-      // window.panelGroup isn't assigned yet, so we set state manually here.
-      this._chatVisible = true;
-      this.chatPanel.open({ suppressFocus: true });
-      if (this.chatToggleBtn) {
-        this.chatToggleBtn.classList.add('active');
-      }
+    // Restore chat visibility from last session (only if chat is available)
+    const chatState = document.documentElement.getAttribute('data-chat');
+    if (chatState === 'available') {
+      this._restoreChatFromStorage();
     } else {
-      // Chat starts closed — zero out the CSS variable so max-width calcs are correct.
-      // (Mirrors AIPanel's constructor which sets --ai-panel-width based on collapsed state.)
+      // Chat not available yet — zero out CSS variable so max-width calcs are correct.
       document.documentElement.style.setProperty('--chat-panel-width', '0px');
     }
+
+    // Listen for late chat-state transitions (config fetch may complete after constructor)
+    window.addEventListener('chat-state-changed', (e) => {
+      const state = e.detail?.state;
+      if (state === 'available') {
+        this._restoreChatFromStorage();
+      } else if (state === 'unavailable' && this.chatToggleBtn) {
+        this.chatToggleBtn.title = 'Install and configure Pi to enable chat';
+      }
+    });
 
     // Bind events
     this._bindEvents();
@@ -314,7 +316,7 @@ class PanelGroup {
     if (!this._reviewVisible) {
       window.aiPanel?.expand();
     }
-    if (!this._chatVisible) {
+    if (!this._chatVisible && this._isChatAvailable()) {
       this.chatPanel.open();
     }
   }
@@ -329,7 +331,9 @@ class PanelGroup {
     // Panel visibility
     ks.registerShortcut(['p', 'n'], 'Toggle file navigator', () => this._toggleSidebar());
     ks.registerShortcut(['p', 'r'], 'Toggle Review panel', () => this._toggleReviewPanel());
-    ks.registerShortcut(['p', 'c'], 'Toggle Chat panel', () => this.toggleChat());
+    ks.registerShortcut(['p', 'c'], 'Toggle Chat panel', () => {
+      if (this._isChatAvailable()) this.toggleChat();
+    });
 
     // Direction shortcuts
     ks.registerShortcut(['p', 'h'], 'Horizontal layout', () => this._switchToHorizontal());
@@ -408,9 +412,37 @@ class PanelGroup {
   }
 
   /**
+   * Check if chat is currently available (data-chat="available")
+   * @returns {boolean}
+   */
+  _isChatAvailable() {
+    return document.documentElement.getAttribute('data-chat') === 'available';
+  }
+
+  /**
+   * Restore chat visibility from localStorage (called when chat becomes available)
+   */
+  _restoreChatFromStorage() {
+    const savedChatVisible = localStorage.getItem(PanelGroup.CHAT_VISIBLE_KEY);
+    if (savedChatVisible === 'true') {
+      this._chatVisible = true;
+      this.chatPanel.open({ suppressFocus: true });
+      if (this.chatToggleBtn) {
+        this.chatToggleBtn.classList.add('active');
+      }
+    } else {
+      document.documentElement.style.setProperty('--chat-panel-width', '0px');
+    }
+    this._updateGroupState();
+    this._updateLayoutToggleVisibility();
+    this._updateRightPanelGroupWidth();
+  }
+
+  /**
    * Toggle chat panel visibility
    */
   toggleChat() {
+    if (!this._isChatAvailable()) return;
     if (this._chatVisible) {
       this.chatPanel.close();
     } else {
@@ -423,6 +455,7 @@ class PanelGroup {
    * @param {Object} [options] - Options to pass to ChatPanel.open()
    */
   showChat(options) {
+    if (!this._isChatAvailable()) return;
     if (!this._chatVisible) {
       this.chatPanel.open(options);
     } else if (options) {

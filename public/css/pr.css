@@ -11588,3 +11588,31 @@ body.resizing * {
   color: var(--color-accent-hover, #1f6feb);
   background: var(--color-bg-accent-subtle, rgba(88, 166, 255, 0.1));
 }
+
+/* ─── Chat Feature Gating ──────────────────────────────────────────────────── */
+
+/* Chat disabled: hide everything */
+[data-chat="disabled"] #chat-toggle-btn,
+[data-chat="disabled"] #panel-layout-toggle,
+[data-chat="disabled"] #chat-panel-container,
+[data-chat="disabled"] .file-header-chat-btn,
+[data-chat="disabled"] .ai-action-chat,
+[data-chat="disabled"] .btn-chat-comment,
+[data-chat="disabled"] .analysis-history-chat-btn {
+  display: none !important;
+}
+
+/* Chat enabled but Pi unavailable: hide all except toggle (which is disabled) */
+[data-chat="unavailable"] #panel-layout-toggle,
+[data-chat="unavailable"] #chat-panel-container,
+[data-chat="unavailable"] .file-header-chat-btn,
+[data-chat="unavailable"] .ai-action-chat,
+[data-chat="unavailable"] .btn-chat-comment,
+[data-chat="unavailable"] .analysis-history-chat-btn {
+  display: none !important;
+}
+
+[data-chat="unavailable"] #chat-toggle-btn {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

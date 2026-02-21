@@ -895,6 +895,14 @@
       if (response.ok) {
         const config = await response.json();
         updateCommandExamples(config.is_running_via_npx);
+
+        // Set chat feature state based on config and Pi availability
+        let chatState = 'disabled';
+        if (config.enable_chat) {
+          chatState = config.pi_available ? 'available' : 'unavailable';
+        }
+        document.documentElement.setAttribute('data-chat', chatState);
+        window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: chatState } }));
       } else {
         // Fallback: assume installed (shorter command)
         updateCommandExamples(false);

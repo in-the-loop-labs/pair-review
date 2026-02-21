@@ -37,7 +37,9 @@ router.get('/api/config', (req, res) => {
     theme: config.theme || 'light',
     comment_button_action: config.comment_button_action || 'submit',
     // Include npx detection for frontend command examples
-    is_running_via_npx: isRunningViaNpx()
+    is_running_via_npx: isRunningViaNpx(),
+    enable_chat: config.enable_chat !== false,
+    pi_available: getCachedAvailability('pi')?.available || false
   });
 });
 

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="light" data-chat="disabled">
 <head>
     <script>
         // Initialize theme immediately to prevent flash
@@ -7,6 +7,14 @@
             const savedTheme = localStorage.getItem('theme') || 'light';
             document.documentElement.setAttribute('data-theme', savedTheme);
         })();
+        // Fetch chat availability early so PanelGroup sees the correct state
+        fetch('/api/config').then(r => r.ok ? r.json() : null).then(config => {
+            if (!config) return;
+            let state = 'disabled';
+            if (config.enable_chat) state = config.pi_available ? 'available' : 'unavailable';
+            document.documentElement.setAttribute('data-chat', state);
+            window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state } }));
+        }).catch(() => {});
     </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
