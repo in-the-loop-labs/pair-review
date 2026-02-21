@@ -10719,7 +10719,6 @@ body.resizing * {
 
 /* Chat Messages Area */
 .chat-panel__messages {
-  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: 16px;
@@ -11119,7 +11118,7 @@ body.resizing * {
 
 .chat-panel__toast {
   position: absolute;
-  top: 8px;
+  top: 44px;
   left: 8px;
   right: 8px;
   z-index: 10;

@@ -2022,25 +2022,25 @@ class ChatPanel {
   }
 
   /**
-   * Show an auto-dismissing toast notification overlaid at the top of the
-   * messages area.  Uses position:absolute so it floats over content without
-   * shifting the layout.
+   * Show an auto-dismissing toast notification overlaid at the border between
+   * the header and messages area.  Appended to the outer .chat-panel container
+   * (which has position:relative) so it stays visible regardless of scroll
+   * position in the messages area.
    * @param {string} message - Text to display
    */
   _showToast(message) {
     // Remove any existing toast
-    const existing = this._container?.querySelector('.chat-panel__toast');
+    const existing = this.panel?.querySelector('.chat-panel__toast');
     if (existing) existing.remove();
 
     const toast = document.createElement('div');
     toast.className = 'chat-panel__toast';
     toast.textContent = message;
 
-    // Insert at the top of the messages area so it's always visible
-    if (this.messagesEl) {
-      this.messagesEl.prepend(toast);
-    } else if (this._container) {
-      this._container.prepend(toast);
+    // Append to the outer chat-panel container so the toast is positioned
+    // relative to it (not inside the scrollable messages area).
+    if (this.panel) {
+      this.panel.appendChild(toast);
     }
 
     // Auto-dismiss after 2.5 seconds
