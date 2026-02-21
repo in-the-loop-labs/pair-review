@@ -6576,6 +6576,11 @@ body:not([data-theme="dark"]) .theme-icon-light {
   z-index: 2;
 }
 
+/* When dropdown is open, lift above resize-handle (z-index:10) */
+.ai-panel > .analysis-context.open {
+  z-index: 11;
+}
+
 /* Prevent text selection during drag */
 body.resizing {
   user-select: none;
