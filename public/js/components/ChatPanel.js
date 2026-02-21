@@ -1414,7 +1414,7 @@ class ChatPanel {
     }
     if (context.configType) tooltipParts.push(`Config: ${context.configType}`);
     if (context.completedAt) {
-      const completedDate = new Date(context.completedAt);
+      const completedDate = window.parseTimestamp(context.completedAt);
       tooltipParts.push(`Completed: ${completedDate.toLocaleString()}`);
     }
     if (context.summary) tooltipParts.push(`Summary: ${context.summary}`);

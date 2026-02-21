@@ -150,6 +150,9 @@ describe('AnalysisHistoryManager', () => {
     // Reset modules so we get a fresh import
     vi.resetModules();
 
+    // Import the shared timestamp utility first (sets window.parseTimestamp)
+    await import('../../public/js/utils/time.js');
+
     // Now import the actual production module
     // The module assigns to window.AnalysisHistoryManager
     await import('../../public/js/modules/analysis-history.js');
