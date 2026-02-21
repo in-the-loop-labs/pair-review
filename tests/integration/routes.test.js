@@ -2630,6 +2630,26 @@ describe('Config Endpoints', () => {
       expect(response.body.theme).toBe('light');
       expect(response.body.comment_button_action).toBe('submit');
     });
+
+    it('should return enable_chat and pi_available fields', async () => {
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.status).toBe(200);
+      // enable_chat defaults to true when not explicitly set in config
+      expect(response.body.enable_chat).toBe(true);
+      // pi_available is false when no cached availability exists
+      expect(response.body.pi_available).toBe(false);
+    });
+
+    it('should return enable_chat as false when explicitly disabled', async () => {
+      app.set('config', { ...app.get('config'), enable_chat: false });
+
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.body.enable_chat).toBe(false);
+    });
   });
 
   describe('PATCH /api/config', () => {

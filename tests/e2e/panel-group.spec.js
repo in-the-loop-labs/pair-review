@@ -37,6 +37,12 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('chat button toggles chat panel visibility', async ({ page }) => {
+    // Enable chat for this test (Pi not available in E2E environment)
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const chatPanel = page.locator('.chat-panel');
     const chatCloseBtn = page.locator('.chat-panel__close-btn');
@@ -54,6 +60,12 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('chat button shows active state when chat is open', async ({ page }) => {
+    // Enable chat for this test (Pi not available in E2E environment)
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const chatCloseBtn = page.locator('.chat-panel__close-btn');
 
@@ -76,6 +88,12 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('layout toggle button visible when both panels are open', async ({ page }) => {
+    // Enable chat for this test (Pi not available in E2E environment)
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
 
@@ -87,6 +105,12 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('popover opens on layout toggle click and selects layout', async ({ page }) => {
+    // Enable chat for this test (Pi not available in E2E environment)
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
     const group = page.locator('#right-panel-group');
@@ -119,6 +143,12 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('popover selects all four layouts correctly', async ({ page }) => {
+    // Enable chat for this test (Pi not available in E2E environment)
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
     const group = page.locator('#right-panel-group');
@@ -142,6 +172,12 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('popover closes on click outside', async ({ page }) => {
+    // Enable chat for this test (Pi not available in E2E environment)
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
     const popover = page.locator('#layout-popover');
@@ -157,6 +193,12 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('layout persists on reload', async ({ page }) => {
+    // Enable chat for this test (Pi not available in E2E environment)
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
     const group = page.locator('#right-panel-group');
@@ -178,6 +220,46 @@ test.describe('Panel Group - PR Mode', () => {
     await expect(groupAfter).toHaveClass(/layout-h-chat-review/);
   });
 
+  test('chat button hidden when chat is disabled', async ({ page }) => {
+    // Mock config to explicitly disable chat
+    await page.route('**/api/config', async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          theme: 'light',
+          comment_button_action: 'submit',
+          is_running_via_npx: false,
+          enable_chat: false,
+          pi_available: false
+        })
+      });
+    });
+    await page.reload();
+    await waitForDiffToRender(page);
+
+    const chatBtn = page.locator('#chat-toggle-btn');
+    await expect(chatBtn).not.toBeVisible();
+  });
+
+  test('chat button grayed out when Pi is unavailable', async ({ page }) => {
+    // Default E2E state: enable_chat=true (default), pi_available=false (no Pi installed)
+    // Wait for config fetch to set data-chat
+    await page.waitForFunction(() =>
+      document.documentElement.getAttribute('data-chat') !== 'disabled'
+    );
+
+    const chatBtn = page.locator('#chat-toggle-btn');
+    // Visible but grayed out with not-allowed cursor and tooltip explaining why
+    await expect(chatBtn).toBeVisible();
+    const styles = await chatBtn.evaluate(el => {
+      const cs = getComputedStyle(el);
+      return { opacity: cs.opacity, cursor: cs.cursor };
+    });
+    expect(styles.opacity).toBe('0.4');
+    expect(styles.cursor).toBe('not-allowed');
+    await expect(chatBtn).toHaveAttribute('title', 'Install and configure Pi to enable chat');
+  });
+
   test('both panels hidden: group collapses', async ({ page }) => {
     const group = page.locator('#right-panel-group');
     const aiPanelClose = page.locator('#ai-panel-close');
@@ -197,6 +279,29 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('chat panel visibility persists on reload', async ({ page }) => {
+    // Mock /api/config to report Pi as available (persists across reload)
+    await page.route('**/api/config', async (route) => {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          theme: 'light',
+          comment_button_action: 'submit',
+          is_running_via_npx: false,
+          enable_chat: true,
+          pi_available: true
+        })
+      });
+    });
+
+    // Reload to pick up the mocked config
+    await page.reload();
+    await waitForDiffToRender(page);
+
+    // Wait for chat to become available (config fetch is async)
+    await page.waitForFunction(() =>
+      document.documentElement.getAttribute('data-chat') === 'available'
+    );
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const chatPanel = page.locator('.chat-panel');
 
@@ -207,6 +312,11 @@ test.describe('Panel Group - PR Mode', () => {
     // Reload
     await page.reload();
     await waitForDiffToRender(page);
+
+    // Wait for chat to become available again
+    await page.waitForFunction(() =>
+      document.documentElement.getAttribute('data-chat') === 'available'
+    );
 
     // Chat should still be visible
     await expect(page.locator('.chat-panel')).toBeVisible();
@@ -236,6 +346,12 @@ test.describe('Panel Group - Local Mode', () => {
   });
 
   test('chat button toggles chat panel visibility', async ({ page }) => {
+    // Enable chat for this test (Pi not available in E2E environment)
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const chatPanel = page.locator('.chat-panel');
     const chatCloseBtn = page.locator('.chat-panel__close-btn');
@@ -253,6 +369,12 @@ test.describe('Panel Group - Local Mode', () => {
   });
 
   test('popover opens and selects layouts in local mode', async ({ page }) => {
+    // Enable chat for this test (Pi not available in E2E environment)
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-chat', 'available');
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'available' } }));
+    });
+
     const chatBtn = page.locator('#chat-toggle-btn');
     const layoutBtn = page.locator('#panel-layout-toggle');
     const group = page.locator('#right-panel-group');

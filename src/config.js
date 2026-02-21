@@ -20,6 +20,7 @@ const DEFAULT_CONFIG = {
   debug_stream: false,  // When true, logs AI provider streaming events (equivalent to --debug-stream CLI flag)
   db_name: "",  // Custom database filename (default: database.db). Useful for per-worktree isolation.
   yolo: false,  // When true, skips fine-grained AI provider permission setup (equivalent to --yolo CLI flag)
+  enable_chat: true,  // When true, enables the chat panel feature (requires Pi AI provider)
   providers: {},  // Custom provider configurations (overrides built-in defaults)
   monorepos: {}  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
 };
