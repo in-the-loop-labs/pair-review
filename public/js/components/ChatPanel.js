@@ -846,6 +846,24 @@ class ChatPanel {
       lines.push(`- Details: ${contextData.body}`);
     }
 
+    // Enrich with diff hunk if available
+    const patch = window.prManager?.filePatches?.get(contextData.file);
+    if (patch && window.DiffContext) {
+      if (contextData.line_start) {
+        const hunk = window.DiffContext.extractHunkForLines(
+          patch, contextData.line_start, contextData.line_end || contextData.line_start, ctx.side
+        );
+        if (hunk) {
+          lines.push(`- Diff hunk:\n\`\`\`\n${hunk}\n\`\`\``);
+        }
+      } else {
+        const ranges = window.DiffContext.extractHunkRangesForFile(patch);
+        if (ranges.length) {
+          lines.push(`- Diff hunk ranges: ${JSON.stringify(ranges)}`);
+        }
+      }
+    }
+
     this._pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
@@ -892,6 +910,24 @@ class ChatPanel {
       lines.push(`- Comment: ${contextData.body}`);
     }
 
+    // Enrich with diff hunk if available
+    const patch = window.prManager?.filePatches?.get(contextData.file);
+    if (patch && window.DiffContext) {
+      if (contextData.line_start && !ctx.isFileLevel) {
+        const hunk = window.DiffContext.extractHunkForLines(
+          patch, contextData.line_start, contextData.line_end || contextData.line_start
+        );
+        if (hunk) {
+          lines.push(`- Diff hunk:\n\`\`\`\n${hunk}\n\`\`\``);
+        }
+      } else {
+        const ranges = window.DiffContext.extractHunkRangesForFile(patch);
+        if (ranges.length) {
+          lines.push(`- Diff hunk ranges: ${JSON.stringify(ranges)}`);
+        }
+      }
+    }
+
     this._pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
@@ -905,7 +941,7 @@ class ChatPanel {
    * @param {string} fileContext.file - File path
    */
   _sendFileContextMessage(fileContext) {
-    const contextText = `The user wants to discuss ${fileContext.file}`;
+    let contextText = `The user wants to discuss ${fileContext.file}`;
 
     // Check for duplicate context
     const isDuplicate = this._pendingContext.some(c => c === contextText) ||
@@ -926,6 +962,15 @@ class ChatPanel {
       body: null
     };
     this._pendingContextData.push(contextData);
+
+    // Enrich with diff hunk ranges if available
+    const patch = window.prManager?.filePatches?.get(fileContext.file);
+    if (patch && window.DiffContext) {
+      const ranges = window.DiffContext.extractHunkRangesForFile(patch);
+      if (ranges.length) {
+        contextText += `\n- Diff hunk ranges: ${JSON.stringify(ranges)}`;
+      }
+    }
 
     this._pendingContext.push(contextText);
 
