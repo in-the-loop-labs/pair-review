@@ -503,21 +503,7 @@ class ChatPanel {
         } else if (ctxData.type === 'comment') {
           this._addCommentContextCard(ctxData, { removable: true });
         } else if (ctxData.type === 'analysis-run') {
-          const card = document.createElement('div');
-          card.className = 'chat-panel__context-card';
-          card.dataset.contextIndex = this._pendingContext.length - 1;
-          card.dataset.analysisRunId = ctxData.aiRunId;
-          card.innerHTML = this._buildAnalysisCardInnerHTML(ctxData);
-          const removeBtn = document.createElement('button');
-          removeBtn.className = 'chat-panel__context-remove';
-          removeBtn.title = 'Remove context';
-          removeBtn.innerHTML = '\u00d7';
-          removeBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this._removeContextCard(card);
-          });
-          card.appendChild(removeBtn);
-          this.messagesEl.appendChild(card);
+          this._addAnalysisRunContextCard(ctxData, { removable: true });
         } else {
           this._addContextCard(ctxData, { removable: true });
         }
@@ -978,10 +964,11 @@ class ChatPanel {
     // 3. Fetch context from backend
     const response = await fetch(`/api/chat/analysis-context/${runId}?reviewId=${this.reviewId}`);
     if (!response.ok) {
-      console.error('Failed to fetch analysis context:', response.statusText);
+      console.error('[ChatPanel] Failed to fetch analysis context:', response.statusText);
       return;
     }
-    const data = await response.json();
+    const result = await response.json();
+    const data = result.data;
 
     // 4. Push to pending context arrays
     this._pendingContext.push(data.text);
@@ -995,36 +982,15 @@ class ChatPanel {
       configType: data.run.configType
     };
     this._pendingContextData.push(contextData);
-    const idx = this._pendingContext.length - 1;
 
     // 5. Remove empty state if present
     const emptyState = this.messagesEl?.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
-    // 6. Create the card element
-    const card = document.createElement('div');
-    card.className = 'chat-panel__context-card';
-    card.dataset.contextIndex = idx;
-    card.dataset.analysisRunId = runId;
-    card.innerHTML = this._buildAnalysisCardInnerHTML(contextData);
+    // 6. Create the card and append
+    this._addAnalysisRunContextCard(contextData, { removable: true });
 
-    // 7. Add remove button
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'chat-panel__context-remove';
-    removeBtn.title = 'Remove context';
-    removeBtn.innerHTML = '\u00d7';
-    removeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this._removeContextCard(card);
-    });
-    card.appendChild(removeBtn);
-
-    // 8. Append to messages area
-    if (this.messagesEl) {
-      this.messagesEl.appendChild(card);
-    }
-
-    // 9. Focus input
+    // 7. Focus input
     if (this.inputEl) this.inputEl.focus();
   }
 
@@ -1482,6 +1448,38 @@ class ChatPanel {
     if (context.provider || context.model || context.summary) {
       card.dataset.hasMetadata = 'true';
     }
+  }
+
+  /**
+   * Add a compact analysis-run context card to the messages area.
+   * Used for manually-added analysis run cards that participate in the pending
+   * context arrays (data-context-index path).  Unlike _addAnalysisContextCard
+   * (auto-added, data-analysis="true"), these cards use _removeContextCard.
+   * @param {Object} ctxData - Context data { type, aiRunId, provider, model, summary, suggestionCount, configType }
+   * @param {Object} [opts] - Options
+   * @param {boolean} [opts.removable=false] - Whether the card should have a remove button
+   */
+  _addAnalysisRunContextCard(ctxData, { removable = false } = {}) {
+    const card = document.createElement('div');
+    card.className = 'chat-panel__context-card';
+    card.dataset.contextIndex = this._pendingContext.length - 1;
+    card.dataset.analysisRunId = ctxData.aiRunId;
+    card.innerHTML = this._buildAnalysisCardInnerHTML(ctxData);
+
+    if (removable) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'chat-panel__context-remove';
+      removeBtn.title = 'Remove context';
+      removeBtn.innerHTML = '\u00d7';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._removeContextCard(card);
+      });
+      card.appendChild(removeBtn);
+    }
+
+    this.messagesEl.appendChild(card);
+    requestAnimationFrame(() => this.scrollToBottom());
   }
 
   /**
