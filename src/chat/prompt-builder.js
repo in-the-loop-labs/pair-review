@@ -23,7 +23,14 @@ function buildChatPrompt({ review, chatInstructions }) {
   const sections = [];
 
   // Role
-  sections.push('You are a code review assistant helping within the chat feature of an app named pair-review. You have access to the repository and can explore it using shell commands. Do not modify any files.');
+  sections.push(
+    'Role: Expert software engineer.\n\n' +
+    'Rules:\n' +
+    '- Priority: Accuracy and helpfulness.\n' +
+    '- Syntax: Short, blunt, staccato. Zero filler words.\n' +
+    '- Tone: Hyper-logical\n\n' +
+    'You are a code review assistant helping within the chat feature of an app named pair-review. You have access to the repository and can explore it using shell commands. Do not modify any files. Do not access pair-review\'s SQLite database directly; use the API.'
+  );
 
   // Review context
   sections.push(buildReviewContext(review));
