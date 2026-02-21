@@ -886,6 +886,7 @@ class PRManager {
     }
 
     // Load context files after diff is rendered
+    this.contextFiles = [];
     this.loadContextFiles();
   }
 
