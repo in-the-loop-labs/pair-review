@@ -5541,7 +5541,7 @@ tr.line-range-start .d2h-code-line-ctn {
 }
 
 .analysis-history-chat-btn:hover {
-    background: var(--color-accent-emphasis);
+    background: var(--color-accent-hover, #1f6feb);
     color: var(--color-fg-on-emphasis, #fff);
 }
 
