@@ -293,15 +293,18 @@ async function startServer(sharedDb = null) {
     // Find available port and start server
     const port = await findAvailablePort(app, config.port);
 
+    // Check provider availability before accepting requests so /api/config
+    // returns accurate pi_available on the very first request (avoids race
+    // condition where the frontend fetches config before the cache is populated)
+    const defaultProvider = config.default_provider || 'claude';
+    try {
+      await checkAllProviders(defaultProvider);
+    } catch (err) {
+      console.warn('Provider availability check failed:', err.message);
+    }
+
     server = app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
-
-      // Check provider availability in background after server is listening
-      // Use the configured default provider as priority (if set)
-      const defaultProvider = config.default_provider || 'claude';
-      checkAllProviders(defaultProvider).catch(err => {
-        console.warn('Background provider availability check failed:', err.message);
-      });
     });
 
     server.on('error', (error) => {
