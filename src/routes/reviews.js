@@ -744,6 +744,59 @@ router.get('/api/reviews/:reviewId/analyses/status', validateReviewId, async (re
   }
 });
 
+// ==========================================================================
+// Hunk Expansion Route
+// ==========================================================================
+
+/**
+ * POST /api/reviews/:reviewId/expand-hunk
+ * Broadcast a request to expand a hidden hunk in the diff view.
+ * This is a transient UI command — no database writes.
+ *
+ * Body: { file, line_start, line_end, side? }
+ *   - file: (string, required) path of the file whose hunk to expand
+ *   - line_start: (integer, required) first line to reveal (>= 1)
+ *   - line_end: (integer, required) last line to reveal (>= line_start)
+ *   - side: ('left' | 'right', optional, default 'right')
+ */
+router.post('/api/reviews/:reviewId/expand-hunk', validateReviewId, async (req, res) => {
+  try {
+    const { file, line_start, line_end, side } = req.body;
+
+    // --- validation ---
+    if (!file || typeof file !== 'string') {
+      return res.status(400).json({ error: 'Missing or invalid required field: file' });
+    }
+
+    if (!Number.isInteger(line_start) || line_start < 1) {
+      return res.status(400).json({ error: 'Missing or invalid required field: line_start (must be a positive integer)' });
+    }
+
+    if (!Number.isInteger(line_end) || line_end < line_start) {
+      return res.status(400).json({ error: 'Missing or invalid required field: line_end (must be an integer >= line_start)' });
+    }
+
+    const resolvedSide = side || 'right';
+    if (!['left', 'right'].includes(resolvedSide)) {
+      return res.status(400).json({ error: 'Invalid value for side: must be "left" or "right"' });
+    }
+
+    // --- broadcast ---
+    broadcastReviewEvent(req.reviewId, {
+      type: 'review:expand_hunk',
+      file,
+      line_start,
+      line_end,
+      side: resolvedSide
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Error broadcasting expand-hunk event:', error);
+    res.status(500).json({ error: 'Failed to broadcast expand-hunk event' });
+  }
+});
+
 /**
  * GET /api/reviews/:reviewId/file-content/:fileName(*)
  * Fetch file content for context expansion and context files.
