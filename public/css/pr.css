@@ -2312,16 +2312,17 @@ tr.newly-expanded .d2h-code-line-ctn {
   background: rgba(248, 81, 73, 0.15);
 }
 
-/* Chat button: blue-tinted outline style */
+/* Chat button: neutral style, blue on hover (matches Edit button) */
 .ai-action-chat {
   background: var(--color-bg-elevated, #1e2329);
-  color: var(--color-accent-primary, #58a6ff);
-  border: 1px solid var(--color-accent-primary, #58a6ff);
+  color: var(--color-text-secondary, #8b949e);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.1));
 }
 
 .ai-action-chat:hover {
   background: var(--color-accent-light, rgba(56, 139, 253, 0.15));
   color: var(--color-accent-primary, #58a6ff);
+  border-color: var(--color-accent-primary, #58a6ff);
 }
 
 /* Icon styling inside action buttons */
@@ -2482,6 +2483,34 @@ tr.newly-expanded .d2h-code-line-ctn {
 
 .btn-restore:hover .octicon {
   fill: var(--color-text-primary);
+}
+
+/* Chat button in collapsed suggestion bar - icon only, transparent */
+.btn-collapsed-chat {
+  color: var(--color-text-tertiary, #6e7681);
+  background-color: transparent;
+  border: none;
+  padding: 2px;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  min-height: 24px;
+  min-width: 24px;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.btn-collapsed-chat:hover {
+  color: var(--color-accent-primary, #58a6ff);
+  background-color: var(--color-accent-light, rgba(56, 139, 253, 0.15));
+}
+
+.btn-collapsed-chat svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
 }
 
 /* Dark theme adjustments for AI suggestions - matches prototype styling */
@@ -8005,6 +8034,32 @@ body.resizing * {
   opacity: 1;
 }
 
+/* Chat action button - upper-right corner of finding items */
+.finding-chat-action {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  z-index: 1;
+}
+
+.finding-item-wrapper:hover .finding-chat-action,
+.finding-item-wrapper:focus-within .finding-chat-action {
+  opacity: 1;
+}
+
+/* Chat quick-action button - blue accent on hover */
+.quick-action-chat {
+  color: var(--color-text-tertiary, #6e7681);
+}
+
+.quick-action-chat:hover {
+  background: var(--color-accent-light, rgba(56, 139, 253, 0.15));
+  color: var(--color-accent-primary, #58a6ff);
+}
+
 .quick-action-btn {
   width: 24px;
   height: 24px;
@@ -11602,6 +11657,8 @@ body.resizing * {
 [data-chat="disabled"] #chat-panel-container,
 [data-chat="disabled"] .file-header-chat-btn,
 [data-chat="disabled"] .ai-action-chat,
+[data-chat="disabled"] .btn-collapsed-chat,
+[data-chat="disabled"] .finding-chat-action,
 [data-chat="disabled"] .btn-chat-comment,
 [data-chat="disabled"] .analysis-history-chat-btn {
   display: none !important;
@@ -11612,6 +11669,8 @@ body.resizing * {
 [data-chat="unavailable"] #chat-panel-container,
 [data-chat="unavailable"] .file-header-chat-btn,
 [data-chat="unavailable"] .ai-action-chat,
+[data-chat="unavailable"] .btn-collapsed-chat,
+[data-chat="unavailable"] .finding-chat-action,
 [data-chat="unavailable"] .btn-chat-comment,
 [data-chat="unavailable"] .analysis-history-chat-btn {
   display: none !important;
