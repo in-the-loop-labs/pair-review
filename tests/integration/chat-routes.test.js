@@ -15,7 +15,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 const chatRouter = require('../../src/routes/chat');
-const { _sseClients, _sseUnsubscribers } = require('../../src/routes/chat');
+const { _sseClients, _sseUnsubscribers, _buildPairReviewApiRe } = require('../../src/routes/chat');
 
 /**
  * Creates a mock ChatSessionManager with controllable behavior.
@@ -718,6 +718,273 @@ describe('Chat Routes', () => {
 
       expect(res.status).toBe(500);
       expect(res.body.error).toContain('Failed to save context');
+    });
+  });
+
+  describe('Hidden pair-review API tool calls', () => {
+    /**
+     * Helper: starts the app on an ephemeral port, creates a session
+     * (which triggers registerSSEBroadcast with that port), captures
+     * the onToolUse callback, and returns it along with a list that
+     * collects all SSE events broadcast during the test.
+     */
+    async function setupToolUseCapture() {
+      let capturedCallback;
+      mockManager.onToolUse.mockImplementation((_sid, cb) => {
+        capturedCallback = cb;
+        return () => {};
+      });
+
+      // Start on an ephemeral port so req.socket.localPort is available
+      const http = require('http');
+      const server = http.createServer(app);
+      await new Promise((resolve) => server.listen(0, resolve));
+      const port = server.address().port;
+
+      try {
+        // Create a session to trigger registerSSEBroadcast
+        await request(server)
+          .post('/api/chat/session')
+          .send({ provider: 'pi', reviewId: 1, systemPrompt: 'test' });
+      } finally {
+        server.close();
+      }
+
+      // Collect broadcast events via a fake SSE client
+      const events = [];
+      const fakeClient = {
+        write: (raw) => {
+          const json = raw.replace(/^data: /, '').trim();
+          if (json) events.push(JSON.parse(json));
+        }
+      };
+      _sseClients.add(fakeClient);
+
+      return { callback: capturedCallback, events, fakeClient, port };
+    }
+
+    it('should suppress curl to localhost/api on the server port (start + end)', async () => {
+      const { callback, events, port } = await setupToolUseCapture();
+
+      callback({
+        toolName: 'Bash',
+        status: 'start',
+        toolCallId: 'tc-1',
+        args: { command: `curl -s http://localhost:${port}/api/comments` }
+      });
+      callback({
+        toolName: 'Bash',
+        status: 'end',
+        toolCallId: 'tc-1'
+      });
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('should suppress curl to 127.0.0.1/api on the server port', async () => {
+      const { callback, events, port } = await setupToolUseCapture();
+
+      callback({
+        toolName: 'Bash',
+        status: 'start',
+        toolCallId: 'tc-2',
+        args: { command: `curl http://127.0.0.1:${port}/api/reviews/1` }
+      });
+      callback({
+        toolName: 'Bash',
+        status: 'end',
+        toolCallId: 'tc-2'
+      });
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('should allow curl to localhost/api on a different port', async () => {
+      const { callback, events, port } = await setupToolUseCapture();
+      const otherPort = port + 1;
+
+      callback({
+        toolName: 'Bash',
+        status: 'start',
+        toolCallId: 'tc-other',
+        args: { command: `curl http://localhost:${otherPort}/api/comments` }
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: 'tool_use', toolName: 'Bash', status: 'start' });
+    });
+
+    it('should allow regular bash commands through', async () => {
+      const { callback, events } = await setupToolUseCapture();
+
+      callback({
+        toolName: 'Bash',
+        status: 'start',
+        toolCallId: 'tc-3',
+        args: { command: 'npm test' }
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: 'tool_use', toolName: 'Bash', status: 'start' });
+    });
+
+    it('should allow non-bash tools through', async () => {
+      const { callback, events } = await setupToolUseCapture();
+
+      callback({
+        toolName: 'Read',
+        status: 'start',
+        toolCallId: 'tc-4',
+        args: { path: '/tmp/file.js' }
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: 'tool_use', toolName: 'Read', status: 'start' });
+    });
+
+    it('should allow curl to external hosts', async () => {
+      const { callback, events } = await setupToolUseCapture();
+
+      callback({
+        toolName: 'Bash',
+        status: 'start',
+        toolCallId: 'tc-5',
+        args: { command: 'curl https://api.github.com/repos/foo/bar' }
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: 'tool_use', toolName: 'Bash', status: 'start' });
+    });
+
+    it('should allow curl to localhost without /api/ path', async () => {
+      const { callback, events, port } = await setupToolUseCapture();
+
+      callback({
+        toolName: 'Bash',
+        status: 'start',
+        toolCallId: 'tc-6',
+        args: { command: `curl http://localhost:${port}/health` }
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: 'tool_use', toolName: 'Bash', status: 'start' });
+    });
+
+    it('should handle missing/undefined args gracefully', async () => {
+      const { callback, events } = await setupToolUseCapture();
+
+      callback({
+        toolName: 'Bash',
+        status: 'start',
+        toolCallId: 'tc-7'
+        // no args
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: 'tool_use', toolName: 'Bash', status: 'start' });
+    });
+
+    it('should match tool name case-insensitively', async () => {
+      const { callback, events, port } = await setupToolUseCapture();
+
+      callback({
+        toolName: 'BASH',
+        status: 'start',
+        toolCallId: 'tc-8',
+        args: { command: `curl http://localhost:${port}/api/comments` }
+      });
+      callback({
+        toolName: 'BASH',
+        status: 'end',
+        toolCallId: 'tc-8'
+      });
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('should not leak suppression across unrelated tool calls', async () => {
+      const { callback, events, port } = await setupToolUseCapture();
+
+      // Suppressed call
+      callback({
+        toolName: 'Bash',
+        status: 'start',
+        toolCallId: 'tc-hidden',
+        args: { command: `curl http://localhost:${port}/api/comments` }
+      });
+
+      // Normal call interleaved
+      callback({
+        toolName: 'Bash',
+        status: 'start',
+        toolCallId: 'tc-visible',
+        args: { command: 'ls -la' }
+      });
+
+      // End of suppressed call
+      callback({
+        toolName: 'Bash',
+        status: 'end',
+        toolCallId: 'tc-hidden'
+      });
+
+      // End of normal call
+      callback({
+        toolName: 'Bash',
+        status: 'end',
+        toolCallId: 'tc-visible'
+      });
+
+      // Only the normal call's start + end should be broadcast
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({ toolName: 'Bash', status: 'start' });
+      expect(events[1]).toMatchObject({ toolName: 'Bash', status: 'end' });
+    });
+  });
+
+  describe('buildPairReviewApiRe (port-scoped regex)', () => {
+    const re = _buildPairReviewApiRe(7247);
+
+    it('should match curl to localhost with the correct port and /api/', () => {
+      expect(re.test('curl http://localhost:7247/api/comments')).toBe(true);
+    });
+
+    it('should match curl to 127.0.0.1 with the correct port and /api/', () => {
+      expect(re.test('curl http://127.0.0.1:7247/api/reviews/1')).toBe(true);
+    });
+
+    it('should match curl with flags before the URL', () => {
+      expect(re.test('curl -s -X POST http://localhost:7247/api/comments')).toBe(true);
+    });
+
+    it('should match https URLs', () => {
+      expect(re.test('curl https://localhost:7247/api/comments')).toBe(true);
+    });
+
+    it('should not match curl to external hosts', () => {
+      expect(re.test('curl https://api.github.com/repos')).toBe(false);
+    });
+
+    it('should not match curl to localhost without /api/', () => {
+      expect(re.test('curl http://localhost:7247/health')).toBe(false);
+    });
+
+    it('should not match non-curl commands', () => {
+      expect(re.test('npm test')).toBe(false);
+    });
+
+    it('should not match curl to localhost on a different port', () => {
+      expect(re.test('curl http://localhost:9999/api/reviews')).toBe(false);
+    });
+
+    it('should not match curl to localhost without a port', () => {
+      expect(re.test('curl http://localhost/api/reviews')).toBe(false);
+    });
+
+    it('should scope to the port passed to the builder', () => {
+      const re3000 = _buildPairReviewApiRe(3000);
+      expect(re3000.test('curl http://127.0.0.1:3000/api/reviews/1')).toBe(true);
+      expect(re3000.test('curl http://127.0.0.1:7247/api/reviews/1')).toBe(false);
     });
   });
 
