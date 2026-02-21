@@ -987,6 +987,119 @@ describe('Chat Routes', () => {
       expect(re3000.test('curl http://127.0.0.1:7247/api/reviews/1')).toBe(false);
     });
   });
+  describe('GET /api/chat/analysis-context/:runId', () => {
+    it('should return formatted context and run metadata for a valid run', async () => {
+      const runId = 'run-ctx-001';
+      db.prepare(`
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, summary, total_suggestions, files_analyzed, config_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(runId, 1, 'claude', 'claude-sonnet-4', 'completed', 'Found 1 issue.', 1, 1, 'single');
+
+      db.prepare(`
+        INSERT INTO comments (id, review_id, source, ai_run_id, ai_level, ai_confidence, file, line_start, line_end, type, title, body, status, is_file_level, is_raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(50, 1, 'ai', runId, null, 0.9, 'src/index.js', 1, 5, 'bug', 'Missing return', 'Function lacks return statement', 'active', 0, 0);
+
+      const res = await request(app)
+        .get(`/api/chat/analysis-context/${runId}?reviewId=1`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.suggestionCount).toBe(1);
+      expect(res.body.data.text).toContain('Missing return');
+      expect(res.body.data.text).toContain('Analysis Run Metadata');
+      expect(res.body.data.run).toEqual(expect.objectContaining({
+        id: runId,
+        provider: 'claude',
+        model: 'claude-sonnet-4',
+        summary: 'Found 1 issue.',
+        configType: 'single'
+      }));
+    });
+
+    it('should return zero suggestions and null text when run has no suggestions', async () => {
+      const runId = 'run-ctx-empty';
+      db.prepare(`
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, config_type)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(runId, 1, 'claude', 'claude-sonnet-4', 'completed', 'single');
+
+      const res = await request(app)
+        .get(`/api/chat/analysis-context/${runId}?reviewId=1`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.suggestionCount).toBe(0);
+      // buildInitialContext returns non-null because analysisRun metadata is present
+      expect(res.body.data.text).toContain('Analysis Run Metadata');
+      expect(res.body.data.run).toBeDefined();
+      expect(res.body.data.run.id).toBe(runId);
+    });
+
+    it('should exclude raw suggestions (is_raw = 1)', async () => {
+      const runId = 'run-ctx-raw';
+      db.prepare(`
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, config_type)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(runId, 1, 'claude', 'claude-sonnet-4', 'completed', 'single');
+
+      // Insert a raw suggestion — should be excluded
+      db.prepare(`
+        INSERT INTO comments (id, review_id, source, ai_run_id, ai_level, ai_confidence, file, line_start, line_end, type, title, body, status, is_file_level, is_raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(60, 1, 'ai', runId, null, 0.8, 'src/raw.js', 1, 1, 'bug', 'Raw suggestion', 'Should be excluded', 'active', 0, 1);
+
+      const res = await request(app)
+        .get(`/api/chat/analysis-context/${runId}?reviewId=1`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.suggestionCount).toBe(0);
+    });
+
+    it('should exclude sub-level suggestions (ai_level IS NOT NULL)', async () => {
+      const runId = 'run-ctx-level';
+      db.prepare(`
+        INSERT INTO analysis_runs (id, review_id, provider, model, status, config_type)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(runId, 1, 'claude', 'claude-sonnet-4', 'completed', 'single');
+
+      // Insert a level-2 suggestion — should be excluded
+      db.prepare(`
+        INSERT INTO comments (id, review_id, source, ai_run_id, ai_level, ai_confidence, file, line_start, line_end, type, title, body, status, is_file_level, is_raw)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(70, 1, 'ai', runId, 2, 0.8, 'src/level2.js', 1, 1, 'bug', 'Level 2 only', 'Should be excluded', 'active', 0, 0);
+
+      const res = await request(app)
+        .get(`/api/chat/analysis-context/${runId}?reviewId=1`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.suggestionCount).toBe(0);
+    });
+
+    it('should return 400 when reviewId is missing', async () => {
+      const res = await request(app)
+        .get('/api/chat/analysis-context/some-run-id');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Missing required params');
+    });
+
+    it('should return 400 when reviewId is not a number', async () => {
+      const res = await request(app)
+        .get('/api/chat/analysis-context/some-run-id?reviewId=abc');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('Missing required params');
+    });
+
+    it('should return run as null when run does not exist in analysis_runs', async () => {
+      const res = await request(app)
+        .get('/api/chat/analysis-context/nonexistent-run?reviewId=1');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.suggestionCount).toBe(0);
+      expect(res.body.data.run).toBeNull();
+      expect(res.body.data.text).toBeNull();
+    });
+  });
 
   describe('GET /api/review/:reviewId/chat/sessions (enhanced)', () => {
     it('should return sessions with message_count, isActive, and isResumable', async () => {

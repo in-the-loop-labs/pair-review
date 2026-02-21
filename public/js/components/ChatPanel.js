@@ -502,6 +502,8 @@ class ChatPanel {
           this._addFileContextCard(ctxData, { removable: true });
         } else if (ctxData.type === 'comment') {
           this._addCommentContextCard(ctxData, { removable: true });
+        } else if (ctxData.type === 'analysis-run') {
+          this._addAnalysisRunContextCard(ctxData, { removable: true });
         } else {
           this._addContextCard(ctxData, { removable: true });
         }
@@ -937,6 +939,68 @@ class ChatPanel {
   }
 
   /**
+   * Add an analysis run as context for the chat conversation.
+   * Fetches run metadata from the backend and creates a removable context card
+   * that participates in the pending context arrays (data-context-index path).
+   * Unlike the auto-added analysis card (data-analysis="true"), this is a
+   * manually-added card that goes through the standard pending context flow.
+   * @param {string} runId - The analysis run ID to add as context
+   */
+  async addAnalysisRunContext(runId) {
+    // 1. Check for duplicate - look for any card with this run ID (both auto-added and manually-added)
+    const existingCard = this.messagesEl?.querySelector(`[data-analysis-run-id="${runId}"]`);
+    if (existingCard) {
+      this._showToast('Analysis run already added');
+      return;
+    }
+
+    // 2. Open panel if closed
+    await this.open({ suppressFocus: true });
+
+    // Re-check: open() may have auto-added a card for this run via _ensureAnalysisContext
+    const existingCardPostOpen = this.messagesEl?.querySelector(
+      `[data-analysis-run-id="${runId}"]`
+    );
+    if (existingCardPostOpen) {
+      this._showToast('Analysis run already added');
+      return;
+    }
+
+    // 3. Fetch context from backend
+    const response = await fetch(`/api/chat/analysis-context/${runId}?reviewId=${this.reviewId}`);
+    if (!response.ok) {
+      console.error('[ChatPanel] Failed to fetch analysis context:', response.statusText);
+      return;
+    }
+    const result = await response.json();
+    const data = result.data;
+
+    // 4. Push to pending context arrays
+    this._pendingContext.push(data.text);
+    const contextData = {
+      type: 'analysis-run',
+      aiRunId: runId,
+      provider: data.run.provider,
+      model: data.run.model,
+      summary: data.run.summary,
+      suggestionCount: data.suggestionCount,
+      configType: data.run.configType,
+      completedAt: data.run.completedAt
+    };
+    this._pendingContextData.push(contextData);
+
+    // 5. Remove empty state if present
+    const emptyState = this.messagesEl?.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    // 6. Create the card and append
+    this._addAnalysisRunContextCard(contextData, { removable: true });
+
+    // 7. Focus input
+    if (this.inputEl) this.inputEl.focus();
+  }
+
+  /**
    * Make a context card removable by adding a data-context-index and a remove button.
    * Shared helper used by _addContextCard, _addCommentContextCard, and _addFileContextCard.
    * @param {HTMLElement} card - The context card element
@@ -1349,11 +1413,11 @@ class ChatPanel {
       tooltipParts.push(`Provider: ${context.provider || 'unknown'}, Model: ${context.model || 'unknown'}`);
     }
     if (context.configType) tooltipParts.push(`Config: ${context.configType}`);
-    if (context.summary) tooltipParts.push(`Summary: ${context.summary}`);
     if (context.completedAt) {
-      const completedDate = new Date(context.completedAt);
+      const completedDate = window.parseTimestamp(context.completedAt);
       tooltipParts.push(`Completed: ${completedDate.toLocaleString()}`);
     }
+    if (context.summary) tooltipParts.push(`Summary: ${context.summary}`);
     const tooltip = tooltipParts.join('\n');
 
     return `
@@ -1390,6 +1454,28 @@ class ChatPanel {
     if (context.provider || context.model || context.summary) {
       card.dataset.hasMetadata = 'true';
     }
+  }
+
+  /**
+   * Add a compact analysis-run context card to the messages area.
+   * Used for manually-added analysis run cards that participate in the pending
+   * context arrays (data-context-index path).  Unlike _addAnalysisContextCard
+   * (auto-added, data-analysis="true"), these cards use _removeContextCard.
+   * @param {Object} ctxData - Context data { type, aiRunId, provider, model, summary, suggestionCount, configType }
+   * @param {Object} [opts] - Options
+   * @param {boolean} [opts.removable=false] - Whether the card should have a remove button
+   */
+  _addAnalysisRunContextCard(ctxData, { removable = false } = {}) {
+    const card = document.createElement('div');
+    card.className = 'chat-panel__context-card';
+    card.dataset.contextIndex = this._pendingContext.length - 1;
+    card.dataset.analysisRunId = ctxData.aiRunId;
+    card.innerHTML = this._buildAnalysisCardInnerHTML(ctxData);
+
+    if (removable) this._makeCardRemovable(card);
+
+    this.messagesEl.appendChild(card);
+    requestAnimationFrame(() => this.scrollToBottom());
   }
 
   /**
@@ -1933,6 +2019,35 @@ class ChatPanel {
     `;
     this.messagesEl.appendChild(errorEl);
     this.scrollToBottom();
+  }
+
+  /**
+   * Show an auto-dismissing toast notification overlaid at the border between
+   * the header and messages area.  Appended to the outer .chat-panel container
+   * (which has position:relative) so it stays visible regardless of scroll
+   * position in the messages area.
+   * @param {string} message - Text to display
+   */
+  _showToast(message) {
+    // Remove any existing toast
+    const existing = this.panel?.querySelector('.chat-panel__toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.className = 'chat-panel__toast';
+    toast.textContent = message;
+
+    // Append to the outer chat-panel container so the toast is positioned
+    // relative to it (not inside the scrollable messages area).
+    if (this.panel) {
+      this.panel.appendChild(toast);
+    }
+
+    // Auto-dismiss after 2.5 seconds
+    setTimeout(() => {
+      toast.classList.add('chat-panel__toast--dismissing');
+      toast.addEventListener('animationend', () => toast.remove());
+    }, 2500);
   }
 
   /**

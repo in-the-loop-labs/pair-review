@@ -267,6 +267,7 @@ class AnalysisHistoryManager {
           </div>
           <div class="analysis-history-item-meta">
             <span>${timeAgo}</span>
+            ${run.status === 'completed' && run.total_suggestions > 0 ? `<span class="analysis-history-chat-btn" data-run-id="${run.id}" title="Chat about this run" role="button" tabindex="-1"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg></span>` : ''}
           </div>
         </button>
       `;
@@ -318,6 +319,19 @@ class AnalysisHistoryManager {
 
       item.addEventListener('mouseleave', () => {
         item.classList.remove('previewing');
+      });
+    });
+
+    // Chat button handlers
+    const chatBtns = this.listElement.querySelectorAll('.analysis-history-chat-btn');
+    chatBtns.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const runId = btn.dataset.runId;
+        if (window.chatPanel) {
+          window.chatPanel.addAnalysisRunContext(runId);
+        }
       });
     });
   }
@@ -713,23 +727,12 @@ class AnalysisHistoryManager {
 
   /**
    * Parse a timestamp string, ensuring UTC interpretation for SQLite timestamps.
-   * SQLite's CURRENT_TIMESTAMP produces strings like "2024-01-20 15:30:00" without
-   * timezone indicator. JavaScript's Date() would interpret these as local time,
-   * but they're actually UTC. This helper ensures correct UTC parsing.
+   * Delegates to the shared window.parseTimestamp utility (see public/js/utils/time.js).
    * @param {string} timestamp - Timestamp string (ISO 8601 or SQLite format)
    * @returns {Date} Parsed Date object
    */
   parseTimestamp(timestamp) {
-    if (!timestamp) return new Date(NaN);
-
-    // If the timestamp already has timezone info (ends with Z or +/-offset), parse as-is
-    if (/Z$|[+-]\d{2}:\d{2}$/.test(timestamp)) {
-      return new Date(timestamp);
-    }
-
-    // SQLite CURRENT_TIMESTAMP format: "YYYY-MM-DD HH:MM:SS" (no timezone, but is UTC)
-    // Append 'Z' to interpret as UTC
-    return new Date(timestamp + 'Z');
+    return window.parseTimestamp(timestamp);
   }
 
   /**

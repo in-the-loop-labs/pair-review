@@ -517,6 +517,62 @@ router.get('/api/review/:reviewId/chat/sessions', (req, res) => {
   }
 });
 
+/**
+ * Get formatted analysis context for a specific run.
+ * Returns context text and run metadata so the chat panel can add it as pending context.
+ */
+router.get('/api/chat/analysis-context/:runId', async (req, res) => {
+  try {
+    const { runId } = req.params;
+    const reviewId = parseInt(req.query.reviewId, 10);
+
+    if (!runId || !reviewId || isNaN(reviewId)) {
+      return res.status(400).json({ error: 'Missing required params: runId (path) and reviewId (query)' });
+    }
+
+    const db = req.app.get('db');
+
+    // Fetch AI suggestions for this specific run (top-level only: ai_level IS NULL)
+    const suggestions = await query(db, `
+      SELECT
+        id, ai_run_id, ai_level, ai_confidence,
+        file, line_start, line_end, type, title, body,
+        reasoning, status, is_file_level
+      FROM comments
+      WHERE review_id = ?
+        AND source = 'ai'
+        AND ai_level IS NULL
+        AND (is_raw = 0 OR is_raw IS NULL)
+        AND ai_run_id = ?
+      ORDER BY file, line_start
+    `, [reviewId, runId]);
+
+    // Fetch the analysis run record for metadata
+    const analysisRunRepo = new AnalysisRunRepository(db);
+    const analysisRun = await analysisRunRepo.getById(runId);
+
+    const text = buildInitialContext({ suggestions, analysisRun });
+
+    res.json({
+      data: {
+        text,
+        suggestionCount: suggestions ? suggestions.length : 0,
+        run: analysisRun ? {
+          id: analysisRun.id,
+          provider: analysisRun.provider || null,
+          model: analysisRun.model || null,
+          summary: analysisRun.summary || null,
+          completedAt: analysisRun.completed_at || null,
+          configType: analysisRun.config_type || null
+        } : null
+      }
+    });
+  } catch (error) {
+    logger.error(`Error fetching analysis context: ${error.message}`);
+    res.status(500).json({ error: 'Failed to fetch analysis context' });
+  }
+});
+
 module.exports = router;
 
 // Expose internals for testing
