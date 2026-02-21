@@ -961,6 +961,17 @@ class ChatPanel {
     // 2. Open panel if closed
     await this.open({ suppressFocus: true });
 
+    // Re-check: open() may have auto-added a card for this run via _ensureAnalysisContext
+    const existingCardPostOpen = this.messagesEl?.querySelector(
+      `[data-analysis-run-id="${runId}"]`
+    );
+    if (existingCardPostOpen) {
+      existingCardPostOpen.classList.remove('chat-panel__context-card--flash');
+      void existingCardPostOpen.offsetWidth;
+      existingCardPostOpen.classList.add('chat-panel__context-card--flash');
+      return;
+    }
+
     // 3. Fetch context from backend
     const response = await fetch(`/api/chat/analysis-context/${runId}?reviewId=${this.reviewId}`);
     if (!response.ok) {
