@@ -502,6 +502,22 @@ class ChatPanel {
           this._addFileContextCard(ctxData, { removable: true });
         } else if (ctxData.type === 'comment') {
           this._addCommentContextCard(ctxData, { removable: true });
+        } else if (ctxData.type === 'analysis-run') {
+          const card = document.createElement('div');
+          card.className = 'chat-panel__context-card';
+          card.dataset.contextIndex = this._pendingContext.length - 1;
+          card.dataset.analysisRunId = ctxData.aiRunId;
+          card.innerHTML = this._buildAnalysisCardInnerHTML(ctxData);
+          const removeBtn = document.createElement('button');
+          removeBtn.className = 'chat-panel__context-remove';
+          removeBtn.title = 'Remove context';
+          removeBtn.innerHTML = '\u00d7';
+          removeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._removeContextCard(card);
+          });
+          card.appendChild(removeBtn);
+          this.messagesEl.appendChild(card);
         } else {
           this._addContextCard(ctxData, { removable: true });
         }
@@ -934,6 +950,82 @@ class ChatPanel {
 
     // Render the compact context card in the UI
     this._addFileContextCard(contextData, { removable: true });
+  }
+
+  /**
+   * Add an analysis run as context for the chat conversation.
+   * Fetches run metadata from the backend and creates a removable context card
+   * that participates in the pending context arrays (data-context-index path).
+   * Unlike the auto-added analysis card (data-analysis="true"), this is a
+   * manually-added card that goes through the standard pending context flow.
+   * @param {string} runId - The analysis run ID to add as context
+   */
+  async addAnalysisRunContext(runId) {
+    // 1. Check for duplicate - look for any card with this run ID (both auto-added and manually-added)
+    const existingCard = this.messagesEl?.querySelector(`[data-analysis-run-id="${runId}"]`);
+    if (existingCard) {
+      // Flash it to indicate it's already there
+      existingCard.classList.remove('chat-panel__context-card--flash');
+      // Force reflow to restart animation
+      void existingCard.offsetWidth;
+      existingCard.classList.add('chat-panel__context-card--flash');
+      return;
+    }
+
+    // 2. Open panel if closed
+    await this.open({ suppressFocus: true });
+
+    // 3. Fetch context from backend
+    const response = await fetch(`/api/chat/analysis-context/${runId}?reviewId=${this.reviewId}`);
+    if (!response.ok) {
+      console.error('Failed to fetch analysis context:', response.statusText);
+      return;
+    }
+    const data = await response.json();
+
+    // 4. Push to pending context arrays
+    this._pendingContext.push(data.text);
+    const contextData = {
+      type: 'analysis-run',
+      aiRunId: runId,
+      provider: data.run.provider,
+      model: data.run.model,
+      summary: data.run.summary,
+      suggestionCount: data.suggestionCount,
+      configType: data.run.configType
+    };
+    this._pendingContextData.push(contextData);
+    const idx = this._pendingContext.length - 1;
+
+    // 5. Remove empty state if present
+    const emptyState = this.messagesEl?.querySelector('.chat-panel__empty');
+    if (emptyState) emptyState.remove();
+
+    // 6. Create the card element
+    const card = document.createElement('div');
+    card.className = 'chat-panel__context-card';
+    card.dataset.contextIndex = idx;
+    card.dataset.analysisRunId = runId;
+    card.innerHTML = this._buildAnalysisCardInnerHTML(contextData);
+
+    // 7. Add remove button
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'chat-panel__context-remove';
+    removeBtn.title = 'Remove context';
+    removeBtn.innerHTML = '\u00d7';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._removeContextCard(card);
+    });
+    card.appendChild(removeBtn);
+
+    // 8. Append to messages area
+    if (this.messagesEl) {
+      this.messagesEl.appendChild(card);
+    }
+
+    // 9. Focus input
+    if (this.inputEl) this.inputEl.focus();
   }
 
   /**

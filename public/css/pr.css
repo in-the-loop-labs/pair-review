@@ -5516,6 +5516,40 @@ tr.line-range-start .d2h-code-line-ctn {
     color: var(--color-text-muted);
 }
 
+.analysis-history-chat-btn {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    margin-left: auto;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-fg-muted);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+    flex-shrink: 0;
+}
+
+/* Show on hover of parent item or when item is previewing */
+.analysis-history-item:hover .analysis-history-chat-btn,
+.analysis-history-item.previewing .analysis-history-chat-btn {
+    opacity: 1;
+}
+
+.analysis-history-chat-btn:hover {
+    background: var(--color-accent-emphasis);
+    color: var(--color-fg-on-emphasis, #fff);
+}
+
+.analysis-history-chat-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
 /* ============================================
    Generated Files Styles
    ============================================ */
@@ -11079,6 +11113,15 @@ body.resizing * {
 .chat-panel__context-remove:hover {
   background: var(--color-danger, #d1242f);
   color: #ffffff;
+}
+
+@keyframes context-card-flash {
+  0% { background-color: var(--color-attention-subtle, #d4a72c33); }
+  100% { background-color: transparent; }
+}
+
+.chat-panel__context-card--flash {
+  animation: context-card-flash 0.6s ease-out;
 }
 
 .chat-panel__context-title code {
