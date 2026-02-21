@@ -3688,6 +3688,51 @@ tr:hover .add-comment-btn {
   opacity: 1;
 }
 
+/* Gutter chat button */
+.chat-line-btn {
+  position: absolute;
+  right: 12px;                /* Left of the + button at right: -12px */
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border-default, rgba(255,255,255,0.1));
+  background: var(--color-bg-elevated, #1e2329);
+  color: var(--color-text-secondary, #8b949e);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  padding: 0;
+}
+
+.chat-line-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.chat-line-btn:hover {
+  background: var(--color-accent-light, rgba(56, 139, 253, 0.15));
+  color: var(--color-accent-primary, #58a6ff);
+  border-color: var(--color-accent-primary, #58a6ff);
+  transform: translateY(-50%) scale(1.08);
+  box-shadow: 0 2px 6px rgba(56, 139, 253, 0.25);
+}
+
+.chat-line-btn:active {
+  transform: translateY(-50%) scale(0.96);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+tr:hover .chat-line-btn {
+  opacity: 1;
+}
+
 /* Line range selection */
 .line-range-selected,
 tr.line-range-selected,
@@ -4290,6 +4335,11 @@ tr.line-range-start .d2h-code-line-ctn {
   display: flex;
   gap: 8px;
   margin-top: 8px;
+}
+
+.comment-form-actions .btn-chat-from-comment,
+.comment-edit-actions .btn-chat-from-comment {
+  margin-left: auto;     /* Push to right side of flex row */
 }
 
 /* Review Submission Panel */
@@ -11780,7 +11830,9 @@ body.resizing * {
 [data-chat="disabled"] .btn-collapsed-chat,
 [data-chat="disabled"] .finding-chat-action,
 [data-chat="disabled"] .btn-chat-comment,
-[data-chat="disabled"] .analysis-history-chat-btn {
+[data-chat="disabled"] .analysis-history-chat-btn,
+[data-chat="disabled"] .chat-line-btn,
+[data-chat="disabled"] .btn-chat-from-comment {
   display: none !important;
 }
 
@@ -11792,7 +11844,9 @@ body.resizing * {
 [data-chat="unavailable"] .btn-collapsed-chat,
 [data-chat="unavailable"] .finding-chat-action,
 [data-chat="unavailable"] .btn-chat-comment,
-[data-chat="unavailable"] .analysis-history-chat-btn {
+[data-chat="unavailable"] .analysis-history-chat-btn,
+[data-chat="unavailable"] .chat-line-btn,
+[data-chat="unavailable"] .btn-chat-from-comment {
   display: none !important;
 }
 

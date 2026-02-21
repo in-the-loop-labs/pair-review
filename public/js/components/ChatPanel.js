@@ -390,7 +390,7 @@ class ChatPanel {
     // Load MRU session with message history (if any previous sessions exist).
     // Skip when opening with explicit context (suggestion/comment/file) — the
     // user wants a *new* conversation about that item, not to resume the last one.
-    const hasExplicitContext = !!(options.suggestionContext || options.commentContext || options.fileContext);
+    const hasExplicitContext = !!(options.suggestionContext || options.commentContext || options.fileContext || options.prefillText);
     if (!this.currentSessionId && !hasExplicitContext) {
       await this._loadMRUSession();
     }
@@ -417,6 +417,13 @@ class ChatPanel {
       this._contextItemId = null;
     }
 
+    // Prefill textarea with supplied text (e.g. [[file:path:lines]] reference)
+    if (options.prefillText) {
+      this.inputEl.value = options.prefillText;
+      this._autoResizeTextarea();
+      this.sendBtn.disabled = !this.inputEl.value.trim() || this.isStreaming;
+    }
+
     // Gate input when reviewId is not yet available (PanelGroup auto-restore race)
     if (!this.reviewId) {
       this._disableInput();
@@ -426,6 +433,9 @@ class ChatPanel {
     window.panelGroup?._onChatVisibilityChanged(true);
     if (!options.suppressFocus) {
       this.inputEl.focus();
+      if (options.prefillText) {
+        this.inputEl.selectionStart = this.inputEl.selectionEnd = this.inputEl.value.length;
+      }
     }
   }
 
