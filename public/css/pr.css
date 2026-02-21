@@ -11077,7 +11077,7 @@ body.resizing * {
 }
 
 .chat-panel__context-remove:hover {
-  background: var(--color-danger, #d0242f);
+  background: var(--color-danger, #d1242f);
   color: #ffffff;
 }
 
@@ -11237,6 +11237,20 @@ body.resizing * {
   color: #ffffff;
 }
 
+.chat-panel__action-btn--dismiss-suggestion,
+.chat-panel__action-btn--dismiss-comment {
+  background: var(--color-danger, #d1242f);
+  border-color: var(--color-danger, #d1242f);
+  color: #ffffff;
+}
+
+.chat-panel__action-btn--dismiss-suggestion:hover:not(:disabled),
+.chat-panel__action-btn--dismiss-comment:hover:not(:disabled) {
+  background: var(--color-danger-hover, #b91c1c);
+  border-color: var(--color-danger-hover, #b91c1c);
+  color: #ffffff;
+}
+
 /* Chat Input Area */
 .chat-panel__input-area {
   display: flex;
@@ -11325,7 +11339,7 @@ body.resizing * {
   height: 28px;
   border: none;
   border-radius: 6px;
-  background: var(--color-danger, #d0242f);
+  background: var(--color-danger, #d1242f);
   color: white;
   cursor: pointer;
   flex-shrink: 0;

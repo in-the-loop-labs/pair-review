@@ -109,7 +109,7 @@ class ChatSessionManager {
    *   in DB as a separate 'context' type message for session resumption UI reconstruction.
    * @returns {Promise<{id: number}>} The stored message ID
    */
-  async sendMessage(sessionId, content, { context, contextData } = {}) {
+  async sendMessage(sessionId, content, { context, contextData, actionContext } = {}) {
     const session = this._sessions.get(sessionId);
     if (!session) {
       throw new Error(`Session ${sessionId} not found or not active`);
@@ -136,6 +136,16 @@ class ChatSessionManager {
     if (session.initialContext) {
       messageForAgent = session.initialContext + '\n\n---\n\n' + messageForAgent;
       session.initialContext = null; // Only prepend once
+    }
+
+    // Inject action context (from action bar buttons: adopt, update, dismiss).
+    // IMPORTANT: Item IDs are passed here as structured metadata for the agent only.
+    // They must NEVER appear in user-visible message text (inputEl.value).
+    // The frontend sets _pendingActionContext synchronously before sendMessage(),
+    // which consumes and clears it before the async fetch — no race window.
+    if (actionContext && actionContext.type && actionContext.itemId) {
+      const actionHint = `[Action: ${actionContext.type}, target ID: ${actionContext.itemId}]`;
+      messageForAgent = messageForAgent + '\n\n' + actionHint;
     }
 
     // Store context + user message atomically

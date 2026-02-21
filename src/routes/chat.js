@@ -280,7 +280,7 @@ router.post('/api/chat/session', async (req, res) => {
 router.post('/api/chat/session/:id/message', async (req, res) => {
   try {
     const sessionId = parseInt(req.params.id, 10);
-    const { content, context, contextData } = req.body || {};
+    const { content, context, contextData, actionContext } = req.body || {};
 
     if (!content) {
       return res.status(400).json({ error: 'Missing required field: content' });
@@ -322,7 +322,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
     }
 
     logger.debug(`[ChatRoute] Forwarding message to session ${sessionId} (${content.length} chars)`);
-    const result = await chatSessionManager.sendMessage(sessionId, content, { context, contextData });
+    const result = await chatSessionManager.sendMessage(sessionId, content, { context, contextData, actionContext });
     logger.debug(`[ChatRoute] Message stored as ID ${result.id}, awaiting agent response via SSE`);
     res.json({ data: { messageId: result.id } });
   } catch (error) {

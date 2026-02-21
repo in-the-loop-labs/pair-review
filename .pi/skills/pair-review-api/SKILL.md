@@ -72,6 +72,8 @@ curl -s -X PUT http://localhost:PORT/api/reviews/REVIEW_ID/comments/COMMENT_ID \
 
 ### Delete a comment
 
+> **Terminology note:** The UI refers to this operation as "dismiss." When a user asks to "dismiss a comment," use this DELETE endpoint.
+
 Soft-deletes the comment. If the comment was adopted from an AI suggestion, the parent suggestion is automatically transitioned to "dismissed" status.
 
 ```bash

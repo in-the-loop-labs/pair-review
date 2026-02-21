@@ -136,6 +136,9 @@ Test structure:
 
 ## Learnings
 
+### Directory Conventions
+- When modifying code in a directory, check for a `CONVENTIONS.md` in that directory or its parent.
+
 ### Local Mode and PR Mode Parity
 - Features must work in BOTH Local mode (`/local/:reviewId`) and PR mode (`/pr/:owner/:repo/:number`)
 - These modes have parallel but separate implementations:
