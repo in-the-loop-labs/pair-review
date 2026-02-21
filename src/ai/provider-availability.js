@@ -2,7 +2,7 @@
 /**
  * Provider Availability Module
  *
- * Manages background checking of AI provider availability at server startup.
+ * Manages checking of AI provider availability at server startup.
  * Caches results and exposes them for the /api/providers endpoint.
  */
 
