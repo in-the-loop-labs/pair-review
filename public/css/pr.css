@@ -10708,6 +10708,11 @@ body.resizing * {
   white-space: nowrap;
 }
 
+.chat-panel__chevron-sep {
+  opacity: 0.4;
+  font-size: 13px;
+}
+
 .chat-panel__chevron {
   flex-shrink: 0;
   opacity: 0.5;
