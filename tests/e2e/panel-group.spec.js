@@ -249,10 +249,15 @@ test.describe('Panel Group - PR Mode', () => {
     );
 
     const chatBtn = page.locator('#chat-toggle-btn');
-    // Visible but not interactable (opacity 0.4, pointer-events none)
+    // Visible but grayed out with not-allowed cursor and tooltip explaining why
     await expect(chatBtn).toBeVisible();
-    const pointerEvents = await chatBtn.evaluate(el => getComputedStyle(el).pointerEvents);
-    expect(pointerEvents).toBe('none');
+    const styles = await chatBtn.evaluate(el => {
+      const cs = getComputedStyle(el);
+      return { opacity: cs.opacity, cursor: cs.cursor };
+    });
+    expect(styles.opacity).toBe('0.4');
+    expect(styles.cursor).toBe('not-allowed');
+    await expect(chatBtn).toHaveAttribute('title', 'Install and configure Pi to enable chat');
   });
 
   test('both panels hidden: group collapses', async ({ page }) => {
