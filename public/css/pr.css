@@ -10711,11 +10711,6 @@ body.resizing * {
 .chat-panel__chevron {
   flex-shrink: 0;
   opacity: 0.5;
-  transition: transform 0.2s ease;
-}
-
-.chat-panel__session-picker-btn--open .chat-panel__chevron {
-  transform: rotate(180deg);
 }
 
 /* Session dropdown flyout */
