@@ -391,6 +391,35 @@ curl -s -X DELETE http://localhost:PORT/api/reviews/REVIEW_ID/context-files
 
 ---
 
+## Diff Hunk Expansion
+
+Expand collapsed diff gaps to reveal hidden lines. Useful when you need to show the user lines that are inside a collapsed hunk. This is a transient UI command — expansions are not persisted.
+
+### Expand a hunk
+
+```bash
+curl -X POST http://localhost:PORT/api/reviews/REVIEW_ID/expand-hunk \
+  -H "Content-Type: application/json" \
+  -d '{
+    "file": "src/app.js",
+    "line_start": 10,
+    "line_end": 20,
+    "side": "right"
+  }'
+```
+
+**Required fields:**
+- `file` (string): Path of the changed file in the diff
+- `line_start` (integer): First line to reveal (≥ 1)
+- `line_end` (integer): Last line to reveal (≥ `line_start`)
+
+**Optional fields:**
+- `side` (string): `"left"` or `"right"` (default: `"right"`)
+
+**Response:** `{ "success": true }`
+
+---
+
 ## Notes
 
 - Replace `PORT`, `REVIEW_ID`, `OWNER`, `REPO`, `PR_NUMBER`, `COMMENT_ID`, `SUGGESTION_ID`, `ANALYSIS_ID`, `RUN_ID`, and `CONTEXT_FILE_ID` with actual values from the review context.

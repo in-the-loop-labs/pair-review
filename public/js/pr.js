@@ -538,6 +538,12 @@ class PRManager {
       debounced('contextFiles', () => this.loadContextFiles());
     });
 
+    document.addEventListener('review:expand_hunk', async (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      const { file, line_start, line_end, side } = e.detail;
+      await this.ensureLinesVisible([{ file, line_start, line_end, side: side || 'right' }]);
+    });
+
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) return;
       if (this._dirtyComments) { this._dirtyComments = false; this.loadUserComments(); }
@@ -1836,6 +1842,40 @@ class PRManager {
   }
 
   /**
+   * Ensure that the given line ranges are visible in the diff view.
+   * For each item, checks if the target line rows exist in the DOM; if not,
+   * calls expandForSuggestion() to expand the gap containing those lines.
+   * @param {Array<{file: string, line_start: number, line_end: number, side: string}>} items
+   */
+  async ensureLinesVisible(items) {
+    for (const item of items) {
+      const { file, line_start, line_end, side } = item;
+      const resolvedSide = (side || 'right').toUpperCase();
+
+      const fileElement = this.findFileElement(file);
+      if (!fileElement) continue;
+
+      // Check if any line in the range is already visible
+      let anyLineVisible = false;
+      const lineRows = fileElement.querySelectorAll('tr');
+      for (let checkLine = line_start; checkLine <= (line_end || line_start); checkLine++) {
+        for (const row of lineRows) {
+          const lineNum = this.getLineNumber(row, resolvedSide);
+          if (lineNum === checkLine) {
+            anyLineVisible = true;
+            break;
+          }
+        }
+        if (anyLineVisible) break;
+      }
+
+      if (!anyLineVisible) {
+        await this.expandForSuggestion(file, line_start, line_end || line_start, resolvedSide);
+      }
+    }
+  }
+
+  /**
    * Line range selection methods - delegate to LineTracker
    */
   startRangeSelection(row, lineNumber, fileName, side = 'RIGHT') {
@@ -2309,6 +2349,16 @@ class PRManager {
 
       // Clear existing comment rows before re-rendering
       document.querySelectorAll('.user-comment-row').forEach(row => row.remove());
+
+      // Before rendering, ensure all comment target lines are visible
+      // (expand hidden hunks so the line rows exist in the DOM)
+      const lineItems = lineLevelComments.map(c => ({
+        file: c.file,
+        line_start: c.line_start,
+        line_end: c.line_start,
+        side: c.side || 'RIGHT'
+      }));
+      await this.ensureLinesVisible(lineItems);
 
       // Display line-level comments inline with diff (only active comments reach here)
       lineLevelComments.forEach(comment => {
