@@ -643,6 +643,35 @@ describe('ChatSessionManager', () => {
       const sessions = manager.getSessionsWithMessageCount(999);
       expect(sessions).toEqual([]);
     });
+
+    it('should return first_message from the first user message', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      await manager.sendMessage(session.id, 'Hello world');
+      await manager.sendMessage(session.id, 'second');
+
+      const sessions = manager.getSessionsWithMessageCount(1);
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].first_message).toBe('Hello world');
+    });
+
+    it('should return null first_message for sessions with no messages', async () => {
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
+
+      const sessions = manager.getSessionsWithMessageCount(1);
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].first_message).toBeNull();
+    });
+
+    it('should not use context messages as first_message', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      await manager.sendMessage(session.id, 'actual user message', {
+        contextData: { type: 'bug', title: 'test' }
+      });
+
+      const sessions = manager.getSessionsWithMessageCount(1);
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].first_message).toBe('actual user message');
+    });
   });
 
   describe('session file persistence via session event', () => {

@@ -146,6 +146,10 @@ function buildElementRegistry() {
     'chat-dismiss-comment-btn': createMockElement('button'),
     'chat-resize-handle': createMockElement('div'),
     'chat-empty': createMockElement('div'),
+    'chat-session-picker': createMockElement('div'),
+    'chat-session-picker-btn': createMockElement('button'),
+    'chat-session-dropdown': createMockElement('div'),
+    'chat-title-text': createMockElement('span'),
   };
 
   // Give the textarea a value property
@@ -160,6 +164,7 @@ function buildElementRegistry() {
   elementRegistry['chat-update-btn'].style = { display: 'none' };
   elementRegistry['chat-dismiss-suggestion-btn'].style = { display: 'none' };
   elementRegistry['chat-dismiss-comment-btn'].style = { display: 'none' };
+  elementRegistry['chat-session-dropdown'].style = { display: 'none' };
 
   return elementRegistry;
 }
@@ -264,6 +269,10 @@ function createChatPanel() {
       '.chat-panel__action-btn--dismiss-suggestion': reg['chat-dismiss-suggestion-btn'],
       '.chat-panel__action-btn--dismiss-comment': reg['chat-dismiss-comment-btn'],
       '.chat-panel__resize-handle': reg['chat-resize-handle'],
+      '.chat-panel__session-picker': reg['chat-session-picker'],
+      '.chat-panel__session-picker-btn': reg['chat-session-picker-btn'],
+      '.chat-panel__session-dropdown': reg['chat-session-dropdown'],
+      '.chat-panel__title-text': reg['chat-title-text'],
     };
     return map[selector] || null;
   });
@@ -3980,6 +3989,210 @@ describe('ChatPanel', () => {
       expect(showErrorSpy).toHaveBeenCalled();
       // Should have made exactly 3 calls, not more
       expect(global.fetch).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Session picker dropdown
+  // ---------------------------------------------------------------------------
+  describe('session picker dropdown', () => {
+    describe('_truncate', () => {
+      it('should return empty string for null or undefined', () => {
+        expect(chatPanel._truncate(null, 60)).toBe('');
+        expect(chatPanel._truncate(undefined, 60)).toBe('');
+      });
+
+      it('should return original text when shorter than maxLen', () => {
+        expect(chatPanel._truncate('Hello', 60)).toBe('Hello');
+      });
+
+      it('should truncate with ellipsis when text exceeds maxLen', () => {
+        const long = 'a'.repeat(80);
+        const result = chatPanel._truncate(long, 60);
+        expect(result).toHaveLength(61); // 60 chars + ellipsis
+        expect(result.endsWith('\u2026')).toBe(true);
+      });
+    });
+
+    describe('_formatRelativeTime', () => {
+      it('should return "Unknown" for null timestamp', () => {
+        expect(chatPanel._formatRelativeTime(null)).toBe('Unknown');
+      });
+
+      it('should return hours ago for timestamps 1-23 hours old', () => {
+        const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+        expect(chatPanel._formatRelativeTime(twoHoursAgo)).toBe('2 hours ago');
+      });
+
+      it('should use singular "hour" for exactly 1 hour', () => {
+        const oneHourAgo = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
+        expect(chatPanel._formatRelativeTime(oneHourAgo)).toBe('1 hour ago');
+      });
+
+      it('should return days ago for timestamps 1-6 days old', () => {
+        const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+        expect(chatPanel._formatRelativeTime(threeDaysAgo)).toBe('3 days ago');
+      });
+    });
+
+    describe('_renderSessionDropdown', () => {
+      it('should show empty message when no sessions', () => {
+        chatPanel._renderSessionDropdown([]);
+        expect(chatPanel.sessionDropdown.innerHTML).toContain('No conversations yet');
+      });
+
+      it('should render session items with preview and meta', () => {
+        chatPanel.currentSessionId = 1;
+        // Mock querySelectorAll for the dropdown to return mock button elements
+        const mockButtons = [];
+        chatPanel.sessionDropdown.querySelectorAll = vi.fn(() => mockButtons);
+
+        chatPanel._renderSessionDropdown([
+          { id: 1, first_message: 'Hello world', updated_at: new Date().toISOString(), message_count: 2 },
+          { id: 2, first_message: null, updated_at: new Date().toISOString(), message_count: 0 },
+        ]);
+
+        const html = chatPanel.sessionDropdown.innerHTML;
+        // First session: should show the message and be active
+        expect(html).toContain('Hello world');
+        expect(html).toContain('chat-panel__session-item--active');
+        // Second session: should show "New conversation"
+        expect(html).toContain('New conversation');
+      });
+
+      it('should truncate long first_message in preview', () => {
+        chatPanel.sessionDropdown.querySelectorAll = vi.fn(() => []);
+        const longMsg = 'a'.repeat(80);
+        chatPanel._renderSessionDropdown([
+          { id: 1, first_message: longMsg, updated_at: new Date().toISOString(), message_count: 1 },
+        ]);
+
+        const html = chatPanel.sessionDropdown.innerHTML;
+        // Should contain truncated text (60 chars + ellipsis entity)
+        expect(html).not.toContain(longMsg);
+        expect(html).toContain('a'.repeat(60));
+      });
+    });
+
+    describe('dropdown visibility', () => {
+      it('_isSessionDropdownOpen returns false when hidden', () => {
+        chatPanel.sessionDropdown.style.display = 'none';
+        expect(chatPanel._isSessionDropdownOpen()).toBe(false);
+      });
+
+      it('_isSessionDropdownOpen returns true when visible', () => {
+        chatPanel.sessionDropdown.style.display = '';
+        expect(chatPanel._isSessionDropdownOpen()).toBe(true);
+      });
+
+      it('_hideSessionDropdown sets display to none and removes open class', () => {
+        chatPanel.sessionDropdown.style.display = '';
+        chatPanel._hideSessionDropdown();
+        expect(chatPanel.sessionDropdown.style.display).toBe('none');
+        expect(chatPanel.sessionPickerBtn.classList.remove).toHaveBeenCalledWith('chat-panel__session-picker-btn--open');
+      });
+    });
+
+    describe('_switchToSession', () => {
+      it('should be a no-op if switching to current session', async () => {
+        chatPanel.currentSessionId = 42;
+        const spy = vi.spyOn(chatPanel, '_finalizeStreaming');
+        await chatPanel._switchToSession(42, { message_count: 0 });
+        expect(spy).not.toHaveBeenCalled();
+      });
+
+      it('should reset state and load new session', async () => {
+        chatPanel.currentSessionId = 1;
+        chatPanel.messages = [{ role: 'user', content: 'old' }];
+        chatPanel._pendingContext = ['some context'];
+
+        // Mock _loadMessageHistory and _ensureAnalysisContext
+        chatPanel._loadMessageHistory = vi.fn().mockResolvedValue(undefined);
+        chatPanel._ensureAnalysisContext = vi.fn();
+        chatPanel._finalizeStreaming = vi.fn();
+        chatPanel._clearMessages = vi.fn();
+        chatPanel._updateActionButtons = vi.fn();
+
+        await chatPanel._switchToSession(2, {
+          id: 2,
+          provider: 'pi',
+          model: 'claude-sonnet-4',
+          message_count: 3,
+        });
+
+        expect(chatPanel.currentSessionId).toBe(2);
+        expect(chatPanel.messages).toEqual([]);
+        expect(chatPanel._pendingContext).toEqual([]);
+        expect(chatPanel._finalizeStreaming).toHaveBeenCalled();
+        expect(chatPanel._clearMessages).toHaveBeenCalled();
+        expect(chatPanel._loadMessageHistory).toHaveBeenCalledWith(2);
+        expect(chatPanel._ensureAnalysisContext).toHaveBeenCalled();
+      });
+
+      it('should skip loading message history for empty sessions', async () => {
+        chatPanel.currentSessionId = 1;
+        chatPanel._loadMessageHistory = vi.fn().mockResolvedValue(undefined);
+        chatPanel._ensureAnalysisContext = vi.fn();
+        chatPanel._finalizeStreaming = vi.fn();
+        chatPanel._clearMessages = vi.fn();
+        chatPanel._updateActionButtons = vi.fn();
+
+        await chatPanel._switchToSession(2, {
+          id: 2,
+          provider: 'pi',
+          message_count: 0,
+        });
+
+        expect(chatPanel._loadMessageHistory).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('_updateTitle', () => {
+      it('should set title text with provider and model', () => {
+        chatPanel._updateTitle('Claude', 'claude-sonnet-4');
+        expect(chatPanel.titleTextEl.textContent).toBe('Chat \u00b7 Claude \u00b7 Claude Sonnet 4');
+      });
+
+      it('should set default title when no args', () => {
+        chatPanel._updateTitle();
+        expect(chatPanel.titleTextEl.textContent).toBe('Chat \u00b7 Pi');
+      });
+    });
+
+    describe('close hides dropdown', () => {
+      it('should call _hideSessionDropdown on close', () => {
+        const spy = vi.spyOn(chatPanel, '_hideSessionDropdown');
+        chatPanel.isOpen = true;
+        chatPanel.close();
+        expect(spy).toHaveBeenCalled();
+      });
+    });
+
+    describe('_startNewConversation hides dropdown', () => {
+      it('should call _hideSessionDropdown on new conversation', async () => {
+        const spy = vi.spyOn(chatPanel, '_hideSessionDropdown');
+        chatPanel._finalizeStreaming = vi.fn();
+        chatPanel._clearMessages = vi.fn();
+        chatPanel._updateActionButtons = vi.fn();
+        chatPanel._updateTitle = vi.fn();
+        chatPanel._ensureAnalysisContext = vi.fn();
+        await chatPanel._startNewConversation();
+        expect(spy).toHaveBeenCalled();
+      });
+    });
+
+    describe('Escape key closes dropdown first', () => {
+      it('should close dropdown before other Escape actions', () => {
+        chatPanel.isOpen = true;
+        chatPanel.sessionDropdown.style.display = '';
+        const hideSpy = vi.spyOn(chatPanel, '_hideSessionDropdown');
+
+        // Simulate Escape keydown
+        const handlers = documentListeners['keydown'] || [];
+        handlers.forEach(h => h({ key: 'Escape' }));
+
+        expect(hideSpy).toHaveBeenCalled();
+      });
     });
   });
 });

@@ -44,12 +44,18 @@ class ChatPanel {
       <div id="chat-panel" class="chat-panel chat-panel--closed">
         <div class="chat-panel__resize-handle" title="Drag to resize"></div>
         <div class="chat-panel__header">
-          <span class="chat-panel__title">
-            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-              <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
-            </svg>
-            Chat &middot; Pi
-          </span>
+          <div class="chat-panel__session-picker">
+            <button class="chat-panel__session-picker-btn" title="Switch conversation">
+              <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
+              </svg>
+              <span class="chat-panel__title-text">Chat &middot; Pi</span>
+              <svg class="chat-panel__chevron" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+                <path d="M12.78 5.22a.749.749 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.06 0L3.22 6.28a.749.749 0 1 1 1.06-1.06L8 8.94l3.72-3.72a.749.749 0 0 1 1.06 0Z"/>
+              </svg>
+            </button>
+            <div class="chat-panel__session-dropdown" style="display: none;"></div>
+          </div>
           <div class="chat-panel__actions">
             <button class="chat-panel__new-btn" title="New conversation">
               <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
@@ -127,7 +133,10 @@ class ChatPanel {
     this.updateBtn = this.container.querySelector('.chat-panel__action-btn--update');
     this.dismissSuggestionBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-suggestion');
     this.dismissCommentBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-comment');
-    this.titleEl = this.container.querySelector('.chat-panel__title');
+    this.sessionPickerEl = this.container.querySelector('.chat-panel__session-picker');
+    this.sessionPickerBtn = this.container.querySelector('.chat-panel__session-picker-btn');
+    this.sessionDropdown = this.container.querySelector('.chat-panel__session-dropdown');
+    this.titleTextEl = this.container.querySelector('.chat-panel__title-text');
   }
 
   /**
@@ -141,6 +150,9 @@ class ChatPanel {
 
     // New conversation button
     this.newBtn.addEventListener('click', () => this._startNewConversation());
+
+    // Session picker button
+    this.sessionPickerBtn.addEventListener('click', () => this._toggleSessionDropdown());
 
     // Send button
     this.sendBtn.addEventListener('click', () => this.sendMessage());
@@ -170,10 +182,12 @@ class ChatPanel {
       }
     });
 
-    // Escape: stop agent if streaming, blur textarea if focused, otherwise close panel
+    // Escape: close dropdown if open, stop agent if streaming, blur textarea if focused, otherwise close panel
     this._onKeydown = (e) => {
       if (e.key === 'Escape' && this.isOpen) {
-        if (this.isStreaming) {
+        if (this._isSessionDropdownOpen()) {
+          this._hideSessionDropdown();
+        } else if (this.isStreaming) {
           this._stopAgent();
         } else if (document.activeElement === this.inputEl) {
           this.inputEl.blur();
@@ -295,14 +309,13 @@ class ChatPanel {
    * @param {string} [model] - Model ID or display name (e.g. 'default', 'multi-model')
    */
   _updateTitle(provider = 'Pi', model) {
-    if (!this.titleEl) return;
-    const svg = this.titleEl.querySelector('svg')?.outerHTML || '';
+    if (!this.titleTextEl) return;
     const modelDisplay = model
       ? model.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
       : null;
     const parts = ['Chat', provider];
     if (modelDisplay) parts.push(modelDisplay);
-    this.titleEl.innerHTML = `${svg}\n            ${this._escapeHtml(parts.join(' \u00b7 '))}`;
+    this.titleTextEl.textContent = parts.join(' \u00b7 ');
   }
 
   /**
@@ -419,6 +432,7 @@ class ChatPanel {
    * Close the chat panel
    */
   close() {
+    this._hideSessionDropdown();
     // Reset UI streaming state (buttons) but keep isStreaming and _streamingContent
     // intact so the background SSE handler can continue accumulating events.
     this.sendBtn.style.display = '';
@@ -457,6 +471,7 @@ class ChatPanel {
    * Preserves any unsent pending context cards and re-adds them to the new conversation.
    */
   async _startNewConversation() {
+    this._hideSessionDropdown();
     // 1. Snapshot pending context before clearing (these are unsent context cards)
     const savedContext = this._pendingContext.slice();
     const savedContextData = this._pendingContextData.slice();
@@ -518,29 +533,40 @@ class ChatPanel {
    * Fetches the session list, picks the MRU, and loads its message history
    * so the user sees their previous conversation when reopening the panel.
    */
+  /**
+   * Fetch sessions for the current review.
+   * Extracted from _loadMRUSession for reuse by the session picker dropdown.
+   * @returns {Promise<Array>} Array of session objects with message_count and first_message
+   */
+  async _fetchSessions() {
+    if (!this.reviewId) return [];
+    try {
+      const response = await fetch(`/api/review/${this.reviewId}/chat/sessions`);
+      if (!response.ok) return [];
+      const result = await response.json();
+      return result.data?.sessions || [];
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to fetch sessions:', err);
+      return [];
+    }
+  }
+
   async _loadMRUSession() {
     if (!this.reviewId) return;
 
     try {
-      const response = await fetch(`/api/review/${this.reviewId}/chat/sessions`);
-      if (!response.ok) return;
-
-      const result = await response.json();
-      const sessions = result.data?.sessions || [];
+      const sessions = await this._fetchSessions();
       if (sessions.length === 0) return;
 
-      // Pick the MRU session (list is already sorted by updated_at DESC)
       const mru = sessions[0];
       this.currentSessionId = mru.id;
       console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
 
-      // Update title with provider/model from the session
       if (mru.provider) {
         const providerName = mru.provider.charAt(0).toUpperCase() + mru.provider.slice(1);
         this._updateTitle(providerName, mru.model);
       }
 
-      // Load message history if the session has messages
       if (mru.message_count > 0) {
         await this._loadMessageHistory(mru.id);
       }
@@ -591,6 +617,172 @@ class ChatPanel {
     } catch (err) {
       console.warn('[ChatPanel] Failed to load message history:', err);
     }
+  }
+
+  // ── Session picker dropdown ────────────────────────────────────────────
+
+  _isSessionDropdownOpen() {
+    return this.sessionDropdown && this.sessionDropdown.style.display !== 'none';
+  }
+
+  _toggleSessionDropdown() {
+    if (this._isSessionDropdownOpen()) {
+      this._hideSessionDropdown();
+    } else {
+      this._showSessionDropdown();
+    }
+  }
+
+  async _showSessionDropdown() {
+    if (!this.sessionDropdown) return;
+
+    const sessions = await this._fetchSessions();
+    this._renderSessionDropdown(sessions);
+    this.sessionDropdown.style.display = '';
+    this.sessionPickerBtn.classList.add('chat-panel__session-picker-btn--open');
+
+    // Bind outside-click-to-close (one-shot)
+    this._outsideClickHandler = (e) => {
+      if (!this.sessionPickerEl.contains(e.target)) {
+        this._hideSessionDropdown();
+      }
+    };
+    // Use setTimeout so the current click event doesn't immediately trigger close
+    setTimeout(() => {
+      document.addEventListener('click', this._outsideClickHandler);
+    }, 0);
+  }
+
+  _hideSessionDropdown() {
+    if (!this.sessionDropdown) return;
+    this.sessionDropdown.style.display = 'none';
+    this.sessionPickerBtn.classList.remove('chat-panel__session-picker-btn--open');
+    if (this._outsideClickHandler) {
+      document.removeEventListener('click', this._outsideClickHandler);
+      this._outsideClickHandler = null;
+    }
+  }
+
+  _renderSessionDropdown(sessions) {
+    if (!this.sessionDropdown) return;
+
+    if (sessions.length === 0) {
+      this.sessionDropdown.innerHTML = `
+        <div class="chat-panel__session-empty">No conversations yet</div>
+      `;
+      return;
+    }
+
+    const items = sessions.map(s => {
+      const isActive = s.id === this.currentSessionId;
+      const preview = s.first_message
+        ? this._truncate(s.first_message, 60)
+        : 'New conversation';
+      const timeAgo = this._formatRelativeTime(s.updated_at);
+
+      return `
+        <button class="chat-panel__session-item${isActive ? ' chat-panel__session-item--active' : ''}"
+                data-session-id="${s.id}">
+          <span class="chat-panel__session-preview">${this._escapeHtml(preview)}</span>
+          <span class="chat-panel__session-meta">${this._escapeHtml(timeAgo)}</span>
+        </button>
+      `;
+    }).join('');
+
+    this.sessionDropdown.innerHTML = items;
+
+    // Bind click handlers on each item
+    this.sessionDropdown.querySelectorAll('.chat-panel__session-item').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const sessionId = parseInt(btn.dataset.sessionId, 10);
+        const sessionData = sessions.find(s => s.id === sessionId);
+        if (sessionData) {
+          this._switchToSession(sessionId, sessionData);
+        }
+        this._hideSessionDropdown();
+      });
+    });
+  }
+
+  /**
+   * Switch to a different chat session.
+   * Tears down current state and loads the target session.
+   * @param {number} sessionId - The session ID to switch to
+   * @param {Object} sessionData - Session metadata (provider, model, message_count, etc.)
+   */
+  async _switchToSession(sessionId, sessionData) {
+    if (sessionId === this.currentSessionId) return;
+
+    // 1. Finalize any active stream
+    this._finalizeStreaming();
+
+    // 2. Reset state
+    this.currentSessionId = sessionId;
+    this.messages = [];
+    this._streamingContent = '';
+    this._pendingContext = [];
+    this._pendingContextData = [];
+    this._contextSource = null;
+    this._contextItemId = null;
+    this._pendingActionContext = null;
+    this._analysisContextRemoved = false;
+    this._sessionAnalysisRunId = null;
+
+    // 3. Clear UI
+    this._clearMessages();
+    this._updateActionButtons();
+
+    // 4. Update title
+    if (sessionData.provider) {
+      const providerName = sessionData.provider.charAt(0).toUpperCase() + sessionData.provider.slice(1);
+      this._updateTitle(providerName, sessionData.model);
+    } else {
+      this._updateTitle();
+    }
+
+    // 5. Load message history
+    if (sessionData.message_count > 0) {
+      await this._loadMessageHistory(sessionId);
+    }
+
+    // 6. Ensure analysis context for the new session
+    this._ensureAnalysisContext();
+  }
+
+  /**
+   * Format a timestamp as relative time (same logic as AnalysisHistoryManager.formatRelativeTime).
+   * @param {string} timestamp - ISO or SQLite timestamp
+   * @returns {string} Relative time string
+   */
+  _formatRelativeTime(timestamp) {
+    if (!timestamp) return 'Unknown';
+
+    const now = new Date();
+    const date = window.parseTimestamp ? window.parseTimestamp(timestamp) : new Date(timestamp);
+    const diffMs = now - date;
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffHours < 1) {
+      return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    } else if (diffHours < 24) {
+      return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+    } else if (diffDays < 7) {
+      return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+    } else {
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+  }
+
+  /**
+   * Truncate text to maxLen characters with ellipsis.
+   * @param {string} text
+   * @param {number} maxLen
+   * @returns {string}
+   */
+  _truncate(text, maxLen) {
+    if (!text || text.length <= maxLen) return text || '';
+    return text.substring(0, maxLen) + '\u2026';
   }
 
   /**

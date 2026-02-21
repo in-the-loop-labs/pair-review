@@ -465,7 +465,11 @@ class ChatSessionManager {
    */
   getSessionsWithMessageCount(reviewId) {
     return this._db.prepare(`
-      SELECT s.*, COUNT(m.id) AS message_count
+      SELECT s.*, COUNT(m.id) AS message_count,
+        (SELECT content FROM chat_messages
+         WHERE session_id = s.id AND role = 'user' AND type = 'message'
+         ORDER BY id ASC LIMIT 1
+        ) AS first_message
       FROM chat_sessions s
       LEFT JOIN chat_messages m ON m.session_id = s.id AND m.type = 'message'
       WHERE s.review_id = ?
