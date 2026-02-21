@@ -46,6 +46,7 @@ class FileCommentManager {
             file: chatBtn.dataset.file || '',
             line_start: null,
             line_end: null,
+            side: suggestionCard?.dataset?.side || 'RIGHT',
             reasoning: null
           }
         });

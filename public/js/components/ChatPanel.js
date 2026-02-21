@@ -827,6 +827,7 @@ class ChatPanel {
       file: ctx.file || null,
       line_start: ctx.line_start || null,
       line_end: ctx.line_end || null,
+      side: ctx.side || null,
       body: ctx.body || null
     };
     this._pendingContextData.push(contextData);
@@ -851,7 +852,7 @@ class ChatPanel {
     if (patch && window.DiffContext) {
       if (contextData.line_start) {
         const hunk = window.DiffContext.extractHunkForLines(
-          patch, contextData.line_start, contextData.line_end || contextData.line_start, ctx.side
+          patch, contextData.line_start, contextData.line_end || contextData.line_start, contextData.side
         );
         if (hunk) {
           lines.push(`- Diff hunk:\n\`\`\`\n${hunk}\n\`\`\``);
@@ -943,9 +944,10 @@ class ChatPanel {
   _sendFileContextMessage(fileContext) {
     let contextText = `The user wants to discuss ${fileContext.file}`;
 
-    // Check for duplicate context
-    const isDuplicate = this._pendingContext.some(c => c === contextText) ||
-      this.messages.some(m => m.role === 'context' && m.content === contextText);
+    // Check for duplicate context (use startsWith because contextText may
+    // get enriched with diff hunk ranges after this check)
+    const isDuplicate = this._pendingContext.some(c => c === contextText || c.startsWith(contextText)) ||
+      this.messages.some(m => m.role === 'context' && (m.content === contextText || m.content.startsWith(contextText)));
     if (isDuplicate) return;
 
     // Remove empty state if present

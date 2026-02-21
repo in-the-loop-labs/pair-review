@@ -43,6 +43,7 @@ class SuggestionManager {
             file: chatBtn.dataset.file || '',
             line_start: suggestionDiv?.dataset?.lineNumber ? parseInt(suggestionDiv.dataset.lineNumber) : null,
             line_end: null,
+            side: suggestionDiv?.dataset?.side || 'RIGHT',
             reasoning: null
           }
         });
