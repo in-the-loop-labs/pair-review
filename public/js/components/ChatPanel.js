@@ -2022,9 +2022,9 @@ class ChatPanel {
   }
 
   /**
-   * Show an auto-dismissing toast notification anchored to the top of the
-   * messages area.  Uses position:sticky so it stays visible regardless of
-   * scroll position.
+   * Show an auto-dismissing toast notification overlaid at the top of the
+   * messages area.  Uses position:absolute so it floats over content without
+   * shifting the layout.
    * @param {string} message - Text to display
    */
   _showToast(message) {
