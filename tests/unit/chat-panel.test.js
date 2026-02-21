@@ -91,6 +91,8 @@ function createMockElement(tag = 'div', overrides = {}) {
       if (selector === '.chat-panel__action-bar') return elementRegistry['chat-action-bar'] || null;
       if (selector === '.chat-panel__action-btn--adopt') return elementRegistry['chat-adopt-btn'] || null;
       if (selector === '.chat-panel__action-btn--update') return elementRegistry['chat-update-btn'] || null;
+      if (selector === '.chat-panel__action-btn--dismiss-suggestion') return elementRegistry['chat-dismiss-suggestion-btn'] || null;
+      if (selector === '.chat-panel__action-btn--dismiss-comment') return elementRegistry['chat-dismiss-comment-btn'] || null;
       if (selector === '.chat-panel__resize-handle') return elementRegistry['chat-resize-handle'] || null;
       if (selector === '.chat-panel__empty') return elementRegistry['chat-empty'] || null;
       if (selector === '.chat-panel__context-card') return null;
@@ -140,6 +142,8 @@ function buildElementRegistry() {
     'chat-action-bar': createMockElement('div'),
     'chat-adopt-btn': createMockElement('button'),
     'chat-update-btn': createMockElement('button'),
+    'chat-dismiss-suggestion-btn': createMockElement('button'),
+    'chat-dismiss-comment-btn': createMockElement('button'),
     'chat-resize-handle': createMockElement('div'),
     'chat-empty': createMockElement('div'),
   };
@@ -154,6 +158,8 @@ function buildElementRegistry() {
   elementRegistry['chat-action-bar'].style = { display: 'none' };
   elementRegistry['chat-adopt-btn'].style = { display: 'none' };
   elementRegistry['chat-update-btn'].style = { display: 'none' };
+  elementRegistry['chat-dismiss-suggestion-btn'].style = { display: 'none' };
+  elementRegistry['chat-dismiss-comment-btn'].style = { display: 'none' };
 
   return elementRegistry;
 }
@@ -252,6 +258,8 @@ function createChatPanel() {
       '.chat-panel__action-bar': reg['chat-action-bar'],
       '.chat-panel__action-btn--adopt': reg['chat-adopt-btn'],
       '.chat-panel__action-btn--update': reg['chat-update-btn'],
+      '.chat-panel__action-btn--dismiss-suggestion': reg['chat-dismiss-suggestion-btn'],
+      '.chat-panel__action-btn--dismiss-comment': reg['chat-dismiss-comment-btn'],
       '.chat-panel__resize-handle': reg['chat-resize-handle'],
     };
     return map[selector] || null;
@@ -364,18 +372,19 @@ describe('ChatPanel', () => {
   });
 
   // -----------------------------------------------------------------------
-  // _handleAdoptClick / _handleUpdateClick
+  // _handleAdoptClick / _handleUpdateClick / dismiss handlers
   // -----------------------------------------------------------------------
   describe('_handleAdoptClick', () => {
-    it('should set input value with suggestion ID and call sendMessage', () => {
+    it('should set clean input text and actionContext then call sendMessage', () => {
       chatPanel._contextItemId = 55;
       chatPanel.isStreaming = false;
       const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
 
       chatPanel._handleAdoptClick();
 
-      expect(chatPanel.inputEl.value).toContain('55');
       expect(chatPanel.inputEl.value).toContain('adopt');
+      expect(chatPanel.inputEl.value).not.toContain('55');
+      expect(chatPanel._pendingActionContext).toEqual({ type: 'adopt', itemId: 55 });
       expect(sendSpy).toHaveBeenCalled();
     });
 
@@ -401,15 +410,16 @@ describe('ChatPanel', () => {
   });
 
   describe('_handleUpdateClick', () => {
-    it('should set input value with comment ID and call sendMessage', () => {
+    it('should set clean input text and actionContext then call sendMessage', () => {
       chatPanel._contextItemId = 88;
       chatPanel.isStreaming = false;
       const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
 
       chatPanel._handleUpdateClick();
 
-      expect(chatPanel.inputEl.value).toContain('88');
       expect(chatPanel.inputEl.value).toContain('update');
+      expect(chatPanel.inputEl.value).not.toContain('88');
+      expect(chatPanel._pendingActionContext).toEqual({ type: 'update', itemId: 88 });
       expect(sendSpy).toHaveBeenCalled();
     });
 
@@ -429,6 +439,76 @@ describe('ChatPanel', () => {
       const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
 
       chatPanel._handleUpdateClick();
+
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('_handleDismissSuggestionClick', () => {
+    it('should set clean input text and actionContext then call sendMessage', () => {
+      chatPanel._contextItemId = 42;
+      chatPanel.isStreaming = false;
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+
+      chatPanel._handleDismissSuggestionClick();
+
+      expect(chatPanel.inputEl.value).toContain('dismiss');
+      expect(chatPanel.inputEl.value).not.toContain('42');
+      expect(chatPanel._pendingActionContext).toEqual({ type: 'dismiss-suggestion', itemId: 42 });
+      expect(sendSpy).toHaveBeenCalled();
+    });
+
+    it('should not act when streaming', () => {
+      chatPanel._contextItemId = 42;
+      chatPanel.isStreaming = true;
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+
+      chatPanel._handleDismissSuggestionClick();
+
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not act when contextItemId is null', () => {
+      chatPanel._contextItemId = null;
+      chatPanel.isStreaming = false;
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+
+      chatPanel._handleDismissSuggestionClick();
+
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('_handleDismissCommentClick', () => {
+    it('should set clean input text and actionContext then call sendMessage', () => {
+      chatPanel._contextItemId = 77;
+      chatPanel.isStreaming = false;
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+
+      chatPanel._handleDismissCommentClick();
+
+      expect(chatPanel.inputEl.value).toContain('delete');
+      expect(chatPanel.inputEl.value).not.toContain('77');
+      expect(chatPanel._pendingActionContext).toEqual({ type: 'dismiss-comment', itemId: 77 });
+      expect(sendSpy).toHaveBeenCalled();
+    });
+
+    it('should not act when streaming', () => {
+      chatPanel._contextItemId = 77;
+      chatPanel.isStreaming = true;
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+
+      chatPanel._handleDismissCommentClick();
+
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not act when contextItemId is null', () => {
+      chatPanel._contextItemId = null;
+      chatPanel.isStreaming = false;
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+
+      chatPanel._handleDismissCommentClick();
 
       expect(sendSpy).not.toHaveBeenCalled();
     });

@@ -5,6 +5,8 @@
  * Works in both PR mode and Local mode.
  */
 
+const DISMISS_ICON = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
+
 class ChatPanel {
   constructor(containerId) {
     this.containerId = containerId;
@@ -21,6 +23,7 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;   // 'suggestion' or 'user' — set when opened with context
     this._contextItemId = null;   // suggestion ID or comment ID from context
+    this._pendingActionContext = null;  // { type, itemId } — set by action button handlers, consumed by sendMessage
     this._resizeConfig = { min: 300, max: 800, default: 400, storageKey: 'chat-panel-width' };
     this._analysisContextRemoved = false;
     this._sessionAnalysisRunId = null; // tracks which AI run ID's context is loaded in the current session
@@ -65,21 +68,29 @@ class ChatPanel {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
               <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
             </svg>
-            <p>Ask questions about this review, or click "Ask about this" on any suggestion.</p>
+            <p>Ask questions about this review, or the changes</p>
           </div>
         </div>
         <div class="chat-panel__action-bar" style="display: none;">
-          <button class="chat-panel__action-btn chat-panel__action-btn--adopt" style="display: none;" title="Ask the agent to refine and adopt this suggestion">
+          <button class="chat-panel__action-btn chat-panel__action-btn--adopt" style="display: none;" title="Adopt this suggestion with edits based on the conversation">
             <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
               <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
             </svg>
             Adopt with AI edits
           </button>
-          <button class="chat-panel__action-btn chat-panel__action-btn--update" style="display: none;" title="Ask the agent to update your comment based on the conversation">
+          <button class="chat-panel__action-btn chat-panel__action-btn--update" style="display: none;" title="Update the comment based on the conversation">
             <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
               <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.253.253 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z"/>
             </svg>
             Update comment
+          </button>
+          <button class="chat-panel__action-btn chat-panel__action-btn--dismiss-suggestion" style="display: none;" title="Dismiss this AI suggestion">
+            ${DISMISS_ICON}
+            Dismiss suggestion
+          </button>
+          <button class="chat-panel__action-btn chat-panel__action-btn--dismiss-comment" style="display: none;" title="Dismiss this comment">
+            ${DISMISS_ICON}
+            Dismiss comment
           </button>
         </div>
         <div class="chat-panel__input-area">
@@ -114,6 +125,8 @@ class ChatPanel {
     this.actionBar = this.container.querySelector('.chat-panel__action-bar');
     this.adoptBtn = this.container.querySelector('.chat-panel__action-btn--adopt');
     this.updateBtn = this.container.querySelector('.chat-panel__action-btn--update');
+    this.dismissSuggestionBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-suggestion');
+    this.dismissCommentBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-comment');
     this.titleEl = this.container.querySelector('.chat-panel__title');
   }
 
@@ -138,6 +151,8 @@ class ChatPanel {
     // Action buttons
     this.adoptBtn.addEventListener('click', () => this._handleAdoptClick());
     this.updateBtn.addEventListener('click', () => this._handleUpdateClick());
+    this.dismissSuggestionBtn.addEventListener('click', () => this._handleDismissSuggestionClick());
+    this.dismissCommentBtn.addEventListener('click', () => this._handleDismissCommentClick());
 
     // Textarea input handling
     this.inputEl.addEventListener('input', () => {
@@ -743,6 +758,12 @@ class ChatPanel {
     // Lock analysis context card (not indexed, handled separately from pending context)
     const analysisRemoveBtn = this.messagesEl.querySelector('.chat-panel__context-card[data-analysis] .chat-panel__context-remove');
     if (analysisRemoveBtn) analysisRemoveBtn.remove();
+
+    // Attach action context (set by action button handlers — adopt, update, dismiss)
+    if (this._pendingActionContext) {
+      payload.actionContext = this._pendingActionContext;
+      this._pendingActionContext = null;
+    }
 
     // Send to API
     try {
@@ -2170,11 +2191,15 @@ class ChatPanel {
     const showBar = hasSuggestion || hasComment;
     this.actionBar.style.display = showBar ? '' : 'none';
     this.adoptBtn.style.display = hasSuggestion ? '' : 'none';
+    this.dismissSuggestionBtn.style.display = hasSuggestion ? '' : 'none';
     this.updateBtn.style.display = hasComment ? '' : 'none';
+    this.dismissCommentBtn.style.display = hasComment ? '' : 'none';
 
     // Disable while streaming
     this.adoptBtn.disabled = this.isStreaming;
     this.updateBtn.disabled = this.isStreaming;
+    this.dismissSuggestionBtn.disabled = this.isStreaming;
+    this.dismissCommentBtn.disabled = this.isStreaming;
   }
 
   /**
@@ -2183,8 +2208,8 @@ class ChatPanel {
    */
   _handleAdoptClick() {
     if (this.isStreaming || !this._contextItemId) return;
-    const id = this._contextItemId;
-    this.inputEl.value = `Based on our conversation, please refine the original AI suggestion and adopt it using the pair-review API. The suggestion ID is ${id}.`;
+    this._pendingActionContext = { type: 'adopt', itemId: this._contextItemId };
+    this.inputEl.value = 'Based on our conversation, please refine and adopt this AI suggestion.';
     this.sendMessage();
   }
 
@@ -2194,8 +2219,30 @@ class ChatPanel {
    */
   _handleUpdateClick() {
     if (this.isStreaming || !this._contextItemId) return;
-    const id = this._contextItemId;
-    this.inputEl.value = `Based on our conversation, please update my comment using the pair-review API. The comment ID is ${id}.`;
+    this._pendingActionContext = { type: 'update', itemId: this._contextItemId };
+    this.inputEl.value = 'Based on our conversation, please update my comment.';
+    this.sendMessage();
+  }
+
+  /**
+   * Handle click on "Dismiss suggestion" button.
+   * Sends a message asking the agent to dismiss the AI suggestion.
+   */
+  _handleDismissSuggestionClick() {
+    if (this.isStreaming || !this._contextItemId) return;
+    this._pendingActionContext = { type: 'dismiss-suggestion', itemId: this._contextItemId };
+    this.inputEl.value = 'Please dismiss this AI suggestion.';
+    this.sendMessage();
+  }
+
+  /**
+   * Handle click on "Dismiss comment" button.
+   * Sends a message asking the agent to dismiss the user comment.
+   */
+  _handleDismissCommentClick() {
+    if (this.isStreaming || !this._contextItemId) return;
+    this._pendingActionContext = { type: 'dismiss-comment', itemId: this._contextItemId };
+    this.inputEl.value = 'Please delete this comment.';
     this.sendMessage();
   }
 
