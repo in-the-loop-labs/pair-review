@@ -28,6 +28,17 @@ const router = express.Router();
 const sseUnsubscribers = new Map();
 
 /**
+ * Build a regex that matches bash commands curling the pair-review
+ * server's own API on a specific port.  The port is required so we
+ * don't accidentally suppress tool badges for unrelated local services.
+ * @param {number} port - The server's listening port
+ * @returns {RegExp}
+ */
+function buildPairReviewApiRe(port) {
+  return new RegExp(`\\bcurl\\b.*\\bhttps?://(?:localhost|127\\.0\\.0\\.1):${port}/api/`);
+}
+
+/**
  * Broadcast an SSE event to all connected clients.
  * @param {number} sessionId - Chat session ID to include in the event
  * @param {Object} payload - Event data (will be merged with sessionId)
@@ -49,8 +60,9 @@ function broadcastSSE(sessionId, payload) {
  * (delta, tool_use, complete, status, error) are forwarded to connected SSE clients.
  * @param {Object} chatSessionManager
  * @param {number} sessionId
+ * @param {number} port - The server's listening port (used to scope API-call suppression)
  */
-function registerSSEBroadcast(chatSessionManager, sessionId) {
+function registerSSEBroadcast(chatSessionManager, sessionId, port) {
   // Guard against double-registration
   if (sseUnsubscribers.has(sessionId)) {
     logger.debug(`[ChatRoute] SSE broadcast already registered for session ${sessionId}, skipping`);
@@ -64,7 +76,22 @@ function registerSSEBroadcast(chatSessionManager, sessionId) {
       broadcastSSE(sessionId, { type: 'delta', text: data.text });
     }));
 
+    const hiddenToolCallIds = new Set();
+    const pairReviewApiRe = buildPairReviewApiRe(port);
+
     unsubs.push(chatSessionManager.onToolUse(sessionId, (data) => {
+      // Suppress tool badges for curl commands hitting the pair-review API
+      if (data.toolName?.toLowerCase() === 'bash') {
+        if (data.status === 'start' && pairReviewApiRe.test(data.args?.command || '')) {
+          hiddenToolCallIds.add(data.toolCallId);
+          return;
+        }
+        if (hiddenToolCallIds.has(data.toolCallId)) {
+          if (data.status === 'end') hiddenToolCallIds.delete(data.toolCallId);
+          return;
+        }
+      }
+
       const event = { type: 'tool_use', toolName: data.toolName, status: data.status };
       if (data.args) {
         event.toolInput = data.args;
@@ -219,7 +246,7 @@ router.post('/api/chat/session', async (req, res) => {
     logger.info(`Chat session created: ${session.id} (provider=${provider}, model=${model})`);
 
     // Register SSE broadcast listeners so events reach all connected clients
-    registerSSEBroadcast(chatSessionManager, session.id);
+    registerSSEBroadcast(chatSessionManager, session.id, serverPort);
 
     const responseData = { id: session.id, status: session.status };
 
@@ -286,7 +313,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       try {
         await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
         unregisterSSEBroadcast(sessionId);
-        registerSSEBroadcast(chatSessionManager, sessionId);
+        registerSSEBroadcast(chatSessionManager, sessionId, req.socket.localPort);
         logger.info(`[ChatRoute] Auto-resumed session ${sessionId} for message delivery`);
       } catch (err) {
         logger.error(`[ChatRoute] Failed to auto-resume session ${sessionId}: ${err.message}`);
@@ -436,7 +463,7 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
 
     await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
     unregisterSSEBroadcast(sessionId);
-    registerSSEBroadcast(chatSessionManager, sessionId);
+    registerSSEBroadcast(chatSessionManager, sessionId, req.socket.localPort);
 
     logger.info(`[ChatRoute] Explicitly resumed session ${sessionId}`);
     res.json({ data: { id: sessionId, status: 'active' } });
@@ -495,3 +522,4 @@ module.exports = router;
 // Expose internals for testing
 module.exports._sseClients = sseClients;
 module.exports._sseUnsubscribers = sseUnsubscribers;
+module.exports._buildPairReviewApiRe = buildPairReviewApiRe;
