@@ -950,11 +950,7 @@ class ChatPanel {
     // 1. Check for duplicate - look for any card with this run ID (both auto-added and manually-added)
     const existingCard = this.messagesEl?.querySelector(`[data-analysis-run-id="${runId}"]`);
     if (existingCard) {
-      // Flash it to indicate it's already there
-      existingCard.classList.remove('chat-panel__context-card--flash');
-      // Force reflow to restart animation
-      void existingCard.offsetWidth;
-      existingCard.classList.add('chat-panel__context-card--flash');
+      this._showToast('Analysis run already added');
       return;
     }
 
@@ -966,9 +962,7 @@ class ChatPanel {
       `[data-analysis-run-id="${runId}"]`
     );
     if (existingCardPostOpen) {
-      existingCardPostOpen.classList.remove('chat-panel__context-card--flash');
-      void existingCardPostOpen.offsetWidth;
-      existingCardPostOpen.classList.add('chat-panel__context-card--flash');
+      this._showToast('Analysis run already added');
       return;
     }
 
@@ -2025,6 +2019,35 @@ class ChatPanel {
     `;
     this.messagesEl.appendChild(errorEl);
     this.scrollToBottom();
+  }
+
+  /**
+   * Show an auto-dismissing toast notification anchored to the top of the
+   * messages area.  Uses position:sticky so it stays visible regardless of
+   * scroll position.
+   * @param {string} message - Text to display
+   */
+  _showToast(message) {
+    // Remove any existing toast
+    const existing = this._container?.querySelector('.chat-panel__toast');
+    if (existing) existing.remove();
+
+    const toast = document.createElement('div');
+    toast.className = 'chat-panel__toast';
+    toast.textContent = message;
+
+    // Insert at the top of the messages area so it's always visible
+    if (this.messagesEl) {
+      this.messagesEl.prepend(toast);
+    } else if (this._container) {
+      this._container.prepend(toast);
+    }
+
+    // Auto-dismiss after 2.5 seconds
+    setTimeout(() => {
+      toast.classList.add('chat-panel__toast--dismissing');
+      toast.addEventListener('animationend', () => toast.remove());
+    }, 2500);
   }
 
   /**

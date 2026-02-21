@@ -11116,13 +11116,33 @@ body.resizing * {
   color: #ffffff;
 }
 
-@keyframes context-card-flash {
-  0% { background-color: var(--color-attention-subtle, #d4a72c33); }
-  100% { background-color: transparent; }
+.chat-panel__toast {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 6px 12px;
+  margin: 0 8px 8px;
+  border-radius: 6px;
+  background: var(--color-attention-subtle);
+  color: var(--color-attention-fg);
+  border: 1px solid var(--color-attention-muted);
+  font-size: 12px;
+  text-align: center;
+  animation: toast-slide-in 0.2s ease-out;
 }
 
-.chat-panel__context-card--flash {
-  animation: context-card-flash 0.6s ease-out;
+.chat-panel__toast--dismissing {
+  animation: toast-fade-out 0.3s ease-out forwards;
+}
+
+@keyframes toast-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 .chat-panel__context-title code {
