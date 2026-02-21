@@ -135,6 +135,8 @@ class PRManager {
     this.contextFiles = [];
     // Canonical file order - sorted file paths for consistent ordering across components
     this.canonicalFileOrder = new Map();
+    // Raw per-file patch text for chat context enrichment
+    this.filePatches = new Map();
     // Analysis history manager - for switching between analysis runs
     this.analysisHistoryManager = null;
     // Currently selected analysis run ID (null = latest)
@@ -587,6 +589,7 @@ class PRManager {
 
         // Parse the unified diff to extract per-file patches
         const filePatchMap = this.parseUnifiedDiff(fullDiff);
+        this.filePatches = filePatchMap;
 
         // Merge patch data into file objects
         const filesWithPatches = files.map(file => ({

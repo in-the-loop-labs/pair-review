@@ -1079,6 +1079,7 @@ class LocalManager {
 
       // Parse the unified diff to extract files
       const filePatchMap = manager.parseUnifiedDiff(diffContent);
+      manager.filePatches = filePatchMap;
 
       // Build file list from diff
       const files = [];
