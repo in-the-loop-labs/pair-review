@@ -5,8 +5,8 @@
  * Tests the gutter chat button and comment form Chat button features:
  * - Gutter chat button visibility on hover (when chat enabled)
  * - Gutter chat button hidden when data-chat="disabled"
- * - Click gutter chat button opens chat panel with [[file:...]] prefilled
- * - Comment form Chat button opens chat with file reference + quoted text
+ * - Click gutter chat button opens chat panel with context card
+ * - Comment form Chat button opens chat with context card containing comment text
  * - Comment form Chat button hidden when data-chat="disabled"
  */
 
@@ -75,7 +75,7 @@ test.describe('Gutter chat button', () => {
     await expect(chatBtn).toBeHidden();
   });
 
-  test('click opens chat panel with [[file:...]] prefilled', async ({ page }) => {
+  test('click opens chat panel with context card', async ({ page }) => {
     await enableChat(page);
 
     // Open the chat panel first so it initializes
@@ -99,10 +99,14 @@ test.describe('Gutter chat button', () => {
     // Chat panel should open
     await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
 
-    // Textarea should contain a [[file:...]] reference
+    // A context card should be rendered (not prefilled text in textarea)
+    const contextCard = page.locator('.chat-panel__context-card');
+    await expect(contextCard).toBeVisible({ timeout: 3000 });
+
+    // Textarea should be empty (no prefillText)
     const textarea = page.locator('.chat-panel__input');
     const value = await textarea.inputValue();
-    expect(value).toMatch(/\[\[file:.+:\d+\]\]/);
+    expect(value).toBe('');
   });
 });
 
@@ -116,7 +120,7 @@ test.describe('Comment form Chat button', () => {
     await cleanupAllComments(page);
   });
 
-  test('opens chat with file reference and quoted text', async ({ page }) => {
+  test('opens chat with context card containing comment text', async ({ page }) => {
     await enableChat(page);
 
     // Initialize chat panel
@@ -149,11 +153,16 @@ test.describe('Comment form Chat button', () => {
     // Chat panel should open
     await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
 
-    // Textarea should contain file reference AND quoted text
+    // A context card should be rendered with the comment text
+    const contextCard = page.locator('.chat-panel__context-card[data-tooltip-body]');
+    await expect(contextCard).toBeVisible({ timeout: 3000 });
+    const contextTitle = contextCard.locator('.chat-panel__context-title');
+    await expect(contextTitle).toContainText('This is my question about this code');
+
+    // Textarea should be empty (context is in the card, not prefilled)
     const chatInput = page.locator('.chat-panel__input');
     const value = await chatInput.inputValue();
-    expect(value).toMatch(/\[\[file:.+:\d+\]\]/);
-    expect(value).toContain('> This is my question about this code');
+    expect(value).toBe('');
   });
 
   test('Chat button is hidden when data-chat is disabled', async ({ page }) => {

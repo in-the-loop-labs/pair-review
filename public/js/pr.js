@@ -1225,8 +1225,15 @@ class PRManager {
           this.lineTracker.clearRangeSelection();
         }
 
-        const lineRef = endLine && endLine !== startLine ? `${startLine}-${endLine}` : `${startLine}`;
-        window.chatPanel.open({ prefillText: `[[file:${file}:${lineRef}]]\n\n` });
+        window.chatPanel.open({
+          commentContext: {
+            body: null,
+            file: file || '',
+            line_start: startLine,
+            line_end: endLine || startLine,
+            source: 'user'
+          }
+        });
       },
       onMouseOver: (_e, row, lineNumber, file) => {
         // Check if we have a potential drag start and convert it to an actual drag
@@ -1256,10 +1263,17 @@ class PRManager {
             // For chat drags, immediately open chat with the selected range
             if (isChat && this.lineTracker.hasActiveSelection()) {
               const range = this.lineTracker.getSelectionRange();
-              const lineRef = `${range.start}-${range.end}`;
               this.lineTracker.clearRangeSelection();
               if (window.chatPanel) {
-                window.chatPanel.open({ prefillText: `[[file:${file}:${lineRef}]]\n\n` });
+                window.chatPanel.open({
+                  commentContext: {
+                    body: null,
+                    file: file || '',
+                    line_start: range.start,
+                    line_end: range.end,
+                    source: 'user'
+                  }
+                });
               }
             }
           }
@@ -2056,24 +2070,27 @@ class PRManager {
         saveBtn.addEventListener('click', () => this.saveEditedUserComment(commentId));
         cancelBtn.addEventListener('click', () => this.cancelEditUserComment(commentId));
 
-        // Chat button handler - opens chat panel with file/line reference and optional quoted text
+        // Chat button handler - opens chat panel with comment context card
         const chatFromEditBtn = editForm.querySelector('.btn-chat-from-comment');
         if (chatFromEditBtn) {
           chatFromEditBtn.addEventListener('click', () => {
             if (!window.chatPanel) return;
             const unsavedText = textarea.value.trim();
             const file = textarea.dataset.file;
-            const lineStart = textarea.dataset.line;
-            const lineEnd = textarea.dataset.lineEnd || lineStart;
-
-            const lineRef = lineEnd && lineEnd !== lineStart ? `${lineStart}-${lineEnd}` : `${lineStart}`;
-            let prefillText = `[[file:${file}:${lineRef}]]\n\n`;
-            if (unsavedText) {
-              prefillText += unsavedText.split('\n').map(l => `> ${l}`).join('\n') + '\n\n';
-            }
+            const lineStart = textarea.dataset.line ? parseInt(textarea.dataset.line) : null;
+            const lineEnd = textarea.dataset.lineEnd ? parseInt(textarea.dataset.lineEnd) : lineStart;
 
             this.cancelEditUserComment(commentId);
-            window.chatPanel.open({ prefillText });
+            window.chatPanel.open({
+              commentContext: {
+                commentId: commentId,
+                body: unsavedText || null,
+                file: file || '',
+                line_start: lineStart,
+                line_end: lineEnd,
+                source: 'user'
+              }
+            });
           });
         }
 

@@ -3688,7 +3688,7 @@ tr:hover .add-comment-btn {
   opacity: 1;
 }
 
-/* Gutter chat button */
+/* Gutter chat button — matches .add-comment-btn style */
 .chat-line-btn {
   position: absolute;
   right: 12px;                /* Left of the + button at right: -12px */
@@ -3696,14 +3696,15 @@ tr:hover .add-comment-btn {
   transform: translateY(-50%);
   width: 22px;
   height: 22px;
-  border-radius: 50%;
-  border: 1px solid var(--color-border-default, rgba(255,255,255,0.1));
-  background: var(--color-bg-elevated, #1e2329);
-  color: var(--color-text-secondary, #8b949e);
+  background: linear-gradient(180deg, #0969da 0%, #0860ca 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+  transition: opacity 0.1s ease, transform 0.1s ease, box-shadow 0.1s ease;
   z-index: 20;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3717,11 +3718,9 @@ tr:hover .add-comment-btn {
 }
 
 .chat-line-btn:hover {
-  background: var(--color-accent-light, rgba(56, 139, 253, 0.15));
-  color: var(--color-accent-primary, #58a6ff);
-  border-color: var(--color-accent-primary, #58a6ff);
+  background: linear-gradient(180deg, #0860ca 0%, #0757b8 100%);
   transform: translateY(-50%) scale(1.08);
-  box-shadow: 0 2px 6px rgba(56, 139, 253, 0.25);
+  box-shadow: 0 2px 6px rgba(9, 105, 218, 0.35), 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .chat-line-btn:active {
@@ -4337,10 +4336,6 @@ tr.line-range-start .d2h-code-line-ctn {
   margin-top: 8px;
 }
 
-.comment-form-actions .btn-chat-from-comment,
-.comment-edit-actions .btn-chat-from-comment {
-  margin-left: auto;     /* Push to right side of flex row */
-}
 
 /* Review Submission Panel */
 .review-panel {

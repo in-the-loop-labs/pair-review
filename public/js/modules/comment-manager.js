@@ -164,25 +164,27 @@ class CommentManager {
       }
     });
 
-    // Chat button handler - opens chat panel with file/line reference and optional quoted text
+    // Chat button handler - opens chat panel with comment context card
     const chatFromCommentBtn = td.querySelector('.btn-chat-from-comment');
     if (chatFromCommentBtn) {
       chatFromCommentBtn.addEventListener('click', () => {
         if (!window.chatPanel) return;
         const unsavedText = textarea.value.trim();
         const file = textarea.dataset.file;
-        const lineStart = textarea.dataset.line;
-        const lineEnd = textarea.dataset.lineEnd || lineStart;
-
-        const lineRef = lineEnd && lineEnd !== lineStart ? `${lineStart}-${lineEnd}` : `${lineStart}`;
-        let prefillText = `[[file:${file}:${lineRef}]]\n\n`;
-        if (unsavedText) {
-          prefillText += unsavedText.split('\n').map(l => `> ${l}`).join('\n') + '\n\n';
-        }
+        const lineStart = textarea.dataset.line ? parseInt(textarea.dataset.line) : null;
+        const lineEnd = textarea.dataset.lineEnd ? parseInt(textarea.dataset.lineEnd) : lineStart;
 
         this.hideCommentForm();
         if (lineTracker) lineTracker.clearRangeSelection();
-        window.chatPanel.open({ prefillText });
+        window.chatPanel.open({
+          commentContext: {
+            body: unsavedText || null,
+            file: file || '',
+            line_start: lineStart,
+            line_end: lineEnd,
+            source: 'user'
+          }
+        });
       });
     }
 
@@ -716,24 +718,27 @@ class CommentManager {
       saveBtn.addEventListener('click', () => this.prManager?.saveEditedUserComment(comment.id));
       cancelBtn.addEventListener('click', () => this.prManager?.cancelEditUserComment(comment.id));
 
-      // Chat button handler - opens chat panel with file/line reference and optional quoted text
+      // Chat button handler - opens chat panel with comment context card
       const chatFromEditBtn = editForm.querySelector('.btn-chat-from-comment');
       if (chatFromEditBtn) {
         chatFromEditBtn.addEventListener('click', () => {
           if (!window.chatPanel) return;
           const unsavedText = textarea.value.trim();
           const file = textarea.dataset.file;
-          const lineStart = textarea.dataset.line;
-          const lineEnd = textarea.dataset.lineEnd || lineStart;
-
-          const lineRef = lineEnd && lineEnd !== lineStart ? `${lineStart}-${lineEnd}` : `${lineStart}`;
-          let prefillText = `[[file:${file}:${lineRef}]]\n\n`;
-          if (unsavedText) {
-            prefillText += unsavedText.split('\n').map(l => `> ${l}`).join('\n') + '\n\n';
-          }
+          const lineStart = textarea.dataset.line ? parseInt(textarea.dataset.line) : null;
+          const lineEnd = textarea.dataset.lineEnd ? parseInt(textarea.dataset.lineEnd) : lineStart;
 
           this.prManager?.cancelEditUserComment(comment.id);
-          window.chatPanel.open({ prefillText });
+          window.chatPanel.open({
+            commentContext: {
+              commentId: comment.id,
+              body: unsavedText || null,
+              file: file || '',
+              line_start: lineStart,
+              line_end: lineEnd,
+              source: 'user'
+            }
+          });
         });
       }
 
