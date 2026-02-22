@@ -1494,6 +1494,7 @@ router.post('/api/pr/:owner/:repo/:number/analyses', async (req, res) => {
     reviewToAnalysisId.set(review.id, analysisId);
 
     broadcastProgress(analysisId, initialStatus);
+    broadcastReviewEvent(review.id, { type: 'review:analysis_started', analysisId });
 
     const analyzer = new Analyzer(req.app.get('db'), model, provider);
 

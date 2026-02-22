@@ -577,6 +577,7 @@ function createMCPServer(db, options = {}) {
           reviewToAnalysisId.set(reviewId, analysisId);
 
           broadcastProgress(analysisId, initialStatus);
+          broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
 
           // Create analyzer and launch asynchronously
           const analyzer = new Analyzer(db, model, provider);
@@ -728,6 +729,7 @@ function createMCPServer(db, options = {}) {
           reviewToAnalysisId.set(review.id, analysisId);
 
           broadcastProgress(analysisId, initialStatus);
+          broadcastReviewEvent(review.id, { type: 'review:analysis_started', analysisId });
 
           const analyzer = new Analyzer(db, model, provider);
           const progressCallback = createProgressCallback(analysisId);
