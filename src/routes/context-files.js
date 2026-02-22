@@ -8,64 +8,41 @@
  * All endpoints live under /api/reviews/:reviewId/context-files
  */
 
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
-const { promisify } = require('util');
-const { exec } = require('child_process');
-const { queryOne, ReviewRepository, ContextFileRepository } = require('../database');
+const { ReviewRepository, ContextFileRepository, WorktreeRepository } = require('../database');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../sse/review-events');
-
-const execPromise = promisify(exec);
+const { getDiffFileList } = require('../utils/diff-file-list');
 
 const router = express.Router();
 
 /**
- * Return the list of file paths that belong to the review's diff.
- * Works for both PR-mode and local-mode reviews.
+ * Resolve the repository root directory for a review.
+ * Local reviews use local_path; PR reviews look up the worktree path.
+ * Returns null when the root cannot be determined (e.g. worktree not set up).
  *
- * @param {object} db   - SQLite database handle
+ * @param {object} db     - SQLite database handle
  * @param {object} review - Review row from the database
- * @returns {Promise<string[]>} Array of relative file paths in the diff
+ * @returns {Promise<string|null>} Absolute path to the repo root, or null
  */
-async function getDiffFileList(db, review) {
-  // PR mode – pull from pr_metadata table
-  if (review.pr_number && review.repository) {
-    try {
-      const prRecord = await queryOne(db, `
-        SELECT pr_data FROM pr_metadata
-        WHERE pr_number = ? AND repository = ? COLLATE NOCASE
-      `, [review.pr_number, review.repository]);
-
-      if (prRecord?.pr_data) {
-        const prData = JSON.parse(prRecord.pr_data);
-        return (prData.changed_files || []).map(f => f.file);
-      }
-    } catch {
-      // parse / query error – fall through to empty list
-    }
-    return [];
-  }
-
-  // Local mode – ask git for changed / untracked files
+async function resolveRepoRoot(db, review) {
+  // Local mode – the path is stored directly on the review record
   if (review.local_path) {
-    try {
-      const opts = { cwd: review.local_path };
-      const [{ stdout: unstaged }, { stdout: untracked }] = await Promise.all([
-        execPromise('git diff --name-only', opts),
-        execPromise('git ls-files --others --exclude-standard', opts),
-      ]);
-      const combined = `${unstaged}\n${untracked}`
-        .split('\n')
-        .map(l => l.trim())
-        .filter(Boolean);
-      return [...new Set(combined)];
-    } catch {
-      // git error – fall through to empty list
-    }
-    return [];
+    return review.local_path;
   }
 
-  return [];
+  // PR mode – look up the worktree record
+  if (review.pr_number && review.repository) {
+    const worktreeRepo = new WorktreeRepository(db);
+    const worktree = await worktreeRepo.findByPR(review.pr_number, review.repository);
+    if (worktree && worktree.path) {
+      return worktree.path;
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -144,6 +121,19 @@ router.post('/api/reviews/:reviewId/context-files', validateReviewId, async (req
       return res.status(400).json({
         error: `Cannot add context file: '${file.trim()}' is already part of the diff`
       });
+    }
+
+    // Validate that the file exists on disk when we can resolve the repo root
+    const repoRoot = await resolveRepoRoot(db, req.review);
+    if (repoRoot) {
+      const resolved = path.resolve(repoRoot, file.trim());
+      // Double-check the resolved path is still within the repo root (belt-and-suspenders with the .. check above)
+      if (!resolved.startsWith(repoRoot + path.sep) && resolved !== repoRoot) {
+        return res.status(400).json({ error: 'file must be a relative path without .. segments' });
+      }
+      if (!fs.existsSync(resolved)) {
+        return res.status(400).json({ error: 'File not found in repository' });
+      }
     }
 
     const contextFileRepo = new ContextFileRepository(db);

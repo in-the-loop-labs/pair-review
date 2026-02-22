@@ -13,6 +13,7 @@ const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { activeAnalyses, reviewToAnalysisId } = require('./shared');
 const logger = require('../utils/logger');
 const { broadcastReviewEvent } = require('../sse/review-events');
+const { ensureContextFileForComment } = require('../utils/auto-context');
 const path = require('path');
 const fs = require('fs').promises;
 const simpleGit = require('simple-git');
@@ -137,6 +138,16 @@ router.post('/api/reviews/:reviewId/comments', validateReviewId, async (req, res
       message: line_start ? 'Comment saved successfully' : 'File-level comment saved successfully'
     });
     broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') });
+
+    // Fire-and-forget: auto-add context file for comments on files outside the diff
+    try {
+      const result = await ensureContextFileForComment(db, req.review, { file, line_start, line_end });
+      if (result.created || result.expanded) {
+        broadcastReviewEvent(req.reviewId, { type: 'review:context_files_changed' });
+      }
+    } catch (err) {
+      logger.warn(`[AutoContext] Failed: ${err.message}`);
+    }
   } catch (error) {
     logger.error('Error creating comment:', error);
     res.status(500).json({

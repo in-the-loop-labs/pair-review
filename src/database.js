@@ -3377,6 +3377,36 @@ class ContextFileRepository {
   }
 
   /**
+   * Get context file ranges for a specific file within a review, ordered by line_start
+   * @param {number} reviewId - Review ID
+   * @param {string} file - File path
+   * @returns {Promise<Array<Object>>} Array of context file records
+   */
+  async getByReviewIdAndFile(reviewId, file) {
+    return query(this.db, `
+      SELECT id, review_id, file, line_start, line_end, label, created_at
+      FROM context_files
+      WHERE review_id = ? AND file = ?
+      ORDER BY line_start
+    `, [reviewId, file]);
+  }
+
+  /**
+   * Update the line range of an existing context file record
+   * @param {number} id - Context file record ID
+   * @param {number} lineStart - New start line number
+   * @param {number} lineEnd - New end line number
+   * @returns {Promise<boolean>} True if record was updated
+   */
+  async updateRange(id, lineStart, lineEnd) {
+    const result = await run(this.db, `
+      UPDATE context_files SET line_start = ?, line_end = ? WHERE id = ?
+    `, [lineStart, lineEnd, id]);
+
+    return result.changes > 0;
+  }
+
+  /**
    * Remove a context file range by ID, scoped to a specific review
    * @param {number} id - Context file record ID
    * @param {number} reviewId - Review ID (ensures deletion is scoped to the correct review)

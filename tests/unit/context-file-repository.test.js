@@ -76,6 +76,69 @@ describe('ContextFileRepository', () => {
     });
   });
 
+  describe('getByReviewIdAndFile', () => {
+    it('should return matching context files for a specific review and file path', async () => {
+      await contextFileRepo.add(reviewId, 'src/utils.js', 30, 40, 'second range');
+      await contextFileRepo.add(reviewId, 'src/utils.js', 10, 25, 'first range');
+      await contextFileRepo.add(reviewId, 'src/other.js', 1, 10, 'other file');
+
+      const results = await contextFileRepo.getByReviewIdAndFile(reviewId, 'src/utils.js');
+
+      expect(results).toHaveLength(2);
+      // Verify ordering by line_start
+      expect(results[0].line_start).toBe(10);
+      expect(results[0].label).toBe('first range');
+      expect(results[1].line_start).toBe(30);
+      expect(results[1].label).toBe('second range');
+    });
+
+    it('should return empty array when no matches', async () => {
+      const results = await contextFileRepo.getByReviewIdAndFile(reviewId, 'src/nonexistent.js');
+
+      expect(results).toEqual([]);
+    });
+
+    it('should only return files matching the specific file path', async () => {
+      await contextFileRepo.add(reviewId, 'src/utils.js', 10, 25, 'utils');
+      await contextFileRepo.add(reviewId, 'src/helpers.js', 1, 15, 'helpers');
+      await contextFileRepo.add(reviewId, 'src/main.js', 5, 20, 'main');
+
+      const results = await contextFileRepo.getByReviewIdAndFile(reviewId, 'src/helpers.js');
+
+      expect(results).toHaveLength(1);
+      expect(results[0].file).toBe('src/helpers.js');
+      expect(results[0].label).toBe('helpers');
+    });
+  });
+
+  describe('updateRange', () => {
+    it('should successfully update line_start and line_end', async () => {
+      const record = await contextFileRepo.add(reviewId, 'src/utils.js', 10, 25, 'helper function');
+
+      await contextFileRepo.updateRange(record.id, 5, 50);
+
+      // Verify the update persisted
+      const results = await contextFileRepo.getByReviewId(reviewId);
+      expect(results).toHaveLength(1);
+      expect(results[0].line_start).toBe(5);
+      expect(results[0].line_end).toBe(50);
+    });
+
+    it('should return true on success', async () => {
+      const record = await contextFileRepo.add(reviewId, 'src/utils.js', 10, 25);
+
+      const updated = await contextFileRepo.updateRange(record.id, 1, 100);
+
+      expect(updated).toBe(true);
+    });
+
+    it('should return false when id does not exist', async () => {
+      const updated = await contextFileRepo.updateRange(99999, 1, 100);
+
+      expect(updated).toBe(false);
+    });
+  });
+
   describe('remove', () => {
     it('should delete by id and return true', async () => {
       const record1 = await contextFileRepo.add(reviewId, 'src/utils.js', 10, 25);
