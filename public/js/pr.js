@@ -4168,8 +4168,14 @@ class PRManager {
   rebuildFileListWithContext() {
     const merged = [...(this.diffFiles || [])];
 
-    // Add context files as file-like objects
+    // Build set of diff file paths so context files don't duplicate them
+    const diffPaths = new Set((this.diffFiles || []).map(f => f.file));
+
+    // Deduplicate context files by path and skip any that overlap with diff files
+    const seenContextPaths = new Set();
     for (const cf of (this.contextFiles || [])) {
+      if (diffPaths.has(cf.file) || seenContextPaths.has(cf.file)) continue;
+      seenContextPaths.add(cf.file);
       merged.push({
         file: cf.file,
         contextFile: true,
