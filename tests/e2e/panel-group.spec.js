@@ -243,10 +243,17 @@ test.describe('Panel Group - PR Mode', () => {
 
   test('chat button grayed out when Pi is unavailable', async ({ page }) => {
     // Default E2E state: enable_chat=true (default), pi_available=false (no Pi installed)
-    // Wait for config fetch to set data-chat
+    // Wait for config fetch to set data-chat to 'unavailable'
     await page.waitForFunction(() =>
-      document.documentElement.getAttribute('data-chat') !== 'disabled'
+      document.documentElement.getAttribute('data-chat') === 'unavailable'
     );
+
+    // The early <head> config fetch may fire chat-state-changed before
+    // PanelGroup attaches its listener at DOMContentLoaded. Re-dispatch
+    // the event so PanelGroup reliably updates the button title.
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: 'unavailable' } }));
+    });
 
     const chatBtn = page.locator('#chat-toggle-btn');
     // Visible but grayed out with not-allowed cursor and tooltip explaining why

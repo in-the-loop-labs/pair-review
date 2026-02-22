@@ -514,6 +514,9 @@ class PanelGroup {
 
     const bothHidden = !this._reviewVisible && !this._chatVisible;
     this.groupEl.classList.toggle('group-collapsed', bothHidden);
+    // When only one panel is visible, expose per-panel resize handles
+    this.groupEl.classList.toggle('chat-only', !this._reviewVisible && this._chatVisible);
+    this.groupEl.classList.toggle('review-only', this._reviewVisible && !this._chatVisible);
   }
 
   /**
