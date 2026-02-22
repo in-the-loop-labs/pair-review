@@ -4308,39 +4308,13 @@ class PRManager {
     }
 
     for (let i = lineStart; i <= lineEnd; i++) {
-      const lineContent = data.lines[i - 1] || '';
-      const row = document.createElement('tr');
-      row.className = 'd2h-cntx';
-      row.dataset.lineNumber = i;
-      row.dataset.fileName = contextFile.file;
-      row.dataset.side = 'RIGHT';
-
-      const lineNumCell = document.createElement('td');
-      lineNumCell.className = 'd2h-code-linenumber';
-      const lineNumContent = document.createElement('div');
-      lineNumContent.className = 'line-number-content';
-      lineNumContent.innerHTML = `<span class="line-num1">${i}</span><span class="line-num2">${i}</span>`;
-      lineNumCell.appendChild(lineNumContent);
-
-      const contentCell = document.createElement('td');
-      contentCell.className = 'd2h-code-line-ctn';
-
-      // Apply syntax highlighting if available
-      if (window.hljs && contextFile.file) {
-        try {
-          const language = window.DiffRenderer?.detectLanguage(contextFile.file) || 'plaintext';
-          const highlighted = window.hljs.highlight(lineContent, { language, ignoreIllegals: true });
-          contentCell.innerHTML = highlighted.value;
-        } catch (e) {
-          contentCell.textContent = lineContent;
-        }
-      } else {
-        contentCell.textContent = lineContent;
-      }
-
-      row.appendChild(lineNumCell);
-      row.appendChild(contentCell);
-      tbody.appendChild(row);
+      const lineData = {
+        type: 'context',
+        oldNumber: i,
+        newNumber: i,
+        content: ' ' + (data.lines[i - 1] || '')
+      };
+      this.renderDiffLine(tbody, lineData, contextFile.file, null);
     }
 
     // Add expand-down gap row if there are lines below the context range
