@@ -19,23 +19,9 @@ const fs = require('fs').promises;
 const simpleGit = require('simple-git');
 const { GitWorktreeManager } = require('../git/worktree');
 const { normalizeRepository } = require('../utils/paths');
+const { getEmoji: getCategoryEmoji } = require('../utils/category-emoji');
 
 const router = express.Router();
-
-// Category to emoji mapping for formatting adopted comments (mirrors frontend SuggestionManager)
-// Canonical types from src/ai/prompts/shared/output-schema.js:
-// bug|improvement|praise|suggestion|design|performance|security|code-style
-const CATEGORY_EMOJI_MAP = {
-  'bug': '\u{1F41B}',           // bug
-  'improvement': '\u{1F4A1}',   // lightbulb
-  'praise': '\u{1F44F}',        // clapping hands
-  'suggestion': '\u{1F4AC}',    // speech bubble
-  'design': '\u{1F3D7}\uFE0F',  // building construction
-  'performance': '\u{26A1}',    // high voltage
-  'security': '\u{1F512}',      // lock
-  'code-style': '\u{1F3A8}',    // artist palette
-  'style': '\u{1F3A8}'          // artist palette (alias for code-style)
-};
 
 /**
  * Format adopted comment text with emoji and category prefix.
@@ -48,7 +34,7 @@ function formatAdoptedComment(text, category) {
   if (!category) {
     return text;
   }
-  const emoji = CATEGORY_EMOJI_MAP[category] || '\u{1F4AC}';
+  const emoji = getCategoryEmoji(category);
   // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
   const capitalizedCategory = category
     .split('-')

@@ -5,21 +5,6 @@
  */
 
 class SuggestionManager {
-  // Category to emoji mapping for formatting adopted comments
-  // Canonical types from src/ai/prompts/shared/output-schema.js:
-  // bug|improvement|praise|suggestion|design|performance|security|code-style
-  static CATEGORY_EMOJI_MAP = {
-    'bug': '\u{1F41B}',           // bug
-    'improvement': '\u{1F4A1}',   // lightbulb
-    'praise': '\u{1F44F}',        // clapping hands
-    'suggestion': '\u{1F4AC}',    // speech bubble
-    'design': '\u{1F3D7}\uFE0F',  // building construction
-    'performance': '\u{26A1}',    // high voltage
-    'security': '\u{1F512}',      // lock
-    'code-style': '\u{1F3A8}',    // artist palette
-    'style': '\u{1F3A8}'          // artist palette (alias for code-style)
-  };
-
   constructor(prManagerRef) {
     // Reference to parent PRManager for API calls and state access
     this.prManager = prManagerRef;
@@ -171,7 +156,7 @@ class SuggestionManager {
    * @returns {string} Emoji character
    */
   getCategoryEmoji(category) {
-    return SuggestionManager.CATEGORY_EMOJI_MAP[category] || '\u{1F4AC}';
+    return window.CategoryEmoji?.getEmoji(category) || '\u{1F4AC}';
   }
 
   /**
