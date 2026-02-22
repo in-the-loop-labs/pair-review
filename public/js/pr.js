@@ -4127,11 +4127,31 @@ class PRManager {
       const oldIds = new Set((this.contextFiles || []).map(f => f.id));
       const newIds = new Set(newFiles.map(f => f.id));
 
-      // Remove only deleted context files
+      // Remove only deleted context files (handles both standalone and merged wrappers)
       for (const old of this.contextFiles || []) {
         if (!newIds.has(old.id)) {
-          const el = document.querySelector(`.context-file[data-context-id="${old.id}"]`);
-          if (el) el.remove();
+          const el = document.querySelector(`[data-context-id="${old.id}"]`);
+          if (!el) continue;
+          if (el.classList.contains('context-file')) {
+            // Standalone wrapper (legacy) — remove entirely
+            el.remove();
+          } else {
+            // Chunk tbody within a merged wrapper
+            const wrapper = el.closest('.context-file');
+            // Also remove adjacent separator tbody if present
+            const prevSib = el.previousElementSibling;
+            const nextSib = el.nextElementSibling;
+            if (prevSib && prevSib.classList.contains('context-chunk-separator')) {
+              prevSib.remove();
+            } else if (nextSib && nextSib.classList.contains('context-chunk-separator')) {
+              nextSib.remove();
+            }
+            el.remove();
+            // If no more chunks remain, remove the wrapper too
+            if (wrapper && !wrapper.querySelector('.context-chunk')) {
+              wrapper.remove();
+            }
+          }
         }
       }
 
@@ -4164,30 +4184,169 @@ class PRManager {
   /**
    * Rebuild the sidebar file list with context files interleaved in natural path order.
    * Merges stored diff files with current context files and re-renders the sidebar.
+   * Delegates to the shared FileListMerger module for the merge/sort logic.
    */
   rebuildFileListWithContext() {
-    const merged = [...(this.diffFiles || [])];
-
-    // Add context files as file-like objects
-    for (const cf of (this.contextFiles || [])) {
-      merged.push({
-        file: cf.file,
-        contextFile: true,
-        contextId: cf.id,
-        label: cf.label,
-        lineStart: cf.line_start,
-        lineEnd: cf.line_end,
-      });
+    const { mergeFileListWithContext } = window.FileListMerger || {};
+    if (!mergeFileListWithContext) {
+      console.warn('FileListMerger not loaded - cannot rebuild file list with context');
+      return;
     }
-
-    // Sort by file path (context files interleave naturally)
-    merged.sort((a, b) => a.file.localeCompare(b.file));
-
+    const merged = mergeFileListWithContext(this.diffFiles, this.contextFiles);
     this.updateFileList(merged);
   }
 
   /**
+   * Build a context chunk tbody with line rows for a context file range.
+   * @param {Object} data - { lines: string[] } from fetchFileContent
+   * @param {Object} contextFile - { id, file, line_start, line_end }
+   * @returns {HTMLElement} tbody element with class context-chunk
+   * @private
+   */
+  _buildContextChunkTbody(data, contextFile) {
+    const tbody = document.createElement('tbody');
+    tbody.className = 'd2h-diff-tbody context-chunk';
+    tbody.dataset.contextId = contextFile.id;
+    tbody.dataset.lineStart = contextFile.line_start;
+
+    // Chunk header row with range label and per-chunk dismiss button
+    const headerRow = document.createElement('tr');
+    headerRow.className = 'context-chunk-header';
+    const lineNumTd = document.createElement('td');
+    lineNumTd.className = 'd2h-code-linenumber';
+    headerRow.appendChild(lineNumTd);
+    const contentTd = document.createElement('td');
+    contentTd.className = 'd2h-code-side-line';
+    contentTd.colSpan = 3;
+    const rangeLabel = document.createElement('span');
+    rangeLabel.className = 'context-range-label';
+    const lineEnd = Math.min(contextFile.line_end, data.lines.length);
+    rangeLabel.textContent = `Lines ${contextFile.line_start}\u2013${lineEnd}`;
+    contentTd.appendChild(rangeLabel);
+    const chunkDismiss = document.createElement('button');
+    chunkDismiss.className = 'context-chunk-dismiss';
+    chunkDismiss.title = 'Remove this range';
+    chunkDismiss.innerHTML = '\u00d7';
+    chunkDismiss.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.removeContextFile(contextFile.id);
+    });
+    contentTd.appendChild(chunkDismiss);
+    headerRow.appendChild(contentTd);
+    tbody.appendChild(headerRow);
+
+    const lineStart = contextFile.line_start;
+    const clampedEnd = Math.min(contextFile.line_end, data.lines.length);
+
+    // Add expand-up gap row if there are lines above the context range
+    if (lineStart > 1) {
+      const gapAboveSize = lineStart - 1;
+      const gapAbove = window.HunkParser.createGapRowElement(
+        contextFile.file,
+        1,              // startLine (old coords)
+        lineStart - 1,  // endLine (old coords)
+        gapAboveSize,
+        'above',
+        this.expandGapContext.bind(this),
+        1               // startLineNew (same as old for context files — no diff offset)
+      );
+      tbody.appendChild(gapAbove);
+    }
+
+    for (let i = lineStart; i <= clampedEnd; i++) {
+      const lineData = {
+        type: 'context',
+        oldNumber: i,
+        newNumber: i,
+        content: ' ' + (data.lines[i - 1] || '')
+      };
+      this.renderDiffLine(tbody, lineData, contextFile.file, null);
+    }
+
+    // Add expand-down gap row if there are lines below the context range
+    const totalLines = data.lines.length;
+    if (clampedEnd < totalLines) {
+      const gapBelowSize = totalLines - clampedEnd;
+      const gapBelow = window.HunkParser.createGapRowElement(
+        contextFile.file,
+        clampedEnd + 1, // startLine (old coords)
+        totalLines,     // endLine (old coords)
+        gapBelowSize,
+        'below',
+        this.expandGapContext.bind(this),
+        clampedEnd + 1  // startLineNew (same as old)
+      );
+      tbody.appendChild(gapBelow);
+    }
+
+    return tbody;
+  }
+
+  /**
+   * Insert a chunk tbody into an existing table in sorted position by line_start.
+   * Adds a visual separator tbody between non-contiguous ranges.
+   * @param {HTMLElement} table - the d2h-diff-table
+   * @param {HTMLElement} newTbody - the context-chunk tbody to insert
+   * @private
+   */
+  _insertChunkSorted(table, newTbody) {
+    const newStart = parseInt(newTbody.dataset.lineStart, 10);
+    const existingChunks = [...table.querySelectorAll('tbody.context-chunk')];
+
+    // Find insertion point
+    let insertBeforeChunk = null;
+    for (const chunk of existingChunks) {
+      const chunkStart = parseInt(chunk.dataset.lineStart, 10);
+      if (chunkStart > newStart) {
+        insertBeforeChunk = chunk;
+        break;
+      }
+    }
+
+    // Determine the element to insert before (including any separator before it)
+    if (insertBeforeChunk) {
+      const prevSibling = insertBeforeChunk.previousElementSibling;
+      const hasSepBefore = prevSibling && prevSibling.classList.contains('context-chunk-separator');
+      if (hasSepBefore) {
+        table.insertBefore(newTbody, prevSibling);
+        const sep = this._createChunkSeparator();
+        table.insertBefore(sep, newTbody);
+      } else {
+        table.insertBefore(newTbody, insertBeforeChunk);
+        const sep = this._createChunkSeparator();
+        table.insertBefore(sep, insertBeforeChunk);
+      }
+    } else {
+      // Append after the last chunk — add separator before if there are existing chunks
+      if (existingChunks.length > 0) {
+        const sep = this._createChunkSeparator();
+        table.appendChild(sep);
+      }
+      table.appendChild(newTbody);
+    }
+  }
+
+  /**
+   * Create a visual separator tbody between context chunks.
+   * @returns {HTMLElement} tbody with a single separator row
+   * @private
+   */
+  _createChunkSeparator() {
+    const sep = document.createElement('tbody');
+    sep.className = 'context-chunk-separator';
+    const row = document.createElement('tr');
+    row.className = 'context-chunk-separator-row';
+    const td = document.createElement('td');
+    td.colSpan = 4;
+    td.className = 'd2h-code-side-line context-chunk-separator-cell';
+    row.appendChild(td);
+    sep.appendChild(row);
+    return sep;
+  }
+
+  /**
    * Render a single context file range in the diff panel.
+   * Merges ranges for the same file into a single wrapper with multiple chunk tbodies.
    * @param {Object} contextFile - { id, review_id, file, line_start, line_end, label }
    */
   async renderContextFile(contextFile) {
@@ -4198,10 +4357,24 @@ class PRManager {
     const data = await this.fetchFileContent(contextFile.file);
     if (!data || !data.lines) return;
 
+    // Check if a wrapper already exists for this file
+    const existing = diffContainer.querySelector(
+      `.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(contextFile.file)}"]`
+    );
+
+    if (existing) {
+      // Merge into existing wrapper — add a new chunk tbody
+      const table = existing.querySelector('.d2h-diff-table');
+      if (!table) return;
+      const newTbody = this._buildContextChunkTbody(data, contextFile);
+      this._insertChunkSorted(table, newTbody);
+      return;
+    }
+
+    // No existing wrapper — create a new one
     const wrapper = document.createElement('div');
     wrapper.className = 'd2h-file-wrapper context-file';
     wrapper.dataset.fileName = contextFile.file;
-    wrapper.dataset.contextId = contextFile.id;
 
     // Build file header — matches regular diff headers (chevron, viewed, comment btn, chat btn)
     const header = document.createElement('div');
@@ -4288,14 +4461,26 @@ class PRManager {
     });
     header.appendChild(fileChatBtn);
 
-    // Dismiss button (context-file specific — remove the pinned range)
+    // Dismiss button — removes ALL context ranges for this file
     const dismissBtn = document.createElement('button');
     dismissBtn.className = 'context-file-dismiss';
     dismissBtn.title = 'Remove context file';
     dismissBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
     dismissBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.removeContextFile(contextFile.id);
+      // Remove all context ranges for this file
+      const fileWrapper = e.target.closest('.context-file');
+      if (!fileWrapper) return;
+      const chunkIds = [...fileWrapper.querySelectorAll('tbody.context-chunk[data-context-id]')]
+        .map(tb => tb.dataset.contextId);
+      if (chunkIds.length === 0) return;
+      // Remove all ranges — fire sequentially to avoid race conditions
+      const removeAll = async () => {
+        for (const cid of chunkIds) {
+          await this.removeContextFile(cid);
+        }
+      };
+      removeAll();
     });
     header.appendChild(dismissBtn);
 
@@ -4316,56 +4501,10 @@ class PRManager {
       wrapper.appendChild(wrapper._fileCommentsZone);
     }
 
-    // Build code table
+    // Build code table with the first chunk
     const table = document.createElement('table');
     table.className = 'd2h-diff-table';
-    const tbody = document.createElement('tbody');
-    tbody.className = 'd2h-diff-tbody';
-
-    const lineStart = contextFile.line_start;
-    const lineEnd = Math.min(contextFile.line_end, data.lines.length);
-
-    // Add expand-up gap row if there are lines above the context range
-    if (lineStart > 1) {
-      const gapAboveSize = lineStart - 1;
-      const gapAbove = window.HunkParser.createGapRowElement(
-        contextFile.file,
-        1,              // startLine (old coords)
-        lineStart - 1,  // endLine (old coords)
-        gapAboveSize,
-        'above',
-        this.expandGapContext.bind(this),
-        1               // startLineNew (same as old for context files — no diff offset)
-      );
-      tbody.appendChild(gapAbove);
-    }
-
-    for (let i = lineStart; i <= lineEnd; i++) {
-      const lineData = {
-        type: 'context',
-        oldNumber: i,
-        newNumber: i,
-        content: ' ' + (data.lines[i - 1] || '')
-      };
-      this.renderDiffLine(tbody, lineData, contextFile.file, null);
-    }
-
-    // Add expand-down gap row if there are lines below the context range
-    const totalLines = data.lines.length;
-    if (lineEnd < totalLines) {
-      const gapBelowSize = totalLines - lineEnd;
-      const gapBelow = window.HunkParser.createGapRowElement(
-        contextFile.file,
-        lineEnd + 1,    // startLine (old coords)
-        totalLines,     // endLine (old coords)
-        gapBelowSize,
-        'below',
-        this.expandGapContext.bind(this),
-        lineEnd + 1     // startLineNew (same as old)
-      );
-      tbody.appendChild(gapBelow);
-    }
-
+    const tbody = this._buildContextChunkTbody(data, contextFile);
     table.appendChild(tbody);
     wrapper.appendChild(table);
 
@@ -4409,19 +4548,29 @@ class PRManager {
    * @param {number} [lineStart] - Optional line number to highlight
    */
   scrollToContextFile(file, lineStart, contextId) {
-    // Use contextId to disambiguate when the same file has multiple context ranges
-    let wrapper;
+    // Use contextId to find a specific chunk tbody within a merged wrapper,
+    // or fall back to a standalone wrapper or the file-level wrapper.
+    let target;
     if (contextId) {
-      wrapper = document.querySelector(`.d2h-file-wrapper.context-file[data-context-id="${CSS.escape(contextId)}"]`);
+      // First try finding a specific chunk tbody (merged wrapper case)
+      const chunk = document.querySelector(`.context-chunk[data-context-id="${CSS.escape(contextId)}"]`);
+      if (chunk) {
+        target = chunk;
+      } else {
+        // Fallback: legacy standalone wrapper with data-context-id on the wrapper itself
+        target = document.querySelector(`.d2h-file-wrapper.context-file[data-context-id="${CSS.escape(contextId)}"]`);
+      }
     }
-    if (!wrapper) {
-      wrapper = document.querySelector(`.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(file)}"]`);
+    if (!target) {
+      target = document.querySelector(`.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(file)}"]`);
     }
-    if (!wrapper) return;
+    if (!target) return;
 
-    wrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     if (lineStart) {
+      // Search for the line row within the wrapper (not just the target chunk)
+      const wrapper = target.closest('.d2h-file-wrapper') || target;
       // Brief delay to let scroll settle, then highlight the target line
       setTimeout(() => {
         const row = wrapper.querySelector(`tr[data-line-number="${lineStart}"]`);
