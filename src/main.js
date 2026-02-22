@@ -14,6 +14,7 @@ const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = requi
 const logger = require('./utils/logger');
 const simpleGit = require('simple-git');
 const { getGeneratedFilePatterns } = require('./git/gitattributes');
+const { getEmoji: getCategoryEmoji } = require('./utils/category-emoji');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
 
 let db = null;
@@ -658,20 +659,6 @@ async function startServerWithPRContext(config, prInfo, flags = {}) {
 }
 
 /**
- * Category to emoji mapping for AI suggestions
- */
-const CATEGORY_EMOJI_MAP = {
-  'bug': '🐛',
-  'performance': '⚡',
-  'design': '📐',
-  'code-style': '🧹',
-  'improvement': '💡',
-  'praise': '⭐',
-  'security': '🔒',
-  'suggestion': '💬'
-};
-
-/**
  * Format AI suggestion with emoji and category prefix
  * @param {string} text - The suggestion text
  * @param {string} category - The suggestion category
@@ -681,7 +668,7 @@ function formatAISuggestion(text, category) {
   if (!category) {
     return text;
   }
-  const emoji = CATEGORY_EMOJI_MAP[category] || '💬';
+  const emoji = getCategoryEmoji(category);
   // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
   const capitalizedCategory = category
     .split('-')

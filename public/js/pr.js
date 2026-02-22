@@ -13,20 +13,6 @@ const STALE_TIMEOUT = 2000;
 
 class PRManager {
   // Forward static constants from modules for backward compatibility
-  static get CATEGORY_EMOJI_MAP() {
-    return window.SuggestionManager?.CATEGORY_EMOJI_MAP || {
-      'bug': '\u{1F41B}',
-      'improvement': '\u{1F4A1}',
-      'praise': '\u{1F44F}',
-      'suggestion': '\u{1F4AC}',
-      'design': '\u{1F3D7}\uFE0F',
-      'performance': '\u{26A1}',
-      'security': '\u{1F512}',
-      'code-style': '\u{1F3A8}',
-      'style': '\u{1F3A8}'
-    };
-  }
-
   static get FOLD_UP_ICON() {
     return window.HunkParser?.FOLD_UP_ICON || '';
   }
