@@ -4417,6 +4417,66 @@ class PRManager {
     }
   }
 
+  async ensureContextFile(file, lineStart = null, lineEnd = null) {
+    // 1. Guard: no review loaded
+    if (!this.currentPR?.id) return null;
+
+    // 2. Check diff files
+    if (this.diffFiles?.some(f => f.file === file)) {
+      return { type: 'diff' };
+    }
+
+    // 3. Check existing context files (idempotent)
+    const existing = this.contextFiles?.find(cf => cf.file === file);
+    if (existing) {
+      return { type: 'context', contextFile: existing };
+    }
+
+    // 4. Compute line range defaults
+    let lineStartVal, lineEndVal;
+    if (lineStart == null && lineEnd == null) {
+      lineStartVal = 1;
+      lineEndVal = 100;
+    } else if (lineEnd == null) {
+      lineStartVal = lineStart;
+      lineEndVal = lineStart + 49;
+    } else {
+      lineStartVal = lineStart;
+      lineEndVal = Math.min(lineEnd, lineStart + 499);
+    }
+
+    // 5. POST to add context file
+    const reviewId = this.currentPR.id;
+    try {
+      const resp = await fetch(`/api/reviews/${reviewId}/context-files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file, line_start: lineStartVal, line_end: lineEndVal })
+      });
+
+      if (resp.status === 201) {
+        // 6. Reload context files to render
+        await this.loadContextFiles();
+        const added = this.contextFiles?.find(cf => cf.file === file);
+        return { type: 'context', contextFile: added || null };
+      }
+
+      if (resp.status === 400) {
+        const data = await resp.json().catch(() => ({}));
+        if (data.error?.includes('already part of the diff')) {
+          return { type: 'diff' };
+        }
+      }
+
+      // 7. Other errors
+      console.error('Failed to add context file:', resp.status);
+      return null;
+    } catch (err) {
+      console.error('Error adding context file:', err);
+      return null;
+    }
+  }
+
 }
 
 // Initialize PR manager when DOM is loaded (browser environment only)
