@@ -4305,15 +4305,17 @@ class PRManager {
 
     // Determine the element to insert before (including any separator before it)
     if (insertBeforeChunk) {
-      // Check if there's a separator just before the target chunk
       const prevSibling = insertBeforeChunk.previousElementSibling;
-      const refNode = (prevSibling && prevSibling.classList.contains('context-chunk-separator'))
-        ? prevSibling : insertBeforeChunk;
-
-      // Add separator before the new chunk (between it and the next chunk)
-      const sep = this._createChunkSeparator();
-      table.insertBefore(newTbody, refNode);
-      table.insertBefore(sep, refNode);
+      const hasSepBefore = prevSibling && prevSibling.classList.contains('context-chunk-separator');
+      if (hasSepBefore) {
+        table.insertBefore(newTbody, prevSibling);
+        const sep = this._createChunkSeparator();
+        table.insertBefore(sep, newTbody);
+      } else {
+        table.insertBefore(newTbody, insertBeforeChunk);
+        const sep = this._createChunkSeparator();
+        table.insertBefore(sep, insertBeforeChunk);
+      }
     } else {
       // Append after the last chunk — add separator before if there are existing chunks
       if (existingChunks.length > 0) {
