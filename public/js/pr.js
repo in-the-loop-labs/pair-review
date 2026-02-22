@@ -1212,6 +1212,30 @@ class PRManager {
           this.showCommentForm(row, lineNumber, file, diffPosition, null, side);
         }
       },
+      onChatButtonClick: (_e, row, lineNumber, file, lineData) => {
+        if (!window.chatPanel) return;
+        let startLine = lineNumber;
+        let endLine = null;
+
+        if (this.lineTracker.hasActiveSelection() &&
+            this.lineTracker.rangeSelectionStart.fileName === file) {
+          const range = this.lineTracker.getSelectionRange();
+          startLine = range.start;
+          endLine = range.end;
+          this.lineTracker.clearRangeSelection();
+        }
+
+        window.chatPanel.open({
+          commentContext: {
+            type: 'line',
+            body: null,
+            file: file || '',
+            line_start: startLine,
+            line_end: endLine || startLine,
+            source: 'user'
+          }
+        });
+      },
       onMouseOver: (_e, row, lineNumber, file) => {
         // Check if we have a potential drag start and convert it to an actual drag
         if (this.lineTracker.potentialDragStart && !this.lineTracker.isDraggingRange) {
@@ -1226,6 +1250,7 @@ class PRManager {
       onMouseUp: (_e, row, lineNumber, file) => {
         if (this.lineTracker.potentialDragStart) {
           const start = this.lineTracker.potentialDragStart;
+          const isChat = start.isChat;
           this.lineTracker.potentialDragStart = null;
 
           if (start.lineNumber !== lineNumber || start.fileName !== file) {
@@ -1235,6 +1260,24 @@ class PRManager {
               this.lineTracker.startDragSelection(start.row, start.lineNumber, start.fileName, start.side);
             }
             this.lineTracker.completeDragSelection(row, lineNumber, file);
+
+            // For chat drags, immediately open chat with the selected range
+            if (isChat && this.lineTracker.hasActiveSelection()) {
+              const range = this.lineTracker.getSelectionRange();
+              this.lineTracker.clearRangeSelection();
+              if (window.chatPanel) {
+                window.chatPanel.open({
+                  commentContext: {
+                    type: 'line',
+                    body: null,
+                    file: file || '',
+                    line_start: range.start,
+                    line_end: range.end,
+                    source: 'user'
+                  }
+                });
+              }
+            }
           }
         } else if (this.lineTracker.isDraggingRange) {
           this.lineTracker.completeDragSelection(row, lineNumber, file);

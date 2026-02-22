@@ -516,6 +516,8 @@ class ChatPanel {
         // Render the appropriate card type based on the context data
         if (ctxData.type === 'file') {
           this._addFileContextCard(ctxData, { removable: true });
+        } else if (ctxData.type === 'line') {
+          this._addLineContextCard(ctxData, { removable: true });
         } else if (ctxData.type === 'comment') {
           this._addCommentContextCard(ctxData, { removable: true });
         } else if (ctxData.type === 'analysis-run') {
@@ -602,6 +604,8 @@ class ChatPanel {
               this._addAnalysisContextCard(ctxData);
             } else if (ctxData.type === 'file') {
               this._addFileContextCard(ctxData);
+            } else if (ctxData.type === 'line') {
+              this._addLineContextCard(ctxData);
             } else if (ctxData.type === 'comment') {
               this._addCommentContextCard(ctxData);
             } else {
@@ -1069,21 +1073,29 @@ class ChatPanel {
   }
 
   /**
-   * Store pending context and render a compact context card for a user comment.
-   * Called when the user clicks "Ask about this" on a user comment.
+   * Store pending context and render a compact context card for a user comment or line reference.
+   * Called when the user clicks "Ask about this" on a user comment, or clicks
+   * the gutter chat button (line reference with no comment body).
    * The context is NOT sent to the agent immediately -- it is prepended
    * to the next user message so the agent receives question + context together.
-   * @param {Object} ctx - Comment context {commentId, body, file, line_start, line_end, source, isFileLevel}
+   * @param {Object} ctx - Comment context {commentId, type, body, file, line_start, line_end, source, isFileLevel}
    */
   _sendCommentContextMessage(ctx) {
     // Remove empty state if present
     const emptyState = this.messagesEl.querySelector('.chat-panel__empty');
     if (emptyState) emptyState.remove();
 
+    const isLine = ctx.type === 'line';
+
     // Store structured context data for DB persistence
+    const lineLabel = !ctx.line_start
+      ? (ctx.file || 'File').split('/').pop()
+      : (ctx.line_end && ctx.line_end !== ctx.line_start ? `Lines ${ctx.line_start}-${ctx.line_end}` : `Line ${ctx.line_start}`);
     const contextData = {
-      type: 'comment',
-      title: ctx.isFileLevel ? 'File comment' : `Comment on line ${ctx.line_start || '?'}`,
+      type: isLine ? 'line' : 'comment',
+      title: isLine
+        ? lineLabel
+        : (ctx.isFileLevel ? 'File comment' : `Comment on line ${ctx.line_start || '?'}`),
       file: ctx.file || null,
       line_start: ctx.line_start || null,
       line_end: ctx.line_end || null,
@@ -1093,7 +1105,11 @@ class ChatPanel {
     this._pendingContextData.push(contextData);
 
     // Build the plain text context for the agent
-    const lines = ['The user wants to discuss their own review comment:'];
+    const lines = isLine
+      ? [ctx.line_start
+        ? `The user wants to discuss code at ${lineLabel} in ${contextData.file || 'unknown file'}:`
+        : `The user wants to discuss the file ${contextData.file || 'unknown file'}:`]
+      : ['The user wants to discuss a review comment:'];
     if (contextData.file) {
       let fileLine = `- File: ${contextData.file}`;
       if (contextData.line_start) {
@@ -1103,6 +1119,9 @@ class ChatPanel {
     }
     if (ctx.isFileLevel) {
       lines.push('- Scope: File-level comment');
+    }
+    if (ctx.parentId) {
+      lines.push('- Origin: adopted from AI suggestion');
     }
     if (contextData.body) {
       lines.push(`- Comment: ${contextData.body}`);
@@ -1129,7 +1148,11 @@ class ChatPanel {
     this._pendingContext.push(lines.join('\n'));
 
     // Render the compact context card in the UI
-    this._addCommentContextCard(ctx, { removable: true });
+    if (isLine) {
+      this._addLineContextCard(ctx, { removable: true });
+    } else {
+      this._addCommentContextCard(ctx, { removable: true });
+    }
   }
 
   /**
@@ -1488,6 +1511,47 @@ class ChatPanel {
     `;
 
     // Store tooltip data for rich hover preview
+    if (ctx.body) card.dataset.tooltipBody = ctx.body;
+
+    if (removable) this._makeCardRemovable(card);
+
+    this.messagesEl.appendChild(card);
+    requestAnimationFrame(() => this.scrollToBottom());
+  }
+
+  /**
+   * Add a compact context card for a line reference (optionally with body text).
+   * @param {Object} ctx - Line context {file, line_start, line_end, body}
+   */
+  _addLineContextCard(ctx, { removable = false } = {}) {
+    const card = document.createElement('div');
+    card.className = 'chat-panel__context-card';
+
+    const lineLabel = !ctx.line_start
+      ? (ctx.file || 'File').split('/').pop()
+      : (ctx.line_end && ctx.line_end !== ctx.line_start ? `Lines ${ctx.line_start}-${ctx.line_end}` : `Line ${ctx.line_start}`);
+    const fileInfo = ctx.file
+      ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}`
+      : '';
+
+    // When body text is provided (e.g. unsaved comment text), show it as the title
+    const titleText = ctx.body
+      ? (ctx.body.length > 60 ? ctx.body.substring(0, 60) + '...' : ctx.body)
+      : lineLabel;
+
+    const label = !ctx.line_start ? 'FILE' : (ctx.line_end && ctx.line_end !== ctx.line_start ? 'LINES' : 'LINE');
+
+    // Code icon (octicon code-square)
+    card.innerHTML = `
+      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+        <path d="m11.28 3.22 4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734L13.94 8l-3.72-3.72a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215Zm-6.56 0a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L2.06 8l3.72 3.72a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L.47 8.53a.75.75 0 0 1 0-1.06Z"/>
+      </svg>
+      <span class="chat-panel__context-label"><strong>${label}</strong></span>
+      <span class="chat-panel__context-title">${this._escapeHtml(titleText)}</span>
+      ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
+    `;
+
+    // Store tooltip data for rich hover preview when body text is present
     if (ctx.body) card.dataset.tooltipBody = ctx.body;
 
     if (removable) this._makeCardRemovable(card);
