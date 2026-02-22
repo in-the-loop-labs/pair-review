@@ -35,7 +35,10 @@ Each result provides `number`, `title`, `html_url`, and `repo` (as `owner/repo`)
 
 ### Phase 3: Open each PR in pair-review with auto-analysis
 
-For each PR found, open it in the browser with the `?analyze=true` query parameter, which
+**Limit**: Open at most **5** PRs. If more than 5 are found, open only the first 5 (most
+recently updated) and report how many were skipped.
+
+For each PR found (up to the limit), open it in the browser with the `?analyze=true` query parameter, which
 automatically starts AI analysis when the page loads:
 
 ```
