@@ -18,13 +18,26 @@ window.PanelResizer = (function() {
     },
     'ai-panel': {
       min: 200,
-      max: 600,
+      max: null, // dynamic — computed from viewport in getEffectiveMax()
       default: 320,
       storageKey: 'ai-panel-width',
       cssVar: '--ai-panel-width'
     }
     // Note: chat-panel resize is handled by ChatPanel itself (see ChatPanel._bindResizeEvents)
   };
+
+  /**
+   * Compute the effective max width for a panel.
+   * For panels with a static max, returns that value.
+   * For panels with max: null, computes a dynamic max from the viewport.
+   */
+  function getEffectiveMax(panelName) {
+    const config = CONFIG[panelName];
+    if (!config) return Infinity;
+    if (config.max != null) return config.max;
+    const sidebarWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'), 10) || 260;
+    return window.innerWidth - sidebarWidth - 100;
+  }
 
   // State
   let isDragging = false;
@@ -60,7 +73,7 @@ window.PanelResizer = (function() {
 
       if (savedWidth) {
         const width = parseInt(savedWidth, 10);
-        if (width >= config.min && width <= config.max) {
+        if (width >= config.min) {
           document.documentElement.style.setProperty(config.cssVar, `${width}px`);
         }
       }
@@ -93,8 +106,8 @@ window.PanelResizer = (function() {
     const config = CONFIG[panelName];
     if (!config) return;
 
-    // Clamp to min/max
-    const clampedWidth = Math.max(config.min, Math.min(config.max, width));
+    // Clamp to min/max (max may be dynamic)
+    const clampedWidth = Math.max(config.min, Math.min(getEffectiveMax(panelName), width));
 
     // Apply to CSS
     document.documentElement.style.setProperty(config.cssVar, `${clampedWidth}px`);
@@ -205,7 +218,7 @@ window.PanelResizer = (function() {
     const saved = localStorage.getItem(config.storageKey);
     if (saved) {
       const width = parseInt(saved, 10);
-      if (width >= config.min && width <= config.max) {
+      if (width >= config.min) {
         return width;
       }
     }

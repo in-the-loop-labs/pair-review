@@ -6769,6 +6769,15 @@ body.resizing * {
   display: none;
 }
 
+/* When only one panel is visible in vertical mode, restore its own resize handle */
+.right-panel-group[class*="layout-v-"].chat-only .chat-panel__resize-handle {
+  display: block;
+}
+
+.right-panel-group[class*="layout-v-"].review-only .ai-panel > .resize-handle {
+  display: block;
+}
+
 /* Full-height group resize handle (shown only in vertical layouts) */
 .panel-group-resize-handle {
   display: none;
@@ -6779,6 +6788,12 @@ body.resizing * {
   position: absolute;
   top: 0;
   bottom: 0;
+}
+
+/* Hide group resize handle when only one panel is visible — per-panel handle takes over */
+.right-panel-group[class*="layout-v-"].chat-only .panel-group-resize-handle,
+.right-panel-group[class*="layout-v-"].review-only .panel-group-resize-handle {
+  display: none;
 }
 
 /* Vertical resize divider between panels (hidden by default in horizontal layouts) */
@@ -11157,9 +11172,7 @@ body.resizing * {
 
 /* Chat file links (auto-linked file:line references in assistant messages) */
 .chat-file-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
+  display: inline;
   font-family: 'JetBrains Mono', 'SFMono-Regular', 'Consolas', monospace;
   font-size: 12px;
   color: var(--color-accent, #0969da);
@@ -11169,6 +11182,9 @@ body.resizing * {
   border-radius: 3px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  word-break: break-all;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 .chat-file-link:hover {
@@ -11177,7 +11193,8 @@ body.resizing * {
 }
 
 .chat-file-link__icon {
-  flex-shrink: 0;
+  display: inline;
+  vertical-align: text-bottom;
   opacity: 0.6;
 }
 

@@ -27,7 +27,7 @@ class ChatPanel {
     this._contextSource = null;   // 'suggestion' or 'user' — set when opened with context
     this._contextItemId = null;   // suggestion ID or comment ID from context
     this._pendingActionContext = null;  // { type, itemId } — set by action button handlers, consumed by sendMessage
-    this._resizeConfig = { min: 300, max: 800, default: 400, storageKey: 'chat-panel-width' };
+    this._resizeConfig = { min: 300, default: 400, storageKey: 'chat-panel-width' };
     this._analysisContextRemoved = false;
     this._sessionAnalysisRunId = null; // tracks which AI run ID's context is loaded in the current session
     this._openPromise = null; // concurrency guard for open()
@@ -250,15 +250,19 @@ class ChatPanel {
     const handle = this.panel.querySelector('.chat-panel__resize-handle');
     if (!handle) return;
 
-    const { min, max, storageKey } = this._resizeConfig;
+    const { min, storageKey } = this._resizeConfig;
 
     let startX = 0;
     let startWidth = 0;
 
     const onMouseMove = (e) => {
+      // Compute dynamic max: leave room for the sidebar and a minimum content area
+      const sidebarWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'), 10) || 260;
+      const dynamicMax = window.innerWidth - sidebarWidth - 100;
+
       // Panel is right-anchored, so dragging left (decreasing clientX) should increase width
       const delta = startX - e.clientX;
-      const newWidth = Math.max(min, Math.min(max, startWidth + delta));
+      const newWidth = Math.max(min, Math.min(dynamicMax, startWidth + delta));
       document.documentElement.style.setProperty('--chat-panel-width', newWidth + 'px');
     };
 
@@ -399,11 +403,11 @@ class ChatPanel {
     }
 
     // Restore persisted width before opening (mirrors AIPanel.expand pattern)
-    const { min, max, default: defaultWidth, storageKey } = this._resizeConfig;
+    const { min, default: defaultWidth, storageKey } = this._resizeConfig;
     const savedWidth = localStorage.getItem(storageKey);
     if (savedWidth) {
       const width = parseInt(savedWidth, 10);
-      if (width >= min && width <= max) {
+      if (width >= min) {
         document.documentElement.style.setProperty('--chat-panel-width', width + 'px');
       } else {
         document.documentElement.style.setProperty('--chat-panel-width', defaultWidth + 'px');
