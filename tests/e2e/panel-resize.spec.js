@@ -191,9 +191,15 @@ test.describe('Panel Resize - PR Mode', () => {
       // Drag the handle 400px to the left (way past maximum)
       await dragResizeHandle(page, resizeHandle, -400);
 
-      // Verify width is at maximum (600px)
+      // The AI panel max is dynamic: window.innerWidth - sidebarWidth - 100
+      const dynamicMax = await page.evaluate(() => {
+        const sidebarWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'), 10) || 260;
+        return window.innerWidth - sidebarWidth - 100;
+      });
+
+      // Verify width is at or below the dynamic maximum
       const newWidth = await aiPanel.evaluate(el => el.offsetWidth);
-      expect(newWidth).toBeLessThanOrEqual(600);
+      expect(newWidth).toBeLessThanOrEqual(dynamicMax);
     });
   });
 
