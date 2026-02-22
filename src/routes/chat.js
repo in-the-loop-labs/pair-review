@@ -12,11 +12,14 @@
  */
 
 const express = require('express');
+const path = require('path');
 const { queryOne, query, AnalysisRunRepository, RepoSettingsRepository } = require('../database');
 const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
 const { GitWorktreeManager } = require('../git/worktree');
 const logger = require('../utils/logger');
 const { sseClients } = require('../sse/review-events');
+
+const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
 
 const router = express.Router();
 
@@ -43,6 +46,31 @@ async function resolveReviewCwd(db, review) {
     }
   }
 
+  return null;
+}
+
+/**
+ * Fetch PR data (base_sha, head_sha) from pr_metadata for a PR review.
+ * Returns null for local reviews or if pr_data is unavailable.
+ * @param {Object} db - Database instance
+ * @param {Object} review - Review record from the database
+ * @returns {Promise<Object|null>} Parsed PR data with base_sha/head_sha, or null
+ */
+async function fetchPrData(db, review) {
+  if (review.review_type === 'local' || !review.pr_number || !review.repository) {
+    return null;
+  }
+  const row = await queryOne(db, `
+    SELECT pr_data FROM pr_metadata
+    WHERE pr_number = ? AND repository = ? COLLATE NOCASE
+  `, [review.pr_number, review.repository]);
+  if (row?.pr_data) {
+    try {
+      return JSON.parse(row.pr_data);
+    } catch {
+      return null;
+    }
+  }
   return null;
 }
 
@@ -120,8 +148,9 @@ function registerSSEBroadcast(chatSessionManager, sessionId, port) {
       }
 
       // Suppress tool badges for reading the API skill file
-      if (data.toolName?.toLowerCase() === 'read' && data.status === 'start') {
-        if ((data.args?.file_path || '').endsWith('pair-review-api/SKILL.md')) {
+      if (data.toolName?.toLowerCase() === 'read') {
+        const readPath = data.args?.path || data.args?.file_path || '';
+        if (readPath.endsWith('pair-review-api/SKILL.md')) {
           hiddenToolCallIds.add(data.toolCallId);
           return;
         }
@@ -222,8 +251,9 @@ router.post('/api/chat/session', async (req, res) => {
     if (!finalSystemPrompt) {
 
       const chatInstructions = await getChatInstructions(db, review);
+      const prData = await fetchPrData(db, review);
 
-      finalSystemPrompt = buildChatPrompt({ review, chatInstructions });
+      finalSystemPrompt = buildChatPrompt({ review, prData, skillPath: pairReviewSkillPath, chatInstructions });
 
       if (!skipAnalysisContext) {
         // Fetch all AI suggestions from the latest analysis run
@@ -348,8 +378,9 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
         return res.status(404).json({ error: 'Review not found for session' });
       }
       const chatInstructions = await getChatInstructions(db, review);
+      const prData = await fetchPrData(db, review);
 
-      const systemPrompt = buildChatPrompt({ review, chatInstructions });
+      const systemPrompt = buildChatPrompt({ review, prData, skillPath: pairReviewSkillPath, chatInstructions });
       const cwd = await resolveReviewCwd(db, review);
 
       try {
@@ -499,8 +530,9 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     // re-injects the review context so the agent retains awareness of the codebase
     // even if the system prompt was only in the initial session's context.
     const chatInstructions = await getChatInstructions(db, review);
+    const prData = await fetchPrData(db, review);
 
-    const systemPrompt = buildChatPrompt({ review, chatInstructions });
+    const systemPrompt = buildChatPrompt({ review, prData, skillPath: pairReviewSkillPath, chatInstructions });
     const cwd = await resolveReviewCwd(db, review);
 
     await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });

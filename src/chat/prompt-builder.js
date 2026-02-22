@@ -16,10 +16,12 @@ const logger = require('../utils/logger');
  * it is injected once per session via the initial context instead.
  * @param {Object} options
  * @param {Object} options.review - Review metadata {id, pr_number, repository, review_type, local_path, name}
+ * @param {Object} [options.prData] - PR data with base_sha/head_sha (for PR reviews)
+ * @param {string} [options.skillPath] - Absolute path to the pair-review-api SKILL.md file
  * @param {string} [options.chatInstructions] - Custom instructions from repo settings to append to system prompt
  * @returns {string} System prompt for the chat agent
  */
-function buildChatPrompt({ review, chatInstructions }) {
+function buildChatPrompt({ review, prData, skillPath, chatInstructions }) {
   const sections = [];
 
   // Role
@@ -33,7 +35,7 @@ function buildChatPrompt({ review, chatInstructions }) {
   );
 
   // Review context
-  sections.push(buildReviewContext(review));
+  sections.push(buildReviewContext(review, prData));
 
   // Domain model — ambient conceptual grounding for every turn
   const domainLines = [
@@ -51,8 +53,11 @@ function buildChatPrompt({ review, chatInstructions }) {
   sections.push(domainLines.join('\n'));
 
   // API capability — MUST load the skill for endpoint details
+  const skillRef = skillPath
+    ? `(\`${skillPath}\`)`
+    : '(`.pi/skills/pair-review-api/SKILL.md`)';
   sections.push(
-    'You MUST load the pair-review-api skill for endpoint details. With it you can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.\n' +
+    `You MUST load the pair-review-api skill ${skillRef} for endpoint details. With it you can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.\n` +
     'IMPORTANT: Do NOT mention that you are reading a skill file, loading API documentation, or consulting reference material. Just use the API naturally as if you already know it.'
   );
 
@@ -85,30 +90,52 @@ function buildChatPrompt({ review, chatInstructions }) {
 
 /**
  * Build the review context section of the prompt.
+ * Includes what is being reviewed and how to view the changes.
  * @param {Object} review - Review metadata
+ * @param {Object} [prData] - PR data with base_sha/head_sha (for PR reviews)
  * @returns {string}
  */
-function buildReviewContext(review) {
+function buildReviewContext(review, prData) {
   if (!review) {
     return 'Review context: unknown.';
   }
 
+  const lines = [];
+
   if (review.review_type === 'local' || review.local_path) {
     const name = review.name || review.local_path || 'unknown';
-    return `This is a local code review for: ${name}`;
+    lines.push(`## Review Context`);
+    lines.push(`This is a local code review for: ${name}`);
+    lines.push('');
+    lines.push('## Viewing Code Changes');
+    lines.push('The changes under review are **unstaged and untracked local changes**. Staged changes (`git diff --cached`) are treated as already reviewed.');
+    lines.push('To see the diff under review: `git diff`');
+    lines.push('Do NOT use `git diff HEAD~1` or `git log` — those show committed history, not the changes under review.');
+  } else {
+    const parts = [];
+    if (review.repository) {
+      parts.push(review.repository);
+    }
+    if (review.pr_number) {
+      parts.push(`PR #${review.pr_number}`);
+    }
+    if (parts.length === 0) {
+      return 'Review context: unknown.';
+    }
+
+    lines.push('## Review Context');
+    lines.push(`This is a review of ${parts.join(' ')}.`);
+
+    if (prData && prData.base_sha && prData.head_sha) {
+      lines.push('');
+      lines.push('## Viewing Code Changes');
+      lines.push(`The changes under review are the diff between base commit \`${prData.base_sha.substring(0, 8)}\` and head commit \`${prData.head_sha.substring(0, 8)}\`.`);
+      lines.push(`To see the full diff: \`git diff ${prData.base_sha}...${prData.head_sha}\``);
+      lines.push('Do NOT use `git diff HEAD~1` or `git diff` without arguments — those do not show the PR changes.');
+    }
   }
 
-  const parts = [];
-  if (review.repository) {
-    parts.push(review.repository);
-  }
-  if (review.pr_number) {
-    parts.push(`PR #${review.pr_number}`);
-  }
-  if (parts.length === 0) {
-    return 'Review context: unknown.';
-  }
-  return `This is a review of ${parts.join(' ')}.`;
+  return lines.join('\n');
 }
 
 /**

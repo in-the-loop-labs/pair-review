@@ -31,6 +31,7 @@ class PiBridge extends EventEmitter {
    * @param {string} [options.tools] - Comma-separated tool list (default: 'read,grep,find,ls')
    * @param {string} [options.piCommand] - Override Pi command (default: 'pi')
    * @param {string[]} [options.skills] - Array of skill file paths to load via --skill
+   * @param {string[]} [options.extensions] - Array of extension directory paths to load via -e
    * @param {string} [options.sessionPath] - Path to a session file for resumption
    */
   constructor(options = {}) {
@@ -42,6 +43,7 @@ class PiBridge extends EventEmitter {
     this.tools = options.tools || 'read,grep,find,ls';
     this.piCommand = options.piCommand || process.env.PAIR_REVIEW_PI_CMD || 'pi';
     this.skills = options.skills || [];
+    this.extensions = options.extensions || [];
     this.sessionPath = options.sessionPath || null;
 
     this._process = null;
@@ -266,6 +268,15 @@ class PiBridge extends EventEmitter {
 
     for (const skill of this.skills) {
       args.push('--skill', skill);
+    }
+
+    // Load extensions via -e (e.g., task extension for subagent delegation).
+    // --no-extensions prevents auto-discovery; only explicitly listed ones load.
+    if (this.extensions.length > 0) {
+      args.push('--no-extensions');
+      for (const ext of this.extensions) {
+        args.push('-e', ext);
+      }
     }
 
     return args;

@@ -13,6 +13,7 @@ const PiBridge = require('./pi-bridge');
 const logger = require('../utils/logger');
 
 const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
+const taskExtensionDir = path.resolve(__dirname, '../../.pi/extensions/task');
 
 const CHAT_TOOLS = 'read,bash,grep,find,ls';
 
@@ -61,7 +62,8 @@ class ChatSessionManager {
       cwd,
       systemPrompt,
       tools: CHAT_TOOLS,
-      skills: [pairReviewSkillPath]
+      skills: [pairReviewSkillPath],
+      extensions: [taskExtensionDir]
     });
 
     const listeners = {
@@ -410,6 +412,7 @@ class ChatSessionManager {
       systemPrompt,
       tools: CHAT_TOOLS,
       skills: [pairReviewSkillPath],
+      extensions: [taskExtensionDir],
       sessionPath: row.agent_session_id
     });
 
