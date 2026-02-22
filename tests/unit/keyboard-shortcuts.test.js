@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Mock window object
-global.window = {};
+global.window = { Icons: { icon: () => '<svg></svg>', DEFS: {} } };
 
 // Minimal DOM mocks for Node environment
 const createMockElement = (tag = 'div', options = {}) => {

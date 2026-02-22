@@ -803,7 +803,9 @@ describe('DiffRenderer', () => {
       }
 
       global.document = { createElement: vi.fn(createElement) };
-      global.window = {};
+      global.window = {
+        Icons: { icon: (name, w, h) => `<svg data-icon="${name}"></svg>` },
+      };
     });
 
     afterEach(() => {

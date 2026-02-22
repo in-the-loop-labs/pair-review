@@ -37,6 +37,7 @@ beforeEach(() => {
     localManager: null,
     aiPanel: null,
     statusIndicator: null,
+    Icons: { icon: () => '<svg></svg>', DEFS: {} },
     EventSource: vi.fn().mockImplementation(() => ({
       close: vi.fn(),
       addEventListener: vi.fn()

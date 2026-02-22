@@ -30,15 +30,15 @@ class PRManager {
   }
 
   static get EYE_ICON() {
-    return window.DiffRenderer?.EYE_ICON || '';
+    return window.Icons?.icon('eye') || '';
   }
 
   static get EYE_CLOSED_ICON() {
-    return window.DiffRenderer?.EYE_CLOSED_ICON || '';
+    return window.Icons?.icon('eyeClosed') || '';
   }
 
   static get GENERATED_FILE_ICON() {
-    return window.DiffRenderer?.GENERATED_FILE_ICON || '';
+    return window.Icons?.icon('gear', 12, 12) || '';
   }
 
   static get LANGUAGE_MAP() {
@@ -56,13 +56,6 @@ class PRManager {
   static get AUTO_EXPAND_THRESHOLD() {
     return window.HunkParser?.AUTO_EXPAND_THRESHOLD || 6;
   }
-
-  // Logo icon - infinity loop rotated for "in-the-loop" branding
-  static LOGO_ICON = `
-    <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24">
-      <path transform="rotate(-50 12 12)" d="M18.178 8c5.096 0 5.096 8 0 8-5.095 0-7.133-8-12.356-8-5.096 0-5.096 8 0 8 5.223 0 7.26-8 12.356-8z"/>
-    </svg>
-  `;
 
   /**
    * Forward static methods to modules
@@ -955,12 +948,8 @@ class PRManager {
       fileCommentBtn.dataset.file = file.file;
       // Outline icon (no comments) - will be updated by updateHeaderButtonState
       fileCommentBtn.innerHTML = `
-        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
-        </svg>
-        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
-        </svg>
+        ${window.Icons.icon('comment', { width: 16, height: 16, className: 'comment-icon-outline' })}
+        <svg class="comment-icon-filled" viewBox="${window.Icons.DEFS.commentFilled.viewBox}" width="16" height="16" fill="currentColor" style="display:none">${window.Icons.DEFS.commentFilled.paths}</svg>
       `;
       fileCommentBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -977,11 +966,7 @@ class PRManager {
       fileChatBtn.className = 'file-header-chat-btn';
       fileChatBtn.title = 'Chat about file';
       fileChatBtn.dataset.file = file.file;
-      fileChatBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
-        </svg>
-      `;
+      fileChatBtn.innerHTML = window.Icons.icon('discussion');
       fileChatBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         if (window.chatPanel) {
@@ -3225,11 +3210,11 @@ class PRManager {
 
     const chevron = document.createElement('span');
     chevron.className = 'file-group-chevron';
-    chevron.innerHTML = `<svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M4.7 10c-.2 0-.4-.1-.5-.2-.3-.3-.3-.8 0-1.1L6.9 6 4.2 3.3c-.3-.3-.3-.8 0-1.1.3-.3.8-.3 1.1 0l3.3 3.3c.3.3.3.8 0 1.1L5.3 9.8c-.2.1-.4.2-.6.2Z"/></svg>`;
+    chevron.innerHTML = window.Icons.icon('chevronRightSmall', 12, 12);
 
     const folderIcon = document.createElement('span');
     folderIcon.className = 'folder-icon';
-    folderIcon.innerHTML = `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>`;
+    folderIcon.innerHTML = window.Icons.icon('folder', 14, 14);
 
     const dirName = document.createElement('span');
     dirName.textContent = dirPath === '.' ? '(root)' : dirPath;
@@ -3404,10 +3389,9 @@ class PRManager {
     const themeButton = document.getElementById('theme-toggle');
     if (themeButton) {
       // Sun icon for light mode (with hollow center), moon icon for dark mode
-      const icon = this.currentTheme === 'light' ?
-        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0-1.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5Zm0-10.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V.75A.75.75 0 0 1 8 0Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 8 13ZM2.343 2.343a.75.75 0 0 1 1.061 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.061l-1.061-1.06a.75.75 0 0 1 0-1.061ZM16 8a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 16 8ZM3 8a.75.75 0 0 1-.75.75H.75a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 3 8Zm10.657-5.657a.75.75 0 0 1 0 1.061l-1.061 1.06a.75.75 0 1 1-1.06-1.06l1.06-1.06a.75.75 0 0 1 1.06 0Zm-9.193 9.193a.75.75 0 0 1 0 1.06l-1.06 1.061a.75.75 0 0 1-1.061-1.06l1.06-1.061a.75.75 0 0 1 1.061 0Z"/></svg>` :
-        `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M9.598 1.591a.749.749 0 0 1 .785-.175 7.001 7.001 0 1 1-8.967 8.967.75.75 0 0 1 .961-.96 5.5 5.5 0 0 0 7.046-7.046.75.75 0 0 1 .175-.786Z"/></svg>`;
-      themeButton.innerHTML = icon;
+      themeButton.innerHTML = this.currentTheme === 'light' ?
+        window.Icons.icon('sun') :
+        window.Icons.icon('moon');
       themeButton.title = `Switch to ${this.currentTheme === 'light' ? 'dark' : 'light'} mode`;
     }
   }
@@ -4211,7 +4195,7 @@ class PRManager {
     const chevronBtn = document.createElement('button');
     chevronBtn.className = 'file-collapse-toggle';
     chevronBtn.title = 'Collapse file';
-    chevronBtn.innerHTML = window.DiffRenderer.CHEVRON_DOWN_ICON;
+    chevronBtn.innerHTML = window.Icons.icon('chevronDown');
     chevronBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.toggleFileCollapse(contextFile.file);
@@ -4255,12 +4239,8 @@ class PRManager {
       fileCommentBtn.title = 'Add file comment';
       fileCommentBtn.dataset.file = contextFile.file;
       fileCommentBtn.innerHTML = `
-        <svg class="comment-icon-outline" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/>
-        </svg>
-        <svg class="comment-icon-filled" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none">
-          <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
-        </svg>
+        ${window.Icons.icon('comment', { width: 16, height: 16, className: 'comment-icon-outline' })}
+        <svg class="comment-icon-filled" viewBox="${window.Icons.DEFS.commentFilled.viewBox}" width="16" height="16" fill="currentColor" style="display:none">${window.Icons.DEFS.commentFilled.paths}</svg>
       `;
       fileCommentBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -4275,11 +4255,7 @@ class PRManager {
     fileChatBtn.className = 'file-header-chat-btn';
     fileChatBtn.title = 'Chat about file';
     fileChatBtn.dataset.file = contextFile.file;
-    fileChatBtn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-        <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
-      </svg>
-    `;
+    fileChatBtn.innerHTML = window.Icons.icon('discussion');
     fileChatBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (window.chatPanel) {
@@ -4292,7 +4268,7 @@ class PRManager {
     const dismissBtn = document.createElement('button');
     dismissBtn.className = 'context-file-dismiss';
     dismissBtn.title = 'Remove context file';
-    dismissBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
+    dismissBtn.innerHTML = window.Icons.icon('close');
     dismissBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.removeContextFile(contextFile.id);

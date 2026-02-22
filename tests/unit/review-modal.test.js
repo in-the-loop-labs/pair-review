@@ -35,6 +35,7 @@ beforeEach(() => {
     prManager: null,
     aiPanel: null,
     toast: null,
+    Icons: { icon: () => '<svg></svg>', DEFS: {} },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn()
   };

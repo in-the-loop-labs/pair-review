@@ -34,9 +34,7 @@ class PreviewModal {
         <div class="modal-header">
           <h3>Preview Comments</h3>
           <button class="modal-close-btn" onclick="previewModal.hide()" title="Close">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
-            </svg>
+            ${window.Icons.icon('close')}
           </button>
         </div>
 
@@ -48,24 +46,17 @@ class PreviewModal {
 
         <div class="modal-footer preview-modal-footer">
           <button class="btn btn-danger" id="clear-all-comments-btn" onclick="previewModal.clearAllComments()" title="Delete all user comments">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-              <path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.675l.66 6.6a.25.25 0 0 0 .249.225h5.19a.25.25 0 0 0 .249-.225l.66-6.6a.75.75 0 0 1 1.492.149l-.66 6.6A1.748 1.748 0 0 1 10.595 15h-5.19a1.75 1.75 0 0 1-1.741-1.575l-.66-6.6a.75.75 0 1 1 1.492-.15ZM6.5 1.75V3h3V1.75a.25.25 0 0 0-.25-.25h-2.5a.25.25 0 0 0-.25.25Z"/>
-            </svg>
+            <span style="margin-right: 6px; display: inline-flex;">${window.Icons.icon('trash', 16)}</span>
             Clear All
           </button>
           <div style="flex: 1;"></div>
           <button class="btn btn-secondary" onclick="previewModal.hide()">Close</button>
           <button class="btn btn-secondary" id="copy-preview-btn" onclick="previewModal.copyToClipboard()">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-              <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
-              <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
-            </svg>
+            <span style="margin-right: 6px; display: inline-flex;">${window.Icons.icon('copy', 16)}</span>
             Copy as Markdown
           </button>
           <button class="btn btn-primary" id="submit-review-btn" onclick="previewModal.submitReview()">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-              <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5Z"/>
-            </svg>
+            <span style="margin-right: 6px; display: inline-flex;">${window.Icons.icon('commentFilled', 16)}</span>
             Submit Review
           </button>
         </div>
@@ -291,9 +282,7 @@ class PreviewModal {
 
       // Show success feedback
       copyBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-          <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
-        </svg>
+        <span style="margin-right: 6px; display: inline-flex;">${window.Icons.icon('check', 16)}</span>
         Copied!
       `;
       copyBtn.disabled = true;
@@ -309,9 +298,7 @@ class PreviewModal {
 
       // Show error feedback
       copyBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="margin-right: 6px;">
-          <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06z"/>
-        </svg>
+        <span style="margin-right: 6px; display: inline-flex;">${window.Icons.icon('close', 16)}</span>
         Failed to copy
       `;
 

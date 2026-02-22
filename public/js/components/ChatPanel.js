@@ -5,8 +5,6 @@
  * Works in both PR mode and Local mode.
  */
 
-const DISMISS_ICON = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
-
 /** Pixel threshold for considering the user "near the bottom" of the messages container. */
 const NEAR_BOTTOM_THRESHOLD = 80;
 
@@ -49,36 +47,26 @@ class ChatPanel {
         <div class="chat-panel__header">
           <div class="chat-panel__session-picker">
             <button class="chat-panel__session-picker-btn" title="Switch conversation">
-              <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
-              </svg>
+              ${window.Icons.icon('discussion', 14, 14)}
               <span class="chat-panel__title-text">Chat &middot; Pi</span>
               <span class="chat-panel__chevron-sep">&middot;</span>
-              <svg class="chat-panel__chevron" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                <path d="m.427 1.927 1.215 1.215a8.002 8.002 0 1 1-1.6 5.685.75.75 0 1 1 1.493-.154 6.5 6.5 0 1 0 1.18-4.458l1.358 1.358A.25.25 0 0 1 3.896 6H.25A.25.25 0 0 1 0 5.75V2.104a.25.25 0 0 1 .427-.177ZM7.75 4a.75.75 0 0 1 .75.75v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.751.751 0 0 1 7 8.25v-3.5A.75.75 0 0 1 7.75 4Z"/>
-              </svg>
+              ${window.Icons.icon('clockHistory', { width: 12, height: 12, className: 'chat-panel__chevron' })}
             </button>
             <div class="chat-panel__session-dropdown" style="display: none;"></div>
           </div>
           <div class="chat-panel__actions">
             <button class="chat-panel__new-btn" title="New conversation">
-              <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                <path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"/>
-              </svg>
+              ${window.Icons.icon('plus', 14, 14)}
             </button>
             <button class="chat-panel__close-btn" title="Close">
-              <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                <path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/>
-              </svg>
+              ${window.Icons.icon('close', 14, 14)}
             </button>
           </div>
         </div>
         <div class="chat-panel__messages-wrapper">
           <div class="chat-panel__messages" id="chat-messages">
             <div class="chat-panel__empty">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
-                <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-              </svg>
+              ${window.Icons.icon('sparkle', 32, 32)}
               <p>Ask questions about this review, or the changes</p>
             </div>
           </div>
@@ -86,23 +74,19 @@ class ChatPanel {
         </div>
         <div class="chat-panel__action-bar" style="display: none;">
           <button class="chat-panel__action-btn chat-panel__action-btn--adopt" style="display: none;" title="Adopt this suggestion with edits based on the conversation">
-            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-              <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
-            </svg>
+            ${window.Icons.icon('check', 12, 12)}
             Adopt with AI edits
           </button>
           <button class="chat-panel__action-btn chat-panel__action-btn--update" style="display: none;" title="Update the comment based on the conversation">
-            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-              <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.253.253 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z"/>
-            </svg>
+            ${window.Icons.icon('pencil', 12, 12)}
             Update comment
           </button>
           <button class="chat-panel__action-btn chat-panel__action-btn--dismiss-suggestion" style="display: none;" title="Dismiss this AI suggestion">
-            ${DISMISS_ICON}
+            ${window.Icons.icon('close', 12, 12)}
             Dismiss suggestion
           </button>
           <button class="chat-panel__action-btn chat-panel__action-btn--dismiss-comment" style="display: none;" title="Dismiss this comment">
-            ${DISMISS_ICON}
+            ${window.Icons.icon('close', 12, 12)}
             Dismiss comment
           </button>
         </div>
@@ -112,14 +96,10 @@ class ChatPanel {
             <span class="chat-panel__input-hint">${typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to send</span>
             <div class="chat-panel__input-actions">
               <button class="chat-panel__send-btn" title="Send" disabled>
-                <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                  <path d="M.989 8 .064 2.68a1.342 1.342 0 0 1 1.85-1.462l13.402 5.744a1.13 1.13 0 0 1 0 2.076L1.913 14.782a1.343 1.343 0 0 1-1.85-1.463L.99 8Zm.603-4.776L2.296 7.25h5.954a.75.75 0 0 1 0 1.5H2.296l-.704 4.026L13.788 8Z"/>
-                </svg>
+                ${window.Icons.icon('send', 14, 14)}
               </button>
               <button class="chat-panel__stop-btn" title="Stop" style="display: none;">
-                <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                  <path d="M4.5 2A2.5 2.5 0 0 0 2 4.5v7A2.5 2.5 0 0 0 4.5 14h7a2.5 2.5 0 0 0 2.5-2.5v-7A2.5 2.5 0 0 0 11.5 2h-7Z"/>
-                </svg>
+                ${window.Icons.icon('stop', 14, 14)}
               </button>
             </div>
           </div>
@@ -827,9 +807,7 @@ class ChatPanel {
   _clearMessages() {
     this.messagesEl.innerHTML = `
       <div class="chat-panel__empty">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
-          <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-        </svg>
+        ${window.Icons.icon('sparkle', 32, 32)}
         <p>Ask questions about this review, or click "Ask about this" on any suggestion.</p>
       </div>
     `;
@@ -1326,9 +1304,7 @@ class ChatPanel {
     const filePath = ctx.file || ctx.title || '';
 
     card.innerHTML = `
-      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-        <path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z"/>
-      </svg>
+      ${window.Icons.icon('filePlain', 12, 12)}
       <span class="chat-panel__context-label"><strong>FILE</strong></span>
       <span class="chat-panel__context-title">${this._escapeHtml(filePath)}</span>
     `;
@@ -1534,9 +1510,7 @@ class ChatPanel {
       : '';
 
     card.innerHTML = `
-      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-        <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
-      </svg>
+      ${window.Icons.icon('person', 12, 12)}
       <span class="chat-panel__context-label">${this._escapeHtml(label)}</span>
       <span class="chat-panel__context-title">${this._renderInlineMarkdown(bodyPreview)}</span>
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
@@ -1575,9 +1549,7 @@ class ChatPanel {
 
     // Code icon (octicon code-square)
     card.innerHTML = `
-      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-        <path d="m11.28 3.22 4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734L13.94 8l-3.72-3.72a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215Zm-6.56 0a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L2.06 8l3.72 3.72a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L.47 8.53a.75.75 0 0 1 0-1.06Z"/>
-      </svg>
+      ${window.Icons.icon('codeSquare', 12, 12)}
       <span class="chat-panel__context-label"><strong>${label}</strong></span>
       <span class="chat-panel__context-title">${this._escapeHtml(titleText)}</span>
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
@@ -1606,9 +1578,7 @@ class ChatPanel {
     const fileInfo = ctx.file ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}` : '';
 
     card.innerHTML = `
-      <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-        <path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/>
-      </svg>
+      ${window.Icons.icon('info', 12, 12)}
       <span class="chat-panel__context-label">${this._renderInlineMarkdown(typeLabel)}</span>
       <span class="chat-panel__context-title">${this._renderInlineMarkdown(ctx.title || 'Untitled')}</span>
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
@@ -1756,9 +1726,7 @@ class ChatPanel {
     const tooltip = tooltipParts.join('\n');
 
     return `
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="12" height="12">
-        <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-      </svg>
+      ${window.Icons.icon('sparkle', 12, 12)}
       <span class="chat-panel__context-label">analysis run</span>
       <span class="chat-panel__context-title" title="${window.escapeHtmlAttribute(tooltip)}">${this._escapeHtml(title)}${metaStr}</span>
     `;
@@ -2041,13 +2009,8 @@ class ChatPanel {
     const btn = document.createElement('button');
     btn.className = 'chat-panel__copy-btn';
     btn.title = 'Copy message';
-    const clipboardIcon = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/>
-      <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
-    </svg>`;
-    const checkIcon = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-      <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
-    </svg>`;
+    const clipboardIcon = window.Icons.icon('copy', 14, 14);
+    const checkIcon = window.Icons.icon('check', 14, 14);
     btn.innerHTML = clipboardIcon;
 
     btn.addEventListener('click', async (e) => {
@@ -2201,9 +2164,7 @@ class ChatPanel {
       const argSummary = this._summarizeToolInput(toolName, toolInput);
 
       const badgeHTML = `
-        <svg viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
-          <path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
-        </svg>
+        ${window.Icons.icon('dotToggle', 10, 10)}
         <span>${this._escapeHtml(toolName)}</span>${argSummary ? `<span class="chat-panel__tool-args" title="${window.escapeHtmlAttribute(argSummary)}">${this._escapeHtml(argSummary)}</span>` : ''}
         <span class="chat-panel__tool-spinner"></span>
       `;
@@ -2346,9 +2307,7 @@ class ChatPanel {
     errorEl.className = 'chat-panel__message chat-panel__message--error';
     errorEl.innerHTML = `
       <div class="chat-panel__error-bubble">
-        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-          <path d="M2.343 13.657A8 8 0 1 1 13.658 2.343 8 8 0 0 1 2.343 13.657ZM6.03 4.97a.751.751 0 0 0-1.042.018.751.751 0 0 0-.018 1.042L6.94 8 4.97 9.97a.749.749 0 0 0 .326 1.275.749.749 0 0 0 .734-.215L8 9.06l1.97 1.97a.749.749 0 0 0 1.275-.326.749.749 0 0 0-.215-.734L9.06 8l1.97-1.97a.749.749 0 0 0-.326-1.275.749.749 0 0 0-.734.215L8 6.94Z"/>
-        </svg>
+        ${window.Icons.icon('errorCircle', 14, 14)}
         ${this._escapeHtml(message)}
       </div>
     `;
@@ -2443,16 +2402,10 @@ class ChatPanel {
         if (lineEnd) link.dataset.lineEnd = lineEnd;
         link.title = 'View in diff';
 
-        // File icon SVG
-        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        icon.setAttribute('viewBox', '0 0 16 16');
-        icon.setAttribute('fill', 'currentColor');
-        icon.setAttribute('width', '12');
-        icon.setAttribute('height', '12');
-        icon.classList.add('chat-file-link__icon');
-        const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        pathEl.setAttribute('d', 'M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-9.5A1.75 1.75 0 0 1 2 14.25Zm1.75-.25a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 0 0 .25-.25V6h-2.75A1.75 1.75 0 0 1 9 4.25V1.5Zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011Z');
-        icon.appendChild(pathEl);
+        // File icon SVG (from shared icons module)
+        const iconWrapper = document.createElement('span');
+        iconWrapper.innerHTML = window.Icons.icon('filePlain', { width: 12, height: 12, className: 'chat-file-link__icon' });
+        const icon = iconWrapper.firstElementChild;
 
         // Display text: show the file reference naturally
         let displayText = filePath;

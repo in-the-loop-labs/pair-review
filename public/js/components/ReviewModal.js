@@ -34,9 +34,7 @@ class ReviewModal {
         <div class="modal-header">
           <h3>Submit Review</h3>
           <button class="modal-close-btn" onclick="reviewModal.handleCloseClick()" title="Close" id="close-review-btn">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
-            </svg>
+            ${window.Icons.icon('close')}
           </button>
         </div>
         
@@ -115,9 +113,7 @@ class ReviewModal {
             <!-- Warning dialog for large reviews -->
             <div class="warning-dialog" id="large-review-warning" style="display: none;">
               <div class="warning-dialog-title">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/>
-                </svg>
+                ${window.Icons.icon('alert')}
                 Large Review Warning
               </div>
               <div class="warning-dialog-content">

@@ -212,9 +212,7 @@ class AnalysisConfigModal {
             </div>
           </div>
           <button class="modal-close-btn" data-action="cancel" title="Close (Esc)">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
-            </svg>
+            ${window.Icons.icon('close')}
           </button>
         </div>
 
@@ -251,9 +249,7 @@ class AnalysisConfigModal {
               Analysis Levels
             </h4>
             <div class="skip-level3-info" id="skip-level3-info" style="display: none;">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1a.75.75 0 01.75.75v2.75h.25a.75.75 0 010 1.5h-2a.75.75 0 010-1.5h.25v-2h-.25a.75.75 0 01-.75-.75zM8 6a1 1 0 100-2 1 1 0 000 2z"/>
-              </svg>
+              ${window.Icons.icon('info', 14, 14)}
               <span>Codebase-wide analysis is automatically skipped for fast-tier models.</span>
             </div>
             <div class="single-level-toggles">
@@ -307,9 +303,7 @@ class AnalysisConfigModal {
                   <span class="banner-label">Repository default instructions active</span>
                   <button class="banner-toggle" id="toggle-repo-instructions" title="Show repository instructions">
                     <span>View</span>
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"/>
-                    </svg>
+                    ${window.Icons.icon('chevronRight', 12, 12)}
                   </button>
                 </div>
               </div>
@@ -317,9 +311,7 @@ class AnalysisConfigModal {
                 <div class="expanded-header">
                   <span>Repository Instructions</span>
                   <button class="collapse-btn" id="collapse-repo-instructions" title="Collapse">
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M3.72 8.72a.75.75 0 011.06 0L8 11.94l3.22-3.22a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.72 9.78a.75.75 0 010-1.06z"/>
-                    </svg>
+                    ${window.Icons.icon('chevronDown', 12, 12)}
                   </button>
                 </div>
                 <div class="expanded-content" id="repo-instructions-text"></div>
@@ -506,9 +498,7 @@ class AnalysisConfigModal {
         </div>
         <p class="model-description">${model.description || ''}</p>
         <div class="model-selected-indicator">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-          </svg>
+          ${window.Icons.icon('check')}
         </div>
       </button>
     `).join('');
