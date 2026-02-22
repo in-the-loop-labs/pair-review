@@ -4164,31 +4164,15 @@ class PRManager {
   /**
    * Rebuild the sidebar file list with context files interleaved in natural path order.
    * Merges stored diff files with current context files and re-renders the sidebar.
+   * Delegates to the shared FileListMerger module for the merge/sort logic.
    */
   rebuildFileListWithContext() {
-    const merged = [...(this.diffFiles || [])];
-
-    // Build set of diff file paths so context files don't duplicate them
-    const diffPaths = new Set((this.diffFiles || []).map(f => f.file));
-
-    // Deduplicate context files by path and skip any that overlap with diff files
-    const seenContextPaths = new Set();
-    for (const cf of (this.contextFiles || [])) {
-      if (diffPaths.has(cf.file) || seenContextPaths.has(cf.file)) continue;
-      seenContextPaths.add(cf.file);
-      merged.push({
-        file: cf.file,
-        contextFile: true,
-        contextId: cf.id,
-        label: cf.label,
-        lineStart: cf.line_start,
-        lineEnd: cf.line_end,
-      });
+    const { mergeFileListWithContext } = window.FileListMerger || {};
+    if (!mergeFileListWithContext) {
+      console.warn('FileListMerger not loaded - cannot rebuild file list with context');
+      return;
     }
-
-    // Sort by file path (context files interleave naturally)
-    merged.sort((a, b) => a.file.localeCompare(b.file));
-
+    const merged = mergeFileListWithContext(this.diffFiles, this.contextFiles);
     this.updateFileList(merged);
   }
 

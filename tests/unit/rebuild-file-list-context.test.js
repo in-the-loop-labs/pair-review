@@ -1,42 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import { mergeFileListWithContext } from '../../public/js/modules/file-list-merger.js';
 
-describe('rebuildFileListWithContext', () => {
-  /**
-   * Create a lightweight PRManager-like object with diffFiles, contextFiles,
-   * a mocked updateFileList, and the rebuildFileListWithContext method bound
-   * so we can test it in isolation.
-   */
-  function createManager(diffFiles, contextFiles) {
-    const manager = {
-      diffFiles,
-      contextFiles,
-      updateFileList: vi.fn(),
-      rebuildFileListWithContext: null,
-    };
-    // Inline copy of the method from PRManager (public/js/pr.js ~line 4168)
-    manager.rebuildFileListWithContext = function () {
-      const merged = [...(this.diffFiles || [])];
-      const diffPaths = new Set((this.diffFiles || []).map(f => f.file));
-      const seenContextPaths = new Set();
-      for (const cf of this.contextFiles || []) {
-        if (diffPaths.has(cf.file) || seenContextPaths.has(cf.file)) continue;
-        seenContextPaths.add(cf.file);
-        merged.push({
-          file: cf.file,
-          contextFile: true,
-          contextId: cf.id,
-          label: cf.label,
-          lineStart: cf.line_start,
-          lineEnd: cf.line_end,
-        });
-      }
-      merged.sort((a, b) => a.file.localeCompare(b.file));
-      this.updateFileList(merged);
-    };
-    return manager;
-  }
-
+describe('mergeFileListWithContext', () => {
   // ── 1. Basic merge ──────────────────────────────────────────────────
 
   it('should merge diff files and context files in sorted path order', () => {
@@ -49,11 +15,7 @@ describe('rebuildFileListWithContext', () => {
       { file: 'tests/app.test.js', id: 2, label: 'Tests', line_start: 10, line_end: 30 },
     ];
 
-    const mgr = createManager(diff, context);
-    mgr.rebuildFileListWithContext();
-
-    expect(mgr.updateFileList).toHaveBeenCalledTimes(1);
-    const merged = mgr.updateFileList.mock.calls[0][0];
+    const merged = mergeFileListWithContext(diff, context);
 
     expect(merged.map(f => f.file)).toEqual([
       'src/app.js',
@@ -84,10 +46,7 @@ describe('rebuildFileListWithContext', () => {
       { file: 'src/helper.js', id: 30, label: 'Third', line_start: 100, line_end: 120 },
     ];
 
-    const mgr = createManager(diff, context);
-    mgr.rebuildFileListWithContext();
-
-    const merged = mgr.updateFileList.mock.calls[0][0];
+    const merged = mergeFileListWithContext(diff, context);
     const helperEntries = merged.filter(f => f.file === 'src/helper.js');
 
     expect(helperEntries).toHaveLength(1);
@@ -107,10 +66,7 @@ describe('rebuildFileListWithContext', () => {
       { file: 'src/new.js', id: 2, label: 'New', line_start: 10, line_end: 30 },
     ];
 
-    const mgr = createManager(diff, context);
-    mgr.rebuildFileListWithContext();
-
-    const merged = mgr.updateFileList.mock.calls[0][0];
+    const merged = mergeFileListWithContext(diff, context);
 
     // src/app.js should appear once (from diff), not from context
     const appEntries = merged.filter(f => f.file === 'src/app.js');
@@ -125,26 +81,17 @@ describe('rebuildFileListWithContext', () => {
 
   describe('empty inputs', () => {
     it('should handle undefined diffFiles and contextFiles', () => {
-      const mgr = createManager(undefined, undefined);
-      mgr.rebuildFileListWithContext();
-
-      const merged = mgr.updateFileList.mock.calls[0][0];
+      const merged = mergeFileListWithContext(undefined, undefined);
       expect(merged).toEqual([]);
     });
 
     it('should handle null diffFiles and contextFiles', () => {
-      const mgr = createManager(null, null);
-      mgr.rebuildFileListWithContext();
-
-      const merged = mgr.updateFileList.mock.calls[0][0];
+      const merged = mergeFileListWithContext(null, null);
       expect(merged).toEqual([]);
     });
 
     it('should handle empty arrays for both', () => {
-      const mgr = createManager([], []);
-      mgr.rebuildFileListWithContext();
-
-      const merged = mgr.updateFileList.mock.calls[0][0];
+      const merged = mergeFileListWithContext([], []);
       expect(merged).toEqual([]);
     });
 
@@ -152,10 +99,8 @@ describe('rebuildFileListWithContext', () => {
       const context = [
         { file: 'src/standalone.js', id: 5, label: 'Alone', line_start: 1, line_end: 100 },
       ];
-      const mgr = createManager([], context);
-      mgr.rebuildFileListWithContext();
+      const merged = mergeFileListWithContext([], context);
 
-      const merged = mgr.updateFileList.mock.calls[0][0];
       expect(merged).toHaveLength(1);
       expect(merged[0]).toEqual({
         file: 'src/standalone.js',
@@ -169,10 +114,8 @@ describe('rebuildFileListWithContext', () => {
 
     it('should handle populated diffFiles with empty contextFiles', () => {
       const diff = [{ file: 'src/app.js' }];
-      const mgr = createManager(diff, []);
-      mgr.rebuildFileListWithContext();
+      const merged = mergeFileListWithContext(diff, []);
 
-      const merged = mgr.updateFileList.mock.calls[0][0];
       expect(merged).toHaveLength(1);
       expect(merged[0]).toEqual({ file: 'src/app.js' });
     });
@@ -187,10 +130,8 @@ describe('rebuildFileListWithContext', () => {
       { file: 'lib/utils.js' },
     ];
 
-    const mgr = createManager(diff, []);
-    mgr.rebuildFileListWithContext();
+    const merged = mergeFileListWithContext(diff, []);
 
-    const merged = mgr.updateFileList.mock.calls[0][0];
     expect(merged.map(f => f.file)).toEqual([
       'lib/utils.js',
       'src/a.js',
@@ -204,34 +145,20 @@ describe('rebuildFileListWithContext', () => {
       { file: 'a.js' },
     ];
 
-    const mgr = createManager(diff, undefined);
-    mgr.rebuildFileListWithContext();
+    const merged = mergeFileListWithContext(diff, undefined);
 
-    const merged = mgr.updateFileList.mock.calls[0][0];
     expect(merged.map(f => f.file)).toEqual(['a.js', 'b.js']);
   });
 
   // ── Additional edge cases ───────────────────────────────────────────
-
-  it('should call updateFileList exactly once', () => {
-    const mgr = createManager(
-      [{ file: 'src/app.js' }],
-      [{ file: 'src/other.js', id: 1, label: 'Other', line_start: 1, line_end: 10 }],
-    );
-    mgr.rebuildFileListWithContext();
-
-    expect(mgr.updateFileList).toHaveBeenCalledTimes(1);
-  });
 
   it('should preserve extra properties on diff file objects', () => {
     const diff = [
       { file: 'src/app.js', additions: 10, deletions: 5, extra: 'data' },
     ];
 
-    const mgr = createManager(diff, []);
-    mgr.rebuildFileListWithContext();
+    const merged = mergeFileListWithContext(diff, []);
 
-    const merged = mgr.updateFileList.mock.calls[0][0];
     expect(merged[0]).toEqual({
       file: 'src/app.js',
       additions: 10,
