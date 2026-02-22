@@ -678,7 +678,7 @@ describe('FileCommentManager.adoptAISuggestion', () => {
     vi.restoreAllMocks();
   });
 
-  it('should call unified API endpoint for status update when reviewType is local', async () => {
+  it('should call atomic /adopt endpoint when reviewType is local', async () => {
     const fileCommentManager = createTestFileCommentManager({
       reviewId: 'local-review-456',
       reviewType: 'local'
@@ -686,10 +686,6 @@ describe('FileCommentManager.adoptAISuggestion', () => {
 
     // Mock all required methods
     fileCommentManager.formatAdoptedComment = vi.fn().mockReturnValue('formatted comment');
-    fileCommentManager._getFileCommentEndpoint = vi.fn().mockReturnValue({
-      endpoint: '/api/reviews/local-review-456/comments',
-      requestBody: { file: 'test.js', body: 'formatted comment' }
-    });
     fileCommentManager.displayUserComment = vi.fn();
     fileCommentManager.updateCommentCount = vi.fn();
 
@@ -700,13 +696,11 @@ describe('FileCommentManager.adoptAISuggestion', () => {
       type: 'bug'
     };
 
-    // Mock successful API responses
-    mockFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ commentId: 999 })
-      })
-      .mockResolvedValueOnce({ ok: true }); // status update
+    // Mock successful /adopt API response (single call)
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ success: true, userCommentId: 999 })
+    });
 
     const mockCard = {
       classList: { add: vi.fn() },
@@ -716,20 +710,18 @@ describe('FileCommentManager.adoptAISuggestion', () => {
 
     await fileCommentManager.adoptAISuggestion(mockZone, suggestion);
 
-    // Verify status update call uses unified endpoint
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    expect(mockFetch).toHaveBeenNthCalledWith(
-      2,
-      '/api/reviews/local-review-456/suggestions/123/status',
+    // Verify single /adopt call instead of two separate calls
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/reviews/local-review-456/suggestions/123/adopt',
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'adopted' })
+        headers: { 'Content-Type': 'application/json' }
       }
     );
   });
 
-  it('should call unified API endpoint for status update when reviewType is pr', async () => {
+  it('should call atomic /adopt endpoint when reviewType is pr', async () => {
     const fileCommentManager = createTestFileCommentManager({
       reviewId: 'pr-review-123',
       reviewType: 'pr',
@@ -737,10 +729,6 @@ describe('FileCommentManager.adoptAISuggestion', () => {
     });
 
     fileCommentManager.formatAdoptedComment = vi.fn().mockReturnValue('formatted comment');
-    fileCommentManager._getFileCommentEndpoint = vi.fn().mockReturnValue({
-      endpoint: '/api/reviews/pr-review-123/comments',
-      requestBody: { file: 'test.js', body: 'formatted comment', commit_sha: 'abc123' }
-    });
     fileCommentManager.displayUserComment = vi.fn();
     fileCommentManager.updateCommentCount = vi.fn();
 
@@ -751,12 +739,10 @@ describe('FileCommentManager.adoptAISuggestion', () => {
       type: 'suggestion'
     };
 
-    mockFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        json: vi.fn().mockResolvedValue({ commentId: 888 })
-      })
-      .mockResolvedValueOnce({ ok: true });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ success: true, userCommentId: 888 })
+    });
 
     const mockCard = {
       classList: { add: vi.fn() },
@@ -766,14 +752,13 @@ describe('FileCommentManager.adoptAISuggestion', () => {
 
     await fileCommentManager.adoptAISuggestion(mockZone, suggestion);
 
-    // Verify status update call uses unified endpoint
-    expect(mockFetch).toHaveBeenNthCalledWith(
-      2,
-      '/api/reviews/pr-review-123/suggestions/456/status',
+    // Verify single /adopt call instead of two separate calls
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/reviews/pr-review-123/suggestions/456/adopt',
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'adopted' })
+        headers: { 'Content-Type': 'application/json' }
       }
     );
   });

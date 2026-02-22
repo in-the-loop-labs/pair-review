@@ -133,12 +133,26 @@ Optional query param: `runId` (specific analysis run UUID).
 ```bash
 curl -s -X POST http://localhost:PORT/api/reviews/REVIEW_ID/suggestions/SUGGESTION_ID/status \
   -H 'Content-Type: application/json' \
-  -d '{ "status": "adopted" }'
+  -d '{ "status": "dismissed" }'
 ```
 
-Valid statuses: `"adopted"`, `"dismissed"`, `"active"` (restore).
+Valid statuses: `"dismissed"`, `"active"` (restore).
 
-**Response:** `{ "success": true, "status": "adopted" }`
+> **Note:** Setting status to `"adopted"` directly is not allowed. Adoption must create a linked user comment via `parent_id`, which is why raw status-setting cannot do it. Use `POST /suggestions/:id/adopt` for adopt-as-is or `POST /suggestions/:id/edit` for adopt-with-edits.
+
+**Response:** `{ "success": true, "status": "dismissed" }`
+
+### Adopt an AI suggestion as-is
+
+Atomically creates a user comment from the suggestion's body/type/title (with category prefix), sets `parent_id` linkage, and updates suggestion status to `adopted`.
+
+```bash
+curl -s -X POST http://localhost:PORT/api/reviews/REVIEW_ID/suggestions/SUGGESTION_ID/adopt
+```
+
+No request body required.
+
+**Response:** `{ "success": true, "userCommentId": 124, "message": "Suggestion adopted as user comment" }`
 
 ### Adopt an AI suggestion with edits
 

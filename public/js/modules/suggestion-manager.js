@@ -6,17 +6,18 @@
 
 class SuggestionManager {
   // Category to emoji mapping for formatting adopted comments
+  // Canonical types from src/ai/prompts/shared/output-schema.js:
+  // bug|improvement|praise|suggestion|design|performance|security|code-style
   static CATEGORY_EMOJI_MAP = {
     'bug': '\u{1F41B}',           // bug
     'improvement': '\u{1F4A1}',   // lightbulb
-    'suggestion': '\u{1F4AD}',    // thought balloon
-    'design': '\u{1F3D7}',        // building construction
-    'performance': '\u{1F680}',   // rocket
+    'praise': '\u{1F44F}',        // clapping hands
+    'suggestion': '\u{1F4AC}',    // speech bubble
+    'design': '\u{1F3D7}\uFE0F',  // building construction
+    'performance': '\u{26A1}',    // high voltage
     'security': '\u{1F512}',      // lock
     'code-style': '\u{1F3A8}',    // artist palette
-    'style': '\u{1F3A8}',         // artist palette (alias)
-    'praise': '\u{2B50}',         // star
-    'comment': '\u{1F4AC}'        // speech bubble
+    'style': '\u{1F3A8}'          // artist palette (alias for code-style)
   };
 
   constructor(prManagerRef) {
@@ -714,110 +715,6 @@ class SuggestionManager {
     return { targetRow, suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel: false };
   }
 
-  /**
-   * Helper function to update status and collapse AI suggestion
-   * @param {number} suggestionId - Suggestion ID
-   * @param {HTMLElement} suggestionRow - The suggestion row element
-   * @param {string} collapsedText - Text to show when collapsed
-   * @param {string} status - Status to set
-   */
-  async collapseAISuggestion(suggestionId, suggestionRow, collapsedText = 'Suggestion adopted', status = 'dismissed') {
-    // Update the AI suggestion status via API
-    const reviewId = this.prManager?.currentPR?.id;
-    const response = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status })
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to update suggestion status');
-    }
-
-    // Collapse the AI suggestion in the UI
-    // Use suggestionId (found by ID) not suggestionRow.querySelector('.ai-suggestion')
-    // because multiple suggestions can share the same row when they target the same line
-    if (suggestionRow) {
-      const suggestionDiv = suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`);
-      if (suggestionDiv) {
-        suggestionDiv.classList.add('collapsed');
-        // Update collapsed content text
-        const collapsedContent = suggestionDiv.querySelector('.collapsed-text');
-        if (collapsedContent) {
-          collapsedContent.textContent = collapsedText;
-        }
-        // Update restore button - should say "Show" since suggestion is now collapsed
-        const restoreButton = suggestionDiv.querySelector('.btn-restore');
-        if (restoreButton) {
-          restoreButton.title = 'Show suggestion';
-          const btnText = restoreButton.querySelector('.btn-text');
-          if (btnText) {
-            btnText.textContent = 'Show';
-          }
-        }
-        if (status === 'adopted') {
-          suggestionDiv.dataset.hiddenForAdoption = 'true';
-        }
-      }
-    }
-  }
-
-  /**
-   * Helper function to create user comment from AI suggestion
-   * @param {number} suggestionId - Suggestion ID
-   * @param {string} fileName - File name
-   * @param {string} lineNumber - Line number
-   * @param {string} suggestionText - Suggestion text
-   * @param {string} suggestionType - Suggestion type
-   * @param {string} suggestionTitle - Suggestion title
-   * @param {string} diffPosition - Diff position
-   * @param {string} side - Side (LEFT or RIGHT)
-   * @returns {Object} Created comment data
-   */
-  async createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side) {
-    // Format the comment text with emoji and category prefix
-    const formattedText = this.formatAdoptedComment(suggestionText, suggestionType);
-
-    // Parse diff_position if it's a string (from dataset)
-    const parsedDiffPosition = diffPosition ? parseInt(diffPosition) : null;
-
-    const reviewId = this.prManager?.currentPR?.id;
-    const headSha = this.prManager?.currentPR?.head_sha;
-
-    const createResponse = await fetch(`/api/reviews/${reviewId}/comments`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        file: fileName,
-        line_start: parseInt(lineNumber),
-        line_end: parseInt(lineNumber),
-        diff_position: parsedDiffPosition,  // For GitHub API line-level comments
-        side: side || 'RIGHT',              // For GitHub API (LEFT for deleted, RIGHT for added/context)
-        body: formattedText,
-        parent_id: suggestionId,  // Link to original AI suggestion
-        type: suggestionType,     // Preserve the type
-        title: suggestionTitle,   // Preserve the title
-        commit_sha: headSha       // Anchor comment to PR head commit
-      })
-    });
-
-    if (!createResponse.ok) {
-      throw new Error('Failed to create user comment');
-    }
-
-    const result = await createResponse.json();
-    return {
-      id: result.commentId,
-      file: fileName,
-      line_start: parseInt(lineNumber),
-      body: formattedText,
-      type: suggestionType,
-      title: suggestionTitle,
-      parent_id: suggestionId,
-      diff_position: parsedDiffPosition,  // Include for expanded context warning logic
-      created_at: new Date().toISOString()
-    };
-  }
 }
 
 // Make SuggestionManager available globally
