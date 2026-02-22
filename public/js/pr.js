@@ -492,6 +492,7 @@ class PRManager {
     this._dirtyComments = false;
     this._dirtySuggestions = false;
     this._dirtyAnalysis = false;
+    this._dirtyAnalysisStarted = false;
     this._dirtyContextFiles = false;
 
     // Simple debounce helper
@@ -517,6 +518,12 @@ class PRManager {
       if (e.detail?.sourceClientId === this._clientId) return;
       if (document.hidden) { this._dirtySuggestions = true; return; }
       debounced('suggestions', () => this.loadAISuggestions());
+    });
+
+    document.addEventListener('review:analysis_started', (e) => {
+      if (e.detail?.reviewId !== reviewId()) return;
+      if (document.hidden) { this._dirtyAnalysisStarted = true; return; }
+      debounced('analysisStarted', () => this.checkRunningAnalysis());
     });
 
     document.addEventListener('review:analysis_completed', (e) => {
@@ -548,6 +555,13 @@ class PRManager {
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) return;
       if (this._dirtyComments) { this._dirtyComments = false; this.loadUserComments(); }
+      if (this._dirtyAnalysisStarted) {
+        this._dirtyAnalysisStarted = false;
+        // Skip if analysis already completed while hidden — the completed handler below will refresh everything
+        if (!this._dirtyAnalysis) {
+          this.checkRunningAnalysis();
+        }
+      }
       if (this._dirtyAnalysis) {
         this._dirtyAnalysis = false;
         this._dirtySuggestions = false; // analysis refresh includes suggestion reload

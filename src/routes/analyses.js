@@ -613,6 +613,7 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
   reviewToAnalysisId.set(reviewId, analysisId);
 
   broadcastProgress(analysisId, initialStatus);
+  broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
 
   const analyzer = new Analyzer(db, 'council', 'council');
 

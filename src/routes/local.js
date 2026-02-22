@@ -747,6 +747,7 @@ router.post('/api/local/:reviewId/analyses', async (req, res) => {
 
     // Broadcast initial status
     broadcastProgress(analysisId, initialStatus);
+    broadcastReviewEvent(reviewId, { type: 'review:analysis_started', analysisId });
 
     // Create analyzer instance with provider and model
     const analyzer = new Analyzer(db, selectedModel, selectedProvider);
