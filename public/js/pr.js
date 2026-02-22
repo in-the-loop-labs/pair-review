@@ -1212,6 +1212,30 @@ class PRManager {
           this.showCommentForm(row, lineNumber, file, diffPosition, null, side);
         }
       },
+      onChatButtonClick: (_e, row, lineNumber, file, lineData) => {
+        if (!window.chatPanel) return;
+        let startLine = lineNumber;
+        let endLine = null;
+
+        if (this.lineTracker.hasActiveSelection() &&
+            this.lineTracker.rangeSelectionStart.fileName === file) {
+          const range = this.lineTracker.getSelectionRange();
+          startLine = range.start;
+          endLine = range.end;
+          this.lineTracker.clearRangeSelection();
+        }
+
+        window.chatPanel.open({
+          commentContext: {
+            type: 'line',
+            body: null,
+            file: file || '',
+            line_start: startLine,
+            line_end: endLine || startLine,
+            source: 'user'
+          }
+        });
+      },
       onMouseOver: (_e, row, lineNumber, file) => {
         // Check if we have a potential drag start and convert it to an actual drag
         if (this.lineTracker.potentialDragStart && !this.lineTracker.isDraggingRange) {
@@ -1226,6 +1250,7 @@ class PRManager {
       onMouseUp: (_e, row, lineNumber, file) => {
         if (this.lineTracker.potentialDragStart) {
           const start = this.lineTracker.potentialDragStart;
+          const isChat = start.isChat;
           this.lineTracker.potentialDragStart = null;
 
           if (start.lineNumber !== lineNumber || start.fileName !== file) {
@@ -1235,6 +1260,24 @@ class PRManager {
               this.lineTracker.startDragSelection(start.row, start.lineNumber, start.fileName, start.side);
             }
             this.lineTracker.completeDragSelection(row, lineNumber, file);
+
+            // For chat drags, immediately open chat with the selected range
+            if (isChat && this.lineTracker.hasActiveSelection()) {
+              const range = this.lineTracker.getSelectionRange();
+              this.lineTracker.clearRangeSelection();
+              if (window.chatPanel) {
+                window.chatPanel.open({
+                  commentContext: {
+                    type: 'line',
+                    body: null,
+                    file: file || '',
+                    line_start: range.start,
+                    line_end: range.end,
+                    source: 'user'
+                  }
+                });
+              }
+            }
           }
         } else if (this.lineTracker.isDraggingRange) {
           this.lineTracker.completeDragSelection(row, lineNumber, file);
@@ -1996,6 +2039,10 @@ class PRManager {
           >${this.escapeHtml(currentText)}</textarea>
           <div class="comment-edit-actions">
             <button class="btn btn-sm btn-primary save-edit-btn">Save</button>
+            <button class="ai-action ai-action-chat btn-chat-from-comment" title="Chat about these lines">
+              <svg viewBox="0 0 16 16" fill="currentColor" width="16" height="16"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
+              Chat
+            </button>
             <button class="btn btn-sm btn-secondary cancel-edit-btn">Cancel</button>
           </div>
         </div>
@@ -2024,6 +2071,30 @@ class PRManager {
 
         saveBtn.addEventListener('click', () => this.saveEditedUserComment(commentId));
         cancelBtn.addEventListener('click', () => this.cancelEditUserComment(commentId));
+
+        // Chat button handler - opens chat panel with comment context card
+        const chatFromEditBtn = editForm.querySelector('.btn-chat-from-comment');
+        if (chatFromEditBtn) {
+          chatFromEditBtn.addEventListener('click', () => {
+            if (!window.chatPanel) return;
+            const unsavedText = textarea.value.trim();
+            const file = textarea.dataset.file;
+            const lineStart = textarea.dataset.line ? parseInt(textarea.dataset.line) : null;
+            const lineEnd = textarea.dataset.lineEnd ? parseInt(textarea.dataset.lineEnd) : lineStart;
+
+            this.cancelEditUserComment(commentId);
+            window.chatPanel.open({
+              commentContext: {
+                commentId: commentId,
+                body: unsavedText || null,
+                file: file || '',
+                line_start: lineStart,
+                line_end: lineEnd,
+                source: 'user'
+              }
+            });
+          });
+        }
 
         textarea.addEventListener('input', () => {
           this.autoResizeTextarea(textarea);

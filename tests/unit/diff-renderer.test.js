@@ -748,4 +748,156 @@ describe('DiffRenderer', () => {
       });
     });
   });
+
+  describe('renderDiffLine — chat button', () => {
+    // Minimal DOM mock for renderDiffLine which calls document.createElement
+    let origDocument, origWindow;
+
+    beforeEach(() => {
+      origDocument = global.document;
+      origWindow = global.window;
+
+      // Lightweight DOM element factory
+      function createElement(tag) {
+        const children = [];
+        let _innerHTML = '';
+        let _className = '';
+        const _dataset = {};
+        const el = {
+          tagName: tag.toUpperCase(),
+          children,
+          childNodes: children,
+          style: {},
+          dataset: _dataset,
+          get className() { return _className; },
+          set className(v) { _className = v; },
+          get innerHTML() { return _innerHTML; },
+          set innerHTML(v) { _innerHTML = v; },
+          textContent: '',
+          title: '',
+          disabled: false,
+          onmousedown: null,
+          onmouseover: null,
+          onmouseup: null,
+          onclick: null,
+          appendChild(child) { children.push(child); return child; },
+          insertBefore(child, ref) {
+            const idx = children.indexOf(ref);
+            if (idx >= 0) children.splice(idx, 0, child);
+            else children.push(child);
+            return child;
+          },
+          querySelector(sel) {
+            // Depth-first search through children
+            for (const c of children) {
+              if (c.className && sel.startsWith('.') && c.className.includes(sel.slice(1))) return c;
+              if (c.querySelector) {
+                const found = c.querySelector(sel);
+                if (found) return found;
+              }
+            }
+            return null;
+          },
+        };
+        return el;
+      }
+
+      global.document = { createElement: vi.fn(createElement) };
+      global.window = {};
+    });
+
+    afterEach(() => {
+      global.document = origDocument;
+      global.window = origWindow;
+    });
+
+    const baseLine = { type: 'insert', newNumber: 10, content: '+hello' };
+    const baseOptions = {
+      onCommentButtonClick: vi.fn(),
+      lineTracker: { potentialDragStart: null },
+    };
+
+    it('creates chat-line-btn when onChatButtonClick provided', () => {
+      const row = DiffRenderer.renderDiffLine(null, baseLine, 'src/app.js', 5, {
+        ...baseOptions,
+        onChatButtonClick: vi.fn(),
+      });
+
+      // The line-number-content div is inside the first td
+      const lineNumCell = row.children[0]; // td.d2h-code-linenumber
+      const lineNumContent = lineNumCell.children[0]; // div.line-number-content
+      const chatBtn = lineNumContent.children.find(c => c.className?.includes('chat-line-btn'));
+
+      expect(chatBtn).toBeDefined();
+      expect(chatBtn.className).toContain('chat-line-btn');
+      expect(chatBtn.className).toContain('ai-action-chat');
+    });
+
+    it('does NOT create chat-line-btn when onChatButtonClick missing', () => {
+      const row = DiffRenderer.renderDiffLine(null, baseLine, 'src/app.js', 5, baseOptions);
+
+      const lineNumCell = row.children[0];
+      const lineNumContent = lineNumCell.children[0];
+      const chatBtn = lineNumContent.children.find(c => c.className?.includes('chat-line-btn'));
+
+      expect(chatBtn).toBeUndefined();
+    });
+
+    it('chat-line-btn is before add-comment-btn in DOM', () => {
+      const row = DiffRenderer.renderDiffLine(null, baseLine, 'src/app.js', 5, {
+        ...baseOptions,
+        onChatButtonClick: vi.fn(),
+      });
+
+      const lineNumCell = row.children[0];
+      const lineNumContent = lineNumCell.children[0];
+      const chatIdx = lineNumContent.children.findIndex(c => c.className?.includes('chat-line-btn'));
+      const commentIdx = lineNumContent.children.findIndex(c => c.className?.includes('add-comment-btn'));
+
+      expect(chatIdx).toBeGreaterThanOrEqual(0);
+      expect(commentIdx).toBeGreaterThanOrEqual(0);
+      expect(chatIdx).toBeLessThan(commentIdx);
+    });
+
+    it('mousedown sets potentialDragStart with isChat: true', () => {
+      const lineTracker = { potentialDragStart: null };
+      const row = DiffRenderer.renderDiffLine(null, baseLine, 'src/app.js', 5, {
+        ...baseOptions,
+        lineTracker,
+        onChatButtonClick: vi.fn(),
+      });
+
+      const lineNumCell = row.children[0];
+      const lineNumContent = lineNumCell.children[0];
+      const chatBtn = lineNumContent.children.find(c => c.className?.includes('chat-line-btn'));
+
+      // Simulate mousedown
+      const mockEvent = { preventDefault: vi.fn(), stopPropagation: vi.fn() };
+      chatBtn.onmousedown(mockEvent);
+
+      expect(lineTracker.potentialDragStart).toBeDefined();
+      expect(lineTracker.potentialDragStart.isChat).toBe(true);
+      expect(lineTracker.potentialDragStart.lineNumber).toBe(10);
+      expect(lineTracker.potentialDragStart.fileName).toBe('src/app.js');
+    });
+
+    it('comment button mousedown does NOT set isChat', () => {
+      const lineTracker = { potentialDragStart: null };
+      const row = DiffRenderer.renderDiffLine(null, baseLine, 'src/app.js', 5, {
+        ...baseOptions,
+        lineTracker,
+        onChatButtonClick: vi.fn(),
+      });
+
+      const lineNumCell = row.children[0];
+      const lineNumContent = lineNumCell.children[0];
+      const commentBtn = lineNumContent.children.find(c => c.className?.includes('add-comment-btn'));
+
+      const mockEvent = { preventDefault: vi.fn(), stopPropagation: vi.fn() };
+      commentBtn.onmousedown(mockEvent);
+
+      expect(lineTracker.potentialDragStart).toBeDefined();
+      expect(lineTracker.potentialDragStart.isChat).toBeUndefined();
+    });
+  });
 });
