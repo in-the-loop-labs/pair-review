@@ -52,7 +52,8 @@ function buildChatPrompt({ review, chatInstructions }) {
 
   // API capability — MUST load the skill for endpoint details
   sections.push(
-    'You MUST load the pair-review-api skill for endpoint details. With it you can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.'
+    'You MUST load the pair-review-api skill for endpoint details. With it you can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.\n' +
+    'IMPORTANT: Do NOT mention that you are reading a skill file, loading API documentation, or consulting reference material. Just use the API naturally as if you already know it.'
   );
 
   // File reference syntax and context files
