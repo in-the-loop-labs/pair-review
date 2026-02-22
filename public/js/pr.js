@@ -16,13 +16,14 @@ class PRManager {
   static get CATEGORY_EMOJI_MAP() {
     return window.SuggestionManager?.CATEGORY_EMOJI_MAP || {
       'bug': '\u{1F41B}',
-      'performance': '\u{26A1}',
-      'design': '\u{1F4D0}',
-      'code-style': '\u{1F9F9}',
       'improvement': '\u{1F4A1}',
-      'praise': '\u{2B50}',
+      'praise': '\u{1F44F}',
+      'suggestion': '\u{1F4AC}',
+      'design': '\u{1F3D7}\uFE0F',
+      'performance': '\u{26A1}',
       'security': '\u{1F512}',
-      'suggestion': '\u{1F4AC}'
+      'code-style': '\u{1F3A8}',
+      'style': '\u{1F3A8}'
     };
   }
 
@@ -2532,10 +2533,6 @@ class PRManager {
     return this.suggestionManager.getFileAndLineInfo(suggestionDiv);
   }
 
-  async collapseAISuggestion(suggestionId, suggestionRow, collapsedText, status) {
-    return this.suggestionManager.collapseAISuggestion(suggestionId, suggestionRow, collapsedText, status);
-  }
-
   getCategoryEmoji(category) {
     return this.suggestionManager.getCategoryEmoji(category);
   }
@@ -2544,12 +2541,101 @@ class PRManager {
     return this.suggestionManager.formatAdoptedComment(text, category);
   }
 
-  async createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side) {
-    return this.suggestionManager.createUserCommentFromSuggestion(suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side);
-  }
-
   getTypeDescription(type) {
     return this.suggestionManager.getTypeDescription(type);
+  }
+
+  /**
+   * Collapse a suggestion div in the UI after adoption.
+   * Handles adding collapsed class, updating text to 'Suggestion adopted',
+   * updating the restore button, and setting hiddenForAdoption flag.
+   * @param {HTMLElement} suggestionRow - The suggestion row element
+   * @param {number|string} suggestionId - Suggestion ID
+   */
+  collapseSuggestionForAdoption(suggestionRow, suggestionId) {
+    if (!suggestionRow) return;
+    const targetDiv = suggestionRow.querySelector(`[data-suggestion-id="${suggestionId}"]`);
+    if (!targetDiv) return;
+    targetDiv.classList.add('collapsed');
+    const collapsedContent = targetDiv.querySelector('.collapsed-text');
+    if (collapsedContent) collapsedContent.textContent = 'Suggestion adopted';
+    const restoreButton = targetDiv.querySelector('.btn-restore');
+    if (restoreButton) {
+      restoreButton.title = 'Show suggestion';
+      const btnText = restoreButton.querySelector('.btn-text');
+      if (btnText) btnText.textContent = 'Show';
+    }
+    targetDiv.dataset.hiddenForAdoption = 'true';
+  }
+
+  /**
+   * Shared helper for adoptAndEditSuggestion and adoptSuggestion.
+   * Performs the /adopt fetch, collapses the suggestion, formats the comment,
+   * and builds the newComment object. Returns { newComment, suggestionRow }
+   * or null on failure. Throws on errors so the caller can handle them.
+   */
+  async _adoptAndBuildComment(suggestionId, suggestionDiv) {
+    const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
+    const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
+
+    // File-level suggestions are handled by FileCommentManager; signal the caller
+    if (isFileLevel) {
+      return { isFileLevel: true, suggestionText, suggestionType, suggestionTitle, fileName, suggestionRow };
+    }
+
+    // Use the atomic /adopt endpoint which creates the user comment, sets parent_id
+    // linkage, and updates suggestion status to 'adopted' in a single request
+    const reviewId = this.currentPR?.id;
+    const adoptResponse = await fetch(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    if (!adoptResponse.ok) throw new Error('Failed to adopt suggestion');
+
+    const adoptResult = await adoptResponse.json();
+
+    // Collapse the suggestion in the UI
+    this.collapseSuggestionForAdoption(suggestionRow, suggestionId);
+
+    // Build comment data from the adopt response and suggestion metadata
+    const formattedText = this.formatAdoptedComment(suggestionText, suggestionType);
+    const newComment = {
+      id: adoptResult.userCommentId,
+      file: fileName,
+      line_start: parseInt(lineNumber),
+      body: formattedText,
+      type: suggestionType,
+      title: suggestionTitle,
+      parent_id: suggestionId,
+      diff_position: diffPosition ? parseInt(diffPosition) : null,
+      side: side || 'RIGHT',
+      created_at: new Date().toISOString()
+    };
+
+    return { isFileLevel: false, newComment, suggestionRow };
+  }
+
+  /**
+   * Notify panels and navigator after a successful adoption
+   */
+  _notifyAdoption(suggestionId, newComment) {
+    if (window.aiPanel?.addComment) {
+      window.aiPanel.addComment(newComment);
+    }
+
+    if (this.suggestionNavigator?.suggestions) {
+      const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
+        s.id === suggestionId ? { ...s, status: 'adopted' } : s
+      );
+      this.suggestionNavigator.updateSuggestions(updatedSuggestions);
+    }
+
+    if (window.aiPanel) {
+      window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
+    }
+
+    this.updateCommentCount();
   }
 
   /**
@@ -2560,54 +2646,27 @@ class PRManager {
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (!suggestionDiv) throw new Error('Suggestion element not found');
 
-      const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
-      const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
+      const result = await this._adoptAndBuildComment(suggestionId, suggestionDiv);
 
-      // File-level suggestions use FileCommentManager for edit-and-adopt
-      if (isFileLevel) {
+      if (result.isFileLevel) {
         if (!this.fileCommentManager) throw new Error('FileCommentManager not initialized');
-        const zone = this.fileCommentManager.findZoneForFile(fileName);
-        if (!zone) throw new Error(`Could not find file comments zone for ${fileName}`);
+        const zone = this.fileCommentManager.findZoneForFile(result.fileName);
+        if (!zone) throw new Error(`Could not find file comments zone for ${result.fileName}`);
 
-        // Build suggestion object for FileCommentManager
         const suggestion = {
           id: suggestionId,
-          file: fileName,
-          body: suggestionText,
-          type: suggestionType,
-          title: suggestionTitle
+          file: result.fileName,
+          body: result.suggestionText,
+          type: result.suggestionType,
+          title: result.suggestionTitle
         };
 
-        // Use editAndAdoptAISuggestion which opens an edit form
         this.fileCommentManager.editAndAdoptAISuggestion(zone, suggestion);
         return;
       }
 
-      await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
-
-      const newComment = await this.createUserCommentFromSuggestion(
-        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side
-      );
-
-      this.displayUserCommentInEditMode(newComment, suggestionRow);
-
-      // Notify AI Panel about the new adopted comment
-      if (window.aiPanel?.addComment) {
-        window.aiPanel.addComment(newComment);
-      }
-
-      if (this.suggestionNavigator?.suggestions) {
-        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
-          s.id === suggestionId ? { ...s, status: 'adopted' } : s
-        );
-        this.suggestionNavigator.updateSuggestions(updatedSuggestions);
-      }
-
-      if (window.aiPanel) {
-        window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
-      }
-
-      this.updateCommentCount();
+      this.displayUserCommentInEditMode(result.newComment, result.suggestionRow);
+      this._notifyAdoption(suggestionId, result.newComment);
     } catch (error) {
       console.error('Error adopting and editing suggestion:', error);
       alert(`Failed to adopt suggestion: ${error.message}`);
@@ -2622,53 +2681,27 @@ class PRManager {
       const suggestionDiv = document.querySelector(`[data-suggestion-id="${suggestionId}"]`);
       if (!suggestionDiv) throw new Error('Suggestion element not found');
 
-      const { suggestionText, suggestionType, suggestionTitle } = this.extractSuggestionData(suggestionDiv);
-      const { suggestionRow, lineNumber, fileName, diffPosition, side, isFileLevel } = this.getFileAndLineInfo(suggestionDiv);
+      const result = await this._adoptAndBuildComment(suggestionId, suggestionDiv);
 
-      // File-level suggestions use FileCommentManager for adoption
-      if (isFileLevel) {
+      if (result.isFileLevel) {
         if (!this.fileCommentManager) throw new Error('FileCommentManager not initialized');
-        const zone = this.fileCommentManager.findZoneForFile(fileName);
-        if (!zone) throw new Error(`Could not find file comments zone for ${fileName}`);
+        const zone = this.fileCommentManager.findZoneForFile(result.fileName);
+        if (!zone) throw new Error(`Could not find file comments zone for ${result.fileName}`);
 
-        // Build suggestion object for FileCommentManager
         const suggestion = {
           id: suggestionId,
-          file: fileName,
-          body: suggestionText,
-          type: suggestionType,
-          title: suggestionTitle
+          file: result.fileName,
+          body: result.suggestionText,
+          type: result.suggestionType,
+          title: result.suggestionTitle
         };
 
         await this.fileCommentManager.adoptAISuggestion(zone, suggestion);
         return;
       }
 
-      await this.collapseAISuggestion(suggestionId, suggestionRow, 'Suggestion adopted', 'adopted');
-
-      const newComment = await this.createUserCommentFromSuggestion(
-        suggestionId, fileName, lineNumber, suggestionText, suggestionType, suggestionTitle, diffPosition, side
-      );
-
-      this.displayUserComment(newComment, suggestionRow);
-
-      // Notify AI Panel about the new adopted comment
-      if (window.aiPanel?.addComment) {
-        window.aiPanel.addComment(newComment);
-      }
-
-      if (this.suggestionNavigator?.suggestions) {
-        const updatedSuggestions = this.suggestionNavigator.suggestions.map(s =>
-          s.id === suggestionId ? { ...s, status: 'adopted' } : s
-        );
-        this.suggestionNavigator.updateSuggestions(updatedSuggestions);
-      }
-
-      if (window.aiPanel) {
-        window.aiPanel.updateFindingStatus(suggestionId, 'adopted');
-      }
-
-      this.updateCommentCount();
+      this.displayUserComment(result.newComment, result.suggestionRow);
+      this._notifyAdoption(suggestionId, result.newComment);
     } catch (error) {
       console.error('Error adopting suggestion:', error);
       alert(`Failed to adopt suggestion: ${error.message}`);

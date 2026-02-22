@@ -1890,7 +1890,7 @@ describe('AI Suggestion Endpoints', () => {
       expect(suggestion.status).toBe('dismissed');
     });
 
-    it('should update suggestion status to adopted', async () => {
+    it('should return 400 when trying to set status to adopted', async () => {
       const { lastID } = await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, body, status)
         VALUES (?, 'ai', 'file.js', 10, 'Suggestion', 'active')
@@ -1900,8 +1900,13 @@ describe('AI Suggestion Endpoints', () => {
         .post(`/api/reviews/${prId}/suggestions/${lastID}/status`)
         .send({ status: 'adopted' });
 
-      expect(response.status).toBe(200);
-      expect(response.body.status).toBe('adopted');
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Cannot set status to \'adopted\' directly');
+      expect(response.body.error).toContain('/adopt');
+
+      // Verify the status was NOT changed in the database
+      const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [lastID]);
+      expect(suggestion.status).toBe('active');
     });
 
     it('should restore suggestion to active and clear adopted_as_id', async () => {
@@ -1931,6 +1936,108 @@ describe('AI Suggestion Endpoints', () => {
       const suggestion = await queryOne(db, 'SELECT status, adopted_as_id FROM comments WHERE id = ?', [suggestionId]);
       expect(suggestion.status).toBe('active');
       expect(suggestion.adopted_as_id).toBeNull();
+    });
+  });
+
+  describe('POST /api/reviews/:reviewId/suggestions/:id/adopt', () => {
+    it('should adopt a suggestion and create a linked user comment', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, title, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Fix the bug here', 'bug', 'Null check needed', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.userCommentId).toBeDefined();
+      expect(response.body.message).toContain('adopted');
+
+      // Verify suggestion status is now 'adopted'
+      const suggestion = await queryOne(db, 'SELECT status, adopted_as_id FROM comments WHERE id = ?', [suggestionId]);
+      expect(suggestion.status).toBe('adopted');
+      expect(suggestion.adopted_as_id).toBe(response.body.userCommentId);
+
+      // Verify user comment was created with parent_id linkage
+      const userComment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.userCommentId]);
+      expect(userComment.source).toBe('user');
+      expect(userComment.parent_id).toBe(suggestionId);
+      expect(userComment.file).toBe('file.js');
+      expect(userComment.title).toBe('Null check needed');
+      // Body should be formatted with category prefix
+      expect(userComment.body).toContain('Fix the bug here');
+    });
+
+    it('should return 404 for non-existent suggestion', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/9999/adopt`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('AI suggestion not found');
+    });
+
+    it('should return 400 when suggestion is already adopted', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Already adopted', 'bug', 'adopted')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('already been adopted');
+    });
+
+    it('should return 400 when suggestion is dismissed', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Dismissed suggestion', 'bug', 'dismissed')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain("Cannot adopt suggestion with status 'dismissed'");
+      expect(response.body.error).toContain('Restore it to active first');
+    });
+
+    it('should return 403 when suggestion belongs to different review', async () => {
+      // Create another review
+      const { lastID: otherReviewId } = await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type)
+        VALUES (999, 'other/repo', 'draft', 'pr')
+      `);
+
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Other review suggestion', 'active')
+      `, [otherReviewId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain('does not belong to this review');
+    });
+
+    it('should format body with category prefix for typed suggestions', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Use const instead of let', 'improvement', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(200);
+
+      const userComment = await queryOne(db, 'SELECT body FROM comments WHERE id = ?', [response.body.userCommentId]);
+      // Should have emoji + category prefix
+      expect(userComment.body).toContain('**Improvement**');
+      expect(userComment.body).toContain('Use const instead of let');
     });
   });
 
@@ -5165,7 +5272,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
   });
 
   describe('POST /api/reviews/:reviewId/suggestions/:id/status (local mode)', () => {
-    it('should update suggestion status to adopted', async () => {
+    it('should return 400 when trying to set status to adopted', async () => {
       // Create an AI suggestion
       const suggestionResult = await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
@@ -5177,13 +5284,13 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
         .send({ status: 'adopted' });
 
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-      expect(response.body.status).toBe('adopted');
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Cannot set status to \'adopted\' directly');
+      expect(response.body.error).toContain('/adopt');
 
-      // Verify the status was updated in the database
+      // Verify the status was NOT changed in the database
       const suggestion = await queryOne(db, 'SELECT status FROM comments WHERE id = ?', [suggestionId]);
-      expect(suggestion.status).toBe('adopted');
+      expect(suggestion.status).toBe('active');
     });
 
     it('should update suggestion status to dismissed', async () => {
@@ -5231,7 +5338,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
     it('should return 404 when suggestion not found', async () => {
       const response = await request(app)
         .post(`/api/reviews/${reviewId}/suggestions/9999/status`)
-        .send({ status: 'adopted' });
+        .send({ status: 'dismissed' });
 
       expect(response.status).toBe(404);
       expect(response.body.error).toContain('AI suggestion not found');
@@ -5255,7 +5362,7 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
       // Try to update the suggestion using the wrong review ID
       const response = await request(app)
         .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/status`)
-        .send({ status: 'adopted' });
+        .send({ status: 'dismissed' });
 
       expect(response.status).toBe(403);
       expect(response.body.error).toContain('Suggestion does not belong to this review');
@@ -5280,10 +5387,98 @@ describe('Local Review AI Suggestion Status Endpoint', () => {
     it('should return 400 for invalid review ID', async () => {
       const response = await request(app)
         .post('/api/reviews/invalid/suggestions/1/status')
-        .send({ status: 'adopted' });
+        .send({ status: 'dismissed' });
 
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Invalid review ID');
+    });
+  });
+
+  describe('POST /api/reviews/:reviewId/suggestions/:id/adopt (local mode)', () => {
+    it('should adopt a suggestion and create a linked user comment', async () => {
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, title, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'Fix the bug here', 'bug', 'Null check needed', 'active', 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.userCommentId).toBeDefined();
+
+      // Verify suggestion status is now 'adopted'
+      const suggestion = await queryOne(db, 'SELECT status, adopted_as_id FROM comments WHERE id = ?', [suggestionId]);
+      expect(suggestion.status).toBe('adopted');
+      expect(suggestion.adopted_as_id).toBe(response.body.userCommentId);
+
+      // Verify user comment was created with parent_id linkage
+      const userComment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [response.body.userCommentId]);
+      expect(userComment.source).toBe('user');
+      expect(userComment.parent_id).toBe(suggestionId);
+      expect(userComment.file).toBe('test.js');
+      expect(userComment.title).toBe('Null check needed');
+      expect(userComment.body).toContain('Fix the bug here');
+    });
+
+    it('should return 404 for non-existent suggestion', async () => {
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/suggestions/9999/adopt`);
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('AI suggestion not found');
+    });
+
+    it('should return 400 when suggestion is already adopted', async () => {
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'Already adopted', 'bug', 'adopted', 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('already been adopted');
+    });
+
+    it('should return 400 when suggestion is dismissed', async () => {
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'Dismissed suggestion', 'bug', 'dismissed', 'run-1')
+      `, [reviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain("Cannot adopt suggestion with status 'dismissed'");
+      expect(response.body.error).toContain('Restore it to active first');
+    });
+
+    it('should return 403 when suggestion belongs to different review', async () => {
+      // Create another local review
+      const otherReviewResult = await run(db, `
+        INSERT INTO reviews (pr_number, repository, status, review_type, local_path, local_head_sha)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [null, 'other-repo', 'draft', 'local', '/tmp/other-repo', 'def456']);
+      const otherReviewId = otherReviewResult.lastID;
+
+      const suggestionResult = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, ai_run_id)
+        VALUES (?, 'ai', 'test.js', 10, 'Other review suggestion', 'active', 'run-1')
+      `, [otherReviewId]);
+      const suggestionId = suggestionResult.lastID;
+
+      const response = await request(app)
+        .post(`/api/reviews/${reviewId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain('does not belong to this review');
     });
   });
 });

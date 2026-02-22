@@ -8,7 +8,7 @@
  */
 
 const express = require('express');
-const { query, queryOne, run, CommentRepository, ReviewRepository, AnalysisRunRepository } = require('../database');
+const { query, queryOne, run, withTransaction, CommentRepository, ReviewRepository, AnalysisRunRepository } = require('../database');
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { activeAnalyses, reviewToAnalysisId } = require('./shared');
 const logger = require('../utils/logger');
@@ -21,6 +21,41 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { normalizeRepository } = require('../utils/paths');
 
 const router = express.Router();
+
+// Category to emoji mapping for formatting adopted comments (mirrors frontend SuggestionManager)
+// Canonical types from src/ai/prompts/shared/output-schema.js:
+// bug|improvement|praise|suggestion|design|performance|security|code-style
+const CATEGORY_EMOJI_MAP = {
+  'bug': '\u{1F41B}',           // bug
+  'improvement': '\u{1F4A1}',   // lightbulb
+  'praise': '\u{1F44F}',        // clapping hands
+  'suggestion': '\u{1F4AC}',    // speech bubble
+  'design': '\u{1F3D7}\uFE0F',  // building construction
+  'performance': '\u{26A1}',    // high voltage
+  'security': '\u{1F512}',      // lock
+  'code-style': '\u{1F3A8}',    // artist palette
+  'style': '\u{1F3A8}'          // artist palette (alias for code-style)
+};
+
+/**
+ * Format adopted comment text with emoji and category prefix.
+ * Mirrors the frontend formatAdoptedComment() in SuggestionManager / FileCommentManager.
+ * @param {string} text - Comment text
+ * @param {string} category - Category name (e.g., 'bug', 'code-style')
+ * @returns {string} Formatted text with emoji prefix
+ */
+function formatAdoptedComment(text, category) {
+  if (!category) {
+    return text;
+  }
+  const emoji = CATEGORY_EMOJI_MAP[category] || '\u{1F4AC}';
+  // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
+  const capitalizedCategory = category
+    .split('-')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+  return `${emoji} **${capitalizedCategory}**: ${text}`;
+}
 
 /**
  * Middleware: validate that :reviewId exists in the reviews table.
@@ -569,16 +604,22 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
 
 /**
  * POST /api/reviews/:reviewId/suggestions/:id/status
- * Update AI suggestion status (adopt/dismiss/restore).
+ * Update AI suggestion status (dismiss/restore).
+ * Note: "adopted" is not allowed here — use the /edit endpoint instead.
  */
 router.post('/api/reviews/:reviewId/suggestions/:id/status', validateReviewId, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
-    if (!['adopted', 'dismissed', 'active'].includes(status)) {
+    if (!['dismissed', 'active'].includes(status)) {
+      if (status === 'adopted') {
+        return res.status(400).json({
+          error: 'Cannot set status to \'adopted\' directly. Use POST /suggestions/:id/adopt for adopt-as-is or POST /suggestions/:id/edit for adopt-with-edits.'
+        });
+      }
       return res.status(400).json({
-        error: 'Invalid status. Must be "adopted", "dismissed", or "active"'
+        error: 'Invalid status. Must be "dismissed" or "active"'
       });
     }
 
@@ -614,6 +655,78 @@ router.post('/api/reviews/:reviewId/suggestions/:id/status', validateReviewId, a
     logger.error('Error updating suggestion status:', error);
     res.status(500).json({
       error: error.message || 'Failed to update suggestion status'
+    });
+  }
+});
+
+/**
+ * POST /api/reviews/:reviewId/suggestions/:id/adopt
+ * Adopt an AI suggestion as-is as a user comment.
+ *
+ * Atomically:
+ *  1. Reads the suggestion from the DB
+ *  2. Creates a user comment from the suggestion's body/type/title (with category prefix)
+ *  3. Sets parent_id linkage on the new comment
+ *  4. Sets suggestion status to 'adopted' in the DB
+ *  5. Returns the new userCommentId
+ *
+ * Why this exists: adoption must create a linked user comment via parent_id,
+ * which is why raw status-setting via POST /suggestions/:id/status cannot do it.
+ * Use this endpoint for adopt-as-is; use POST /suggestions/:id/edit for adopt-with-edits.
+ */
+router.post('/api/reviews/:reviewId/suggestions/:id/adopt', validateReviewId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = req.app.get('db');
+    const commentRepo = new CommentRepository(db);
+
+    // Get the suggestion to validate it exists
+    const suggestion = await commentRepo.getComment(id, 'ai');
+
+    if (!suggestion) {
+      return res.status(404).json({
+        error: 'AI suggestion not found'
+      });
+    }
+
+    // Verify suggestion belongs to this review
+    if (suggestion.review_id !== req.reviewId) {
+      return res.status(403).json({
+        error: 'Suggestion does not belong to this review'
+      });
+    }
+
+    // Only active suggestions can be adopted
+    if (suggestion.status !== 'active') {
+      return res.status(400).json({
+        error: suggestion.status === 'adopted'
+          ? 'Suggestion has already been adopted'
+          : `Cannot adopt suggestion with status '${suggestion.status}'. Restore it to active first.`
+      });
+    }
+
+    // Format the body with category prefix (mirrors frontend formatAdoptedComment)
+    const formattedBody = formatAdoptedComment(suggestion.body, suggestion.type);
+
+    // Atomically adopt: create user comment and update suggestion status in one transaction
+    const userCommentId = await withTransaction(db, async () => {
+      const ucId = await commentRepo.adoptSuggestion(id, formattedBody);
+      await commentRepo.updateSuggestionStatus(id, 'adopted', ucId);
+      return ucId;
+    });
+
+    res.json({
+      success: true,
+      userCommentId,
+      message: 'Suggestion adopted as user comment'
+    });
+    broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });
+    broadcastReviewEvent(req.reviewId, { type: 'review:comments_changed' }, { sourceClientId: req.get('X-Client-Id') });
+
+  } catch (error) {
+    logger.error('Error adopting suggestion:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to adopt suggestion'
     });
   }
 });
@@ -658,11 +771,12 @@ router.post('/api/reviews/:reviewId/suggestions/:id/edit', validateReviewId, asy
       });
     }
 
-    // Adopt the suggestion with edited text using repository
-    const userCommentId = await commentRepo.adoptSuggestion(id, editedText);
-
-    // Update suggestion status to adopted and link to user comment
-    await commentRepo.updateSuggestionStatus(id, 'adopted', userCommentId);
+    // Atomically adopt: create user comment and update suggestion status in one transaction
+    const userCommentId = await withTransaction(db, async () => {
+      const ucId = await commentRepo.adoptSuggestion(id, editedText);
+      await commentRepo.updateSuggestionStatus(id, 'adopted', ucId);
+      return ucId;
+    });
 
     res.json({
       success: true,

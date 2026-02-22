@@ -949,4 +949,105 @@ describe('PRManager Suggestion Status', () => {
       expect(prManager.loadUserComments).toHaveBeenCalledWith(false);
     });
   });
+
+  // Regression guard for pair_review-149d: collapseSuggestionForAdoption must only
+  // affect the targeted suggestion when multiple suggestions share the same row.
+  describe('collapseSuggestionForAdoption', () => {
+    let prManager;
+
+    beforeEach(() => {
+      prManager = Object.create(PRManager.prototype);
+    });
+
+    /**
+     * Build a mock suggestion div with the DOM structure
+     * collapseSuggestionForAdoption queries:
+     *   - classList.add('collapsed')
+     *   - querySelector('.collapsed-text') -> { textContent }
+     *   - querySelector('.btn-restore') -> { title, querySelector('.btn-text') -> { textContent } }
+     *   - dataset.hiddenForAdoption
+     */
+    function buildSuggestionDiv(id) {
+      const collapsedText = { textContent: '' };
+      const btnText = { textContent: '' };
+      const restoreBtn = { title: '', querySelector: vi.fn(() => btnText) };
+
+      const div = {
+        dataset: { suggestionId: id },
+        classList: { add: vi.fn() },
+        querySelector: vi.fn((selector) => {
+          if (selector === '.collapsed-text') return collapsedText;
+          if (selector === '.btn-restore') return restoreBtn;
+          return null;
+        }),
+        getAttribute: vi.fn((attr) => attr === 'data-suggestion-id' ? id : null),
+        _collapsedText: collapsedText,
+        _restoreBtn: restoreBtn,
+        _btnText: btnText
+      };
+      return div;
+    }
+
+    /**
+     * Build a mock suggestion row that contains one or more suggestion divs.
+     * The row's querySelector uses CSS attribute selectors to find the right div.
+     */
+    function buildRowWithSuggestions(...divs) {
+      return {
+        querySelector: vi.fn((selector) => {
+          // selector looks like: [data-suggestion-id="<id>"]
+          const match = selector.match(/data-suggestion-id="([^"]+)"/);
+          if (!match) return null;
+          return divs.find(d => d.dataset.suggestionId === match[1]) || null;
+        })
+      };
+    }
+
+    it('should collapse the targeted suggestion div', () => {
+      const div = buildSuggestionDiv('s1');
+      const row = buildRowWithSuggestions(div);
+
+      prManager.collapseSuggestionForAdoption(row, 's1');
+
+      expect(div.classList.add).toHaveBeenCalledWith('collapsed');
+      expect(div._collapsedText.textContent).toBe('Suggestion adopted');
+      expect(div._restoreBtn.title).toBe('Show suggestion');
+      expect(div._btnText.textContent).toBe('Show');
+      expect(div.dataset.hiddenForAdoption).toBe('true');
+    });
+
+    it('should only collapse the targeted suggestion when two suggestions share the same row', () => {
+      const divA = buildSuggestionDiv('s-target');
+      const divB = buildSuggestionDiv('s-other');
+      const row = buildRowWithSuggestions(divA, divB);
+
+      prManager.collapseSuggestionForAdoption(row, 's-target');
+
+      // Target suggestion should be collapsed
+      expect(divA.classList.add).toHaveBeenCalledWith('collapsed');
+      expect(divA._collapsedText.textContent).toBe('Suggestion adopted');
+      expect(divA.dataset.hiddenForAdoption).toBe('true');
+
+      // Other suggestion on the same row should be completely unaffected
+      expect(divB.classList.add).not.toHaveBeenCalled();
+      expect(divB._collapsedText.textContent).toBe('');
+      expect(divB.dataset.hiddenForAdoption).toBeUndefined();
+    });
+
+    it('should be a no-op when suggestionRow is null', () => {
+      // Should not throw
+      expect(() => prManager.collapseSuggestionForAdoption(null, 's1')).not.toThrow();
+    });
+
+    it('should be a no-op when the target div is not found in the row', () => {
+      const divA = buildSuggestionDiv('s-other');
+      const row = buildRowWithSuggestions(divA);
+
+      // Targeting a non-existent suggestion ID should not affect divA
+      prManager.collapseSuggestionForAdoption(row, 's-missing');
+
+      expect(divA.classList.add).not.toHaveBeenCalled();
+      expect(divA._collapsedText.textContent).toBe('');
+    });
+  });
 });

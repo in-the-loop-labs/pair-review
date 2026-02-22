@@ -6,20 +6,18 @@
 
 class FileCommentManager {
   // Category to emoji mapping for formatting adopted comments (matches SuggestionManager)
+  // Canonical types from src/ai/prompts/shared/output-schema.js:
+  // bug|improvement|praise|suggestion|design|performance|security|code-style
   static CATEGORY_EMOJI_MAP = {
     'bug': '\u{1F41B}',           // bug
     'improvement': '\u{1F4A1}',   // lightbulb
-    'suggestion': '\u{1F4AD}',    // thought balloon
-    'design': '\u{1F3D7}',        // building construction
-    'performance': '\u{1F680}',   // rocket
+    'praise': '\u{1F44F}',        // clapping hands
+    'suggestion': '\u{1F4AC}',    // speech bubble
+    'design': '\u{1F3D7}\uFE0F',  // building construction
+    'performance': '\u{26A1}',    // high voltage
     'security': '\u{1F512}',      // lock
-    'refactor': '\u{1F527}',      // wrench
-    'documentation': '\u{1F4DD}', // memo
-    'test': '\u{2705}',           // white heavy check mark
-    'style': '\u{1F3A8}',         // artist palette
-    'chore': '\u{1F9F9}',         // broom
-    'feat': '\u{2728}',           // sparkles
-    'fix': '\u{1F527}'            // wrench
+    'code-style': '\u{1F3A8}',    // artist palette
+    'style': '\u{1F3A8}'          // artist palette (alias for code-style)
   };
 
   constructor(prManagerRef) {
@@ -597,37 +595,19 @@ class FileCommentManager {
    */
   async adoptAISuggestion(zone, suggestion) {
     try {
-      // Format the comment body with category prefix (matches line-level behavior)
-      const formattedBody = this.formatAdoptedComment(suggestion.body, suggestion.type);
+      // Use the atomic /adopt endpoint which creates the user comment, sets parent_id
+      // linkage, and updates suggestion status to 'adopted' in a single request
+      const reviewId = this.prManager?.currentPR?.id;
+      const adoptEndpoint = `/api/reviews/${reviewId}/suggestions/${suggestion.id}/adopt`;
 
-      // Create a file-level user comment from the suggestion, including parent_id/type/title for adopted suggestions
-      const { endpoint, requestBody } = this._getFileCommentEndpoint('create', {
-        file: suggestion.file,
-        body: formattedBody,
-        parent_id: suggestion.id,
-        type: suggestion.type,
-        title: suggestion.title
-      });
-
-      const createResponse = await fetch(endpoint, {
+      const adoptResponse = await fetch(adoptEndpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
+        headers: { 'Content-Type': 'application/json' }
       });
 
-      if (!createResponse.ok) throw new Error('Failed to create user comment');
+      if (!adoptResponse.ok) throw new Error('Failed to adopt suggestion');
 
-      const createResult = await createResponse.json();
-
-      // Update the AI suggestion status to adopted (mode-aware endpoint)
-      const statusEndpoint = this._getSuggestionStatusEndpoint(suggestion.id);
-      const statusResponse = await fetch(statusEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'adopted' })
-      });
-
-      if (!statusResponse.ok) throw new Error('Failed to update suggestion status');
+      const adoptResult = await adoptResponse.json();
 
       // Collapse the AI suggestion card instead of removing it
       const suggestionCard = zone.querySelector(`[data-suggestion-id="${suggestion.id}"]`);
@@ -640,9 +620,12 @@ class FileCommentManager {
         }
       }
 
+      // Format the comment body with category prefix for display (matches server-side formatting)
+      const formattedBody = this.formatAdoptedComment(suggestion.body, suggestion.type);
+
       // Display as user comment with formatted body
       const commentData = {
-        id: createResult.commentId,
+        id: adoptResult.userCommentId,
         file: suggestion.file,
         body: formattedBody,
         source: 'user',
@@ -856,34 +839,23 @@ class FileCommentManager {
       // Format the edited body with category prefix (matches line-level behavior)
       const formattedBody = this.formatAdoptedComment(editedBody, suggestion.type);
 
-      // Create a file-level user comment with the edited body, including parent_id/type/title for adopted suggestions
-      const { endpoint, requestBody } = this._getFileCommentEndpoint('create', {
-        file: suggestion.file,
-        body: formattedBody,
-        parent_id: suggestion.id,
-        type: suggestion.type,
-        title: suggestion.title
-      });
+      // Use the /edit endpoint which atomically creates a user comment with the edited
+      // body and sets the suggestion status to 'adopted' with parent_id linkage
+      const reviewId = this.prManager?.currentPR?.id;
+      const editEndpoint = `/api/reviews/${reviewId}/suggestions/${suggestion.id}/edit`;
 
-      const createResponse = await fetch(endpoint, {
+      const editResponse = await fetch(editEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify({
+          action: 'adopt_edited',
+          editedText: formattedBody
+        })
       });
 
-      if (!createResponse.ok) throw new Error('Failed to create user comment');
+      if (!editResponse.ok) throw new Error('Failed to adopt suggestion with edits');
 
-      const createResult = await createResponse.json();
-
-      // Update the AI suggestion status to adopted (mode-aware endpoint)
-      const statusEndpoint = this._getSuggestionStatusEndpoint(suggestion.id);
-      const statusResponse = await fetch(statusEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'adopted' })
-      });
-
-      if (!statusResponse.ok) throw new Error('Failed to update suggestion status');
+      const editResult = await editResponse.json();
 
       // Collapse the AI suggestion card instead of removing it
       const suggestionCard = zone.querySelector(`[data-suggestion-id="${suggestion.id}"]`);
@@ -898,7 +870,7 @@ class FileCommentManager {
 
       // Display as user comment with formatted body
       const commentData = {
-        id: createResult.commentId,
+        id: editResult.userCommentId,
         file: suggestion.file,
         body: formattedBody,
         source: 'user',
