@@ -92,6 +92,20 @@ function registerSSEBroadcast(chatSessionManager, sessionId, port) {
         }
       }
 
+      // Suppress tool badges for reading the API skill file
+      if (data.toolName?.toLowerCase() === 'read' && data.status === 'start') {
+        if ((data.args?.file_path || '').endsWith('pair-review-api/SKILL.md')) {
+          hiddenToolCallIds.add(data.toolCallId);
+          return;
+        }
+      }
+
+      // Suppress follow-up events (update/end) for any hidden tool call
+      if (hiddenToolCallIds.has(data.toolCallId)) {
+        if (data.status === 'end') hiddenToolCallIds.delete(data.toolCallId);
+        return;
+      }
+
       const event = { type: 'tool_use', toolName: data.toolName, status: data.status };
       if (data.args) {
         event.toolInput = data.args;
