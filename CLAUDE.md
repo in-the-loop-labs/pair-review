@@ -98,9 +98,6 @@ Pair-Review is a local web application that assists human reviewers with GitHub 
 - Auto-open browser on start
 - Serve static files and API endpoints
 
-## Future Features (Post-MVP)
-- Interactive chat with AI about specific code sections
-
 ## Testing
 - `npm test` - Run all tests once
 - `npm run test:watch` - Run tests in watch mode (re-runs on file changes)
@@ -128,6 +125,7 @@ Test structure:
   - All change must support BOTH Local mode and PR mode
   - Include appropriate test coverage when making changes, especially for bug fixes
   - Consider whether a change also requires a README update
+  - Rename plan files under `plans/` to match the functionality described
   - When completing a change, run the relevant tests
   - When completing changes that modify frontend code, use a Task tool run E2E tests
 
