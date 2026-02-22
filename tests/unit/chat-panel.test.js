@@ -95,6 +95,7 @@ function createMockElement(tag = 'div', overrides = {}) {
       if (selector === '.chat-panel__action-btn--dismiss-comment') return elementRegistry['chat-dismiss-comment-btn'] || null;
       if (selector === '.chat-panel__resize-handle') return elementRegistry['chat-resize-handle'] || null;
       if (selector === '.chat-panel__empty') return elementRegistry['chat-empty'] || null;
+      if (selector === '.chat-panel__new-content-pill') return elementRegistry['chat-new-content-pill'] || null;
       if (selector === '.chat-panel__context-card') return null;
       if (selector === '.chat-panel__bubble') return null;
       if (selector === '.chat-panel__thinking') return null;
@@ -150,6 +151,7 @@ function buildElementRegistry() {
     'chat-session-picker-btn': createMockElement('button'),
     'chat-session-dropdown': createMockElement('div'),
     'chat-title-text': createMockElement('span'),
+    'chat-new-content-pill': createMockElement('button'),
   };
 
   // Give the textarea a value property
@@ -165,6 +167,7 @@ function buildElementRegistry() {
   elementRegistry['chat-dismiss-suggestion-btn'].style = { display: 'none' };
   elementRegistry['chat-dismiss-comment-btn'].style = { display: 'none' };
   elementRegistry['chat-session-dropdown'].style = { display: 'none' };
+  elementRegistry['chat-new-content-pill'].style = { display: 'none' };
 
   return elementRegistry;
 }
@@ -236,7 +239,7 @@ global.setTimeout = vi.fn((cb) => { cb(); return 99; });
 global.requestAnimationFrame = vi.fn((cb) => { cb(); return 0; });
 
 // Now require the production ChatPanel module
-const { ChatPanel } = require('../../public/js/components/ChatPanel.js');
+const { ChatPanel, NEAR_BOTTOM_THRESHOLD } = require('../../public/js/components/ChatPanel.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -273,6 +276,7 @@ function createChatPanel() {
       '.chat-panel__session-picker-btn': reg['chat-session-picker-btn'],
       '.chat-panel__session-dropdown': reg['chat-session-dropdown'],
       '.chat-panel__title-text': reg['chat-title-text'],
+      '.chat-panel__new-content-pill': reg['chat-new-content-pill'],
     };
     return map[selector] || null;
   });
@@ -4501,6 +4505,265 @@ describe('ChatPanel', () => {
 
       expect(chatPanel._showToast).toHaveBeenCalledWith('Could not load file');
       expect(linkEl.classList.remove).toHaveBeenCalledWith('chat-file-link--loading');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // scrollToBottom and new-content pill
+  // -------------------------------------------------------------------------
+
+  describe('scrollToBottom and new-content pill', () => {
+    /** Helper: configure messagesEl scroll geometry so we can control nearBottom. */
+    function setScrollGeometry(scrollTop, scrollHeight, clientHeight) {
+      Object.defineProperty(chatPanel.messagesEl, 'scrollTop', {
+        get: () => scrollTop,
+        set: vi.fn(),
+        configurable: true,
+      });
+      Object.defineProperty(chatPanel.messagesEl, 'scrollHeight', {
+        value: scrollHeight,
+        configurable: true,
+      });
+      Object.defineProperty(chatPanel.messagesEl, 'clientHeight', {
+        value: clientHeight,
+        configurable: true,
+      });
+    }
+
+    it('NEAR_BOTTOM_THRESHOLD is exported and equals 80', () => {
+      expect(NEAR_BOTTOM_THRESHOLD).toBe(80);
+    });
+
+    describe('scrollToBottom({ force: true })', () => {
+      it('should always scroll to bottom and hide the pill', () => {
+        // User is far from bottom (distance = 500)
+        setScrollGeometry(100, 1000, 400);
+        chatPanel.newContentPill.style.display = ''; // pill visible
+
+        chatPanel.scrollToBottom({ force: true });
+
+        // Pill should be hidden
+        expect(chatPanel.newContentPill.style.display).toBe('none');
+      });
+
+      it('should scroll to bottom even when already near bottom', () => {
+        // distance = 50, which is < threshold
+        setScrollGeometry(450, 1000, 500);
+        chatPanel.newContentPill.style.display = '';
+
+        chatPanel.scrollToBottom({ force: true });
+
+        expect(chatPanel.newContentPill.style.display).toBe('none');
+      });
+
+      it('should scroll and clear _userScrolledAway even when flag is true', () => {
+        chatPanel._userScrolledAway = true;
+        setScrollGeometry(100, 1000, 400);
+        chatPanel.newContentPill.style.display = '';
+
+        chatPanel.scrollToBottom({ force: true });
+
+        expect(chatPanel._userScrolledAway).toBe(false);
+        expect(chatPanel.newContentPill.style.display).toBe('none');
+      });
+    });
+
+    describe('scrollToBottom() without force', () => {
+      beforeEach(() => {
+        // Ensure flag is clear so threshold logic is exercised
+        chatPanel._userScrolledAway = false;
+      });
+
+      it('should scroll when near the bottom (within threshold)', () => {
+        // distance = 50, which is < 80 threshold
+        setScrollGeometry(450, 1000, 500);
+        chatPanel.newContentPill.style.display = '';
+
+        chatPanel.scrollToBottom();
+
+        // Pill should be hidden (auto-scrolled)
+        expect(chatPanel.newContentPill.style.display).toBe('none');
+      });
+
+      it('should show pill when not near the bottom', () => {
+        // distance = 200, which is > 80 threshold
+        setScrollGeometry(300, 1000, 500);
+        chatPanel.newContentPill.style.display = 'none';
+
+        chatPanel.scrollToBottom();
+
+        // Pill should now be visible
+        expect(chatPanel.newContentPill.style.display).toBe('');
+      });
+
+      it('should show pill at exactly the threshold boundary', () => {
+        // distance = exactly 80, which is NOT less than 80, so pill shows
+        setScrollGeometry(420, 1000, 500);
+        chatPanel.newContentPill.style.display = 'none';
+
+        chatPanel.scrollToBottom();
+
+        expect(chatPanel.newContentPill.style.display).toBe('');
+      });
+
+      it('should auto-scroll at one pixel inside threshold', () => {
+        // distance = 79, which IS less than 80
+        setScrollGeometry(421, 1000, 500);
+        chatPanel.newContentPill.style.display = '';
+
+        chatPanel.scrollToBottom();
+
+        expect(chatPanel.newContentPill.style.display).toBe('none');
+      });
+    });
+
+    describe('_userScrolledAway flag', () => {
+      it('should bail immediately and show pill when flag is true (no force)', () => {
+        chatPanel._userScrolledAway = true;
+        // Even near bottom, flag causes immediate bail
+        setScrollGeometry(450, 1000, 500);
+        chatPanel.newContentPill.style.display = 'none';
+
+        chatPanel.scrollToBottom();
+
+        expect(chatPanel.newContentPill.style.display).toBe('');
+        // Flag remains true
+        expect(chatPanel._userScrolledAway).toBe(true);
+      });
+
+      it('should set flag to true when scrollToBottom sees user far from bottom', () => {
+        chatPanel._userScrolledAway = false;
+        setScrollGeometry(100, 1000, 400); // distance = 500
+
+        chatPanel.scrollToBottom();
+
+        expect(chatPanel._userScrolledAway).toBe(true);
+        expect(chatPanel.newContentPill.style.display).toBe('');
+      });
+
+      it('should clear flag when scrollToBottom auto-scrolls near bottom', () => {
+        chatPanel._userScrolledAway = false;
+        setScrollGeometry(450, 1000, 500); // distance = 50
+
+        chatPanel.scrollToBottom();
+
+        expect(chatPanel._userScrolledAway).toBe(false);
+        expect(chatPanel.newContentPill.style.display).toBe('none');
+      });
+    });
+
+    describe('scroll listener direction tracking', () => {
+      /** Helper: retrieve the scroll handler registered on messagesEl. */
+      function getScrollHandler() {
+        const scrollCalls = chatPanel.messagesEl.addEventListener.mock.calls
+          .filter(([event]) => event === 'scroll');
+        expect(scrollCalls.length).toBeGreaterThan(0);
+        return scrollCalls[0][1];
+      }
+
+      it('should set _userScrolledAway when scrolling UP beyond threshold', () => {
+        const handler = getScrollHandler();
+        chatPanel._userScrolledAway = false;
+
+        // First scroll event at scrollTop=500 to set lastScrollTop
+        setScrollGeometry(500, 1000, 400); // distance = 100 (>= threshold)
+        handler();
+        expect(chatPanel._userScrolledAway).toBe(false); // scrolling down or first event
+
+        // Second event: scrollTop=400 (scrolling UP), distance = 200 (>= threshold)
+        setScrollGeometry(400, 1000, 400);
+        handler();
+        expect(chatPanel._userScrolledAway).toBe(true);
+        expect(chatPanel.newContentPill.style.display).toBe('');
+      });
+
+      it('should clear _userScrolledAway when scrolling back near bottom', () => {
+        const handler = getScrollHandler();
+        chatPanel._userScrolledAway = true;
+
+        // Scroll to near bottom: distance = 50 (< threshold)
+        setScrollGeometry(550, 1000, 400);
+        handler();
+        expect(chatPanel._userScrolledAway).toBe(false);
+        expect(chatPanel.newContentPill.style.display).toBe('none');
+      });
+
+      it('should not change flag when scrolling DOWN but still far from bottom', () => {
+        const handler = getScrollHandler();
+
+        // First event to set lastScrollTop
+        setScrollGeometry(100, 1000, 400); // distance = 500
+        handler();
+
+        // Scrolling down (scrollTop increased), still far from bottom
+        chatPanel._userScrolledAway = false;
+        setScrollGeometry(200, 1000, 400); // distance = 400, scrolling down
+        handler();
+        // Not scrolling UP, distance >= threshold -> no change to flag
+        expect(chatPanel._userScrolledAway).toBe(false);
+      });
+    });
+
+    describe('scrollToBottom with no messagesEl', () => {
+      it('should not throw when messagesEl is null', () => {
+        chatPanel.messagesEl = null;
+        expect(() => chatPanel.scrollToBottom()).not.toThrow();
+        expect(() => chatPanel.scrollToBottom({ force: true })).not.toThrow();
+      });
+    });
+
+    describe('_showNewContentPill / _hideNewContentPill', () => {
+      it('_showNewContentPill makes pill visible', () => {
+        chatPanel.newContentPill.style.display = 'none';
+        chatPanel._showNewContentPill();
+        expect(chatPanel.newContentPill.style.display).toBe('');
+      });
+
+      it('_hideNewContentPill makes pill hidden', () => {
+        chatPanel.newContentPill.style.display = '';
+        chatPanel._hideNewContentPill();
+        expect(chatPanel.newContentPill.style.display).toBe('none');
+      });
+
+      it('_showNewContentPill does not throw when pill is null', () => {
+        chatPanel.newContentPill = null;
+        expect(() => chatPanel._showNewContentPill()).not.toThrow();
+      });
+
+      it('_hideNewContentPill does not throw when pill is null', () => {
+        chatPanel.newContentPill = null;
+        expect(() => chatPanel._hideNewContentPill()).not.toThrow();
+      });
+    });
+
+    describe('pill click triggers force scroll', () => {
+      it('should call scrollToBottom with force: true on pill click', () => {
+        const spy = vi.spyOn(chatPanel, 'scrollToBottom');
+
+        // Find the click handler registered on the pill
+        const clickCalls = chatPanel.newContentPill.addEventListener.mock.calls
+          .filter(([event]) => event === 'click');
+
+        expect(clickCalls.length).toBeGreaterThan(0);
+
+        // Invoke the click handler
+        const clickHandler = clickCalls[0][1];
+        clickHandler();
+
+        expect(spy).toHaveBeenCalledWith({ force: true });
+      });
+
+      it('should clear _userScrolledAway when pill click triggers force scroll', () => {
+        chatPanel._userScrolledAway = true;
+        setScrollGeometry(100, 1000, 400); // far from bottom
+        chatPanel.newContentPill.style.display = '';
+
+        // Simulate what the pill click handler does
+        chatPanel.scrollToBottom({ force: true });
+
+        expect(chatPanel._userScrolledAway).toBe(false);
+        expect(chatPanel.newContentPill.style.display).toBe('none');
+      });
     });
   });
 });
