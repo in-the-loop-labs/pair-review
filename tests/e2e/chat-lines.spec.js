@@ -100,7 +100,7 @@ test.describe('Gutter chat button', () => {
     await expect(page.locator('.chat-panel')).toBeVisible({ timeout: 5000 });
 
     // A context card should be rendered (not prefilled text in textarea)
-    const contextCard = page.locator('.chat-panel__context-card');
+    const contextCard = page.locator('.chat-panel__context-card[data-context-index]');
     await expect(contextCard).toBeVisible({ timeout: 3000 });
 
     // Textarea should be empty (no prefillText)
