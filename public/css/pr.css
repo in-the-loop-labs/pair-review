@@ -11840,6 +11840,49 @@ body.resizing * {
   color: var(--color-danger, #cf222e);
 }
 
+/* Context chunk header (range label + per-chunk dismiss) */
+.context-chunk-header td {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  border-top: 1px dashed var(--color-border-secondary, #d0d7de);
+}
+
+.context-range-label {
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.context-chunk-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  font-size: 14px;
+  margin-left: 8px;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+.context-chunk-dismiss:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-danger, #cf222e);
+}
+
+/* Separator between non-contiguous context chunks */
+.context-chunk-separator-row {
+  height: 8px;
+}
+
+.context-chunk-separator-cell {
+  border-top: 1px dashed var(--color-border-secondary, #d0d7de);
+  background: var(--color-bg-subtle, #f6f8fa);
+}
+
 .file-item.context-file-item .file-name {
   font-size: 11px;
   color: var(--color-text-secondary);
@@ -11872,6 +11915,14 @@ body.resizing * {
 
 [data-theme="dark"] .context-file-dismiss:hover {
   color: var(--color-danger, #f85149);
+}
+
+[data-theme="dark"] .context-chunk-dismiss:hover {
+  color: var(--color-danger, #f85149);
+}
+
+[data-theme="dark"] .context-chunk-separator-cell {
+  background: var(--color-bg-subtle, #161b22);
 }
 
 [data-theme="dark"] .chat-file-link {

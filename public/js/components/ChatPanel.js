@@ -2495,8 +2495,24 @@ class ChatPanel {
       // File is already rendered — scroll to it
       const contextEl = wrapper.closest('.context-file');
       if (contextEl) {
-        // Context file
-        const contextFileId = contextEl.dataset?.contextId;
+        // Context file — find the right chunk by line number or use first chunk
+        let contextFileId = contextEl.dataset?.contextId; // legacy: on wrapper itself
+        if (!contextFileId && lineStart) {
+          // Merged wrapper: find chunk tbody containing this line
+          const chunks = [...contextEl.querySelectorAll('tbody.context-chunk[data-context-id]')];
+          for (const chunk of chunks) {
+            const row = chunk.querySelector(`tr[data-line-number="${lineStart}"]`);
+            if (row) {
+              contextFileId = chunk.dataset.contextId;
+              break;
+            }
+          }
+        }
+        if (!contextFileId) {
+          // Fallback: use first chunk's context ID
+          const firstChunk = contextEl.querySelector('tbody.context-chunk[data-context-id]');
+          if (firstChunk) contextFileId = firstChunk.dataset.contextId;
+        }
         if (window.prManager?.scrollToContextFile) {
           window.prManager.scrollToContextFile(file, lineStart, contextFileId);
         }
