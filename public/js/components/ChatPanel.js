@@ -7,6 +7,9 @@
 
 const DISMISS_ICON = `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>`;
 
+/** Pixel threshold for considering the user "near the bottom" of the messages container. */
+const NEAR_BOTTOM_THRESHOLD = 80;
+
 class ChatPanel {
   constructor(containerId) {
     this.containerId = containerId;
@@ -70,13 +73,16 @@ class ChatPanel {
             </button>
           </div>
         </div>
-        <div class="chat-panel__messages" id="chat-messages">
-          <div class="chat-panel__empty">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
-              <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-            </svg>
-            <p>Ask questions about this review, or the changes</p>
+        <div class="chat-panel__messages-wrapper">
+          <div class="chat-panel__messages" id="chat-messages">
+            <div class="chat-panel__empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
+                <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+              </svg>
+              <p>Ask questions about this review, or the changes</p>
+            </div>
           </div>
+          <button class="chat-panel__new-content-pill" style="display:none">\u2193 New content</button>
         </div>
         <div class="chat-panel__action-bar" style="display: none;">
           <button class="chat-panel__action-btn chat-panel__action-btn--adopt" style="display: none;" title="Adopt this suggestion with edits based on the conversation">
@@ -138,6 +144,7 @@ class ChatPanel {
     this.sessionPickerBtn = this.container.querySelector('.chat-panel__session-picker-btn');
     this.sessionDropdown = this.container.querySelector('.chat-panel__session-dropdown');
     this.titleTextEl = this.container.querySelector('.chat-panel__title-text');
+    this.newContentPill = this.container.querySelector('.chat-panel__new-content-pill');
   }
 
   /**
@@ -166,6 +173,31 @@ class ChatPanel {
     this.updateBtn.addEventListener('click', () => this._handleUpdateClick());
     this.dismissSuggestionBtn.addEventListener('click', () => this._handleDismissSuggestionClick());
     this.dismissCommentBtn.addEventListener('click', () => this._handleDismissCommentClick());
+
+    // New-content pill: click to scroll to bottom
+    if (this.newContentPill) {
+      this.newContentPill.addEventListener('click', () => this.scrollToBottom({ force: true }));
+    }
+
+    // Track scroll direction to disengage/re-engage auto-scroll
+    if (this.messagesEl) {
+      let lastScrollTop = 0;
+      this.messagesEl.addEventListener('scroll', () => {
+        const { scrollTop, scrollHeight, clientHeight } = this.messagesEl;
+        const distance = scrollHeight - scrollTop - clientHeight;
+
+        if (scrollTop < lastScrollTop && distance >= NEAR_BOTTOM_THRESHOLD) {
+          // Scrolling UP and not near bottom — disengage
+          this._userScrolledAway = true;
+          this._showNewContentPill();
+        } else if (distance < NEAR_BOTTOM_THRESHOLD) {
+          // Back near bottom — re-engage
+          this._userScrolledAway = false;
+          this._hideNewContentPill();
+        }
+        lastScrollTop = scrollTop;
+      }, { passive: true });
+    }
 
     // Textarea input handling
     this.inputEl.addEventListener('input', () => {
@@ -1304,7 +1336,7 @@ class ChatPanel {
     if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
-    requestAnimationFrame(() => this.scrollToBottom());
+    requestAnimationFrame(() => this.scrollToBottom({ force: true }));
   }
 
   /**
@@ -1516,7 +1548,7 @@ class ChatPanel {
     if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
-    requestAnimationFrame(() => this.scrollToBottom());
+    requestAnimationFrame(() => this.scrollToBottom({ force: true }));
   }
 
   /**
@@ -1590,7 +1622,7 @@ class ChatPanel {
     if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
-    requestAnimationFrame(() => this.scrollToBottom());
+    requestAnimationFrame(() => this.scrollToBottom({ force: true }));
   }
 
   /**
@@ -1778,7 +1810,7 @@ class ChatPanel {
     if (removable) this._makeCardRemovable(card);
 
     this.messagesEl.appendChild(card);
-    requestAnimationFrame(() => this.scrollToBottom());
+    requestAnimationFrame(() => this.scrollToBottom({ force: true }));
   }
 
   /**
@@ -1822,7 +1854,7 @@ class ChatPanel {
     } else {
       this.messagesEl.appendChild(card);
     }
-    requestAnimationFrame(() => this.scrollToBottom());
+    requestAnimationFrame(() => this.scrollToBottom({ force: true }));
   }
 
   /**
@@ -1996,7 +2028,7 @@ class ChatPanel {
 
     msgEl.appendChild(bubble);
     this.messagesEl.appendChild(msgEl);
-    this.scrollToBottom();
+    this.scrollToBottom({ force: true });
     return msgEl;
   }
 
@@ -2052,7 +2084,7 @@ class ChatPanel {
 
     msgEl.appendChild(bubble);
     this.messagesEl.appendChild(msgEl);
-    this.scrollToBottom();
+    this.scrollToBottom({ force: true });
   }
 
   /**
@@ -2321,7 +2353,7 @@ class ChatPanel {
       </div>
     `;
     this.messagesEl.appendChild(errorEl);
-    this.scrollToBottom();
+    this.scrollToBottom({ force: true });
   }
 
   /**
@@ -2631,11 +2663,44 @@ class ChatPanel {
   }
 
   /**
-   * Auto-scroll messages to bottom
+   * Auto-scroll messages to bottom.
+   * When force is true (user-initiated actions), always scrolls.
+   * When force is false (streaming content), only scrolls if already near the bottom.
+   * @param {{ force?: boolean }} options
    */
-  scrollToBottom() {
-    if (this.messagesEl) {
-      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+  scrollToBottom({ force = false } = {}) {
+    if (!this.messagesEl) return;
+    if (!force && this._userScrolledAway) {
+      this._showNewContentPill();
+      return;            // instant bail, no threshold fight
+    }
+    const { scrollTop, scrollHeight, clientHeight } = this.messagesEl;
+    const nearBottom = scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_THRESHOLD;
+    if (force || nearBottom) {
+      this.messagesEl.scrollTop = scrollHeight;
+      this._userScrolledAway = false;
+      this._hideNewContentPill();
+    } else {
+      this._userScrolledAway = true;
+      this._showNewContentPill();
+    }
+  }
+
+  /**
+   * Show the "new content" pill indicator at the bottom of the messages area.
+   */
+  _showNewContentPill() {
+    if (this.newContentPill) {
+      this.newContentPill.style.display = '';
+    }
+  }
+
+  /**
+   * Hide the "new content" pill indicator.
+   */
+  _hideNewContentPill() {
+    if (this.newContentPill) {
+      this.newContentPill.style.display = 'none';
     }
   }
 
@@ -2798,5 +2863,5 @@ window.ChatPanel = ChatPanel;
 
 // Export for CommonJS testing environments
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { ChatPanel };
+  module.exports = { ChatPanel, NEAR_BOTTOM_THRESHOLD };
 }
