@@ -8060,6 +8060,7 @@ body.resizing * {
   display: flex;
   align-items: stretch;
   position: relative;
+  min-height: 56px; /* Accommodate stacked chat + action buttons */
 }
 
 .finding-item-wrapper .finding-item {
