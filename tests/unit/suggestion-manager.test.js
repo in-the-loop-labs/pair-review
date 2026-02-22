@@ -937,8 +937,8 @@ describe('SuggestionManager chat button event delegation', () => {
     expect(mockEvent.stopPropagation).not.toHaveBeenCalled();
   });
 
-  it('should handle missing suggestion data gracefully', () => {
-    // Chat button with no data attributes
+  it('should ignore chat buttons not inside an .ai-suggestion', () => {
+    // Chat button with no parent .ai-suggestion (e.g. gutter chat button, comment form button)
     const chatBtn = {
       dataset: {},
       closest: vi.fn((selector) => {
@@ -962,12 +962,8 @@ describe('SuggestionManager chat button event delegation', () => {
     const chatHandler = clickHandlers[0];
     chatHandler(mockEvent);
 
-    expect(mockChatPanel.open).toHaveBeenCalledTimes(1);
-    const openArgs = mockChatPanel.open.mock.calls[0][0];
-    // Should have empty/default values rather than undefined
-    expect(openArgs.suggestionContext.title).toBe('');
-    expect(openArgs.suggestionContext.body).toBe('');
-    expect(openArgs.suggestionContext.type).toBe('');
-    expect(openArgs.suggestionContext.file).toBe('');
+    // Should bail out — these clicks are handled by other managers
+    expect(mockChatPanel.open).not.toHaveBeenCalled();
+    expect(mockEvent.stopPropagation).not.toHaveBeenCalled();
   });
 });

@@ -29,6 +29,7 @@ class SuggestionManager {
     document.addEventListener('click', (e) => {
       const chatBtn = e.target.closest('.ai-action-chat');
       if (chatBtn && chatBtn.closest('.file-comments-zone')) return; // handled by FileCommentManager
+      if (chatBtn && !chatBtn.closest('.ai-suggestion')) return; // not a suggestion chat button
       if (chatBtn && window.chatPanel) {
         e.stopPropagation();
         const suggestionDiv = chatBtn.closest('.ai-suggestion');

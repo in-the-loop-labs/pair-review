@@ -1227,6 +1227,7 @@ class PRManager {
 
         window.chatPanel.open({
           commentContext: {
+            type: 'line',
             body: null,
             file: file || '',
             line_start: startLine,
@@ -1267,6 +1268,7 @@ class PRManager {
               if (window.chatPanel) {
                 window.chatPanel.open({
                   commentContext: {
+                    type: 'line',
                     body: null,
                     file: file || '',
                     line_start: range.start,
