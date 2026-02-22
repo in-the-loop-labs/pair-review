@@ -4196,4 +4196,311 @@ describe('ChatPanel', () => {
     });
   });
 
+  // -----------------------------------------------------------------------
+  // ensureContextFile (PRManager method)
+  // -----------------------------------------------------------------------
+  describe('ensureContextFile', () => {
+    // Import PRManager so we can bind its prototype method onto a lightweight
+    // mock object — avoids the heavy constructor that needs full DOM.
+    const { PRManager } = require('../../public/js/pr.js');
+
+    /** Create a minimal PRManager-like object with ensureContextFile bound */
+    function createMockPRManager(overrides = {}) {
+      const mgr = {
+        currentPR: overrides.currentPR !== undefined ? overrides.currentPR : { id: 42 },
+        diffFiles: overrides.diffFiles || [],
+        contextFiles: overrides.contextFiles || [],
+        loadContextFiles: overrides.loadContextFiles || vi.fn(async () => {}),
+      };
+      // Bind the real method onto our mock
+      mgr.ensureContextFile = PRManager.prototype.ensureContextFile.bind(mgr);
+      return mgr;
+    }
+
+    it('should return null when no reviewId (currentPR is null)', async () => {
+      const mgr = createMockPRManager({ currentPR: null });
+
+      const result = await mgr.ensureContextFile('src/foo.js');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return { type: "diff" } when file is in diffFiles', async () => {
+      const mgr = createMockPRManager({
+        diffFiles: [{ file: 'src/foo.js' }, { file: 'src/bar.js' }],
+      });
+
+      const result = await mgr.ensureContextFile('src/foo.js');
+
+      expect(result).toEqual({ type: 'diff' });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('should return { type: "context" } when file already in contextFiles', async () => {
+      const existingEntry = { file: 'src/foo.js', id: 7, line_start: 1, line_end: 50 };
+      const mgr = createMockPRManager({
+        contextFiles: [existingEntry],
+      });
+
+      const result = await mgr.ensureContextFile('src/foo.js');
+
+      expect(result).toEqual({ type: 'context', contextFile: existingEntry });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('should POST with correct URL, method, and body for a new file', async () => {
+      const mgr = createMockPRManager({
+        currentPR: { id: 99 },
+        loadContextFiles: vi.fn(async () => {
+          mgr.contextFiles = [{ file: 'src/new.js', id: 10 }];
+        }),
+      });
+      global.fetch.mockResolvedValue({ status: 201 });
+
+      await mgr.ensureContextFile('src/new.js', 5, 20);
+
+      expect(global.fetch).toHaveBeenCalledWith('/api/reviews/99/context-files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: 'src/new.js', line_start: 5, line_end: 20 }),
+      });
+    });
+
+    it('should default to line_start=1, line_end=100 when no range provided', async () => {
+      const mgr = createMockPRManager();
+      global.fetch.mockResolvedValue({ status: 201 });
+
+      await mgr.ensureContextFile('src/foo.js');
+
+      const callBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(callBody.line_start).toBe(1);
+      expect(callBody.line_end).toBe(100);
+    });
+
+    it('should set line_end = lineStart + 49 when only lineStart provided', async () => {
+      const mgr = createMockPRManager();
+      global.fetch.mockResolvedValue({ status: 201 });
+
+      await mgr.ensureContextFile('src/foo.js', 10);
+
+      const callBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(callBody.line_start).toBe(10);
+      expect(callBody.line_end).toBe(59);
+    });
+
+    it('should clamp range > 500 lines (line_end capped at lineStart + 499)', async () => {
+      const mgr = createMockPRManager();
+      global.fetch.mockResolvedValue({ status: 201 });
+
+      await mgr.ensureContextFile('src/foo.js', 10, 1000);
+
+      const callBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(callBody.line_start).toBe(10);
+      expect(callBody.line_end).toBe(509);
+    });
+
+    it('should return null on fetch error (network failure)', async () => {
+      const mgr = createMockPRManager();
+      global.fetch.mockRejectedValue(new Error('network error'));
+
+      const result = await mgr.ensureContextFile('src/foo.js');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null on non-201/non-400 response status', async () => {
+      const mgr = createMockPRManager();
+      global.fetch.mockResolvedValue({
+        status: 500,
+        json: vi.fn().mockResolvedValue({}),
+      });
+
+      const result = await mgr.ensureContextFile('src/foo.js');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return { type: "diff" } on 400 "already part of the diff"', async () => {
+      const mgr = createMockPRManager();
+      global.fetch.mockResolvedValue({
+        status: 400,
+        json: vi.fn().mockResolvedValue({ error: 'File is already part of the diff' }),
+      });
+
+      const result = await mgr.ensureContextFile('src/foo.js');
+
+      expect(result).toEqual({ type: 'diff' });
+    });
+
+    it('should reload contextFiles and return added entry on 201', async () => {
+      const addedEntry = { file: 'src/new.js', id: 10, line_start: 1, line_end: 100 };
+      const mgr = createMockPRManager({
+        loadContextFiles: vi.fn(async () => {
+          mgr.contextFiles = [addedEntry];
+        }),
+      });
+      global.fetch.mockResolvedValue({ status: 201 });
+
+      const result = await mgr.ensureContextFile('src/new.js');
+
+      expect(mgr.loadContextFiles).toHaveBeenCalled();
+      expect(result).toEqual({ type: 'context', contextFile: addedEntry });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _handleFileLinkClick
+  // -----------------------------------------------------------------------
+  describe('_handleFileLinkClick', () => {
+    let savedQuerySelector;
+    let savedCSS;
+
+    beforeEach(() => {
+      savedQuerySelector = global.document.querySelector;
+      // Provide CSS.escape for the method
+      savedCSS = global.CSS;
+      global.CSS = { escape: vi.fn((s) => s) };
+      // Default: no file wrapper found in DOM
+      global.document.querySelector = vi.fn(() => null);
+      // Reset prManager
+      global.window.prManager = {
+        ensureContextFile: vi.fn(),
+        scrollToFile: vi.fn(),
+        scrollToContextFile: vi.fn(),
+      };
+      chatPanel._scrollToLine = vi.fn();
+      chatPanel._showToast = vi.fn();
+    });
+
+    afterEach(() => {
+      global.document.querySelector = savedQuerySelector;
+      global.CSS = savedCSS;
+      global.window.prManager = null;
+    });
+
+    function createLinkEl(file, lineStart = null, lineEnd = null) {
+      const el = createMockElement('a', {
+        dataset: {
+          file,
+          lineStart: lineStart != null ? String(lineStart) : '',
+          lineEnd: lineEnd != null ? String(lineEnd) : '',
+        },
+      });
+      return el;
+    }
+
+    it('should scroll to diff file when wrapper exists in DOM (no ensureContextFile call)', async () => {
+      const wrapper = createMockElement('div', { dataset: { fileName: 'src/app.js' } });
+      wrapper.closest = vi.fn(() => null); // not inside .context-file-wrapper
+      global.document.querySelector = vi.fn(() => wrapper);
+
+      const linkEl = createLinkEl('src/app.js', 10);
+
+      await chatPanel._handleFileLinkClick(linkEl);
+
+      expect(chatPanel._scrollToLine).toHaveBeenCalledWith('src/app.js', 10);
+      expect(global.window.prManager.ensureContextFile).not.toHaveBeenCalled();
+    });
+
+    it('should scroll to context file when wrapper exists in DOM', async () => {
+      const contextWrapper = createMockElement('div', {
+        dataset: { contextId: '7' },
+      });
+      const wrapper = createMockElement('div', { dataset: { fileName: 'src/app.js' } });
+      wrapper.closest = vi.fn((sel) => {
+        if (sel === '.context-file') return contextWrapper;
+        return null;
+      });
+      global.document.querySelector = vi.fn(() => wrapper);
+
+      const linkEl = createLinkEl('src/app.js', 5);
+
+      await chatPanel._handleFileLinkClick(linkEl);
+
+      expect(global.window.prManager.scrollToContextFile).toHaveBeenCalledWith('src/app.js', 5, '7');
+      expect(global.window.prManager.ensureContextFile).not.toHaveBeenCalled();
+    });
+
+    it('should call ensureContextFile when file not in DOM', async () => {
+      global.document.querySelector = vi.fn(() => null);
+      global.window.prManager.ensureContextFile.mockResolvedValue({ type: 'diff' });
+
+      const linkEl = createLinkEl('src/missing.js', 10, 50);
+
+      await chatPanel._handleFileLinkClick(linkEl);
+
+      expect(global.window.prManager.ensureContextFile).toHaveBeenCalledWith('src/missing.js', 10, 50);
+    });
+
+    it('should show error toast when ensureContextFile returns null', async () => {
+      global.document.querySelector = vi.fn(() => null);
+      global.window.prManager.ensureContextFile.mockResolvedValue(null);
+
+      const linkEl = createLinkEl('src/missing.js');
+
+      await chatPanel._handleFileLinkClick(linkEl);
+
+      expect(chatPanel._showToast).toHaveBeenCalledWith('Could not load file');
+    });
+
+    it('should add and remove loading class', async () => {
+      global.document.querySelector = vi.fn(() => null);
+      // Use a promise we control to verify loading class timing
+      let resolveEnsure;
+      global.window.prManager.ensureContextFile.mockImplementation(() =>
+        new Promise(resolve => { resolveEnsure = resolve; })
+      );
+
+      const linkEl = createLinkEl('src/missing.js');
+
+      const promise = chatPanel._handleFileLinkClick(linkEl);
+
+      // Loading class should be added immediately
+      expect(linkEl.classList.add).toHaveBeenCalledWith('chat-file-link--loading');
+
+      // Resolve the ensureContextFile call
+      resolveEnsure({ type: 'diff' });
+      await promise;
+
+      // Loading class should be removed in finally block
+      expect(linkEl.classList.remove).toHaveBeenCalledWith('chat-file-link--loading');
+    });
+
+    it('should scroll to file after ensureContextFile returns diff', async () => {
+      global.document.querySelector = vi.fn(() => null);
+      global.window.prManager.ensureContextFile.mockResolvedValue({ type: 'diff' });
+
+      const linkEl = createLinkEl('src/found.js');
+
+      await chatPanel._handleFileLinkClick(linkEl);
+
+      expect(global.window.prManager.scrollToFile).toHaveBeenCalledWith('src/found.js');
+    });
+
+    it('should scroll to context file after ensureContextFile returns context', async () => {
+      global.document.querySelector = vi.fn(() => null);
+      global.window.prManager.ensureContextFile.mockResolvedValue({
+        type: 'context',
+        contextFile: { id: 22 },
+      });
+
+      const linkEl = createLinkEl('src/ctx.js', 10);
+
+      await chatPanel._handleFileLinkClick(linkEl);
+
+      expect(global.window.prManager.scrollToContextFile).toHaveBeenCalledWith('src/ctx.js', 10, 22);
+    });
+
+    it('should show error toast when ensureContextFile throws', async () => {
+      global.document.querySelector = vi.fn(() => null);
+      global.window.prManager.ensureContextFile.mockRejectedValue(new Error('boom'));
+
+      const linkEl = createLinkEl('src/broken.js');
+
+      await chatPanel._handleFileLinkClick(linkEl);
+
+      expect(chatPanel._showToast).toHaveBeenCalledWith('Could not load file');
+      expect(linkEl.classList.remove).toHaveBeenCalledWith('chat-file-link--loading');
+    });
+  });
 });

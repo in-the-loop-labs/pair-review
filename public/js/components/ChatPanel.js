@@ -2451,30 +2451,64 @@ class ChatPanel {
    * in the diff view.
    * @param {HTMLElement} linkEl - The clicked .chat-file-link element
    */
-  _handleFileLinkClick(linkEl) {
+  async _handleFileLinkClick(linkEl) {
     const file = linkEl.dataset.file;
-    if (!file) return;
-
     const lineStart = linkEl.dataset.lineStart ? parseInt(linkEl.dataset.lineStart, 10) : null;
+    const lineEnd = linkEl.dataset.lineEnd ? parseInt(linkEl.dataset.lineEnd, 10) : null;
 
-    if (!window.prManager) return;
+    // Check if file wrapper exists in DOM
+    const wrapper = document.querySelector(`[data-file-name="${CSS.escape(file)}"]`);
 
-    if (lineStart) {
-      // When a line is specified, scroll directly to the target row (skip file-level scroll
-      // to avoid double-scroll bounce from two competing scrollIntoView calls)
-      const escaped = CSS.escape(file);
-      const fileWrapper = document.querySelector(`[data-file-name="${escaped}"]`) ||
-        document.querySelector(`[data-file-name$="/${escaped}"]`);
-      if (!fileWrapper) {
-        // File not visible yet — fall back to file-level scroll and retry
-        window.prManager.scrollToFile(file);
-        setTimeout(() => this._scrollToLine(file, lineStart), 400);
+    if (wrapper) {
+      // File is already rendered — scroll to it
+      const contextEl = wrapper.closest('.context-file');
+      if (contextEl) {
+        // Context file
+        const contextFileId = contextEl.dataset?.contextId;
+        if (window.prManager?.scrollToContextFile) {
+          window.prManager.scrollToContextFile(file, lineStart, contextFileId);
+        }
+      } else {
+        // Diff file
+        if (lineStart) {
+          this._scrollToLine(file, lineStart);
+        } else if (window.prManager?.scrollToFile) {
+          window.prManager.scrollToFile(file);
+        }
+      }
+      return;
+    }
+
+    // File not in DOM — try to add as context file
+    if (!window.prManager?.ensureContextFile) return;
+
+    linkEl.classList.add('chat-file-link--loading');
+    try {
+      const result = await window.prManager.ensureContextFile(file, lineStart, lineEnd);
+
+      if (!result) {
+        this._showToast('Could not load file');
         return;
       }
 
-      this._scrollToLine(file, lineStart, fileWrapper);
-    } else {
-      window.prManager.scrollToFile(file);
+      if (result.type === 'diff') {
+        if (lineStart) {
+          this._scrollToLine(file, lineStart);
+        } else if (window.prManager?.scrollToFile) {
+          window.prManager.scrollToFile(file);
+        }
+      } else if (result.type === 'context') {
+        // Brief delay for DOM to settle after loadContextFiles
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (window.prManager.scrollToContextFile) {
+          window.prManager.scrollToContextFile(file, lineStart, result.contextFile?.id);
+        }
+      }
+    } catch (err) {
+      console.error('[ChatPanel] Error handling file link click:', err);
+      this._showToast('Could not load file');
+    } finally {
+      linkEl.classList.remove('chat-file-link--loading');
     }
   }
 
