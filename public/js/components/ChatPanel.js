@@ -1088,9 +1088,9 @@ class ChatPanel {
     const isLine = ctx.type === 'line';
 
     // Store structured context data for DB persistence
-    const lineLabel = ctx.line_start && ctx.line_end && ctx.line_end !== ctx.line_start
-      ? `Lines ${ctx.line_start}-${ctx.line_end}`
-      : `Line ${ctx.line_start || '?'}`;
+    const lineLabel = !ctx.line_start
+      ? (ctx.file || 'File').split('/').pop()
+      : (ctx.line_end && ctx.line_end !== ctx.line_start ? `Lines ${ctx.line_start}-${ctx.line_end}` : `Line ${ctx.line_start}`);
     const contextData = {
       type: isLine ? 'line' : 'comment',
       title: isLine
@@ -1106,7 +1106,9 @@ class ChatPanel {
 
     // Build the plain text context for the agent
     const lines = isLine
-      ? [`The user wants to discuss code at ${lineLabel} in ${contextData.file || 'unknown file'}:`]
+      ? [ctx.line_start
+        ? `The user wants to discuss code at ${lineLabel} in ${contextData.file || 'unknown file'}:`
+        : `The user wants to discuss the file ${contextData.file || 'unknown file'}:`]
       : ['The user wants to discuss a review comment:'];
     if (contextData.file) {
       let fileLine = `- File: ${contextData.file}`;
@@ -1525,9 +1527,9 @@ class ChatPanel {
     const card = document.createElement('div');
     card.className = 'chat-panel__context-card';
 
-    const lineLabel = ctx.line_start && ctx.line_end && ctx.line_end !== ctx.line_start
-      ? `Lines ${ctx.line_start}-${ctx.line_end}`
-      : `Line ${ctx.line_start || '?'}`;
+    const lineLabel = !ctx.line_start
+      ? (ctx.file || 'File').split('/').pop()
+      : (ctx.line_end && ctx.line_end !== ctx.line_start ? `Lines ${ctx.line_start}-${ctx.line_end}` : `Line ${ctx.line_start}`);
     const fileInfo = ctx.file
       ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}`
       : '';
@@ -1537,12 +1539,14 @@ class ChatPanel {
       ? (ctx.body.length > 60 ? ctx.body.substring(0, 60) + '...' : ctx.body)
       : lineLabel;
 
+    const label = !ctx.line_start ? 'FILE' : (ctx.line_end && ctx.line_end !== ctx.line_start ? 'LINES' : 'LINE');
+
     // Code icon (octicon code-square)
     card.innerHTML = `
       <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
         <path d="m11.28 3.22 4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734L13.94 8l-3.72-3.72a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215Zm-6.56 0a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L2.06 8l3.72 3.72a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L.47 8.53a.75.75 0 0 1 0-1.06Z"/>
       </svg>
-      <span class="chat-panel__context-label"><strong>${ctx.line_end && ctx.line_end !== ctx.line_start ? 'LINES' : 'LINE'}</strong></span>
+      <span class="chat-panel__context-label"><strong>${label}</strong></span>
       <span class="chat-panel__context-title">${this._escapeHtml(titleText)}</span>
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
