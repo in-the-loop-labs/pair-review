@@ -390,7 +390,7 @@ class ChatPanel {
     // Load MRU session with message history (if any previous sessions exist).
     // Skip when opening with explicit context (suggestion/comment/file) — the
     // user wants a *new* conversation about that item, not to resume the last one.
-    const hasExplicitContext = !!(options.suggestionContext || options.commentContext || options.fileContext || options.prefillText);
+    const hasExplicitContext = !!(options.suggestionContext || options.commentContext || options.fileContext);
     if (!this.currentSessionId && !hasExplicitContext) {
       await this._loadMRUSession();
     }
@@ -417,13 +417,6 @@ class ChatPanel {
       this._contextItemId = null;
     }
 
-    // Prefill textarea with supplied text (e.g. [[file:path:lines]] reference)
-    if (options.prefillText) {
-      this.inputEl.value = options.prefillText;
-      this._autoResizeTextarea();
-      this.sendBtn.disabled = !this.inputEl.value.trim() || this.isStreaming;
-    }
-
     // Gate input when reviewId is not yet available (PanelGroup auto-restore race)
     if (!this.reviewId) {
       this._disableInput();
@@ -433,9 +426,6 @@ class ChatPanel {
     window.panelGroup?._onChatVisibilityChanged(true);
     if (!options.suppressFocus) {
       this.inputEl.focus();
-      if (options.prefillText) {
-        this.inputEl.selectionStart = this.inputEl.selectionEnd = this.inputEl.value.length;
-      }
     }
   }
 
@@ -1525,8 +1515,8 @@ class ChatPanel {
   }
 
   /**
-   * Add a compact context card for a line reference (no comment body).
-   * @param {Object} ctx - Line context {file, line_start, line_end}
+   * Add a compact context card for a line reference (optionally with body text).
+   * @param {Object} ctx - Line context {file, line_start, line_end, body}
    */
   _addLineContextCard(ctx, { removable = false } = {}) {
     const card = document.createElement('div');
@@ -1539,15 +1529,23 @@ class ChatPanel {
       ? `${ctx.file}${ctx.line_start ? ':' + ctx.line_start : ''}`
       : '';
 
+    // When body text is provided (e.g. unsaved comment text), show it as the title
+    const titleText = ctx.body
+      ? (ctx.body.length > 60 ? ctx.body.substring(0, 60) + '...' : ctx.body)
+      : lineLabel;
+
     // Code icon (octicon code-square)
     card.innerHTML = `
       <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
         <path d="m11.28 3.22 4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734L13.94 8l-3.72-3.72a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215Zm-6.56 0a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042L2.06 8l3.72 3.72a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L.47 8.53a.75.75 0 0 1 0-1.06Z"/>
       </svg>
       <span class="chat-panel__context-label"><strong>${ctx.line_end && ctx.line_end !== ctx.line_start ? 'LINES' : 'LINE'}</strong></span>
-      <span class="chat-panel__context-title">${this._escapeHtml(lineLabel)}</span>
+      <span class="chat-panel__context-title">${this._escapeHtml(titleText)}</span>
       ${fileInfo ? `<span class="chat-panel__context-file">${this._escapeHtml(fileInfo)}</span>` : ''}
     `;
+
+    // Store tooltip data for rich hover preview when body text is present
+    if (ctx.body) card.dataset.tooltipBody = ctx.body;
 
     if (removable) this._makeCardRemovable(card);
 

@@ -4196,48 +4196,4 @@ describe('ChatPanel', () => {
     });
   });
 
-  // -----------------------------------------------------------------------
-  // open() — prefillText support
-  // -----------------------------------------------------------------------
-  describe('open() with prefillText', () => {
-    beforeEach(() => {
-      vi.spyOn(chatPanel, '_ensureConnected').mockResolvedValue({ sessionData: null });
-    });
-
-    it('should set textarea value and enable send button', async () => {
-      await chatPanel.open({ reviewId: 1, prefillText: '[[file:src/app.js:10]]\n\n' });
-
-      expect(chatPanel.inputEl.value).toBe('[[file:src/app.js:10]]\n\n');
-      expect(chatPanel.sendBtn.disabled).toBe(false);
-    });
-
-    it('should treat as explicit context (starts new session, skips MRU load)', async () => {
-      const loadMRUSpy = vi.spyOn(chatPanel, '_loadMRUSession').mockResolvedValue();
-
-      await chatPanel.open({ prefillText: '[[file:src/app.js:5-10]]\n\n' });
-
-      // prefillText is included in hasExplicitContext, so MRU should NOT be loaded
-      expect(loadMRUSpy).not.toHaveBeenCalled();
-    });
-
-    it('should treat empty string as no prefill', async () => {
-      const loadMRUSpy = vi.spyOn(chatPanel, '_loadMRUSession').mockResolvedValue();
-
-      await chatPanel.open({ prefillText: '' });
-
-      // Empty string is falsy, so hasExplicitContext should be false
-      // and _loadMRUSession should be called (since no currentSessionId)
-      expect(loadMRUSpy).toHaveBeenCalled();
-      // Textarea should remain empty
-      expect(chatPanel.inputEl.value).toBe('');
-    });
-
-    it('should position cursor at end of prefilled text', async () => {
-      const prefill = '[[file:src/app.js:42]]\n\n';
-      await chatPanel.open({ prefillText: prefill });
-
-      expect(chatPanel.inputEl.selectionStart).toBe(prefill.length);
-      expect(chatPanel.inputEl.selectionEnd).toBe(prefill.length);
-    });
-  });
 });
