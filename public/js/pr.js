@@ -4103,9 +4103,11 @@ class PRManager {
       }
 
       // Add only new context files
+      let newFilesRendered = false;
       for (const cf of newFiles) {
         if (!oldIds.has(cf.id)) {
           await this.renderContextFile(cf);
+          newFilesRendered = true;
         }
       }
 
@@ -4113,6 +4115,14 @@ class PRManager {
 
       // Rebuild sidebar with context files interleaved in natural path order
       this.rebuildFileListWithContext();
+
+      // Re-anchor comments after new context files are rendered so that
+      // comments targeting lines in these files find their DOM targets.
+      // loadUserComments() is idempotent (clears existing comment rows first).
+      if (newFilesRendered) {
+        const includeDismissed = window.aiPanel?.showDismissedComments || false;
+        await this.loadUserComments(includeDismissed);
+      }
     } catch (error) {
       console.error('Error loading context files:', error);
     }
@@ -4303,6 +4313,7 @@ class PRManager {
       row.className = 'd2h-cntx';
       row.dataset.lineNumber = i;
       row.dataset.fileName = contextFile.file;
+      row.dataset.side = 'RIGHT';
 
       const lineNumCell = document.createElement('td');
       lineNumCell.className = 'd2h-code-linenumber';
