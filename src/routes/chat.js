@@ -14,10 +14,37 @@
 const express = require('express');
 const { queryOne, query, AnalysisRunRepository, RepoSettingsRepository } = require('../database');
 const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
+const { GitWorktreeManager } = require('../git/worktree');
 const logger = require('../utils/logger');
 const { sseClients } = require('../sse/review-events');
 
 const router = express.Router();
+
+/**
+ * Resolve the working directory for a chat session.
+ * - Local reviews: use review.local_path (the git root being reviewed)
+ * - PR reviews: look up the worktree path from the worktrees table
+ * @param {Object} db - Database instance
+ * @param {Object} review - Review record from the database
+ * @returns {Promise<string|null>} Absolute path to the code directory, or null
+ */
+async function resolveReviewCwd(db, review) {
+  // Local reviews store the path directly
+  if (review.local_path) {
+    return review.local_path;
+  }
+
+  // PR reviews: resolve worktree via the worktree manager
+  if (review.pr_number && review.repository) {
+    const [owner, repo] = review.repository.split('/');
+    if (owner && repo) {
+      const worktreeManager = new GitWorktreeManager(db);
+      return worktreeManager.getWorktreePath({ owner, repo, number: review.pr_number });
+    }
+  }
+
+  return null;
+}
 
 /**
  * Unsubscribe functions for SSE broadcast listeners, keyed by session ID.
@@ -180,18 +207,19 @@ router.post('/api/chat/session', async (req, res) => {
     const chatSessionManager = req.app.chatSessionManager;
     const db = req.app.get('db');
 
+    // Always load the review so we can resolve the worktree CWD
+    const review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
+    if (!review) {
+      return res.status(404).json({ error: 'Review not found' });
+    }
+
     // Build system prompt if not provided directly
     let finalSystemPrompt = systemPrompt;
     let initialContext = null;
     let suggestions = null;
     let analysisRun = null;
-    let review = null;
 
     if (!finalSystemPrompt) {
-      review = await queryOne(db, 'SELECT * FROM reviews WHERE id = ?', [reviewId]);
-      if (!review) {
-        return res.status(404).json({ error: 'Review not found' });
-      }
 
       const chatInstructions = await getChatInstructions(db, review);
 
@@ -234,8 +262,8 @@ router.post('/api/chat/session', async (req, res) => {
       }
     }
 
-    // Resolve cwd: explicit from request body, or local_path from review record
-    const resolvedCwd = cwd || (review && review.local_path) || null;
+    // Resolve cwd: explicit from request body, or the review's code directory
+    const resolvedCwd = cwd || await resolveReviewCwd(db, review);
 
     // Inject the server port into the initial context so the agent learns it
     // once at session start. This avoids wasting tokens by repeating the port
@@ -322,7 +350,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       const chatInstructions = await getChatInstructions(db, review);
 
       const systemPrompt = buildChatPrompt({ review, chatInstructions });
-      const cwd = review?.local_path || null;
+      const cwd = await resolveReviewCwd(db, review);
 
       try {
         await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
@@ -473,7 +501,7 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     const chatInstructions = await getChatInstructions(db, review);
 
     const systemPrompt = buildChatPrompt({ review, chatInstructions });
-    const cwd = review?.local_path || null;
+    const cwd = await resolveReviewCwd(db, review);
 
     await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
     unregisterSSEBroadcast(sessionId);
