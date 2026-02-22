@@ -1107,7 +1107,7 @@ class ChatPanel {
     // Build the plain text context for the agent
     const lines = isLine
       ? [`The user wants to discuss code at ${lineLabel} in ${contextData.file || 'unknown file'}:`]
-      : ['The user wants to discuss their own review comment:'];
+      : ['The user wants to discuss a review comment:'];
     if (contextData.file) {
       let fileLine = `- File: ${contextData.file}`;
       if (contextData.line_start) {
@@ -1117,6 +1117,9 @@ class ChatPanel {
     }
     if (ctx.isFileLevel) {
       lines.push('- Scope: File-level comment');
+    }
+    if (ctx.parentId) {
+      lines.push('- Origin: adopted from AI suggestion');
     }
     if (contextData.body) {
       lines.push(`- Comment: ${contextData.body}`);

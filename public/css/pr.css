@@ -4226,6 +4226,12 @@ tr.line-range-start .d2h-code-line-ctn {
   display: none;
 }
 
+/* File-comment-card editing puts the textarea inside .user-comment-body,
+   so we must keep the body visible (the content is already replaced). */
+.file-comment-card.editing-mode .user-comment-body {
+  display: block;
+}
+
 .user-comment-edit-form,
 .comment-edit-textarea {
   width: 100%;
