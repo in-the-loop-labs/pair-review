@@ -13,6 +13,8 @@
             let state = 'disabled';
             if (config.enable_chat) state = config.pi_available ? 'available' : 'unavailable';
             document.documentElement.setAttribute('data-chat', state);
+            const shortcutsState = config.chat_enable_shortcuts === false ? 'disabled' : 'enabled';
+            document.documentElement.setAttribute('data-chat-shortcuts', shortcutsState);
             window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state } }));
         }).catch(() => {});
     </script>

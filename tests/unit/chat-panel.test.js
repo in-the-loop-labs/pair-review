@@ -407,6 +407,25 @@ describe('ChatPanel', () => {
       expect(chatPanel.dismissSuggestionBtn.style.display).toBe('none');
       expect(chatPanel.dismissCommentBtn.style.display).toBe('none');
     });
+
+    it('should hide action bar when chat shortcuts are disabled via config', () => {
+      chatPanel._contextSource = 'suggestion';
+      chatPanel._contextItemId = 'sugg-1';
+
+      // Mock getAttribute to return 'disabled' for data-chat-shortcuts
+      const originalGetAttribute = document.documentElement.getAttribute;
+      document.documentElement.getAttribute = vi.fn((attr) => {
+        if (attr === 'data-chat-shortcuts') return 'disabled';
+        return null;
+      });
+
+      chatPanel._updateActionButtons();
+
+      expect(chatPanel.actionBar.style.display).toBe('none');
+
+      // Restore
+      document.documentElement.getAttribute = originalGetAttribute;
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -579,6 +598,21 @@ describe('ChatPanel', () => {
 
       expect(chatPanel._pendingActionContext).toBeNull();
       expect(sendSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('_handleActionBarDismiss', () => {
+    it('should clear context state and hide action bar', () => {
+      chatPanel._contextSource = 'suggestion';
+      chatPanel._contextItemId = 'sugg-1';
+      chatPanel._contextLineMeta = { file: 'foo.js', line_start: 1, line_end: 5 };
+
+      chatPanel._handleActionBarDismiss();
+
+      expect(chatPanel._contextSource).toBeNull();
+      expect(chatPanel._contextItemId).toBeNull();
+      expect(chatPanel._contextLineMeta).toBeNull();
+      expect(chatPanel.actionBar.style.display).toBe('none');
     });
   });
 

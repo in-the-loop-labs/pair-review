@@ -902,9 +902,6 @@
           chatState = config.pi_available ? 'available' : 'unavailable';
         }
         document.documentElement.setAttribute('data-chat', chatState);
-        // Set chat shortcuts state
-        const shortcutsState = config.chat_enable_shortcuts === false ? 'disabled' : 'enabled';
-        document.documentElement.setAttribute('data-chat-shortcuts', shortcutsState);
         window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: chatState } }));
       } else {
         // Fallback: assume installed (shorter command)
