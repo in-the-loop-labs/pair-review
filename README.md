@@ -393,10 +393,6 @@ The CLI command used for a provider follows this precedence (highest to lowest):
 2. Config file `providers.<provider>.command`
 3. Built-in default
 
-#### Migration Notes
-
-If you have an older config file using `provider` and `model` keys at the top level, they are automatically treated as `default_provider` and `default_model`. No migration is required.
-
 ## Features
 
 ### Three-Level AI Analysis
