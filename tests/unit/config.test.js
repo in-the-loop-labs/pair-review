@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+const fs = require('fs');
 const os = require('os');
-const { getGitHubToken, expandPath, getMonorepoPath, resolveDbName, warnIfDevModeWithoutDbName } = require('../../src/config');
+const path = require('path');
+const { getGitHubToken, expandPath, getMonorepoPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -303,6 +305,98 @@ describe('config.js', () => {
       warnIfDevModeWithoutDbName({});
 
       expect(warnSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('loadConfig', () => {
+    const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.pair-review', 'config.json');
+    const LOCAL_CONFIG_PATH = path.join(process.cwd(), '.pair-review', 'config.json');
+
+    let readFileSpy;
+    let accessSpy;
+    let mkdirSpy;
+    let writeFileSpy;
+    let copyFileSpy;
+
+    beforeEach(() => {
+      // Spy on fs.promises methods (the same object config.js captured at load time)
+      accessSpy = vi.spyOn(fs.promises, 'access').mockResolvedValue(undefined);
+      mkdirSpy = vi.spyOn(fs.promises, 'mkdir').mockResolvedValue(undefined);
+      writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined);
+      copyFileSpy = vi.spyOn(fs.promises, 'copyFile').mockResolvedValue(undefined);
+      readFileSpy = vi.spyOn(fs.promises, 'readFile');
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    function mockReadFile(globalJson, localJson) {
+      readFileSpy.mockImplementation(async (filePath) => {
+        if (filePath === GLOBAL_CONFIG_PATH) {
+          if (globalJson === null) {
+            const err = new Error('ENOENT');
+            err.code = 'ENOENT';
+            throw err;
+          }
+          return JSON.stringify(globalJson);
+        }
+        if (filePath === LOCAL_CONFIG_PATH) {
+          if (localJson === null) {
+            const err = new Error('ENOENT');
+            err.code = 'ENOENT';
+            throw err;
+          }
+          return JSON.stringify(localJson);
+        }
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      });
+    }
+
+    it('should deep-merge global config partial chat object with defaults', async () => {
+      mockReadFile(
+        { port: 7247, chat: { enable_shortcuts: false } },
+        null  // no local config
+      );
+
+      const { config } = await loadConfig();
+
+      expect(config.chat).toEqual({ enable_shortcuts: false });
+    });
+
+    it('should three-way merge defaults, global, and local for nested objects', async () => {
+      mockReadFile(
+        { port: 7247, chat: { enable_shortcuts: false } },
+        { chat: { some_future_key: true } }
+      );
+
+      const { config } = await loadConfig();
+
+      expect(config.chat).toEqual({ enable_shortcuts: false, some_future_key: true });
+    });
+
+    it('should let local config override global for the same nested key', async () => {
+      mockReadFile(
+        { chat: { enable_shortcuts: false } },
+        { chat: { enable_shortcuts: true } }
+      );
+
+      const { config } = await loadConfig();
+
+      expect(config.chat.enable_shortcuts).toBe(true);
+    });
+
+    it('should preserve object defaults when config only has scalar keys', async () => {
+      mockReadFile(
+        { port: 8080, theme: 'dark' },
+        null  // no local config
+      );
+
+      const { config } = await loadConfig();
+
+      expect(config.chat).toEqual({ enable_shortcuts: true });
     });
   });
 });

@@ -156,7 +156,7 @@ async function loadConfig() {
       // Deep-merge one level for object-valued local config overrides
       for (const key of Object.keys(DEFAULT_CONFIG)) {
         if (typeof DEFAULT_CONFIG[key] === 'object' && DEFAULT_CONFIG[key] !== null && !Array.isArray(DEFAULT_CONFIG[key])) {
-          mergedConfig[key] = { ...DEFAULT_CONFIG[key], ...mergedConfig[key], ...localConfig[key] };
+          mergedConfig[key] = { ...DEFAULT_CONFIG[key], ...config[key], ...localConfig[key] };
         }
       }
     } catch (localError) {
