@@ -1,5 +1,120 @@
 # Changelog
 
+## 2.0.0
+
+### Major Changes
+
+- fe5f3c9: Refactor API routes: rename and reorganize REST endpoints for reviews, analyses, and suggestions
+
+### Minor Changes
+
+- 3715410: Add "Chat about lines" action to diff panel gutter and comment forms
+
+  - Gutter chat button alongside the existing + comment button, with drag-to-select line range support
+  - Chat button in line-level and file-level comment forms to pivot unsaved comments into chat
+  - Line context cards with structured metadata for the chat agent (file, lines, provenance)
+  - AI suggestion provenance passed through comment context when comments originated from suggestions
+  - Editing-mode properly hides action buttons on both line-level and file-level comments
+
+- e393781: Add "Create comment" shortcut button and dismiss control to chat action bar
+
+  - "Create comment" button appears when chat is opened from a diff line gutter icon, sending structured line metadata to the agent
+  - Dismiss (×) button on the action bar to hide stale shortcuts mid-conversation
+  - `chat.enable_shortcuts` config option to globally disable action bar shortcuts
+
+- 6bb675f: Add copy-to-clipboard button on assistant chat messages for quick copying of raw markdown content
+- 9a93ba9: Add chat instructions to repository settings for customizing chat session system prompts
+- 506443b: Add session picker dropdown to chat panel
+
+  The chat panel header now includes a dropdown to switch between previous
+  conversations for the current review. Each session shows a preview of the first
+  message and a relative timestamp, with the active session highlighted. Sessions
+  are listed in most-recently-used order.
+
+- dcb5a64: Chat with AI agent about review suggestions via Pi RPC
+- 4f12587: Add context files feature: pin non-diff file ranges into the diff panel for review context. Context file headers include viewed checkbox, comment, chat, and collapse controls matching regular diff files. File navigator sidebar renamed and unified diff-file validation covers both PR and local review modes.
+- ba5f6de: Add flexible panel group layout for Review and Chat panels with four arrangement options (side-by-side, stacked, and flipped variants)
+- 7a2d34a: Add "Chat about this run" button to analysis history popover, allowing users to chat about any previous analysis run — not just the latest
+- 62fbf54: Broadcast review events via the existing chat SSE connection so the frontend auto-refreshes comments, suggestions, and analysis results without a manual reload. Eliminates the second EventSource connection and adds background-tab recovery via visibilitychange.
+
+### Patch Changes
+
+- bc2a0be: Fix analysis runs dropdown being overlapped by the review panel resize handle due to CSS stacking context
+- 9321adc: Auto-add context file when clicking a chat file link that references a non-diff file
+- 52bdf02: Auto-add context file when commenting on a file outside the diff
+
+  When a comment is created on a file not in the PR diff, the server now automatically creates a context file entry so the file appears in the diff panel. Inline comments on context file lines are also rendered correctly. Includes filesystem validation for context file paths and proper handling of multiple context file ranges per file.
+
+- 2995050: Broadcast `review:analysis_started` SSE event so browser UI updates when chat agent triggers analysis
+- e393781: Add dismiss (×) button to chat action bar and `chat.enable_shortcuts` config option
+
+  - Small × button on the action bar to hide stale shortcut buttons mid-conversation
+  - `chat: { enable_shortcuts: false }` in config globally disables action bar shortcuts
+  - One-level deep merge for nested config objects prevents silent loss of defaults
+
+- 83e2748: Enhance chat agent with task extension and review context guidance
+
+  - Load the task extension (`-e .pi/extensions/task`) for chat agent sessions, enabling subagent delegation
+  - Add review context to the system prompt so the agent knows the correct `git diff` command for the review type (local vs PR)
+  - Pass the absolute path to the pair-review-api SKILL.md in the system prompt to reduce agent fumbling
+  - Fix skill file read suppression to check both `path` and `file_path` arg names
+
+- 8e6029b: Fix chat auto-scroll fighting user during streaming responses. The chat panel no longer yanks the viewport to the bottom on every streaming chunk — if the user scrolls up, auto-scroll disengages and a "New content" pill appears. Clicking the pill or scrolling back to the bottom re-engages auto-scroll. User-initiated actions (sending messages, adding context cards) always scroll into view.
+- 396bc3b: Add chat buttons to collapsed AI suggestions and Review panel findings for easier access to chat context
+- e7b9bd3: Enrich chat context with diff hunks so the AI agent receives actual code when discussing suggestions or comments
+- e8e9672: Add domain model to chat system prompt so the agent understands comments, suggestions, and analysis runs on every turn
+- a367391: Polish chat panel: rolling transient tool badges, markdown rendering in context cards, and rich hover tooltips for suggestion/comment context
+- 52b419b: Add dismiss buttons to chat panel action bar for suggestions and comments
+- d725707: Auto-expand collapsed diff hunks when comments target hidden lines, and add a REST endpoint for agents to explicitly expand hunks via SSE
+- e14482a: Fix chat agent CWD to use the review's worktree directory instead of the server's working directory. For PR reviews, the worktree path is now resolved from the worktrees table (matching analysis behavior). Previously, the chat agent could not explore the codebase in PR mode because it launched in the wrong directory.
+- 6677758: Fix chat showing as unavailable on first load
+
+  Await provider availability check before the server starts listening so the
+  `/api/config` endpoint returns accurate `pi_available` status on the very first
+  request. Previously the check ran in the background after `app.listen()`,
+  causing a race where the frontend would fetch config before the cache was
+  populated, making chat appear unavailable until a page reload.
+
+- a047852: Fix chat panel layout issues: file location links now wrap within chat bubbles instead of overflowing, and panel resize constraints are dynamic based on viewport width. In vertical layout, closing the Review panel no longer locks the Chat panel at a fixed width — the per-panel resize handle is restored so the Chat panel can be freely resized.
+- 84ff596: Fix review panel comment items being too short to accommodate stacked chat and dismiss buttons. Comment items now match the height of AI suggestion items.
+- ec37372: Fix duplicate context file entries in sidebar nav and diff panel when the same file has multiple context ranges. Sidebar now deduplicates by path and yields to diff files; diff panel merges ranges into a single wrapper with per-chunk dismiss buttons.
+- a78f818: Fix context files disappearing from the diff panel on review reload by clearing stale in-memory state in `renderDiff()` so that `loadContextFiles()` correctly re-renders them
+- 62354d5: Prevent direct status transition to "adopted" and add atomic /adopt endpoint
+
+  - Reject "adopted" in POST /suggestions/:id/status with 400 pointing to proper endpoints
+  - Add POST /suggestions/:id/adopt for atomic adopt-as-is (creates linked user comment + sets status in one request)
+  - Wrap /adopt and /edit DB operations in transactions for true atomicity
+  - Migrate frontend adoption paths to use /adopt endpoint instead of two-request dance
+  - Harmonize CATEGORY_EMOJI_MAP across all four locations to match AI prompt schema
+  - Update pair-review-api skill documentation
+
+- f4a7ca1: Gate chat panel behind config and Pi availability
+
+  Chat UI is now hidden by default until both `enable_chat` is true in config and
+  the Pi AI provider is detected. Three states control visibility: `disabled`
+  (chat feature off — everything hidden), `unavailable` (enabled but Pi not
+  installed — toggle button shown grayed-out with tooltip), and `available` (fully
+  functional). Early inline script in HTML prevents flash of chat UI before config
+  loads.
+
+- 887041d: Hide tool badges for internal API calls in chat panel
+
+  Suppress tool_use SSE events when the chat agent curls the pair-review server's own API, so implementation-detail badges don't appear in the chat panel. The regex is port-scoped to avoid accidentally hiding calls to other local services.
+
+- e75ba8c: Hide skill file read from chat UI
+
+  Suppress the Read tool badge when the chat agent loads the pair-review-api skill file, and instruct the agent not to mention it.
+
+- fe6071e: Persist analysis tier on the analysis_runs database record instead of deriving it from the model name at query time
+- 868f628: Add personality directives to chat system prompt and prevent direct SQLite access
+- 3e9edd5: Fix chat panel suggestion bugs: hide lingering context tooltip when removing a pending suggestion card, and prevent "Chat" on a suggestion from loading the previous session instead of staying in the current new conversation
+- e117b99: Update built-in model definitions for Gemini, Copilot, and Cursor Agent providers
+
+  - Gemini: Drop `-preview` suffix from gemini-3-flash and gemini-3-pro (with aliases for backward compat), add gemini-3.1-pro
+  - Copilot: Add claude-sonnet-4.6 (new default), gpt-5.3-codex, claude-opus-4.6-fast; demote sonnet-4.5
+  - Cursor Agent: Add sonnet-4.6-thinking (new default), gemini-3.1-pro, gpt-5.3-codex-xhigh; demote sonnet-4.5-thinking
+  - Extract default model constants to reduce duplication across constructor and getDefaultModel()
+
 ## 1.6.2
 
 ### Patch Changes
