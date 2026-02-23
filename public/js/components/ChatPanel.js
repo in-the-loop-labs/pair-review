@@ -26,6 +26,7 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;   // 'suggestion' or 'user' — set when opened with context
     this._contextItemId = null;   // suggestion ID or comment ID from context
+    this._contextLineMeta = null;  // { file, line_start, line_end } — set when opened with line context
     this._pendingActionContext = null;  // { type, itemId } — set by action button handlers, consumed by sendMessage
     this._resizeConfig = { min: 300, default: 400, storageKey: 'chat-panel-width' };
     this._analysisContextRemoved = false;
@@ -105,6 +106,15 @@ class ChatPanel {
             ${DISMISS_ICON}
             Dismiss comment
           </button>
+          <button class="chat-panel__action-btn chat-panel__action-btn--create-comment" style="display: none;" title="Create a review comment for this line">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+              <path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/>
+            </svg>
+            Create comment
+          </button>
+          <button class="chat-panel__action-bar-dismiss" title="Dismiss shortcuts">
+            ${DISMISS_ICON}
+          </button>
         </div>
         <div class="chat-panel__input-area">
           <textarea class="chat-panel__input" placeholder="Ask about this review..." rows="1"></textarea>
@@ -140,6 +150,8 @@ class ChatPanel {
     this.updateBtn = this.container.querySelector('.chat-panel__action-btn--update');
     this.dismissSuggestionBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-suggestion');
     this.dismissCommentBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-comment');
+    this.createCommentBtn = this.container.querySelector('.chat-panel__action-btn--create-comment');
+    this.actionBarDismissBtn = this.container.querySelector('.chat-panel__action-bar-dismiss');
     this.sessionPickerEl = this.container.querySelector('.chat-panel__session-picker');
     this.sessionPickerBtn = this.container.querySelector('.chat-panel__session-picker-btn');
     this.sessionDropdown = this.container.querySelector('.chat-panel__session-dropdown');
@@ -173,6 +185,8 @@ class ChatPanel {
     this.updateBtn.addEventListener('click', () => this._handleUpdateClick());
     this.dismissSuggestionBtn.addEventListener('click', () => this._handleDismissSuggestionClick());
     this.dismissCommentBtn.addEventListener('click', () => this._handleDismissCommentClick());
+    this.createCommentBtn.addEventListener('click', () => this._handleCreateCommentClick());
+    this.actionBarDismissBtn.addEventListener('click', () => this._handleActionBarDismiss());
 
     // New-content pill: click to scroll to bottom
     if (this.newContentPill) {
@@ -444,8 +458,18 @@ class ChatPanel {
     } else if (options.commentContext) {
       // If opening with user comment context, inject it as a context card
       this._sendCommentContextMessage(options.commentContext);
-      this._contextSource = 'user';
-      this._contextItemId = options.commentContext.commentId || null;
+      if (options.commentContext.type === 'line') {
+        this._contextSource = 'line';
+        this._contextItemId = null;
+        this._contextLineMeta = {
+          file: options.commentContext.file,
+          line_start: options.commentContext.line_start,
+          line_end: options.commentContext.line_end,
+        };
+      } else {
+        this._contextSource = 'user';
+        this._contextItemId = options.commentContext.commentId || null;
+      }
     } else if (options.fileContext) {
       // If opening with file context, inject it as a context card
       this._sendFileContextMessage(options.fileContext);
@@ -483,6 +507,7 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;
     this._contextItemId = null;
+    this._contextLineMeta = null;
     // Zero out CSS variable so max-width calcs don't reserve space (mirrors AIPanel.collapse)
     document.documentElement.style.setProperty('--chat-panel-width', '0px');
     // Preserve _analysisContextRemoved and _sessionAnalysisRunId across
@@ -514,6 +539,7 @@ class ChatPanel {
     const savedContextData = this._pendingContextData.slice();
     const savedContextSource = this._contextSource;
     const savedContextItemId = this._contextItemId;
+    const savedContextLineMeta = this._contextLineMeta;
 
     // 2. Clear everything as normal
     this._finalizeStreaming();
@@ -524,6 +550,7 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;
     this._contextItemId = null;
+    this._contextLineMeta = null;
     this._analysisContextRemoved = false;
     this._sessionAnalysisRunId = null;
     this._clearMessages();
@@ -543,6 +570,7 @@ class ChatPanel {
       // Restore context metadata
       this._contextSource = savedContextSource;
       this._contextItemId = savedContextItemId;
+      this._contextLineMeta = savedContextLineMeta;
 
       for (let i = 0; i < savedContextData.length; i++) {
         const ctxData = savedContextData[i];
@@ -764,6 +792,7 @@ class ChatPanel {
     this._pendingContextData = [];
     this._contextSource = null;
     this._contextItemId = null;
+    this._contextLineMeta = null;
     this._pendingActionContext = null;
     this._analysisContextRemoved = false;
     this._sessionAnalysisRunId = null;
@@ -2728,16 +2757,25 @@ class ChatPanel {
    * Update visibility and disabled state of action buttons based on context and streaming state.
    */
   _updateActionButtons() {
+    // Check if shortcuts are disabled via config
+    if (document.documentElement.getAttribute('data-chat-shortcuts') === 'disabled') {
+      this.actionBar.style.display = 'none';
+      return;
+    }
+
     const hasSuggestion = this._contextSource === 'suggestion' && this._contextItemId;
     const hasComment = this._contextSource === 'user' && this._contextItemId;
+    const hasLine = this._contextSource === 'line';
 
     // Show the bar only if at least one button is relevant
-    const showBar = hasSuggestion || hasComment;
+    const showBar = hasSuggestion || hasComment || hasLine;
     this.actionBar.style.display = showBar ? '' : 'none';
     this.adoptBtn.style.display = hasSuggestion ? '' : 'none';
     this.dismissSuggestionBtn.style.display = hasSuggestion ? '' : 'none';
     this.updateBtn.style.display = hasComment ? '' : 'none';
     this.dismissCommentBtn.style.display = hasComment ? '' : 'none';
+    this.createCommentBtn.style.display = hasLine ? '' : 'none';
+    this.createCommentBtn.disabled = this.isStreaming;
 
     // Disable while streaming
     this.adoptBtn.disabled = this.isStreaming;
@@ -2787,6 +2825,33 @@ class ChatPanel {
     if (this.isStreaming || !this._contextItemId) return;
     this._pendingActionContext = { type: 'dismiss-comment', itemId: this._contextItemId };
     this.inputEl.value = 'Please delete this comment.';
+    this.sendMessage();
+  }
+
+  /**
+   * Handle click on action bar dismiss button.
+   * Hides the action bar for this conversation by clearing context source.
+   */
+  _handleActionBarDismiss() {
+    this._contextSource = null;
+    this._contextItemId = null;
+    this._contextLineMeta = null;
+    this._updateActionButtons();
+  }
+
+  /**
+   * Handle click on "Create comment" button.
+   * Sends a message asking the agent to create a review comment for the referenced lines.
+   */
+  _handleCreateCommentClick() {
+    if (this.isStreaming) return;
+    this._pendingActionContext = {
+      type: 'create-comment',
+      file: this._contextLineMeta?.file,
+      line_start: this._contextLineMeta?.line_start,
+      line_end: this._contextLineMeta?.line_end,
+    };
+    this.inputEl.value = 'Based on our conversation, please create a review comment for this code.';
     this.sendMessage();
   }
 

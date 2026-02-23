@@ -11621,6 +11621,18 @@ body.resizing * {
   color: #ffffff;
 }
 
+.chat-panel__action-btn--create-comment {
+  background: var(--color-accent-primary, #2f81f7);
+  border-color: var(--color-accent-primary, #2f81f7);
+  color: #ffffff;
+}
+
+.chat-panel__action-btn--create-comment:hover:not(:disabled) {
+  background: var(--color-accent-hover, #388bfd);
+  border-color: var(--color-accent-hover, #388bfd);
+  color: #ffffff;
+}
+
 .chat-panel__action-btn--dismiss-suggestion,
 .chat-panel__action-btn--dismiss-comment {
   background: var(--color-danger, #d1242f);
@@ -11633,6 +11645,26 @@ body.resizing * {
   background: var(--color-danger-hover, #b91c1c);
   border-color: var(--color-danger-hover, #b91c1c);
   color: #ffffff;
+}
+
+.chat-panel__action-bar-dismiss {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chat-panel__action-bar-dismiss:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
 
 /* Chat Input Area */

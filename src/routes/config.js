@@ -39,6 +39,7 @@ router.get('/api/config', (req, res) => {
     // Include npx detection for frontend command examples
     is_running_via_npx: isRunningViaNpx(),
     enable_chat: config.enable_chat !== false,
+    chat_enable_shortcuts: config.chat?.enable_shortcuts !== false,
     pi_available: getCachedAvailability('pi')?.available || false
   });
 });
@@ -49,7 +50,7 @@ router.get('/api/config', (req, res) => {
  */
 router.patch('/api/config', async (req, res) => {
   try {
-    const { comment_button_action } = req.body;
+    const { comment_button_action, chat_enable_shortcuts } = req.body;
 
     // Validate comment_button_action if provided
     if (comment_button_action !== undefined) {
@@ -60,12 +61,25 @@ router.patch('/api/config', async (req, res) => {
       }
     }
 
+    if (chat_enable_shortcuts !== undefined) {
+      if (typeof chat_enable_shortcuts !== 'boolean') {
+        return res.status(400).json({
+          error: 'Invalid chat_enable_shortcuts. Must be a boolean'
+        });
+      }
+    }
+
     // Get current config
     const config = req.app.get('config') || {};
 
     // Update allowed fields
     if (comment_button_action !== undefined) {
       config.comment_button_action = comment_button_action;
+    }
+
+    if (chat_enable_shortcuts !== undefined) {
+      if (!config.chat) config.chat = {};
+      config.chat.enable_shortcuts = chat_enable_shortcuts;
     }
 
     // Save config to file
@@ -79,7 +93,8 @@ router.patch('/api/config', async (req, res) => {
       success: true,
       config: {
         theme: config.theme || 'light',
-        comment_button_action: config.comment_button_action || 'submit'
+        comment_button_action: config.comment_button_action || 'submit',
+        chat_enable_shortcuts: config.chat?.enable_shortcuts !== false
       }
     });
 

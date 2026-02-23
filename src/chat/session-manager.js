@@ -148,6 +148,12 @@ class ChatSessionManager {
     if (actionContext && actionContext.type && actionContext.itemId) {
       const actionHint = `[Action: ${actionContext.type}, target ID: ${actionContext.itemId}]`;
       messageForAgent = messageForAgent + '\n\n' + actionHint;
+    } else if (actionContext && actionContext.type === 'create-comment' && actionContext.file) {
+      const lineSpec = (!actionContext.line_end || actionContext.line_start === actionContext.line_end)
+        ? `${actionContext.line_start}`
+        : `${actionContext.line_start}-${actionContext.line_end}`;
+      const actionHint = `[Action: create-comment, file: ${actionContext.file}, lines: ${lineSpec}]`;
+      messageForAgent = messageForAgent + '\n\n' + actionHint;
     }
 
     // Store context + user message atomically

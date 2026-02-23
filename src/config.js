@@ -21,6 +21,7 @@ const DEFAULT_CONFIG = {
   db_name: "",  // Custom database filename (default: database.db). Useful for per-worktree isolation.
   yolo: false,  // When true, skips fine-grained AI provider permission setup (equivalent to --yolo CLI flag)
   enable_chat: true,  // When true, enables the chat panel feature (requires Pi AI provider)
+  chat: { enable_shortcuts: true },  // Chat panel settings (enable_shortcuts: show action shortcut buttons)
   providers: {},  // Custom provider configurations (overrides built-in defaults)
   monorepos: {}  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
 };
@@ -139,6 +140,12 @@ async function loadConfig() {
     // Merge with defaults to ensure all keys exist
     // Legacy keys ('provider', 'model') are handled lazily via getDefaultProvider/getDefaultModel
     const mergedConfig = { ...DEFAULT_CONFIG, ...config };
+    // Deep-merge one level for object-valued defaults (e.g. chat, providers, monorepos)
+    for (const key of Object.keys(DEFAULT_CONFIG)) {
+      if (typeof DEFAULT_CONFIG[key] === 'object' && DEFAULT_CONFIG[key] !== null && !Array.isArray(DEFAULT_CONFIG[key])) {
+        mergedConfig[key] = { ...DEFAULT_CONFIG[key], ...config[key] };
+      }
+    }
 
     // Merge local config (CWD/.pair-review/config.json) on top of global config
     try {
@@ -146,6 +153,12 @@ async function loadConfig() {
       const localConfigData = await fs.readFile(localConfigPath, 'utf8');
       const localConfig = JSON.parse(localConfigData);
       Object.assign(mergedConfig, localConfig);
+      // Deep-merge one level for object-valued local config overrides
+      for (const key of Object.keys(DEFAULT_CONFIG)) {
+        if (typeof DEFAULT_CONFIG[key] === 'object' && DEFAULT_CONFIG[key] !== null && !Array.isArray(DEFAULT_CONFIG[key])) {
+          mergedConfig[key] = { ...DEFAULT_CONFIG[key], ...config[key], ...localConfig[key] };
+        }
+      }
     } catch (localError) {
       if (localError.code !== 'ENOENT') {
         if (localError instanceof SyntaxError) {

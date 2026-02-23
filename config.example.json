@@ -10,6 +10,9 @@
   "dev_mode": false,
   "debug_stream": false,
   "yolo": false,
+  "chat": {
+    "enable_shortcuts": true
+  },
 
   "providers": {
     "_comment": "Provider configurations override built-in defaults. Most providers have built-in models, but OpenCode and Pi require manual configuration.",
