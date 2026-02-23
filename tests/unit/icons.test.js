@@ -39,6 +39,30 @@ describe('Icons module', () => {
       expect(svg).toContain('height="10"');
       expect(svg).toContain('class="foo"');
     });
+
+    it('defaults height to width when only width is provided', () => {
+      const svg = icon('discussion', { width: 10 });
+      expect(svg).toContain('width="10"');
+      expect(svg).toContain('height="10"');
+    });
+
+    it('defaults both dimensions to 16 when only className is provided', () => {
+      const svg = icon('discussion', { className: 'bar' });
+      expect(svg).toContain('width="16"');
+      expect(svg).toContain('height="16"');
+      expect(svg).toContain('class="bar"');
+    });
+
+    it('accepts a style option and emits style attribute', () => {
+      const svg = icon('commentFilled', { width: 16, height: 16, style: 'display:none' });
+      expect(svg).toContain('style="display:none"');
+      expect(svg).toContain('width="16"');
+    });
+
+    it('omits style attribute when style is not provided', () => {
+      const svg = icon('discussion', { width: 16 });
+      expect(svg).not.toContain('style=');
+    });
   });
 
   describe('unknown icon', () => {

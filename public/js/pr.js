@@ -949,7 +949,7 @@ class PRManager {
       // Outline icon (no comments) - will be updated by updateHeaderButtonState
       fileCommentBtn.innerHTML = `
         ${window.Icons.icon('comment', { width: 16, height: 16, className: 'comment-icon-outline' })}
-        <svg class="comment-icon-filled" viewBox="${window.Icons.DEFS.commentFilled.viewBox}" width="16" height="16" fill="currentColor" style="display:none">${window.Icons.DEFS.commentFilled.paths}</svg>
+        ${window.Icons.icon('commentFilled', { width: 16, height: 16, className: 'comment-icon-filled', style: 'display:none' })}
       `;
       fileCommentBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -4240,7 +4240,7 @@ class PRManager {
       fileCommentBtn.dataset.file = contextFile.file;
       fileCommentBtn.innerHTML = `
         ${window.Icons.icon('comment', { width: 16, height: 16, className: 'comment-icon-outline' })}
-        <svg class="comment-icon-filled" viewBox="${window.Icons.DEFS.commentFilled.viewBox}" width="16" height="16" fill="currentColor" style="display:none">${window.Icons.DEFS.commentFilled.paths}</svg>
+        ${window.Icons.icon('commentFilled', { width: 16, height: 16, className: 'comment-icon-filled', style: 'display:none' })}
       `;
       fileCommentBtn.addEventListener('click', (e) => {
         e.stopPropagation();

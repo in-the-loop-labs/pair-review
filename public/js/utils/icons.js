@@ -287,6 +287,12 @@
       paths: '<path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575L6.457 1.047Z"/>'
     },
 
+    // ── Octicon: question (circle with question mark) ─────────────────
+    question: {
+      viewBox: '0 0 16 16',
+      paths: '<path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.92 6.085c.081-.16.19-.299.34-.398.145-.097.371-.187.74-.187.302 0 .558.066.743.205a.677.677 0 0 1 .26.514c0 .217-.062.376-.15.495-.083.112-.216.22-.436.345-.205.119-.36.234-.479.364a.788.788 0 0 0-.19.478v.413a.75.75 0 1 0 1.5 0v-.124c0-.05.024-.1.067-.14.052-.047.154-.113.333-.19.188-.083.37-.196.523-.35a1.724 1.724 0 0 0 .437-1.18c0-.515-.177-.914-.504-1.199-.331-.289-.78-.447-1.3-.447-.531 0-.978.164-1.307.465-.323.295-.496.682-.558 1.093a.75.75 0 0 0 1.474.28.327.327 0 0 1 .029-.073ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/>'
+    },
+
     // ── Octicon: sidebar-collapse ─────────────────────────────────────
     sidebarCollapse: {
       viewBox: '0 0 16 16',
@@ -312,22 +318,24 @@
     let width = 16;
     let height;
     let className = '';
+    let style = '';
 
     if (widthOrOpts && typeof widthOrOpts === 'object') {
       width = widthOrOpts.width ?? 16;
       height = widthOrOpts.height ?? width;
       className = widthOrOpts.className ?? '';
+      style = widthOrOpts.style ?? '';
     } else if (widthOrOpts !== undefined) {
       width = widthOrOpts;
       height = heightArg ?? width;
     } else {
       height = 16;
     }
-    if (height === undefined) height = width;
 
     const fillAttr = def.attrs || 'fill="currentColor"';
     const cls = className ? ` class="${className}"` : '';
-    return `<svg viewBox="${def.viewBox}" width="${width}" height="${height}" ${fillAttr}${cls}>${def.paths}</svg>`;
+    const sty = style ? ` style="${style}"` : '';
+    return `<svg viewBox="${def.viewBox}" width="${width}" height="${height}" ${fillAttr}${cls}${sty}>${def.paths}</svg>`;
   }
 
   // Export to global scope

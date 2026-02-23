@@ -495,7 +495,7 @@ class SuggestionManager {
         <div class="ai-suggestion-header">
           <div class="ai-suggestion-header-left">
             ${suggestion.type === 'praise'
-              ? `<span class="praise-badge" title="Nice Work">${window.Icons.icon('star')}Nice Work</span>`
+              ? `<span class="praise-badge" title="Nice Work">${window.Icons.icon('star', 12, 12)}Nice Work</span>`
               : `<span class="ai-suggestion-badge" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">${window.Icons.icon('sparkles', 12, 12)}AI Suggestion</span>`}
             ${categoryLabel ? `<span class="ai-suggestion-category">${escapeHtml(categoryLabel)}</span>` : ''}
             <span class="ai-title">${escapeHtml(suggestion.title || '')}</span>
@@ -510,7 +510,7 @@ class SuggestionManager {
         </div>
         <div class="ai-suggestion-collapsed-content">
           ${suggestion.type === 'praise'
-            ? `<span class="praise-badge" title="Nice Work">${window.Icons.icon('star')}Nice Work</span>`
+            ? `<span class="praise-badge" title="Nice Work">${window.Icons.icon('star', 12, 12)}Nice Work</span>`
             : `<span class="ai-suggestion-badge collapsed" data-type="${suggestion.type}" title="${this.getTypeDescription(suggestion.type)}">${window.Icons.icon('sparkles', 10, 10)}AI Suggestion</span>`}
           <span class="collapsed-text">${isAdopted ? 'Suggestion adopted' : 'Hidden AI suggestion'}</span>
           <span class="collapsed-title">${escapeHtml(suggestion.title || '')}</span>
