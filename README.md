@@ -10,6 +10,34 @@
 
 ![pair-review screenshot](https://raw.githubusercontent.com/in-the-loop-labs/pair-review/main/docs/screenshot.png)
 
+## Table of Contents
+
+- [What is pair-review?](#what-is-pair-review)
+- [Why pair-review?](#why-pair-review)
+- [Workflows](#workflows)
+  - [Local Review](#1-local-review-human-reviews-agent-generated-code)
+  - [Meta-Review](#2-meta-review-judging-ai-suggestions)
+  - [AI-Guided Review](#3-ai-guided-review-when-youre-accountable)
+- [Quick Start](#quick-start)
+- [Command Line Interface](#command-line-interface)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [GitHub Token](#github-token)
+  - [AI Provider Configuration](#ai-provider-configuration)
+- [Features](#features)
+  - [Three-Level AI Analysis](#three-level-ai-analysis)
+  - [Chat](#chat)
+  - [Customization](#customization)
+  - [Review Feedback Export](#review-feedback-export)
+  - [Inline Comments](#inline-comments)
+  - [Local Mode](#local-mode)
+- [Claude Code Plugins](#claude-code-plugins)
+- [MCP Integration](#mcp-integration)
+- [Development](#development)
+- [FAQ](#faq)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## What is pair-review?
 
 pair-review is a local web application for keeping humans in the loop with AI coding agents. Calling it an AI code review tool would be accurate but incomplete — it supports multiple workflows beyond automated review, from reviewing agent-generated code before committing, to judging AI suggestions instead of reading every line, to using AI to guide your attention during a thorough review. You pick what fits your situation.
@@ -381,6 +409,34 @@ pair-review's AI analysis system examines your code changes at increasing levels
 
 This progressive approach keeps analysis focused while catching issues at every scope.
 
+### Chat
+
+Talk to an AI agent about the code you're reviewing — ask questions, discuss suggestions, or take actions directly from the conversation. Powered by [Pi](https://github.com/mariozechner/pi-coding-agent).
+
+**What you can do:**
+
+- Ask questions about the code, architecture, or intent behind changes
+- Discuss AI suggestions with the agent before adopting or dismissing them
+- Take actions from chat — the agent can read files, run commands, and make changes in the review worktree
+- Start conversations from multiple entry points: the chat panel, inline comment actions, or the keyboard shortcut
+
+**How it works:**
+
+- Pi runs in RPC mode as a persistent background session with full tool access
+- Each review gets its own conversation history that persists across page reloads
+- Multiple conversations are supported — start a new one or continue an existing thread
+- Custom instructions from your repo and review settings are included automatically
+
+**Setup:**
+
+```bash
+npm install -g @mariozechner/pi-coding-agent
+```
+
+Configure your preferred models in `providers.pi.models` — see [AI Provider Configuration](#ai-provider-configuration) for details. Everything else in pair-review works without Pi installed.
+
+**Keyboard shortcut:** Press `p` then `c` to toggle the chat panel.
+
 ### Customization
 
 Tailor AI analysis to your team's standards and your current needs:
@@ -637,6 +693,15 @@ A: OpenCode has no built-in models, so you must configure them in your `~/.pair-
 
 **Q: How do I use Pi as my AI provider?**
 A: Like OpenCode, Pi has no built-in models. Configure them in your `~/.pair-review/config.json` by adding a `providers.pi.models` array with at least one model definition. Pi supports many providers (Google, Anthropic, OpenAI, etc.) via its `--provider` and `--model` flags. See the [AI Provider Configuration](#ai-provider-configuration) section and `config.example.json` for examples.
+
+**Q: Why does chat use Pi instead of Claude or other providers?**
+A: Pi provides persistent interactive sessions via RPC with full tool access — it can read files, run commands, and take actions in the codebase. The other providers are used in one-shot mode for analysis, where they receive a prompt and return structured results. Pi is also model-agnostic: you can configure it to use Claude, Gemini, GPT, or any other supported model underneath.
+
+**Q: Do I need Pi installed to use pair-review?**
+A: No. Pi is only required for the chat feature. Without it, the chat toggle appears grayed out in the UI. All other features — diff viewing, AI analysis, inline comments, review export — work without Pi.
+
+**Q: How do I set up chat?**
+A: Install the Pi coding agent (`npm install -g @mariozechner/pi-coding-agent`), then configure your preferred models in `providers.pi.models` in your `~/.pair-review/config.json`. See the [AI Provider Configuration](#ai-provider-configuration) section for details. Once configured, chat becomes available automatically in the review UI.
 
 ## Contributing
 
