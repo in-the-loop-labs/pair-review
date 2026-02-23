@@ -31,8 +31,8 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  * Tier structure:
  * - free (auto): Cursor's default auto-routing model
  * - fast (composer-1, gpt-5.3-codex-fast, gemini-3-flash): Quick analysis
- * - balanced (composer-1.5, sonnet-4.5-thinking, gemini-3-pro): Recommended for most reviews
- * - thorough (gpt-5.3-codex-high, opus-4.5-thinking, opus-4.6-thinking): Deep analysis for complex code
+ * - balanced (composer-1.5, sonnet-4.6-thinking, sonnet-4.5-thinking, gemini-3-pro, gemini-3.1-pro): Recommended for most reviews
+ * - thorough (gpt-5.3-codex-high, gpt-5.3-codex-xhigh, opus-4.5-thinking, opus-4.6-thinking): Deep analysis for complex code
  */
 const CURSOR_AGENT_MODELS = [
   {
@@ -81,14 +81,23 @@ const CURSOR_AGENT_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
-    id: 'sonnet-4.5-thinking',
-    name: 'Claude 4.5 Sonnet (Thinking)',
+    id: 'sonnet-4.6-thinking',
+    name: 'Claude 4.6 Sonnet (Thinking)',
     tier: 'balanced',
     tagline: 'Best Balance',
-    description: 'Extended thinking for thorough analysis with excellent quality-to-cost ratio',
+    description: 'Latest Sonnet with extended thinking—excellent quality-to-cost ratio for thorough reviews',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
+  },
+  {
+    id: 'sonnet-4.5-thinking',
+    name: 'Claude 4.5 Sonnet (Thinking)',
+    tier: 'balanced',
+    tagline: 'Previous Gen',
+    description: 'Previous generation extended thinking—still strong for thorough analysis',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-balanced'
   },
   {
     id: 'gemini-3-pro',
@@ -100,12 +109,30 @@ const CURSOR_AGENT_MODELS = [
     badgeClass: 'badge-balanced'
   },
   {
+    id: 'gemini-3.1-pro',
+    name: 'Gemini 3.1 Pro',
+    tier: 'balanced',
+    tagline: 'Latest Gemini',
+    description: 'Newest Gemini model—cutting-edge reasoning for complex multi-file reviews',
+    badge: 'Latest',
+    badgeClass: 'badge-balanced'
+  },
+  {
     id: 'gpt-5.3-codex-high',
     name: 'GPT-5.3 Codex High',
     tier: 'thorough',
     tagline: 'Deep Code Analysis',
     description: "OpenAI's latest and most capable for complex code review with deep reasoning",
     badge: 'Thorough',
+    badgeClass: 'badge-power'
+  },
+  {
+    id: 'gpt-5.3-codex-xhigh',
+    name: 'GPT-5.3 Codex Extra High',
+    tier: 'thorough',
+    tagline: 'Maximum Reasoning',
+    description: 'Highest reasoning effort for the most complex architectural reviews',
+    badge: 'Maximum',
     badgeClass: 'badge-power'
   },
   {
@@ -128,6 +155,8 @@ const CURSOR_AGENT_MODELS = [
   }
 ];
 
+const DEFAULT_CURSOR_AGENT_MODEL = 'sonnet-4.6-thinking';
+
 class CursorAgentProvider extends AIProvider {
   /**
    * @param {string} model - Model identifier
@@ -137,7 +166,7 @@ class CursorAgentProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'sonnet-4.5-thinking', configOverrides = {}) {
+  constructor(model = DEFAULT_CURSOR_AGENT_MODEL, configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -790,7 +819,7 @@ class CursorAgentProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'sonnet-4.5-thinking';
+    return DEFAULT_CURSOR_AGENT_MODEL;
   }
 
   static getInstallInstructions() {

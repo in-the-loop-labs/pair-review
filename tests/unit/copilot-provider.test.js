@@ -48,7 +48,7 @@ describe('CopilotProvider', () => {
     });
 
     it('should return default model', () => {
-      expect(CopilotProvider.getDefaultModel()).toBe('claude-sonnet-4.5');
+      expect(CopilotProvider.getDefaultModel()).toBe('claude-sonnet-4.6');
     });
 
     it('should return array of models', () => {
@@ -74,7 +74,7 @@ describe('CopilotProvider', () => {
       const models = CopilotProvider.getModels();
       const defaultModels = models.filter(m => m.default);
       expect(defaultModels).toHaveLength(1);
-      expect(defaultModels[0].id).toBe('claude-sonnet-4.5');
+      expect(defaultModels[0].id).toBe('claude-sonnet-4.6');
     });
 
     it('should return install instructions with correct GitHub Copilot package', () => {
@@ -103,21 +103,23 @@ describe('CopilotProvider', () => {
       const models = CopilotProvider.getModels();
       const balancedModels = models.filter(m => m.tier === 'balanced');
       expect(balancedModels.length).toBeGreaterThan(0);
-      expect(balancedModels[0].id).toBe('claude-sonnet-4.5');
+      expect(balancedModels[0].id).toBe('claude-sonnet-4.6');
     });
 
     it('should have thorough tier models', () => {
       const models = CopilotProvider.getModels();
       const thoroughModels = models.filter(m => m.tier === 'thorough');
-      expect(thoroughModels.length).toBe(2);
+      expect(thoroughModels.length).toBe(4);
       const thoroughIds = thoroughModels.map(m => m.id);
+      expect(thoroughIds).toContain('gpt-5.3-codex');
       expect(thoroughIds).toContain('claude-opus-4.5');
       expect(thoroughIds).toContain('claude-opus-4.6');
+      expect(thoroughIds).toContain('claude-opus-4.6-fast');
     });
 
-    it('should have exactly 7 models covering tiers', () => {
+    it('should have exactly 9 models covering tiers', () => {
       const models = CopilotProvider.getModels();
-      expect(models).toHaveLength(6);
+      expect(models).toHaveLength(9);
 
       const tiers = models.map(m => m.tier);
       expect(tiers).toContain('fast');
@@ -129,7 +131,7 @@ describe('CopilotProvider', () => {
   describe('constructor', () => {
     it('should create instance with default model', () => {
       const provider = new CopilotProvider();
-      expect(provider.model).toBe('claude-sonnet-4.5');
+      expect(provider.model).toBe('claude-sonnet-4.6');
     });
 
     it('should create instance with custom model', () => {
@@ -266,7 +268,7 @@ describe('CopilotProvider', () => {
       expect(balancedModel.badgeClass).toBe('badge-recommended');
 
       const thoroughModels = models.filter(m => m.tier === 'thorough');
-      expect(thoroughModels.length).toBe(2);
+      expect(thoroughModels.length).toBe(4);
     });
 
     it('should have meaningful taglines for each model', () => {

@@ -21,9 +21,10 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  *
  * GitHub Copilot CLI supports multiple AI models including OpenAI,
  * Anthropic, and Google models via the --model flag.
- * Available models (as of Feb 2026): claude-haiku-4.5, claude-sonnet-4.5,
- * gemini-3-pro-preview, gpt-5.2-codex, claude-opus-4.5,
- * claude-opus-4.6. Default is claude-sonnet-4.5.
+ * Available models (as of Feb 2026): claude-haiku-4.5, claude-sonnet-4.6,
+ * claude-sonnet-4.5, gemini-3-pro-preview, gpt-5.2-codex, gpt-5.3-codex,
+ * claude-opus-4.5, claude-opus-4.6, claude-opus-4.6-fast.
+ * Default is claude-sonnet-4.6.
  */
 const COPILOT_MODELS = [
   {
@@ -36,14 +37,23 @@ const COPILOT_MODELS = [
     badgeClass: 'badge-speed'
   },
   {
-    id: 'claude-sonnet-4.5',
-    name: 'Claude Sonnet 4.5',
+    id: 'claude-sonnet-4.6',
+    name: 'Claude Sonnet 4.6',
     tier: 'balanced',
-    tagline: 'Reliable Review',
-    description: 'Copilot default—strong code understanding with excellent quality-to-cost ratio',
+    tagline: 'Best Balance',
+    description: 'Latest Sonnet—excellent code understanding with fast turnaround',
     badge: 'Recommended',
     badgeClass: 'badge-recommended',
     default: true
+  },
+  {
+    id: 'claude-sonnet-4.5',
+    name: 'Claude Sonnet 4.5',
+    tier: 'balanced',
+    tagline: 'Previous Gen',
+    description: 'Previous generation Sonnet—strong code understanding with excellent quality-to-cost ratio',
+    badge: 'Previous Gen',
+    badgeClass: 'badge-balanced'
   },
   {
     id: 'gemini-3-pro-preview',
@@ -64,6 +74,15 @@ const COPILOT_MODELS = [
     badgeClass: 'badge-balanced'
   },
   {
+    id: 'gpt-5.3-codex',
+    name: 'GPT-5.3 Codex',
+    tier: 'thorough',
+    tagline: 'Deep Code Analysis',
+    description: 'Most capable OpenAI coding model—frontier performance for complex multi-file reviews',
+    badge: 'Thorough',
+    badgeClass: 'badge-power'
+  },
+  {
     id: 'claude-opus-4.5',
     name: 'Claude Opus 4.5',
     tier: 'thorough',
@@ -80,8 +99,19 @@ const COPILOT_MODELS = [
     description: 'Most capable model for critical code reviews—deep reasoning for security and architecture',
     badge: 'Premium',
     badgeClass: 'badge-premium'
+  },
+  {
+    id: 'claude-opus-4.6-fast',
+    name: 'Claude Opus 4.6 Fast',
+    tier: 'thorough',
+    tagline: 'Fast Opus',
+    description: 'Opus-level analysis at reduced latency—preview mode for faster deep reviews',
+    badge: 'Preview',
+    badgeClass: 'badge-premium'
   }
 ];
+
+const DEFAULT_COPILOT_MODEL = 'claude-sonnet-4.6';
 
 class CopilotProvider extends AIProvider {
   /**
@@ -92,7 +122,7 @@ class CopilotProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'claude-sonnet-4.5', configOverrides = {}) {
+  constructor(model = DEFAULT_COPILOT_MODEL, configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -462,7 +492,7 @@ class CopilotProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'claude-sonnet-4.5';
+    return DEFAULT_COPILOT_MODEL;
   }
 
   static getInstallInstructions() {
