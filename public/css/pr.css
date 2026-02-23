@@ -11635,6 +11635,26 @@ body.resizing * {
   color: #ffffff;
 }
 
+.chat-panel__action-bar-dismiss {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chat-panel__action-bar-dismiss:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
 /* Chat Input Area */
 .chat-panel__input-area {
   display: flex;

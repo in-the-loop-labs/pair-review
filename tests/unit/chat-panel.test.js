@@ -93,6 +93,7 @@ function createMockElement(tag = 'div', overrides = {}) {
       if (selector === '.chat-panel__action-btn--update') return elementRegistry['chat-update-btn'] || null;
       if (selector === '.chat-panel__action-btn--dismiss-suggestion') return elementRegistry['chat-dismiss-suggestion-btn'] || null;
       if (selector === '.chat-panel__action-btn--dismiss-comment') return elementRegistry['chat-dismiss-comment-btn'] || null;
+      if (selector === '.chat-panel__action-bar-dismiss') return elementRegistry['chat-action-bar-dismiss'] || null;
       if (selector === '.chat-panel__resize-handle') return elementRegistry['chat-resize-handle'] || null;
       if (selector === '.chat-panel__empty') return elementRegistry['chat-empty'] || null;
       if (selector === '.chat-panel__new-content-pill') return elementRegistry['chat-new-content-pill'] || null;
@@ -145,6 +146,7 @@ function buildElementRegistry() {
     'chat-update-btn': createMockElement('button'),
     'chat-dismiss-suggestion-btn': createMockElement('button'),
     'chat-dismiss-comment-btn': createMockElement('button'),
+    'chat-action-bar-dismiss': createMockElement('button'),
     'chat-resize-handle': createMockElement('div'),
     'chat-empty': createMockElement('div'),
     'chat-session-picker': createMockElement('div'),
@@ -212,6 +214,7 @@ documentListeners = {};
 global.document = {
   documentElement: {
     style: { setProperty: vi.fn(), getPropertyValue: vi.fn(() => '') },
+    getAttribute: vi.fn(() => null),
   },
   body: {
     classList: { add: vi.fn(), remove: vi.fn() },
@@ -271,6 +274,7 @@ function createChatPanel() {
       '.chat-panel__action-btn--update': reg['chat-update-btn'],
       '.chat-panel__action-btn--dismiss-suggestion': reg['chat-dismiss-suggestion-btn'],
       '.chat-panel__action-btn--dismiss-comment': reg['chat-dismiss-comment-btn'],
+      '.chat-panel__action-bar-dismiss': reg['chat-action-bar-dismiss'],
       '.chat-panel__resize-handle': reg['chat-resize-handle'],
       '.chat-panel__session-picker': reg['chat-session-picker'],
       '.chat-panel__session-picker-btn': reg['chat-session-picker-btn'],

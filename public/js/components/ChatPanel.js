@@ -105,6 +105,9 @@ class ChatPanel {
             ${DISMISS_ICON}
             Dismiss comment
           </button>
+          <button class="chat-panel__action-bar-dismiss" title="Dismiss shortcuts">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>
+          </button>
         </div>
         <div class="chat-panel__input-area">
           <textarea class="chat-panel__input" placeholder="Ask about this review..." rows="1"></textarea>
@@ -140,6 +143,7 @@ class ChatPanel {
     this.updateBtn = this.container.querySelector('.chat-panel__action-btn--update');
     this.dismissSuggestionBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-suggestion');
     this.dismissCommentBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-comment');
+    this.actionBarDismissBtn = this.container.querySelector('.chat-panel__action-bar-dismiss');
     this.sessionPickerEl = this.container.querySelector('.chat-panel__session-picker');
     this.sessionPickerBtn = this.container.querySelector('.chat-panel__session-picker-btn');
     this.sessionDropdown = this.container.querySelector('.chat-panel__session-dropdown');
@@ -173,6 +177,7 @@ class ChatPanel {
     this.updateBtn.addEventListener('click', () => this._handleUpdateClick());
     this.dismissSuggestionBtn.addEventListener('click', () => this._handleDismissSuggestionClick());
     this.dismissCommentBtn.addEventListener('click', () => this._handleDismissCommentClick());
+    this.actionBarDismissBtn.addEventListener('click', () => this._handleActionBarDismiss());
 
     // New-content pill: click to scroll to bottom
     if (this.newContentPill) {
@@ -2728,6 +2733,12 @@ class ChatPanel {
    * Update visibility and disabled state of action buttons based on context and streaming state.
    */
   _updateActionButtons() {
+    // Check if shortcuts are disabled via config
+    if (document.documentElement.getAttribute('data-chat-shortcuts') === 'disabled') {
+      this.actionBar.style.display = 'none';
+      return;
+    }
+
     const hasSuggestion = this._contextSource === 'suggestion' && this._contextItemId;
     const hasComment = this._contextSource === 'user' && this._contextItemId;
 
@@ -2788,6 +2799,16 @@ class ChatPanel {
     this._pendingActionContext = { type: 'dismiss-comment', itemId: this._contextItemId };
     this.inputEl.value = 'Please delete this comment.';
     this.sendMessage();
+  }
+
+  /**
+   * Handle click on action bar dismiss button.
+   * Hides the action bar for this conversation by clearing context source.
+   */
+  _handleActionBarDismiss() {
+    this._contextSource = null;
+    this._contextItemId = null;
+    this._updateActionButtons();
   }
 
   /**

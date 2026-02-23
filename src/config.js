@@ -21,6 +21,7 @@ const DEFAULT_CONFIG = {
   db_name: "",  // Custom database filename (default: database.db). Useful for per-worktree isolation.
   yolo: false,  // When true, skips fine-grained AI provider permission setup (equivalent to --yolo CLI flag)
   enable_chat: true,  // When true, enables the chat panel feature (requires Pi AI provider)
+  chat: { enable_shortcuts: true },  // Chat panel settings (enable_shortcuts: show action shortcut buttons)
   providers: {},  // Custom provider configurations (overrides built-in defaults)
   monorepos: {}  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
 };
