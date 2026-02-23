@@ -26,6 +26,7 @@
   - [AI Provider Configuration](#ai-provider-configuration)
 - [Features](#features)
   - [Three-Level AI Analysis](#three-level-ai-analysis)
+  - [Analysis Configuration](#analysis-configuration)
   - [Chat](#chat)
   - [Customization](#customization)
   - [Review Feedback Export](#review-feedback-export)
@@ -404,6 +405,28 @@ pair-review's AI analysis system examines your code changes at increasing levels
 - **Level 3 - Codebase Context**: Validates architectural patterns across the codebase
 
 This progressive approach keeps analysis focused while catching issues at every scope.
+
+### Analysis Configuration
+
+There are three ways to configure which models run your analysis, each building on the last:
+
+**Single Model** — Pick one provider and model. All enabled analysis levels run with that model, and consolidation uses the same model. The simplest option.
+
+**Review Council** — Pick multiple provider+model combinations that all run in parallel across the selected analysis levels. You pick a separate consolidation model that merges everything together.
+
+- Each reviewer can have its own timeout, instructions, and prompt tier (see [Model Tiers](#model-tiers))
+- Results consolidate first across levels for each reviewer, then across reviewers
+- Individual reviewer results are available alongside the overall council result
+
+**Advanced** — For each enabled analysis level, pick different provider+model combinations. Level 1 might use a fast model while Level 3 uses a thorough one. Supports the same per-model options as Review Council (timeout, instructions, tier). Consolidation model is selected separately. Results consolidate first within each level (if multiple reviewers), then across levels.
+
+The key difference from Review Council is consolidation order: Advanced consolidates within each level first, then across levels, so there are no per-reviewer rollups.
+
+**Example use cases:**
+
+- **Large changesets with Opus 4.6**: Use review council instructions to tell the model to use a Team — it will spawn sub-agents to divide the work
+- **Multi-model parallel review**: Give each model a specific focus area (security, performance, correctness) via per-model instructions and get combined results
+- **Cross-model perspectives**: Run the same analysis across different providers (e.g., Claude, Gemini, GPT) — where models agree signals high-confidence findings, but unique outliers from a single model can be equally valuable, catching issue types that only that model excels at spotting
 
 ### Chat
 
