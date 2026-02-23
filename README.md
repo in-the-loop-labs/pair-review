@@ -10,6 +10,34 @@
 
 ![pair-review screenshot](https://raw.githubusercontent.com/in-the-loop-labs/pair-review/main/docs/screenshot.png)
 
+## Table of Contents
+
+- [What is pair-review?](#what-is-pair-review)
+- [Why pair-review?](#why-pair-review)
+- [Workflows](#workflows)
+  - [Local Review](#1-local-review-human-reviews-agent-generated-code)
+  - [Meta-Review](#2-meta-review-judging-ai-suggestions)
+  - [AI-Guided Review](#3-ai-guided-review-when-youre-accountable)
+- [Quick Start](#quick-start)
+- [Command Line Interface](#command-line-interface)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [GitHub Token](#github-token)
+  - [AI Provider Configuration](#ai-provider-configuration)
+- [Features](#features)
+  - [Three-Level AI Analysis](#three-level-ai-analysis)
+  - [Chat](#chat)
+  - [Customization](#customization)
+  - [Review Feedback Export](#review-feedback-export)
+  - [Inline Comments](#inline-comments)
+  - [Local Mode](#local-mode)
+- [Claude Code Plugins](#claude-code-plugins)
+- [MCP Integration](#mcp-integration)
+- [Development](#development)
+- [FAQ](#faq)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## What is pair-review?
 
 pair-review is a local web application for keeping humans in the loop with AI coding agents. Calling it an AI code review tool would be accurate but incomplete — it supports multiple workflows beyond automated review, from reviewing agent-generated code before committing, to judging AI suggestions instead of reading every line, to using AI to guide your attention during a thorough review. You pick what fits your situation.
@@ -365,10 +393,6 @@ The CLI command used for a provider follows this precedence (highest to lowest):
 2. Config file `providers.<provider>.command`
 3. Built-in default
 
-#### Migration Notes
-
-If you have an older config file using `provider` and `model` keys at the top level, they are automatically treated as `default_provider` and `default_model`. No migration is required.
-
 ## Features
 
 ### Three-Level AI Analysis
@@ -380,6 +404,29 @@ pair-review's AI analysis system examines your code changes at increasing levels
 - **Level 3 - Codebase Context**: Validates architectural patterns across the codebase
 
 This progressive approach keeps analysis focused while catching issues at every scope.
+
+### Chat
+
+Chat with a full coding agent while you review — it can read the codebase, answer questions, and interact with pair-review on your behalf. Powered by [Pi](https://github.com/mariozechner/pi-coding-agent).
+
+**What you can do:**
+
+- Ask questions about the code, architecture, or intent behind changes
+- Have the agent pull related code into the diff panel as context files — see how changed code connects to the rest of the codebase without leaving the review
+- Adopt, dismiss, or discuss AI suggestions directly from the conversation
+- Create and edit review comments through chat
+- Trigger new analysis runs with custom instructions
+- Start conversations from context — an analysis run, an AI suggestion, a comment, any line or file
+
+**Setup:**
+
+```bash
+npm install -g @mariozechner/pi-coding-agent
+```
+
+Configure your preferred models in `providers.pi.models` — see [AI Provider Configuration](#ai-provider-configuration) for details. Everything else in pair-review works without Pi installed.
+
+**Keyboard shortcut:** Press `p` then `c` to toggle the chat panel.
 
 ### Customization
 
@@ -637,6 +684,9 @@ A: OpenCode has no built-in models, so you must configure them in your `~/.pair-
 
 **Q: How do I use Pi as my AI provider?**
 A: Like OpenCode, Pi has no built-in models. Configure them in your `~/.pair-review/config.json` by adding a `providers.pi.models` array with at least one model definition. Pi supports many providers (Google, Anthropic, OpenAI, etc.) via its `--provider` and `--model` flags. See the [AI Provider Configuration](#ai-provider-configuration) section and `config.example.json` for examples.
+
+**Q: Why does chat use Pi instead of Claude or other providers?**
+A: Pi provides persistent interactive sessions with a full agent — it can read files and run commands in the context of the codebase. Pi is model-agnostic and uses your existing provider subscriptions — no separate API keys needed.
 
 ## Contributing
 
