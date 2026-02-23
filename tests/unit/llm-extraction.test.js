@@ -38,9 +38,9 @@ describe('LLM-based JSON extraction fallback', () => {
       expect(provider.getFastTierModel()).toBe('haiku');
     });
 
-    it('should return fast-tier model for Gemini (gemini-3-flash-preview)', () => {
+    it('should return fast-tier model for Gemini (gemini-3-flash)', () => {
       const provider = new GeminiProvider('gemini-2.5-pro');
-      expect(provider.getFastTierModel()).toBe('gemini-3-flash-preview');
+      expect(provider.getFastTierModel()).toBe('gemini-3-flash');
     });
 
     it('should return fast-tier model for Codex (gpt-5.1-codex-mini)', () => {
@@ -103,7 +103,7 @@ describe('LLM-based JSON extraction fallback', () => {
     describe('GeminiProvider', () => {
       it('should return valid config', () => {
         const provider = new GeminiProvider();
-        const config = provider.getExtractionConfig('gemini-3-flash-preview');
+        const config = provider.getExtractionConfig('gemini-3-flash');
 
         expect(config).toHaveProperty('command');
         expect(config).toHaveProperty('args');
@@ -112,7 +112,7 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should use text output format for extraction', () => {
         const provider = new GeminiProvider();
-        const config = provider.getExtractionConfig('gemini-3-flash-preview');
+        const config = provider.getExtractionConfig('gemini-3-flash');
 
         // For extraction, we use -o text to get raw JSON without wrapper
         expect(config.args).toContain('text');
@@ -120,9 +120,9 @@ describe('LLM-based JSON extraction fallback', () => {
 
       it('should include model in args', () => {
         const provider = new GeminiProvider();
-        const config = provider.getExtractionConfig('gemini-3-flash-preview');
+        const config = provider.getExtractionConfig('gemini-3-flash');
 
-        expect(config.args).toContain('gemini-3-flash-preview');
+        expect(config.args).toContain('gemini-3-flash');
       });
     });
 
@@ -190,7 +190,7 @@ describe('LLM-based JSON extraction fallback', () => {
     it('all providers should have fast-tier models defined', () => {
       const providers = [
         { Class: ClaudeProvider, expectedFast: 'haiku' },
-        { Class: GeminiProvider, expectedFast: 'gemini-3-flash-preview' },
+        { Class: GeminiProvider, expectedFast: 'gemini-3-flash' },
         { Class: CodexProvider, expectedFast: 'gpt-5.1-codex-mini' },
         { Class: CopilotProvider, expectedFast: 'claude-haiku-4.5' },
       ];

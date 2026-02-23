@@ -21,7 +21,8 @@ const BIN_DIR = path.join(__dirname, '..', '..', 'bin');
  */
 const GEMINI_MODELS = [
   {
-    id: 'gemini-3-flash-preview',
+    id: 'gemini-3-flash',
+    aliases: ['gemini-3-flash-preview'],
     name: '3.0 Flash',
     tier: 'fast',
     tagline: 'Rapid Sanity Check',
@@ -40,15 +41,27 @@ const GEMINI_MODELS = [
     default: true
   },
   {
-    id: 'gemini-3-pro-preview',
+    id: 'gemini-3-pro',
+    aliases: ['gemini-3-pro-preview'],
     name: '3.0 Pro',
     tier: 'thorough',
     tagline: 'Architectural Audit',
     description: 'Most intelligent Gemini model—advanced reasoning for deep architectural analysis',
     badge: 'Deep Dive',
     badgeClass: 'badge-power'
+  },
+  {
+    id: 'gemini-3.1-pro',
+    name: '3.1 Pro',
+    tier: 'thorough',
+    tagline: 'Latest & Greatest',
+    description: 'Newest Gemini model—cutting-edge reasoning for complex architectural reviews',
+    badge: 'Latest',
+    badgeClass: 'badge-power'
   }
 ];
+
+const DEFAULT_GEMINI_MODEL = 'gemini-2.5-pro';
 
 class GeminiProvider extends AIProvider {
   /**
@@ -59,7 +72,7 @@ class GeminiProvider extends AIProvider {
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
    */
-  constructor(model = 'gemini-2.5-pro', configOverrides = {}) {
+  constructor(model = DEFAULT_GEMINI_MODEL, configOverrides = {}) {
     super(model);
 
     // Command precedence: ENV > config > default
@@ -690,7 +703,7 @@ class GeminiProvider extends AIProvider {
   }
 
   static getDefaultModel() {
-    return 'gemini-2.5-pro';
+    return DEFAULT_GEMINI_MODEL;
   }
 
   static getInstallInstructions() {
