@@ -11621,6 +11621,18 @@ body.resizing * {
   color: #ffffff;
 }
 
+.chat-panel__action-btn--create-comment {
+  background: var(--color-accent-primary, #2f81f7);
+  border-color: var(--color-accent-primary, #2f81f7);
+  color: #ffffff;
+}
+
+.chat-panel__action-btn--create-comment:hover:not(:disabled) {
+  background: var(--color-accent-hover, #388bfd);
+  border-color: var(--color-accent-hover, #388bfd);
+  color: #ffffff;
+}
+
 .chat-panel__action-btn--dismiss-suggestion,
 .chat-panel__action-btn--dismiss-comment {
   background: var(--color-danger, #d1242f);

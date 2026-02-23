@@ -93,6 +93,7 @@ function createMockElement(tag = 'div', overrides = {}) {
       if (selector === '.chat-panel__action-btn--update') return elementRegistry['chat-update-btn'] || null;
       if (selector === '.chat-panel__action-btn--dismiss-suggestion') return elementRegistry['chat-dismiss-suggestion-btn'] || null;
       if (selector === '.chat-panel__action-btn--dismiss-comment') return elementRegistry['chat-dismiss-comment-btn'] || null;
+      if (selector === '.chat-panel__action-btn--create-comment') return elementRegistry['chat-create-comment-btn'] || null;
       if (selector === '.chat-panel__action-bar-dismiss') return elementRegistry['chat-action-bar-dismiss'] || null;
       if (selector === '.chat-panel__resize-handle') return elementRegistry['chat-resize-handle'] || null;
       if (selector === '.chat-panel__empty') return elementRegistry['chat-empty'] || null;
@@ -146,6 +147,7 @@ function buildElementRegistry() {
     'chat-update-btn': createMockElement('button'),
     'chat-dismiss-suggestion-btn': createMockElement('button'),
     'chat-dismiss-comment-btn': createMockElement('button'),
+    'chat-create-comment-btn': createMockElement('button'),
     'chat-action-bar-dismiss': createMockElement('button'),
     'chat-resize-handle': createMockElement('div'),
     'chat-empty': createMockElement('div'),
@@ -168,6 +170,7 @@ function buildElementRegistry() {
   elementRegistry['chat-update-btn'].style = { display: 'none' };
   elementRegistry['chat-dismiss-suggestion-btn'].style = { display: 'none' };
   elementRegistry['chat-dismiss-comment-btn'].style = { display: 'none' };
+  elementRegistry['chat-create-comment-btn'].style = { display: 'none' };
   elementRegistry['chat-session-dropdown'].style = { display: 'none' };
   elementRegistry['chat-new-content-pill'].style = { display: 'none' };
 
@@ -274,6 +277,7 @@ function createChatPanel() {
       '.chat-panel__action-btn--update': reg['chat-update-btn'],
       '.chat-panel__action-btn--dismiss-suggestion': reg['chat-dismiss-suggestion-btn'],
       '.chat-panel__action-btn--dismiss-comment': reg['chat-dismiss-comment-btn'],
+      '.chat-panel__action-btn--create-comment': reg['chat-create-comment-btn'],
       '.chat-panel__action-bar-dismiss': reg['chat-action-bar-dismiss'],
       '.chat-panel__resize-handle': reg['chat-resize-handle'],
       '.chat-panel__session-picker': reg['chat-session-picker'],
@@ -388,6 +392,20 @@ describe('ChatPanel', () => {
 
       expect(chatPanel.adoptBtn.disabled).toBe(false);
       expect(chatPanel.updateBtn.disabled).toBe(false);
+    });
+
+    it('should show create comment button for line context', () => {
+      chatPanel._contextSource = 'line';
+      chatPanel._contextItemId = null;
+
+      chatPanel._updateActionButtons();
+
+      expect(chatPanel.actionBar.style.display).toBe('');
+      expect(chatPanel.createCommentBtn.style.display).toBe('');
+      expect(chatPanel.adoptBtn.style.display).toBe('none');
+      expect(chatPanel.updateBtn.style.display).toBe('none');
+      expect(chatPanel.dismissSuggestionBtn.style.display).toBe('none');
+      expect(chatPanel.dismissCommentBtn.style.display).toBe('none');
     });
   });
 
@@ -530,6 +548,36 @@ describe('ChatPanel', () => {
 
       chatPanel._handleDismissCommentClick();
 
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('_handleCreateCommentClick', () => {
+    it('should set pending action context and send create comment message', () => {
+      chatPanel.isStreaming = false;
+      chatPanel._contextLineMeta = { file: 'src/foo.js', line_start: 10, line_end: 20 };
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+
+      chatPanel._handleCreateCommentClick();
+
+      expect(chatPanel._pendingActionContext).toEqual({
+        type: 'create-comment',
+        file: 'src/foo.js',
+        line_start: 10,
+        line_end: 20,
+      });
+      expect(chatPanel.inputEl.value).toBe('Based on our conversation, please create a review comment for this code.');
+      expect(sendSpy).toHaveBeenCalled();
+    });
+
+    it('should not send when streaming', () => {
+      chatPanel.isStreaming = true;
+      chatPanel._contextLineMeta = { file: 'src/foo.js', line_start: 10, line_end: 20 };
+      const sendSpy = vi.spyOn(chatPanel, 'sendMessage').mockResolvedValue(undefined);
+
+      chatPanel._handleCreateCommentClick();
+
+      expect(chatPanel._pendingActionContext).toBeNull();
       expect(sendSpy).not.toHaveBeenCalled();
     });
   });
@@ -1199,6 +1247,29 @@ describe('ChatPanel', () => {
       expect(sendCommentCtxSpy).not.toHaveBeenCalled();
       expect(chatPanel._contextSource).toBeNull();
       expect(chatPanel._contextItemId).toBeNull();
+    });
+
+    it('should set line context source and metadata for line-type commentContext', async () => {
+      vi.spyOn(chatPanel, '_sendCommentContextMessage').mockImplementation(() => {});
+      vi.spyOn(chatPanel, '_updateActionButtons').mockImplementation(() => {});
+      vi.spyOn(chatPanel, '_ensureAnalysisContext').mockImplementation(() => {});
+
+      await chatPanel.open({
+        commentContext: {
+          type: 'line',
+          file: 'src/bar.js',
+          line_start: 5,
+          line_end: 15,
+        },
+      });
+
+      expect(chatPanel._contextSource).toBe('line');
+      expect(chatPanel._contextItemId).toBeNull();
+      expect(chatPanel._contextLineMeta).toEqual({
+        file: 'src/bar.js',
+        line_start: 5,
+        line_end: 15,
+      });
     });
 
     it('should call _ensureAnalysisContext on every expand, even without context', async () => {
