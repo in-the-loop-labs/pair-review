@@ -407,12 +407,15 @@ This progressive approach keeps analysis focused while catching issues at every 
 
 ### Chat
 
-Talk to an AI agent about the code you're reviewing — ask questions, explore the codebase, or discuss suggestions. Powered by [Pi](https://github.com/mariozechner/pi-coding-agent).
+Chat with a full coding agent while you review — it can read the codebase, answer questions, and interact with pair-review on your behalf. Powered by [Pi](https://github.com/mariozechner/pi-coding-agent).
 
 **What you can do:**
 
 - Ask questions about the code, architecture, or intent behind changes
-- Discuss AI suggestions with the agent before adopting or dismissing them
+- Have the agent pull related code into the diff panel as context files — see how changed code connects to the rest of the codebase without leaving the review
+- Adopt, dismiss, or discuss AI suggestions directly from the conversation
+- Create and edit review comments through chat
+- Trigger new analysis runs with custom instructions
 - Start conversations from context — an analysis run, an AI suggestion, a comment, any line or file
 
 **Setup:**
