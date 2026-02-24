@@ -165,6 +165,7 @@ class CursorAgentProvider extends AIProvider {
    * @param {string[]} configOverrides.extra_args - Additional CLI arguments
    * @param {Object} configOverrides.env - Additional environment variables
    * @param {Object[]} configOverrides.models - Custom model definitions
+   * @param {boolean} configOverrides.yolo - When true, use --yolo instead of --trust/--sandbox
    */
   constructor(model = DEFAULT_CURSOR_AGENT_MODEL, configOverrides = {}) {
     super(model);
