@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.1
+
+### Patch Changes
+
+- 609bc18: Add --trust flag to Cursor agent CLI to auto-approve working directory without interactive prompt, and use --yolo in yolo mode
+- 99b6e46: Fix chat agent comments being submitted as file-level instead of line-level on GitHub
+- 6fd379a: Fix chat file links not expanding context when targeting lines outside existing ranges in both context files and diff files
+- 0ffb573: Fix context card dismiss button being inaccessible at narrow chat panel widths
+- 5308b38: Replace subtle arrow indicator with bold left-border highlight when navigating to lines from chat links
+- 643e879: Add tool usage guidance to chat system prompt to reduce unnecessary Task tool delegation
+- 4c0d4c9: Make file reference links clickable during chat response streaming instead of only after completion
+
 ## 2.0.0
 
 ### Major Changes
