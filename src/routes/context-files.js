@@ -173,6 +173,57 @@ router.get('/api/reviews/:reviewId/context-files', validateReviewId, async (req,
 });
 
 /**
+ * PATCH /api/reviews/:reviewId/context-files/:id
+ * Update the line range of an existing context file entry.
+ * Body: { line_start, line_end }
+ */
+router.patch('/api/reviews/:reviewId/context-files/:id', validateReviewId, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+
+    if (isNaN(id) || id <= 0) {
+      return res.status(400).json({ error: 'Invalid context file ID' });
+    }
+
+    const { line_start, line_end } = req.body;
+
+    const lineStart = parseInt(line_start, 10);
+    const lineEnd = parseInt(line_end, 10);
+
+    if (isNaN(lineStart) || lineStart <= 0) {
+      return res.status(400).json({ error: 'line_start must be a positive integer' });
+    }
+
+    if (isNaN(lineEnd) || lineEnd <= 0) {
+      return res.status(400).json({ error: 'line_end must be a positive integer' });
+    }
+
+    if (lineEnd < lineStart) {
+      return res.status(400).json({ error: 'line_end must be >= line_start' });
+    }
+
+    if (lineEnd - lineStart + 1 > 500) {
+      return res.status(400).json({ error: 'Range cannot exceed 500 lines' });
+    }
+
+    const db = req.app.get('db');
+    const contextFileRepo = new ContextFileRepository(db);
+
+    const updated = await contextFileRepo.updateRange(id, lineStart, lineEnd);
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Context file not found' });
+    }
+
+    res.json({ success: true });
+    broadcastReviewEvent(req.reviewId, { type: 'review:context_files_changed' }, { sourceClientId: req.get('X-Client-Id') });
+  } catch (error) {
+    logger.error('Error updating context file range:', error);
+    res.status(500).json({ error: 'Failed to update context file range' });
+  }
+});
+
+/**
  * DELETE /api/reviews/:reviewId/context-files/:id
  * Remove a single context file range by ID.
  */

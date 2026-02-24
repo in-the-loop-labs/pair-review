@@ -2531,6 +2531,7 @@ class ChatPanel {
       if (contextEl) {
         // Context file — find the right chunk by line number or use first chunk
         let contextFileId = contextEl.dataset?.contextId; // legacy: on wrapper itself
+        let lineFoundInChunk = !!contextFileId; // legacy mode assumes line is present
         if (!contextFileId && lineStart) {
           // Merged wrapper: find chunk tbody containing this line
           const chunks = [...contextEl.querySelectorAll('tbody.context-chunk[data-context-id]')];
@@ -2538,27 +2539,34 @@ class ChatPanel {
             const row = chunk.querySelector(`tr[data-line-number="${lineStart}"]`);
             if (row) {
               contextFileId = chunk.dataset.contextId;
+              lineFoundInChunk = true;
               break;
             }
           }
         }
-        if (!contextFileId) {
-          // Fallback: use first chunk's context ID
-          const firstChunk = contextEl.querySelector('tbody.context-chunk[data-context-id]');
-          if (firstChunk) contextFileId = firstChunk.dataset.contextId;
+
+        if (lineFoundInChunk || !lineStart) {
+          if (!contextFileId) {
+            const firstChunk = contextEl.querySelector('tbody.context-chunk[data-context-id]');
+            if (firstChunk) contextFileId = firstChunk.dataset.contextId;
+          }
+          if (window.prManager?.scrollToContextFile) {
+            window.prManager.scrollToContextFile(file, lineStart, contextFileId);
+          }
+          return;
         }
-        if (window.prManager?.scrollToContextFile) {
-          window.prManager.scrollToContextFile(file, lineStart, contextFileId);
-        }
+        // Line not found in any existing chunk — fall through to add new range
       } else {
         // Diff file
         if (lineStart) {
-          this._scrollToLine(file, lineStart);
+          await (lineEnd
+            ? this._scrollToLine(file, lineStart, lineEnd)
+            : this._scrollToLine(file, lineStart));
         } else if (window.prManager?.scrollToFile) {
           window.prManager.scrollToFile(file);
         }
+        return;
       }
-      return;
     }
 
     // File not in DOM — try to add as context file
@@ -2575,7 +2583,9 @@ class ChatPanel {
 
       if (result.type === 'diff') {
         if (lineStart) {
-          this._scrollToLine(file, lineStart);
+          await (lineEnd
+            ? this._scrollToLine(file, lineStart, lineEnd)
+            : this._scrollToLine(file, lineStart));
         } else if (window.prManager?.scrollToFile) {
           window.prManager.scrollToFile(file);
         }
@@ -2596,12 +2606,14 @@ class ChatPanel {
 
   /**
    * Scroll to a specific line within a file wrapper, with micro-feedback
-   * when the target is already visible.
+   * when the target is already visible. If the line is in a collapsed diff
+   * chunk, expands the chunk first via ensureLinesVisible().
    * @param {string} file - File path
    * @param {number} lineStart - Target line number
+   * @param {number|null} [lineEnd] - End of target line range (used for expansion)
    * @param {HTMLElement} [fileWrapper] - Pre-resolved file wrapper element
    */
-  _scrollToLine(file, lineStart, fileWrapper) {
+  async _scrollToLine(file, lineStart, lineEnd, fileWrapper) {
     if (!fileWrapper) {
       const escaped = CSS.escape(file);
       fileWrapper = document.querySelector(`[data-file-name="${escaped}"]`) ||
@@ -2610,13 +2622,14 @@ class ChatPanel {
     if (!fileWrapper) return;
 
     // Find the target row by line number
-    const lineNums = fileWrapper.querySelectorAll('.line-num2');
-    let targetRow = null;
-    for (const ln of lineNums) {
-      if (ln.textContent.trim() === String(lineStart)) {
-        targetRow = ln.closest('tr');
-        break;
-      }
+    let targetRow = this._findLineRow(fileWrapper, lineStart);
+
+    // If not found, try expanding the collapsed diff context
+    if (!targetRow && window.prManager?.ensureLinesVisible) {
+      await window.prManager.ensureLinesVisible([
+        { file, line_start: lineStart, line_end: lineEnd || lineStart, side: 'RIGHT' }
+      ]);
+      targetRow = this._findLineRow(fileWrapper, lineStart);
     }
     if (!targetRow) return;
 
@@ -2633,6 +2646,22 @@ class ChatPanel {
       targetRow.classList.add('chat-file-link--highlight');
       setTimeout(() => targetRow.classList.remove('chat-file-link--highlight'), 2000);
     }
+  }
+
+  /**
+   * Find a table row by line number within a file wrapper.
+   * @param {HTMLElement} fileWrapper - The file wrapper element
+   * @param {number} lineNum - Target line number
+   * @returns {HTMLElement|null} The matching row, or null
+   */
+  _findLineRow(fileWrapper, lineNum) {
+    const lineNums = fileWrapper.querySelectorAll('.line-num2');
+    for (const ln of lineNums) {
+      if (ln.textContent.trim() === String(lineNum)) {
+        return ln.closest('tr');
+      }
+    }
+    return null;
   }
 
   /**
