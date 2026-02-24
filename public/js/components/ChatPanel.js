@@ -2135,6 +2135,7 @@ class ChatPanel {
     const bubble = streamingMsg.querySelector('.chat-panel__bubble');
     if (bubble) {
       bubble.innerHTML = this.renderMarkdown(text) + '<span class="chat-panel__cursor"></span>';
+      this._linkifyFileReferences(bubble);
     }
     this.scrollToBottom();
   }
