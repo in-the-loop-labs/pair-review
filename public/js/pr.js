@@ -4593,13 +4593,7 @@ class PRManager {
       return { type: 'diff' };
     }
 
-    // 3. Check existing context files (idempotent)
-    const existing = this.contextFiles?.find(cf => cf.file === file);
-    if (existing) {
-      return { type: 'context', contextFile: existing };
-    }
-
-    // 4. Compute line range defaults
+    // 3. Compute line range values up front (used by both existing-check and POST)
     let lineStartVal, lineEndVal;
     if (lineStart == null && lineEnd == null) {
       lineStartVal = 1;
@@ -4610,6 +4604,55 @@ class PRManager {
     } else {
       lineStartVal = lineStart;
       lineEndVal = Math.min(lineEnd, lineStart + 499);
+    }
+
+    // 4. Check existing context files — expand range if needed
+    const existingEntries = this.contextFiles?.filter(cf => cf.file === file) || [];
+    if (existingEntries.length > 0 && lineStart != null) {
+      const covering = existingEntries.find(cf =>
+        cf.line_start <= lineStartVal && cf.line_end >= lineEndVal
+      );
+      if (covering) {
+        return { type: 'context', contextFile: covering };
+      }
+
+      const overlapping = existingEntries.find(cf =>
+        cf.line_start <= lineEndVal && cf.line_end >= lineStartVal
+      );
+      if (overlapping) {
+        const newStart = Math.min(overlapping.line_start, lineStartVal);
+        let newEnd = Math.max(overlapping.line_end, lineEndVal);
+        if (newEnd - newStart + 1 > 500) {
+          newEnd = newStart + 499;
+        }
+        const reviewId = this.currentPR.id;
+        try {
+          const resp = await fetch(`/api/reviews/${reviewId}/context-files/${overlapping.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ line_start: newStart, line_end: newEnd })
+          });
+          if (resp.ok) {
+            // Evict stale entries for this file so loadContextFiles sees
+            // them as new IDs and triggers a fresh render.
+            const staleFile = overlapping.file;
+            this.contextFiles = (this.contextFiles || []).filter(cf => cf.file !== staleFile);
+            // Remove the file wrapper from the DOM so chunks are re-created
+            const staleWrapper = document.querySelector(
+              `.d2h-file-wrapper.context-file[data-file-name="${CSS.escape(staleFile)}"]`
+            );
+            if (staleWrapper) staleWrapper.remove();
+
+            await this.loadContextFiles();
+            const updated = this.contextFiles?.find(cf => cf.id === overlapping.id);
+            return { type: 'context', contextFile: updated || overlapping, expanded: true };
+          }
+        } catch (err) {
+          console.error('Error expanding context file range:', err);
+        }
+      }
+    } else if (existingEntries.length > 0) {
+      return { type: 'context', contextFile: existingEntries[0] };
     }
 
     // 5. POST to add context file
