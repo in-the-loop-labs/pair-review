@@ -4618,6 +4618,97 @@ describe('ChatPanel', () => {
   });
 
   // -------------------------------------------------------------------------
+  // _findLineRows
+  // -------------------------------------------------------------------------
+
+  describe('_findLineRows', () => {
+    /**
+     * Build a mock fileWrapper whose querySelectorAll('.line-num2') returns
+     * elements with the given textContent values.  Each element lives inside
+     * a mock <tr> reachable via closest('tr').
+     */
+    function buildFileWrapper(lineTexts) {
+      const lineNumEls = lineTexts.map((text) => {
+        const tr = createMockElement('tr');
+        const ln = createMockElement('td');
+        ln.textContent = String(text);
+        ln.closest = vi.fn((sel) => (sel === 'tr' ? tr : null));
+        // Attach the parent row for assertion purposes
+        ln._parentRow = tr;
+        return ln;
+      });
+
+      const wrapper = createMockElement('div');
+      wrapper.querySelectorAll = vi.fn((sel) => {
+        if (sel === '.line-num2') return lineNumEls;
+        return [];
+      });
+      wrapper._lineNumEls = lineNumEls;
+      return wrapper;
+    }
+
+    it('returns matching rows for a line range', () => {
+      // Lines 10 through 20
+      const texts = [];
+      for (let i = 10; i <= 20; i++) texts.push(i);
+      const wrapper = buildFileWrapper(texts);
+
+      const rows = chatPanel._findLineRows(wrapper, 12, 15);
+
+      expect(rows).toHaveLength(4);
+      // Verify the returned rows are the <tr> elements for lines 12–15
+      const expectedRows = wrapper._lineNumEls
+        .filter((el) => {
+          const n = parseInt(el.textContent, 10);
+          return n >= 12 && n <= 15;
+        })
+        .map((el) => el._parentRow);
+      expect(rows).toEqual(expectedRows);
+    });
+
+    it('returns exactly one row for a single-line degenerate case', () => {
+      const texts = [];
+      for (let i = 10; i <= 20; i++) texts.push(i);
+      const wrapper = buildFileWrapper(texts);
+
+      const rows = chatPanel._findLineRows(wrapper, 14, 14);
+
+      expect(rows).toHaveLength(1);
+      const expected = wrapper._lineNumEls.find(
+        (el) => el.textContent.trim() === '14',
+      );
+      expect(rows[0]).toBe(expected._parentRow);
+    });
+
+    it('handles non-numeric gutter content (isNaN guard)', () => {
+      // Mix numeric lines with non-numeric entries like "..." and ""
+      const texts = [10, '...', 11, '', 12, 13];
+      const wrapper = buildFileWrapper(texts);
+
+      const rows = chatPanel._findLineRows(wrapper, 10, 13);
+
+      // Only the four numeric entries (10, 11, 12, 13) should match
+      expect(rows).toHaveLength(4);
+      // Non-numeric elements should have been skipped
+      const returnedNums = rows.map((row) => {
+        const ln = wrapper._lineNumEls.find((el) => el._parentRow === row);
+        return parseInt(ln.textContent, 10);
+      });
+      expect(returnedNums).toEqual([10, 11, 12, 13]);
+    });
+
+    it('returns empty array when no lines match the range', () => {
+      const texts = [];
+      for (let i = 10; i <= 20; i++) texts.push(i);
+      const wrapper = buildFileWrapper(texts);
+
+      const rows = chatPanel._findLineRows(wrapper, 50, 60);
+
+      expect(rows).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // scrollToBottom and new-content pill
   // -------------------------------------------------------------------------
 
