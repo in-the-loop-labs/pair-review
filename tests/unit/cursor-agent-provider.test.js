@@ -164,6 +164,7 @@ describe('CursorAgentProvider', () => {
       expect(provider.args).toContain('--stream-partial-output');
       expect(provider.args).toContain('--model');
       expect(provider.args).toContain('gemini-3-flash');
+      expect(provider.args).toContain('--trust');
       expect(provider.args).toContain('--sandbox');
       expect(provider.args).toContain('enabled');
     });
@@ -220,23 +221,27 @@ describe('CursorAgentProvider', () => {
     });
 
     describe('yolo mode', () => {
-      it('should include sandbox enabled by default', () => {
+      it('should include --trust and sandbox enabled by default', () => {
         const provider = new CursorAgentProvider('gemini-3-flash');
+        expect(provider.args).toContain('--trust');
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('enabled');
+        expect(provider.args).not.toContain('--yolo');
       });
 
-      it('should disable sandbox when yolo is true', () => {
+      it('should use --yolo when yolo is true', () => {
         const provider = new CursorAgentProvider('gemini-3-flash', { yolo: true });
-        expect(provider.args).toContain('--sandbox');
-        expect(provider.args).toContain('disabled');
-        expect(provider.args).not.toContain('enabled');
+        expect(provider.args).toContain('--yolo');
+        expect(provider.args).not.toContain('--trust');
+        expect(provider.args).not.toContain('--sandbox');
       });
 
-      it('should include sandbox enabled when yolo is explicitly false', () => {
+      it('should include --trust and sandbox enabled when yolo is explicitly false', () => {
         const provider = new CursorAgentProvider('gemini-3-flash', { yolo: false });
+        expect(provider.args).toContain('--trust');
         expect(provider.args).toContain('--sandbox');
         expect(provider.args).toContain('enabled');
+        expect(provider.args).not.toContain('--yolo');
       });
     });
   });
@@ -490,6 +495,12 @@ describe('CursorAgentProvider', () => {
       const formatIdx = config.args.indexOf('--output-format');
       expect(formatIdx).toBeGreaterThanOrEqual(0);
       expect(config.args[formatIdx + 1]).toBe('text');
+    });
+
+    it('should include --trust for extraction', () => {
+      const provider = new CursorAgentProvider();
+      const config = provider.getExtractionConfig('auto');
+      expect(config.args).toContain('--trust');
     });
 
     it('should use shell mode for multi-word command', () => {
