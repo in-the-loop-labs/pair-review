@@ -209,9 +209,12 @@ class CursorAgentProvider extends AIProvider {
     //   in parseCursorAgentResponse (isStreamingDelta / timestamp_ms check). If this
     //   flag is removed, the parser will treat all assistant events as complete messages,
     //   which is fine but will change accumulation behavior. Keep these in sync.
-    // Use --sandbox enabled for security (when not in yolo mode)
-    const sandboxArgs = configOverrides.yolo ? ['--sandbox', 'disabled'] : ['--sandbox', 'enabled'];
-    const baseArgs = ['-p', '--output-format', 'stream-json', '--stream-partial-output', '--model', model, ...sandboxArgs];
+    // Normal mode: --trust to auto-approve the working directory, --sandbox enabled for safety
+    // Yolo mode: --yolo to skip all permissions (implies trust + sandbox disabled)
+    const permissionArgs = configOverrides.yolo
+      ? ['--yolo']
+      : ['--trust', '--sandbox', 'enabled'];
+    const baseArgs = ['-p', '--output-format', 'stream-json', '--stream-partial-output', '--model', model, ...permissionArgs];
     const providerArgs = configOverrides.extra_args || [];
     const modelConfig = configOverrides.models?.find(m => m.id === model);
     const modelArgs = modelConfig?.extra_args || [];
@@ -700,7 +703,8 @@ class CursorAgentProvider extends AIProvider {
    */
   buildArgsForModel(model) {
     // Base args for extraction (text output, no tools needed)
-    const baseArgs = ['-p', '--output-format', 'text', '--model', model];
+    // --trust needed to auto-approve the working directory without interactive prompt
+    const baseArgs = ['-p', '--output-format', 'text', '--trust', '--model', model];
     // Provider-level extra_args (from configOverrides)
     const providerArgs = this.configOverrides?.extra_args || [];
     // Model-specific extra_args (from the model config for the given model)
