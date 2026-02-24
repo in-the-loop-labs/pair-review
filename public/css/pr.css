@@ -11362,6 +11362,7 @@ body.resizing * {
 
 /* Chat Panel Context Card */
 .chat-panel__context-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -11391,6 +11392,7 @@ body.resizing * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
   color: var(--color-text-secondary);
 }
 
@@ -11405,9 +11407,12 @@ body.resizing * {
   display: none;
   align-items: center;
   justify-content: center;
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 16px;
   height: 16px;
-  margin-left: auto;
   padding: 0;
   border: none;
   border-radius: 50%;
@@ -11416,7 +11421,6 @@ body.resizing * {
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
-  flex-shrink: 0;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
