@@ -2326,10 +2326,11 @@ describe('Review Submission Endpoint', () => {
         VALUES (?, 'user', 'file1.js', 'File-level comment', 'active', 1)
       `, [prId]);
 
-      // Insert a line-level comment with diff_position (inside diff hunk)
+      // Insert a line-level comment on a line within the mock diff hunk
+      // Line 2 of file.js is within the diff (RIGHT side)
       await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status, is_file_level)
-        VALUES (?, 'user', 'file2.js', 10, 5, 'RIGHT', 'Line-level comment', 'active', 0)
+        VALUES (?, 'user', 'file.js', 2, 5, 'RIGHT', 'Line-level comment', 'active', 0)
       `, [prId]);
 
       const response = await request(app)
@@ -2347,8 +2348,8 @@ describe('Review Submission Endpoint', () => {
       expect(comments.length).toBe(2);
 
       // Find file-level and line-level comments
-      const fileLevelComment = comments.find(c => c.path === 'file1.js');
-      const lineLevelComment = comments.find(c => c.path === 'file2.js');
+      const fileLevelComment = comments.find(c => c.isFileLevel && !c.line);
+      const lineLevelComment = comments.find(c => !c.isFileLevel);
 
       // File-level comment should have isFileLevel=true and no line/side
       expect(fileLevelComment.isFileLevel).toBe(true);
@@ -2357,7 +2358,7 @@ describe('Review Submission Endpoint', () => {
 
       // Line-level comment should have isFileLevel=false and include line/side
       expect(lineLevelComment.isFileLevel).toBe(false);
-      expect(lineLevelComment.line).toBe(10);
+      expect(lineLevelComment.line).toBe(2);
       expect(lineLevelComment.side).toBe('RIGHT');
     });
 
@@ -2517,11 +2518,40 @@ describe('Review Submission Endpoint', () => {
       expect(comments[0].body).toContain('Expanded context comment');
     });
 
+    it('should submit line-level comment without diff_position when line is in diff (chat agent regression)', async () => {
+      // The chat agent creates comments with line_start but no diff_position.
+      // These should be submitted as line-level when the line is inside a diff hunk.
+      // The mock diff has file.js with RIGHT lines 1-4 (see mockWorktreeResponses.generateUnifiedDiff).
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, side, body, status, is_file_level)
+        VALUES (?, 'user', 'file.js', 2, 'RIGHT', 'Chat agent comment on diff line', 'active', 0)
+      `, [prId]);
+
+      const response = await request(app)
+        .post('/api/pr/owner/repo/1/submit-review')
+        .send({ event: 'COMMENT', body: 'Review with chat agent comment' });
+
+      expect(response.status).toBe(200);
+
+      const callArgs = GitHubClient.prototype.createReviewGraphQL.mock.calls[0];
+      const comments = callArgs[3];
+
+      expect(comments.length).toBe(1);
+      // Must be line-level, NOT file-level
+      expect(comments[0].isFileLevel).toBe(false);
+      expect(comments[0].path).toBe('file.js');
+      expect(comments[0].line).toBe(2);
+      expect(comments[0].side).toBe('RIGHT');
+      // Body should NOT have a (Ref Line) prefix
+      expect(comments[0].body).toBe('Chat agent comment on diff line');
+    });
+
     it('should include start_line for multi-line comments', async () => {
       // Insert a multi-line comment (line_start != line_end)
+      // Lines 2-4 are within the mock diff hunk (RIGHT side)
       await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, line_end, diff_position, side, body, status, is_file_level)
-        VALUES (?, 'user', 'file.js', 10, 15, 5, 'RIGHT', 'Multi-line comment spanning lines 10-15', 'active', 0)
+        VALUES (?, 'user', 'file.js', 2, 4, 5, 'RIGHT', 'Multi-line comment spanning lines 2-4', 'active', 0)
       `, [prId]);
 
       const response = await request(app)
@@ -2539,16 +2569,17 @@ describe('Review Submission Endpoint', () => {
       expect(comments.length).toBe(1);
       expect(comments[0].isFileLevel).toBe(false);
       expect(comments[0].path).toBe('file.js');
-      expect(comments[0].line).toBe(15); // Should use line_end for multi-line
-      expect(comments[0].start_line).toBe(10); // Should include start_line
+      expect(comments[0].line).toBe(4); // Should use line_end for multi-line
+      expect(comments[0].start_line).toBe(2); // Should include start_line
       expect(comments[0].side).toBe('RIGHT');
     });
 
     it('should not include start_line for single-line comments', async () => {
       // Insert a single-line comment (line_start only, no line_end)
+      // Line 3 is within the mock diff hunk (RIGHT side)
       await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, diff_position, side, body, status, is_file_level)
-        VALUES (?, 'user', 'file.js', 25, 10, 'RIGHT', 'Single-line comment', 'active', 0)
+        VALUES (?, 'user', 'file.js', 3, 10, 'RIGHT', 'Single-line comment', 'active', 0)
       `, [prId]);
 
       const response = await request(app)
@@ -2566,16 +2597,17 @@ describe('Review Submission Endpoint', () => {
       expect(comments.length).toBe(1);
       expect(comments[0].isFileLevel).toBe(false);
       expect(comments[0].path).toBe('file.js');
-      expect(comments[0].line).toBe(25); // Should use line_start for single-line
+      expect(comments[0].line).toBe(3); // Should use line_start for single-line
       expect(comments[0].start_line).toBeUndefined(); // Should NOT include start_line
       expect(comments[0].side).toBe('RIGHT');
     });
 
     it('should correctly handle single-line comment with same line_start and line_end', async () => {
       // Insert a comment where line_start equals line_end (single line but with both values set)
+      // Line 3 is within the mock diff hunk (RIGHT side)
       await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, line_end, diff_position, side, body, status, is_file_level)
-        VALUES (?, 'user', 'file.js', 30, 30, 15, 'RIGHT', 'Single-line comment with both values', 'active', 0)
+        VALUES (?, 'user', 'file.js', 3, 3, 15, 'RIGHT', 'Single-line comment with both values', 'active', 0)
       `, [prId]);
 
       const response = await request(app)
@@ -2592,7 +2624,7 @@ describe('Review Submission Endpoint', () => {
 
       expect(comments.length).toBe(1);
       expect(comments[0].isFileLevel).toBe(false);
-      expect(comments[0].line).toBe(30); // Should use line_start since not a range
+      expect(comments[0].line).toBe(3); // Should use line_start since not a range
       expect(comments[0].start_line).toBeUndefined(); // Should NOT include start_line (same line)
     });
 

@@ -44,6 +44,45 @@ class CommentManager {
   }
 
   /**
+   * Check whether a line falls within a diff hunk for the given file.
+   * Uses the parsed hunk blocks from HunkParser rather than relying on
+   * diff_position, which may be absent for comments created by the chat agent.
+   *
+   * @param {string} fileName - The file path
+   * @param {number} lineNum - The line number to check
+   * @param {string} [side='RIGHT'] - 'LEFT' for old/deleted lines, 'RIGHT' for new/added/context
+   * @returns {boolean} true if the line is inside a diff hunk
+   */
+  isLineInDiffHunk(fileName, lineNum, side = 'RIGHT') {
+    const patch = this.prManager?.filePatches?.get(fileName);
+    if (!patch || !window.HunkParser) return false;
+
+    const blocks = window.HunkParser.parseDiffIntoBlocks(patch);
+    for (const block of blocks) {
+      let oldLine = block.oldStart;
+      let newLine = block.newStart;
+
+      for (const line of block.lines) {
+        if (line.startsWith('\\ No newline')) continue;
+        if (line.startsWith('+')) {
+          if (side === 'RIGHT' && newLine === lineNum) return true;
+          newLine++;
+        } else if (line.startsWith('-')) {
+          if (side === 'LEFT' && oldLine === lineNum) return true;
+          oldLine++;
+        } else {
+          // Context line — present on both sides
+          if (side === 'LEFT' && oldLine === lineNum) return true;
+          if (side === 'RIGHT' && newLine === lineNum) return true;
+          oldLine++;
+          newLine++;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * Show comment form inline
    * @param {HTMLElement} targetRow - The row to insert the comment form after
    * @param {number} lineNumber - The starting line number for the comment
@@ -503,7 +542,13 @@ class CommentManager {
     // WORKAROUND: Comments on expanded context lines (outside diff hunks) will be
     // submitted as file-level comments since GitHub's API doesn't support line-level
     // comments on these lines. Show an indicator to inform the user.
-    const isExpandedContext = comment.diff_position === null || comment.diff_position === undefined;
+    // Check actual diff hunk membership rather than diff_position, which may be
+    // absent for comments created by the chat agent even when they target hunk lines.
+    const commentSide = comment.side || 'RIGHT';
+    const isRange = comment.line_end && comment.line_end !== comment.line_start;
+    const isExpandedContext = isRange
+      ? !this.isLineInDiffHunk(comment.file, comment.line_start, commentSide) || !this.isLineInDiffHunk(comment.file, comment.line_end, commentSide)
+      : !this.isLineInDiffHunk(comment.file, comment.line_start, commentSide);
     const expandedContextIndicator = isExpandedContext
       ? `<span class="expanded-context-indicator" title="This expanded context comment will be posted to GitHub as a file-level comment">
            <svg viewBox="0 0 16 16" width="14" height="14">
