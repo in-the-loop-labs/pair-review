@@ -2559,9 +2559,7 @@ class ChatPanel {
       } else {
         // Diff file
         if (lineStart) {
-          await (lineEnd
-            ? this._scrollToLine(file, lineStart, lineEnd)
-            : this._scrollToLine(file, lineStart));
+          await this._scrollToLine(file, lineStart, lineEnd);
         } else if (window.prManager?.scrollToFile) {
           window.prManager.scrollToFile(file);
         }
@@ -2583,9 +2581,7 @@ class ChatPanel {
 
       if (result.type === 'diff') {
         if (lineStart) {
-          await (lineEnd
-            ? this._scrollToLine(file, lineStart, lineEnd)
-            : this._scrollToLine(file, lineStart));
+          await this._scrollToLine(file, lineStart, lineEnd);
         } else if (window.prManager?.scrollToFile) {
           window.prManager.scrollToFile(file);
         }
@@ -2605,11 +2601,13 @@ class ChatPanel {
   }
 
   /**
-   * Scroll to a specific line within a file wrapper, with micro-feedback
-   * when the target is already visible. If the line is in a collapsed diff
-   * chunk, expands the chunk first via ensureLinesVisible().
+   * Scroll to a specific line within a file wrapper, applying a bold
+   * left-border + background highlight that fades over ~3.5s.
+   * Supports line ranges: if lineEnd is provided, all rows from
+   * lineStart to lineEnd are highlighted. If the line is in a collapsed
+   * diff chunk, expands the chunk first via ensureLinesVisible().
    * @param {string} file - File path
-   * @param {number} lineStart - Target line number
+   * @param {number} lineStart - Target line number (start of range)
    * @param {number|null} [lineEnd] - End of target line range (used for expansion)
    * @param {HTMLElement} [fileWrapper] - Pre-resolved file wrapper element
    */
@@ -2621,85 +2619,60 @@ class ChatPanel {
     }
     if (!fileWrapper) return;
 
-    // Find the target row by line number
-    let targetRow = this._findLineRow(fileWrapper, lineStart);
+    // Collect all target rows (single line or range)
+    const end = lineEnd || lineStart;
+    let targetRows = this._findLineRows(fileWrapper, lineStart, end);
 
     // If not found, try expanding the collapsed diff context
-    if (!targetRow && window.prManager?.ensureLinesVisible) {
+    if (targetRows.length === 0 && window.prManager?.ensureLinesVisible) {
       await window.prManager.ensureLinesVisible([
-        { file, line_start: lineStart, line_end: lineEnd || lineStart, side: 'RIGHT' }
+        { file, line_start: lineStart, line_end: end, side: 'RIGHT' }
       ]);
-      targetRow = this._findLineRow(fileWrapper, lineStart);
+      targetRows = this._findLineRows(fileWrapper, lineStart, end);
     }
-    if (!targetRow) return;
+    if (targetRows.length === 0) return;
 
-    // Check if the target row is already visible in the viewport
-    const rect = targetRow.getBoundingClientRect();
+    const primaryRow = targetRows[0];
+
+    // Check if the primary target row is already visible in the viewport
+    const rect = primaryRow.getBoundingClientRect();
     const isVisible = rect.top >= 0 && rect.bottom <= window.innerHeight;
 
-    if (isVisible) {
-      // Already visible — provide micro-feedback instead of scrolling
-      this._showLineFeedback(targetRow, lineStart);
-    } else {
-      // Scroll to the row, then apply highlight
-      targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      targetRow.classList.add('chat-file-link--highlight');
-      setTimeout(() => targetRow.classList.remove('chat-file-link--highlight'), 2000);
+    if (!isVisible) {
+      primaryRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    // Apply the highlight to all target rows
+    for (const row of targetRows) {
+      // Remove any existing highlight first (in case of rapid re-clicks)
+      row.classList.remove('chat-line-highlight');
+      // Force reflow so re-adding the class restarts the animation
+      void row.offsetWidth;
+      row.classList.add('chat-line-highlight');
+      row.addEventListener('animationend', () => {
+        row.classList.remove('chat-line-highlight');
+      }, { once: true });
     }
   }
 
   /**
-   * Find a table row by line number within a file wrapper.
+   * Find all table rows matching a line range within a file wrapper.
    * @param {HTMLElement} fileWrapper - The file wrapper element
-   * @param {number} lineNum - Target line number
-   * @returns {HTMLElement|null} The matching row, or null
+   * @param {number} lineStart - Start line number
+   * @param {number} lineEnd - End line number (inclusive)
+   * @returns {HTMLElement[]} Matching rows
    */
-  _findLineRow(fileWrapper, lineNum) {
+  _findLineRows(fileWrapper, lineStart, lineEnd) {
+    const rows = [];
     const lineNums = fileWrapper.querySelectorAll('.line-num2');
     for (const ln of lineNums) {
-      if (ln.textContent.trim() === String(lineNum)) {
-        return ln.closest('tr');
+      const num = parseInt(ln.textContent.trim(), 10);
+      if (!isNaN(num) && num >= lineStart && num <= lineEnd) {
+        const row = ln.closest('tr');
+        if (row) rows.push(row);
       }
     }
-    return null;
-  }
-
-  /**
-   * Show micro-feedback when a target line is already visible:
-   * 1. A brief hop animation (scroll nudge)
-   * 2. A temporary gutter arrow indicator
-   * @param {HTMLElement} row - The target table row
-   * @param {number} lineNum - The line number
-   */
-  _showLineFeedback(row, lineNum) {
-    // Highlight the row
-    row.classList.add('chat-file-link--highlight');
-    setTimeout(() => row.classList.remove('chat-file-link--highlight'), 2000);
-
-    // Inject a temporary gutter arrow
-    const lineNumCell = row.querySelector('.d2h-code-linenumber');
-    if (lineNumCell) {
-      const arrow = document.createElement('span');
-      arrow.className = 'chat-gutter-arrow';
-      arrow.textContent = '\u2192'; // →
-      lineNumCell.appendChild(arrow);
-      // Fade out and remove after 1.5s
-      setTimeout(() => {
-        arrow.classList.add('chat-gutter-arrow--fade');
-        arrow.addEventListener('transitionend', () => arrow.remove(), { once: true });
-        // Safety cleanup in case transitionend doesn't fire
-        setTimeout(() => arrow.remove(), 500);
-      }, 1500);
-    }
-
-    // Hop animation — small vertical nudge
-    const scrollContainer = document.getElementById('diff-container') ||
-      row.closest('.d2h-wrapper') || document.documentElement;
-    const currentScroll = scrollContainer.scrollTop;
-    scrollContainer.scrollTo({ top: currentScroll - 30, behavior: 'smooth' });
-    setTimeout(() => {
-      scrollContainer.scrollTo({ top: currentScroll, behavior: 'smooth' });
-    }, 150);
+    return rows;
   }
 
   /**
