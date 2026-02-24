@@ -4575,9 +4575,11 @@ class PRManager {
       setTimeout(() => {
         const row = wrapper.querySelector(`tr[data-line-number="${lineStart}"]`);
         if (row) {
-          row.classList.add('highlight-flash');
+          row.classList.remove('chat-line-highlight');
+          void row.offsetWidth;
+          row.classList.add('chat-line-highlight');
           row.addEventListener('animationend', () => {
-            row.classList.remove('highlight-flash');
+            row.classList.remove('chat-line-highlight');
           }, { once: true });
         }
       }, 400);
