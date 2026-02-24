@@ -11198,14 +11198,78 @@ body.resizing * {
   opacity: 0.6;
 }
 
-/* Highlight flash when navigating to a line from a chat file link */
-.chat-file-link--highlight {
-  animation: chat-file-link-flash 2s ease-out;
+/* Unified line highlight for navigating to lines from chat/context links.
+   Applied to <tr> elements; styles target <td> children since box-shadow
+   and background-color animations don't render on <tr> in most browsers. */
+.chat-line-highlight td {
+  animation: chat-line-highlight-bg 3.5s ease-out forwards !important;
 }
 
-@keyframes chat-file-link-flash {
-  0% { background-color: rgba(227, 179, 65, 0.25); }
-  100% { background-color: transparent; }
+.chat-line-highlight > td:first-child {
+  animation: chat-line-highlight-border 3.5s ease-out forwards !important;
+}
+
+@keyframes chat-line-highlight-bg {
+  0% {
+    background-color: rgba(227, 179, 65, 0.20);
+  }
+  57% {
+    background-color: rgba(227, 179, 65, 0.08);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes chat-line-highlight-border {
+  0% {
+    box-shadow: inset 5px 0 0 #e3b341;
+    background-color: rgba(227, 179, 65, 0.20);
+  }
+  57% {
+    /* ~2s: border still solid, background fading */
+    box-shadow: inset 5px 0 0 #e3b341;
+    background-color: rgba(227, 179, 65, 0.08);
+  }
+  100% {
+    box-shadow: inset 5px 0 0 transparent;
+    background-color: transparent;
+  }
+}
+
+[data-theme="dark"] .chat-line-highlight td {
+  animation: chat-line-highlight-bg-dark 3.5s ease-out forwards !important;
+}
+
+[data-theme="dark"] .chat-line-highlight > td:first-child {
+  animation: chat-line-highlight-border-dark 3.5s ease-out forwards !important;
+}
+
+@keyframes chat-line-highlight-bg-dark {
+  0% {
+    background-color: rgba(227, 179, 65, 0.15);
+  }
+  57% {
+    background-color: rgba(227, 179, 65, 0.06);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes chat-line-highlight-border-dark {
+  0% {
+    box-shadow: inset 5px 0 0 #e3b341;
+    background-color: rgba(227, 179, 65, 0.15);
+  }
+  57% {
+    box-shadow: inset 5px 0 0 #e3b341;
+    background-color: rgba(227, 179, 65, 0.06);
+  }
+  100% {
+    box-shadow: inset 5px 0 0 transparent;
+    background-color: transparent;
+  }
 }
 
 .chat-file-link--loading {
@@ -11225,28 +11289,6 @@ body.resizing * {
 }
 @keyframes chat-file-link-spin {
   to { transform: rotate(360deg); }
-}
-
-/* Gutter arrow for "already here" micro-feedback */
-.chat-gutter-arrow {
-  position: absolute;
-  left: -2px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: #e3b341;
-  font-size: 20px;
-  font-weight: bold;
-  pointer-events: none;
-  transition: opacity 0.3s ease;
-  z-index: 2;
-}
-
-.chat-gutter-arrow--fade {
-  opacity: 0;
-}
-
-[data-theme="dark"] .chat-gutter-arrow {
-  color: #e3b341;
 }
 
 /* Error bubble */
@@ -11940,20 +11982,6 @@ body.resizing * {
 .file-item.context-file-item .file-name {
   font-size: 11px;
   color: var(--color-text-secondary);
-}
-
-/* Highlight flash animation for scroll-to-line targeting */
-.highlight-flash {
-  animation: highlightFlash 1.5s ease-out;
-}
-
-@keyframes highlightFlash {
-  0% {
-    background-color: var(--color-selection, #fff8c5);
-  }
-  100% {
-    background-color: transparent;
-  }
 }
 
 /* Dark theme overrides for context files */

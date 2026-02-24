@@ -4511,7 +4511,7 @@ describe('ChatPanel', () => {
 
       await chatPanel._handleFileLinkClick(linkEl);
 
-      expect(chatPanel._scrollToLine).toHaveBeenCalledWith('src/app.js', 10);
+      expect(chatPanel._scrollToLine).toHaveBeenCalledWith('src/app.js', 10, null);
       expect(global.window.prManager.ensureContextFile).not.toHaveBeenCalled();
     });
 
