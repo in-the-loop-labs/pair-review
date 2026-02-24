@@ -5991,4 +5991,108 @@ describe('Context Files Endpoints', () => {
       expect(response.body.deletedCount).toBe(0);
     });
   });
+
+  describe('PATCH /api/reviews/:reviewId/context-files/:id', () => {
+    it('should update line range of existing context file', async () => {
+      const createResponse = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
+
+      const contextFileId = createResponse.body.contextFile.id;
+
+      const patchResponse = await request(app)
+        .patch(`/api/reviews/${reviewId}/context-files/${contextFileId}`)
+        .send({ line_start: 5, line_end: 40 });
+
+      expect(patchResponse.status).toBe(200);
+      expect(patchResponse.body.success).toBe(true);
+
+      // Verify the range was updated
+      const listResponse = await request(app)
+        .get(`/api/reviews/${reviewId}/context-files`);
+
+      expect(listResponse.body.contextFiles).toHaveLength(1);
+      expect(listResponse.body.contextFiles[0].line_start).toBe(5);
+      expect(listResponse.body.contextFiles[0].line_end).toBe(40);
+    });
+
+    it('should return 400 for invalid context file ID', async () => {
+      const zeroResponse = await request(app)
+        .patch(`/api/reviews/${reviewId}/context-files/0`)
+        .send({ line_start: 1, line_end: 10 });
+
+      expect(zeroResponse.status).toBe(400);
+      expect(zeroResponse.body.error).toContain('Invalid context file ID');
+
+      const abcResponse = await request(app)
+        .patch(`/api/reviews/${reviewId}/context-files/abc`)
+        .send({ line_start: 1, line_end: 10 });
+
+      expect(abcResponse.status).toBe(400);
+      expect(abcResponse.body.error).toContain('Invalid context file ID');
+    });
+
+    it('should return 400 when line_start is missing', async () => {
+      const createResponse = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
+
+      const contextFileId = createResponse.body.contextFile.id;
+
+      const response = await request(app)
+        .patch(`/api/reviews/${reviewId}/context-files/${contextFileId}`)
+        .send({ line_end: 30 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('line_start must be a positive integer');
+    });
+
+    it('should return 400 when line_end < line_start', async () => {
+      const createResponse = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
+
+      const contextFileId = createResponse.body.contextFile.id;
+
+      const response = await request(app)
+        .patch(`/api/reviews/${reviewId}/context-files/${contextFileId}`)
+        .send({ line_start: 30, line_end: 10 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('line_end must be >= line_start');
+    });
+
+    it('should return 400 when range exceeds 500 lines', async () => {
+      const createResponse = await request(app)
+        .post(`/api/reviews/${reviewId}/context-files`)
+        .send({ file: 'src/utils.js', line_start: 10, line_end: 25 });
+
+      const contextFileId = createResponse.body.contextFile.id;
+
+      const response = await request(app)
+        .patch(`/api/reviews/${reviewId}/context-files/${contextFileId}`)
+        .send({ line_start: 1, line_end: 502 });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Range cannot exceed 500 lines');
+    });
+
+    it('should return 404 for non-existent context file', async () => {
+      const response = await request(app)
+        .patch(`/api/reviews/${reviewId}/context-files/99999`)
+        .send({ line_start: 1, line_end: 10 });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('Context file not found');
+    });
+
+    it('should return 404 for invalid review ID', async () => {
+      const response = await request(app)
+        .patch('/api/reviews/99999/context-files/1')
+        .send({ line_start: 1, line_end: 10 });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+  });
 });
