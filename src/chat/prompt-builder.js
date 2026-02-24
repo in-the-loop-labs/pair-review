@@ -57,7 +57,7 @@ function buildChatPrompt({ review, prData, skillPath, chatInstructions }) {
     ? `(\`${skillPath}\`)`
     : '(`.pi/skills/pair-review-api/SKILL.md`)';
   sections.push(
-    `You MUST load the pair-review-api skill ${skillRef} for endpoint details. With it you can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.\n` +
+    `You MUST read the pair-review-api skill ${skillRef} for endpoint details using the Read tool. With it you can create, update, and delete review comments, adopt or dismiss AI suggestions, and trigger new analyses via curl.\n` +
     'IMPORTANT: Do NOT mention that you are reading a skill file, loading API documentation, or consulting reference material. Just use the API naturally as if you already know it.'
   );
 
@@ -70,6 +70,16 @@ function buildChatPrompt({ review, prData, skillPath, chatInstructions }) {
     'Files in the diff can be referenced freely. Files outside the diff can also be referenced; ' +
     'to make them visible in the diff panel, add them as context files via the API (see skill). ' +
     'Add context files judiciously — only when directly relevant, with focused line ranges.'
+  );
+
+  // Tool usage discipline — avoid unnecessary Task delegation
+  sections.push(
+    '## Tool usage\n\n' +
+    'Prefer answering from context you already have (the diff, suggestions, and prior conversation). ' +
+    'For simple lookups — reading a file, searching for a symbol, running a git command — use the basic tools directly. ' +
+    'Only use the Task tool for genuinely large, multi-step operations that would consume significant context ' +
+    '(e.g., tracing a complex call chain across many files, or broad codebase exploration). ' +
+    'Most chat questions should not require a Task.'
   );
 
   // Instructions
