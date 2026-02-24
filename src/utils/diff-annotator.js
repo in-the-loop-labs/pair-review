@@ -404,11 +404,80 @@ function parseAnnotatedDiff(annotatedDiff) {
   return files;
 }
 
+/**
+ * Build a lookup of which file+side+line combinations appear in diff hunks.
+ * Used to determine whether a comment targets a line GitHub can render inline
+ * (inside a hunk) vs. one that must be submitted as file-level.
+ *
+ * @param {string} rawDiff - Raw unified diff from git
+ * @returns {{ isLineInDiff: (file: string, line: number, side?: string) => boolean }}
+ */
+function buildDiffLineSet(rawDiff) {
+  if (!rawDiff || rawDiff.trim() === '') {
+    return { isLineInDiff: () => false };
+  }
+
+  const entries = new Set();
+  const diffLines = rawDiff.split('\n');
+  let currentFile = {};
+  let oldLineNum = 0;
+  let newLineNum = 0;
+  let inHunk = false;
+
+  for (const line of diffLines) {
+    if (line.startsWith('diff --git')) {
+      currentFile = {};
+      inHunk = false;
+      parseFileHeader(line, currentFile);
+      continue;
+    }
+
+    if (parseFileHeader(line, currentFile)) {
+      continue;
+    }
+
+    const hunkInfo = parseHunkHeader(line);
+    if (hunkInfo) {
+      oldLineNum = hunkInfo.oldStart;
+      newLineNum = hunkInfo.newStart;
+      inHunk = true;
+      continue;
+    }
+
+    if (!inHunk) continue;
+
+    if (line.startsWith('\\ No newline')) continue;
+
+    const filePath = currentFile.newPath || currentFile.oldPath;
+    if (!filePath) continue;
+
+    if (line.startsWith('+')) {
+      entries.add(`${filePath}:RIGHT:${newLineNum}`);
+      newLineNum++;
+    } else if (line.startsWith('-')) {
+      entries.add(`${filePath}:LEFT:${oldLineNum}`);
+      oldLineNum++;
+    } else if (line.startsWith(' ') || line === '') {
+      entries.add(`${filePath}:LEFT:${oldLineNum}`);
+      entries.add(`${filePath}:RIGHT:${newLineNum}`);
+      oldLineNum++;
+      newLineNum++;
+    }
+  }
+
+  return {
+    isLineInDiff(file, lineNum, side = 'RIGHT') {
+      return entries.has(`${file}:${side}:${lineNum}`);
+    }
+  };
+}
+
 module.exports = {
   annotateDiff,
   parseAnnotatedDiff,
   parseHunkHeader,
   formatLineNum,
   getLineMarker,
-  getLineContent
+  getLineContent,
+  buildDiffLineSet
 };

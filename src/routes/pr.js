@@ -25,6 +25,7 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
+const { buildDiffLineSet } = require('../utils/diff-annotator');
 const { broadcastReviewEvent } = require('../sse/review-events');
 const simpleGit = require('simple-git');
 const {
@@ -988,14 +989,16 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
     // GraphQL supports both line-level comments (within diff hunks) and file-level comments
     // (for expanded context lines outside diff hunks via subjectType: FILE).
     //
-    // Comments on expanded context lines (diff_position IS NULL) are formatted as file-level
-    // comments with a "(Ref Line X)" prefix in the body.
+    // We check whether the comment's target line actually appears in a diff hunk
+    // rather than relying on diff_position (which may not be set by all sources).
     const prNodeId = prData.node_id;
     if (!prNodeId) {
       return res.status(400).json({
         error: 'PR node_id not available. Please refresh the PR data and try again.'
       });
     }
+
+    const diffLineSet = buildDiffLineSet(diffContent);
 
     const graphqlComments = comments.map(comment => {
       const side = comment.side || 'RIGHT';
@@ -1013,10 +1016,11 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
         };
       }
 
-      // Detect expanded context comments (no diff_position)
-      // These are submitted as file-level comments since GitHub API rejects
-      // line-level comments on lines outside diff hunks.
-      const isExpandedContext = comment.diff_position === null || comment.diff_position === undefined;
+      // Detect expanded context comments by checking whether the target line
+      // actually appears in a diff hunk. This is more reliable than checking
+      // diff_position, which may be absent for comments created by the chat agent.
+      const commentLine = isRange ? comment.line_end : comment.line_start;
+      const isExpandedContext = !diffLineSet.isLineInDiff(comment.file, commentLine, side);
 
       if (isExpandedContext) {
         // File-level comment with line reference prefix
