@@ -129,6 +129,31 @@ describe('buildDiffLineSet', () => {
     expect(isLineInDiff('file.js', 1, 'RIGHT')).toBe(false);
   });
 
+  it('should not add phantom entries when rawDiff ends with a trailing newline', () => {
+    // Real `git diff` output ends with \n, which causes split('\n') to produce
+    // a trailing empty string. Without trimming, the empty string matches the
+    // context-line branch and registers a phantom line beyond the hunk boundary.
+    const diff = [
+      'diff --git a/file.js b/file.js',
+      '--- a/file.js',
+      '+++ b/file.js',
+      '@@ -1,3 +1,4 @@',
+      '+// New line',
+      ' line1',
+      ' line2',
+      ' line3',
+      '' // trailing empty string from split('\n') on newline-terminated diff
+    ].join('\n');
+
+    const { isLineInDiff } = buildDiffLineSet(diff);
+    // Valid lines should still be detected
+    expect(isLineInDiff('file.js', 1, 'RIGHT')).toBe(true);  // +// New line
+    expect(isLineInDiff('file.js', 4, 'RIGHT')).toBe(true);  // line3 context
+    // Line beyond the hunk must NOT be present (the phantom entry bug)
+    expect(isLineInDiff('file.js', 5, 'RIGHT')).toBe(false);
+    expect(isLineInDiff('file.js', 4, 'LEFT')).toBe(false);  // only 3 old lines
+  });
+
   it('should handle renames correctly using new path', () => {
     const diff = [
       'diff --git a/old.js b/new.js',

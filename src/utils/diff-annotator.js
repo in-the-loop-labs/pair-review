@@ -187,6 +187,7 @@ function annotateDiff(rawDiff) {
   }
 
   const lines = rawDiff.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
   const output = [];
 
   let currentFile = {};
@@ -419,6 +420,10 @@ function buildDiffLineSet(rawDiff) {
 
   const entries = new Set();
   const diffLines = rawDiff.split('\n');
+  // Trim trailing empty element produced by split('\n') on newline-terminated input.
+  // Without this, the empty string matches the context-line branch and adds phantom
+  // entries for lines beyond the actual hunk boundary.
+  if (diffLines[diffLines.length - 1] === '') diffLines.pop();
   let currentFile = {};
   let oldLineNum = 0;
   let newLineNum = 0;

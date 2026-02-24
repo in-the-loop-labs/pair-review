@@ -1019,8 +1019,12 @@ router.post('/api/pr/:owner/:repo/:number/submit-review', async (req, res) => {
       // Detect expanded context comments by checking whether the target line
       // actually appears in a diff hunk. This is more reliable than checking
       // diff_position, which may be absent for comments created by the chat agent.
-      const commentLine = isRange ? comment.line_end : comment.line_start;
-      const isExpandedContext = !diffLineSet.isLineInDiff(comment.file, commentLine, side);
+      // For range comments, both endpoints must be inside the diff; if the start
+      // line falls outside a hunk but the end is inside, submitting with start_line
+      // would produce a position GitHub cannot render.
+      const isExpandedContext = isRange
+        ? !diffLineSet.isLineInDiff(comment.file, comment.line_start, side) || !diffLineSet.isLineInDiff(comment.file, comment.line_end, side)
+        : !diffLineSet.isLineInDiff(comment.file, comment.line_start, side);
 
       if (isExpandedContext) {
         // File-level comment with line reference prefix
