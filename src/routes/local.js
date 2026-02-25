@@ -476,25 +476,24 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       } catch (wsError) {
         logger.warn(`Could not generate whitespace-filtered diff for review #${reviewId}: ${wsError.message}`);
         // Fall through to cached diff below
-        diffData = null;
       }
     }
 
+    // Get diff from module-level storage, falling back to database
     if (!diffData) {
-      // Get diff from module-level storage, falling back to database
       diffData = getLocalReviewDiff(reviewId);
+    }
 
-      if (!diffData) {
-        // Try loading from database
-        const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
-        if (persistedDiff) {
-          diffData = persistedDiff;
-          // Cache-warm the in-memory Map
-          setLocalReviewDiff(reviewId, diffData);
-          logger.log('API', `Loaded persisted diff from DB for review #${reviewId}`, 'cyan');
-        } else {
-          diffData = { diff: '', stats: {} };
-        }
+    if (!diffData) {
+      // Try loading from database
+      const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
+      if (persistedDiff) {
+        diffData = persistedDiff;
+        // Cache-warm the in-memory Map
+        setLocalReviewDiff(reviewId, diffData);
+        logger.log('API', `Loaded persisted diff from DB for review #${reviewId}`, 'cyan');
+      } else {
+        diffData = { diff: '', stats: {} };
       }
     }
 
