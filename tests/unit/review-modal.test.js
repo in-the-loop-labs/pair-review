@@ -299,7 +299,7 @@ describe('ReviewModal', () => {
       expect(pendingDraftLink.href).toBe('https://github.com/owner/repo/pull/1');
     });
 
-    it('should handle missing prManager gracefully', () => {
+    it('should handle missing prManager gracefully (pending draft)', () => {
       const { modal, pendingDraftNotice, draftTypeLabel } = createTestReviewModal();
 
       // No prManager at all
@@ -313,6 +313,118 @@ describe('ReviewModal', () => {
 
       // Label should be the default
       expect(draftTypeLabel.textContent).toBe('Save as Draft');
+    });
+  });
+
+  describe('Cmd/Ctrl+Enter keyboard shortcut', () => {
+    /**
+     * Create a ReviewModal via its real constructor with document.addEventListener
+     * mocked to capture the keydown handler. Returns the instance and the handler.
+     */
+    function setupKeydownTest() {
+      const { ReviewModal } = require('../../public/js/components/ReviewModal.js');
+      ReviewModal._listenersRegistered = false;
+
+      let keydownHandler;
+      document.addEventListener = vi.fn().mockImplementation((event, handler) => {
+        if (event === 'keydown') keydownHandler = handler;
+      });
+
+      const instance = new ReviewModal();
+      instance.submitReview = vi.fn();
+      instance.hide = vi.fn();
+      global.window.reviewModal = instance;
+
+      return { instance, keydownHandler };
+    }
+
+    it('should register a keydown listener on document', () => {
+      setupKeydownTest();
+
+      const keydownCalls = document.addEventListener.mock.calls.filter(c => c[0] === 'keydown');
+      expect(keydownCalls.length).toBeGreaterThan(0);
+    });
+
+    it('should call submitReview on Cmd+Enter when modal is visible and not submitting', () => {
+      const { instance, keydownHandler } = setupKeydownTest();
+      instance.isVisible = true;
+      instance.isSubmitting = false;
+
+      const event = {
+        metaKey: true,
+        ctrlKey: false,
+        key: 'Enter',
+        preventDefault: vi.fn()
+      };
+      keydownHandler(event);
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(instance.submitReview).toHaveBeenCalled();
+    });
+
+    it('should call submitReview on Ctrl+Enter when modal is visible and not submitting', () => {
+      const { instance, keydownHandler } = setupKeydownTest();
+      instance.isVisible = true;
+      instance.isSubmitting = false;
+
+      const event = {
+        metaKey: false,
+        ctrlKey: true,
+        key: 'Enter',
+        preventDefault: vi.fn()
+      };
+      keydownHandler(event);
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(instance.submitReview).toHaveBeenCalled();
+    });
+
+    it('should NOT call submitReview when modal is not visible', () => {
+      const { instance, keydownHandler } = setupKeydownTest();
+      instance.isVisible = false;
+      instance.isSubmitting = false;
+
+      const event = {
+        metaKey: true,
+        ctrlKey: false,
+        key: 'Enter',
+        preventDefault: vi.fn()
+      };
+      keydownHandler(event);
+
+      expect(instance.submitReview).not.toHaveBeenCalled();
+    });
+
+    it('should NOT call submitReview when already submitting', () => {
+      const { instance, keydownHandler } = setupKeydownTest();
+      instance.isVisible = true;
+      instance.isSubmitting = true;
+
+      const event = {
+        metaKey: true,
+        ctrlKey: false,
+        key: 'Enter',
+        preventDefault: vi.fn()
+      };
+      keydownHandler(event);
+
+      expect(instance.submitReview).not.toHaveBeenCalled();
+    });
+
+    it('should still close on Escape when modal is visible', () => {
+      const { instance, keydownHandler } = setupKeydownTest();
+      instance.isVisible = true;
+      instance.isSubmitting = false;
+
+      const event = {
+        metaKey: false,
+        ctrlKey: false,
+        key: 'Escape',
+        preventDefault: vi.fn()
+      };
+      keydownHandler(event);
+
+      expect(instance.hide).toHaveBeenCalled();
     });
   });
 });
