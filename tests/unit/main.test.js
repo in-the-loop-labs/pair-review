@@ -347,6 +347,37 @@ describe('CLI help and version', () => {
   });
 });
 
+describe('CLI child process spawning', () => {
+  it('should use the same Node.js binary as the parent process, not node from PATH', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+
+    // Create a temp directory with a fake "node" that always fails
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pr-test-'));
+    const fakeNode = path.join(tmpDir, 'node');
+    fs.writeFileSync(fakeNode, '#!/bin/sh\necho "WRONG_NODE" >&2\nexit 99\n');
+    fs.chmodSync(fakeNode, 0o755);
+
+    try {
+      // Spawn bin/pair-review.js --version using the real node (process.execPath),
+      // but with the fake node first in PATH. If the bin script correctly uses
+      // process.execPath, the child process will use the real node and succeed.
+      // If it spawns 'node' from PATH, it'll hit the fake one and fail.
+      const result = spawnSync(process.execPath, ['bin/pair-review.js', '--version'], {
+        env: { ...process.env, PATH: `${tmpDir}:${process.env.PATH}` },
+        encoding: 'utf-8'
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toMatch(/pair-review v\d+\.\d+\.\d+/);
+      expect(result.stderr).not.toContain('WRONG_NODE');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+});
+
 describe('CLI --configure', () => {
   it('should show comprehensive configuration help', () => {
     const output = execSync('node bin/pair-review.js --configure', { encoding: 'utf-8' });
