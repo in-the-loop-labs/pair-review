@@ -132,7 +132,7 @@ class ReviewModal {
         
         <div class="modal-footer review-modal-footer">
           <button class="btn btn-secondary" onclick="reviewModal.handleCloseClick()" id="cancel-review-btn">Cancel</button>
-          <button class="btn btn-primary" id="submit-review-btn-modal" onclick="reviewModal.submitReview()">
+          <button class="btn btn-primary" id="submit-review-btn-modal" onclick="reviewModal.submitReview()" title="Submit review (Cmd/Ctrl+Enter)">
             Submit review
           </button>
         </div>
@@ -157,11 +157,16 @@ class ReviewModal {
     }
     ReviewModal._listenersRegistered = true;
 
-    // Handle escape key - uses window.reviewModal to get the current instance
+    // Handle keyboard shortcuts - uses window.reviewModal to get the current instance
     document.addEventListener('keydown', (e) => {
       const instance = window.reviewModal;
-      if (e.key === 'Escape' && instance?.isVisible && !instance?.isSubmitting) {
+      if (!instance?.isVisible) return;
+
+      if (e.key === 'Escape' && !instance.isSubmitting) {
         instance.hide();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !instance.isSubmitting) {
+        e.preventDefault();
+        instance.submitReview();
       }
     });
 
