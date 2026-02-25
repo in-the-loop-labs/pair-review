@@ -682,9 +682,9 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
             const isRenamed = resolvedFile !== file.file;
             const result = {
               file: resolvedFile,
-              additions: file.insertions,
+              insertions: file.insertions,
               deletions: file.deletions,
-              changes: file.insertions + file.deletions,
+              changes: file.changes,
               generated: gitattributes.isGenerated(resolvedFile)
             };
             if (isRenamed) {
