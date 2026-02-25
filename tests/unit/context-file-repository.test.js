@@ -115,7 +115,7 @@ describe('ContextFileRepository', () => {
     it('should successfully update line_start and line_end', async () => {
       const record = await contextFileRepo.add(reviewId, 'src/utils.js', 10, 25, 'helper function');
 
-      await contextFileRepo.updateRange(record.id, 5, 50);
+      await contextFileRepo.updateRange(record.id, reviewId, 5, 50);
 
       // Verify the update persisted
       const results = await contextFileRepo.getByReviewId(reviewId);
@@ -127,13 +127,13 @@ describe('ContextFileRepository', () => {
     it('should return true on success', async () => {
       const record = await contextFileRepo.add(reviewId, 'src/utils.js', 10, 25);
 
-      const updated = await contextFileRepo.updateRange(record.id, 1, 100);
+      const updated = await contextFileRepo.updateRange(record.id, reviewId, 1, 100);
 
       expect(updated).toBe(true);
     });
 
     it('should return false when id does not exist', async () => {
-      const updated = await contextFileRepo.updateRange(99999, 1, 100);
+      const updated = await contextFileRepo.updateRange(99999, reviewId, 1, 100);
 
       expect(updated).toBe(false);
     });

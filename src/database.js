@@ -3394,14 +3394,15 @@ class ContextFileRepository {
   /**
    * Update the line range of an existing context file record
    * @param {number} id - Context file record ID
+   * @param {number} reviewId - Review ID (ensures update is scoped to the correct review)
    * @param {number} lineStart - New start line number
    * @param {number} lineEnd - New end line number
    * @returns {Promise<boolean>} True if record was updated
    */
-  async updateRange(id, lineStart, lineEnd) {
+  async updateRange(id, reviewId, lineStart, lineEnd) {
     const result = await run(this.db, `
-      UPDATE context_files SET line_start = ?, line_end = ? WHERE id = ?
-    `, [lineStart, lineEnd, id]);
+      UPDATE context_files SET line_start = ?, line_end = ? WHERE id = ? AND review_id = ?
+    `, [lineStart, lineEnd, id, reviewId]);
 
     return result.changes > 0;
   }

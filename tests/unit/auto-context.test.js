@@ -170,7 +170,7 @@ describe('ensureContextFileForComment', () => {
     // Desired range: [40, 65]. Existing: [50, 60].
     // Union: [min(50,40), max(60,65)] = [40, 65]
     expect(result).toEqual({ created: false, expanded: true, contextFileId: 77 });
-    expect(mockUpdateRange).toHaveBeenCalledWith(77, 40, 65);
+    expect(mockUpdateRange).toHaveBeenCalledWith(77, 42, 40, 65);
     expect(mockAdd).not.toHaveBeenCalled();
   });
 
@@ -273,7 +273,7 @@ describe('ensureContextFileForComment', () => {
     // Desired range: [105, 135]. Entry [90, 120] overlaps, so expand it.
     // Union: [min(90,105), max(120,135)] = [90, 135]
     expect(result).toEqual({ created: false, expanded: true, contextFileId: 11 });
-    expect(mockUpdateRange).toHaveBeenCalledWith(11, 90, 135);
+    expect(mockUpdateRange).toHaveBeenCalledWith(11, 42, 90, 135);
     expect(mockAdd).not.toHaveBeenCalled();
   });
 
@@ -315,7 +315,7 @@ describe('ensureContextFileForComment', () => {
     // Union: [min(1,380), max(400,510)] = [1, 510] => 510 lines, exceeds 500
     // Clamped: [1, 1+499] = [1, 500]
     expect(result).toEqual({ created: false, expanded: true, contextFileId: 88 });
-    expect(mockUpdateRange).toHaveBeenCalledWith(88, 1, 500);
+    expect(mockUpdateRange).toHaveBeenCalledWith(88, 42, 1, 500);
     expect(mockAdd).not.toHaveBeenCalled();
   });
 });
