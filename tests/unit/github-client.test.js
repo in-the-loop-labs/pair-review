@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
  * The actual GitHub API calls are mocked by replacing the graphql method on each client instance.
  */
 
-const { GitHubClient, GitHubApiError } = require('../../src/github/client');
+const { GitHubClient, GitHubApiError, isComplexityError } = require('../../src/github/client');
 
 describe('GitHubClient', () => {
   describe('createReviewGraphQL', () => {
@@ -894,6 +894,151 @@ describe('GitHubClient', () => {
       expect(result.failedDetails).toHaveLength(2);
       expect(result.failedDetails[0]).toBe('deleted-file.js:5 - path not found in diff');
       expect(result.failedDetails[1]).toBe('other-file.js:100 - line is not part of the diff');
+    });
+  });
+
+  describe('isComplexityError', () => {
+    it('should return true for "complexity" in error message', () => {
+      const error = new Error('This query has a complexity of 500, which exceeds the max complexity of 100');
+      expect(isComplexityError(error)).toBe(true);
+    });
+
+    it('should return true for "MAX_NODE_LIMIT" in error message', () => {
+      const error = new Error('MAX_NODE_LIMIT exceeded');
+      expect(isComplexityError(error)).toBe(true);
+    });
+
+    it('should return true for "cost exceeds" in error message', () => {
+      const error = new Error('Query cost exceeds limit');
+      expect(isComplexityError(error)).toBe(true);
+    });
+
+    it('should return true for "too large" in error message', () => {
+      const error = new Error('Mutation payload too large');
+      expect(isComplexityError(error)).toBe(true);
+    });
+
+    it('should return true for complexity pattern in errors array', () => {
+      const error = new Error('GraphQL error');
+      error.errors = [{ message: 'MAX_NODE_LIMIT exceeded' }];
+      expect(isComplexityError(error)).toBe(true);
+    });
+
+    it('should return false for unrelated error message', () => {
+      const error = new Error('Server unavailable');
+      expect(isComplexityError(error)).toBe(false);
+    });
+
+    it('should return false for empty error message', () => {
+      const error = new Error('');
+      expect(isComplexityError(error)).toBe(false);
+    });
+
+    it('should return false for error with unrelated errors array', () => {
+      const error = new Error('fail');
+      error.errors = [{ message: 'not found' }];
+      expect(isComplexityError(error)).toBe(false);
+    });
+  });
+
+  describe('addCommentsInBatches - adaptive batch sizing', () => {
+    function makeComments(n) {
+      const comments = [];
+      for (let i = 0; i < n; i++) {
+        comments.push({ path: `file${i}.js`, line: i + 1, side: 'RIGHT', body: `Comment ${i}` });
+      }
+      return comments;
+    }
+
+    function successResult(mutation) {
+      const commentMatches = mutation.match(/comment\d+:/g) || [];
+      const result = {};
+      commentMatches.forEach((_, index) => {
+        result[`comment${index}`] = { thread: { id: `thread-${index}` } };
+      });
+      return result;
+    }
+
+    it('should halve batch size on complexity error and retry with smaller batches', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockImplementation((mutation) => {
+        const commentCount = (mutation.match(/comment\d+:/g) || []).length;
+        if (commentCount > 2) {
+          return Promise.reject(new Error('This query has a complexity of 500, exceeds max'));
+        }
+        return Promise.resolve(successResult(mutation));
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', makeComments(4), 4);
+
+      expect(result.successCount).toBe(4);
+      expect(result.failed).toBe(false);
+      // Call 1: batch of 4 (rejected), Call 2: batch of 2, Call 3: batch of 2
+      expect(mockGraphql).toHaveBeenCalledTimes(3);
+    });
+
+    it('should continue with reduced batch size for all remaining batches', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockImplementation((mutation) => {
+        const commentCount = (mutation.match(/comment\d+:/g) || []).length;
+        if (commentCount > 2) {
+          return Promise.reject(new Error('MAX_NODE_LIMIT exceeded'));
+        }
+        return Promise.resolve(successResult(mutation));
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', makeComments(6), 4);
+
+      expect(result.successCount).toBe(6);
+      expect(result.failed).toBe(false);
+      // Call 1: batch of 4 (rejected), Calls 2-4: batches of 2
+      expect(mockGraphql).toHaveBeenCalledTimes(4);
+    });
+
+    it('should halve multiple times if needed', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockImplementation((mutation) => {
+        const commentCount = (mutation.match(/comment\d+:/g) || []).length;
+        if (commentCount > 1) {
+          return Promise.reject(new Error('Query cost exceeds limit'));
+        }
+        return Promise.resolve(successResult(mutation));
+      });
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', makeComments(4), 4);
+
+      expect(result.successCount).toBe(4);
+      expect(result.failed).toBe(false);
+      // Call 1: batch of 4 (rejected), Call 2: batch of 2 (rejected), Calls 3-6: batches of 1
+      expect(mockGraphql).toHaveBeenCalledTimes(6);
+    });
+
+    it('should treat complexity error at minimum batch size as permanent failure', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockRejectedValue(new Error('Mutation payload too large'));
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', makeComments(1), 1);
+
+      expect(result.failed).toBe(true);
+      expect(result.successCount).toBe(0);
+      // At min batch size: initial attempt + 1 retry (normal retry logic)
+      expect(mockGraphql).toHaveBeenCalledTimes(2);
+    });
+
+    it('should not halve batch size for non-complexity errors', async () => {
+      const client = new GitHubClient('test-token');
+      const mockGraphql = vi.fn().mockRejectedValue(new Error('Server unavailable'));
+      client.octokit.graphql = mockGraphql;
+
+      const result = await client.addCommentsInBatches('PR_node123', 'review-123', makeComments(4), 4);
+
+      expect(result.failed).toBe(true);
+      // Only 2 calls: initial + 1 retry (no re-batching)
+      expect(mockGraphql).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -20,6 +20,45 @@ class GitHubApiError extends Error {
 }
 
 /**
+ * Detect whether a GraphQL error is a complexity/cost limit error from GitHub.
+ * These errors mean the mutation was too large and can be retried with fewer items.
+ *
+ * @param {Error} error - The error thrown by octokit.graphql
+ * @returns {boolean} True if the error is a complexity/cost limit error
+ */
+function isComplexityError(error) {
+  const patterns = [
+    /complexity/i,
+    /MAX_NODE_LIMIT/,
+    /cost exceeds/i,
+    /too large/i,
+    /query size exceeds/i,
+  ];
+
+  // Check the top-level error message
+  if (error.message) {
+    for (const pattern of patterns) {
+      if (pattern.test(error.message)) return true;
+    }
+  }
+
+  // Check individual GraphQL error messages in the errors array
+  if (error.errors && Array.isArray(error.errors)) {
+    for (const err of error.errors) {
+      if (err.message) {
+        for (const pattern of patterns) {
+          if (pattern.test(err.message)) return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+const MIN_BATCH_SIZE = 1;
+
+/**
  * GitHub API client wrapper with error handling and rate limiting
  */
 class GitHubClient {
@@ -347,42 +386,38 @@ class GitHubClient {
    * Add comments to a pending review in batches
    * This helper splits comments into batches to avoid GitHub API limits
    * on large mutations. Each batch is executed sequentially with retry logic.
+   * If a batch fails due to GitHub GraphQL complexity/cost limits, the batch
+   * size is automatically halved and the failed batch is retried.
    *
    * @param {string} prNodeId - GraphQL node ID for the PR (e.g., "PR_kwDOM...")
    * @param {string} reviewId - GraphQL node ID for the pending review
    * @param {Array} comments - Array of comments with path, line (optional), side, body, isFileLevel
-   * @param {number} batchSize - Number of comments per batch (default: 25)
+   * @param {number} batchSize - Number of comments per batch (default: 10)
    * @returns {Promise<Object>} Result with successCount, failed flag, and failedDetails array of error strings
    */
-  // Batch size of 25 is empirically chosen to stay well under GitHub's GraphQL
-  // mutation size limits while still being efficient for large reviews.
-  async addCommentsInBatches(prNodeId, reviewId, comments, batchSize = 25) {
+  async addCommentsInBatches(prNodeId, reviewId, comments, batchSize = 10) {
     if (comments.length === 0) {
       return { successCount: 0, failed: false, failedDetails: [] };
     }
 
-    // Split comments into batches
-    const batches = [];
-    for (let i = 0; i < comments.length; i += batchSize) {
-      batches.push(comments.slice(i, i + batchSize));
-    }
-
-    console.log(`Adding ${comments.length} comments in ${batches.length} batch(es) of up to ${batchSize} comments each`);
-
+    let currentBatchSize = batchSize;
+    let remaining = comments.slice();
     let totalSuccessful = 0;
     const failedDetails = [];
+    let batchNumber = 0;
 
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
-      const batchNumber = batchIndex + 1;
-      console.log(`Adding comments batch ${batchNumber}/${batches.length} (${batch.length} comments)...`);
+    console.log(`Adding ${comments.length} comments in batches of up to ${currentBatchSize}`);
+
+    while (remaining.length > 0) {
+      batchNumber++;
+      const batch = remaining.slice(0, currentBatchSize);
+      console.log(`Adding comments batch ${batchNumber} (${batch.length} comments, ${remaining.length} remaining)...`);
 
       // Build mutation for this batch
       const commentMutations = batch.map((comment, index) => {
         const isFileLevel = comment.isFileLevel || !comment.line;
 
         if (isFileLevel) {
-          // File-level comment (for expanded context lines)
           return `
             comment${index}: addPullRequestReviewThread(input: {
               pullRequestId: $prId
@@ -395,7 +430,6 @@ class GitHubClient {
             }
           `;
         } else {
-          // Line-level comment
           const side = comment.side || 'RIGHT';
           const startLineField = comment.start_line ? `startLine: ${comment.start_line}\n                ` : '';
           return `
@@ -424,6 +458,7 @@ class GitHubClient {
       let batchError = null;
       let retryAttempt = 0;
       const maxRetries = 1;
+      let reducedBatchSize = false;
 
       while (retryAttempt <= maxRetries) {
         try {
@@ -435,6 +470,22 @@ class GitHubClient {
           break; // Success, exit retry loop
         } catch (error) {
           batchError = error;
+
+          // Check for complexity/cost limit errors — reduce batch size instead of retrying
+          if (isComplexityError(error)) {
+            const newSize = Math.max(MIN_BATCH_SIZE, Math.floor(currentBatchSize / 2));
+            if (newSize < currentBatchSize) {
+              console.warn(
+                `Batch ${batchNumber} hit complexity limit (size ${currentBatchSize}), ` +
+                `reducing batch size to ${newSize}`
+              );
+              currentBatchSize = newSize;
+              reducedBatchSize = true;
+              break; // Exit retry loop — will re-attempt with smaller batch
+            }
+            // Already at minimum batch size — fall through to normal retry logic
+          }
+
           if (retryAttempt < maxRetries) {
             console.warn(`Batch ${batchNumber} failed, retrying... (${error.message})`);
             retryAttempt++;
@@ -448,6 +499,12 @@ class GitHubClient {
             break; // Exit retry loop - all retries exhausted
           }
         }
+      }
+
+      // If we reduced batch size due to complexity, retry from top of loop
+      // with the same remaining comments but a smaller batch
+      if (reducedBatchSize) {
+        continue;
       }
 
       // Check if batch succeeded
@@ -522,9 +579,12 @@ class GitHubClient {
         totalSuccessful += batchSuccessful;
         console.log(`Batch ${batchNumber} complete: ${batchSuccessful} comments added`);
       }
+
+      // Advance past the successfully processed batch
+      remaining = remaining.slice(batch.length);
     }
 
-    console.log(`All ${batches.length} batches complete: ${totalSuccessful} total comments added`);
+    console.log(`All batches complete: ${totalSuccessful} total comments added`);
     return { successCount: totalSuccessful, failed: false, failedDetails };
   }
 
@@ -1124,4 +1184,4 @@ class GitHubClient {
   }
 }
 
-module.exports = { GitHubClient, GitHubApiError };
+module.exports = { GitHubClient, GitHubApiError, isComplexityError };
