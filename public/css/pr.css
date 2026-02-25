@@ -6362,10 +6362,27 @@ body:not([data-theme="dark"]) .theme-icon-light {
 }
 
 /* Small icon buttons in toolbar have reduced dimensions */
-.toolbar-actions .btn-sm.btn-icon {
+.toolbar-actions .btn-sm.btn-icon,
+.toolbar-meta .btn-sm.btn-icon {
   padding: 6px;
   width: 32px;
   height: 32px;
+}
+
+/* Icon buttons inside toolbar-meta need the same visual treatment as toolbar-actions */
+.toolbar-meta .btn-icon {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.toolbar-meta .btn-icon:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-secondary);
 }
 
 /* ============================================
@@ -6962,13 +6979,15 @@ body.resizing * {
 }
 
 /* Dark theme toolbar button overrides */
-[data-theme="dark"] .toolbar-actions .btn-icon {
+[data-theme="dark"] .toolbar-actions .btn-icon,
+[data-theme="dark"] .toolbar-meta .btn-icon {
   background: var(--color-bg-tertiary);
   border-color: var(--color-border-secondary);
   color: var(--color-text-secondary);
 }
 
-[data-theme="dark"] .toolbar-actions .btn-icon:hover {
+[data-theme="dark"] .toolbar-actions .btn-icon:hover,
+[data-theme="dark"] .toolbar-meta .btn-icon:hover {
   background: var(--color-bg-elevated);
   color: var(--color-text-primary);
 }
