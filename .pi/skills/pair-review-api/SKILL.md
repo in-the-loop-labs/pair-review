@@ -1,3 +1,8 @@
+---
+name: pair-review-api
+description: Reference for the pair-review HTTP API. Load this skill to create, update, and delete review comments, adopt or dismiss AI suggestions, manage context files, expand diff hunks, and trigger or monitor analyses via curl.
+---
+
 # Pair-Review API Skill
 
 You have **read-only access to the filesystem**. To modify the review (create comments, adopt suggestions, trigger analysis) or interact with the pair-review app, you MUST use the pair-review API via `curl`.
