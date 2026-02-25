@@ -602,9 +602,11 @@ describe('PRManager Suggestion Status', () => {
       window.toast = toastMock;
 
       // Reset querySelector mock for this test
+      document.querySelector.mockReset();
       document.querySelector
         .mockReturnValueOnce(mockCommentRow)  // First call: line-level comment row
-        .mockReturnValueOnce(null);            // Second call: file-level comment card (not found)
+        .mockReturnValueOnce(null)            // Second call: file-level comment card (not found)
+        .mockReturnValueOnce(null);           // Third call: suggestion div (not found, aiPanel is null anyway)
 
       const commentId = 'test-comment-no-panel';
       const parentSuggestionId = 'test-suggestion-789';
@@ -685,6 +687,112 @@ describe('PRManager Suggestion Status', () => {
 
       // Comment count should still be updated
       expect(prManager.updateCommentCount).toHaveBeenCalled();
+    });
+
+    it('should clear hiddenForAdoption when dismissing an adopted comment\'s parent suggestion', async () => {
+      const commentId = 'test-comment-adopted';
+      const parentSuggestionId = 'test-suggestion-adopted-parent';
+
+      // Mock successful DELETE response with dismissedSuggestionId
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          success: true,
+          dismissedSuggestionId: parentSuggestionId
+        })
+      });
+
+      // Build a suggestion div with hiddenForAdoption set
+      const mockSuggestionDiv = {
+        dataset: { hiddenForAdoption: 'true', suggestionId: parentSuggestionId }
+      };
+
+      // Reset querySelector mock to handle all 3 calls:
+      // 1) line-level comment row, 2) file-level comment card, 3) suggestion div
+      document.querySelector.mockReset();
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)       // [data-comment-id="..."]
+        .mockReturnValueOnce(null)                  // .file-comment-card[data-comment-id="..."]
+        .mockReturnValueOnce(mockSuggestionDiv);    // [data-suggestion-id="..."]
+
+      await prManager.deleteUserComment(commentId);
+
+      // Verify hiddenForAdoption was cleared from the suggestion div
+      expect(mockSuggestionDiv.dataset.hiddenForAdoption).toBeUndefined();
+
+      // Verify AIPanel updateFindingStatus was also called
+      expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledWith(parentSuggestionId, 'dismissed');
+    });
+
+    it('should support full adopt → dismiss → restore cycle', async () => {
+      // This test verifies the complete lifecycle:
+      // 1. Suggestion is adopted (hiddenForAdoption = 'true')
+      // 2. User deletes the comment → hiddenForAdoption should be cleared
+      // 3. User restores the suggestion → should call API (not toggle-only shortcut)
+
+      const commentId = 'test-comment-cycle';
+      const suggestionId = 'test-suggestion-cycle';
+
+      // --- Step 1: Setup adopted suggestion state ---
+      const mockSuggestionDiv = {
+        dataset: { hiddenForAdoption: 'true', suggestionId },
+        classList: {
+          add: vi.fn(),
+          remove: vi.fn(),
+          toggle: vi.fn(),
+          contains: vi.fn().mockReturnValue(false)
+        },
+        closest: vi.fn().mockReturnValue(null),
+        querySelector: vi.fn().mockReturnValue(null)
+      };
+
+      // Verify initial state: hiddenForAdoption is set
+      expect(mockSuggestionDiv.dataset.hiddenForAdoption).toBe('true');
+
+      // --- Step 2: Delete the comment (dismiss the parent suggestion) ---
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          success: true,
+          dismissedSuggestionId: suggestionId
+        })
+      });
+
+      // querySelector calls: comment row, file-comment card, suggestion div
+      document.querySelector.mockReset();
+      document.querySelector
+        .mockReturnValueOnce(mockCommentRow)       // line-level comment row
+        .mockReturnValueOnce(null)                  // file-level comment card
+        .mockReturnValueOnce(mockSuggestionDiv);    // suggestion div lookup
+
+      await prManager.deleteUserComment(commentId);
+
+      // After deletion, hiddenForAdoption should be cleared
+      expect(mockSuggestionDiv.dataset.hiddenForAdoption).toBeUndefined();
+      expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledWith(suggestionId, 'dismissed');
+
+      // --- Step 3: Restore the suggestion ---
+      // Since hiddenForAdoption was cleared, restoreSuggestion should take the API path
+      mockFetch.mockResolvedValueOnce({ ok: true });
+
+      // restoreSuggestion calls querySelector once for the suggestion div
+      document.querySelector.mockReset();
+      document.querySelector.mockReturnValue(mockSuggestionDiv);
+
+      window.aiPanel.updateFindingStatus.mockClear();
+      await prManager.restoreSuggestion(suggestionId);
+
+      // API SHOULD have been called (not the toggle-only shortcut)
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/reviews/test-review-1/suggestions/${suggestionId}/status`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ status: 'active' })
+        })
+      );
+
+      // aiPanel.updateFindingStatus should be called with 'active'
+      expect(window.aiPanel.updateFindingStatus).toHaveBeenCalledWith(suggestionId, 'active');
     });
 
     it('should remove comment when showDismissedComments is false', async () => {

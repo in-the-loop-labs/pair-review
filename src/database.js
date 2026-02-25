@@ -1921,6 +1921,7 @@ class CommentRepository {
       throw new Error('This suggestion has already been processed');
     }
 
+
     // Create user comment preserving metadata from the suggestion
     const result = await run(this.db, `
       INSERT INTO comments (
