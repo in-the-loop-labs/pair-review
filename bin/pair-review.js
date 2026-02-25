@@ -26,7 +26,7 @@ async function main() {
       : 'inherit';
 
     // Spawn the main process with arguments
-    const app = spawn('node', [mainPath, ...args], {
+    const app = spawn(process.execPath, [mainPath, ...args], {
       stdio: stdioOption
     });
 
