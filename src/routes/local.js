@@ -465,8 +465,24 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       });
     }
 
+    // When ?w=1, regenerate the diff with whitespace changes hidden (transient view, not cached)
+    const hideWhitespace = req.query.w === '1';
+    let diffData;
+
+    if (hideWhitespace && review.local_path) {
+      try {
+        const wsResult = await generateLocalDiff(review.local_path, { hideWhitespace: true });
+        diffData = { diff: wsResult.diff, stats: wsResult.stats };
+      } catch (wsError) {
+        logger.warn(`Could not generate whitespace-filtered diff for review #${reviewId}: ${wsError.message}`);
+        // Fall through to cached diff below
+      }
+    }
+
     // Get diff from module-level storage, falling back to database
-    let diffData = getLocalReviewDiff(reviewId);
+    if (!diffData) {
+      diffData = getLocalReviewDiff(reviewId);
+    }
 
     if (!diffData) {
       // Try loading from database

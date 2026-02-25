@@ -18,7 +18,7 @@ const { query, queryOne, run, withTransaction, WorktreeRepository, ReviewReposit
 const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { getGeneratedFilePatterns } = require('../git/gitattributes');
-const { normalizeRepository } = require('../utils/paths');
+const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
 const { mergeInstructions } = require('../utils/instructions');
 const Analyzer = require('../ai/analyzer');
 const { v4: uuidv4 } = require('uuid');
@@ -652,15 +652,54 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
       });
     }
 
-    // Add generated flag to changed files based on .gitattributes
-    let changedFiles = prData.changed_files || [];
-
-    // Look up worktree path to read .gitattributes
+    // Look up worktree path (needed for .gitattributes and whitespace-filtered diffs)
     const db = req.app.get('db');
     const worktreeRepo = new WorktreeRepository(db);
     const worktreeRecord = await worktreeRepo.findByPR(prNumber, repository);
 
-    if (worktreeRecord && worktreeRecord.path) {
+    // When ?w=1, regenerate the diff from the worktree with whitespace changes hidden
+    const hideWhitespace = req.query.w === '1';
+    let diffContent = prData.diff || '';
+    let changedFiles = prData.changed_files || [];
+
+    if (hideWhitespace && worktreeRecord && worktreeRecord.path) {
+      try {
+        const worktreePath = worktreeRecord.path;
+        await fs.access(worktreePath);
+        const git = simpleGit(worktreePath);
+        const baseSha = prData.base_sha;
+        const headSha = prData.head_sha;
+
+        if (baseSha && headSha) {
+          // Regenerate diff with -w flag to ignore whitespace changes
+          diffContent = await git.diff([`${baseSha}...${headSha}`, '--unified=3', '-w']);
+
+          // Regenerate changed files stats with -w flag
+          const diffSummary = await git.diffSummary([`${baseSha}...${headSha}`, '-w']);
+          const gitattributes = await getGeneratedFilePatterns(worktreePath);
+          changedFiles = diffSummary.files.map(file => {
+            const resolvedFile = resolveRenamedFile(file.file);
+            const isRenamed = resolvedFile !== file.file;
+            const result = {
+              file: resolvedFile,
+              insertions: file.insertions,
+              deletions: file.deletions,
+              changes: file.changes,
+              generated: gitattributes.isGenerated(resolvedFile)
+            };
+            if (isRenamed) {
+              result.renamed = true;
+              result.renamedFrom = resolveRenamedFileOld(file.file);
+            }
+            return result;
+          });
+        }
+      } catch (wsError) {
+        logger.warn(`Could not generate whitespace-filtered diff for PR #${prNumber}: ${wsError.message}`);
+        // Fall back to cached diff (diffContent and changedFiles already set from prData)
+      }
+    } else if (worktreeRecord && worktreeRecord.path) {
+      // Add generated flag to changed files based on .gitattributes
       try {
         const gitattributes = await getGeneratedFilePatterns(worktreeRecord.path);
         changedFiles = changedFiles.map(file => ({
@@ -668,23 +707,33 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
           generated: gitattributes.isGenerated(file.file)
         }));
       } catch (error) {
-        console.warn('Could not load .gitattributes:', error.message);
+        logger.warn(`Could not load .gitattributes: ${error.message}`);
         // Continue without generated flags
       }
     }
 
+    // When hideWhitespace is active and diff was regenerated, compute
+    // aggregate stats from the regenerated changedFiles instead of using
+    // stale cached values from prData.
+    const additions = hideWhitespace
+      ? changedFiles.reduce((sum, f) => sum + (f.insertions || 0), 0)
+      : (prData.additions || 0);
+    const deletions = hideWhitespace
+      ? changedFiles.reduce((sum, f) => sum + (f.deletions || 0), 0)
+      : (prData.deletions || 0);
+
     res.json({
-      diff: prData.diff || '',
+      diff: diffContent,
       changed_files: changedFiles,
       stats: {
-        additions: prData.additions || 0,
-        deletions: prData.deletions || 0,
+        additions,
+        deletions,
         changed_files: changedFiles.length
       }
     });
 
   } catch (error) {
-    console.error('Error fetching PR diff:', error);
+    logger.error('Error fetching PR diff:', error);
     res.status(500).json({
       error: 'Internal server error while fetching diff data'
     });

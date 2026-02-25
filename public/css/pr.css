@@ -6362,10 +6362,27 @@ body:not([data-theme="dark"]) .theme-icon-light {
 }
 
 /* Small icon buttons in toolbar have reduced dimensions */
-.toolbar-actions .btn-sm.btn-icon {
+.toolbar-actions .btn-sm.btn-icon,
+.toolbar-meta .btn-sm.btn-icon {
   padding: 6px;
   width: 32px;
   height: 32px;
+}
+
+/* Icon buttons inside toolbar-meta need the same visual treatment as toolbar-actions */
+.toolbar-meta .btn-icon {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.toolbar-meta .btn-icon:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-secondary);
 }
 
 /* ============================================
@@ -6962,15 +6979,94 @@ body.resizing * {
 }
 
 /* Dark theme toolbar button overrides */
-[data-theme="dark"] .toolbar-actions .btn-icon {
+[data-theme="dark"] .toolbar-actions .btn-icon,
+[data-theme="dark"] .toolbar-meta .btn-icon {
   background: var(--color-bg-tertiary);
   border-color: var(--color-border-secondary);
   color: var(--color-text-secondary);
 }
 
-[data-theme="dark"] .toolbar-actions .btn-icon:hover {
+[data-theme="dark"] .toolbar-actions .btn-icon:hover,
+[data-theme="dark"] .toolbar-meta .btn-icon:hover {
   background: var(--color-bg-elevated);
   color: var(--color-text-primary);
+}
+
+/* --------------------------------------------------------------------------
+   Diff Options Popover (gear icon dropdown for whitespace toggle, etc.)
+   -------------------------------------------------------------------------- */
+.diff-options-popover {
+  position: fixed;
+  z-index: 1100;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 4px 0;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+.diff-options-popover.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.diff-options-popover label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  user-select: none;
+  transition: background-color 0.1s ease;
+}
+
+.diff-options-popover label:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.diff-options-popover input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+/* Active state for the diff-options gear button when a filter is applied */
+#diff-options-btn.active {
+  color: var(--color-accent-primary);
+  border-color: var(--color-accent-primary);
+  background: var(--color-accent-light);
+}
+
+#diff-options-btn.active:hover {
+  background: var(--color-accent-lighter);
+}
+
+/* Dark theme */
+[data-theme="dark"] .diff-options-popover {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-secondary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .diff-options-popover label:hover {
+  background: var(--color-bg-tertiary);
+}
+
+[data-theme="dark"] #diff-options-btn.active {
+  color: #58a6ff;
+  border-color: #58a6ff;
+  background: rgba(88, 166, 255, 0.1);
+}
+
+[data-theme="dark"] #diff-options-btn.active:hover {
+  background: rgba(88, 166, 255, 0.15);
 }
 
 .ai-panel-header {

@@ -366,8 +366,9 @@ async function getUntrackedFiles(repoPath) {
  * @param {string} repoPath - Path to the git repository
  * @returns {Promise<{diff: string, untrackedFiles: Array, stats: Object}>}
  */
-async function generateLocalDiff(repoPath) {
+async function generateLocalDiff(repoPath, options = {}) {
   let diff = '';
+  const wFlag = options.hideWhitespace ? ' -w' : '';
   const stats = {
     trackedChanges: 0,
     untrackedFiles: 0,
@@ -378,7 +379,7 @@ async function generateLocalDiff(repoPath) {
   try {
     // Count staged changes for stats (but don't include in diff)
     // This is informational only - staged files are excluded from review
-    const stagedDiff = execSync('git diff --cached --no-color --no-ext-diff --unified=25', {
+    const stagedDiff = execSync(`git diff --cached --no-color --no-ext-diff --unified=25${wFlag}`, {
       cwd: repoPath,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -390,7 +391,7 @@ async function generateLocalDiff(repoPath) {
     }
 
     // Get unstaged changes to tracked files (this is what we show in the review)
-    const unstagedDiff = execSync('git diff --no-color --no-ext-diff --unified=25', {
+    const unstagedDiff = execSync(`git diff --no-color --no-ext-diff --unified=25${wFlag}`, {
       cwd: repoPath,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -427,7 +428,7 @@ async function generateLocalDiff(repoPath) {
         // git diff --no-index exits with code 1 when files differ, code 0 when identical
         let fileDiff;
         try {
-          fileDiff = execSync(`git diff --no-index --no-color --no-ext-diff -- /dev/null "${filePath}"`, {
+          fileDiff = execSync(`git diff --no-index --no-color --no-ext-diff${wFlag} -- /dev/null "${filePath}"`, {
             cwd: repoPath,
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],

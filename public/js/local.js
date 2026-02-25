@@ -463,6 +463,32 @@ class LocalManager {
       }
     };
 
+    // Override handleWhitespaceToggle for local mode.
+    // The base PRManager implementation calls loadAndDisplayFiles() which
+    // uses the PR diff endpoint. In local mode we need to call loadLocalDiff()
+    // instead, which uses the local diff endpoint.
+    manager.handleWhitespaceToggle = async function(hide) {
+      manager.hideWhitespace = hide;
+
+      // Nothing to reload if we haven't loaded a review yet
+      if (!manager.currentPR) return;
+
+      const scrollY = window.scrollY;
+
+      // Re-fetch and re-render the diff (loadLocalDiff reads hideWhitespace)
+      await self.loadLocalDiff();
+
+      // Re-anchor comments and suggestions on the fresh DOM
+      const includeDismissed = window.aiPanel?.showDismissedComments || false;
+      await manager.loadUserComments(includeDismissed);
+      await manager.loadAISuggestions(null, manager.selectedRunId);
+
+      // Restore scroll position after the DOM settles
+      requestAnimationFrame(() => {
+        window.scrollTo(0, scrollY);
+      });
+    };
+
     console.log('PRManager patched for local mode');
   }
 
@@ -1050,7 +1076,11 @@ class LocalManager {
     const manager = window.prManager;
 
     try {
-      const response = await fetch(`/api/local/${this.reviewId}/diff`);
+      let diffUrl = `/api/local/${this.reviewId}/diff`;
+      if (manager.hideWhitespace) {
+        diffUrl += '?w=1';
+      }
+      const response = await fetch(diffUrl);
 
       if (!response.ok) {
         throw new Error('Failed to load local diff');

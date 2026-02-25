@@ -318,6 +318,68 @@ describe('PR Management Endpoints', () => {
       expect(response.body.changed_files).toBeDefined();
       expect(response.body.stats).toBeDefined();
     });
+
+    it('should return cached prData stats without ?w=1', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/diff');
+
+      expect(response.status).toBe(200);
+      // Without ?w=1, stats should come from prData.additions / prData.deletions
+      // (insertTestPR sets additions: 10, deletions: 5)
+      expect(response.body.stats.additions).toBe(10);
+      expect(response.body.stats.deletions).toBe(5);
+    });
+
+    it('should compute stats from changedFiles when ?w=1 is set', async () => {
+      // Insert PR with different per-file stats vs aggregate stats to expose the bug.
+      // Real stored data uses 'insertions'/'deletions' field names from simple-git.
+      const prData = JSON.stringify({
+        state: 'open',
+        diff: 'diff content',
+        changed_files: [
+          { file: 'file1.js', insertions: 3, deletions: 1, changes: 4 },
+          { file: 'file2.js', insertions: 5, deletions: 2, changes: 7 }
+        ],
+        additions: 100,
+        deletions: 50,
+        html_url: 'https://github.com/owner/repo/pull/1',
+        base_sha: 'abc123',
+        head_sha: 'def456',
+        node_id: 'PR_node123'
+      });
+      await run(db, `
+        INSERT INTO pr_metadata (pr_number, repository, title, description, author, base_branch, head_branch, pr_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'owner/repo', 'Test PR', 'Desc', 'testuser', 'main', 'feature', prData]);
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/diff?w=1');
+
+      expect(response.status).toBe(200);
+      // With ?w=1, stats should be computed from changedFiles (3+5=8 insertions, 1+2=3 deletions)
+      // NOT from stale prData.additions (100) / prData.deletions (50)
+      expect(response.body.stats.additions).toBe(8);
+      expect(response.body.stats.deletions).toBe(3);
+      expect(response.body.stats.changed_files).toBe(2);
+    });
+
+    it('should not use changedFiles stats when ?w is not 1', async () => {
+      await insertTestPR(db, 1, 'owner/repo');
+      await insertTestWorktree(db, 1, 'owner/repo');
+
+      // ?w=0 should NOT trigger whitespace mode
+      const response = await request(app)
+        .get('/api/pr/owner/repo/1/diff?w=0');
+
+      expect(response.status).toBe(200);
+      // Should use cached prData.additions / prData.deletions
+      expect(response.body.stats.additions).toBe(10);
+      expect(response.body.stats.deletions).toBe(5);
+    });
   });
 
   describe('GET /api/prs', () => {
