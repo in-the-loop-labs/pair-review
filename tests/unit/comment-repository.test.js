@@ -206,6 +206,43 @@ describe('CommentRepository', () => {
 
       await expect(commentRepo.adoptSuggestion(aiSuggestionId.lastID, 'Test')).rejects.toThrow('already been processed');
     });
+
+    it('should reactivate existing inactive comment on re-adoption instead of creating duplicate', async () => {
+      // Create an AI suggestion
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, type, title)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'active', 'suggestion', 'AI Title']);
+
+      // First adoption
+      const firstCommentId = await commentRepo.adoptSuggestion(aiSuggestionId.lastID, 'First adoption text');
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'adopted', firstCommentId);
+
+      // Soft-delete the user comment (simulates dismissing the adopted comment)
+      await run(db, `
+        UPDATE comments SET status = 'inactive' WHERE id = ?
+      `, [firstCommentId]);
+
+      // Restore the suggestion to active (simulates restoring the suggestion)
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'active');
+
+      // Re-adopt with a new body
+      const secondCommentId = await commentRepo.adoptSuggestion(aiSuggestionId.lastID, 'Re-adopted text');
+
+      // Should return the SAME comment ID, not a new one
+      expect(secondCommentId).toBe(firstCommentId);
+
+      // Verify the comment now has status='active' and the new body
+      const comment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [secondCommentId]);
+      expect(comment.status).toBe('active');
+      expect(comment.body).toBe('Re-adopted text');
+
+      // Verify there is only ONE user comment with this parent_id
+      const allUserComments = await query(db, `
+        SELECT * FROM comments WHERE parent_id = ? AND source = 'user'
+      `, [aiSuggestionId.lastID]);
+      expect(allUserComments).toHaveLength(1);
+    });
   });
 
   describe('updateSuggestionStatus', () => {
