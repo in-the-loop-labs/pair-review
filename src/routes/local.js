@@ -465,19 +465,36 @@ router.get('/api/local/:reviewId/diff', async (req, res) => {
       });
     }
 
-    // Get diff from module-level storage, falling back to database
-    let diffData = getLocalReviewDiff(reviewId);
+    // When ?w=1, regenerate the diff with whitespace changes hidden (transient view, not cached)
+    const hideWhitespace = req.query.w === '1';
+    let diffData;
+
+    if (hideWhitespace && review.local_path) {
+      try {
+        const wsResult = await generateLocalDiff(review.local_path, { hideWhitespace: true });
+        diffData = { diff: wsResult.diff, stats: wsResult.stats };
+      } catch (wsError) {
+        logger.warn(`Could not generate whitespace-filtered diff for review #${reviewId}: ${wsError.message}`);
+        // Fall through to cached diff below
+        diffData = null;
+      }
+    }
 
     if (!diffData) {
-      // Try loading from database
-      const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
-      if (persistedDiff) {
-        diffData = persistedDiff;
-        // Cache-warm the in-memory Map
-        setLocalReviewDiff(reviewId, diffData);
-        logger.log('API', `Loaded persisted diff from DB for review #${reviewId}`, 'cyan');
-      } else {
-        diffData = { diff: '', stats: {} };
+      // Get diff from module-level storage, falling back to database
+      diffData = getLocalReviewDiff(reviewId);
+
+      if (!diffData) {
+        // Try loading from database
+        const persistedDiff = await reviewRepo.getLocalDiff(reviewId);
+        if (persistedDiff) {
+          diffData = persistedDiff;
+          // Cache-warm the in-memory Map
+          setLocalReviewDiff(reviewId, diffData);
+          logger.log('API', `Loaded persisted diff from DB for review #${reviewId}`, 'cyan');
+        } else {
+          diffData = { diff: '', stats: {} };
+        }
       }
     }
 

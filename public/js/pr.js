@@ -130,6 +130,12 @@ class PRManager {
     this.selectedRunId = null;
     // Keyboard shortcuts manager
     this.keyboardShortcuts = null;
+    // Hide whitespace toggle state — must be set before DiffOptionsDropdown
+    // is constructed because it fires the callback synchronously on init
+    // when localStorage has a persisted `true` value.
+    this.hideWhitespace = false;
+    // Diff options dropdown (gear icon popover)
+    this.diffOptionsDropdown = null;
     // Unique client ID for self-echo suppression on SSE review events.
     // Sent as X-Client-Id header on mutation requests; the server echoes
     // it back in the SSE broadcast so this tab can skip its own events.
@@ -173,6 +179,16 @@ class PRManager {
     this.initTheme();
     this.initAnalysisConfigModal();
     this.initKeyboardShortcuts();
+
+    // Initialize diff options dropdown (gear icon for whitespace toggle).
+    // Must happen before init() so the persisted hideWhitespace state is
+    // applied before the first loadAndDisplayFiles() call.
+    const diffOptionsBtn = document.getElementById('diff-options-btn');
+    if (diffOptionsBtn && window.DiffOptionsDropdown) {
+      this.diffOptionsDropdown = new window.DiffOptionsDropdown(diffOptionsBtn, {
+        onToggleWhitespace: (hide) => this.handleWhitespaceToggle(hide),
+      });
+    }
 
     // In local mode, LocalManager handles init instead
     if (!window.PAIR_REVIEW_LOCAL_MODE) {
@@ -576,7 +592,11 @@ class PRManager {
    */
   async loadAndDisplayFiles(owner, repo, number) {
     try {
-      const response = await fetch(`/api/pr/${owner}/${repo}/${number}/diff`);
+      let diffUrl = `/api/pr/${owner}/${repo}/${number}/diff`;
+      if (this.hideWhitespace) {
+        diffUrl += '?w=1';
+      }
+      const response = await fetch(diffUrl);
 
       if (response.ok) {
         const data = await response.json();
@@ -640,6 +660,35 @@ class PRManager {
         diffContainer.innerHTML = '<div class="no-diff">Error loading changes</div>';
       }
     }
+  }
+
+  /**
+   * Handle the whitespace visibility toggle from DiffOptionsDropdown.
+   * Re-fetches the diff (with or without ?w=1), re-renders it, and
+   * re-anchors user comments and AI suggestions on the fresh DOM.
+   * @param {boolean} hide - Whether to hide whitespace-only changes
+   */
+  async handleWhitespaceToggle(hide) {
+    this.hideWhitespace = hide;
+
+    // Nothing to reload if we haven't loaded a PR yet
+    if (!this.currentPR) return;
+
+    const { owner, repo, number } = this.currentPR;
+    const scrollY = window.scrollY;
+
+    // Re-fetch and re-render the diff
+    await this.loadAndDisplayFiles(owner, repo, number);
+
+    // Re-anchor comments and suggestions on the fresh DOM
+    const includeDismissed = window.aiPanel?.showDismissedComments || false;
+    await this.loadUserComments(includeDismissed);
+    await this.loadAISuggestions(null, this.selectedRunId);
+
+    // Restore scroll position after the DOM settles
+    requestAnimationFrame(() => {
+      window.scrollTo(0, scrollY);
+    });
   }
 
   /**
