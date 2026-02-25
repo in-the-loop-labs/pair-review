@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.2
+
+### Patch Changes
+
+- 692feb2: Reduce default GitHub review comment batch size from 25 to 10 and automatically halve batch size on GraphQL complexity/cost errors
+- 45d1a3e: Support Cmd/Ctrl+Enter keyboard shortcut to submit review in the Submit Review dialog
+- c0263ad: Fix suggestion restore after adopt-dismiss cycle: clear stale hiddenForAdoption flag when adopted comment is dismissed, allowing re-adoption of restored suggestions (new comment created while preserving old inactive comment)
+- 4891018: Add "Hide whitespace changes" option to diff toolbar
+- d320b27: Scope context file updateRange to review_id to prevent cross-review modifications
+- 335b999: Use `process.execPath` instead of `'node'` when spawning the child process, fixing native module ABI mismatch errors when installed via Nix or other package managers that bundle a specific Node.js version
+
 ## 2.0.1
 
 ### Patch Changes
