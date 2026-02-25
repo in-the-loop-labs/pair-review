@@ -1921,22 +1921,14 @@ class CommentRepository {
       throw new Error('This suggestion has already been processed');
     }
 
-    // Check for an existing inactive comment from a prior adoption cycle
-    // (adopt → dismiss comment → restore suggestion → adopt again)
-    const existingComment = await queryOne(this.db, `
-      SELECT id FROM comments
+    // Clean up any inactive comment from a prior adoption cycle
+    // (adopt → dismiss comment → restore suggestion → adopt again).
+    // Delete rather than reactivate so each adoption is a fresh event
+    // with its own created_at, and no stale state from prior edits.
+    await run(this.db, `
+      DELETE FROM comments
       WHERE parent_id = ? AND source = 'user' AND status = 'inactive'
     `, [suggestionId]);
-
-    if (existingComment) {
-      // Reactivate the existing comment with the (possibly edited) body
-      await run(this.db, `
-        UPDATE comments
-        SET status = 'active', body = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [editedBody.trim(), existingComment.id]);
-      return existingComment.id;
-    }
 
     // Create user comment preserving metadata from the suggestion
     const result = await run(this.db, `
