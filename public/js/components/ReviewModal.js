@@ -82,9 +82,10 @@ class ReviewModal {
                 placeholder="Leave a comment about this pull request..."
                 rows="2"
               ></textarea>
-              <label class="assisted-by-toggle" id="assisted-by-toggle">
+              <label class="remember-toggle assisted-by-toggle" id="assisted-by-toggle">
                 <input type="checkbox" id="assisted-by-checkbox" />
-                <span class="assisted-by-label">Review assisted by pair-review</span>
+                <span class="toggle-switch"></span>
+                <span class="toggle-label">Review assisted by pair-review</span>
               </label>
             </div>
             
@@ -629,15 +630,17 @@ class ReviewModal {
     }
 
     const footer = this.getAssistedByFooter();
-    const hasFooter = textarea.value.endsWith(footer);
+    const hasFooter = textarea.value.includes(footer);
 
     if (hasFooter) {
       // Insert before footer
-      const beforeFooter = textarea.value.slice(0, -footer.length).trim();
+      const footerIdx = textarea.value.indexOf(footer);
+      const beforeFooter = textarea.value.slice(0, footerIdx).trim();
+      const afterFooter = textarea.value.slice(footerIdx + footer.length);
       if (beforeFooter) {
-        textarea.value = beforeFooter + '\n\n' + summary + footer;
+        textarea.value = beforeFooter + '\n\n' + summary + footer + afterFooter;
       } else {
-        textarea.value = summary + footer;
+        textarea.value = summary + footer + afterFooter;
       }
     } else {
       // Original behavior
@@ -670,7 +673,7 @@ class ReviewModal {
     if (!checkbox) return;
 
     const stored = localStorage.getItem(ASSISTED_BY_STORAGE_KEY);
-    const isChecked = stored === 'true';
+    const isChecked = stored !== 'false';
     checkbox.checked = isChecked;
 
     if (isChecked) {
@@ -686,7 +689,7 @@ class ReviewModal {
     if (!textarea) return;
 
     const footer = this.getAssistedByFooter();
-    if (!textarea.value.endsWith(footer)) {
+    if (!textarea.value.includes(footer)) {
       textarea.value = textarea.value + footer;
     }
   }
@@ -699,8 +702,9 @@ class ReviewModal {
     if (!textarea) return;
 
     const footer = this.getAssistedByFooter();
-    if (textarea.value.endsWith(footer)) {
-      textarea.value = textarea.value.slice(0, -footer.length);
+    const idx = textarea.value.indexOf(footer);
+    if (idx !== -1) {
+      textarea.value = textarea.value.slice(0, idx) + textarea.value.slice(idx + footer.length);
     }
   }
 

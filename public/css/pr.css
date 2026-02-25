@@ -4846,37 +4846,14 @@ tr.line-range-start .d2h-code-line-ctn {
   opacity: 0.7;
 }
 
-/* Assisted-by footer toggle */
+/* Assisted-by footer toggle (extends .remember-toggle) */
 .assisted-by-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
   margin-top: 8px;
-  font-size: 12px;
-  color: #656d76;
-  cursor: pointer;
-  user-select: none;
-}
-
-.assisted-by-toggle:hover {
-  color: #24292f;
 }
 
 .assisted-by-toggle.disabled {
   opacity: 0.5;
   pointer-events: none;
-}
-
-.assisted-by-toggle input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  accent-color: #d97706;
-  cursor: pointer;
-}
-
-.assisted-by-label {
-  line-height: 1;
 }
 
 .review-type-options {
@@ -4987,14 +4964,6 @@ tr.line-range-start .d2h-code-line-ctn {
   color: #7d8590;
   cursor: not-allowed;
   opacity: 0.7;
-}
-
-[data-theme="dark"] .assisted-by-toggle {
-  color: #848d97;
-}
-
-[data-theme="dark"] .assisted-by-toggle:hover {
-  color: #e6edf3;
 }
 
 [data-theme="dark"] .review-type-label {

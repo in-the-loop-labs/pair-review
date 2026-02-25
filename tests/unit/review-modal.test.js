@@ -368,13 +368,13 @@ describe('ReviewModal', () => {
       expect(textarea.value).toBe('');
     });
 
-    it('should default to unchecked when no localStorage key', () => {
+    it('should default to checked when no localStorage key', () => {
       const { modal, assistedByCheckbox, textarea } = createTestReviewModal();
 
       modal.restoreAssistedByToggle();
 
-      expect(assistedByCheckbox.checked).toBe(false);
-      expect(textarea.value).toBe('');
+      expect(assistedByCheckbox.checked).toBe(true);
+      expect(textarea.value).toContain('Review assisted by [pair-review]');
     });
 
     it('should save true and append footer when toggled ON', () => {
@@ -410,6 +410,16 @@ describe('ReviewModal', () => {
       modal.appendAssistedByFooter();
 
       expect(textarea.value).toBe(firstValue);
+    });
+
+    it('should remove footer from middle of text', () => {
+      const { modal, textarea } = createTestReviewModal();
+      const footer = modal.getAssistedByFooter();
+      textarea.value = 'Before' + footer + 'After';
+
+      modal.removeAssistedByFooter();
+
+      expect(textarea.value).toBe('BeforeAfter');
     });
 
     it('should be a no-op when removeAssistedByFooter called without footer', () => {
