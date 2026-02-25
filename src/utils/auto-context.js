@@ -67,7 +67,7 @@ async function ensureContextFileForComment(db, review, { file, line_start, line_
           newEnd = newStart + MAX_RANGE - 1;
         }
 
-        await contextFileRepo.updateRange(overlapping.id, newStart, newEnd);
+        await contextFileRepo.updateRange(overlapping.id, review.id, newStart, newEnd);
         return { created: false, expanded: true, contextFileId: overlapping.id };
       }
 
