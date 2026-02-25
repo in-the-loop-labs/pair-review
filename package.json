@@ -8,6 +8,7 @@
     "git-diff-lines": "bin/git-diff-lines"
   },
   "files": [
+    ".pi/",
     "bin/",
     "src/",
     "public/",
