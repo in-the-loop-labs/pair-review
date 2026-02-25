@@ -712,12 +712,22 @@ router.get('/api/pr/:owner/:repo/:number/diff', async (req, res) => {
       }
     }
 
+    // When hideWhitespace is active and diff was regenerated, compute
+    // aggregate stats from the regenerated changedFiles instead of using
+    // stale cached values from prData.
+    const additions = hideWhitespace
+      ? changedFiles.reduce((sum, f) => sum + (f.insertions || 0), 0)
+      : (prData.additions || 0);
+    const deletions = hideWhitespace
+      ? changedFiles.reduce((sum, f) => sum + (f.deletions || 0), 0)
+      : (prData.deletions || 0);
+
     res.json({
       diff: diffContent,
       changed_files: changedFiles,
       stats: {
-        additions: prData.additions || 0,
-        deletions: prData.deletions || 0,
+        additions,
+        deletions,
         changed_files: changedFiles.length
       }
     });
