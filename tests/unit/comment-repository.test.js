@@ -206,6 +206,39 @@ describe('CommentRepository', () => {
 
       await expect(commentRepo.adoptSuggestion(aiSuggestionId.lastID, 'Test')).rejects.toThrow('already been processed');
     });
+
+    it('should allow re-adoption without destroying the old inactive comment', async () => {
+      // Create an AI suggestion
+      const aiSuggestionId = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, status, type, title)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [1, 'ai', 'test.js', 10, 'AI suggestion', 'active', 'suggestion', 'AI Title']);
+
+      // First adoption
+      const firstCommentId = await commentRepo.adoptSuggestion(aiSuggestionId.lastID, 'First adoption text');
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'adopted', firstCommentId);
+
+      // Soft-delete the user comment (simulates dismissing the adopted comment)
+      await run(db, `
+        UPDATE comments SET status = 'inactive' WHERE id = ?
+      `, [firstCommentId]);
+
+      // Restore the suggestion to active (simulates restoring the suggestion)
+      await commentRepo.updateSuggestionStatus(aiSuggestionId.lastID, 'active');
+
+      // Re-adopt with a new body
+      const secondCommentId = await commentRepo.adoptSuggestion(aiSuggestionId.lastID, 'Re-adopted text');
+
+      // New comment has fresh state
+      const newComment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [secondCommentId]);
+      expect(newComment.status).toBe('active');
+      expect(newComment.body).toBe('Re-adopted text');
+
+      // Old inactive comment is preserved (user can still restore it)
+      const oldComment = await queryOne(db, 'SELECT * FROM comments WHERE id = ?', [firstCommentId]);
+      expect(oldComment.status).toBe('inactive');
+      expect(oldComment.body).toBe('First adoption text');
+    });
   });
 
   describe('updateSuggestionStatus', () => {

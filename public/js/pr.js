@@ -2214,8 +2214,17 @@ class PRManager {
       // If a parent suggestion existed, the suggestion card is still collapsed/dismissed in the diff view.
       // Update AIPanel to show the suggestion as 'dismissed' (matching its visual state).
       // User can click "Show" to restore it to active state if they want to re-adopt.
-      if (apiResult.dismissedSuggestionId && window.aiPanel?.updateFindingStatus) {
-        window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
+      if (apiResult.dismissedSuggestionId) {
+        if (window.aiPanel?.updateFindingStatus) {
+          window.aiPanel.updateFindingStatus(apiResult.dismissedSuggestionId, 'dismissed');
+        }
+        // Clear hiddenForAdoption so that restoring the suggestion takes the API code path
+        // instead of the toggle-only shortcut. Without this, restoring a previously-adopted
+        // suggestion would only toggle visibility without updating its status.
+        const suggestionDiv = document.querySelector(`[data-suggestion-id="${apiResult.dismissedSuggestionId}"]`);
+        if (suggestionDiv) {
+          delete suggestionDiv.dataset.hiddenForAdoption;
+        }
       }
 
       // Show success toast
