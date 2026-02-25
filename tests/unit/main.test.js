@@ -247,7 +247,7 @@ describe('CLI help and version', () => {
   // They test that the binary responds correctly to -h and -v flags
 
   it('should show help text when --help is passed', () => {
-    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --help`, { encoding: 'utf-8' });
 
     expect(output).toContain('pair-review');
     expect(output).toContain('USAGE:');
@@ -264,26 +264,26 @@ describe('CLI help and version', () => {
   });
 
   it('should show help text when -h is passed', () => {
-    const output = execSync('node bin/pair-review.js -h', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js -h`, { encoding: 'utf-8' });
 
     expect(output).toContain('USAGE:');
     expect(output).toContain('OPTIONS:');
   });
 
   it('should show version when --version is passed', () => {
-    const output = execSync('node bin/pair-review.js --version', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --version`, { encoding: 'utf-8' });
 
     expect(output).toMatch(/pair-review v\d+\.\d+\.\d+/);
   });
 
   it('should show version when -v is passed', () => {
-    const output = execSync('node bin/pair-review.js -v', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js -v`, { encoding: 'utf-8' });
 
     expect(output).toMatch(/pair-review v\d+\.\d+\.\d+/);
   });
 
   it('help output should contain environment variables section', () => {
-    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --help`, { encoding: 'utf-8' });
 
     expect(output).toContain('ENVIRONMENT VARIABLES:');
     expect(output).toContain('GITHUB_TOKEN');
@@ -294,7 +294,7 @@ describe('CLI help and version', () => {
   });
 
   it('help output should contain configuration section', () => {
-    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --help`, { encoding: 'utf-8' });
 
     expect(output).toContain('CONFIGURATION:');
     expect(output).toContain('~/.pair-review/config.json');
@@ -302,47 +302,47 @@ describe('CLI help and version', () => {
   });
 
   it('help output should mention -l short flag for local', () => {
-    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --help`, { encoding: 'utf-8' });
 
     expect(output).toContain('-l, --local');
   });
 
   it('help output should mention -d short flag for debug', () => {
-    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --help`, { encoding: 'utf-8' });
 
     expect(output).toContain('-d, --debug');
   });
 
   it('help output should mention --debug-stream flag', () => {
-    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --help`, { encoding: 'utf-8' });
 
     expect(output).toContain('--debug-stream');
     expect(output).toContain('streaming events');
   });
 
   it('help output should mention Claude Code as default provider', () => {
-    const output = execSync('node bin/pair-review.js --help', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --help`, { encoding: 'utf-8' });
 
     expect(output).toContain('Claude Code is the default provider');
   });
 
   it('--help should exit with code 0', () => {
-    const result = spawnSync('node', ['bin/pair-review.js', '--help']);
+    const result = spawnSync(process.execPath, ['bin/pair-review.js', '--help']);
     expect(result.status).toBe(0);
   });
 
   it('-h should exit with code 0', () => {
-    const result = spawnSync('node', ['bin/pair-review.js', '-h']);
+    const result = spawnSync(process.execPath, ['bin/pair-review.js', '-h']);
     expect(result.status).toBe(0);
   });
 
   it('--version should exit with code 0', () => {
-    const result = spawnSync('node', ['bin/pair-review.js', '--version']);
+    const result = spawnSync(process.execPath, ['bin/pair-review.js', '--version']);
     expect(result.status).toBe(0);
   });
 
   it('-v should exit with code 0', () => {
-    const result = spawnSync('node', ['bin/pair-review.js', '-v']);
+    const result = spawnSync(process.execPath, ['bin/pair-review.js', '-v']);
     expect(result.status).toBe(0);
   });
 });
@@ -380,7 +380,7 @@ describe('CLI child process spawning', () => {
 
 describe('CLI --configure', () => {
   it('should show comprehensive configuration help', () => {
-    const output = execSync('node bin/pair-review.js --configure', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --configure`, { encoding: 'utf-8' });
 
     expect(output).toContain('pair-review Configuration');
     expect(output).toContain('CONFIG FILE:');
@@ -396,14 +396,14 @@ describe('CLI --configure', () => {
   });
 
   it('should mention GITHUB_TOKEN takes precedence over config file', () => {
-    const output = execSync('node bin/pair-review.js --configure', { encoding: 'utf-8' });
+    const output = execSync(`${process.execPath} bin/pair-review.js --configure`, { encoding: 'utf-8' });
 
     expect(output).toContain('GITHUB_TOKEN environment variable');
     expect(output).toContain('takes precedence');
   });
 
   it('--configure should exit with code 0', () => {
-    const result = spawnSync('node', ['bin/pair-review.js', '--configure']);
+    const result = spawnSync(process.execPath, ['bin/pair-review.js', '--configure']);
     expect(result.status).toBe(0);
   });
 });
