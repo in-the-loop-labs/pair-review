@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.3
+
+### Patch Changes
+
+- c81efaf: Include .pi/ directory in npm package so Pi provider skills and extensions are available after install
+
 ## 2.0.2
 
 ### Patch Changes
