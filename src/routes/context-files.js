@@ -209,7 +209,7 @@ router.patch('/api/reviews/:reviewId/context-files/:id', validateReviewId, async
     const db = req.app.get('db');
     const contextFileRepo = new ContextFileRepository(db);
 
-    const updated = await contextFileRepo.updateRange(id, lineStart, lineEnd);
+    const updated = await contextFileRepo.updateRange(id, req.reviewId, lineStart, lineEnd);
 
     if (!updated) {
       return res.status(404).json({ error: 'Context file not found' });
