@@ -65,7 +65,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
 
     configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
     configModule.getMonorepoPath.mockReturnValue(null);
-    configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: null, worktreeConfig: null });
+    configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: null, checkoutTimeout: 300000, worktreeConfig: null });
 
     // Default: findMainGitRoot rejects
     localReview.findMainGitRoot.mockRejectedValue(new Error('Not a git repo'));
@@ -294,7 +294,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
     makePathsExist([`${TEST_REPO_ROOT}/.git`]);
 
     // checkout_script is configured
-    configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: './scripts/pr-checkout.sh', worktreeConfig: null });
+    configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: './scripts/pr-checkout.sh', checkoutTimeout: 300000, worktreeConfig: null });
 
     const result = await findRepositoryPath({
       db,
@@ -343,7 +343,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
     makePathsExist([`${TEST_REPO_ROOT}/.git`]);
 
     // But checkout_script is also configured
-    configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: './checkout.sh', worktreeConfig: null });
+    configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: './checkout.sh', checkoutTimeout: 300000, worktreeConfig: null });
 
     const result = await findRepositoryPath({
       db,
@@ -369,6 +369,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
     // Configure checkout_script alongside worktree options
     configModule.resolveMonorepoOptions.mockReturnValue({
       checkoutScript: './scripts/pr-checkout.sh',
+      checkoutTimeout: 300000,
       worktreeConfig: {
         worktreeBaseDir: '/custom/worktrees',
         nameTemplate: '{owner}-{repo}-pr-{pr_number}'
@@ -399,6 +400,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
 
     configModule.resolveMonorepoOptions.mockReturnValue({
       checkoutScript: null,
+      checkoutTimeout: 300000,
       worktreeConfig: { worktreeBaseDir: '/custom/worktrees' }
     });
 
@@ -423,6 +425,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
 
     configModule.resolveMonorepoOptions.mockReturnValue({
       checkoutScript: null,
+      checkoutTimeout: 300000,
       worktreeConfig: { nameTemplate: '{owner}-{repo}-pr-{pr_number}' }
     });
 

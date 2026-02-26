@@ -16,7 +16,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getMonorepoPath, resolveMonorepoOptions } = require('../config');
+const { getConfigDir, getMonorepoPath, resolveMonorepoOptions, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
 const logger = require('../utils/logger');
 const simpleGit = require('simple-git');
 const fs = require('fs').promises;
@@ -273,7 +273,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   // ------------------------------------------------------------------
   // Resolve monorepo worktree options (checkout_script, worktree_directory, worktree_name_template)
   // ------------------------------------------------------------------
-  const resolved = config ? resolveMonorepoOptions(config, repository) : { checkoutScript: null, checkoutTimeout: 300000, worktreeConfig: null };
+  const resolved = config ? resolveMonorepoOptions(config, repository) : { checkoutScript: null, checkoutTimeout: DEFAULT_CHECKOUT_TIMEOUT_MS, worktreeConfig: null };
   const { checkoutScript, checkoutTimeout, worktreeConfig } = resolved;
 
   // When a checkout script is configured, null out worktreeSourcePath —

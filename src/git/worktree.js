@@ -3,7 +3,7 @@ const simpleGit = require('simple-git');
 const path = require('path');
 const fs = require('fs').promises;
 const os = require('os');
-const { getConfigDir } = require('../config');
+const { getConfigDir, DEFAULT_CHECKOUT_TIMEOUT_MS } = require('../config');
 const { WorktreeRepository, generateWorktreeId } = require('../database');
 const { getGeneratedFilePatterns } = require('./gitattributes');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
@@ -168,10 +168,10 @@ class GitWorktreeManager {
    * @param {string} script - Script path or command to execute
    * @param {string} worktreePath - Path to the worktree (used as cwd)
    * @param {Object} env - Environment variables to pass (BASE_BRANCH, HEAD_BRANCH, etc.)
-   * @param {number} [timeout=60000] - Timeout in milliseconds
+   * @param {number} [timeout=DEFAULT_CHECKOUT_TIMEOUT_MS] - Timeout in milliseconds (default: 5 minutes)
    * @returns {Promise<{stdout: string, stderr: string}>} Script output
    */
-  async executeCheckoutScript(script, worktreePath, env, timeout = 300000) {
+  async executeCheckoutScript(script, worktreePath, env, timeout = DEFAULT_CHECKOUT_TIMEOUT_MS) {
     return new Promise((resolve, reject) => {
       const child = spawn(script, [], {
         cwd: worktreePath,
@@ -398,22 +398,22 @@ class GitWorktreeManager {
       console.log(`Fetching PR #${prInfo.number} head...`);
       await worktreeGit.fetch([remote, `+refs/pull/${prInfo.number}/head:refs/remotes/${remote}/pr-${prInfo.number}`]);
 
-      // Also fetch the actual head branch by name (for tooling that expects branch refs)
-      // This may fail for fork PRs where the branch is in a different repo - that's okay
-      if (prData.head_branch) {
-        try {
-          console.log(`Fetching head branch ${prData.head_branch}...`);
-          await worktreeGit.fetch([remote, `+refs/heads/${prData.head_branch}:refs/remotes/${remote}/${prData.head_branch}`]);
-          // Create a local branch pointing to the fetched ref so tooling can reference it by name
-          await worktreeGit.branch([prData.head_branch, `${remote}/${prData.head_branch}`]);
-        } catch (branchFetchError) {
-          // Expected for fork PRs - the branch exists in the fork, not the base repo
-          console.log(`Could not fetch head branch (may be from a fork): ${branchFetchError.message}`);
-        }
-      }
-
       // Execute checkout script if configured (before checkout so sparse-checkout is set up)
       if (checkoutScript) {
+        // Fetch the actual head branch by name (for checkout scripts that expect branch refs)
+        // This may fail for fork PRs where the branch is in a different repo - that's okay
+        if (prData.head_branch) {
+          try {
+            console.log(`Fetching head branch ${prData.head_branch}...`);
+            await worktreeGit.fetch([remote, `+refs/heads/${prData.head_branch}:refs/remotes/${remote}/${prData.head_branch}`]);
+            // Create/update a local branch pointing to the fetched ref so tooling can reference it by name
+            await worktreeGit.branch(['-f', prData.head_branch, `${remote}/${prData.head_branch}`]);
+          } catch (branchFetchError) {
+            // Expected for fork PRs - the branch exists in the fork, not the base repo
+            console.log(`Could not fetch head branch (may be from a fork): ${branchFetchError.message}`);
+          }
+        }
+
         console.log(`Executing checkout script: ${checkoutScript}`);
         const scriptEnv = {
           BASE_BRANCH: prData.base_branch,

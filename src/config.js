@@ -5,6 +5,7 @@ const os = require('os');
 const logger = require('./utils/logger');
 
 const CONFIG_DIR = path.join(os.homedir(), '.pair-review');
+const DEFAULT_CHECKOUT_TIMEOUT_MS = 300000;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const CONFIG_EXAMPLE_FILE = path.join(CONFIG_DIR, 'config.example.json');
 const PACKAGE_ROOT = path.join(__dirname, '..');
@@ -363,7 +364,7 @@ function getMonorepoCheckoutTimeout(config, repository) {
   if (monorepoConfig?.checkout_timeout_seconds) {
     return monorepoConfig.checkout_timeout_seconds * 1000;
   }
-  return 300000; // 5 minutes default
+  return DEFAULT_CHECKOUT_TIMEOUT_MS; // 5 minutes default
 }
 
 /**
@@ -439,5 +440,6 @@ module.exports = {
   getMonorepoCheckoutTimeout,
   resolveMonorepoOptions,
   resolveDbName,
-  warnIfDevModeWithoutDbName
+  warnIfDevModeWithoutDbName,
+  DEFAULT_CHECKOUT_TIMEOUT_MS
 };
