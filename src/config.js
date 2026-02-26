@@ -353,6 +353,30 @@ function getMonorepoWorktreeNameTemplate(config, repository) {
 }
 
 /**
+ * Resolves all monorepo worktree options for a repository into a single object.
+ * Composite helper that combines the individual getters into the shape expected
+ * by GitWorktreeManager and createWorktreeForPR.
+ *
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {{ checkoutScript: string|null, worktreeConfig: Object|null }}
+ */
+function resolveMonorepoOptions(config, repository) {
+  const checkoutScript = getMonorepoCheckoutScript(config, repository);
+  const worktreeDirectory = getMonorepoWorktreeDirectory(config, repository);
+  const nameTemplate = getMonorepoWorktreeNameTemplate(config, repository);
+
+  let worktreeConfig = null;
+  if (worktreeDirectory || nameTemplate) {
+    worktreeConfig = {};
+    if (worktreeDirectory) worktreeConfig.worktreeBaseDir = worktreeDirectory;
+    if (nameTemplate) worktreeConfig.nameTemplate = nameTemplate;
+  }
+
+  return { checkoutScript, worktreeConfig };
+}
+
+/**
  * Resolves the database filename to use.
  * Priority:
  *   1. PAIR_REVIEW_DB_NAME environment variable (highest priority)
@@ -397,6 +421,7 @@ module.exports = {
   getMonorepoCheckoutScript,
   getMonorepoWorktreeDirectory,
   getMonorepoWorktreeNameTemplate,
+  resolveMonorepoOptions,
   resolveDbName,
   warnIfDevModeWithoutDbName
 };

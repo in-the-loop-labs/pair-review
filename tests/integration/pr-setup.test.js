@@ -39,6 +39,7 @@ vi.spyOn(configModule, 'getMonorepoPath');
 vi.spyOn(configModule, 'getMonorepoCheckoutScript');
 vi.spyOn(configModule, 'getMonorepoWorktreeDirectory');
 vi.spyOn(configModule, 'getMonorepoWorktreeNameTemplate');
+vi.spyOn(configModule, 'resolveMonorepoOptions');
 vi.spyOn(localReview, 'findMainGitRoot');
 vi.spyOn(GitWorktreeManager.prototype, 'pathExists');
 
@@ -70,6 +71,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
     configModule.getMonorepoCheckoutScript.mockReturnValue(null);
     configModule.getMonorepoWorktreeDirectory.mockReturnValue(null);
     configModule.getMonorepoWorktreeNameTemplate.mockReturnValue(null);
+    configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: null, worktreeConfig: null });
 
     // Default: findMainGitRoot rejects
     localReview.findMainGitRoot.mockRejectedValue(new Error('Not a git repo'));
@@ -298,7 +300,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
     makePathsExist([`${TEST_REPO_ROOT}/.git`]);
 
     // checkout_script is configured
-    configModule.getMonorepoCheckoutScript.mockReturnValue('./scripts/pr-checkout.sh');
+    configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: './scripts/pr-checkout.sh', worktreeConfig: null });
 
     const result = await findRepositoryPath({
       db,
@@ -322,8 +324,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
     localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
     makePathsExist([`${TEST_REPO_ROOT}/.git`]);
 
-    // No checkout_script configured
-    configModule.getMonorepoCheckoutScript.mockReturnValue(null);
+    // No checkout_script configured (default resolveMonorepoOptions mock returns nulls)
 
     const result = await findRepositoryPath({
       db,
@@ -348,7 +349,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
     makePathsExist([`${TEST_REPO_ROOT}/.git`]);
 
     // But checkout_script is also configured
-    configModule.getMonorepoCheckoutScript.mockReturnValue('./checkout.sh');
+    configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: './checkout.sh', worktreeConfig: null });
 
     const result = await findRepositoryPath({
       db,
@@ -372,9 +373,13 @@ describe('findRepositoryPath with monorepo configuration', () => {
     makePathsExist([`${TEST_REPO_ROOT}/.git`]);
 
     // Configure checkout_script alongside worktree options
-    configModule.getMonorepoCheckoutScript.mockReturnValue('./scripts/pr-checkout.sh');
-    configModule.getMonorepoWorktreeDirectory.mockReturnValue('/custom/worktrees');
-    configModule.getMonorepoWorktreeNameTemplate.mockReturnValue('{owner}-{repo}-pr-{pr_number}');
+    configModule.resolveMonorepoOptions.mockReturnValue({
+      checkoutScript: './scripts/pr-checkout.sh',
+      worktreeConfig: {
+        worktreeBaseDir: '/custom/worktrees',
+        nameTemplate: '{owner}-{repo}-pr-{pr_number}'
+      }
+    });
 
     const result = await findRepositoryPath({
       db,
@@ -398,8 +403,10 @@ describe('findRepositoryPath with monorepo configuration', () => {
     localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
     makePathsExist([`${TEST_REPO_ROOT}/.git`]);
 
-    configModule.getMonorepoWorktreeDirectory.mockReturnValue('/custom/worktrees');
-    // nameTemplate left as default (null)
+    configModule.resolveMonorepoOptions.mockReturnValue({
+      checkoutScript: null,
+      worktreeConfig: { worktreeBaseDir: '/custom/worktrees' }
+    });
 
     const result = await findRepositoryPath({
       db,
@@ -420,8 +427,10 @@ describe('findRepositoryPath with monorepo configuration', () => {
     localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
     makePathsExist([`${TEST_REPO_ROOT}/.git`]);
 
-    configModule.getMonorepoWorktreeNameTemplate.mockReturnValue('{owner}-{repo}-pr-{pr_number}');
-    // worktreeDirectory left as default (null)
+    configModule.resolveMonorepoOptions.mockReturnValue({
+      checkoutScript: null,
+      worktreeConfig: { nameTemplate: '{owner}-{repo}-pr-{pr_number}' }
+    });
 
     const result = await findRepositoryPath({
       db,

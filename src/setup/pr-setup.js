@@ -16,7 +16,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate } = require('../config');
+const { getConfigDir, getMonorepoPath, resolveMonorepoOptions } = require('../config');
 const logger = require('../utils/logger');
 const simpleGit = require('simple-git');
 const fs = require('fs').promises;
@@ -270,9 +270,10 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   }
 
   // ------------------------------------------------------------------
-  // Resolve checkout_script for monorepo (if configured)
+  // Resolve monorepo worktree options (checkout_script, worktree_directory, worktree_name_template)
   // ------------------------------------------------------------------
-  const checkoutScript = config ? getMonorepoCheckoutScript(config, repository) : null;
+  const resolved = config ? resolveMonorepoOptions(config, repository) : { checkoutScript: null, worktreeConfig: null };
+  const { checkoutScript, worktreeConfig } = resolved;
 
   // When a checkout script is configured, null out worktreeSourcePath —
   // the script handles all sparse-checkout setup, so we don't want to
@@ -346,23 +347,6 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
         onProgress({ step: 'repo', status: 'running', message: `Repository cloned to ${cachedRepoPath}` });
       }
       logger.info(`Cloned repository to ${repositoryPath}`);
-    }
-  }
-
-  // ------------------------------------------------------------------
-  // Resolve worktree config (worktree_directory and worktree_name_template)
-  // ------------------------------------------------------------------
-  let worktreeConfig = null;
-  const worktreeDirectory = config ? getMonorepoWorktreeDirectory(config, repository) : null;
-  const worktreeNameTemplate = config ? getMonorepoWorktreeNameTemplate(config, repository) : null;
-
-  if (worktreeDirectory || worktreeNameTemplate) {
-    worktreeConfig = {};
-    if (worktreeDirectory) {
-      worktreeConfig.worktreeBaseDir = worktreeDirectory;
-    }
-    if (worktreeNameTemplate) {
-      worktreeConfig.nameTemplate = worktreeNameTemplate;
     }
   }
 
