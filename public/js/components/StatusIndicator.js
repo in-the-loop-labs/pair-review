@@ -40,9 +40,7 @@ class StatusIndicator {
         <span class="status-dots">...</span>
       </div>
       <button class="status-close" onclick="statusIndicator.hide()" title="Dismiss">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
-        </svg>
+        ${window.Icons.icon('close', 12, 12)}
       </button>
     `;
 
@@ -177,11 +175,7 @@ class StatusIndicator {
   showCheckmark() {
     const statusIcon = this.indicator?.querySelector('.status-icon');
     if (statusIcon) {
-      statusIcon.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="checkmark">
-          <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>
-        </svg>
-      `;
+      statusIcon.innerHTML = window.Icons.icon('check', { width: 14, height: 14, className: 'checkmark' });
       statusIcon.className = 'status-icon success';
     }
   }
@@ -192,11 +186,7 @@ class StatusIndicator {
   showErrorIcon() {
     const statusIcon = this.indicator?.querySelector('.status-icon');
     if (statusIcon) {
-      statusIcon.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" class="error-icon">
-          <path d="M2.343 13.657A8 8 0 1113.657 2.343 8 8 0 012.343 13.657zM6.03 4.97a.75.75 0 00-1.06 1.06L6.94 8 4.97 9.97a.75.75 0 101.06 1.06L8 9.06l1.97 1.97a.75.75 0 101.06-1.06L9.06 8l1.97-1.97a.75.75 0 10-1.06-1.06L8 6.94 6.03 4.97z"/>
-        </svg>
-      `;
+      statusIcon.innerHTML = window.Icons.icon('errorCircle', { width: 14, height: 14, className: 'error-icon' });
       statusIcon.className = 'status-icon error';
     }
   }

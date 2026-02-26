@@ -267,7 +267,7 @@ class AnalysisHistoryManager {
           </div>
           <div class="analysis-history-item-meta">
             <span>${timeAgo}</span>
-            ${run.status === 'completed' && run.total_suggestions > 0 ? `<span class="analysis-history-chat-btn" data-run-id="${run.id}" title="Chat about this run" role="button" tabindex="-1"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg></span>` : ''}
+            ${run.status === 'completed' && run.total_suggestions > 0 ? `<span class="analysis-history-chat-btn" data-run-id="${run.id}" title="Chat about this run" role="button" tabindex="-1">${window.Icons.icon('discussion')}</span>` : ''}
           </div>
         </button>
       `;
@@ -403,9 +403,7 @@ class AnalysisHistoryManager {
     if (!run) {
       this.previewPanel.innerHTML = `
         <div class="analysis-preview-empty">
-          <svg class="analysis-preview-empty-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
-          </svg>
+          ${window.Icons.icon('sparkle', { width: 24, height: 24, className: 'analysis-preview-empty-icon' })}
           <span>Select a run to view details</span>
         </div>
       `;
@@ -514,9 +512,7 @@ class AnalysisHistoryManager {
         <div class="analysis-preview-summary collapsed">
           <div class="analysis-preview-summary-header">
             <button class="analysis-preview-summary-toggle" data-action="toggle-summary" aria-expanded="false" aria-controls="${summaryContentId}">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"></path>
-              </svg>
+              ${window.Icons.icon('chevronRight', 12, 12)}
               Result Summary
             </button>
           </div>
@@ -539,16 +535,11 @@ class AnalysisHistoryManager {
         <div class="analysis-preview-custom-instructions">
           <div class="analysis-preview-custom-header">
             <button class="analysis-preview-custom-toggle" data-action="toggle-custom-instructions">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"></path>
-              </svg>
+              ${window.Icons.icon('chevronRight', 12, 12)}
               Custom Instructions
             </button>
             <button class="analysis-info-copy-btn" data-action="copy-instructions" data-content="${btoa(String.fromCharCode(...new TextEncoder().encode(run.request_instructions)))}" title="Copy to clipboard">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
-                <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
-              </svg>
+              ${window.Icons.icon('copy', 12, 12)}
               <span class="copy-btn-text">Copy</span>
             </button>
           </div>
@@ -563,16 +554,11 @@ class AnalysisHistoryManager {
         <div class="analysis-preview-custom-instructions">
           <div class="analysis-preview-custom-header">
             <button class="analysis-preview-custom-toggle" data-action="toggle-custom-instructions">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"></path>
-              </svg>
+              ${window.Icons.icon('chevronRight', 12, 12)}
               Custom Instructions
             </button>
             <button class="analysis-info-copy-btn" data-action="copy-instructions" data-content="${btoa(String.fromCharCode(...new TextEncoder().encode(run.custom_instructions)))}" title="Copy to clipboard">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
-                <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
-              </svg>
+              ${window.Icons.icon('copy', 12, 12)}
               <span class="copy-btn-text">Copy</span>
             </button>
           </div>
@@ -589,16 +575,11 @@ class AnalysisHistoryManager {
         <div class="analysis-preview-repo-instructions collapsed">
           <div class="analysis-preview-repo-header">
             <button class="analysis-preview-repo-toggle" data-action="toggle-repo-instructions">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M6.22 3.22a.75.75 0 011.06 0l4.25 4.25a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 010-1.06z"></path>
-              </svg>
+              ${window.Icons.icon('chevronRight', 12, 12)}
               Repository Instructions
             </button>
             <button class="analysis-info-copy-btn" data-action="copy-instructions" data-content="${btoa(String.fromCharCode(...new TextEncoder().encode(run.repo_instructions)))}" title="Copy to clipboard">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
-                <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
-              </svg>
+              ${window.Icons.icon('copy', 12, 12)}
               <span class="copy-btn-text">Copy</span>
             </button>
           </div>

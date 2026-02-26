@@ -6,28 +6,6 @@
  */
 
 class AIPanel {
-    // Icon SVG constants for reuse
-    static ICONS = {
-        adopt: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"></path>
-        </svg>`,
-        dismiss: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"></path>
-        </svg>`,
-        restore: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path d="M1.705 8.005a.75.75 0 01.834.656 5.5 5.5 0 009.592 2.97l-1.204-1.204a.25.25 0 01.177-.427h3.646a.25.25 0 01.25.25v3.646a.25.25 0 01-.427.177l-1.38-1.38A7.002 7.002 0 011.05 8.84a.75.75 0 01.656-.834zM8 2.5a5.487 5.487 0 00-4.131 1.869l1.204 1.204A.25.25 0 014.896 6H1.25a.25.25 0 01-.25-.25V2.104a.25.25 0 01.427-.177l1.38 1.38A7.002 7.002 0 0114.95 7.16a.75.75 0 11-1.49.178A5.5 5.5 0 008 2.5z"></path>
-        </svg>`,
-        filter: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path d="M.75 3h14.5a.75.75 0 010 1.5H.75a.75.75 0 010-1.5zM3 7.75A.75.75 0 013.75 7h8.5a.75.75 0 010 1.5h-8.5A.75.75 0 013 7.75zm3 4a.75.75 0 01.75-.75h2.5a.75.75 0 010 1.5h-2.5a.75.75 0 01-.75-.75z"></path>
-        </svg>`,
-        eye: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path d="M8 2c1.981 0 3.671.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.45.678-1.367 1.932-2.637 3.023C11.67 13.008 9.981 14 8 14c-1.981 0-3.671-.992-4.933-2.078C1.797 10.83.88 9.576.43 8.898a1.62 1.62 0 0 1 0-1.798c.45-.677 1.367-1.931 2.637-3.022C4.33 2.992 6.019 2 8 2ZM1.679 7.932a.12.12 0 0 0 0 .136c.411.622 1.241 1.75 2.366 2.717C5.176 11.758 6.527 12.5 8 12.5c1.473 0 2.825-.742 3.955-1.715 1.124-.967 1.954-2.096 2.366-2.717a.12.12 0 0 0 0-.136c-.412-.621-1.242-1.75-2.366-2.717C10.824 4.242 9.473 3.5 8 3.5c-1.473 0-2.825.742-3.955 1.715-1.124.967-1.954 2.096-2.366 2.717ZM8 10a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 10Z"></path>
-        </svg>`,
-        eyeClosed: `<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-            <path d="M.143 2.31a.75.75 0 0 1 1.047-.167l14.5 10.5a.75.75 0 1 1-.88 1.214l-2.248-1.628C11.346 13.19 9.792 14 8 14c-1.981 0-3.67-.992-4.933-2.078C1.797 10.832.88 9.577.43 8.9a1.619 1.619 0 0 1 0-1.797c.353-.533.995-1.42 1.868-2.305L.31 3.357A.75.75 0 0 1 .143 2.31Zm1.536 5.622A.12.12 0 0 0 1.657 8c0 .021.006.045.022.068.412.621 1.242 1.75 2.366 2.717C5.175 11.758 6.527 12.5 8 12.5c1.195 0 2.31-.488 3.29-1.191L9.063 9.695A2 2 0 0 1 6.058 7.52L3.529 5.688a14.207 14.207 0 0 0-1.85 2.244ZM8 3.5c-.516 0-1.017.09-1.499.251a.75.75 0 1 1-.473-1.423A6.207 6.207 0 0 1 8 2c1.981 0 3.67.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.11.166-.248.365-.41.587a.75.75 0 1 1-1.21-.887c.148-.201.272-.382.371-.53a.119.119 0 0 0 0-.137c-.412-.621-1.242-1.75-2.366-2.717C10.825 4.242 9.473 3.5 8 3.5Z"></path>
-        </svg>`
-    };
-
     constructor() {
         this.panel = document.getElementById('ai-panel');
         // Check actual DOM state for collapsed status
@@ -115,10 +93,10 @@ class AIPanel {
         if (this.showDismissedComments) {
             this.filterToggleBtn.classList.add('active');
             this.filterToggleBtn.title = 'Hide dismissed user comments';
-            this.filterToggleBtn.innerHTML = AIPanel.ICONS.eye;
+            this.filterToggleBtn.innerHTML = window.Icons.icon('eye', 14, 14);
         } else {
             this.filterToggleBtn.title = 'Show dismissed user comments';
-            this.filterToggleBtn.innerHTML = AIPanel.ICONS.eyeClosed;
+            this.filterToggleBtn.innerHTML = window.Icons.icon('eyeClosed', 14, 14);
         }
         this.filterToggleBtn.setAttribute('aria-label', this.filterToggleBtn.title);
 
@@ -198,10 +176,10 @@ class AIPanel {
             // Use eye icon when dismissed comments are visible, eye-closed when hidden
             if (this.showDismissedComments) {
                 this.filterToggleBtn.title = 'Hide dismissed user comments';
-                this.filterToggleBtn.innerHTML = AIPanel.ICONS.eye;
+                this.filterToggleBtn.innerHTML = window.Icons.icon('eye', 14, 14);
             } else {
                 this.filterToggleBtn.title = 'Show dismissed user comments';
-                this.filterToggleBtn.innerHTML = AIPanel.ICONS.eyeClosed;
+                this.filterToggleBtn.innerHTML = window.Icons.icon('eyeClosed', 14, 14);
             }
             this.filterToggleBtn.setAttribute('aria-label', this.filterToggleBtn.title);
         }
@@ -1047,22 +1025,13 @@ class AIPanel {
     getTypeIcon(type) {
         switch (type) {
             case 'issue':
-                return `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                    <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575L6.457 1.047Z"/>
-                </svg>`;
+                return window.Icons.icon('alertFilled', 12, 12);
             case 'praise':
-                return `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                    <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/>
-                </svg>`;
+                return window.Icons.icon('star', 12, 12);
             case 'comment':
-                // Chat bubble icon for comments
-                return `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                    <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"/>
-                </svg>`;
+                return window.Icons.icon('comment', 12, 12);
             default:
-                return `<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                    <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0Zm0 4a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 8 4Zm0 9a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/>
-                </svg>`;
+                return window.Icons.icon('infoFilled', 12, 12);
         }
     }
 
@@ -1075,19 +1044,13 @@ class AIPanel {
         switch (type) {
             case 'sparkle':
                 // Sparkle/stars icon for "Ready for AI Review"
-                return `<svg viewBox="0 0 16 16" fill="currentColor" width="32" height="32">
-                    <path d="M7.53 1.282a.5.5 0 0 1 .94 0l.478 1.306a7.492 7.492 0 0 0 4.464 4.464l1.305.478a.5.5 0 0 1 0 .94l-1.305.478a7.492 7.492 0 0 0-4.464 4.464l-.478 1.305a.5.5 0 0 1-.94 0l-.478-1.305a7.492 7.492 0 0 0-4.464-4.464L1.282 8.47a.5.5 0 0 1 0-.94l1.306-.478a7.492 7.492 0 0 0 4.464-4.464l.478-1.306Z"/>
-                </svg>`;
+                return window.Icons.icon('sparkleSmall', 32, 32);
             case 'check':
                 // Check circle icon for "No issues found"
-                return `<svg viewBox="0 0 16 16" fill="currentColor" width="32" height="32">
-                    <path d="M8 16A8 8 0 1 1 8 0a8 8 0 0 1 0 16Zm3.78-9.72a.751.751 0 0 0-.018-1.042.751.751 0 0 0-1.042-.018L6.75 9.19 5.28 7.72a.751.751 0 0 0-1.042.018.751.751 0 0 0-.018 1.042l2 2a.75.75 0 0 0 1.06 0Z"/>
-                </svg>`;
+                return window.Icons.icon('checkCircleFill', 32, 32);
             case 'comment':
                 // Comment bubble icon for "No comments yet"
-                return `<svg viewBox="0 0 16 16" fill="currentColor" width="32" height="32">
-                    <path fill-rule="evenodd" d="M2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.75.75 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75zM1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.457 1.457 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5z"/>
-                </svg>`;
+                return window.Icons.icon('comment', 32, 32);
             default:
                 return '';
         }
@@ -1123,10 +1086,10 @@ class AIPanel {
             quickActions = `
             <div class="finding-quick-actions">
                 <button class="quick-action-btn quick-action-adopt" data-finding-id="${finding.id}" title="Adopt" aria-label="Adopt suggestion">
-                    ${this.getAdoptIcon()}
+                    ${window.Icons.icon('check', 14, 14)}
                 </button>
                 <button class="quick-action-btn quick-action-dismiss" data-finding-id="${finding.id}" title="Dismiss" aria-label="Dismiss suggestion">
-                    ${this.getDismissIcon()}
+                    ${window.Icons.icon('close', 14, 14)}
                 </button>
             </div>
         `;
@@ -1135,7 +1098,7 @@ class AIPanel {
             quickActions = `
             <div class="finding-quick-actions">
                 <button class="quick-action-btn quick-action-restore" data-finding-id="${finding.id}" title="Restore" aria-label="Restore suggestion">
-                    ${this.getRestoreIcon()}
+                    ${window.Icons.icon('restore', 14, 14)}
                 </button>
             </div>
         `;
@@ -1147,7 +1110,7 @@ class AIPanel {
             chatAction = `
             <div class="finding-chat-action">
                 <button class="quick-action-btn quick-action-chat" data-finding-id="${finding.id}" data-finding-file="${finding.file || ''}" data-finding-title="${this.escapeHtml(title)}" title="Chat" aria-label="Chat about suggestion">
-                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
+                    ${window.Icons.icon('discussion', 12, 12)}
                 </button>
             </div>
         `;
@@ -1188,8 +1151,8 @@ class AIPanel {
 
         // Choose icon based on whether comment originated from AI (has parent_id) or user
         const icon = comment.parent_id
-            ? this.getCommentAIIcon()
-            : this.getPersonIcon();
+            ? window.Icons.icon('commentAi', 14, 14)
+            : window.Icons.icon('person', 14, 14);
 
         // Build status class
         const dismissedClass = isDismissed ? ' comment-item-dismissed' : '';
@@ -1201,7 +1164,7 @@ class AIPanel {
             actionButton = `
                 <div class="finding-quick-actions">
                     <button class="quick-action-btn quick-action-restore-comment" data-comment-id="${comment.id}" title="Restore comment" aria-label="Restore comment">
-                        ${AIPanel.ICONS.restore}
+                        ${window.Icons.icon('restore', 14, 14)}
                     </button>
                 </div>
             `;
@@ -1210,7 +1173,7 @@ class AIPanel {
             actionButton = `
                 <div class="finding-quick-actions">
                     <button class="quick-action-btn quick-action-dismiss-comment" data-comment-id="${comment.id}" title="Dismiss comment" aria-label="Dismiss comment">
-                        ${AIPanel.ICONS.dismiss}
+                        ${window.Icons.icon('close', 14, 14)}
                     </button>
                 </div>
             `;
@@ -1222,7 +1185,7 @@ class AIPanel {
             chatAction = `
             <div class="finding-chat-action">
                 <button class="quick-action-btn quick-action-chat" data-comment-id="${comment.id}" data-finding-file="${comment.file || ''}" data-finding-title="${this.escapeHtml(title)}" title="Chat" aria-label="Chat about comment">
-                    <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/></svg>
+                    ${window.Icons.icon('discussion', 12, 12)}
                 </button>
             </div>
         `;
@@ -1241,50 +1204,6 @@ class AIPanel {
                 ${chatAction}
             </div>
         `;
-    }
-
-    /**
-     * Get the comment-ai Octicon SVG for AI-adopted comments
-     * @returns {string} SVG HTML string
-     */
-    getCommentAIIcon() {
-        return `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-            <path d="M7.75 1a.75.75 0 0 1 0 1.5h-5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2c.199 0 .39.079.53.22.141.14.22.331.22.53v2.19l2.72-2.72a.747.747 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-2a.75.75 0 0 1 1.5 0v2c0 .464-.184.909-.513 1.237A1.746 1.746 0 0 1 13.25 12H9.06l-2.573 2.573A1.457 1.457 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25v-7.5C1 1.784 1.784 1 2.75 1h5Zm4.519-.837a.248.248 0 0 1 .466 0l.238.648a3.726 3.726 0 0 0 2.218 2.219l.649.238a.249.249 0 0 1 0 .467l-.649.238a3.725 3.725 0 0 0-2.218 2.218l-.238.649a.248.248 0 0 1-.466 0l-.239-.649a3.725 3.725 0 0 0-2.218-2.218l-.649-.238a.249.249 0 0 1 0-.467l.649-.238A3.726 3.726 0 0 0 12.03.811l.239-.648Z"/>
-        </svg>`;
-    }
-
-    /**
-     * Get the person Octicon SVG for user-originated comments
-     * @returns {string} SVG HTML string
-     */
-    getPersonIcon() {
-        return `<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-            <path d="M10.561 8.073a6.005 6.005 0 0 1 3.432 5.142.75.75 0 1 1-1.498.07 4.5 4.5 0 0 0-8.99 0 .75.75 0 0 1-1.498-.07 6.004 6.004 0 0 1 3.431-5.142 3.999 3.999 0 1 1 5.123 0ZM10.5 5a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"/>
-        </svg>`;
-    }
-
-    /**
-     * Get the adopt (checkmark) icon SVG for quick-action buttons
-     * @returns {string} SVG HTML string
-     */
-    getAdoptIcon() {
-        return AIPanel.ICONS.adopt;
-    }
-
-    /**
-     * Get the dismiss (X) icon SVG for quick-action buttons
-     * @returns {string} SVG HTML string
-     */
-    getDismissIcon() {
-        return AIPanel.ICONS.dismiss;
-    }
-
-    /**
-     * Get the restore (counter-clockwise arrow) icon SVG for quick-action buttons
-     * @returns {string} SVG HTML string
-     */
-    getRestoreIcon() {
-        return AIPanel.ICONS.restore;
     }
 
     /**
@@ -1326,7 +1245,7 @@ class AIPanel {
                 const restoreHtml = `
                     <div class="finding-quick-actions">
                         <button class="quick-action-btn quick-action-restore" data-finding-id="${findingId}" title="Restore" aria-label="Restore suggestion">
-                            ${this.getRestoreIcon()}
+                            ${window.Icons.icon('restore', 14, 14)}
                         </button>
                     </div>
                 `;
@@ -1353,10 +1272,10 @@ class AIPanel {
                 const activeHtml = `
                     <div class="finding-quick-actions">
                         <button class="quick-action-btn quick-action-adopt" data-finding-id="${findingId}" title="Adopt" aria-label="Adopt suggestion">
-                            ${this.getAdoptIcon()}
+                            ${window.Icons.icon('check', 14, 14)}
                         </button>
                         <button class="quick-action-btn quick-action-dismiss" data-finding-id="${findingId}" title="Dismiss" aria-label="Dismiss suggestion">
-                            ${this.getDismissIcon()}
+                            ${window.Icons.icon('close', 14, 14)}
                         </button>
                     </div>
                 `;
@@ -1565,15 +1484,11 @@ class AIPanel {
         headerContainer.innerHTML = `
             <div class="findings-nav">
                 <button class="findings-nav-btn nav-prev" title="Previous item (k)">
-                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                        <path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/>
-                    </svg>
+                    ${window.Icons.icon('chevronUp', 12, 12)}
                 </button>
                 <span class="findings-counter" id="findings-count">${currentDisplay} of ${itemCount}</span>
                 <button class="findings-nav-btn nav-next" title="Next item (j)">
-                    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
-                        <path d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
-                    </svg>
+                    ${window.Icons.icon('chevronDown', 12, 12)}
                 </button>
             </div>
         `;

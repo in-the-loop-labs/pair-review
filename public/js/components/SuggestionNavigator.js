@@ -41,9 +41,7 @@ class SuggestionNavigator {
       <div class="navigator-header">
         <h3>AI Suggestions</h3>
         <button class="navigator-toggle" title="Collapse sidebar">
-          <svg viewBox="0 0 16 16">
-            <path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 14H1.75A1.75 1.75 0 010 12.25v-8.5zm1.75-.25a.25.25 0 00-.25.25v8.5c0 .138.112.25.25.25H9.5v-9H1.75zm9.25 9h3.25a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25H11v9z"/>
-          </svg>
+          ${window.Icons.icon('sidebarCollapse')}
         </button>
       </div>
       <div class="level-selector">
@@ -67,14 +65,10 @@ class SuggestionNavigator {
       <div class="navigator-controls">
         <div class="navigation-buttons">
           <button class="nav-btn nav-prev" title="Previous suggestion (k)">
-            <svg viewBox="0 0 16 16">
-              <path d="M3.22 9.78a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0l4.25 4.25a.75.75 0 01-1.06 1.06L8 6.06 4.28 9.78a.75.75 0 01-1.06 0z"/>
-            </svg>
+            ${window.Icons.icon('chevronUp')}
           </button>
           <button class="nav-btn nav-next" title="Next suggestion (j)">
-            <svg viewBox="0 0 16 16">
-              <path d="M12.78 6.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 7.28a.75.75 0 011.06-1.06L8 9.94l3.72-3.72a.75.75 0 011.06 0z"/>
-            </svg>
+            ${window.Icons.icon('chevronDown')}
           </button>
         </div>
         <div class="suggestion-counter">
@@ -91,11 +85,7 @@ class SuggestionNavigator {
     this.collapseToggle.className = 'navigator-toggle-collapsed';
     this.collapseToggle.style.display = this.isCollapsed ? 'flex' : 'none';
     this.collapseToggle.title = 'Show AI suggestions sidebar';
-    this.collapseToggle.innerHTML = `
-      <svg viewBox="0 0 16 16" class="sparkles-icon">
-        <path d="M9.6 2.279a.426.426 0 0 1 .8 0l.407 1.112a6.386 6.386 0 0 0 3.802 3.802l1.112.407a.426.426 0 0 1 0 .8l-1.112.407a6.386 6.386 0 0 0-3.802 3.802l-.407 1.112a.426.426 0 0 1-.8 0l-.407-1.112a6.386 6.386 0 0 0-3.802-3.802L4.279 8.4a.426.426 0 0 1 0-.8l1.112-.407a6.386 6.386 0 0 0 3.802-3.802L9.6 2.279Zm-4.267 8.837a.178.178 0 0 1 .334 0l.169.464a2.662 2.662 0 0 0 1.584 1.584l.464.169a.178.178 0 0 1 0 .334l-.464.169a2.662 2.662 0 0 0-1.584 1.584l-.169.464a.178.178 0 0 1-.334 0l-.169-.464a2.662 2.662 0 0 0-1.584-1.584l-.464-.169a.178.178 0 0 1 0-.334l.464-.169a2.662 2.662 0 0 0 1.584-1.584l.169-.464ZM2.8.14a.213.213 0 0 1 .4 0l.203.556a3.2 3.2 0 0 0 1.901 1.901l.556.203a.213.213 0 0 1 0 .4l-.556.203a3.2 3.2 0 0 0-1.901 1.901L3.2 5.86a.213.213 0 0 1-.4 0l-.203-.556A3.2 3.2 0 0 0 .696 3.403L.14 3.2a.213.213 0 0 1 0-.4l.556-.203A3.2 3.2 0 0 0 2.597.696L2.8.14Z"/>
-      </svg>
-    `;
+    this.collapseToggle.innerHTML = window.Icons.icon('sparkles', { width: 16, height: 16, className: 'sparkles-icon' });
 
     // Append to body
     document.body.appendChild(this.element);

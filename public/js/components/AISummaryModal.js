@@ -40,9 +40,7 @@ class AISummaryModal {
         <div class="modal-header">
           <h3>AI Analysis Summary</h3>
           <button class="modal-close-btn" data-action="close" title="Close">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
-            </svg>
+            ${window.Icons.icon('close')}
           </button>
         </div>
 
@@ -50,9 +48,7 @@ class AISummaryModal {
           <!-- Stats bar -->
           <div class="ai-summary-stats">
             <div class="ai-summary-stat ai-summary-stat-issues">
-              <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                <path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575L6.457 1.047Z"/>
-              </svg>
+              ${window.Icons.icon('alertFilled', 14, 14)}
               <span class="ai-summary-stat-count" id="ai-summary-issues-count">0</span>
               <span class="ai-summary-stat-label">issues</span>
             </div>
@@ -64,9 +60,7 @@ class AISummaryModal {
               <span class="ai-summary-stat-label">suggestions</span>
             </div>
             <div class="ai-summary-stat ai-summary-stat-praise">
-              <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-                <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/>
-              </svg>
+              ${window.Icons.icon('star', 14, 14)}
               <span class="ai-summary-stat-count" id="ai-summary-praise-count">0</span>
               <span class="ai-summary-stat-label">praise</span>
             </div>
@@ -81,10 +75,7 @@ class AISummaryModal {
         <div class="modal-footer ai-summary-modal-footer">
           <button class="btn btn-secondary" data-action="close">Close</button>
           <button class="btn btn-primary" id="ai-summary-copy-btn" title="Copy summary to clipboard">
-            <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-              <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
-              <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
-            </svg>
+            ${window.Icons.icon('copy', 14, 14)}
             Copy Summary
           </button>
         </div>

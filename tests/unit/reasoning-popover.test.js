@@ -93,6 +93,9 @@ global.document = {
 // Set up global.window
 global.window = global.window || {};
 
+// Load shared icons module (sets window.Icons) - required by production classes
+require('../../public/js/utils/icons.js');
+
 // Import the actual production classes
 const { SuggestionManager } = require('../../public/js/modules/suggestion-manager.js');
 const { FileCommentManager } = require('../../public/js/modules/file-comment-manager.js');

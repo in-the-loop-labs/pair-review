@@ -189,6 +189,9 @@ global.window.escapeHtmlAttribute = (text) => String(text).replace(/&/g, '&amp;'
 // Load shared timestamp utility (sets window.parseTimestamp)
 require('../../public/js/utils/time.js');
 
+// Load shared icons module (sets window.Icons)
+require('../../public/js/utils/icons.js');
+
 global.localStorage = {
   _store: {},
   getItem: vi.fn((key) => global.localStorage._store[key] || null),

@@ -7,16 +7,13 @@
  * and global level toggles (L1/L2/L3) apply to every reviewer uniformly.
  */
 class VoiceCentricConfigTab {
-  /** Info circle SVG icon for section tooltips */
-  static INFO_ICON_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"/></svg>`;
-
   /**
    * Build an info-tip toggle button
    * @param {string} id - Unique identifier for aria-controls linkage
    * @returns {string} HTML string
    */
   static buildInfoTipButton(id) {
-    return `<button class="info-tip-toggle" aria-controls="info-tip-vc-${id}" aria-expanded="false" title="More info">${VoiceCentricConfigTab.INFO_ICON_SVG}</button>`;
+    return `<button class="info-tip-toggle" aria-controls="info-tip-vc-${id}" aria-expanded="false" title="More info">${window.Icons.icon('info', 14, 14)}</button>`;
   }
 
   /**
@@ -29,14 +26,6 @@ class VoiceCentricConfigTab {
     return `<div class="info-tip-content" id="info-tip-vc-${id}" style="display:none">${text}</div>`;
   }
 
-  /** Speech bubble SVG icon (outline) */
-  static SPEECH_BUBBLE_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.5 0v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25H2.75a.25.25 0 0 0-.25.25Z"/></svg>`;
-
-  /** Speech bubble SVG icon (solid/filled) */
-  static SPEECH_BUBBLE_SVG_SOLID = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 1C1.784 1 1 1.784 1 2.75v7.5c0 .966.784 1.75 1.75 1.75H4v1.543a1.458 1.458 0 0 0 2.487 1.03L9.06 12h4.19A1.75 1.75 0 0 0 15 10.25v-7.5A1.75 1.75 0 0 0 13.25 1H2.75Z"/></svg>`;
-
-  /** Clock SVG icon for per-voice timeout toggle */
-  static CLOCK_SVG = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm7-3.25v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.751.751 0 0 1 7 8.25v-3.5a.75.75 0 0 1 1.5 0Z"/></svg>`;
 
   /** Default timeout in milliseconds (10 minutes) */
   static DEFAULT_TIMEOUT = 600000;
@@ -316,8 +305,8 @@ class VoiceCentricConfigTab {
               <option value="thorough">Thorough</option>
             </select>
             <span class="vc-timeout-mount" id="vc-orchestration-timeout-mount"></span>
-            <button class="toggle-timeout-icon" id="vc-orchestration-timeout-toggle" title="Consolidation timeout">${VoiceCentricConfigTab.CLOCK_SVG}</button>
-            <button class="toggle-instructions-icon" id="vc-orchestration-instructions-toggle" title="Consolidation instructions">${VoiceCentricConfigTab.SPEECH_BUBBLE_SVG}</button>
+            <button class="toggle-timeout-icon" id="vc-orchestration-timeout-toggle" title="Consolidation timeout">${window.Icons.icon('clock', 14, 14)}</button>
+            <button class="toggle-instructions-icon" id="vc-orchestration-instructions-toggle" title="Consolidation instructions">${window.Icons.icon('comment', 14, 14)}</button>
           </div>
           <div class="voice-instructions-area" id="vc-orchestration-instructions-area" style="display:none">
             <textarea class="voice-instructions-input" id="vc-orchestration-instructions" placeholder="Consolidation instructions (e.g., Prefer security findings over style nits)" rows="2"></textarea>
@@ -342,8 +331,8 @@ class VoiceCentricConfigTab {
               <option value="thorough">Thorough</option>
             </select>
             <span class="vc-timeout-mount" data-index="${index}"></span>
-            <button class="toggle-timeout-icon" data-index="${index}" title="Per-reviewer timeout">${VoiceCentricConfigTab.CLOCK_SVG}</button>
-            <button class="toggle-instructions-icon" data-index="${index}" title="Per-reviewer instructions">${VoiceCentricConfigTab.SPEECH_BUBBLE_SVG}</button>
+            <button class="toggle-timeout-icon" data-index="${index}" title="Per-reviewer timeout">${window.Icons.icon('clock', 14, 14)}</button>
+            <button class="toggle-instructions-icon" data-index="${index}" title="Per-reviewer instructions">${window.Icons.icon('comment', 14, 14)}</button>
           </div>
           <div class="voice-instructions-area" data-index="${index}" style="display:none">
             <textarea class="voice-instructions-input" data-index="${index}" placeholder="Per-reviewer instructions (e.g., Focus on security)" rows="2"></textarea>
@@ -653,8 +642,8 @@ class VoiceCentricConfigTab {
 
     const hasContent = value.trim().length > 0;
     iconBtn.innerHTML = hasContent
-      ? VoiceCentricConfigTab.SPEECH_BUBBLE_SVG_SOLID
-      : VoiceCentricConfigTab.SPEECH_BUBBLE_SVG;
+      ? window.Icons.icon('speechBubbleSolid', 14, 14)
+      : window.Icons.icon('comment', 14, 14);
     iconBtn.classList.toggle('has-instructions', hasContent);
   }
 
@@ -664,8 +653,8 @@ class VoiceCentricConfigTab {
 
     const hasContent = value.trim().length > 0;
     iconBtn.innerHTML = hasContent
-      ? VoiceCentricConfigTab.SPEECH_BUBBLE_SVG_SOLID
-      : VoiceCentricConfigTab.SPEECH_BUBBLE_SVG;
+      ? window.Icons.icon('speechBubbleSolid', 14, 14)
+      : window.Icons.icon('comment', 14, 14);
     iconBtn.classList.toggle('has-instructions', hasContent);
   }
 
