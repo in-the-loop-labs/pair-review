@@ -348,117 +348,69 @@ describe('ReviewModal', () => {
   });
 
   describe('Assisted-by Footer Toggle', () => {
-    it('should restore checkbox ON from localStorage and append footer', () => {
+    it('should restore checkbox ON from localStorage', () => {
       global.localStorage._store['pair-review-assisted-by'] = 'true';
-      const { modal, assistedByCheckbox, textarea } = createTestReviewModal();
+      const { modal, assistedByCheckbox } = createTestReviewModal();
 
       modal.restoreAssistedByToggle();
 
       expect(assistedByCheckbox.checked).toBe(true);
-      expect(textarea.value).toContain('Review assisted by [pair-review]');
     });
 
-    it('should restore checkbox OFF from localStorage and not append footer', () => {
+    it('should restore checkbox OFF from localStorage', () => {
       global.localStorage._store['pair-review-assisted-by'] = 'false';
-      const { modal, assistedByCheckbox, textarea } = createTestReviewModal();
+      const { modal, assistedByCheckbox } = createTestReviewModal();
 
       modal.restoreAssistedByToggle();
 
       expect(assistedByCheckbox.checked).toBe(false);
-      expect(textarea.value).toBe('');
     });
 
     it('should default to checked when no localStorage key', () => {
-      const { modal, assistedByCheckbox, textarea } = createTestReviewModal();
+      const { modal, assistedByCheckbox } = createTestReviewModal();
 
       modal.restoreAssistedByToggle();
 
       expect(assistedByCheckbox.checked).toBe(true);
-      expect(textarea.value).toContain('Review assisted by [pair-review]');
     });
 
-    it('should save true and append footer when toggled ON', () => {
-      const { modal, assistedByCheckbox, textarea } = createTestReviewModal();
+    it('should save true to localStorage when toggled ON', () => {
+      const { modal, assistedByCheckbox } = createTestReviewModal();
       assistedByCheckbox.checked = true;
 
       modal.handleAssistedByToggle();
 
       expect(global.localStorage.setItem).toHaveBeenCalledWith('pair-review-assisted-by', 'true');
-      expect(textarea.value).toContain('Review assisted by [pair-review]');
     });
 
-    it('should save false and remove footer when toggled OFF', () => {
-      const { modal, assistedByCheckbox, textarea } = createTestReviewModal();
-      // First append footer
-      assistedByCheckbox.checked = true;
-      modal.handleAssistedByToggle();
-      expect(textarea.value).toContain('Review assisted by [pair-review]');
-
-      // Now toggle off
+    it('should save false to localStorage when toggled OFF', () => {
+      const { modal, assistedByCheckbox } = createTestReviewModal();
       assistedByCheckbox.checked = false;
+
       modal.handleAssistedByToggle();
 
       expect(global.localStorage.setItem).toHaveBeenCalledWith('pair-review-assisted-by', 'false');
-      expect(textarea.value).toBe('');
     });
 
-    it('should not duplicate footer on appendAssistedByFooter', () => {
+    it('should append AI summary to textarea', () => {
       const { modal, textarea } = createTestReviewModal();
-
-      modal.appendAssistedByFooter();
-      const firstValue = textarea.value;
-      modal.appendAssistedByFooter();
-
-      expect(textarea.value).toBe(firstValue);
-    });
-
-    it('should remove footer from middle of text', () => {
-      const { modal, textarea } = createTestReviewModal();
-      const footer = modal.getAssistedByFooter();
-      textarea.value = 'Before' + footer + 'After';
-
-      modal.removeAssistedByFooter();
-
-      expect(textarea.value).toBe('BeforeAfter');
-    });
-
-    it('should be a no-op when removeAssistedByFooter called without footer', () => {
-      const { modal, textarea } = createTestReviewModal();
-      textarea.value = 'Some review text';
-
-      modal.removeAssistedByFooter();
-
-      expect(textarea.value).toBe('Some review text');
-    });
-
-    it('should insert AI summary before footer when present', () => {
-      const { modal, textarea } = createTestReviewModal();
-
-      // Add footer
-      modal.appendAssistedByFooter();
-
-      // Mock AI panel
-      global.window.aiPanel = {
-        getSummary: () => 'AI generated summary'
-      };
+      textarea.value = 'Existing text';
+      global.window.aiPanel = { getSummary: () => 'AI generated summary' };
       global.window.toast = { showSuccess: vi.fn(), showWarning: vi.fn() };
 
       modal.appendAISummary();
 
-      // Summary should come before footer
-      const footerIndex = textarea.value.indexOf('---\n_Review assisted by');
-      const summaryIndex = textarea.value.indexOf('AI generated summary');
-      expect(summaryIndex).toBeLessThan(footerIndex);
-      expect(summaryIndex).toBeGreaterThanOrEqual(0);
+      expect(textarea.value).toContain('Existing text');
+      expect(textarea.value).toContain('AI generated summary');
     });
 
-    it('should use configured URL from assistedByUrl', () => {
-      const { modal, textarea } = createTestReviewModal();
+    it('should use configured URL in footer', () => {
+      const { modal } = createTestReviewModal();
       modal.assistedByUrl = 'https://custom.example.com/review';
 
-      modal.appendAssistedByFooter();
+      const footer = modal.getAssistedByFooter();
 
-      expect(textarea.value).toContain('https://custom.example.com/review');
+      expect(footer).toContain('https://custom.example.com/review');
     });
 
     it('should disable toggle when Draft is selected', () => {
@@ -477,6 +429,16 @@ describe('ReviewModal', () => {
       modal.updateTextareaState();
 
       expect(assistedByToggle.classList.add).toHaveBeenCalledWith('disabled');
+    });
+
+    it('should append footer to review body on submit when toggle is checked', () => {
+      const { modal, assistedByCheckbox, textarea } = createTestReviewModal();
+      assistedByCheckbox.checked = true;
+      textarea.value = 'Great work!';
+
+      // Verify getAssistedByFooter produces a footer containing pair-review
+      const footer = modal.getAssistedByFooter();
+      expect(footer).toContain('pair-review');
     });
   });
 

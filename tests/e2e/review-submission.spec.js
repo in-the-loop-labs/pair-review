@@ -117,9 +117,8 @@ test.describe('Review Summary Input', () => {
     // Reopen modal
     await openReviewModal(page);
 
-    // User text should be cleared (footer may be present from default-ON toggle)
-    const value = await textarea.inputValue();
-    expect(value).not.toContain('Some test text');
+    // Textarea should be empty
+    await expect(textarea).toHaveValue('');
   });
 });
 
@@ -288,9 +287,7 @@ test.describe('Review Submission UI States', () => {
 
     // Should be reset to COMMENT default
     await expect(page.locator('input[value="COMMENT"]')).toBeChecked();
-    // User text should be cleared (footer may be present from default-ON toggle)
-    const value = await page.locator('#review-body-modal').inputValue();
-    expect(value).not.toContain('Test review');
+    await expect(page.locator('#review-body-modal')).toHaveValue('');
   });
 });
 
@@ -352,77 +349,78 @@ test.describe('Assisted-by Footer Toggle', () => {
     await expect(checkbox).toBeAttached();
   });
 
-  test('should have footer appended by default', async ({ page }) => {
+  test('should have toggle checked by default', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await openReviewModal(page);
 
-    // Toggle defaults to ON, footer should already be in textarea
+    // Toggle defaults to ON
+    const checkbox = page.locator('#assisted-by-checkbox');
+    await expect(checkbox).toBeChecked();
+
+    // But footer is NOT shown in textarea (only appended on submit)
     const textarea = page.locator('#review-body-modal');
-    await expect(textarea).toHaveValue(/Review assisted by \[pair-review\]/);
-  });
-
-  test('should remove footer when toggle is unchecked', async ({ page }) => {
-    await page.goto('/pr/test-owner/test-repo/1');
-    await openReviewModal(page);
-
-    // Default is ON, footer is present
-    const textarea = page.locator('#review-body-modal');
-    await expect(textarea).toHaveValue(/Review assisted by \[pair-review\]/);
-
-    // Click once to turn OFF
-    await page.locator('#assisted-by-toggle').click();
-
-    // Footer should be gone
     await expect(textarea).toHaveValue('');
   });
 
-  test('should include footer in submitted review body', async ({ page }) => {
+  test('should persist toggle OFF state', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await openReviewModal(page);
 
-    // Turn off toggle, fill text, then turn on to get footer after text
-    await page.locator('#assisted-by-toggle').click(); // OFF
+    // Turn off
+    await page.locator('#assisted-by-toggle').click();
+
+    // Close and reopen
+    await page.locator('#cancel-review-btn').click();
+    await page.waitForSelector('.review-modal-overlay', { state: 'hidden', timeout: 5000 });
+    await openReviewModal(page);
+
+    // Should remember OFF
+    const checkbox = page.locator('#assisted-by-checkbox');
+    await expect(checkbox).not.toBeChecked();
+  });
+
+  test('should include footer in submitted review body when toggle is ON', async ({ page }) => {
+    await page.goto('/pr/test-owner/test-repo/1');
+    await openReviewModal(page);
+
+    // Toggle is ON by default
     const textarea = page.locator('#review-body-modal');
     await textarea.fill('Great work!');
-    await page.locator('#assisted-by-toggle').click(); // ON - appends footer
-
-    // Verify textarea has both text and footer
-    await expect(textarea).toHaveValue(/Great work![\s\S]*Review assisted by \[pair-review\]/);
 
     // Intercept the submit API call
     const submitPromise = page.waitForRequest(request =>
       request.url().includes('/submit-review') && request.method() === 'POST'
     );
 
-    // Submit
     await page.locator('#submit-review-btn-modal').click();
 
     const request = await submitPromise;
     const body = JSON.parse(request.postData());
+    expect(body.body).toContain('Great work!');
     expect(body.body).toContain('Review assisted by [pair-review]');
   });
 
-  test('should persist toggle state across modal open/close', async ({ page }) => {
+  test('should NOT include footer when toggle is OFF', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await openReviewModal(page);
 
-    // Default is ON — turn it OFF
+    // Turn off toggle
     await page.locator('#assisted-by-toggle').click();
 
-    // Close modal
-    await page.locator('#cancel-review-btn').click();
-    await page.waitForSelector('.review-modal-overlay', { state: 'hidden', timeout: 5000 });
-
-    // Reopen modal
-    await openReviewModal(page);
-
-    // Checkbox should still be unchecked (persisted OFF state)
-    const checkbox = page.locator('#assisted-by-checkbox');
-    await expect(checkbox).not.toBeChecked();
-
-    // Footer should NOT be present
     const textarea = page.locator('#review-body-modal');
-    await expect(textarea).toHaveValue('');
+    await textarea.fill('No footer please');
+
+    // Intercept the submit API call
+    const submitPromise = page.waitForRequest(request =>
+      request.url().includes('/submit-review') && request.method() === 'POST'
+    );
+
+    await page.locator('#submit-review-btn-modal').click();
+
+    const request = await submitPromise;
+    const body = JSON.parse(request.postData());
+    expect(body.body).toContain('No footer please');
+    expect(body.body).not.toContain('Review assisted by [pair-review]');
   });
 
   test('should disable toggle when Draft is selected', async ({ page }) => {

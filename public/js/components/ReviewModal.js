@@ -85,7 +85,7 @@ class ReviewModal {
               <label class="remember-toggle assisted-by-toggle" id="assisted-by-toggle">
                 <input type="checkbox" id="assisted-by-checkbox" />
                 <span class="toggle-switch"></span>
-                <span class="toggle-label">Review assisted by pair-review</span>
+                <span class="toggle-label">Append pair-review footer</span>
               </label>
             </div>
             
@@ -462,6 +462,10 @@ class ReviewModal {
     if (this.isSubmitting) return;
     
     const reviewBody = this.modal.querySelector('#review-body-modal').value.trim();
+    const assistedByCheckbox = this.modal.querySelector('#assisted-by-checkbox');
+    const finalBody = assistedByCheckbox?.checked
+      ? reviewBody + this.getAssistedByFooter()
+      : reviewBody;
     const selectedOption = this.modal.querySelector('input[name="review-event"]:checked');
     const reviewEvent = selectedOption ? selectedOption.value : 'COMMENT';
     // Count BOTH line-level (.user-comment-row) and file-level (.file-comment-card.user-comment) comments
@@ -511,7 +515,7 @@ class ReviewModal {
         },
         body: JSON.stringify({
           event: reviewEvent,
-          body: reviewBody
+          body: finalBody
         })
       });
       
@@ -629,29 +633,15 @@ class ReviewModal {
       return;
     }
 
-    const footer = this.getAssistedByFooter();
-    const hasFooter = textarea.value.includes(footer);
-
-    if (hasFooter) {
-      // Insert before footer
-      const footerIdx = textarea.value.indexOf(footer);
-      const beforeFooter = textarea.value.slice(0, footerIdx).trim();
-      const afterFooter = textarea.value.slice(footerIdx + footer.length);
-      if (beforeFooter) {
-        textarea.value = beforeFooter + '\n\n' + summary + footer + afterFooter;
-      } else {
-        textarea.value = summary + footer + afterFooter;
-      }
+    // Append to existing text (with newline if there's existing content)
+    const currentValue = textarea.value.trim();
+    if (currentValue) {
+      textarea.value = currentValue + '\n\n' + summary;
     } else {
-      // Original behavior
-      const currentValue = textarea.value.trim();
-      if (currentValue) {
-        textarea.value = currentValue + '\n\n' + summary;
-      } else {
-        textarea.value = summary;
-      }
+      textarea.value = summary;
     }
 
+    // Show success feedback
     if (window.toast) {
       window.toast.showSuccess('AI summary added to review');
     }
@@ -673,39 +663,7 @@ class ReviewModal {
     if (!checkbox) return;
 
     const stored = localStorage.getItem(ASSISTED_BY_STORAGE_KEY);
-    const isChecked = stored !== 'false';
-    checkbox.checked = isChecked;
-
-    if (isChecked) {
-      this.appendAssistedByFooter();
-    }
-  }
-
-  /**
-   * Append the assisted-by footer to the textarea if not already present
-   */
-  appendAssistedByFooter() {
-    const textarea = this.modal?.querySelector('#review-body-modal');
-    if (!textarea) return;
-
-    const footer = this.getAssistedByFooter();
-    if (!textarea.value.includes(footer)) {
-      textarea.value = textarea.value + footer;
-    }
-  }
-
-  /**
-   * Remove the assisted-by footer from the textarea
-   */
-  removeAssistedByFooter() {
-    const textarea = this.modal?.querySelector('#review-body-modal');
-    if (!textarea) return;
-
-    const footer = this.getAssistedByFooter();
-    const idx = textarea.value.indexOf(footer);
-    if (idx !== -1) {
-      textarea.value = textarea.value.slice(0, idx) + textarea.value.slice(idx + footer.length);
-    }
+    checkbox.checked = stored !== 'false';
   }
 
   /**
@@ -716,12 +674,6 @@ class ReviewModal {
     if (!checkbox) return;
 
     localStorage.setItem(ASSISTED_BY_STORAGE_KEY, String(checkbox.checked));
-
-    if (checkbox.checked) {
-      this.appendAssistedByFooter();
-    } else {
-      this.removeAssistedByFooter();
-    }
   }
 
 }
