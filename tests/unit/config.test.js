@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { getGitHubToken, expandPath, getMonorepoPath, resolveDbName, warnIfDevModeWithoutDbName, loadConfig } = require('../../src/config');
+const { getGitHubToken, expandPath, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate, getMonorepoCheckoutTimeout, resolveMonorepoOptions, resolveDbName, warnIfDevModeWithoutDbName, loadConfig } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -193,6 +193,335 @@ describe('config.js', () => {
 
       const result = getMonorepoPath(config, 'owner/repo');
       expect(result).toBe('/absolute/path/to/repo');
+    });
+  });
+
+  describe('getMonorepoCheckoutScript', () => {
+    it('should return checkout script for configured repository', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { checkout_script: './scripts/pr-checkout.sh' }
+        }
+      };
+
+      const result = getMonorepoCheckoutScript(config, 'owner/repo');
+      expect(result).toBe('./scripts/pr-checkout.sh');
+    });
+
+    it('should return null for unconfigured repository', () => {
+      const config = {
+        monorepos: {
+          'other/repo': { checkout_script: './scripts/other.sh' }
+        }
+      };
+
+      const result = getMonorepoCheckoutScript(config, 'owner/repo');
+      expect(result).toBe(null);
+    });
+
+    it('should return null when monorepo config has no checkout_script', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { path: '~/some/path' }
+        }
+      };
+
+      const result = getMonorepoCheckoutScript(config, 'owner/repo');
+      expect(result).toBe(null);
+    });
+
+    it('should return null when config has no monorepos', () => {
+      const config = {};
+
+      const result = getMonorepoCheckoutScript(config, 'owner/repo');
+      expect(result).toBe(null);
+    });
+  });
+
+  describe('getMonorepoWorktreeDirectory', () => {
+    it('should return expanded path for configured repository', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { worktree_directory: '~/custom/worktrees' }
+        }
+      };
+
+      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      expect(result).toBe(`${os.homedir()}/custom/worktrees`);
+    });
+
+    it('should return null for unconfigured repository', () => {
+      const config = {
+        monorepos: {
+          'other/repo': { worktree_directory: '~/other/worktrees' }
+        }
+      };
+
+      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      expect(result).toBe(null);
+    });
+
+    it('should return null when monorepo config has no worktree_directory', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { path: '~/some/path' }
+        }
+      };
+
+      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      expect(result).toBe(null);
+    });
+
+    it('should return null when config has no monorepos', () => {
+      const config = {};
+
+      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      expect(result).toBe(null);
+    });
+
+    it('should handle absolute paths without expansion', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { worktree_directory: '/absolute/worktrees' }
+        }
+      };
+
+      const result = getMonorepoWorktreeDirectory(config, 'owner/repo');
+      expect(result).toBe('/absolute/worktrees');
+    });
+  });
+
+  describe('getMonorepoWorktreeNameTemplate', () => {
+    it('should return template for configured repository', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { worktree_name_template: '{id}/src' }
+        }
+      };
+
+      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      expect(result).toBe('{id}/src');
+    });
+
+    it('should return null for unconfigured repository', () => {
+      const config = {
+        monorepos: {
+          'other/repo': { worktree_name_template: '{id}' }
+        }
+      };
+
+      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      expect(result).toBe(null);
+    });
+
+    it('should return null when monorepo config has no worktree_name_template', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { path: '~/some/path' }
+        }
+      };
+
+      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      expect(result).toBe(null);
+    });
+
+    it('should return null when config has no monorepos', () => {
+      const config = {};
+
+      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      expect(result).toBe(null);
+    });
+
+    it('should return complex templates with multiple variables', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { worktree_name_template: 'pr-{pr_number}/{owner}-{repo}/{id}' }
+        }
+      };
+
+      const result = getMonorepoWorktreeNameTemplate(config, 'owner/repo');
+      expect(result).toBe('pr-{pr_number}/{owner}-{repo}/{id}');
+    });
+  });
+
+  describe('getMonorepoCheckoutTimeout', () => {
+    it('should return configured value converted to milliseconds', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { checkout_timeout_seconds: 120 }
+        }
+      };
+
+      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      expect(result).toBe(120000);
+    });
+
+    it('should return default 300000 when not configured', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { path: '~/some/path' }
+        }
+      };
+
+      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      expect(result).toBe(300000);
+    });
+
+    it('should return default when monorepos section does not have the repo', () => {
+      const config = {
+        monorepos: {
+          'other/repo': { checkout_timeout_seconds: 60 }
+        }
+      };
+
+      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      expect(result).toBe(300000);
+    });
+
+    it('should return default when config has no monorepos', () => {
+      const config = {};
+
+      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      expect(result).toBe(300000);
+    });
+
+    it('should return default when checkout_timeout_seconds is 0 (falsy)', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { checkout_timeout_seconds: 0 }
+        }
+      };
+
+      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      expect(result).toBe(300000);
+    });
+
+    it('should return default when checkout_timeout_seconds is negative', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { checkout_timeout_seconds: -10 }
+        }
+      };
+
+      // Negative values are now correctly rejected by the > 0 guard
+      const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
+      expect(result).toBe(300000);
+    });
+  });
+
+  describe('resolveMonorepoOptions', () => {
+    it('should return null for both when no monorepo config exists', () => {
+      const config = {};
+
+      const result = resolveMonorepoOptions(config, 'owner/repo');
+
+      expect(result.checkoutScript).toBe(null);
+      expect(result.checkoutTimeout).toBe(300000);
+      expect(result.worktreeConfig).toBe(null);
+    });
+
+    it('should return checkoutScript when only checkout_script is configured', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { checkout_script: './scripts/checkout.sh' }
+        }
+      };
+
+      const result = resolveMonorepoOptions(config, 'owner/repo');
+
+      expect(result.checkoutScript).toBe('./scripts/checkout.sh');
+      expect(result.checkoutTimeout).toBe(300000);
+      expect(result.worktreeConfig).toBe(null);
+    });
+
+    it('should return worktreeConfig with worktreeBaseDir when only worktree_directory is configured', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { worktree_directory: '~/custom/worktrees' }
+        }
+      };
+
+      const result = resolveMonorepoOptions(config, 'owner/repo');
+
+      expect(result.checkoutScript).toBe(null);
+      expect(result.checkoutTimeout).toBe(300000);
+      expect(result.worktreeConfig).toEqual({
+        worktreeBaseDir: `${os.homedir()}/custom/worktrees`
+      });
+    });
+
+    it('should return worktreeConfig with nameTemplate when only worktree_name_template is configured', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': { worktree_name_template: 'pr-{pr_number}/{id}' }
+        }
+      };
+
+      const result = resolveMonorepoOptions(config, 'owner/repo');
+
+      expect(result.checkoutScript).toBe(null);
+      expect(result.checkoutTimeout).toBe(300000);
+      expect(result.worktreeConfig).toEqual({
+        nameTemplate: 'pr-{pr_number}/{id}'
+      });
+    });
+
+    it('should return worktreeConfig with both properties when worktree_directory and worktree_name_template are configured', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': {
+            worktree_directory: '/abs/worktrees',
+            worktree_name_template: '{id}/src'
+          }
+        }
+      };
+
+      const result = resolveMonorepoOptions(config, 'owner/repo');
+
+      expect(result.checkoutScript).toBe(null);
+      expect(result.checkoutTimeout).toBe(300000);
+      expect(result.worktreeConfig).toEqual({
+        worktreeBaseDir: '/abs/worktrees',
+        nameTemplate: '{id}/src'
+      });
+    });
+
+    it('should return all values when checkout_script, worktree_directory, and worktree_name_template are all configured', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': {
+            checkout_script: './scripts/pr-checkout.sh',
+            worktree_directory: '~/mono/worktrees',
+            worktree_name_template: 'pr-{pr_number}'
+          }
+        }
+      };
+
+      const result = resolveMonorepoOptions(config, 'owner/repo');
+
+      expect(result.checkoutScript).toBe('./scripts/pr-checkout.sh');
+      expect(result.checkoutTimeout).toBe(300000);
+      expect(result.worktreeConfig).toEqual({
+        worktreeBaseDir: `${os.homedir()}/mono/worktrees`,
+        nameTemplate: 'pr-{pr_number}'
+      });
+    });
+
+    it('should return custom checkoutTimeout when checkout_timeout_seconds is configured', () => {
+      const config = {
+        monorepos: {
+          'owner/repo': {
+            checkout_script: './scripts/pr-checkout.sh',
+            checkout_timeout_seconds: 600
+          }
+        }
+      };
+
+      const result = resolveMonorepoOptions(config, 'owner/repo');
+
+      expect(result.checkoutScript).toBe('./scripts/pr-checkout.sh');
+      expect(result.checkoutTimeout).toBe(600000);
+      expect(result.worktreeConfig).toBe(null);
     });
   });
 

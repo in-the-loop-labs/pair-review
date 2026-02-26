@@ -7,6 +7,85 @@ import os from 'os';
 
 const { GitWorktreeManager } = require('../../src/git/worktree');
 
+describe('GitWorktreeManager constructor and name template', () => {
+  it('should use default worktree base directory when not provided', () => {
+    const manager = new GitWorktreeManager();
+    expect(manager.worktreeBaseDir).toContain('.pair-review/worktrees');
+  });
+
+  it('should use custom worktree base directory when provided', () => {
+    const manager = new GitWorktreeManager(null, { worktreeBaseDir: '/custom/path' });
+    expect(manager.worktreeBaseDir).toBe('/custom/path');
+  });
+
+  it('should use default name template when not provided', () => {
+    const manager = new GitWorktreeManager();
+    expect(manager.nameTemplate).toBe('{id}');
+  });
+
+  it('should use custom name template when provided', () => {
+    const manager = new GitWorktreeManager(null, { nameTemplate: '{id}/src' });
+    expect(manager.nameTemplate).toBe('{id}/src');
+  });
+
+  describe('applyNameTemplate', () => {
+    it('should replace {id} with the worktree ID', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}' });
+      const result = manager.applyNameTemplate({ id: 'abc123' });
+      expect(result).toBe('abc123');
+    });
+
+    it('should replace {pr_number} with the PR number', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: 'pr-{pr_number}' });
+      const result = manager.applyNameTemplate({ id: 'abc123', prNumber: 42 });
+      expect(result).toBe('pr-42');
+    });
+
+    it('should replace {repo} with the repository name', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{repo}' });
+      const result = manager.applyNameTemplate({ id: 'abc123', repo: 'my-repo' });
+      expect(result).toBe('my-repo');
+    });
+
+    it('should replace {owner} with the repository owner', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{owner}' });
+      const result = manager.applyNameTemplate({ id: 'abc123', owner: 'my-org' });
+      expect(result).toBe('my-org');
+    });
+
+    it('should replace all variables in a complex template', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: 'pr-{pr_number}/{owner}/{repo}/{id}' });
+      const result = manager.applyNameTemplate({ id: 'abc123', prNumber: 42, repo: 'my-repo', owner: 'my-org' });
+      expect(result).toBe('pr-42/my-org/my-repo/abc123');
+    });
+
+    it('should handle templates with subdirectories', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}/src' });
+      const result = manager.applyNameTemplate({ id: 'abc123' });
+      expect(result).toBe('abc123/src');
+    });
+
+    it('should handle multiple occurrences of the same variable', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}-{id}' });
+      const result = manager.applyNameTemplate({ id: 'abc123' });
+      expect(result).toBe('abc123-abc123');
+    });
+
+    it('should leave unreplaced variables when context is missing', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}-{pr_number}' });
+      const result = manager.applyNameTemplate({ id: 'abc123' });
+      expect(result).toBe('abc123-{pr_number}');
+    });
+
+    it('should replace id with undefined when not in context', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}' });
+      const result = manager.applyNameTemplate({});
+      // id is always replaced (with undefined if not provided), but optional vars are preserved
+      expect(result).toBe('undefined');
+    });
+  });
+});
+
 describe('GitWorktreeManager sparse-checkout methods', () => {
   let testDir;
   let worktreeManager;
@@ -228,6 +307,95 @@ describe('GitWorktreeManager sparse-checkout methods', () => {
       // Should not contain child directories if parent is added
       expect(addedDirs).not.toContain('src/utils');
       expect(addedDirs).not.toContain('src/utils/deep');
+    });
+  });
+
+  describe('executeCheckoutScript', () => {
+    it('should execute script with correct env vars and CWD', async () => {
+      // Create a script that writes env vars and CWD to a file
+      const outputFile = path.join(testDir, 'script-output.txt');
+      const scriptPath = path.join(testDir, 'test-script.sh');
+      await fs.writeFile(scriptPath, `#!/bin/sh
+echo "CWD=$(pwd)" > "${outputFile}"
+echo "BASE_BRANCH=$BASE_BRANCH" >> "${outputFile}"
+echo "HEAD_BRANCH=$HEAD_BRANCH" >> "${outputFile}"
+echo "BASE_SHA=$BASE_SHA" >> "${outputFile}"
+echo "HEAD_SHA=$HEAD_SHA" >> "${outputFile}"
+echo "PR_NUMBER=$PR_NUMBER" >> "${outputFile}"
+echo "WORKTREE_PATH=$WORKTREE_PATH" >> "${outputFile}"
+`, { mode: 0o755 });
+
+      const env = {
+        BASE_BRANCH: 'main',
+        HEAD_BRANCH: 'feature/test',
+        BASE_SHA: 'abc123',
+        HEAD_SHA: 'def456',
+        PR_NUMBER: '42',
+        WORKTREE_PATH: testDir
+      };
+
+      await worktreeManager.executeCheckoutScript(scriptPath, testDir, env);
+
+      const output = await fs.readFile(outputFile, 'utf8');
+      // On macOS, /var is symlinked to /private/var, so pwd resolves the symlink.
+      // Use fs.realpath to get the canonical path for comparison.
+      const realTestDir = await fs.realpath(testDir);
+      expect(output).toContain(`CWD=${realTestDir}`);
+      expect(output).toContain('BASE_BRANCH=main');
+      expect(output).toContain('HEAD_BRANCH=feature/test');
+      expect(output).toContain('BASE_SHA=abc123');
+      expect(output).toContain('HEAD_SHA=def456');
+      expect(output).toContain('PR_NUMBER=42');
+      expect(output).toContain(`WORKTREE_PATH=${testDir}`);
+    });
+
+    it('should resolve with stdout and stderr on success', async () => {
+      const scriptPath = path.join(testDir, 'echo-script.sh');
+      await fs.writeFile(scriptPath, `#!/bin/sh
+echo "hello stdout"
+echo "hello stderr" >&2
+`, { mode: 0o755 });
+
+      const result = await worktreeManager.executeCheckoutScript(scriptPath, testDir, {});
+      expect(result.stdout).toContain('hello stdout');
+      expect(result.stderr).toContain('hello stderr');
+    });
+
+    it('should reject on non-zero exit code with stdout/stderr in error', async () => {
+      const scriptPath = path.join(testDir, 'fail-script.sh');
+      await fs.writeFile(scriptPath, `#!/bin/sh
+echo "some output"
+echo "some error" >&2
+exit 1
+`, { mode: 0o755 });
+
+      await expect(
+        worktreeManager.executeCheckoutScript(scriptPath, testDir, {})
+      ).rejects.toThrow(/exited with code 1/);
+
+      try {
+        await worktreeManager.executeCheckoutScript(scriptPath, testDir, {});
+      } catch (err) {
+        expect(err.message).toContain('some output');
+        expect(err.message).toContain('some error');
+      }
+    });
+
+    it('should reject on timeout', async () => {
+      const scriptPath = path.join(testDir, 'slow-script.sh');
+      await fs.writeFile(scriptPath, `#!/bin/sh
+sleep 30
+`, { mode: 0o755 });
+
+      await expect(
+        worktreeManager.executeCheckoutScript(scriptPath, testDir, {}, 100)
+      ).rejects.toThrow(/timed out/);
+    });
+
+    it('should reject on ENOENT (command not found)', async () => {
+      await expect(
+        worktreeManager.executeCheckoutScript('/nonexistent/script.sh', testDir, {})
+      ).rejects.toThrow(/not found|No such file|ENOENT|code 127/);
     });
   });
 });

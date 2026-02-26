@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 const fs = require('fs');
-const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName } = require('./config');
+const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, resolveMonorepoOptions } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -495,23 +495,35 @@ async function handlePullRequest(args, config, db, flags = {}) {
     // Determine repository path: only use cwd if it matches the target repo
     const currentDir = parser.getCurrentDirectory();
     const isMatchingRepo = await parser.isMatchingRepository(currentDir, prInfo.owner, prInfo.repo);
+    const repository = normalizeRepository(prInfo.owner, prInfo.repo);
 
     let repositoryPath;
+    let worktreeSourcePath;
+    let checkoutScript;
+    let checkoutTimeout;
+    let worktreeConfig = null;
     if (isMatchingRepo) {
       // Current directory is a checkout of the target repository
       repositoryPath = currentDir;
       // Register the known repository location for future web UI usage
       await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+
+      // Resolve monorepo config options (checkout_script, worktree_directory, worktree_name_template)
+      // even when running from inside the target repo, so they are not silently ignored.
+      const resolved = resolveMonorepoOptions(config, repository);
+      checkoutScript = resolved.checkoutScript;
+      checkoutTimeout = resolved.checkoutTimeout;
+      worktreeConfig = resolved.worktreeConfig;
     } else {
       // Current directory is not the target repository - find or clone it
       console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);
-      const repository = normalizeRepository(prInfo.owner, prInfo.repo);
       const result = await findRepositoryPath({
         db,
         owner: prInfo.owner,
         repo: prInfo.repo,
         repository,
         prNumber: prInfo.number,
+        config,
         onProgress: (progress) => {
           if (progress.message) {
             console.log(progress.message);
@@ -519,12 +531,20 @@ async function handlePullRequest(args, config, db, flags = {}) {
         }
       });
       repositoryPath = result.repositoryPath;
+      worktreeSourcePath = result.worktreeSourcePath;
+      checkoutScript = result.checkoutScript;
+      checkoutTimeout = result.checkoutTimeout;
+      worktreeConfig = result.worktreeConfig;
     }
 
     // Setup git worktree
     console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager(db);
-    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath);
+    const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
+    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
+      worktreeSourcePath,
+      checkoutScript,
+      checkoutTimeout
+    });
 
     // Generate unified diff
     console.log('Generating unified diff...');
@@ -784,10 +804,21 @@ async function performHeadlessReview(args, config, db, flags, options) {
       const isMatchingRepo = await parser.isMatchingRepository(currentDir, prInfo.owner, prInfo.repo);
 
       let repositoryPath;
+      let worktreeSourcePath;
+      let checkoutScript;
+      let checkoutTimeout;
+      let worktreeConfig = null;
       if (isMatchingRepo) {
         // Current directory is a checkout of the target repository
         repositoryPath = currentDir;
         await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+
+        // Resolve monorepo config options (checkout_script, worktree_directory, worktree_name_template)
+        // even when running from inside the target repo, so they are not silently ignored.
+        const resolved = resolveMonorepoOptions(config, repository);
+        checkoutScript = resolved.checkoutScript;
+        checkoutTimeout = resolved.checkoutTimeout;
+        worktreeConfig = resolved.worktreeConfig;
       } else {
         // Current directory is not the target repository - find or clone it
         console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);
@@ -797,6 +828,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
           repo: prInfo.repo,
           repository,
           prNumber: prInfo.number,
+          config,
           onProgress: (progress) => {
             if (progress.message) {
               console.log(progress.message);
@@ -804,11 +836,19 @@ async function performHeadlessReview(args, config, db, flags, options) {
           }
         });
         repositoryPath = result.repositoryPath;
+        worktreeSourcePath = result.worktreeSourcePath;
+        checkoutScript = result.checkoutScript;
+        checkoutTimeout = result.checkoutTimeout;
+        worktreeConfig = result.worktreeConfig;
       }
 
       console.log('Setting up git worktree...');
-      const worktreeManager = new GitWorktreeManager(db);
-      worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath);
+      const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
+      worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
+        worktreeSourcePath,
+        checkoutScript,
+        checkoutTimeout
+      });
 
       console.log('Generating unified diff...');
       diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);

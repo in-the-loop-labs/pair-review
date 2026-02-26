@@ -5,6 +5,7 @@ const os = require('os');
 const logger = require('./utils/logger');
 
 const CONFIG_DIR = path.join(os.homedir(), '.pair-review');
+const DEFAULT_CHECKOUT_TIMEOUT_MS = 300000;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const CONFIG_EXAMPLE_FILE = path.join(CONFIG_DIR, 'config.example.json');
 const PACKAGE_ROOT = path.join(__dirname, '..');
@@ -317,6 +318,81 @@ function getMonorepoPath(config, repository) {
 }
 
 /**
+ * Gets the configured checkout script for a monorepo repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {string|null} - Checkout script path or null if not configured
+ */
+function getMonorepoCheckoutScript(config, repository) {
+  const monorepoConfig = config.monorepos?.[repository];
+  return monorepoConfig?.checkout_script || null;
+}
+
+/**
+ * Gets the configured worktree directory for a monorepo repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {string|null} - Expanded worktree directory path or null if not configured
+ */
+function getMonorepoWorktreeDirectory(config, repository) {
+  const monorepoConfig = config.monorepos?.[repository];
+  if (monorepoConfig?.worktree_directory) {
+    return expandPath(monorepoConfig.worktree_directory);
+  }
+  return null;
+}
+
+/**
+ * Gets the configured worktree name template for a monorepo repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {string|null} - Template string or null if not configured
+ */
+function getMonorepoWorktreeNameTemplate(config, repository) {
+  const monorepoConfig = config.monorepos?.[repository];
+  return monorepoConfig?.worktree_name_template || null;
+}
+
+/**
+ * Gets the configured checkout script timeout for a monorepo repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {number} - Timeout in milliseconds (default: 300000 = 5 minutes)
+ */
+function getMonorepoCheckoutTimeout(config, repository) {
+  const monorepoConfig = config.monorepos?.[repository];
+  if (monorepoConfig?.checkout_timeout_seconds > 0) {
+    return monorepoConfig.checkout_timeout_seconds * 1000;
+  }
+  return DEFAULT_CHECKOUT_TIMEOUT_MS; // 5 minutes default
+}
+
+/**
+ * Resolves all monorepo worktree options for a repository into a single object.
+ * Composite helper that combines the individual getters into the shape expected
+ * by GitWorktreeManager and createWorktreeForPR.
+ *
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {{ checkoutScript: string|null, checkoutTimeout: number, worktreeConfig: Object|null }}
+ */
+function resolveMonorepoOptions(config, repository) {
+  const checkoutScript = getMonorepoCheckoutScript(config, repository);
+  const checkoutTimeout = getMonorepoCheckoutTimeout(config, repository);
+  const worktreeDirectory = getMonorepoWorktreeDirectory(config, repository);
+  const nameTemplate = getMonorepoWorktreeNameTemplate(config, repository);
+
+  let worktreeConfig = null;
+  if (worktreeDirectory || nameTemplate) {
+    worktreeConfig = {};
+    if (worktreeDirectory) worktreeConfig.worktreeBaseDir = worktreeDirectory;
+    if (nameTemplate) worktreeConfig.nameTemplate = nameTemplate;
+  }
+
+  return { checkoutScript, checkoutTimeout, worktreeConfig };
+}
+
+/**
  * Resolves the database filename to use.
  * Priority:
  *   1. PAIR_REVIEW_DB_NAME environment variable (highest priority)
@@ -358,6 +434,12 @@ module.exports = {
   showWelcomeMessage,
   expandPath,
   getMonorepoPath,
+  getMonorepoCheckoutScript,
+  getMonorepoWorktreeDirectory,
+  getMonorepoWorktreeNameTemplate,
+  getMonorepoCheckoutTimeout,
+  resolveMonorepoOptions,
   resolveDbName,
-  warnIfDevModeWithoutDbName
+  warnIfDevModeWithoutDbName,
+  DEFAULT_CHECKOUT_TIMEOUT_MS
 };
