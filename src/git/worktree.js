@@ -7,6 +7,7 @@ const { getConfigDir } = require('../config');
 const { WorktreeRepository, generateWorktreeId } = require('../database');
 const { getGeneratedFilePatterns } = require('./gitattributes');
 const { normalizeRepository, resolveRenamedFile, resolveRenamedFileOld } = require('../utils/paths');
+const { spawn, execSync } = require('child_process');
 
 /**
  * Git worktree manager for handling PR branch checkouts and diffs
@@ -171,8 +172,6 @@ class GitWorktreeManager {
    * @returns {Promise<{stdout: string, stderr: string}>} Script output
    */
   async executeCheckoutScript(script, worktreePath, env, timeout = 60000) {
-    const { spawn } = require('child_process');
-
     return new Promise((resolve, reject) => {
       const child = spawn(script, [], {
         cwd: worktreePath,
@@ -729,7 +728,6 @@ class GitWorktreeManager {
       await fs.rm(dirPath, { recursive: true, force: true });
     } catch (error) {
       // Fallback for older Node.js versions
-      const { execSync } = require('child_process');
       if (process.platform === 'win32') {
         execSync(`rmdir /s /q "${dirPath}"`, { stdio: 'ignore' });
       } else {

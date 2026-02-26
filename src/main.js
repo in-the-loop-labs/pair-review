@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 const fs = require('fs');
-const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName } = require('./config');
+const { loadConfig, getConfigDir, getGitHubToken, showWelcomeMessage, resolveDbName, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate } = require('./config');
 const { initializeDatabase, run, queryOne, query, migrateExistingWorktrees, WorktreeRepository, ReviewRepository, RepoSettingsRepository, GitHubReviewRepository } = require('./database');
 const { PRArgumentParser } = require('./github/parser');
 const { GitHubClient } = require('./github/client');
@@ -505,6 +505,22 @@ async function handlePullRequest(args, config, db, flags = {}) {
       repositoryPath = currentDir;
       // Register the known repository location for future web UI usage
       await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+
+      // Resolve monorepo config options (checkout_script, worktree_directory, worktree_name_template)
+      // even when running from inside the target repo, so they are not silently ignored.
+      const repository = normalizeRepository(prInfo.owner, prInfo.repo);
+      checkoutScript = getMonorepoCheckoutScript(config, repository);
+      const worktreeDirectory = getMonorepoWorktreeDirectory(config, repository);
+      const worktreeNameTemplate = getMonorepoWorktreeNameTemplate(config, repository);
+      if (worktreeDirectory || worktreeNameTemplate) {
+        worktreeConfig = {};
+        if (worktreeDirectory) {
+          worktreeConfig.worktreeBaseDir = worktreeDirectory;
+        }
+        if (worktreeNameTemplate) {
+          worktreeConfig.nameTemplate = worktreeNameTemplate;
+        }
+      }
     } else {
       // Current directory is not the target repository - find or clone it
       console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);
@@ -801,6 +817,21 @@ async function performHeadlessReview(args, config, db, flags, options) {
         // Current directory is a checkout of the target repository
         repositoryPath = currentDir;
         await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
+
+        // Resolve monorepo config options (checkout_script, worktree_directory, worktree_name_template)
+        // even when running from inside the target repo, so they are not silently ignored.
+        checkoutScript = getMonorepoCheckoutScript(config, repository);
+        const worktreeDirectory = getMonorepoWorktreeDirectory(config, repository);
+        const worktreeNameTemplate = getMonorepoWorktreeNameTemplate(config, repository);
+        if (worktreeDirectory || worktreeNameTemplate) {
+          worktreeConfig = {};
+          if (worktreeDirectory) {
+            worktreeConfig.worktreeBaseDir = worktreeDirectory;
+          }
+          if (worktreeNameTemplate) {
+            worktreeConfig.nameTemplate = worktreeNameTemplate;
+          }
+        }
       } else {
         // Current directory is not the target repository - find or clone it
         console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);

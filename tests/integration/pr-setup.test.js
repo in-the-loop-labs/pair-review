@@ -37,6 +37,8 @@ const { RepoSettingsRepository } = require('../../src/database');
 vi.spyOn(configModule, 'getConfigDir');
 vi.spyOn(configModule, 'getMonorepoPath');
 vi.spyOn(configModule, 'getMonorepoCheckoutScript');
+vi.spyOn(configModule, 'getMonorepoWorktreeDirectory');
+vi.spyOn(configModule, 'getMonorepoWorktreeNameTemplate');
 vi.spyOn(localReview, 'findMainGitRoot');
 vi.spyOn(GitWorktreeManager.prototype, 'pathExists');
 
@@ -66,6 +68,8 @@ describe('findRepositoryPath with monorepo configuration', () => {
     configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
     configModule.getMonorepoPath.mockReturnValue(null);
     configModule.getMonorepoCheckoutScript.mockReturnValue(null);
+    configModule.getMonorepoWorktreeDirectory.mockReturnValue(null);
+    configModule.getMonorepoWorktreeNameTemplate.mockReturnValue(null);
 
     // Default: findMainGitRoot rejects
     localReview.findMainGitRoot.mockRejectedValue(new Error('Not a git repo'));
@@ -359,5 +363,96 @@ describe('findRepositoryPath with monorepo configuration', () => {
     expect(result.checkoutScript).toBe('./checkout.sh');
     expect(result.worktreeSourcePath).toBeNull();
     expect(result.repositoryPath).toBe(TEST_REPO_ROOT);
+  });
+
+  it('should return worktreeConfig with worktreeBaseDir and nameTemplate when both are configured', async () => {
+    // Tier -1: monorepo path resolves directly to main root
+    configModule.getMonorepoPath.mockReturnValue(TEST_REPO_ROOT);
+    localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
+    makePathsExist([`${TEST_REPO_ROOT}/.git`]);
+
+    // Configure checkout_script alongside worktree options
+    configModule.getMonorepoCheckoutScript.mockReturnValue('./scripts/pr-checkout.sh');
+    configModule.getMonorepoWorktreeDirectory.mockReturnValue('/custom/worktrees');
+    configModule.getMonorepoWorktreeNameTemplate.mockReturnValue('{owner}-{repo}-pr-{pr_number}');
+
+    const result = await findRepositoryPath({
+      db,
+      owner: 'owner',
+      repo: 'repo',
+      repository: 'owner/repo',
+      prNumber: 42,
+      config: testConfig
+    });
+
+    expect(result.repositoryPath).toBe(TEST_REPO_ROOT);
+    expect(result.checkoutScript).toBe('./scripts/pr-checkout.sh');
+    expect(result.worktreeConfig).toEqual({
+      worktreeBaseDir: '/custom/worktrees',
+      nameTemplate: '{owner}-{repo}-pr-{pr_number}'
+    });
+  });
+
+  it('should return worktreeConfig with only worktreeBaseDir when nameTemplate is not configured', async () => {
+    configModule.getMonorepoPath.mockReturnValue(TEST_REPO_ROOT);
+    localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
+    makePathsExist([`${TEST_REPO_ROOT}/.git`]);
+
+    configModule.getMonorepoWorktreeDirectory.mockReturnValue('/custom/worktrees');
+    // nameTemplate left as default (null)
+
+    const result = await findRepositoryPath({
+      db,
+      owner: 'owner',
+      repo: 'repo',
+      repository: 'owner/repo',
+      prNumber: 42,
+      config: testConfig
+    });
+
+    expect(result.worktreeConfig).toEqual({
+      worktreeBaseDir: '/custom/worktrees'
+    });
+  });
+
+  it('should return worktreeConfig with only nameTemplate when worktreeBaseDir is not configured', async () => {
+    configModule.getMonorepoPath.mockReturnValue(TEST_REPO_ROOT);
+    localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
+    makePathsExist([`${TEST_REPO_ROOT}/.git`]);
+
+    configModule.getMonorepoWorktreeNameTemplate.mockReturnValue('{owner}-{repo}-pr-{pr_number}');
+    // worktreeDirectory left as default (null)
+
+    const result = await findRepositoryPath({
+      db,
+      owner: 'owner',
+      repo: 'repo',
+      repository: 'owner/repo',
+      prNumber: 42,
+      config: testConfig
+    });
+
+    expect(result.worktreeConfig).toEqual({
+      nameTemplate: '{owner}-{repo}-pr-{pr_number}'
+    });
+  });
+
+  it('should return null worktreeConfig when neither worktreeDirectory nor nameTemplate are configured', async () => {
+    configModule.getMonorepoPath.mockReturnValue(TEST_REPO_ROOT);
+    localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
+    makePathsExist([`${TEST_REPO_ROOT}/.git`]);
+
+    // Both left as default (null)
+
+    const result = await findRepositoryPath({
+      db,
+      owner: 'owner',
+      repo: 'repo',
+      repository: 'owner/repo',
+      prNumber: 42,
+      config: testConfig
+    });
+
+    expect(result.worktreeConfig).toBeNull();
   });
 });
