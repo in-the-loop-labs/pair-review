@@ -36,9 +36,6 @@ const { RepoSettingsRepository } = require('../../src/database');
 // variables capture the spy wrappers, not the original functions.
 vi.spyOn(configModule, 'getConfigDir');
 vi.spyOn(configModule, 'getMonorepoPath');
-vi.spyOn(configModule, 'getMonorepoCheckoutScript');
-vi.spyOn(configModule, 'getMonorepoWorktreeDirectory');
-vi.spyOn(configModule, 'getMonorepoWorktreeNameTemplate');
 vi.spyOn(configModule, 'resolveMonorepoOptions');
 vi.spyOn(localReview, 'findMainGitRoot');
 vi.spyOn(GitWorktreeManager.prototype, 'pathExists');
@@ -68,9 +65,6 @@ describe('findRepositoryPath with monorepo configuration', () => {
 
     configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
     configModule.getMonorepoPath.mockReturnValue(null);
-    configModule.getMonorepoCheckoutScript.mockReturnValue(null);
-    configModule.getMonorepoWorktreeDirectory.mockReturnValue(null);
-    configModule.getMonorepoWorktreeNameTemplate.mockReturnValue(null);
     configModule.resolveMonorepoOptions.mockReturnValue({ checkoutScript: null, worktreeConfig: null });
 
     // Default: findMainGitRoot rejects

@@ -191,10 +191,10 @@
     }
   },
   "monorepos": {
-    "_comment": "Monorepo configuration. 'path' points to an existing local clone. 'checkout_script' runs in the new worktree with env vars: BASE_BRANCH, HEAD_BRANCH, BASE_SHA, HEAD_SHA, PR_NUMBER, WORKTREE_PATH. 'worktree_directory' overrides where worktrees are created. 'worktree_name_template' controls naming with vars: {id} (includes 'pair-review--' prefix, e.g. 'pair-review--abc'), {pr_number}, {repo}, {owner}.",
+    "_comment": "Monorepo configuration. 'path' points to an existing local clone. 'checkout_script' runs in the new worktree with env vars: BASE_BRANCH, HEAD_BRANCH, BASE_SHA, HEAD_SHA, PR_NUMBER, WORKTREE_PATH. The script is spawned with shell: true, so $ENV_VAR expansion works. Note: relative paths won't work because the worktree is created with --no-checkout (empty directory); use an absolute path or a command on PATH instead. 'worktree_directory' overrides where worktrees are created. 'worktree_name_template' controls naming with vars: {id} (includes 'pair-review--' prefix, e.g. 'pair-review--abc'), {pr_number}, {repo}, {owner}.",
     "owner/repo": {
       "path": "~/path/to/monorepo",
-      "checkout_script": "./scripts/pr-checkout.sh",
+      "checkout_script": "my-repo-checkout $BASE_BRANCH $HEAD_BRANCH",
       "worktree_directory": "~/custom/worktrees",
       "worktree_name_template": "{id}/src"
     }
