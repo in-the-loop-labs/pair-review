@@ -191,10 +191,12 @@
     }
   },
   "monorepos": {
-    "_comment": "Monorepo sparse-checkout configuration. 'checkout_script' runs in the worktree with env vars: BASE_BRANCH, HEAD_BRANCH, BASE_SHA, HEAD_SHA, PR_NUMBER, WORKTREE_PATH.",
+    "_comment": "Monorepo configuration. 'path' points to an existing local clone. 'checkout_script' runs in the worktree with env vars: BASE_BRANCH, HEAD_BRANCH, BASE_SHA, HEAD_SHA, PR_NUMBER, WORKTREE_PATH. 'worktree_directory' overrides where worktrees are created. 'worktree_name_template' controls naming with vars: {id} (includes 'pair-review--' prefix, e.g. 'pair-review--abc'), {pr_number}, {repo}, {owner}.",
     "owner/repo": {
       "path": "~/path/to/monorepo",
-      "checkout_script": "./scripts/pr-checkout.sh"
+      "checkout_script": "./scripts/pr-checkout.sh",
+      "worktree_directory": "~/custom/worktrees",
+      "worktree_name_template": "{id}/src"
     }
   }
 }

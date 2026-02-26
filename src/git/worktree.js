@@ -15,11 +15,41 @@ class GitWorktreeManager {
   /**
    * Create a new GitWorktreeManager instance
    * @param {sqlite3.Database} [db] - Optional database instance for worktree tracking
+   * @param {Object} [options] - Optional settings
+   * @param {string} [options.worktreeBaseDir] - Custom base directory for worktrees
+   * @param {string} [options.nameTemplate] - Template for worktree directory names
+   *   Supported variables: {id}, {pr_number}, {repo}, {owner}
+   *   Default: '{id}' (preserves current behavior)
    */
-  constructor(db = null) {
-    this.worktreeBaseDir = path.join(getConfigDir(), 'worktrees');
+  constructor(db = null, options = {}) {
+    this.worktreeBaseDir = options.worktreeBaseDir || path.join(getConfigDir(), 'worktrees');
+    this.nameTemplate = options.nameTemplate || '{id}';
     this.db = db;
     this.worktreeRepo = db ? new WorktreeRepository(db) : null;
+  }
+
+  /**
+   * Apply the name template to generate a worktree directory name
+   * @param {Object} context - Template context variables
+   * @param {string} context.id - Random worktree ID
+   * @param {number} [context.prNumber] - PR number
+   * @param {string} [context.repo] - Repository name
+   * @param {string} [context.owner] - Repository owner
+   * @returns {string} Resolved directory name
+   */
+  applyNameTemplate(context) {
+    let name = this.nameTemplate;
+    name = name.replace(/\{id\}/g, context.id);
+    if (context.prNumber !== undefined) {
+      name = name.replace(/\{pr_number\}/g, String(context.prNumber));
+    }
+    if (context.repo) {
+      name = name.replace(/\{repo\}/g, context.repo);
+    }
+    if (context.owner) {
+      name = name.replace(/\{owner\}/g, context.owner);
+    }
+    return name;
   }
 
   /**
@@ -221,7 +251,7 @@ class GitWorktreeManager {
       // Check if the directory still exists on disk
       const directoryExists = await this.pathExists(worktreePath);
 
-      if (directoryExists) {
+      if (directoryExists && await this.isValidGitWorktree(worktreePath)) {
         // Try to reuse existing worktree by refreshing it
         console.log(`Found existing worktree for PR #${prInfo.number} at ${worktreePath}`);
         try {
@@ -234,6 +264,8 @@ class GitWorktreeManager {
           // For other errors, log and fall through to recreate
           console.log(`Could not refresh existing worktree, will recreate: ${refreshError.message}`);
         }
+      } else if (directoryExists) {
+        console.log(`Worktree directory at ${worktreePath} is not a valid git worktree, will recreate`);
       } else {
         console.log(`Worktree directory no longer exists at ${worktreePath}, will recreate`);
       }
@@ -271,9 +303,15 @@ class GitWorktreeManager {
         }
       }
 
-      // Generate new random ID for worktree directory
+      // Generate new random ID for worktree directory and apply name template
       const worktreeId = generateWorktreeId();
-      worktreePath = path.join(this.worktreeBaseDir, worktreeId);
+      const worktreeDirName = this.applyNameTemplate({
+        id: worktreeId,
+        prNumber: prInfo.number,
+        repo: prInfo.repo,
+        owner: prInfo.owner
+      });
+      worktreePath = path.join(this.worktreeBaseDir, worktreeDirName);
     }
 
     try {

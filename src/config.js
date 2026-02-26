@@ -328,6 +328,31 @@ function getMonorepoCheckoutScript(config, repository) {
 }
 
 /**
+ * Gets the configured worktree directory for a monorepo repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {string|null} - Expanded worktree directory path or null if not configured
+ */
+function getMonorepoWorktreeDirectory(config, repository) {
+  const monorepoConfig = config.monorepos?.[repository];
+  if (monorepoConfig?.worktree_directory) {
+    return expandPath(monorepoConfig.worktree_directory);
+  }
+  return null;
+}
+
+/**
+ * Gets the configured worktree name template for a monorepo repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {string|null} - Template string or null if not configured
+ */
+function getMonorepoWorktreeNameTemplate(config, repository) {
+  const monorepoConfig = config.monorepos?.[repository];
+  return monorepoConfig?.worktree_name_template || null;
+}
+
+/**
  * Resolves the database filename to use.
  * Priority:
  *   1. PAIR_REVIEW_DB_NAME environment variable (highest priority)
@@ -370,6 +395,8 @@ module.exports = {
   expandPath,
   getMonorepoPath,
   getMonorepoCheckoutScript,
+  getMonorepoWorktreeDirectory,
+  getMonorepoWorktreeNameTemplate,
   resolveDbName,
   warnIfDevModeWithoutDbName
 };

@@ -7,6 +7,85 @@ import os from 'os';
 
 const { GitWorktreeManager } = require('../../src/git/worktree');
 
+describe('GitWorktreeManager constructor and name template', () => {
+  it('should use default worktree base directory when not provided', () => {
+    const manager = new GitWorktreeManager();
+    expect(manager.worktreeBaseDir).toContain('.pair-review/worktrees');
+  });
+
+  it('should use custom worktree base directory when provided', () => {
+    const manager = new GitWorktreeManager(null, { worktreeBaseDir: '/custom/path' });
+    expect(manager.worktreeBaseDir).toBe('/custom/path');
+  });
+
+  it('should use default name template when not provided', () => {
+    const manager = new GitWorktreeManager();
+    expect(manager.nameTemplate).toBe('{id}');
+  });
+
+  it('should use custom name template when provided', () => {
+    const manager = new GitWorktreeManager(null, { nameTemplate: '{id}/src' });
+    expect(manager.nameTemplate).toBe('{id}/src');
+  });
+
+  describe('applyNameTemplate', () => {
+    it('should replace {id} with the worktree ID', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}' });
+      const result = manager.applyNameTemplate({ id: 'abc123' });
+      expect(result).toBe('abc123');
+    });
+
+    it('should replace {pr_number} with the PR number', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: 'pr-{pr_number}' });
+      const result = manager.applyNameTemplate({ id: 'abc123', prNumber: 42 });
+      expect(result).toBe('pr-42');
+    });
+
+    it('should replace {repo} with the repository name', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{repo}' });
+      const result = manager.applyNameTemplate({ id: 'abc123', repo: 'my-repo' });
+      expect(result).toBe('my-repo');
+    });
+
+    it('should replace {owner} with the repository owner', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{owner}' });
+      const result = manager.applyNameTemplate({ id: 'abc123', owner: 'my-org' });
+      expect(result).toBe('my-org');
+    });
+
+    it('should replace all variables in a complex template', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: 'pr-{pr_number}/{owner}/{repo}/{id}' });
+      const result = manager.applyNameTemplate({ id: 'abc123', prNumber: 42, repo: 'my-repo', owner: 'my-org' });
+      expect(result).toBe('pr-42/my-org/my-repo/abc123');
+    });
+
+    it('should handle templates with subdirectories', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}/src' });
+      const result = manager.applyNameTemplate({ id: 'abc123' });
+      expect(result).toBe('abc123/src');
+    });
+
+    it('should handle multiple occurrences of the same variable', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}-{id}' });
+      const result = manager.applyNameTemplate({ id: 'abc123' });
+      expect(result).toBe('abc123-abc123');
+    });
+
+    it('should leave unreplaced variables when context is missing', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}-{pr_number}' });
+      const result = manager.applyNameTemplate({ id: 'abc123' });
+      expect(result).toBe('abc123-{pr_number}');
+    });
+
+    it('should replace id with undefined when not in context', () => {
+      const manager = new GitWorktreeManager(null, { nameTemplate: '{id}' });
+      const result = manager.applyNameTemplate({});
+      // id is always replaced (with undefined if not provided), but optional vars are preserved
+      expect(result).toBe('undefined');
+    });
+  });
+});
+
 describe('GitWorktreeManager sparse-checkout methods', () => {
   let testDir;
   let worktreeManager;

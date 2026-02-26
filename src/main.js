@@ -497,6 +497,9 @@ async function handlePullRequest(args, config, db, flags = {}) {
     const isMatchingRepo = await parser.isMatchingRepository(currentDir, prInfo.owner, prInfo.repo);
 
     let repositoryPath;
+    let worktreeSourcePath;
+    let checkoutScript;
+    let worktreeConfig;
     if (isMatchingRepo) {
       // Current directory is a checkout of the target repository
       repositoryPath = currentDir;
@@ -512,6 +515,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
         repo: prInfo.repo,
         repository,
         prNumber: prInfo.number,
+        config,
         onProgress: (progress) => {
           if (progress.message) {
             console.log(progress.message);
@@ -519,12 +523,18 @@ async function handlePullRequest(args, config, db, flags = {}) {
         }
       });
       repositoryPath = result.repositoryPath;
+      worktreeSourcePath = result.worktreeSourcePath;
+      checkoutScript = result.checkoutScript;
+      worktreeConfig = result.worktreeConfig;
     }
 
     // Setup git worktree
     console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager(db);
-    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath);
+    const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
+    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
+      worktreeSourcePath,
+      checkoutScript
+    });
 
     // Generate unified diff
     console.log('Generating unified diff...');
@@ -784,6 +794,9 @@ async function performHeadlessReview(args, config, db, flags, options) {
       const isMatchingRepo = await parser.isMatchingRepository(currentDir, prInfo.owner, prInfo.repo);
 
       let repositoryPath;
+      let worktreeSourcePath;
+      let checkoutScript;
+      let worktreeConfig;
       if (isMatchingRepo) {
         // Current directory is a checkout of the target repository
         repositoryPath = currentDir;
@@ -797,6 +810,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
           repo: prInfo.repo,
           repository,
           prNumber: prInfo.number,
+          config,
           onProgress: (progress) => {
             if (progress.message) {
               console.log(progress.message);
@@ -804,11 +818,17 @@ async function performHeadlessReview(args, config, db, flags, options) {
           }
         });
         repositoryPath = result.repositoryPath;
+        worktreeSourcePath = result.worktreeSourcePath;
+        checkoutScript = result.checkoutScript;
+        worktreeConfig = result.worktreeConfig;
       }
 
       console.log('Setting up git worktree...');
-      const worktreeManager = new GitWorktreeManager(db);
-      worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath);
+      const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
+      worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
+        worktreeSourcePath,
+        checkoutScript
+      });
 
       console.log('Generating unified diff...');
       diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);

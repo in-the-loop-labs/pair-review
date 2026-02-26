@@ -16,7 +16,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getMonorepoPath, getMonorepoCheckoutScript } = require('../config');
+const { getConfigDir, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate } = require('../config');
 const logger = require('../utils/logger');
 const simpleGit = require('simple-git');
 const fs = require('fs').promises;
@@ -202,10 +202,12 @@ async function registerRepositoryLocation(db, currentDir, owner, repo) {
  * @param {number} params.prNumber - PR number (used for worktree lookup)
  * @param {Object} [params.config] - Application config (used for monorepo path lookup)
  * @param {Function} [params.onProgress] - Optional progress callback
- * @returns {Promise<{ repositoryPath: string, knownPath: string|null, worktreeSourcePath: string|null, checkoutScript: string|null }>}
+ * @returns {Promise<{ repositoryPath: string, knownPath: string|null, worktreeSourcePath: string|null, checkoutScript: string|null, worktreeConfig: Object|null }>}
  *   - repositoryPath: the main git root (bare repo or .git parent)
  *   - knownPath: the known path from database (if any)
  *   - worktreeSourcePath: path to use as cwd for `git worktree add` (may be a worktree with sparse-checkout)
+ *   - checkoutScript: path to the checkout script (if configured)
+ *   - worktreeConfig: { worktreeBaseDir, nameTemplate } if configured, null otherwise
  */
 async function findRepositoryPath({ db, owner, repo, repository, prNumber, config, onProgress }) {
   const worktreeManager = new GitWorktreeManager(db);
@@ -347,7 +349,24 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
     }
   }
 
-  return { repositoryPath, knownPath, worktreeSourcePath, checkoutScript };
+  // ------------------------------------------------------------------
+  // Resolve worktree config (worktree_directory and worktree_name_template)
+  // ------------------------------------------------------------------
+  let worktreeConfig = null;
+  const worktreeDirectory = config ? getMonorepoWorktreeDirectory(config, repository) : null;
+  const worktreeNameTemplate = config ? getMonorepoWorktreeNameTemplate(config, repository) : null;
+
+  if (worktreeDirectory || worktreeNameTemplate) {
+    worktreeConfig = {};
+    if (worktreeDirectory) {
+      worktreeConfig.worktreeBaseDir = worktreeDirectory;
+    }
+    if (worktreeNameTemplate) {
+      worktreeConfig.nameTemplate = worktreeNameTemplate;
+    }
+  }
+
+  return { repositoryPath, knownPath, worktreeSourcePath, checkoutScript, worktreeConfig };
 }
 
 /**
@@ -393,7 +412,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   // Step: repo - Find (or clone) a local repository
   // ------------------------------------------------------------------
   progress({ step: 'repo', status: 'running', message: 'Locating repository...' });
-  const { repositoryPath, knownPath, worktreeSourcePath, checkoutScript } = await findRepositoryPath({
+  const { repositoryPath, knownPath, worktreeSourcePath, checkoutScript, worktreeConfig } = await findRepositoryPath({
     db,
     owner,
     repo,
@@ -408,7 +427,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   // Step: worktree - Create git worktree for the PR
   // ------------------------------------------------------------------
   progress({ step: 'worktree', status: 'running', message: 'Setting up git worktree...' });
-  const worktreeManager = new GitWorktreeManager(db);
+  const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
   const prInfo = { owner, repo, number: prNumber };
   // Use worktreeSourcePath as cwd for git worktree add (if available) to inherit sparse-checkout
   const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath, checkoutScript });
