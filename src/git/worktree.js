@@ -154,8 +154,16 @@ class GitWorktreeManager {
       let stdout = '';
       let stderr = '';
 
-      child.stdout.on('data', (data) => { stdout += data.toString(); });
-      child.stderr.on('data', (data) => { stderr += data.toString(); });
+      child.stdout.on('data', (data) => {
+        const chunk = data.toString();
+        stdout += chunk;
+        process.stdout.write(chunk);
+      });
+      child.stderr.on('data', (data) => {
+        const chunk = data.toString();
+        stderr += chunk;
+        process.stderr.write(chunk);
+      });
 
       const timer = setTimeout(() => {
         child.kill('SIGTERM');
@@ -363,9 +371,8 @@ class GitWorktreeManager {
           PR_NUMBER: String(prInfo.number),
           WORKTREE_PATH: worktreePath
         };
-        const { stdout, stderr } = await this.executeCheckoutScript(checkoutScript, worktreePath, scriptEnv);
-        if (stdout.trim()) console.log(`Checkout script stdout:\n${stdout}`);
-        if (stderr.trim()) console.log(`Checkout script stderr:\n${stderr}`);
+        await this.executeCheckoutScript(checkoutScript, worktreePath, scriptEnv);
+        console.log('Checkout script completed successfully');
       }
 
       // Checkout to PR head commit
