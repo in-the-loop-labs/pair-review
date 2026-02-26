@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.0
+
+### Minor Changes
+
+- d99addb: Add `checkout_script` option for monorepo sparse-checkout configuration. When configured under `monorepos.<owner/repo>.checkout_script`, the specified script is executed in the new worktree with environment variables (BASE_BRANCH, HEAD_BRANCH, BASE_SHA, HEAD_SHA, PR_NUMBER, WORKTREE_PATH) instead of the built-in sparse-checkout expansion algorithm.
+
 ## 2.0.3
 
 ### Patch Changes
