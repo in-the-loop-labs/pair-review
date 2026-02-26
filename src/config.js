@@ -317,6 +317,17 @@ function getMonorepoPath(config, repository) {
 }
 
 /**
+ * Gets the configured checkout script for a monorepo repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {string|null} - Checkout script path or null if not configured
+ */
+function getMonorepoCheckoutScript(config, repository) {
+  const monorepoConfig = config.monorepos?.[repository];
+  return monorepoConfig?.checkout_script || null;
+}
+
+/**
  * Resolves the database filename to use.
  * Priority:
  *   1. PAIR_REVIEW_DB_NAME environment variable (highest priority)
@@ -358,6 +369,7 @@ module.exports = {
   showWelcomeMessage,
   expandPath,
   getMonorepoPath,
+  getMonorepoCheckoutScript,
   resolveDbName,
   warnIfDevModeWithoutDbName
 };

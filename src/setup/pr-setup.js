@@ -16,7 +16,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const { GitHubClient } = require('../github/client');
 const { normalizeRepository } = require('../utils/paths');
 const { findMainGitRoot } = require('../local-review');
-const { getConfigDir, getMonorepoPath } = require('../config');
+const { getConfigDir, getMonorepoPath, getMonorepoCheckoutScript } = require('../config');
 const logger = require('../utils/logger');
 const simpleGit = require('simple-git');
 const fs = require('fs').promises;
@@ -202,7 +202,7 @@ async function registerRepositoryLocation(db, currentDir, owner, repo) {
  * @param {number} params.prNumber - PR number (used for worktree lookup)
  * @param {Object} [params.config] - Application config (used for monorepo path lookup)
  * @param {Function} [params.onProgress] - Optional progress callback
- * @returns {Promise<{ repositoryPath: string, knownPath: string|null, worktreeSourcePath: string|null }>}
+ * @returns {Promise<{ repositoryPath: string, knownPath: string|null, worktreeSourcePath: string|null, checkoutScript: string|null }>}
  *   - repositoryPath: the main git root (bare repo or .git parent)
  *   - knownPath: the known path from database (if any)
  *   - worktreeSourcePath: path to use as cwd for `git worktree add` (may be a worktree with sparse-checkout)
@@ -265,6 +265,18 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
     } catch (resolveError) {
       logger.warn(`Configured monorepo path ${monorepoPath} does not exist or is not a git repository: ${resolveError.message}`);
     }
+  }
+
+  // ------------------------------------------------------------------
+  // Resolve checkout_script for monorepo (if configured)
+  // ------------------------------------------------------------------
+  const checkoutScript = config ? getMonorepoCheckoutScript(config, repository) : null;
+
+  // When a checkout script is configured, null out worktreeSourcePath —
+  // the script handles all sparse-checkout setup, so we don't want to
+  // inherit from an existing worktree.
+  if (checkoutScript) {
+    worktreeSourcePath = null;
   }
 
   // ------------------------------------------------------------------
@@ -335,7 +347,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
     }
   }
 
-  return { repositoryPath, knownPath, worktreeSourcePath };
+  return { repositoryPath, knownPath, worktreeSourcePath, checkoutScript };
 }
 
 /**
@@ -381,7 +393,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   // Step: repo - Find (or clone) a local repository
   // ------------------------------------------------------------------
   progress({ step: 'repo', status: 'running', message: 'Locating repository...' });
-  const { repositoryPath, knownPath, worktreeSourcePath } = await findRepositoryPath({
+  const { repositoryPath, knownPath, worktreeSourcePath, checkoutScript } = await findRepositoryPath({
     db,
     owner,
     repo,
@@ -399,7 +411,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   const worktreeManager = new GitWorktreeManager(db);
   const prInfo = { owner, repo, number: prNumber };
   // Use worktreeSourcePath as cwd for git worktree add (if available) to inherit sparse-checkout
-  const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath });
+  const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath, checkoutScript });
   progress({ step: 'worktree', status: 'completed', message: `Worktree created at ${worktreePath}` });
 
   // ------------------------------------------------------------------
@@ -415,7 +427,11 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   //
   // NOTE: prData.changed_files is an INTEGER (count) from the GitHub pulls.get
   // API, not an array. We must fetch the actual file list via pulls.listFiles.
-  if (prData.changed_files > 0) {
+  if (checkoutScript) {
+    // checkout_script handles all sparse-checkout setup — skip built-in expansion
+    logger.info('Skipping built-in sparse-checkout expansion (checkout_script configured)');
+    progress({ step: 'sparse', status: 'completed', message: 'Sparse-checkout managed by checkout_script' });
+  } else if (prData.changed_files > 0) {
     const isSparse = await worktreeManager.isSparseCheckoutEnabled(worktreePath);
     if (isSparse) {
       progress({ step: 'sparse', status: 'running', message: 'Expanding sparse-checkout for PR directories...' });

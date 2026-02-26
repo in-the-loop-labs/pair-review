@@ -189,5 +189,12 @@
         }
       ]
     }
+  },
+  "monorepos": {
+    "_comment": "Monorepo sparse-checkout configuration. 'checkout_script' runs in the worktree with env vars: BASE_BRANCH, HEAD_BRANCH, BASE_SHA, HEAD_SHA, PR_NUMBER, WORKTREE_PATH.",
+    "owner/repo": {
+      "path": "~/path/to/monorepo",
+      "checkout_script": "./scripts/pr-checkout.sh"
+    }
   }
 }

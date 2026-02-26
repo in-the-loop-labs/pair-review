@@ -230,4 +230,93 @@ describe('GitWorktreeManager sparse-checkout methods', () => {
       expect(addedDirs).not.toContain('src/utils/deep');
     });
   });
+
+  describe('executeCheckoutScript', () => {
+    it('should execute script with correct env vars and CWD', async () => {
+      // Create a script that writes env vars and CWD to a file
+      const outputFile = path.join(testDir, 'script-output.txt');
+      const scriptPath = path.join(testDir, 'test-script.sh');
+      await fs.writeFile(scriptPath, `#!/bin/sh
+echo "CWD=$(pwd)" > "${outputFile}"
+echo "BASE_BRANCH=$BASE_BRANCH" >> "${outputFile}"
+echo "HEAD_BRANCH=$HEAD_BRANCH" >> "${outputFile}"
+echo "BASE_SHA=$BASE_SHA" >> "${outputFile}"
+echo "HEAD_SHA=$HEAD_SHA" >> "${outputFile}"
+echo "PR_NUMBER=$PR_NUMBER" >> "${outputFile}"
+echo "WORKTREE_PATH=$WORKTREE_PATH" >> "${outputFile}"
+`, { mode: 0o755 });
+
+      const env = {
+        BASE_BRANCH: 'main',
+        HEAD_BRANCH: 'feature/test',
+        BASE_SHA: 'abc123',
+        HEAD_SHA: 'def456',
+        PR_NUMBER: '42',
+        WORKTREE_PATH: testDir
+      };
+
+      await worktreeManager.executeCheckoutScript(scriptPath, testDir, env);
+
+      const output = await fs.readFile(outputFile, 'utf8');
+      // On macOS, /var is symlinked to /private/var, so pwd resolves the symlink.
+      // Use fs.realpath to get the canonical path for comparison.
+      const realTestDir = await fs.realpath(testDir);
+      expect(output).toContain(`CWD=${realTestDir}`);
+      expect(output).toContain('BASE_BRANCH=main');
+      expect(output).toContain('HEAD_BRANCH=feature/test');
+      expect(output).toContain('BASE_SHA=abc123');
+      expect(output).toContain('HEAD_SHA=def456');
+      expect(output).toContain('PR_NUMBER=42');
+      expect(output).toContain(`WORKTREE_PATH=${testDir}`);
+    });
+
+    it('should resolve with stdout and stderr on success', async () => {
+      const scriptPath = path.join(testDir, 'echo-script.sh');
+      await fs.writeFile(scriptPath, `#!/bin/sh
+echo "hello stdout"
+echo "hello stderr" >&2
+`, { mode: 0o755 });
+
+      const result = await worktreeManager.executeCheckoutScript(scriptPath, testDir, {});
+      expect(result.stdout).toContain('hello stdout');
+      expect(result.stderr).toContain('hello stderr');
+    });
+
+    it('should reject on non-zero exit code with stdout/stderr in error', async () => {
+      const scriptPath = path.join(testDir, 'fail-script.sh');
+      await fs.writeFile(scriptPath, `#!/bin/sh
+echo "some output"
+echo "some error" >&2
+exit 1
+`, { mode: 0o755 });
+
+      await expect(
+        worktreeManager.executeCheckoutScript(scriptPath, testDir, {})
+      ).rejects.toThrow(/exited with code 1/);
+
+      try {
+        await worktreeManager.executeCheckoutScript(scriptPath, testDir, {});
+      } catch (err) {
+        expect(err.message).toContain('some output');
+        expect(err.message).toContain('some error');
+      }
+    });
+
+    it('should reject on timeout', async () => {
+      const scriptPath = path.join(testDir, 'slow-script.sh');
+      await fs.writeFile(scriptPath, `#!/bin/sh
+sleep 30
+`, { mode: 0o755 });
+
+      await expect(
+        worktreeManager.executeCheckoutScript(scriptPath, testDir, {}, 100)
+      ).rejects.toThrow(/timed out/);
+    });
+
+    it('should reject on ENOENT (command not found)', async () => {
+      await expect(
+        worktreeManager.executeCheckoutScript('/nonexistent/script.sh', testDir, {})
+      ).rejects.toThrow(/not found|No such file|ENOENT|code 127/);
+    });
+  });
 });

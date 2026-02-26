@@ -36,6 +36,7 @@ const { RepoSettingsRepository } = require('../../src/database');
 // variables capture the spy wrappers, not the original functions.
 vi.spyOn(configModule, 'getConfigDir');
 vi.spyOn(configModule, 'getMonorepoPath');
+vi.spyOn(configModule, 'getMonorepoCheckoutScript');
 vi.spyOn(localReview, 'findMainGitRoot');
 vi.spyOn(GitWorktreeManager.prototype, 'pathExists');
 
@@ -64,6 +65,7 @@ describe('findRepositoryPath with monorepo configuration', () => {
 
     configModule.getConfigDir.mockReturnValue('/tmp/.pair-review-test');
     configModule.getMonorepoPath.mockReturnValue(null);
+    configModule.getMonorepoCheckoutScript.mockReturnValue(null);
 
     // Default: findMainGitRoot rejects
     localReview.findMainGitRoot.mockRejectedValue(new Error('Not a git repo'));
@@ -281,5 +283,81 @@ describe('findRepositoryPath with monorepo configuration', () => {
 
     expect(result.repositoryPath).toBe(TEST_REPO_ROOT);
     expect(result.knownPath).toBeNull();
+  });
+
+  it('should return checkoutScript when configured, with worktreeSourcePath nullified', async () => {
+    const configuredWorktreePath = '/workspace/monorepo-worktree';
+
+    // Tier -1: monorepo path resolves through a worktree
+    configModule.getMonorepoPath.mockReturnValue(configuredWorktreePath);
+    localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
+    makePathsExist([`${TEST_REPO_ROOT}/.git`]);
+
+    // checkout_script is configured
+    configModule.getMonorepoCheckoutScript.mockReturnValue('./scripts/pr-checkout.sh');
+
+    const result = await findRepositoryPath({
+      db,
+      owner: 'owner',
+      repo: 'repo',
+      repository: 'owner/repo',
+      prNumber: 42,
+      config: testConfig
+    });
+
+    expect(result.repositoryPath).toBe(TEST_REPO_ROOT);
+    expect(result.checkoutScript).toBe('./scripts/pr-checkout.sh');
+    // worktreeSourcePath should be nullified when checkoutScript is set
+    // (even though monorepo path differs from resolved root)
+    expect(result.worktreeSourcePath).toBeNull();
+  });
+
+  it('should return null checkoutScript when not configured (existing behavior preserved)', async () => {
+    // Tier -1: monorepo path resolves directly to main root
+    configModule.getMonorepoPath.mockReturnValue(TEST_REPO_ROOT);
+    localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
+    makePathsExist([`${TEST_REPO_ROOT}/.git`]);
+
+    // No checkout_script configured
+    configModule.getMonorepoCheckoutScript.mockReturnValue(null);
+
+    const result = await findRepositoryPath({
+      db,
+      owner: 'owner',
+      repo: 'repo',
+      repository: 'owner/repo',
+      prNumber: 42,
+      config: testConfig
+    });
+
+    expect(result.repositoryPath).toBe(TEST_REPO_ROOT);
+    expect(result.checkoutScript).toBeNull();
+    expect(result.worktreeSourcePath).toBeNull();
+  });
+
+  it('should nullify worktreeSourcePath when checkoutScript is set even with different monorepo path', async () => {
+    const configuredWorktreePath = '/workspace/different-worktree';
+
+    // Monorepo path differs from resolved root (would normally set worktreeSourcePath)
+    configModule.getMonorepoPath.mockReturnValue(configuredWorktreePath);
+    localReview.findMainGitRoot.mockResolvedValue(TEST_REPO_ROOT);
+    makePathsExist([`${TEST_REPO_ROOT}/.git`]);
+
+    // But checkout_script is also configured
+    configModule.getMonorepoCheckoutScript.mockReturnValue('./checkout.sh');
+
+    const result = await findRepositoryPath({
+      db,
+      owner: 'owner',
+      repo: 'repo',
+      repository: 'owner/repo',
+      prNumber: 42,
+      config: testConfig
+    });
+
+    // checkoutScript is set, so worktreeSourcePath must be null
+    expect(result.checkoutScript).toBe('./checkout.sh');
+    expect(result.worktreeSourcePath).toBeNull();
+    expect(result.repositoryPath).toBe(TEST_REPO_ROOT);
   });
 });

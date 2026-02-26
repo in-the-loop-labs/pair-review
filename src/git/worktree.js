@@ -130,6 +130,59 @@ class GitWorktreeManager {
   }
 
   /**
+   * Execute a user-provided checkout script in the worktree.
+   * The script receives PR context as environment variables and is responsible
+   * for configuring sparse-checkout (or any other worktree setup).
+   *
+   * @param {string} script - Script path or command to execute
+   * @param {string} worktreePath - Path to the worktree (used as cwd)
+   * @param {Object} env - Environment variables to pass (BASE_BRANCH, HEAD_BRANCH, etc.)
+   * @param {number} [timeout=60000] - Timeout in milliseconds
+   * @returns {Promise<{stdout: string, stderr: string}>} Script output
+   */
+  async executeCheckoutScript(script, worktreePath, env, timeout = 60000) {
+    const { spawn } = require('child_process');
+
+    return new Promise((resolve, reject) => {
+      const child = spawn(script, [], {
+        cwd: worktreePath,
+        shell: true,
+        env: { ...process.env, ...env },
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (data) => { stdout += data.toString(); });
+      child.stderr.on('data', (data) => { stderr += data.toString(); });
+
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        reject(new Error(`Checkout script timed out after ${timeout}ms.\nstdout: ${stdout}\nstderr: ${stderr}`));
+      }, timeout);
+
+      child.on('error', (err) => {
+        clearTimeout(timer);
+        if (err.code === 'ENOENT') {
+          reject(new Error(`Checkout script not found: ${script}`));
+        } else {
+          reject(new Error(`Checkout script failed to start: ${err.message}`));
+        }
+      });
+
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve({ stdout, stderr });
+        } else {
+          reject(new Error(`Checkout script exited with code ${code}.\nstdout: ${stdout}\nstderr: ${stderr}`));
+        }
+      });
+    });
+  }
+
+  /**
    * Create a git worktree for a PR and checkout to the PR head commit
    * @param {Object} prInfo - PR information { owner, repo, number }
    * @param {Object} prData - PR data from GitHub API
@@ -137,10 +190,13 @@ class GitWorktreeManager {
    * @param {Object} [options] - Optional settings
    * @param {string} [options.worktreeSourcePath] - Path to use as cwd for git worktree add
    *   (to inherit sparse-checkout from an existing worktree). Falls back to repositoryPath.
+   * @param {string} [options.checkoutScript] - Path to a script that configures sparse-checkout in the worktree.
+   *   When set, worktree is created with --no-checkout from the main git root (no sparse-checkout inheritance),
+   *   and the script is executed before checkout with PR context as environment variables.
    * @returns {Promise<string>} Path to created worktree
    */
   async createWorktreeForPR(prInfo, prData, repositoryPath, options = {}) {
-    const { worktreeSourcePath } = options;
+    const { worktreeSourcePath, checkoutScript } = options;
     // Check if worktree already exists in DB
     const repository = normalizeRepository(prInfo.owner, prInfo.repo);
     let worktreePath;
@@ -243,23 +299,39 @@ class GitWorktreeManager {
         }
       }
       
-      // Create worktree and checkout to base branch
-      // Use worktreeSourcePath as cwd if provided (to inherit sparse-checkout from existing worktree)
-      const worktreeAddGit = worktreeSourcePath ? simpleGit(worktreeSourcePath) : git;
-      if (worktreeSourcePath) {
-        console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch} (inheriting sparse-checkout from ${worktreeSourcePath})...`);
+      // Create worktree — strategy depends on whether a checkout script is configured
+      if (checkoutScript) {
+        // With checkout_script: create worktree with --no-checkout from main git root.
+        // The script will configure sparse-checkout before files are populated.
+        console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch} (--no-checkout, script will configure sparse-checkout)...`);
+        try {
+          await git.raw(['worktree', 'add', '--no-checkout', worktreePath, `${remote}/${prData.base_branch}`]);
+        } catch (worktreeError) {
+          if (worktreeError.message.includes('already registered')) {
+            console.log('Worktree already registered, trying with --force...');
+            await git.raw(['worktree', 'add', '--force', '--no-checkout', worktreePath, `${remote}/${prData.base_branch}`]);
+          } else {
+            throw worktreeError;
+          }
+        }
       } else {
-        console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch}...`);
-      }
-      try {
-        await worktreeAddGit.raw(['worktree', 'add', worktreePath, `${remote}/${prData.base_branch}`]);
-      } catch (worktreeError) {
-        // If worktree creation fails due to existing registration, try with --force
-        if (worktreeError.message.includes('already registered')) {
-          console.log('Worktree already registered, trying with --force...');
-          await worktreeAddGit.raw(['worktree', 'add', '--force', worktreePath, `${remote}/${prData.base_branch}`]);
+        // Without checkout_script: use worktreeSourcePath as cwd if provided
+        // (to inherit sparse-checkout from existing worktree)
+        const worktreeAddGit = worktreeSourcePath ? simpleGit(worktreeSourcePath) : git;
+        if (worktreeSourcePath) {
+          console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch} (inheriting sparse-checkout from ${worktreeSourcePath})...`);
         } else {
-          throw worktreeError;
+          console.log(`Creating worktree at ${worktreePath} from ${prData.base_branch}...`);
+        }
+        try {
+          await worktreeAddGit.raw(['worktree', 'add', worktreePath, `${remote}/${prData.base_branch}`]);
+        } catch (worktreeError) {
+          if (worktreeError.message.includes('already registered')) {
+            console.log('Worktree already registered, trying with --force...');
+            await worktreeAddGit.raw(['worktree', 'add', '--force', worktreePath, `${remote}/${prData.base_branch}`]);
+          } else {
+            throw worktreeError;
+          }
         }
       }
       
@@ -279,6 +351,22 @@ class GitWorktreeManager {
       // Fetch the PR head using GitHub's pull request refs (more reliable than branch names)
       console.log(`Fetching PR #${prInfo.number} head...`);
       await worktreeGit.fetch([remote, `+refs/pull/${prInfo.number}/head:refs/remotes/${remote}/pr-${prInfo.number}`]);
+
+      // Execute checkout script if configured (before checkout so sparse-checkout is set up)
+      if (checkoutScript) {
+        console.log(`Executing checkout script: ${checkoutScript}`);
+        const scriptEnv = {
+          BASE_BRANCH: prData.base_branch,
+          HEAD_BRANCH: prData.head_branch,
+          BASE_SHA: prData.base_sha,
+          HEAD_SHA: prData.head_sha,
+          PR_NUMBER: String(prInfo.number),
+          WORKTREE_PATH: worktreePath
+        };
+        const { stdout, stderr } = await this.executeCheckoutScript(checkoutScript, worktreePath, scriptEnv);
+        if (stdout.trim()) console.log(`Checkout script stdout:\n${stdout}`);
+        if (stderr.trim()) console.log(`Checkout script stderr:\n${stderr}`);
+      }
 
       // Checkout to PR head commit
       console.log(`Checking out to PR head commit ${prData.head_sha}...`);
