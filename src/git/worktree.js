@@ -171,7 +171,7 @@ class GitWorktreeManager {
    * @param {number} [timeout=60000] - Timeout in milliseconds
    * @returns {Promise<{stdout: string, stderr: string}>} Script output
    */
-  async executeCheckoutScript(script, worktreePath, env, timeout = 60000) {
+  async executeCheckoutScript(script, worktreePath, env, timeout = 300000) {
     return new Promise((resolve, reject) => {
       const child = spawn(script, [], {
         cwd: worktreePath,
@@ -230,10 +230,11 @@ class GitWorktreeManager {
    * @param {string} [options.checkoutScript] - Path to a script that configures sparse-checkout in the worktree.
    *   When set, worktree is created with --no-checkout from the main git root (no sparse-checkout inheritance),
    *   and the script is executed before checkout with PR context as environment variables.
+   * @param {number} [options.checkoutTimeout] - Timeout in ms for checkout script (default: 300000 = 5 minutes)
    * @returns {Promise<string>} Path to created worktree
    */
   async createWorktreeForPR(prInfo, prData, repositoryPath, options = {}) {
-    const { worktreeSourcePath, checkoutScript } = options;
+    const { worktreeSourcePath, checkoutScript, checkoutTimeout } = options;
     // Check if worktree already exists in DB
     const repository = normalizeRepository(prInfo.owner, prInfo.repo);
     let worktreePath;
@@ -397,6 +398,20 @@ class GitWorktreeManager {
       console.log(`Fetching PR #${prInfo.number} head...`);
       await worktreeGit.fetch([remote, `+refs/pull/${prInfo.number}/head:refs/remotes/${remote}/pr-${prInfo.number}`]);
 
+      // Also fetch the actual head branch by name (for tooling that expects branch refs)
+      // This may fail for fork PRs where the branch is in a different repo - that's okay
+      if (prData.head_branch) {
+        try {
+          console.log(`Fetching head branch ${prData.head_branch}...`);
+          await worktreeGit.fetch([remote, `+refs/heads/${prData.head_branch}:refs/remotes/${remote}/${prData.head_branch}`]);
+          // Create a local branch pointing to the fetched ref so tooling can reference it by name
+          await worktreeGit.branch([prData.head_branch, `${remote}/${prData.head_branch}`]);
+        } catch (branchFetchError) {
+          // Expected for fork PRs - the branch exists in the fork, not the base repo
+          console.log(`Could not fetch head branch (may be from a fork): ${branchFetchError.message}`);
+        }
+      }
+
       // Execute checkout script if configured (before checkout so sparse-checkout is set up)
       if (checkoutScript) {
         console.log(`Executing checkout script: ${checkoutScript}`);
@@ -408,7 +423,7 @@ class GitWorktreeManager {
           PR_NUMBER: String(prInfo.number),
           WORKTREE_PATH: worktreePath
         };
-        await this.executeCheckoutScript(checkoutScript, worktreePath, scriptEnv);
+        await this.executeCheckoutScript(checkoutScript, worktreePath, scriptEnv, checkoutTimeout);
         console.log('Checkout script completed successfully');
       }
 

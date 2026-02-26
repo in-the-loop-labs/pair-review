@@ -202,11 +202,12 @@ async function registerRepositoryLocation(db, currentDir, owner, repo) {
  * @param {number} params.prNumber - PR number (used for worktree lookup)
  * @param {Object} [params.config] - Application config (used for monorepo path lookup)
  * @param {Function} [params.onProgress] - Optional progress callback
- * @returns {Promise<{ repositoryPath: string, knownPath: string|null, worktreeSourcePath: string|null, checkoutScript: string|null, worktreeConfig: Object|null }>}
+ * @returns {Promise<{ repositoryPath: string, knownPath: string|null, worktreeSourcePath: string|null, checkoutScript: string|null, checkoutTimeout: number, worktreeConfig: Object|null }>}
  *   - repositoryPath: the main git root (bare repo or .git parent)
  *   - knownPath: the known path from database (if any)
  *   - worktreeSourcePath: path to use as cwd for `git worktree add` (may be a worktree with sparse-checkout)
  *   - checkoutScript: path to the checkout script (if configured)
+ *   - checkoutTimeout: timeout in ms for checkout script (default: 300000 = 5 minutes)
  *   - worktreeConfig: { worktreeBaseDir, nameTemplate } if configured, null otherwise
  */
 async function findRepositoryPath({ db, owner, repo, repository, prNumber, config, onProgress }) {
@@ -272,8 +273,8 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
   // ------------------------------------------------------------------
   // Resolve monorepo worktree options (checkout_script, worktree_directory, worktree_name_template)
   // ------------------------------------------------------------------
-  const resolved = config ? resolveMonorepoOptions(config, repository) : { checkoutScript: null, worktreeConfig: null };
-  const { checkoutScript, worktreeConfig } = resolved;
+  const resolved = config ? resolveMonorepoOptions(config, repository) : { checkoutScript: null, checkoutTimeout: 300000, worktreeConfig: null };
+  const { checkoutScript, checkoutTimeout, worktreeConfig } = resolved;
 
   // When a checkout script is configured, null out worktreeSourcePath —
   // the script handles all sparse-checkout setup, so we don't want to
@@ -350,7 +351,7 @@ async function findRepositoryPath({ db, owner, repo, repository, prNumber, confi
     }
   }
 
-  return { repositoryPath, knownPath, worktreeSourcePath, checkoutScript, worktreeConfig };
+  return { repositoryPath, knownPath, worktreeSourcePath, checkoutScript, checkoutTimeout, worktreeConfig };
 }
 
 /**
@@ -396,7 +397,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   // Step: repo - Find (or clone) a local repository
   // ------------------------------------------------------------------
   progress({ step: 'repo', status: 'running', message: 'Locating repository...' });
-  const { repositoryPath, knownPath, worktreeSourcePath, checkoutScript, worktreeConfig } = await findRepositoryPath({
+  const { repositoryPath, knownPath, worktreeSourcePath, checkoutScript, checkoutTimeout, worktreeConfig } = await findRepositoryPath({
     db,
     owner,
     repo,
@@ -414,7 +415,7 @@ async function setupPRReview({ db, owner, repo, prNumber, githubToken, config, o
   const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
   const prInfo = { owner, repo, number: prNumber };
   // Use worktreeSourcePath as cwd for git worktree add (if available) to inherit sparse-checkout
-  const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath, checkoutScript });
+  const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, { worktreeSourcePath, checkoutScript, checkoutTimeout });
   progress({ step: 'worktree', status: 'completed', message: `Worktree created at ${worktreePath}` });
 
   // ------------------------------------------------------------------

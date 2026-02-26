@@ -353,16 +353,31 @@ function getMonorepoWorktreeNameTemplate(config, repository) {
 }
 
 /**
+ * Gets the configured checkout script timeout for a monorepo repository
+ * @param {Object} config - Configuration object from loadConfig()
+ * @param {string} repository - Repository in "owner/repo" format
+ * @returns {number} - Timeout in milliseconds (default: 300000 = 5 minutes)
+ */
+function getMonorepoCheckoutTimeout(config, repository) {
+  const monorepoConfig = config.monorepos?.[repository];
+  if (monorepoConfig?.checkout_timeout_seconds) {
+    return monorepoConfig.checkout_timeout_seconds * 1000;
+  }
+  return 300000; // 5 minutes default
+}
+
+/**
  * Resolves all monorepo worktree options for a repository into a single object.
  * Composite helper that combines the individual getters into the shape expected
  * by GitWorktreeManager and createWorktreeForPR.
  *
  * @param {Object} config - Configuration object from loadConfig()
  * @param {string} repository - Repository in "owner/repo" format
- * @returns {{ checkoutScript: string|null, worktreeConfig: Object|null }}
+ * @returns {{ checkoutScript: string|null, checkoutTimeout: number, worktreeConfig: Object|null }}
  */
 function resolveMonorepoOptions(config, repository) {
   const checkoutScript = getMonorepoCheckoutScript(config, repository);
+  const checkoutTimeout = getMonorepoCheckoutTimeout(config, repository);
   const worktreeDirectory = getMonorepoWorktreeDirectory(config, repository);
   const nameTemplate = getMonorepoWorktreeNameTemplate(config, repository);
 
@@ -373,7 +388,7 @@ function resolveMonorepoOptions(config, repository) {
     if (nameTemplate) worktreeConfig.nameTemplate = nameTemplate;
   }
 
-  return { checkoutScript, worktreeConfig };
+  return { checkoutScript, checkoutTimeout, worktreeConfig };
 }
 
 /**
@@ -421,6 +436,7 @@ module.exports = {
   getMonorepoCheckoutScript,
   getMonorepoWorktreeDirectory,
   getMonorepoWorktreeNameTemplate,
+  getMonorepoCheckoutTimeout,
   resolveMonorepoOptions,
   resolveDbName,
   warnIfDevModeWithoutDbName

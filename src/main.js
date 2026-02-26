@@ -500,6 +500,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
     let repositoryPath;
     let worktreeSourcePath;
     let checkoutScript;
+    let checkoutTimeout;
     let worktreeConfig = null;
     if (isMatchingRepo) {
       // Current directory is a checkout of the target repository
@@ -511,6 +512,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
       // even when running from inside the target repo, so they are not silently ignored.
       const resolved = resolveMonorepoOptions(config, repository);
       checkoutScript = resolved.checkoutScript;
+      checkoutTimeout = resolved.checkoutTimeout;
       worktreeConfig = resolved.worktreeConfig;
     } else {
       // Current directory is not the target repository - find or clone it
@@ -531,6 +533,7 @@ async function handlePullRequest(args, config, db, flags = {}) {
       repositoryPath = result.repositoryPath;
       worktreeSourcePath = result.worktreeSourcePath;
       checkoutScript = result.checkoutScript;
+      checkoutTimeout = result.checkoutTimeout;
       worktreeConfig = result.worktreeConfig;
     }
 
@@ -539,7 +542,8 @@ async function handlePullRequest(args, config, db, flags = {}) {
     const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
     const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
       worktreeSourcePath,
-      checkoutScript
+      checkoutScript,
+      checkoutTimeout
     });
 
     // Generate unified diff
@@ -802,6 +806,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
       let repositoryPath;
       let worktreeSourcePath;
       let checkoutScript;
+      let checkoutTimeout;
       let worktreeConfig = null;
       if (isMatchingRepo) {
         // Current directory is a checkout of the target repository
@@ -812,6 +817,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
         // even when running from inside the target repo, so they are not silently ignored.
         const resolved = resolveMonorepoOptions(config, repository);
         checkoutScript = resolved.checkoutScript;
+        checkoutTimeout = resolved.checkoutTimeout;
         worktreeConfig = resolved.worktreeConfig;
       } else {
         // Current directory is not the target repository - find or clone it
@@ -832,6 +838,7 @@ async function performHeadlessReview(args, config, db, flags, options) {
         repositoryPath = result.repositoryPath;
         worktreeSourcePath = result.worktreeSourcePath;
         checkoutScript = result.checkoutScript;
+        checkoutTimeout = result.checkoutTimeout;
         worktreeConfig = result.worktreeConfig;
       }
 
@@ -839,7 +846,8 @@ async function performHeadlessReview(args, config, db, flags, options) {
       const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
       worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
         worktreeSourcePath,
-        checkoutScript
+        checkoutScript,
+        checkoutTimeout
       });
 
       console.log('Generating unified diff...');
