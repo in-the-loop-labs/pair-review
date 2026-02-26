@@ -396,17 +396,16 @@ describe('config.js', () => {
       expect(result).toBe(300000);
     });
 
-    it('should return default when checkout_timeout_seconds is negative (falsy)', () => {
+    it('should return default when checkout_timeout_seconds is negative', () => {
       const config = {
         monorepos: {
           'owner/repo': { checkout_timeout_seconds: -10 }
         }
       };
 
-      // Negative values are truthy, so they get multiplied: -10 * 1000 = -10000
-      // The production code uses `if (monorepoConfig?.checkout_timeout_seconds)` which is truthy for negatives
+      // Negative values are now correctly rejected by the > 0 guard
       const result = getMonorepoCheckoutTimeout(config, 'owner/repo');
-      expect(result).toBe(-10000);
+      expect(result).toBe(300000);
     });
   });
 

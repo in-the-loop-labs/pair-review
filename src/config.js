@@ -361,7 +361,7 @@ function getMonorepoWorktreeNameTemplate(config, repository) {
  */
 function getMonorepoCheckoutTimeout(config, repository) {
   const monorepoConfig = config.monorepos?.[repository];
-  if (monorepoConfig?.checkout_timeout_seconds) {
+  if (monorepoConfig?.checkout_timeout_seconds > 0) {
     return monorepoConfig.checkout_timeout_seconds * 1000;
   }
   return DEFAULT_CHECKOUT_TIMEOUT_MS; // 5 minutes default
