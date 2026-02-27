@@ -31,6 +31,7 @@
   - [Customization](#customization)
   - [Review Feedback Export](#review-feedback-export)
   - [Inline Comments](#inline-comments)
+  - [Comment Format](#comment-format)
   - [Local Mode](#local-mode)
 - [Claude Code Plugins](#claude-code-plugins)
 - [MCP Integration](#mcp-integration)
@@ -478,6 +479,51 @@ The markdown includes file paths, line numbers, and your comments - everything t
 - See all comments in context with the diff
 - Edit or discard AI suggestions before finalizing
 - Comments include file and line number for precision
+
+### Comment Format
+
+When AI suggestions are adopted as review comments, pair-review formats them with an emoji and category prefix. You can customize this format via the `comment_format` setting in `~/.pair-review/config.json`.
+
+**Presets:**
+
+| Preset | Example Output |
+|--------|---------------|
+| `default` | 🐛 **Bug**: Missing null check |
+| `minimal` | [Bug] Missing null check |
+| `plain` | Missing null check |
+| `emoji-only` | 🐛 Missing null check |
+
+To use a preset:
+
+```json
+{
+  "comment_format": "minimal"
+}
+```
+
+**Custom templates:**
+
+You can also provide a custom template using these placeholders: `{emoji}`, `{category}`, `{title}`, `{description}`, `{suggestion}`.
+
+```json
+{
+  "comment_format": {
+    "template": "{emoji} **{category}**: {description}\n\n**Suggestion:** {suggestion}",
+    "showEmoji": true,
+    "emojiOverrides": {
+      "bug": "🔴"
+    }
+  }
+}
+```
+
+- The `{suggestion}` block (and any surrounding text on the same line) is automatically omitted when a suggestion has no remediation text (e.g., praise comments).
+- `{title}` uses the suggestion's title field if available.
+- `emojiOverrides` lets you replace the default emoji for specific categories.
+
+The template must contain at least the `{description}` placeholder.
+
+**Available categories:** bug, improvement, praise, suggestion, design, performance, security, code-style
 
 ### Local Mode
 
