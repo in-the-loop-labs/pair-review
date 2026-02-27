@@ -466,8 +466,6 @@ AI PROVIDERS:
  * @param {Object} flags - Parsed command line flags
  */
 async function handlePullRequest(args, config, db, flags = {}) {
-  let prInfo = null; // Declare prInfo outside try block for error handling
-  
   try {
     // Get GitHub token (env var takes precedence over config)
     const githubToken = getGitHubToken(config);
@@ -477,156 +475,36 @@ async function handlePullRequest(args, config, db, flags = {}) {
 
     // Parse PR arguments
     const parser = new PRArgumentParser();
-    prInfo = await parser.parsePRArguments(args);
+    const prInfo = await parser.parsePRArguments(args);
 
-    console.log(`Processing pull request #${prInfo.number} from ${prInfo.owner}/${prInfo.repo}`);
-
-    // Create GitHub client and verify repository access
-    const githubClient = new GitHubClient(githubToken);
-    const repoExists = await githubClient.repositoryExists(prInfo.owner, prInfo.repo);
-    if (!repoExists) {
-      throw new Error(`Repository ${prInfo.owner}/${prInfo.repo} not found or not accessible`);
-    }
-
-    // Fetch PR data from GitHub
-    console.log('Fetching pull request data from GitHub...');
-    const prData = await githubClient.fetchPullRequest(prInfo.owner, prInfo.repo, prInfo.number);
-
-    // Determine repository path: only use cwd if it matches the target repo
+    // Register cwd as known repo path if it matches the target repo
     const currentDir = parser.getCurrentDirectory();
     const isMatchingRepo = await parser.isMatchingRepository(currentDir, prInfo.owner, prInfo.repo);
-    const repository = normalizeRepository(prInfo.owner, prInfo.repo);
-
-    let repositoryPath;
-    let worktreeSourcePath;
-    let checkoutScript;
-    let checkoutTimeout;
-    let worktreeConfig = null;
     if (isMatchingRepo) {
-      // Current directory is a checkout of the target repository
-      repositoryPath = currentDir;
-      // Register the known repository location for future web UI usage
       await registerRepositoryLocation(db, currentDir, prInfo.owner, prInfo.repo);
-
-      // Resolve monorepo config options (checkout_script, worktree_directory, worktree_name_template)
-      // even when running from inside the target repo, so they are not silently ignored.
-      const resolved = resolveMonorepoOptions(config, repository);
-      checkoutScript = resolved.checkoutScript;
-      checkoutTimeout = resolved.checkoutTimeout;
-      worktreeConfig = resolved.worktreeConfig;
-    } else {
-      // Current directory is not the target repository - find or clone it
-      console.log(`Current directory is not a checkout of ${prInfo.owner}/${prInfo.repo}, locating repository...`);
-      const result = await findRepositoryPath({
-        db,
-        owner: prInfo.owner,
-        repo: prInfo.repo,
-        repository,
-        prNumber: prInfo.number,
-        config,
-        onProgress: (progress) => {
-          if (progress.message) {
-            console.log(progress.message);
-          }
-        }
-      });
-      repositoryPath = result.repositoryPath;
-      worktreeSourcePath = result.worktreeSourcePath;
-      checkoutScript = result.checkoutScript;
-      checkoutTimeout = result.checkoutTimeout;
-      worktreeConfig = result.worktreeConfig;
     }
 
-    // Setup git worktree
-    console.log('Setting up git worktree...');
-    const worktreeManager = new GitWorktreeManager(db, worktreeConfig || {});
-    const worktreePath = await worktreeManager.createWorktreeForPR(prInfo, prData, repositoryPath, {
-      worktreeSourcePath,
-      checkoutScript,
-      checkoutTimeout
-    });
+    // Set model override if provided via CLI flag
+    if (flags.model) {
+      process.env.PAIR_REVIEW_MODEL = flags.model;
+    }
 
-    // Generate unified diff
-    console.log('Generating unified diff...');
-    const diff = await worktreeManager.generateUnifiedDiff(worktreePath, prData);
-    const changedFiles = await worktreeManager.getChangedFiles(worktreePath, prData);
+    // Start server and open browser to setup page
+    const port = await startServer(db);
 
-    // Store PR data in database
-    console.log('Storing pull request data...');
-    await storePRData(db, prInfo, prData, diff, changedFiles, worktreePath);
+    // Async cleanup of stale worktrees (don't block startup)
+    cleanupStaleWorktreesAsync(config);
 
-    // Start server with PR context
-    console.log('Starting server...');
-    const port = await startServerWithPRContext(config, prInfo, flags);
-
-    // Trigger AI analysis server-side if --ai flag is present
+    let url = `http://localhost:${port}/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
     if (flags.ai) {
-      console.log('Starting AI analysis...');
-
-      // Wait for server to be ready with retry logic
-      const maxRetries = 5;
-      const retryDelay = 200; // ms
-      let lastError;
-
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          // Add small delay to ensure server is fully initialized
-          if (attempt > 1) {
-            await new Promise(resolve => setTimeout(resolve, retryDelay * attempt));
-          }
-
-          const response = await fetch(`http://localhost:${port}/api/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}/analyses`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
-          });
-
-          if (response.ok) {
-            const result = await response.json();
-            console.log(`AI analysis started (ID: ${result.analysisId})`);
-            break; // Success, exit retry loop
-          } else {
-            lastError = `Server responded with ${response.status}: ${await response.text()}`;
-            if (attempt === maxRetries) {
-              console.warn('Failed to start AI analysis:', lastError);
-            }
-          }
-        } catch (error) {
-          lastError = error.message;
-          if (attempt === maxRetries) {
-            console.warn('Could not start AI analysis after', maxRetries, 'attempts:', lastError);
-          }
-        }
-      }
+      url += '?analyze=true';
     }
-
-    // Open browser to PR view
-    const url = `http://localhost:${port}/pr/${prInfo.owner}/${prInfo.repo}/${prInfo.number}`;
 
     console.log(`Opening browser to: ${url}`);
     await open(url);
 
   } catch (error) {
-    // Provide cleaner error messages for common issues
-    if (error.message && error.message.includes('not found in repository')) {
-      if (prInfo) {
-        console.error(`\n❌ Pull request #${prInfo.number} does not exist in ${prInfo.owner}/${prInfo.repo}`);
-      } else {
-        console.error(`\n❌ ${error.message}`);
-      }
-      console.error('Please check the PR number and try again.\n');
-    } else if (error.message && error.message.includes('authentication failed')) {
-      console.error('\n❌ GitHub authentication failed');
-      console.error('Please check your token in ~/.pair-review/config.json\n');
-    } else if (error.message && error.message.includes('Repository') && error.message.includes('not found')) {
-      console.error(`\n❌ ${error.message}`);
-      console.error('Please check the repository name and your access permissions.\n');
-    } else if (error.message && error.message.includes('Network error')) {
-      console.error('\n❌ Network connection error');
-      console.error('Please check your internet connection and try again.\n');
-    } else {
-      // For other errors, show a clean message without stack trace
-      console.error(`\n❌ Error: ${error.message}\n`);
-    }
+    console.error(`\n❌ Error: ${error.message}\n`);
     process.exit(1);
   }
 }
@@ -647,36 +525,6 @@ async function startServerOnly(config) {
   await open(url);
 }
 
-/**
- * Start server with PR context
- * @param {Object} config - Application configuration
- * @param {Object} prInfo - PR information
- * @param {Object} flags - Command line flags
- * @returns {Promise<number>} Server port
- */
-async function startServerWithPRContext(config, prInfo, flags = {}) {
-  // Set environment variable for PR context
-  process.env.PAIR_REVIEW_PR = JSON.stringify(prInfo);
-
-  // Set environment variable for auto-AI flag
-  if (flags.ai) {
-    process.env.PAIR_REVIEW_AUTO_AI = 'true';
-  }
-
-  // Set environment variable for model override (CLI takes priority)
-  if (flags.model) {
-    process.env.PAIR_REVIEW_MODEL = flags.model;
-  }
-
-  const { startServer } = require('./server');
-  const actualPort = await startServer(db);
-
-  // Async cleanup of stale worktrees (don't block startup)
-  cleanupStaleWorktreesAsync(config);
-
-  // Return the actual port the server started on
-  return actualPort;
-}
 
 /**
  * Format AI suggestion with emoji and category prefix
