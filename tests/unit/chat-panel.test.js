@@ -544,7 +544,7 @@ describe('ChatPanel', () => {
 
       chatPanel._handleDismissCommentClick();
 
-      expect(chatPanel.inputEl.value).toContain('delete');
+      expect(chatPanel.inputEl.value).toContain('dismiss');
       expect(chatPanel.inputEl.value).not.toContain('77');
       expect(chatPanel._pendingActionContext).toEqual({ type: 'dismiss-comment', itemId: 77 });
       expect(sendSpy).toHaveBeenCalled();

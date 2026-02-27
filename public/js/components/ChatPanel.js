@@ -2827,7 +2827,7 @@ class ChatPanel {
   _handleDismissCommentClick() {
     if (this.isStreaming || !this._contextItemId) return;
     this._pendingActionContext = { type: 'dismiss-comment', itemId: this._contextItemId };
-    this.inputEl.value = 'Please delete this comment.';
+    this.inputEl.value = 'Please dismiss this comment.';
     this.sendMessage();
   }
 
