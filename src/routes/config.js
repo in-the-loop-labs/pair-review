@@ -36,6 +36,7 @@ router.get('/api/config', (req, res) => {
   res.json({
     theme: config.theme || 'light',
     comment_button_action: config.comment_button_action || 'submit',
+    comment_format: config.comment_format || 'default',
     // Include npx detection for frontend command examples
     is_running_via_npx: isRunningViaNpx(),
     enable_chat: config.enable_chat !== false,
@@ -51,7 +52,7 @@ router.get('/api/config', (req, res) => {
  */
 router.patch('/api/config', async (req, res) => {
   try {
-    const { comment_button_action, chat_enable_shortcuts } = req.body;
+    const { comment_button_action, chat_enable_shortcuts, comment_format } = req.body;
 
     // Validate comment_button_action if provided
     if (comment_button_action !== undefined) {
@@ -70,6 +71,33 @@ router.patch('/api/config', async (req, res) => {
       }
     }
 
+    // Validate comment_format if provided
+    if (comment_format !== undefined) {
+      const validPresets = ['default', 'minimal', 'plain', 'emoji-only'];
+      if (typeof comment_format === 'string') {
+        if (!validPresets.includes(comment_format)) {
+          return res.status(400).json({
+            error: `Invalid comment_format preset. Must be one of: ${validPresets.join(', ')}`
+          });
+        }
+      } else if (typeof comment_format === 'object' && comment_format !== null) {
+        if (!comment_format.template || typeof comment_format.template !== 'string') {
+          return res.status(400).json({
+            error: 'Custom comment_format must have a "template" string'
+          });
+        }
+        if (!comment_format.template.includes('{description}')) {
+          return res.status(400).json({
+            error: 'Custom comment_format template must contain {description} placeholder'
+          });
+        }
+      } else {
+        return res.status(400).json({
+          error: 'comment_format must be a preset name string or a custom template object'
+        });
+      }
+    }
+
     // Get current config
     const config = req.app.get('config') || {};
 
@@ -81,6 +109,10 @@ router.patch('/api/config', async (req, res) => {
     if (chat_enable_shortcuts !== undefined) {
       if (!config.chat) config.chat = {};
       config.chat.enable_shortcuts = chat_enable_shortcuts;
+    }
+
+    if (comment_format !== undefined) {
+      config.comment_format = comment_format;
     }
 
     // Save config to file
@@ -95,7 +127,8 @@ router.patch('/api/config', async (req, res) => {
       config: {
         theme: config.theme || 'light',
         comment_button_action: config.comment_button_action || 'submit',
-        chat_enable_shortcuts: config.chat?.enable_shortcuts !== false
+        chat_enable_shortcuts: config.chat?.enable_shortcuts !== false,
+        comment_format: config.comment_format || 'default'
       }
     });
 

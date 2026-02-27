@@ -3505,12 +3505,8 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         continue;
       }
 
-      const suggestionText = suggestion.suggestion;
-      const hasSuggestionBlock = suggestionText?.trimStart().startsWith('```suggestion');
-      const body = suggestion.description +
-        (suggestionText
-          ? (hasSuggestionBlock ? '\n\n' + suggestionText : '\n\n**Suggestion:** ' + suggestionText)
-          : '');
+      const body = suggestion.description;
+      const suggestionText = suggestion.suggestion || null;
 
       const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;
       const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';
@@ -3518,9 +3514,9 @@ File-level suggestions should NOT have a line number. They apply to the entire f
       await dbRun(this.db, `
         INSERT INTO comments (
           review_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, side, type, title, body, reasoning, status, is_file_level,
+          file, line_start, line_end, side, type, title, body, suggestion_text, reasoning, status, is_file_level,
           voice_id, is_raw
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         reviewId,
         'ai',
@@ -3535,6 +3531,7 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         suggestion.type,
         suggestion.title,
         body,
+        suggestionText,
         suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
         'active',
         isFileLevel,

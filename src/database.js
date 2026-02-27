@@ -20,7 +20,7 @@ function getDbPath() {
 /**
  * Current schema version - increment this when adding new migrations
  */
-const CURRENT_SCHEMA_VERSION = 24;
+const CURRENT_SCHEMA_VERSION = 25;
 
 /**
  * Database schema SQL statements
@@ -80,6 +80,7 @@ const SCHEMA_SQL = {
       type TEXT,
       title TEXT,
       body TEXT,
+      suggestion_text TEXT,
       reasoning TEXT,
 
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'dismissed', 'adopted', 'submitted', 'draft', 'inactive')),
@@ -1135,6 +1136,28 @@ const MIGRATIONS = {
     }
 
     console.log('Migration to schema version 24 complete');
+  },
+
+  // Migration to version 25: adds suggestion_text column to comments for structured suggestion storage
+  25: (db) => {
+    console.log('Migrating to schema version 25: Add suggestion_text column to comments');
+
+    const columns = db.prepare('PRAGMA table_info(comments)').all();
+    if (!columns.some(c => c.name === 'suggestion_text')) {
+      try {
+        db.prepare('ALTER TABLE comments ADD COLUMN suggestion_text TEXT').run();
+        console.log('  Added suggestion_text column to comments');
+      } catch (error) {
+        if (!error.message.includes('duplicate column name')) {
+          throw error;
+        }
+        console.log('  Column suggestion_text already exists (race condition)');
+      }
+    } else {
+      console.log('  Column suggestion_text already exists');
+    }
+
+    console.log('Migration to schema version 25 complete');
   }
 };
 
@@ -2193,12 +2216,8 @@ class CommentRepository {
     }
 
     for (const suggestion of normalized) {
-      const suggestionText = suggestion.suggestion;
-      const hasSuggestionBlock = suggestionText?.trimStart().startsWith('```suggestion');
-      const body = suggestion.description +
-        (suggestionText
-          ? (hasSuggestionBlock ? '\n\n' + suggestionText : '\n\n**Suggestion:** ' + suggestionText)
-          : '');
+      const body = suggestion.description;
+      const suggestionText = suggestion.suggestion || null;
 
       // File-level suggestions have is_file_level=true or have null line_start
       const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;
@@ -2209,8 +2228,8 @@ class CommentRepository {
       await run(this.db, `
         INSERT INTO comments (
           review_id, source, author, ai_run_id, ai_level, ai_confidence,
-          file, line_start, line_end, side, type, title, body, reasoning, status, is_file_level
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          file, line_start, line_end, side, type, title, body, suggestion_text, reasoning, status, is_file_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         reviewId,
         'ai',
@@ -2225,6 +2244,7 @@ class CommentRepository {
         suggestion.type,
         suggestion.title,
         body,
+        suggestionText,
         suggestion.reasoning ? JSON.stringify(suggestion.reasoning) : null,
         'active',
         isFileLevel

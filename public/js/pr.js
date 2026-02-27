@@ -100,6 +100,7 @@ class PRManager {
     this.expandedFolders = new Set();
     this.expandedSections = new Set();
     this.currentTheme = localStorage.getItem('theme') || 'light';
+    this.commentFormat = 'default';
     this.suggestionNavigator = null;
     // AI analysis state
     this.isAnalyzing = false;
@@ -410,6 +411,17 @@ class PRManager {
       // API returns { success: true, data: { ... } } wrapper
       const prData = responseData.data || responseData;
       this.currentPR = prData;
+
+      // Fetch user config (comment format, etc.)
+      try {
+        const configResponse = await fetch('/api/config');
+        if (configResponse.ok) {
+          const configData = await configResponse.json();
+          this.commentFormat = configData.comment_format || 'default';
+        }
+      } catch (configErr) {
+        console.warn('Failed to load config, using defaults:', configErr);
+      }
 
       // Render PR header with metadata
       this.renderPRHeader(prData);
@@ -2595,8 +2607,8 @@ class PRManager {
     return this.suggestionManager.getCategoryEmoji(category);
   }
 
-  formatAdoptedComment(text, category) {
-    return this.suggestionManager.formatAdoptedComment(text, category);
+  formatAdoptedComment(text, category, suggestionText) {
+    return this.suggestionManager.formatAdoptedComment(text, category, suggestionText);
   }
 
   getTypeDescription(type) {

@@ -19,29 +19,9 @@ const fs = require('fs').promises;
 const simpleGit = require('simple-git');
 const { GitWorktreeManager } = require('../git/worktree');
 const { normalizeRepository } = require('../utils/paths');
-const { getEmoji: getCategoryEmoji } = require('../utils/category-emoji');
+const { resolveFormat, formatAdoptedComment: formatComment } = require('../utils/comment-formatter');
 
 const router = express.Router();
-
-/**
- * Format adopted comment text with emoji and category prefix.
- * Mirrors the frontend formatAdoptedComment() in SuggestionManager / FileCommentManager.
- * @param {string} text - Comment text
- * @param {string} category - Category name (e.g., 'bug', 'code-style')
- * @returns {string} Formatted text with emoji prefix
- */
-function formatAdoptedComment(text, category) {
-  if (!category) {
-    return text;
-  }
-  const emoji = getCategoryEmoji(category);
-  // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
-  const capitalizedCategory = category
-    .split('-')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-  return `${emoji} **${capitalizedCategory}**: ${text}`;
-}
 
 /**
  * Middleware: validate that :reviewId exists in the reviews table.
@@ -691,8 +671,15 @@ router.post('/api/reviews/:reviewId/suggestions/:id/adopt', validateReviewId, as
       });
     }
 
-    // Format the body with category prefix (mirrors frontend formatAdoptedComment)
-    const formattedBody = formatAdoptedComment(suggestion.body, suggestion.type);
+    // Format the body with category prefix using configurable formatter
+    const config = req.app.get('config') || {};
+    const formatConfig = resolveFormat(config.comment_format);
+    const formattedBody = formatComment({
+      body: suggestion.body,
+      suggestionText: suggestion.suggestion_text,
+      category: suggestion.type,
+      title: suggestion.title
+    }, formatConfig);
 
     // Atomically adopt: create user comment and update suggestion status in one transaction
     const userCommentId = await withTransaction(db, async () => {

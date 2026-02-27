@@ -160,22 +160,21 @@ class SuggestionManager {
   }
 
   /**
-   * Format adopted comment text with emoji and category prefix
-   * @param {string} text - Comment text
+   * Format adopted comment text using configurable shared formatter
+   * @param {string} text - Comment text (body/description)
    * @param {string} category - Category name
+   * @param {string} [suggestionText] - Separate suggestion text (from suggestion_text column)
    * @returns {string} Formatted text
    */
-  formatAdoptedComment(text, category) {
-    if (!category) {
-      return text;
-    }
-    const emoji = this.getCategoryEmoji(category);
-    // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
-    const capitalizedCategory = category
-      .split('-')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-    return `${emoji} **${capitalizedCategory}**: ${text}`;
+  formatAdoptedComment(text, category, suggestionText) {
+    const formatConfig = window.CommentFormatter?.resolveFormat(
+      this.prManager?.commentFormat
+    );
+    return window.CommentFormatter?.formatAdoptedComment({
+      body: text,
+      suggestionText: suggestionText || null,
+      category
+    }, formatConfig) || text;
   }
 
   /**
