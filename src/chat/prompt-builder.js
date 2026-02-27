@@ -44,6 +44,7 @@ function buildChatPrompt({ review, prData, skillPath, chatInstructions }) {
     '- **Comments** are human-curated review findings (created by the reviewer).',
     '- **Suggestions** are AI-generated findings from analysis runs.',
     '- **Workflow**: AI generates suggestions → reviewer triages (adopt, edit, or dismiss) → adopted suggestions become comments.',
+    '- **IMPORTANT**: Do NOT adopt, dismiss, or modify suggestions or comments unless the user explicitly asks you to. Your role is to discuss and explain — the reviewer decides what action to take.',
     '- **Analysis runs** are the process that produces suggestions. Each run has a provider, model, tier, and status.',
     '- **Review ID** is a stable integer identifying this review session, used in all API calls.'
   ];
@@ -69,7 +70,11 @@ function buildChatPrompt({ review, prData, skillPath, chatInstructions }) {
     'These become clickable links in the UI. Do NOT use backtick code spans for file references you want to be clickable.\n\n' +
     'Files in the diff can be referenced freely. Files outside the diff can also be referenced; ' +
     'to make them visible in the diff panel, add them as context files via the API (see skill). ' +
-    'Add context files judiciously — only when directly relevant, with focused line ranges.'
+    'Add context files judiciously — only when directly relevant, with focused line ranges.\n\n' +
+    'When the user asks to see code (e.g. "Show me…", "Where is…", "What does X look like?"), ' +
+    'add the relevant file as a context file with a focused line range so it appears in the diff panel. ' +
+    'When explaining code, prefer referencing specific line ranges (e.g. [[file:path.js:10-25]]) ' +
+    'over quoting large blocks in your response. Short inline snippets (a few lines) are fine when they clarify the explanation.'
   );
 
   // Tool usage discipline — avoid unnecessary Task delegation
