@@ -92,6 +92,15 @@ Do NOT modify files or run write commands. Analyze and report only.
   "summary": "Brief summary of findings"
 }
 
+### GitHub Suggestion Syntax
+When suggesting a specific change, **embed** a GitHub suggestion block within the "suggestion" field:
+
+```suggestion
+replacement content here
+```
+
+The content inside the block is the complete replacement for the commented line(s). Do not include explanation inside the block — any explanation should appear as plain text outside it. For non-specific suggestions, use plain text only.
+
 ## Line Number Reference (old_or_new field)
 The "old_or_new" field indicates which line number column to use:
 - **"NEW"** (default): Use the NEW column number for:

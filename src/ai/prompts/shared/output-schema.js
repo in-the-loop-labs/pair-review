@@ -148,7 +148,16 @@ function buildOutputSchemaSection(schema) {
 Output ONLY valid JSON with no additional text, explanations, or markdown code blocks. Do not wrap the JSON in \`\`\`json blocks. The response must start with { and end with }.
 
 Output JSON with this structure:
-${JSON.stringify(schema, null, 2)}`
+${JSON.stringify(schema, null, 2)}
+
+### GitHub Suggestion Syntax
+When suggesting a specific change, **embed** a GitHub suggestion block within the "suggestion" field:
+
+\`\`\`suggestion
+replacement content here
+\`\`\`
+
+The content inside the block is the complete replacement for the commented line(s). Do not include explanation inside the block — any explanation should appear as plain text outside it. For non-specific suggestions, use plain text only.`
   };
 }
 

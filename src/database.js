@@ -2193,8 +2193,12 @@ class CommentRepository {
     }
 
     for (const suggestion of normalized) {
+      const suggestionText = suggestion.suggestion;
+      const hasSuggestionBlock = suggestionText?.trimStart().startsWith('```suggestion');
       const body = suggestion.description +
-        (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
+        (suggestionText
+          ? (hasSuggestionBlock ? '\n\n' + suggestionText : '\n\n**Suggestion:** ' + suggestionText)
+          : '');
 
       // File-level suggestions have is_file_level=true or have null line_start
       const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;

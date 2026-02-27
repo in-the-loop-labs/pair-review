@@ -89,6 +89,15 @@ Merge suggestions from multiple AI reviewers. Deduplicate. Resolve conflicts. Ke
   }],
   "summary": "Key findings as if from single reviewer (no mention of consolidation/merging)"
 }
+
+### GitHub Suggestion Syntax
+When suggesting a specific change, **embed** a GitHub suggestion block within the "suggestion" field:
+
+\`\`\`suggestion
+replacement content here
+\`\`\`
+
+The content inside the block is the complete replacement for the commented line(s). Do not include explanation inside the block — any explanation should appear as plain text outside it. For non-specific suggestions, use plain text only.
 </section>
 
 <section name="diff-instructions" required="true" tier="fast">
