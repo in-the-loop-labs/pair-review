@@ -550,6 +550,30 @@ describe('POST /api/analyses/results', () => {
     expect(comment.body).toBe('Well done.');
   });
 
+  it('should skip **Suggestion:** prefix when suggestion contains a GitHub suggestion block', async () => {
+    const suggestionBlock = '```suggestion\nconst x = 1;\n```';
+    const response = await request(app)
+      .post('/api/analyses/results')
+      .send({
+        path: '/tmp/project',
+        headSha: 'sha-backtick',
+        suggestions: [
+          {
+            file: 'x.js', line_start: 1, line_end: 1,
+            type: 'bug', title: 'Fix variable',
+            description: 'Use const instead of var.',
+            suggestion: suggestionBlock
+          }
+        ]
+      });
+
+    expect(response.status).toBe(201);
+
+    const comment = await queryOne(db, 'SELECT body FROM comments WHERE ai_run_id = ?', [response.body.runId]);
+    expect(comment.body).toBe('Use const instead of var.\n\n' + suggestionBlock);
+    expect(comment.body).not.toContain('**Suggestion:**');
+  });
+
   // --- Mixed line-level and file-level suggestions ---
 
   it('should handle both line-level and file-level suggestions in one request', async () => {

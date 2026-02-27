@@ -87,6 +87,15 @@ Annotated diff tool (preferred), `cat -n <file>`, ls, find, grep. Do NOT modify 
   "summary": "Brief summary"
 }
 
+### GitHub Suggestion Syntax
+When suggesting a specific change, **embed** a GitHub suggestion block within the "suggestion" field:
+
+```suggestion
+replacement content here
+```
+
+The content inside the block is the complete replacement for the commented line(s). Do not include explanation inside the block — any explanation should appear as plain text outside it. For non-specific suggestions, use plain text only.
+
 ## Line Numbers
 "NEW" (default): added [+] and context lines. "OLD": only deleted [-] lines.
 

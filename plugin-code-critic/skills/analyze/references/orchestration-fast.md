@@ -97,6 +97,15 @@ Use "Consider...", "Worth noting..." - guidance not mandates.
   "summary": "Key findings as if from single reviewer (no mention of levels/orchestration)"
 }
 
+### GitHub Suggestion Syntax
+When suggesting a specific change, **embed** a GitHub suggestion block within the "suggestion" field:
+
+```suggestion
+replacement content here
+```
+
+The content inside the block is the complete replacement for the commented line(s). Do not include explanation inside the block — any explanation should appear as plain text outside it. For non-specific suggestions, use plain text only.
+
 ## old_or_new
 "NEW" (default): added [+] and context lines. "OLD": deleted [-] only. Preserve from input.
 

@@ -118,6 +118,15 @@ Output JSON with this structure:
   }],
   "summary": "Brief consolidation summary. Write as if a single reviewer produced this analysis — do NOT mention 'consolidation', 'merging', or 'multiple reviewers'."
 }
+
+### GitHub Suggestion Syntax
+When suggesting a specific change, **embed** a GitHub suggestion block within the "suggestion" field:
+
+\`\`\`suggestion
+replacement content here
+\`\`\`
+
+The content inside the block is the complete replacement for the commented line(s). Do not include explanation inside the block — any explanation should appear as plain text outside it. For non-specific suggestions, use plain text only.
 </section>
 
 <section name="diff-instructions" required="true">
