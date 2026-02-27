@@ -37,10 +37,12 @@ beforeEach(() => {
     localManager: null,
     aiPanel: null,
     statusIndicator: null,
-    EventSource: vi.fn().mockImplementation(() => ({
+    wsClient: {
+      connect: vi.fn(),
+      subscribe: vi.fn().mockReturnValue(vi.fn()),
       close: vi.fn(),
-      addEventListener: vi.fn()
-    }))
+      connected: true
+    }
   };
 });
 
@@ -48,7 +50,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   delete global.document;
   delete global.window;
-  delete global.EventSource;
 });
 
 /**
@@ -101,7 +102,7 @@ function createTestCouncilProgressModal() {
   modal.modal = modalContainer;
   modal.isVisible = false;
   modal.currentAnalysisId = null;
-  modal.eventSource = null;
+  modal._wsUnsub = null;
   modal.statusCheckInterval = null;
   modal.isRunningInBackground = false;
   modal.councilConfig = null;

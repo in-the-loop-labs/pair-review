@@ -6,10 +6,10 @@
  * - _updateActionButtons: shows/hides correct buttons for suggestion vs comment vs null context
  * - _handleAdoptClick / _handleUpdateClick: set input and call sendMessage, guard streaming/missing ID
  * - _sendCommentContextMessage: stores context and renders card correctly
- * - close(): resets button UI state, clears context, keeps SSE alive
+ * - close(): resets button UI state, clears context, keeps WS subscriptions alive
  * - _startNewConversation(): calls _finalizeStreaming, resets all state
  * - open() with mutually exclusive contexts: suggestion vs comment (if/else if)
- * - Background SSE accumulation: delta events accumulate when isOpen === false
+ * - Background WS accumulation: delta events accumulate when isOpen === false
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -196,20 +196,11 @@ global.localStorage = {
   removeItem: vi.fn((key) => { delete global.localStorage._store[key]; }),
 };
 
-global.EventSource = class MockEventSource {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSED = 2;
-
-  constructor(url) {
-    this.url = url;
-    this.readyState = MockEventSource.OPEN;
-    this.onmessage = null;
-    this.onerror = null;
-  }
-  close() {
-    this.readyState = MockEventSource.CLOSED;
-  }
+global.wsClient = global.window.wsClient = {
+  connect: vi.fn(),
+  subscribe: vi.fn().mockReturnValue(vi.fn()), // returns unsubscribe fn
+  close: vi.fn(),
+  connected: true
 };
 
 documentListeners = {};
@@ -319,9 +310,9 @@ describe('ChatPanel', () => {
 
   afterEach(() => {
     if (chatPanel) {
-      // Suppress destroy's SSE cleanup
-      chatPanel.eventSource = null;
-      chatPanel._sseReconnectTimer = null;
+      // Suppress destroy's WS cleanup
+      chatPanel._chatUnsub = null;
+      chatPanel._reviewUnsub = null;
     }
     chatPanel = null;
   });
@@ -959,15 +950,15 @@ describe('ChatPanel', () => {
       expect(chatPanel._analysisContextRemoved).toBe(true);
     });
 
-    it('should NOT close the global SSE connection', () => {
-      const mockES = new global.EventSource('/api/chat/stream');
-      chatPanel.eventSource = mockES;
-      const closeSpy = vi.spyOn(mockES, 'close');
+    it('should NOT close WebSocket subscriptions', () => {
+      const mockUnsub = vi.fn();
+      chatPanel._chatUnsub = mockUnsub;
+      chatPanel._reviewUnsub = vi.fn();
 
       chatPanel.close();
 
-      expect(closeSpy).not.toHaveBeenCalled();
-      expect(chatPanel.eventSource).toBe(mockES);
+      expect(mockUnsub).not.toHaveBeenCalled();
+      expect(chatPanel._chatUnsub).toBe(mockUnsub);
     });
 
     it('should keep isStreaming and _streamingContent intact for background accumulation', () => {
@@ -1381,42 +1372,18 @@ describe('ChatPanel', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Background SSE accumulation (isOpen === false)
+  // Background WS accumulation (isOpen === false)
   // -----------------------------------------------------------------------
-  describe('Background SSE accumulation', () => {
-    let onmessageHandler;
-
+  describe('Background WS accumulation', () => {
     beforeEach(() => {
-      // Set up an SSE connection and capture its onmessage handler
       chatPanel.currentSessionId = 'sess-1';
       chatPanel.isOpen = false;
       chatPanel.isStreaming = true;
       chatPanel._streamingContent = '';
-
-      // Create EventSource and capture the handler that _ensureGlobalSSE sets
-      const mockES = new global.EventSource('/api/chat/stream');
-      chatPanel.eventSource = mockES;
-
-      // Simulate what _ensureGlobalSSE does: it assigns onmessage
-      // We need to manually trigger events, so capture the handler
-      vi.spyOn(chatPanel, '_ensureGlobalSSE').mockImplementation(() => {
-        // Already connected, no-op
-      });
-
-      // Extract the onmessage handler by calling _ensureGlobalSSE with a real EventSource
-      // Instead, we'll manually simulate the SSE message handler logic
-      // by invoking the onmessage handler path directly.
-
-      // To properly test, we need to set up the real onmessage handler.
-      // Let's call _ensureGlobalSSE for real this time.
-      chatPanel._ensureGlobalSSE.mockRestore();
-      chatPanel.eventSource = null; // Force reconnect
-      chatPanel._ensureGlobalSSE();
-      onmessageHandler = chatPanel.eventSource.onmessage;
     });
 
     function emitEvent(data) {
-      onmessageHandler({ data: JSON.stringify(data) });
+      chatPanel._handleChatMessage(data);
     }
 
     it('should accumulate delta events into _streamingContent when panel is closed', () => {
@@ -1474,15 +1441,6 @@ describe('ChatPanel', () => {
       expect(chatPanel._streamingContent).toBe('');
     });
 
-    it('should ignore "connected" event without sessionId', () => {
-      // This is the initial handshake event — should not affect state
-      chatPanel._streamingContent = '';
-
-      emitEvent({ type: 'connected' });
-
-      expect(chatPanel._streamingContent).toBe('');
-    });
-
     it('should skip tool_use and status events when panel is closed', () => {
       // These are purely visual — they should not throw or alter state
       emitEvent({ type: 'tool_use', toolName: 'Read', status: 'start', sessionId: 'sess-1' });
@@ -1497,59 +1455,67 @@ describe('ChatPanel', () => {
   // _ensureGlobalSSE / _closeGlobalSSE
   // -----------------------------------------------------------------------
   describe('_ensureGlobalSSE', () => {
-    it('should create a new EventSource when none exists', () => {
-      chatPanel.eventSource = null;
+    it('should call wsClient.connect()', () => {
+      window.wsClient.connect.mockClear();
       chatPanel._ensureGlobalSSE();
 
-      expect(chatPanel.eventSource).not.toBeNull();
-      expect(chatPanel.eventSource.url).toBe('/api/chat/stream');
+      expect(window.wsClient.connect).toHaveBeenCalled();
     });
 
-    it('should not create a new EventSource if one is already open', () => {
-      const firstES = new global.EventSource('/api/chat/stream');
-      chatPanel.eventSource = firstES;
+    it('should subscribe to review topic when reviewId is set', () => {
+      window.wsClient.subscribe.mockClear();
+      chatPanel.reviewId = 'review-42';
+      chatPanel._reviewUnsub = null;
 
       chatPanel._ensureGlobalSSE();
 
-      expect(chatPanel.eventSource).toBe(firstES);
+      expect(window.wsClient.subscribe).toHaveBeenCalledWith('review:review-42', expect.any(Function));
+      expect(chatPanel._reviewUnsub).not.toBeNull();
     });
 
-    it('should reconnect if the existing EventSource is closed', () => {
-      const closedES = new global.EventSource('/api/chat/stream');
-      closedES.readyState = global.EventSource.CLOSED;
-      chatPanel.eventSource = closedES;
+    it('should subscribe to chat topic when currentSessionId is set', () => {
+      window.wsClient.subscribe.mockClear();
+      chatPanel.currentSessionId = 'sess-99';
+      chatPanel._chatUnsub = null;
 
       chatPanel._ensureGlobalSSE();
 
-      expect(chatPanel.eventSource).not.toBe(closedES);
-      expect(chatPanel.eventSource.url).toBe('/api/chat/stream');
+      expect(window.wsClient.subscribe).toHaveBeenCalledWith('chat:sess-99', expect.any(Function));
+      expect(chatPanel._chatUnsub).not.toBeNull();
+    });
+
+    it('should not re-subscribe if already subscribed', () => {
+      window.wsClient.subscribe.mockClear();
+      const existingUnsub = vi.fn();
+      chatPanel._chatUnsub = existingUnsub;
+      chatPanel._reviewUnsub = vi.fn();
+      chatPanel.currentSessionId = 'sess-99';
+      chatPanel.reviewId = 'review-42';
+
+      chatPanel._ensureGlobalSSE();
+
+      expect(window.wsClient.subscribe).not.toHaveBeenCalled();
     });
   });
 
   describe('_closeGlobalSSE', () => {
-    it('should close the EventSource and null it out', () => {
-      const mockES = new global.EventSource('/api/chat/stream');
-      chatPanel.eventSource = mockES;
-      const closeSpy = vi.spyOn(mockES, 'close');
+    it('should call chat and review unsubscribe functions', () => {
+      const chatUnsub = vi.fn();
+      const reviewUnsub = vi.fn();
+      chatPanel._chatUnsub = chatUnsub;
+      chatPanel._reviewUnsub = reviewUnsub;
 
       chatPanel._closeGlobalSSE();
 
-      expect(closeSpy).toHaveBeenCalled();
-      expect(chatPanel.eventSource).toBeNull();
+      expect(chatUnsub).toHaveBeenCalled();
+      expect(reviewUnsub).toHaveBeenCalled();
+      expect(chatPanel._chatUnsub).toBeNull();
+      expect(chatPanel._reviewUnsub).toBeNull();
     });
 
-    it('should clear the reconnect timer', () => {
-      chatPanel._sseReconnectTimer = 42;
-
-      chatPanel._closeGlobalSSE();
-
-      expect(global.clearTimeout).toHaveBeenCalledWith(42);
-      expect(chatPanel._sseReconnectTimer).toBeNull();
-    });
-
-    it('should be safe to call when no EventSource exists', () => {
-      chatPanel.eventSource = null;
-      chatPanel._sseReconnectTimer = null;
+    it('should be safe to call when no subscriptions exist', () => {
+      chatPanel._chatUnsub = null;
+      chatPanel._reviewUnsub = null;
 
       expect(() => chatPanel._closeGlobalSSE()).not.toThrow();
     });

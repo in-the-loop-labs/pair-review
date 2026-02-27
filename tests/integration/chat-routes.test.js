@@ -15,7 +15,8 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 const chatRouter = require('../../src/routes/chat');
-const { _sseClients, _sseUnsubscribers, _buildPairReviewApiRe } = require('../../src/routes/chat');
+const { _sseUnsubscribers, _buildPairReviewApiRe } = require('../../src/routes/chat');
+const ws = require('../../src/ws');
 
 /**
  * Creates a mock ChatSessionManager with controllable behavior.
@@ -51,8 +52,11 @@ describe('Chat Routes', () => {
   let app;
   let db;
   let mockManager;
+  let broadcastSpy;
 
   beforeEach(() => {
+    broadcastSpy = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
+
     db = createTestDatabase();
 
     // Insert a review to satisfy foreign key constraints
@@ -73,9 +77,9 @@ describe('Chat Routes', () => {
   });
 
   afterEach(() => {
-    // Clean up any SSE clients and unsubscribers registered during tests
-    _sseClients.clear();
+    // Clean up any unsubscribers registered during tests
     _sseUnsubscribers.clear();
+    broadcastSpy.mockRestore();
     closeTestDatabase(db);
   });
 
@@ -422,61 +426,6 @@ describe('Chat Routes', () => {
     });
   });
 
-  describe('GET /api/chat/stream (multiplexed SSE)', () => {
-    it('should return SSE headers and connected event', async () => {
-      // SSE connections stay open, so we use a raw HTTP approach with a promise
-      const http = require('http');
-      const server = app.listen(0);
-      const port = server.address().port;
-
-      try {
-        const result = await new Promise((resolve, reject) => {
-          const req = http.get(`http://127.0.0.1:${port}/api/chat/stream`, (res) => {
-            let data = '';
-            res.on('data', (chunk) => {
-              data += chunk.toString();
-              // We have data — destroy the connection
-              req.destroy();
-              resolve({ headers: res.headers, data });
-            });
-            res.on('error', () => resolve({ headers: res.headers, data }));
-          });
-          req.on('error', reject);
-          setTimeout(() => { req.destroy(); reject(new Error('timeout')); }, 5000);
-        });
-
-        expect(result.headers['content-type']).toBe('text/event-stream');
-        expect(result.headers['cache-control']).toBe('no-cache');
-        expect(result.data).toContain('data: {"type":"connected"}');
-      } finally {
-        server.close();
-      }
-    });
-
-    it('should add and remove clients from sseClients set', async () => {
-      const http = require('http');
-      const server = app.listen(0);
-      const port = server.address().port;
-
-      try {
-        expect(_sseClients.size).toBe(0);
-
-        const req = http.get(`http://127.0.0.1:${port}/api/chat/stream`, () => {});
-
-        // Wait briefly for the connection to be registered
-        await new Promise(r => setTimeout(r, 100));
-        expect(_sseClients.size).toBe(1);
-
-        // Disconnect the client
-        req.destroy();
-        await new Promise(r => setTimeout(r, 100));
-        expect(_sseClients.size).toBe(0);
-      } finally {
-        server.close();
-      }
-    });
-  });
-
   describe('GET /api/review/:reviewId/chat/sessions', () => {
     it('should list sessions for a review', async () => {
       const mockSessions = [
@@ -726,7 +675,7 @@ describe('Chat Routes', () => {
      * Helper: starts the app on an ephemeral port, creates a session
      * (which triggers registerSSEBroadcast with that port), captures
      * the onToolUse callback, and returns it along with a list that
-     * collects all SSE events broadcast during the test.
+     * collects broadcast events via the mocked ws broadcast function.
      */
     async function setupToolUseCapture() {
       let capturedCallback;
@@ -750,17 +699,13 @@ describe('Chat Routes', () => {
         server.close();
       }
 
-      // Collect broadcast events via a fake SSE client
+      // Collect broadcast events via the spy on ws.broadcast
       const events = [];
-      const fakeClient = {
-        write: (raw) => {
-          const json = raw.replace(/^data: /, '').trim();
-          if (json) events.push(JSON.parse(json));
-        }
-      };
-      _sseClients.add(fakeClient);
+      broadcastSpy.mockImplementation((_topic, payload) => {
+        events.push(payload);
+      });
 
-      return { callback: capturedCallback, events, fakeClient, port };
+      return { callback: capturedCallback, events, port };
     }
 
     it('should suppress curl to localhost/api on the server port (start + end)', async () => {

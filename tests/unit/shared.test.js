@@ -3,8 +3,11 @@
  * Tests for shared.js cancellation-related functions
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
+
+const ws = require('../../src/ws');
+
 import {
   registerProcess,
   killProcesses,
@@ -13,7 +16,6 @@ import {
   activeAnalyses,
   createProgressCallback,
   broadcastProgress,
-  progressClients,
   parseEnabledLevels
 } from '../../src/routes/shared.js';
 
@@ -264,11 +266,12 @@ describe('shared.js cancellation functions', () => {
 describe('createProgressCallback', () => {
   let analysisId;
   let baseStatus;
+  let broadcastSpy;
 
   beforeEach(() => {
     // Clean up state between tests
     activeAnalyses.clear();
-    progressClients.clear();
+    broadcastSpy = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
     vi.clearAllTimers();
     vi.useFakeTimers();
 
@@ -284,6 +287,11 @@ describe('createProgressCallback', () => {
       }
     };
     activeAnalyses.set(analysisId, baseStatus);
+  });
+
+  afterEach(() => {
+    broadcastSpy.mockRestore();
+    vi.useRealTimers();
   });
 
   it('should return a function', () => {
@@ -774,9 +782,6 @@ describe('createProgressCallback', () => {
     });
 
     it('should broadcast stream events for consolidation-L* levels', () => {
-      const mockClient = { write: vi.fn() };
-      progressClients.set(analysisId, new Set([mockClient]));
-
       const callback = createProgressCallback(analysisId);
 
       callback({
@@ -784,9 +789,10 @@ describe('createProgressCallback', () => {
         streamEvent: { type: 'assistant_text', text: 'Working...' }
       });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(1);
-      const written = mockClient.write.mock.calls[0][0];
-      expect(written).toContain('"type":"progress"');
+      expect(broadcastSpy).toHaveBeenCalled();
+      const [topic, payload] = broadcastSpy.mock.calls[broadcastSpy.mock.calls.length - 1];
+      expect(topic).toBe('analysis:' + analysisId);
+      expect(payload.type).toBe('progress');
     });
 
     it('should set orchestration consolidationStep on stream events', () => {
@@ -938,26 +944,23 @@ describe('createProgressCallback', () => {
     });
 
     it('should broadcast first stream event immediately', () => {
-      const mockClient = { write: vi.fn() };
-      progressClients.set(analysisId, new Set([mockClient]));
-
       const callback = createProgressCallback(analysisId);
+      const callCountBefore = broadcastSpy.mock.calls.length;
 
       callback({
         level: 1,
         streamEvent: { type: 'assistant_text', text: 'First message' }
       });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(1);
-      const written = mockClient.write.mock.calls[0][0];
-      expect(written).toContain('"type":"progress"');
+      expect(broadcastSpy).toHaveBeenCalledTimes(callCountBefore + 1);
+      const [topic, payload] = broadcastSpy.mock.calls[broadcastSpy.mock.calls.length - 1];
+      expect(topic).toBe('analysis:' + analysisId);
+      expect(payload.type).toBe('progress');
     });
 
     it('should throttle stream events within 300ms window', () => {
-      const mockClient = { write: vi.fn() };
-      progressClients.set(analysisId, new Set([mockClient]));
-
       const callback = createProgressCallback(analysisId);
+      const callCountBefore = broadcastSpy.mock.calls.length;
 
       // First event: should broadcast
       callback({
@@ -965,7 +968,7 @@ describe('createProgressCallback', () => {
         streamEvent: { type: 'assistant_text', text: 'Message 1' }
       });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(1);
+      expect(broadcastSpy).toHaveBeenCalledTimes(callCountBefore + 1);
 
       // Advance time by 100ms (less than 300ms)
       vi.advanceTimersByTime(100);
@@ -976,7 +979,7 @@ describe('createProgressCallback', () => {
         streamEvent: { type: 'assistant_text', text: 'Message 2' }
       });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(1); // Still 1
+      expect(broadcastSpy).toHaveBeenCalledTimes(callCountBefore + 1); // Still 1
 
       // Third event: should NOT broadcast (still within 300ms of first)
       vi.advanceTimersByTime(150); // Total 250ms
@@ -985,7 +988,7 @@ describe('createProgressCallback', () => {
         streamEvent: { type: 'assistant_text', text: 'Message 3' }
       });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(1); // Still 1
+      expect(broadcastSpy).toHaveBeenCalledTimes(callCountBefore + 1); // Still 1
 
       // Fourth event: should broadcast (300ms elapsed since first)
       vi.advanceTimersByTime(100); // Total 350ms
@@ -994,14 +997,12 @@ describe('createProgressCallback', () => {
         streamEvent: { type: 'assistant_text', text: 'Message 4' }
       });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(2); // Now 2
+      expect(broadcastSpy).toHaveBeenCalledTimes(callCountBefore + 2); // Now 2
     });
 
     it('should throttle stream events independently per level', () => {
-      const mockClient = { write: vi.fn() };
-      progressClients.set(analysisId, new Set([mockClient]));
-
       const callback = createProgressCallback(analysisId);
+      const callCountBefore = broadcastSpy.mock.calls.length;
 
       // Level 1 event
       callback({
@@ -1009,7 +1010,7 @@ describe('createProgressCallback', () => {
         streamEvent: { type: 'assistant_text', text: 'Level 1' }
       });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(1);
+      expect(broadcastSpy).toHaveBeenCalledTimes(callCountBefore + 1);
 
       // Level 2 event (should not be throttled, different level)
       callback({
@@ -1017,7 +1018,7 @@ describe('createProgressCallback', () => {
         streamEvent: { type: 'assistant_text', text: 'Level 2' }
       });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(2);
+      expect(broadcastSpy).toHaveBeenCalledTimes(callCountBefore + 2);
 
       // Level 3 event (should not be throttled, different level)
       callback({
@@ -1025,7 +1026,7 @@ describe('createProgressCallback', () => {
         streamEvent: { type: 'assistant_text', text: 'Level 3' }
       });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(3);
+      expect(broadcastSpy).toHaveBeenCalledTimes(callCountBefore + 3);
     });
 
     it('should ignore stream events when level does not exist in status', () => {
@@ -1220,35 +1221,27 @@ describe('createProgressCallback', () => {
     });
   });
 
-  describe('Broadcasts to SSE clients', () => {
-    it('should broadcast to connected clients', () => {
-      const mockClient = { write: vi.fn() };
-      progressClients.set(analysisId, new Set([mockClient]));
-
+  describe('Broadcasts via WebSocket', () => {
+    it('should broadcast to ws with correct topic and payload', () => {
       const callback = createProgressCallback(analysisId);
+      broadcastSpy.mockClear();
 
       callback({ level: 1, status: 'running', progress: 'Testing broadcast' });
 
-      expect(mockClient.write).toHaveBeenCalledTimes(1);
-      const message = mockClient.write.mock.calls[0][0];
-      expect(message).toContain('data: ');
-      expect(message).toContain('"type":"progress"');
-      expect(message).toContain('"status":"running"');
+      expect(broadcastSpy).toHaveBeenCalled();
+      const [topic, payload] = broadcastSpy.mock.calls[broadcastSpy.mock.calls.length - 1];
+      expect(topic).toBe('analysis:' + analysisId);
+      expect(payload.type).toBe('progress');
+      expect(payload.status).toBe('running');
     });
 
-    it('should broadcast to multiple clients', () => {
-      const mockClient1 = { write: vi.fn() };
-      const mockClient2 = { write: vi.fn() };
-      const mockClient3 = { write: vi.fn() };
-      progressClients.set(analysisId, new Set([mockClient1, mockClient2, mockClient3]));
-
+    it('should call broadcast for each update (ws module handles fan-out)', () => {
       const callback = createProgressCallback(analysisId);
+      broadcastSpy.mockClear();
 
       callback({ level: 2, status: 'completed' });
 
-      expect(mockClient1.write).toHaveBeenCalledTimes(1);
-      expect(mockClient2.write).toHaveBeenCalledTimes(1);
-      expect(mockClient3.write).toHaveBeenCalledTimes(1);
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
     });
 
     it('should not throw if no clients connected', () => {
@@ -1260,27 +1253,25 @@ describe('createProgressCallback', () => {
     });
 
     it('should broadcast regular updates but not throttled stream events', () => {
-      const mockClient = { write: vi.fn() };
-      progressClients.set(analysisId, new Set([mockClient]));
-
       const callback = createProgressCallback(analysisId);
+      broadcastSpy.mockClear();
 
       // Regular update: should broadcast
       callback({ level: 1, status: 'running', progress: 'Regular update' });
-      expect(mockClient.write).toHaveBeenCalledTimes(1);
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
 
       // Stream event: should broadcast first time
       callback({ level: 1, streamEvent: { type: 'assistant_text', text: 'Stream 1' } });
-      expect(mockClient.write).toHaveBeenCalledTimes(2);
+      expect(broadcastSpy).toHaveBeenCalledTimes(2);
 
       // Another stream event within 300ms: should NOT broadcast
       vi.advanceTimersByTime(100);
       callback({ level: 1, streamEvent: { type: 'assistant_text', text: 'Stream 2' } });
-      expect(mockClient.write).toHaveBeenCalledTimes(2); // Still 2
+      expect(broadcastSpy).toHaveBeenCalledTimes(2); // Still 2
 
       // Regular update: should broadcast immediately even within throttle window
       callback({ level: 1, status: 'completed', progress: 'Done' });
-      expect(mockClient.write).toHaveBeenCalledTimes(3);
+      expect(broadcastSpy).toHaveBeenCalledTimes(3);
     });
   });
 });

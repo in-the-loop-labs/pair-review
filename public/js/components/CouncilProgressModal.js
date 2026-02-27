@@ -14,7 +14,7 @@ class CouncilProgressModal {
     this.modal = null;
     this.isVisible = false;
     this.currentAnalysisId = null;
-    this.eventSource = null;
+    this._wsUnsub = null;
     this.statusCheckInterval = null;
     this.isRunningInBackground = false;
     this.councilConfig = null;
@@ -146,59 +146,56 @@ class CouncilProgressModal {
 
   /**
    * Configure for local mode.
-   * Retained as a public method since callers invoke it, but the SSE endpoint
-   * is now unified so no per-mode state is needed.
+   * Retained as a public method since callers invoke it, but the WebSocket
+   * topic subscription is now unified so no per-mode state is needed.
    */
   setLocalMode(_reviewId) {
-    // no-op: SSE endpoint is unified
+    // no-op: WebSocket topic subscription is unified
   }
 
   /**
    * Configure for PR mode (default).
-   * Retained as a public method since callers invoke it, but the SSE endpoint
-   * is now unified so no per-mode state is needed.
+   * Retained as a public method since callers invoke it, but the WebSocket
+   * topic subscription is now unified so no per-mode state is needed.
    */
   setPRMode() {
-    // no-op: SSE endpoint is unified
+    // no-op: WebSocket topic subscription is unified
   }
 
   // ---------------------------------------------------------------------------
-  // SSE / Polling
+  // WebSocket / Polling
   // ---------------------------------------------------------------------------
 
   startProgressMonitoring() {
-    if (this.eventSource) {
-      this.eventSource.close();
-    }
+    this.stopProgressMonitoring();
     if (!this.currentAnalysisId) return;
 
-    const sseUrl = `/api/analyses/${this.currentAnalysisId}/progress`;
+    window.wsClient.connect();
 
-    this.eventSource = new EventSource(sseUrl);
+    // Subscribe to analysis progress via WebSocket
+    this._wsUnsub = window.wsClient.subscribe('analysis:' + this.currentAnalysisId, (msg) => {
+      if (msg.type === 'progress') {
+        this.updateProgress(msg);
+        if (['completed', 'failed', 'cancelled'].includes(msg.status)) {
+          this.stopProgressMonitoring();
+        }
+      }
+    });
 
-    this.eventSource.onopen = () => {
-      console.log('Council progress: connected to SSE stream');
-    };
-
-    this.eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'connected') return;
-        if (data.type === 'progress') {
-          this.updateProgress(data);
-          if (['completed', 'failed', 'cancelled'].includes(data.status)) {
+    // Fetch initial state via HTTP
+    fetch('/api/analyses/' + this.currentAnalysisId + '/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(status => {
+        if (status) {
+          this.updateProgress(status);
+          if (['completed', 'failed', 'cancelled'].includes(status.status)) {
             this.stopProgressMonitoring();
           }
         }
-      } catch (error) {
-        console.error('Error parsing council SSE data:', error);
-      }
-    };
-
-    this.eventSource.onerror = () => {
-      console.error('Council SSE connection error, falling back to polling');
-      this._fallbackToPolling();
-    };
+      })
+      .catch(err => {
+        console.warn('Failed to fetch initial analysis status:', err);
+      });
   }
 
   stopProgressMonitoring() {
@@ -206,16 +203,16 @@ class CouncilProgressModal {
       clearInterval(this.statusCheckInterval);
       this.statusCheckInterval = null;
     }
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
+    if (this._wsUnsub) {
+      this._wsUnsub();
+      this._wsUnsub = null;
     }
   }
 
   _fallbackToPolling() {
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
+    if (this._wsUnsub) {
+      this._wsUnsub();
+      this._wsUnsub = null;
     }
     if (this.statusCheckInterval) {
       clearInterval(this.statusCheckInterval);

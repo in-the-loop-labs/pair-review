@@ -18,8 +18,8 @@ class ChatPanel {
     this.reviewId = null;
     this.isOpen = false;
     this.isStreaming = false;
-    this.eventSource = null;
-    this._sseReconnectTimer = null;
+    this._chatUnsub = null;
+    this._reviewUnsub = null;
     this.messages = [];
     this._streamingContent = '';
     this._pendingContext = [];
@@ -544,6 +544,7 @@ class ChatPanel {
     // 2. Clear everything as normal
     this._finalizeStreaming();
     this.currentSessionId = null;
+    this._resubscribeChat(); // Unsubscribe old chat topic
     this.messages = [];
     this._streamingContent = '';
     this._pendingContext = [];
@@ -556,7 +557,6 @@ class ChatPanel {
     this._clearMessages();
     this._updateActionButtons();
     this._updateTitle(); // Reset title for new conversation
-    // SSE stays connected — it's multiplexed and will filter by sessionId
 
     // 3. Re-add analysis context (appears first, handled separately from pending arrays)
     this._ensureAnalysisContext();
@@ -626,6 +626,7 @@ class ChatPanel {
 
       const mru = sessions[0];
       this.currentSessionId = mru.id;
+      this._resubscribeChat();
       console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
 
       if (mru.provider) {
@@ -786,6 +787,7 @@ class ChatPanel {
 
     // 2. Reset state
     this.currentSessionId = sessionId;
+    this._resubscribeChat();
     this.messages = [];
     this._streamingContent = '';
     this._pendingContext = [];
@@ -942,6 +944,7 @@ class ChatPanel {
 
       const result = await response.json();
       this.currentSessionId = result.data.id;
+      this._resubscribeChat();
       console.debug('[ChatPanel] Session created:', this.currentSessionId);
       return result.data;
     } catch (error) {
@@ -1044,6 +1047,7 @@ class ChatPanel {
       if (response.status === 410) {
         console.debug('[ChatPanel] Session not resumable (410), creating new session and retrying');
         this.currentSessionId = null;
+        this._resubscribeChat();
         this._ensureGlobalSSE();
         const sessionData = await this.createSession();
         if (!sessionData) {
@@ -1914,123 +1918,117 @@ class ChatPanel {
   }
 
   /**
-   * Ensure the global multiplexed SSE connection is established.
-   * Creates the EventSource once; subsequent calls are no-ops if already connected.
-   * Events are filtered by sessionId to dispatch only to the active session.
+   * Ensure WebSocket subscriptions are established for review and chat topics.
+   * Subscribes to review events (stable for page lifetime) and chat events
+   * (changes when session changes). Subsequent calls are no-ops if already subscribed.
    */
   _ensureGlobalSSE() {
-    // Already connected or connecting — nothing to do
-    if (this.eventSource &&
-        this.eventSource.readyState !== EventSource.CLOSED) {
-      return;
+    window.wsClient.connect();
+
+    // Subscribe to review events (stable for page lifetime)
+    if (this.reviewId && !this._reviewUnsub) {
+      this._reviewUnsub = window.wsClient.subscribe('review:' + this.reviewId, (msg) => {
+        if (msg.type?.startsWith('review:')) {
+          document.dispatchEvent(new CustomEvent(msg.type, {
+            detail: { ...msg }
+          }));
+        }
+      });
     }
 
-    // Clear any pending reconnect timer
-    clearTimeout(this._sseReconnectTimer);
-    this._sseReconnectTimer = null;
-
-    const url = '/api/chat/stream';
-    console.debug('[ChatPanel] Connecting multiplexed SSE:', url);
-    this.eventSource = new EventSource(url);
-
-    this.eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        // Initial connection acknowledgement — no sessionId, just log
-        if (data.type === 'connected' && !data.sessionId) {
-          console.debug('[ChatPanel] Multiplexed SSE connected');
-          return;
-        }
-
-        // Route review-scoped events to document as CustomEvents
-        if (data.reviewId && data.type?.startsWith('review:')) {
-          document.dispatchEvent(new CustomEvent(data.type, {
-            detail: { ...data }
-          }));
-          return;
-        }
-
-        // Filter: only process events for the active session
-        if (data.sessionId !== this.currentSessionId) return;
-
-        if (data.type !== 'delta') {
-          console.debug('[ChatPanel] SSE event:', data.type, 'session:', data.sessionId);
-        }
-
-        // When the panel is closed, still accumulate internal state
-        // so messages are available when the panel reopens.
-        if (!this.isOpen) {
-          switch (data.type) {
-            case 'delta':
-              this._streamingContent += data.text;
-              break;
-            case 'complete':
-              if (this._streamingContent) {
-                this.messages.push({ role: 'assistant', content: this._streamingContent, id: data.messageId });
-              }
-              this._streamingContent = '';
-              this.isStreaming = false;
-              break;
-            case 'error':
-              this._streamingContent = '';
-              this.isStreaming = false;
-              break;
-            // tool_use, status: purely visual, skip when closed
-          }
-          return;
-        }
-
-        switch (data.type) {
-          case 'delta':
-            this._hideThinkingIndicator();
-            this._streamingContent += data.text;
-            this.updateStreamingMessage(this._streamingContent);
-            break;
-
-          case 'tool_use':
-            this._showToolUse(data.toolName, data.status, data.toolInput);
-            break;
-
-          case 'status':
-            this._handleAgentStatus(data.status);
-            break;
-
-          case 'complete':
-            this.finalizeStreamingMessage(data.messageId);
-            break;
-
-          case 'error':
-            this._showError(data.message || 'An error occurred');
-            this._finalizeStreaming();
-            break;
-        }
-      } catch (e) {
-        console.error('[ChatPanel] SSE parse error:', e);
-      }
-    };
-
-    this.eventSource.onerror = () => {
-      if (this.eventSource?.readyState === EventSource.CLOSED) {
-        console.warn('[ChatPanel] Multiplexed SSE connection closed, reconnecting in 2s');
-        this.eventSource = null;
-        this._sseReconnectTimer = setTimeout(() => {
-          this._ensureGlobalSSE();
-        }, 2000);
-      }
-    };
+    // Subscribe to chat session
+    if (this.currentSessionId && !this._chatUnsub) {
+      this._chatUnsub = window.wsClient.subscribe('chat:' + this.currentSessionId, (msg) => {
+        this._handleChatMessage(msg);
+      });
+    }
   }
 
   /**
-   * Close the global SSE connection and cancel any reconnect timer.
+   * Unsubscribe from the current chat topic and re-subscribe to the new one.
+   * Called whenever `this.currentSessionId` changes.
+   */
+  _resubscribeChat() {
+    if (this._chatUnsub) { this._chatUnsub(); this._chatUnsub = null; }
+    if (this.currentSessionId) {
+      this._chatUnsub = window.wsClient.subscribe('chat:' + this.currentSessionId, (msg) => {
+        this._handleChatMessage(msg);
+      });
+    }
+  }
+
+  /**
+   * Handle an incoming chat message from the WebSocket.
+   * Extracted from the former SSE onmessage handler.
+   * @param {Object} data - Parsed message object
+   */
+  _handleChatMessage(data) {
+    try {
+      // Filter: only process events for the active session
+      if (data.sessionId !== this.currentSessionId) return;
+
+      if (data.type !== 'delta') {
+        console.debug('[ChatPanel] WS event:', data.type, 'session:', data.sessionId);
+      }
+
+      // When the panel is closed, still accumulate internal state
+      // so messages are available when the panel reopens.
+      if (!this.isOpen) {
+        switch (data.type) {
+          case 'delta':
+            this._streamingContent += data.text;
+            break;
+          case 'complete':
+            if (this._streamingContent) {
+              this.messages.push({ role: 'assistant', content: this._streamingContent, id: data.messageId });
+            }
+            this._streamingContent = '';
+            this.isStreaming = false;
+            break;
+          case 'error':
+            this._streamingContent = '';
+            this.isStreaming = false;
+            break;
+          // tool_use, status: purely visual, skip when closed
+        }
+        return;
+      }
+
+      switch (data.type) {
+        case 'delta':
+          this._hideThinkingIndicator();
+          this._streamingContent += data.text;
+          this.updateStreamingMessage(this._streamingContent);
+          break;
+
+        case 'tool_use':
+          this._showToolUse(data.toolName, data.status, data.toolInput);
+          break;
+
+        case 'status':
+          this._handleAgentStatus(data.status);
+          break;
+
+        case 'complete':
+          this.finalizeStreamingMessage(data.messageId);
+          break;
+
+        case 'error':
+          this._showError(data.message || 'An error occurred');
+          this._finalizeStreaming();
+          break;
+      }
+    } catch (e) {
+      console.error('[ChatPanel] WS parse error:', e);
+    }
+  }
+
+  /**
+   * Close all WebSocket subscriptions (chat and review).
    */
   _closeGlobalSSE() {
-    clearTimeout(this._sseReconnectTimer);
-    this._sseReconnectTimer = null;
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
+    if (this._chatUnsub) { this._chatUnsub(); this._chatUnsub = null; }
+    if (this._reviewUnsub) { this._reviewUnsub(); this._reviewUnsub = null; }
   }
 
   /**

@@ -17,7 +17,7 @@ const { queryOne, query, AnalysisRunRepository, RepoSettingsRepository } = requi
 const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
 const { GitWorktreeManager } = require('../git/worktree');
 const logger = require('../utils/logger');
-const { sseClients } = require('../sse/review-events');
+const ws = require('../ws');
 
 const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
 
@@ -94,20 +94,12 @@ function buildPairReviewApiRe(port) {
 }
 
 /**
- * Broadcast an SSE event to all connected clients.
+ * Broadcast a chat event via WebSocket to all clients subscribed to `chat:{sessionId}`.
  * @param {number} sessionId - Chat session ID to include in the event
  * @param {Object} payload - Event data (will be merged with sessionId)
  */
 function broadcastSSE(sessionId, payload) {
-  const data = JSON.stringify({ ...payload, sessionId });
-  for (const client of sseClients) {
-    try {
-      client.write(`data: ${data}\n\n`);
-    } catch {
-      // Client disconnected — remove from set
-      sseClients.delete(client);
-    }
-  }
+  ws.broadcast('chat:' + sessionId, { ...payload, sessionId });
 }
 
 /**
@@ -405,34 +397,6 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
 });
 
 /**
- * Multiplexed SSE stream for all chat sessions.
- * Clients connect once and receive events tagged with sessionId.
- */
-router.get('/api/chat/stream', (req, res) => {
-  // Set up SSE headers
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive'
-  });
-
-  // Send initial connection acknowledgement
-  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
-  logger.debug(`[ChatRoute] Multiplexed SSE client connected (total: ${sseClients.size + 1})`);
-
-  sseClients.add(res);
-
-  // Handle client disconnect
-  const cleanup = () => {
-    sseClients.delete(res);
-    logger.debug(`[ChatRoute] Multiplexed SSE client disconnected (total: ${sseClients.size})`);
-  };
-
-  req.on('close', cleanup);
-  req.on('error', cleanup);
-});
-
-/**
  * Abort the current agent turn in a chat session
  */
 router.post('/api/chat/session/:id/abort', async (req, res) => {
@@ -650,6 +614,5 @@ router.get('/api/chat/analysis-context/:runId', async (req, res) => {
 module.exports = router;
 
 // Expose internals for testing
-module.exports._sseClients = sseClients;
 module.exports._sseUnsubscribers = sseUnsubscribers;
 module.exports._buildPairReviewApiRe = buildPairReviewApiRe;

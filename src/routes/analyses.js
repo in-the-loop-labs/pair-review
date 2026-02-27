@@ -9,7 +9,6 @@
  * - POST /api/analyses/results           — import external analysis results
  * - GET  /api/analyses/:id/status        — get in-memory analysis status
  * - POST /api/analyses/:id/cancel        — cancel an active analysis
- * - GET  /api/analyses/:id/progress      — SSE progress stream (unified)
  *
  * Routes that are PR-specific or local-specific live in pr.js and local.js
  * respectively (e.g., starting an analysis).
@@ -27,7 +26,6 @@ const { normalizeRepository } = require('../utils/paths');
 const {
   activeAnalyses,
   reviewToAnalysisId,
-  progressClients,
   localReviewDiffs,
   broadcastProgress,
   killProcesses,
@@ -436,77 +434,6 @@ router.post('/api/analyses/:id/cancel', async (req, res) => {
       error: 'Failed to cancel analysis'
     });
   }
-});
-
-/**
- * Server-Sent Events endpoint for AI analysis progress (unified)
- *
- * Clients connect with an analysis UUID. The handler also registers
- * the client under `review-${reviewId}` when the analysis status
- * carries a reviewId, so that external result broadcasts reach them.
- */
-router.get('/api/analyses/:id/progress', (req, res) => {
-  const analysisId = req.params.id;
-
-  // Set up SSE headers
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Cache-Control'
-  });
-
-  // Send initial connection message
-  res.write('data: {"type":"connected","message":"Connected to progress stream"}\n\n');
-
-  // Store client for this analysis
-  if (!progressClients.has(analysisId)) {
-    progressClients.set(analysisId, new Set());
-  }
-  progressClients.get(analysisId).add(res);
-
-  // Also register under the review-level key so external broadcasts reach this client
-  const currentStatus = activeAnalyses.get(analysisId);
-  const reviewId = currentStatus?.reviewId;
-  const reviewKey = reviewId ? `review-${reviewId}` : null;
-  if (reviewKey) {
-    if (!progressClients.has(reviewKey)) {
-      progressClients.set(reviewKey, new Set());
-    }
-    progressClients.get(reviewKey).add(res);
-  }
-
-  // Send current status if analysis exists
-  if (currentStatus) {
-    res.write(`data: ${JSON.stringify({
-      type: 'progress',
-      ...currentStatus
-    })}\n\n`);
-  }
-
-  // Handle client disconnect
-  const cleanup = () => {
-    const clients = progressClients.get(analysisId);
-    if (clients) {
-      clients.delete(res);
-      if (clients.size === 0) {
-        progressClients.delete(analysisId);
-      }
-    }
-    if (reviewKey) {
-      const reviewClients = progressClients.get(reviewKey);
-      if (reviewClients) {
-        reviewClients.delete(res);
-        if (reviewClients.size === 0) {
-          progressClients.delete(reviewKey);
-        }
-      }
-    }
-  };
-
-  req.on('close', cleanup);
-  req.on('error', cleanup);
 });
 
 // ==========================================================================

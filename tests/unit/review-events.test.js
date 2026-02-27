@@ -3,99 +3,72 @@
  * Tests for src/sse/review-events.js
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { sseClients, broadcastReviewEvent } from '../../src/sse/review-events.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const ws = require('../../src/ws');
+const { broadcastReviewEvent } = require('../../src/sse/review-events');
 
 describe('review-events', () => {
+  let broadcastSpy;
+
   beforeEach(() => {
-    sseClients.clear();
+    broadcastSpy = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
   });
 
-  describe('sseClients', () => {
-    it('should be a Set instance', () => {
-      expect(sseClients).toBeInstanceOf(Set);
-    });
+  afterEach(() => {
+    broadcastSpy.mockRestore();
   });
 
   describe('broadcastReviewEvent', () => {
-    it('should broadcast to multiple connected clients', () => {
-      const client1 = { write: vi.fn() };
-      const client2 = { write: vi.fn() };
-      const client3 = { write: vi.fn() };
-      sseClients.add(client1);
-      sseClients.add(client2);
-      sseClients.add(client3);
-
+    it('should broadcast with correct topic and payload', () => {
       broadcastReviewEvent(42, { type: 'comment_added', commentId: 7 });
 
-      expect(client1.write).toHaveBeenCalledTimes(1);
-      expect(client2.write).toHaveBeenCalledTimes(1);
-      expect(client3.write).toHaveBeenCalledTimes(1);
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
+      expect(broadcastSpy).toHaveBeenCalledWith('review:42', {
+        type: 'comment_added',
+        commentId: 7,
+        reviewId: 42
+      });
     });
 
     it('should include reviewId merged with the payload', () => {
-      const client = { write: vi.fn() };
-      sseClients.add(client);
-
       broadcastReviewEvent(99, { type: 'analysis_complete', score: 85 });
 
-      const written = client.write.mock.calls[0][0];
-      const parsed = JSON.parse(written.replace('data: ', '').trim());
-      expect(parsed).toEqual({
+      expect(broadcastSpy).toHaveBeenCalledWith('review:99', {
         type: 'analysis_complete',
         score: 85,
         reviewId: 99
       });
     });
 
-    it('should format the message as an SSE data line', () => {
-      const client = { write: vi.fn() };
-      sseClients.add(client);
+    it('should include sourceClientId when provided in options', () => {
+      broadcastReviewEvent(10, { type: 'update' }, { sourceClientId: 'client-abc' });
 
-      broadcastReviewEvent(1, { type: 'test' });
-
-      const written = client.write.mock.calls[0][0];
-      expect(written).toMatch(/^data: .+\n\n$/);
+      expect(broadcastSpy).toHaveBeenCalledWith('review:10', {
+        type: 'update',
+        reviewId: 10,
+        sourceClientId: 'client-abc'
+      });
     });
 
-    it('should remove disconnected clients that throw on write', () => {
-      const goodClient = { write: vi.fn() };
-      const badClient = {
-        write: vi.fn(() => {
-          throw new Error('Connection reset');
-        })
-      };
-      sseClients.add(goodClient);
-      sseClients.add(badClient);
-
+    it('should not include sourceClientId when not provided', () => {
       broadcastReviewEvent(10, { type: 'update' });
 
-      expect(sseClients.has(goodClient)).toBe(true);
-      expect(sseClients.has(badClient)).toBe(false);
-      expect(sseClients.size).toBe(1);
-      // Good client should still have received the event
-      expect(goodClient.write).toHaveBeenCalledTimes(1);
+      const payload = broadcastSpy.mock.calls[0][1];
+      expect(payload).not.toHaveProperty('sourceClientId');
     });
 
-    it('should not throw when sseClients is empty', () => {
-      expect(sseClients.size).toBe(0);
-
+    it('should not throw when called (ws module handles missing subscribers)', () => {
       expect(() => {
         broadcastReviewEvent(1, { type: 'noop' });
       }).not.toThrow();
     });
 
-    it('should let reviewId in payload be overridden by the reviewId argument', () => {
-      const client = { write: vi.fn() };
-      sseClients.add(client);
-
-      // Payload contains a reviewId, but the function spreads payload first
-      // then sets reviewId, so the argument wins
+    it('should let reviewId argument override reviewId in payload', () => {
       broadcastReviewEvent(123, { type: 'test', reviewId: 456 });
 
-      const written = client.write.mock.calls[0][0];
-      const parsed = JSON.parse(written.replace('data: ', '').trim());
-      expect(parsed.reviewId).toBe(123);
+      const payload = broadcastSpy.mock.calls[0][1];
+      expect(payload.reviewId).toBe(123);
     });
   });
 });

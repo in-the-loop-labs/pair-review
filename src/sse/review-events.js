@@ -1,23 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * Shared SSE client registry and review-scoped event broadcaster.
+ * Review-scoped event broadcaster.
  *
- * All SSE connections (chat, analysis, etc.) share a single Set of
- * Express response objects.  broadcastReviewEvent sends review-level
- * events (as opposed to session-level events handled in chat.js).
+ * Broadcasts review-level events (comment mutations, analysis completion, etc.)
+ * to all WebSocket clients subscribed to the `review:{reviewId}` topic.
  */
 
-const logger = require('../utils/logger');
+const ws = require('../ws');
 
 /**
- * Connected SSE clients shared across all route modules.
- * Each entry is an Express response object with an open SSE connection.
- * @type {Set<import('express').Response>}
- */
-const sseClients = new Set();
-
-/**
- * Broadcast a review-scoped SSE event to all connected clients.
+ * Broadcast a review-scoped event via WebSocket to all clients
+ * subscribed to `review:{reviewId}`.
  * Optionally includes a `sourceClientId` so the originating browser tab
  * can recognise (and skip) its own echo.
  *
@@ -31,16 +24,7 @@ function broadcastReviewEvent(reviewId, payload, options = {}) {
   if (options.sourceClientId) {
     envelope.sourceClientId = options.sourceClientId;
   }
-  const data = JSON.stringify(envelope);
-  for (const client of sseClients) {
-    try {
-      client.write(`data: ${data}\n\n`);
-    } catch {
-      // Client disconnected — remove from set
-      sseClients.delete(client);
-      logger.debug('[ReviewEvents] Removed disconnected SSE client');
-    }
-  }
+  ws.broadcast('review:' + reviewId, envelope);
 }
 
-module.exports = { sseClients, broadcastReviewEvent };
+module.exports = { broadcastReviewEvent };
