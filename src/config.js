@@ -24,7 +24,8 @@ const DEFAULT_CONFIG = {
   enable_chat: true,  // When true, enables the chat panel feature (requires Pi AI provider)
   chat: { enable_shortcuts: true },  // Chat panel settings (enable_shortcuts: show action shortcut buttons)
   providers: {},  // Custom provider configurations (overrides built-in defaults)
-  monorepos: {}  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
+  monorepos: {},  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
+  assisted_by_url: "https://github.com/in-the-loop-labs/pair-review"  // URL for "Review assisted by" footer link
 };
 
 /**

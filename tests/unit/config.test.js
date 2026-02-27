@@ -717,6 +717,17 @@ describe('config.js', () => {
       expect(config.chat.enable_shortcuts).toBe(true);
     });
 
+    it('should include assisted_by_url in default config', async () => {
+      mockReadFile(
+        { port: 7247 },
+        null  // no local config
+      );
+
+      const { config } = await loadConfig();
+
+      expect(config.assisted_by_url).toBe('https://github.com/in-the-loop-labs/pair-review');
+    });
+
     it('should preserve object defaults when config only has scalar keys', async () => {
       mockReadFile(
         { port: 8080, theme: 'dark' },

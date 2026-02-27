@@ -4846,6 +4846,16 @@ tr.line-range-start .d2h-code-line-ctn {
   opacity: 0.7;
 }
 
+/* Assisted-by footer toggle (extends .remember-toggle) */
+.assisted-by-toggle {
+  margin-top: 8px;
+}
+
+.assisted-by-toggle.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 .review-type-options {
   display: flex;
   flex-direction: column;

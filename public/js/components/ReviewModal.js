@@ -3,11 +3,24 @@
  * Review Submission Modal Component
  * Allows users to submit their review with comments to GitHub
  */
+
+const ASSISTED_BY_STORAGE_KEY = 'pair-review-assisted-by';
+const DEFAULT_ASSISTED_BY_URL = 'https://github.com/in-the-loop-labs/pair-review';
+
 class ReviewModal {
   constructor() {
     this.modal = null;
     this.isVisible = false;
     this.isSubmitting = false;
+    this.assistedByUrl = DEFAULT_ASSISTED_BY_URL;
+    fetch('/api/config')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.assisted_by_url) {
+          this.assistedByUrl = data.assisted_by_url;
+        }
+      })
+      .catch(() => {});  // Use default on failure
     this.createModal();
     this.setupEventListeners();
   }
@@ -69,6 +82,11 @@ class ReviewModal {
                 placeholder="Leave a comment about this pull request..."
                 rows="2"
               ></textarea>
+              <label class="remember-toggle assisted-by-toggle" id="assisted-by-toggle">
+                <input type="checkbox" id="assisted-by-checkbox" />
+                <span class="toggle-switch"></span>
+                <span class="toggle-label">Append pair-review footer</span>
+              </label>
             </div>
             
             <div class="review-type-section">
@@ -183,6 +201,9 @@ class ReviewModal {
       if (e.target.matches('input[name="review-event"]')) {
         window.reviewModal?.updateTextareaState();
       }
+      if (e.target.matches('#assisted-by-checkbox')) {
+        window.reviewModal?.handleAssistedByToggle();
+      }
     });
   }
 
@@ -194,6 +215,7 @@ class ReviewModal {
   updateTextareaState() {
     const textarea = this.modal?.querySelector('#review-body-modal');
     const selectedOption = this.modal?.querySelector('input[name="review-event"]:checked');
+    const toggle = this.modal?.querySelector('#assisted-by-toggle');
 
     if (!textarea || !selectedOption) return;
 
@@ -204,9 +226,15 @@ class ReviewModal {
     if (isDraft) {
       textarea.title = 'Review summary is not included with draft reviews';
       textarea.classList.add('disabled-textarea');
+      if (toggle) {
+        toggle.classList.add('disabled');
+      }
     } else {
       textarea.title = '';
       textarea.classList.remove('disabled-textarea');
+      if (toggle) {
+        toggle.classList.remove('disabled');
+      }
     }
   }
 
@@ -234,6 +262,9 @@ class ReviewModal {
 
     // Update textarea state (ensures it's enabled since COMMENT is selected by default)
     this.updateTextareaState();
+
+    // Restore assisted-by toggle from localStorage
+    this.restoreAssistedByToggle();
 
     // Clear any errors or warnings
     this.hideError();
@@ -431,6 +462,10 @@ class ReviewModal {
     if (this.isSubmitting) return;
     
     const reviewBody = this.modal.querySelector('#review-body-modal').value.trim();
+    const assistedByCheckbox = this.modal.querySelector('#assisted-by-checkbox');
+    const finalBody = assistedByCheckbox?.checked
+      ? reviewBody + this.getAssistedByFooter()
+      : reviewBody;
     const selectedOption = this.modal.querySelector('input[name="review-event"]:checked');
     const reviewEvent = selectedOption ? selectedOption.value : 'COMMENT';
     // Count BOTH line-level (.user-comment-row) and file-level (.file-comment-card.user-comment) comments
@@ -480,7 +515,7 @@ class ReviewModal {
         },
         body: JSON.stringify({
           event: reviewEvent,
-          body: reviewBody
+          body: finalBody
         })
       });
       
@@ -590,7 +625,6 @@ class ReviewModal {
     const textarea = this.modal?.querySelector('#review-body-modal');
     if (!textarea) return;
 
-    // Get AI summary from the AI panel
     const summary = window.aiPanel?.getSummary?.();
     if (!summary) {
       if (window.toast) {
@@ -611,6 +645,35 @@ class ReviewModal {
     if (window.toast) {
       window.toast.showSuccess('AI summary added to review');
     }
+  }
+
+  /**
+   * Get the "assisted by" footer string
+   */
+  getAssistedByFooter() {
+    const url = this.assistedByUrl || DEFAULT_ASSISTED_BY_URL;
+    return `\n\n---\n_Review assisted by [pair-review](${url})_`;
+  }
+
+  /**
+   * Restore the assisted-by toggle state from localStorage
+   */
+  restoreAssistedByToggle() {
+    const checkbox = this.modal?.querySelector('#assisted-by-checkbox');
+    if (!checkbox) return;
+
+    const stored = localStorage.getItem(ASSISTED_BY_STORAGE_KEY);
+    checkbox.checked = stored !== 'false';
+  }
+
+  /**
+   * Handle the assisted-by checkbox toggle
+   */
+  handleAssistedByToggle() {
+    const checkbox = this.modal?.querySelector('#assisted-by-checkbox');
+    if (!checkbox) return;
+
+    localStorage.setItem(ASSISTED_BY_STORAGE_KEY, String(checkbox.checked));
   }
 
 }

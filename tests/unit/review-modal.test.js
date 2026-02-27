@@ -38,12 +38,22 @@ beforeEach(() => {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn()
   };
+
+  // Create a localStorage mock
+  global.localStorage = {
+    _store: {},
+    getItem: vi.fn((key) => global.localStorage._store[key] ?? null),
+    setItem: vi.fn((key, value) => { global.localStorage._store[key] = value; }),
+    removeItem: vi.fn((key) => { delete global.localStorage._store[key]; }),
+    clear: vi.fn(() => { global.localStorage._store = {}; })
+  };
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   delete global.document;
   delete global.window;
+  delete global.localStorage;
 });
 
 /**
@@ -114,6 +124,21 @@ function createTestReviewModal() {
   pendingDraftLink.style = { display: 'inline' };
   pendingDraftLink.href = '';
 
+  // Create a persistent textarea element
+  const textarea = createMockElement('textarea');
+  textarea.id = 'review-body-modal';
+  textarea.value = '';
+
+  // Create assisted-by checkbox and toggle
+  const assistedByCheckbox = createMockElement('input');
+  assistedByCheckbox.type = 'checkbox';
+  assistedByCheckbox.id = 'assisted-by-checkbox';
+  assistedByCheckbox.checked = false;
+
+  const assistedByToggle = createMockElement('label');
+  assistedByToggle.id = 'assisted-by-toggle';
+  assistedByToggle.className = 'assisted-by-toggle';
+
   // Create the DRAFT radio input and its label
   const draftRadioInput = createMockElement('input');
   draftRadioInput.type = 'radio';
@@ -146,7 +171,9 @@ function createTestReviewModal() {
   modalContainer.querySelector = vi.fn().mockImplementation((sel) => {
     if (sel === '#pending-draft-notice') return pendingDraftNotice;
     if (sel === 'input[name="review-event"][value="DRAFT"]') return draftRadioInput;
-    if (sel === '#review-body-modal') return createMockElement('textarea');
+    if (sel === '#review-body-modal') return textarea;
+    if (sel === '#assisted-by-checkbox') return assistedByCheckbox;
+    if (sel === '#assisted-by-toggle') return assistedByToggle;
     if (sel === 'input[name="review-event"]:checked') {
       const radio = createMockElement('input');
       radio.value = 'COMMENT';
@@ -168,10 +195,14 @@ function createTestReviewModal() {
   modal.modal = modalContainer;
   modal.isVisible = false;
   modal.isSubmitting = false;
+  modal.assistedByUrl = 'https://github.com/in-the-loop-labs/pair-review';
 
   return {
     modal,
     modalContainer,
+    textarea,
+    assistedByCheckbox,
+    assistedByToggle,
     pendingDraftNotice,
     pendingDraftCount,
     pendingDraftLink,
@@ -313,6 +344,101 @@ describe('ReviewModal', () => {
 
       // Label should be the default
       expect(draftTypeLabel.textContent).toBe('Save as Draft');
+    });
+  });
+
+  describe('Assisted-by Footer Toggle', () => {
+    it('should restore checkbox ON from localStorage', () => {
+      global.localStorage._store['pair-review-assisted-by'] = 'true';
+      const { modal, assistedByCheckbox } = createTestReviewModal();
+
+      modal.restoreAssistedByToggle();
+
+      expect(assistedByCheckbox.checked).toBe(true);
+    });
+
+    it('should restore checkbox OFF from localStorage', () => {
+      global.localStorage._store['pair-review-assisted-by'] = 'false';
+      const { modal, assistedByCheckbox } = createTestReviewModal();
+
+      modal.restoreAssistedByToggle();
+
+      expect(assistedByCheckbox.checked).toBe(false);
+    });
+
+    it('should default to checked when no localStorage key', () => {
+      const { modal, assistedByCheckbox } = createTestReviewModal();
+
+      modal.restoreAssistedByToggle();
+
+      expect(assistedByCheckbox.checked).toBe(true);
+    });
+
+    it('should save true to localStorage when toggled ON', () => {
+      const { modal, assistedByCheckbox } = createTestReviewModal();
+      assistedByCheckbox.checked = true;
+
+      modal.handleAssistedByToggle();
+
+      expect(global.localStorage.setItem).toHaveBeenCalledWith('pair-review-assisted-by', 'true');
+    });
+
+    it('should save false to localStorage when toggled OFF', () => {
+      const { modal, assistedByCheckbox } = createTestReviewModal();
+      assistedByCheckbox.checked = false;
+
+      modal.handleAssistedByToggle();
+
+      expect(global.localStorage.setItem).toHaveBeenCalledWith('pair-review-assisted-by', 'false');
+    });
+
+    it('should append AI summary to textarea', () => {
+      const { modal, textarea } = createTestReviewModal();
+      textarea.value = 'Existing text';
+      global.window.aiPanel = { getSummary: () => 'AI generated summary' };
+      global.window.toast = { showSuccess: vi.fn(), showWarning: vi.fn() };
+
+      modal.appendAISummary();
+
+      expect(textarea.value).toContain('Existing text');
+      expect(textarea.value).toContain('AI generated summary');
+    });
+
+    it('should use configured URL in footer', () => {
+      const { modal } = createTestReviewModal();
+      modal.assistedByUrl = 'https://custom.example.com/review';
+
+      const footer = modal.getAssistedByFooter();
+
+      expect(footer).toContain('https://custom.example.com/review');
+    });
+
+    it('should disable toggle when Draft is selected', () => {
+      const { modal, modalContainer, assistedByToggle } = createTestReviewModal();
+
+      // Mock the checked radio to be DRAFT
+      const draftRadio = createMockElement('input');
+      draftRadio.value = 'DRAFT';
+      modalContainer.querySelector = vi.fn().mockImplementation((sel) => {
+        if (sel === '#review-body-modal') return createMockElement('textarea');
+        if (sel === 'input[name="review-event"]:checked') return draftRadio;
+        if (sel === '#assisted-by-toggle') return assistedByToggle;
+        return null;
+      });
+
+      modal.updateTextareaState();
+
+      expect(assistedByToggle.classList.add).toHaveBeenCalledWith('disabled');
+    });
+
+    it('should append footer to review body on submit when toggle is checked', () => {
+      const { modal, assistedByCheckbox, textarea } = createTestReviewModal();
+      assistedByCheckbox.checked = true;
+      textarea.value = 'Great work!';
+
+      // Verify getAssistedByFooter produces a footer containing pair-review
+      const footer = modal.getAssistedByFooter();
+      expect(footer).toContain('pair-review');
     });
   });
 
