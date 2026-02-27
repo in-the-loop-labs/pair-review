@@ -3505,8 +3505,12 @@ File-level suggestions should NOT have a line number. They apply to the entire f
         continue;
       }
 
+      const suggestionText = suggestion.suggestion;
+      const hasSuggestionBlock = suggestionText?.trimStart().startsWith('```suggestion');
       const body = suggestion.description +
-        (suggestion.suggestion ? '\n\n**Suggestion:** ' + suggestion.suggestion : '');
+        (suggestionText
+          ? (hasSuggestionBlock ? '\n\n' + suggestionText : '\n\n**Suggestion:** ' + suggestionText)
+          : '');
 
       const isFileLevel = suggestion.is_file_level === true || suggestion.line_start === null ? 1 : 0;
       const side = suggestion.old_or_new === 'OLD' ? 'LEFT' : 'RIGHT';

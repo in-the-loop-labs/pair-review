@@ -283,6 +283,15 @@ Output JSON with this structure:
   }],
   "summary": "Brief summary of the key findings and their significance to the reviewer. Focus on WHAT was found, not HOW it was found. Do NOT mention 'orchestration', 'levels', 'merged from Level 1/2/3' etc. Write as if a single reviewer produced this analysis."
 }
+
+### GitHub Suggestion Syntax
+When suggesting a specific change, **embed** a GitHub suggestion block within the "suggestion" field:
+
+\`\`\`suggestion
+replacement content here
+\`\`\`
+
+The content inside the block is the complete replacement for the commented line(s). Do not include explanation inside the block — any explanation should appear as plain text outside it. For non-specific suggestions, use plain text only.
 </section>
 
 <section name="diff-instructions" required="true" tier="thorough">

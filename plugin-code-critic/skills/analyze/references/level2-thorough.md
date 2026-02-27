@@ -177,6 +177,15 @@ Output JSON with this structure:
   "summary": "Brief summary of file context findings"
 }
 
+### GitHub Suggestion Syntax
+When suggesting a specific change, **embed** a GitHub suggestion block within the "suggestion" field:
+
+```suggestion
+replacement content here
+```
+
+The content inside the block is the complete replacement for the commented line(s). Do not include explanation inside the block — any explanation should appear as plain text outside it. For non-specific suggestions, use plain text only.
+
 ## old_or_new Field Reference
 Use "NEW" (the default) for added lines [+] and context lines. Use "OLD" only for deleted lines [-]. When uncertain, use "NEW".
 
