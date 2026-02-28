@@ -10,12 +10,15 @@
 const fs = require('fs');
 const path = require('path');
 const PiBridge = require('./pi-bridge');
+const AcpBridge = require('./acp-bridge');
 const logger = require('../utils/logger');
 
 const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
 const taskExtensionDir = path.resolve(__dirname, '../../.pi/extensions/task');
 
 const CHAT_TOOLS = 'read,bash,grep,find,ls';
+
+const ACP_PROVIDERS = new Set(['acp']);
 
 class ChatSessionManager {
   /**
@@ -56,14 +59,11 @@ class ChatSessionManager {
 
     // Create and start the bridge
     // Chat sessions get bash for git commands; review analysis uses the safe default
-    const bridge = new PiBridge({
+    const bridge = this._createBridge(provider, {
       provider,
       model,
       cwd,
       systemPrompt,
-      tools: CHAT_TOOLS,
-      skills: [pairReviewSkillPath],
-      extensions: [taskExtensionDir]
     });
 
     const listeners = {
@@ -397,29 +397,29 @@ class ChatSessionManager {
       throw new Error(`Session ${sessionId} not found`);
     }
 
-    if (!row.agent_session_id) {
-      throw new Error(`Session ${sessionId} has no session file — cannot resume`);
+    const isAcp = ACP_PROVIDERS.has(row.provider);
+
+    if (!isAcp) {
+      // Pi sessions require a session file on disk
+      if (!row.agent_session_id) {
+        throw new Error(`Session ${sessionId} has no session file — cannot resume`);
+      }
+      if (!fs.existsSync(row.agent_session_id)) {
+        this._db.prepare('UPDATE chat_sessions SET agent_session_id = NULL WHERE id = ?').run(sessionId);
+        throw new Error(`Session file not found on disk: ${row.agent_session_id}`);
+      }
     }
 
-    // Verify file exists on disk
-    if (!fs.existsSync(row.agent_session_id)) {
-      // Null out the stale path
-      this._db.prepare('UPDATE chat_sessions SET agent_session_id = NULL WHERE id = ?').run(sessionId);
-      throw new Error(`Session file not found on disk: ${row.agent_session_id}`);
-    }
+    logger.info(`[ChatSession] Resuming session ${sessionId}${isAcp ? ` (ACP session ${row.agent_session_id || 'new'})` : ` from ${row.agent_session_id}`}`);
 
-    logger.info(`[ChatSession] Resuming session ${sessionId} from ${row.agent_session_id}`);
-
-    // Create bridge with session path for resumption
-    const bridge = new PiBridge({
+    const bridge = this._createBridge(row.provider, {
       provider: row.provider,
       model: row.model,
       cwd,
       systemPrompt,
-      tools: CHAT_TOOLS,
-      skills: [pairReviewSkillPath],
-      extensions: [taskExtensionDir],
-      sessionPath: row.agent_session_id
+      ...(isAcp
+        ? (row.agent_session_id ? { resumeSessionId: row.agent_session_id } : {})
+        : { sessionPath: row.agent_session_id }),
     });
 
     const listeners = {
@@ -490,6 +490,25 @@ class ChatSessionManager {
   // ---------------------------------------------------------------------------
   // Private methods
   // ---------------------------------------------------------------------------
+
+  /**
+   * Create the appropriate bridge instance for a provider.
+   * ACP providers get an AcpBridge; everything else gets a PiBridge with tools/skills.
+   * @param {string} provider
+   * @param {Object} options - Bridge constructor options
+   * @returns {PiBridge|AcpBridge}
+   */
+  _createBridge(provider, options) {
+    if (ACP_PROVIDERS.has(provider)) {
+      return new AcpBridge(options);
+    }
+    return new PiBridge({
+      ...options,
+      tools: CHAT_TOOLS,
+      skills: [pairReviewSkillPath],
+      extensions: [taskExtensionDir],
+    });
+  }
 
   /**
    * Wire up bridge event handlers that dispatch to the session's listener sets
@@ -591,13 +610,14 @@ class ChatSessionManager {
     });
 
     bridge.on('session', (event) => {
-      if (event.sessionFile) {
+      const sessionRef = event.sessionFile || event.sessionId;
+      if (sessionRef) {
         try {
           this._db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?')
-            .run(event.sessionFile, sessionId);
-          logger.info(`[ChatSession] Session ${sessionId} session file: ${event.sessionFile}`);
+            .run(sessionRef, sessionId);
+          logger.info(`[ChatSession] Session ${sessionId} agent ref: ${sessionRef}`);
         } catch (err) {
-          logger.warn(`[ChatSession] Failed to store session file: ${err.message}`);
+          logger.warn(`[ChatSession] Failed to store session ref: ${err.message}`);
         }
       }
     });
