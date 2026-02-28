@@ -239,6 +239,30 @@ describe('main.js parseArgs', () => {
       expect(result.flags.model).toBe('opus');
       expect(result.prArgs).toEqual(['123']);
     });
+
+    it('should skip --register flag', () => {
+      const result = parseArgs(['--register']);
+      expect(result.prArgs).toEqual([]);
+      expect(result.flags).toEqual({});
+    });
+
+    it('should skip --unregister flag', () => {
+      const result = parseArgs(['--unregister']);
+      expect(result.prArgs).toEqual([]);
+      expect(result.flags).toEqual({});
+    });
+
+    it('should skip --command flag with its value', () => {
+      const result = parseArgs(['--register', '--command', 'node bin/pr.js']);
+      expect(result.prArgs).toEqual([]);
+      expect(result.flags).toEqual({});
+    });
+
+    it('should skip --command flag without value', () => {
+      const result = parseArgs(['--register', '--command']);
+      expect(result.prArgs).toEqual([]);
+      expect(result.flags).toEqual({});
+    });
   });
 });
 
@@ -318,6 +342,12 @@ describe('CLI help and version', () => {
 
     expect(output).toContain('--debug-stream');
     expect(output).toContain('streaming events');
+  });
+
+  it('help output should mention --register flag', () => {
+    const output = execSync(`${process.execPath} bin/pair-review.js --help`, { encoding: 'utf-8' });
+    expect(output).toContain('--register');
+    expect(output).toContain('pair-review://');
   });
 
   it('help output should mention Claude Code as default provider', () => {

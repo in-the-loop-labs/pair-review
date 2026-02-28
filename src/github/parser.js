@@ -30,7 +30,7 @@ class PRArgumentParser {
     // Check if input is a PR number
     const prNumber = parseInt(input);
     if (isNaN(prNumber) || prNumber <= 0) {
-      throw new Error('Invalid input format. Expected: PR number, GitHub URL (https://github.com/owner/repo/pull/number), or Graphite URL (https://app.graphite.com/github/pr/owner/repo/number)');
+      throw new Error('Invalid input format. Expected: PR number, GitHub URL (https://github.com/owner/repo/pull/number), Graphite URL (https://app.graphite.com/github/pr/owner/repo/number), or pair-review:// URL');
     }
 
     // Parse repository from current directory's git remote
@@ -57,6 +57,15 @@ class PRArgumentParser {
       normalizedUrl = 'https://' + normalizedUrl;
     } else if (normalizedUrl.startsWith('app.graphite.dev') || normalizedUrl.startsWith('app.graphite.com')) {
       normalizedUrl = 'https://' + normalizedUrl;
+    }
+
+    // Check if input is a pair-review:// protocol URL
+    if (normalizedUrl.startsWith('pair-review://')) {
+      try {
+        return this.parseProtocolURL(normalizedUrl);
+      } catch (e) {
+        return null;
+      }
     }
 
     // Check if input is a GitHub URL
@@ -115,6 +124,22 @@ class PRArgumentParser {
   }
 
   /**
+   * Parse pair-review:// protocol URL to extract owner, repo, and PR number
+   * @param {string} url - Protocol URL (e.g., pair-review://pr/owner/repo/123)
+   * @returns {Object} Parsed information { owner, repo, number }
+   */
+  parseProtocolURL(url) {
+    const match = url.match(/^pair-review:\/\/pr\/([^\/]+)\/([^\/]+)\/(\d+)(?:\/.*)?$/);
+
+    if (!match) {
+      throw new Error('Invalid pair-review:// URL format. Expected: pair-review://pr/owner/repo/number');
+    }
+
+    const [, owner, repo, numberStr] = match;
+    return this._createPRInfo(owner, repo, numberStr, 'pair-review://');
+  }
+
+  /**
    * Create and validate PR info object from parsed components
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
@@ -129,7 +154,9 @@ class PRArgumentParser {
     if (isNaN(number) || number <= 0) {
       const exampleUrl = source === 'GitHub'
         ? 'https://github.com/owner/repo/pull/number'
-        : 'https://app.graphite.com/github/pr/owner/repo/number';
+        : source === 'pair-review://'
+          ? 'pair-review://pr/owner/repo/number'
+          : 'https://app.graphite.com/github/pr/owner/repo/number';
       throw new Error(`Invalid ${source} URL format. Expected: ${exampleUrl}`);
     }
 

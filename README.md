@@ -195,6 +195,9 @@ pair-review --local [path]
 | `-h`, `--help` | Show help message with full CLI documentation |
 | `-l`, `--local [path]` | Review local uncommitted changes. Optional path defaults to current directory |
 | `--model <name>` | Override the AI model for any provider. Model availability depends on provider configuration. |
+| `--register` | Register `pair-review://` URL scheme handler (macOS only) |
+| `--unregister` | Unregister `pair-review://` URL scheme handler (macOS only) |
+| `--command <cmd>` | Custom CLI command for `--register` (default: `npx @in-the-loop-labs/pair-review`) |
 | `-v`, `--version` | Show version number |
 
 ### Examples
@@ -204,6 +207,8 @@ pair-review 123                        # Review PR #123 in current repo
 pair-review https://github.com/owner/repo/pull/456
 pair-review --local                    # Review uncommitted local changes
 pair-review 123 --ai                   # Auto-run AI analysis
+pair-review --register                 # Register pair-review:// URL scheme (macOS)
+pair-review --register --command "node bin/pair-review.js"  # Custom command
 ```
 
 ## Configuration

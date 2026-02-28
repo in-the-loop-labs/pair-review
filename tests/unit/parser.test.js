@@ -96,6 +96,15 @@ describe('PRArgumentParser', () => {
     it('should return null for non-string input', () => {
       expect(parser.parsePRUrl(123)).toBeNull();
     });
+
+    it('should parse pair-review:// protocol URL', () => {
+      const result = parser.parsePRUrl('pair-review://pr/owner/repo/123');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123 });
+    });
+
+    it('should return null for invalid pair-review:// protocol URL', () => {
+      expect(parser.parsePRUrl('pair-review://invalid')).toBeNull();
+    });
   });
 
   describe('parseGraphiteURL', () => {
@@ -141,6 +150,35 @@ describe('PRArgumentParser', () => {
     });
   });
 
+  describe('parseProtocolURL', () => {
+    it('should parse valid pair-review:// PR URL', () => {
+      const result = parser.parseProtocolURL('pair-review://pr/owner/repo/123');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 123 });
+    });
+
+    it('should parse protocol URL with trailing path', () => {
+      const result = parser.parseProtocolURL('pair-review://pr/owner/repo/456/files');
+      expect(result).toEqual({ owner: 'owner', repo: 'repo', number: 456 });
+    });
+
+    it('should parse protocol URL with hyphenated names', () => {
+      const result = parser.parseProtocolURL('pair-review://pr/my-org/my-cool-repo/789');
+      expect(result).toEqual({ owner: 'my-org', repo: 'my-cool-repo', number: 789 });
+    });
+
+    it('should throw error for missing PR number', () => {
+      expect(() => parser.parseProtocolURL('pair-review://pr/owner/repo')).toThrow('Invalid pair-review:// URL format');
+    });
+
+    it('should throw error for non-PR path', () => {
+      expect(() => parser.parseProtocolURL('pair-review://settings')).toThrow('Invalid pair-review:// URL format');
+    });
+
+    it('should throw error for non-numeric PR number', () => {
+      expect(() => parser.parseProtocolURL('pair-review://pr/owner/repo/abc')).toThrow('Invalid pair-review:// URL format');
+    });
+  });
+
   describe('parsePRArguments', () => {
     it('should parse GitHub URL', async () => {
       const result = await parser.parsePRArguments(['https://github.com/owner/repo/pull/123']);
@@ -178,6 +216,11 @@ describe('PRArgumentParser', () => {
 
     it('should throw error for invalid input', async () => {
       await expect(parser.parsePRArguments(['not-a-number-or-url'])).rejects.toThrow('Invalid input format');
+    });
+
+    it('should parse pair-review:// protocol URL', async () => {
+      const result = await parser.parsePRArguments(['pair-review://pr/facebook/react/12345']);
+      expect(result).toEqual({ owner: 'facebook', repo: 'react', number: 12345 });
     });
   });
 
