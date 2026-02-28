@@ -20,7 +20,7 @@ const Analyzer = require('../ai/analyzer');
 const { getTierForModel } = require('../ai/provider');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
-const { broadcastReviewEvent } = require('../sse/review-events');
+const { broadcastReviewEvent } = require('../events/review-events');
 const path = require('path');
 const { normalizeRepository } = require('../utils/paths');
 const {

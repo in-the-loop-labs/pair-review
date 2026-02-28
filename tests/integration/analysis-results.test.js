@@ -663,6 +663,11 @@ describe('POST /api/analyses/results', () => {
       ([topic, payload]) => topic === `review:${reviewId}` && payload.type === 'review:analysis_completed'
     );
     expect(reviewEventBroadcasts.length).toBeGreaterThanOrEqual(1);
+
+    // Verify broadcast payload contains expected fields
+    const localPayload = reviewEventBroadcasts[0][1];
+    expect(localPayload.reviewId).toBe(reviewId);
+    expect(localPayload.type).toBe('review:analysis_completed');
   });
 
   it('should broadcast review:analysis_completed event for PR mode', async () => {
@@ -687,5 +692,10 @@ describe('POST /api/analyses/results', () => {
       ([topic, payload]) => topic === `review:${reviewId}` && payload.type === 'review:analysis_completed'
     );
     expect(reviewEventBroadcasts.length).toBeGreaterThanOrEqual(1);
+
+    // Verify broadcast payload contains expected fields
+    const prPayload = reviewEventBroadcasts[0][1];
+    expect(prPayload.reviewId).toBe(reviewId);
+    expect(prPayload.type).toBe('review:analysis_completed');
   });
 });

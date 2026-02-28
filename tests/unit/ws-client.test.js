@@ -100,10 +100,14 @@ describe('WSClient', () => {
     });
 
     it('should create a WebSocket with wss:// URL from https: origin', () => {
-      global.location.protocol = 'https:';
-      client.connect();
-      expect(lastWs().url).toBe('wss://localhost:7247/ws');
-      global.location.protocol = 'http:'; // restore
+      const origProtocol = global.location.protocol;
+      try {
+        global.location = { ...global.location, protocol: 'https:' };
+        client.connect();
+        expect(lastWs().url).toBe('wss://localhost:7247/ws');
+      } finally {
+        global.location = { ...global.location, protocol: origProtocol };
+      }
     });
 
     it('should set connected to true on open', () => {
@@ -148,14 +152,16 @@ describe('WSClient', () => {
       expect(sent).toContainEqual({ action: 'subscribe', topic: 'analysis:123' });
     });
 
-    it('should queue subscribe message when not connected', () => {
+    it('should replay subscription from _subscriptions on connect', () => {
       // Subscribe before connect
       const cb = vi.fn();
       client.subscribe('analysis:456', cb);
+      // Subscription is tracked locally
+      expect(client._subscriptions.has('analysis:456')).toBe(true);
       // Now connect
       client.connect();
       lastWs().simulateOpen();
-      // Only one subscribe should be sent (from _subscriptions, not the stale queue)
+      // Subscribe message should be sent from _subscriptions on open
       const sent = lastWs().sent.map((s) => JSON.parse(s));
       const subscribes = sent.filter(
         (m) => m.action === 'subscribe' && m.topic === 'analysis:456'
@@ -194,6 +200,23 @@ describe('WSClient', () => {
       lastWs().simulateMessage({ topic: 'shared-topic', value: 42 });
       expect(cb1).toHaveBeenCalledWith({ topic: 'shared-topic', value: 42 });
       expect(cb2).toHaveBeenCalledWith({ topic: 'shared-topic', value: 42 });
+    });
+
+    it('should isolate callback errors so all subscribers are called', () => {
+      client.connect();
+      lastWs().simulateOpen();
+
+      const throwingCb = vi.fn(() => { throw new Error('subscriber boom'); });
+      const healthyCb = vi.fn();
+      client.subscribe('fragile-topic', throwingCb);
+      client.subscribe('fragile-topic', healthyCb);
+
+      // Should not throw despite the first callback throwing
+      lastWs().simulateMessage({ topic: 'fragile-topic', value: 1 });
+
+      expect(throwingCb).toHaveBeenCalledTimes(1);
+      expect(healthyCb).toHaveBeenCalledTimes(1);
+      expect(healthyCb).toHaveBeenCalledWith({ topic: 'fragile-topic', value: 1 });
     });
 
     it('should ignore messages for unknown topics', () => {
@@ -250,13 +273,12 @@ describe('WSClient', () => {
       expect(client._subscriptions.has('topic-z')).toBe(true);
     });
 
-    it('should remove queued subscribe when unsubscribing before connect', () => {
+    it('should remove subscription when unsubscribing before connect', () => {
       const unsub = client.subscribe('queued-topic', vi.fn());
-      expect(client._queue.some((m) => m.topic === 'queued-topic')).toBe(true);
+      expect(client._subscriptions.has('queued-topic')).toBe(true);
 
       unsub();
 
-      expect(client._queue.some((m) => m.topic === 'queued-topic')).toBe(false);
       expect(client._subscriptions.has('queued-topic')).toBe(false);
     });
   });

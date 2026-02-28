@@ -12,7 +12,7 @@ const { query, queryOne, run, withTransaction, CommentRepository, ReviewReposito
 const { calculateStats, getStatsQuery } = require('../utils/stats-calculator');
 const { activeAnalyses, reviewToAnalysisId } = require('./shared');
 const logger = require('../utils/logger');
-const { broadcastReviewEvent } = require('../sse/review-events');
+const { broadcastReviewEvent } = require('../events/review-events');
 const { ensureContextFileForComment } = require('../utils/auto-context');
 const path = require('path');
 const fs = require('fs').promises;

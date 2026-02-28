@@ -1948,6 +1948,50 @@ class ChatPanel {
         this._handleChatMessage(msg);
       });
     }
+
+    // Listen for WebSocket reconnects — any deltas broadcast during the
+    // reconnect gap are lost, so we re-fetch via HTTP to recover the stream.
+    if (!this._onReconnect) {
+      this._onReconnect = () => { this._recoverAfterReconnect(); };
+      window.addEventListener('wsReconnected', this._onReconnect);
+    }
+  }
+
+  /**
+   * Recover streaming state after a WebSocket reconnect.
+   * If a stream was in progress when the connection dropped, deltas broadcast
+   * during the gap are lost. Re-fetch the full message history via HTTP and
+   * replace the partial `_streamingContent` with the complete last assistant
+   * message. When not streaming, no action is needed.
+   */
+  async _recoverAfterReconnect() {
+    if (!this.isStreaming || !this.currentSessionId) return;
+
+    try {
+      const response = await fetch(`/api/chat/session/${this.currentSessionId}/messages`);
+      if (!response.ok) return;
+
+      const result = await response.json();
+      const messages = result.data?.messages || [];
+
+      // Find the last assistant message — this is the one being streamed
+      let lastAssistant = null;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].type === 'message' && messages[i].role === 'assistant') {
+          lastAssistant = messages[i];
+          break;
+        }
+      }
+
+      if (lastAssistant && lastAssistant.content) {
+        this._streamingContent = lastAssistant.content;
+        if (this.isOpen) {
+          this.updateStreamingMessage(this._streamingContent);
+        }
+      }
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to recover stream after reconnect:', err);
+    }
   }
 
   /**
@@ -1969,8 +2013,12 @@ class ChatPanel {
    */
   _handleChatMessage(data) {
     try {
-      // Filter: only process events for the active session
-      if (data.sessionId !== this.currentSessionId) return;
+      // Assertion: WebSocket topic scoping guarantees sessionId match.
+      // This warn is a safety net — if it fires, something is wrong upstream.
+      if (data.sessionId !== this.currentSessionId) {
+        console.warn(`[ChatPanel] Unexpected sessionId mismatch: got ${data.sessionId}, expected ${this.currentSessionId}`);
+        return;
+      }
 
       if (data.type !== 'delta') {
         console.debug('[ChatPanel] WS event:', data.type, 'session:', data.sessionId);
@@ -2034,6 +2082,10 @@ class ChatPanel {
   _closeSubscriptions() {
     if (this._chatUnsub) { this._chatUnsub(); this._chatUnsub = null; }
     if (this._reviewUnsub) { this._reviewUnsub(); this._reviewUnsub = null; }
+    if (this._onReconnect) {
+      window.removeEventListener('wsReconnected', this._onReconnect);
+      this._onReconnect = null;
+    }
   }
 
   /**

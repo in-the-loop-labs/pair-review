@@ -13,7 +13,7 @@ const { GitWorktreeManager } = require('../git/worktree');
 const path = require('path');
 const { normalizeRepository } = require('../utils/paths');
 const logger = require('../utils/logger');
-const { broadcastReviewEvent } = require('../sse/review-events');
+const { broadcastReviewEvent } = require('../events/review-events');
 const {
   activeAnalyses,
   reviewToAnalysisId,

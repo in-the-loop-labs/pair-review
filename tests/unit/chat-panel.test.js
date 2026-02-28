@@ -203,6 +203,19 @@ global.wsClient = global.window.wsClient = {
   connected: true
 };
 
+/** Listeners registered on the window mock via addEventListener */
+let windowListeners;
+windowListeners = {};
+global.window.addEventListener = vi.fn((event, handler) => {
+  if (!windowListeners[event]) windowListeners[event] = [];
+  windowListeners[event].push(handler);
+});
+global.window.removeEventListener = vi.fn((event, handler) => {
+  if (windowListeners[event]) {
+    windowListeners[event] = windowListeners[event].filter(h => h !== handler);
+  }
+});
+
 documentListeners = {};
 
 global.document = {
@@ -304,6 +317,7 @@ describe('ChatPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     documentListeners = {};
+    windowListeners = {};
     global.localStorage._store = {};
     chatPanel = createChatPanel();
   });
@@ -313,6 +327,7 @@ describe('ChatPanel', () => {
       // Suppress destroy's WS cleanup
       chatPanel._chatUnsub = null;
       chatPanel._reviewUnsub = null;
+      chatPanel._onReconnect = null;
     }
     chatPanel = null;
   });
@@ -1435,10 +1450,17 @@ describe('ChatPanel', () => {
       expect(chatPanel.isStreaming).toBe(false);
     });
 
-    it('should ignore events for other sessions', () => {
+    it('should warn and ignore events for mismatched sessions', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
       emitEvent({ type: 'delta', text: 'foreign', sessionId: 'other-session' });
 
       expect(chatPanel._streamingContent).toBe('');
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Unexpected sessionId mismatch')
+      );
+
+      warnSpy.mockRestore();
     });
 
     it('should skip tool_use and status events when panel is closed', () => {
@@ -1496,6 +1518,25 @@ describe('ChatPanel', () => {
 
       expect(window.wsClient.subscribe).not.toHaveBeenCalled();
     });
+
+    it('should register wsReconnected listener on window', () => {
+      chatPanel._onReconnect = null;
+      global.window.addEventListener.mockClear();
+
+      chatPanel._ensureSubscriptions();
+
+      expect(global.window.addEventListener).toHaveBeenCalledWith('wsReconnected', expect.any(Function));
+      expect(chatPanel._onReconnect).not.toBeNull();
+    });
+
+    it('should not re-register wsReconnected listener if already registered', () => {
+      chatPanel._onReconnect = vi.fn();
+      global.window.addEventListener.mockClear();
+
+      chatPanel._ensureSubscriptions();
+
+      expect(global.window.addEventListener).not.toHaveBeenCalledWith('wsReconnected', expect.any(Function));
+    });
   });
 
   describe('_closeSubscriptions', () => {
@@ -1513,11 +1554,231 @@ describe('ChatPanel', () => {
       expect(chatPanel._reviewUnsub).toBeNull();
     });
 
+    it('should remove wsReconnected listener', () => {
+      const handler = vi.fn();
+      chatPanel._onReconnect = handler;
+
+      chatPanel._closeSubscriptions();
+
+      expect(global.window.removeEventListener).toHaveBeenCalledWith('wsReconnected', handler);
+      expect(chatPanel._onReconnect).toBeNull();
+    });
+
     it('should be safe to call when no subscriptions exist', () => {
       chatPanel._chatUnsub = null;
       chatPanel._reviewUnsub = null;
+      chatPanel._onReconnect = null;
 
       expect(() => chatPanel._closeSubscriptions()).not.toThrow();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // _recoverAfterReconnect
+  // -----------------------------------------------------------------------
+  describe('_recoverAfterReconnect', () => {
+    it('should do nothing when not streaming', async () => {
+      chatPanel.isStreaming = false;
+      chatPanel.currentSessionId = 'sess-1';
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('should do nothing when no currentSessionId', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.currentSessionId = null;
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('should fetch messages and replace _streamingContent with last assistant message', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.isOpen = false;
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel._streamingContent = 'partial respo';
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            messages: [
+              { type: 'message', role: 'user', content: 'hello', id: 1 },
+              { type: 'message', role: 'assistant', content: 'Full response text here', id: 2 },
+            ]
+          }
+        })
+      });
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(chatPanel._streamingContent).toBe('Full response text here');
+    });
+
+    it('should update the visible streaming message when panel is open', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.isOpen = true;
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel._streamingContent = 'partial';
+
+      const updateSpy = vi.spyOn(chatPanel, 'updateStreamingMessage');
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            messages: [
+              { type: 'message', role: 'assistant', content: 'Recovered content', id: 5 },
+            ]
+          }
+        })
+      });
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(chatPanel._streamingContent).toBe('Recovered content');
+      expect(updateSpy).toHaveBeenCalledWith('Recovered content');
+    });
+
+    it('should not update visible message when panel is closed', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.isOpen = false;
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel._streamingContent = 'partial';
+
+      const updateSpy = vi.spyOn(chatPanel, 'updateStreamingMessage');
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            messages: [
+              { type: 'message', role: 'assistant', content: 'Recovered', id: 5 },
+            ]
+          }
+        })
+      });
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(chatPanel._streamingContent).toBe('Recovered');
+      expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it('should handle empty message history gracefully', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel._streamingContent = 'partial';
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: { messages: [] }
+        })
+      });
+
+      await chatPanel._recoverAfterReconnect();
+
+      // Should keep partial content unchanged
+      expect(chatPanel._streamingContent).toBe('partial');
+    });
+
+    it('should handle fetch failure gracefully', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel._streamingContent = 'partial';
+
+      global.fetch.mockRejectedValueOnce(new Error('network error'));
+
+      // Should not throw
+      await chatPanel._recoverAfterReconnect();
+
+      expect(chatPanel._streamingContent).toBe('partial');
+    });
+
+    it('should handle non-ok response gracefully', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel._streamingContent = 'partial';
+
+      global.fetch.mockResolvedValueOnce({ ok: false, status: 500 });
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(chatPanel._streamingContent).toBe('partial');
+    });
+
+    it('should use the last assistant message when multiple exist', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.isOpen = false;
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel._streamingContent = 'partial';
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            messages: [
+              { type: 'message', role: 'user', content: 'q1', id: 1 },
+              { type: 'message', role: 'assistant', content: 'First answer', id: 2 },
+              { type: 'message', role: 'user', content: 'q2', id: 3 },
+              { type: 'message', role: 'assistant', content: 'Latest answer', id: 4 },
+            ]
+          }
+        })
+      });
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(chatPanel._streamingContent).toBe('Latest answer');
+    });
+
+    it('should skip context messages when looking for last assistant message', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.isOpen = false;
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel._streamingContent = 'partial';
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            messages: [
+              { type: 'message', role: 'assistant', content: 'Answer', id: 2 },
+              { type: 'context', content: '{"type":"analysis"}' },
+            ]
+          }
+        })
+      });
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(chatPanel._streamingContent).toBe('Answer');
+    });
+
+    it('should not replace content when no assistant messages exist', async () => {
+      chatPanel.isStreaming = true;
+      chatPanel.isOpen = false;
+      chatPanel.currentSessionId = 'sess-1';
+      chatPanel._streamingContent = 'partial';
+
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          data: {
+            messages: [
+              { type: 'message', role: 'user', content: 'hello', id: 1 },
+            ]
+          }
+        })
+      });
+
+      await chatPanel._recoverAfterReconnect();
+
+      expect(chatPanel._streamingContent).toBe('partial');
     });
   });
 

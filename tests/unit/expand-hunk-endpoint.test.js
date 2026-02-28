@@ -19,7 +19,7 @@ import { createTestDatabase, closeTestDatabase } from '../utils/schema';
 const { run } = require('../../src/database.js');
 
 // Import the review-events module and spy on broadcastReviewEvent
-const reviewEvents = require('../../src/sse/review-events');
+const reviewEvents = require('../../src/events/review-events');
 vi.spyOn(reviewEvents, 'broadcastReviewEvent').mockImplementation(() => {});
 
 // Suppress logger output during tests

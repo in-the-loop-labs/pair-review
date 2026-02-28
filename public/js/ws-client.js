@@ -22,8 +22,6 @@
       this._backoffMax = 10000;
       /** @type {boolean} whether close() was called intentionally */
       this._closed = false;
-      /** @type {Array<object>} messages queued while socket not yet open */
-      this._queue = [];
       /** @type {number|null} reconnect timer id */
       this._reconnectTimer = null;
       /** @type {boolean} whether at least one connection has been established */
@@ -45,7 +43,6 @@
       this._ws.onopen = () => {
         this.connected = true;
         this._backoff = 1000;
-        this._queue = []; // discard stale queued subscribes
         // Re-subscribe to all active topics (_subscriptions is authoritative)
         for (const topic of this._subscriptions.keys()) {
           this._ws.send(JSON.stringify({ action: 'subscribe', topic }));
@@ -106,12 +103,9 @@
       }
       callbacks.add(callback);
 
-      // Send subscribe message (or queue it)
-      const msg = { action: 'subscribe', topic };
+      // Send subscribe message if connected (otherwise it will be sent on connect via _subscriptions)
       if (this._ws && this._ws.readyState === WebSocket.OPEN) {
-        this._ws.send(JSON.stringify(msg));
-      } else {
-        this._queue.push(msg);
+        this._ws.send(JSON.stringify({ action: 'subscribe', topic }));
       }
 
       // Return unsubscribe function
@@ -123,10 +117,6 @@
           if (this._ws && this._ws.readyState === WebSocket.OPEN) {
             this._ws.send(JSON.stringify(unsub));
           }
-          // Also remove any queued subscribe for this topic
-          this._queue = this._queue.filter(
-            (m) => !(m.action === 'subscribe' && m.topic === topic)
-          );
         }
       };
     }

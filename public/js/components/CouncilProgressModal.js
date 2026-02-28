@@ -256,7 +256,7 @@ class CouncilProgressModal {
         this._updateConsolidation(level4);
       }
     } else if (this._renderMode === 'council') {
-      // Voice-centric council: transpose level-first SSE data to voice-first DOM
+      // Voice-centric council: transpose level-first WebSocket data to voice-first DOM
       this._updateVoiceCentric(status);
     } else {
       // Advanced (level-centric): update voices within levels
@@ -495,10 +495,10 @@ class CouncilProgressModal {
   // ---------------------------------------------------------------------------
 
   /**
-   * Update voice-centric DOM from level-first SSE data.
-   * Transposes levels -> voices: for each level in SSE data, update the
+   * Update voice-centric DOM from level-first WebSocket data.
+   * Transposes levels -> voices: for each level in WebSocket data, update the
    * corresponding level-child under each voice parent.
-   * @param {Object} status - SSE status object with levels map
+   * @param {Object} status - WebSocket status object with levels map
    */
   _updateVoiceCentric(status) {
     for (let level = 1; level <= 3; level++) {
@@ -1037,7 +1037,7 @@ class CouncilProgressModal {
     // approach as the backend (runReviewerCentricCouncil in analyzer.js).
     // The backend deduplicates by provider|model|tier|customInstructions, then
     // generates keys from the index into the global deduplicated array.
-    // We must mirror this exactly so voice keys match SSE progress events.
+    // We must mirror this exactly so voice keys match WebSocket progress events.
     //
     // Voice-centric format: levels are booleans (e.g. { '1': true }), voices
     // are a top-level array (config.voices). Advanced format: levels are objects

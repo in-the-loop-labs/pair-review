@@ -1258,8 +1258,7 @@ describe('CouncilProgressModal', () => {
 
       modal._fetchAndApplyStatus();
 
-      // Give it time to resolve
-      await new Promise(r => setTimeout(r, 10));
+      await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
       expect(updateSpy).not.toHaveBeenCalled();
     });
   });
