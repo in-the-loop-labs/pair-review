@@ -38,7 +38,7 @@ function registerProtocolHandler({ command, _deps } = {}) {
     'end run',
     '',
     'on open location theURL',
-    `\tdo shell script "${shell} -l -c '${resolvedCommand} " & quoted form of theURL & "' &> /dev/null &"`,
+    `\tdo shell script "${shell} -l -c \\"${resolvedCommand} " & quoted form of theURL & " > /dev/null 2>&1 &\\""`,
     'end open location',
   ].join('\n');
 
