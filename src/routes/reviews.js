@@ -727,7 +727,7 @@ router.post('/api/reviews/:reviewId/suggestions/:id/adopt', validateReviewId, as
 router.post('/api/reviews/:reviewId/suggestions/:id/edit', validateReviewId, async (req, res) => {
   try {
     const { id } = req.params;
-    const { editedText, action, category, title } = req.body;
+    const { editedText, action } = req.body;
 
     if (action !== 'adopt_edited') {
       return res.status(400).json({
@@ -760,16 +760,8 @@ router.post('/api/reviews/:reviewId/suggestions/:id/edit', validateReviewId, asy
       });
     }
 
-    // Apply server-side formatting when the action is adopt_edited
-    // Use category/title from request body, falling back to suggestion metadata
-    const config = req.app.get('config') || {};
-    const formatConfig = resolveFormat(config.comment_format);
-    const formattedBody = formatComment({
-      body: editedText.trim(),
-      suggestionText: suggestion.suggestion_text,
-      category: category || suggestion.type,
-      title: title || suggestion.title
-    }, formatConfig);
+    // The user already edited the fully formatted text, so store it verbatim
+    const formattedBody = editedText.trim();
 
     // Atomically adopt: create user comment and update suggestion status in one transaction
     const userCommentId = await withTransaction(db, async () => {

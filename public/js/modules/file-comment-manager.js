@@ -742,7 +742,7 @@ class FileCommentManager {
         class="file-comment-textarea"
         placeholder="Edit the suggestion..."
         data-file="${window.escapeHtmlAttribute(suggestion.file)}"
-      >${this.escapeHtml(suggestion.body)}</textarea>
+      >${this.escapeHtml(suggestion.formattedBody || suggestion.body)}</textarea>
       <div class="file-comment-form-footer">
         <button class="file-comment-form-btn submit submit-btn">Adopt</button>
         <button class="file-comment-form-btn cancel cancel-btn">Cancel</button>

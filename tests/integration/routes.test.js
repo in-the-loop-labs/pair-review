@@ -2157,40 +2157,36 @@ describe('AI Suggestion Endpoints', () => {
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
-          editedText: 'Edited body text',
-          category: 'bug',
-          title: 'Edited title'
+          editedText: 'Edited body text'
         });
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
       expect(response.body.userCommentId).toBeDefined();
       expect(response.body.formattedBody).toBeDefined();
-      expect(response.body.formattedBody).toContain('Edited body text');
+      expect(response.body.formattedBody).toBe('Edited body text');
     });
 
-    it('should use category and title from request body in formatting', async () => {
+    it('should store editedText verbatim without re-formatting', async () => {
       const { lastID: suggestionId } = await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, body, type, title, status)
         VALUES (?, 'ai', 'file.js', 10, 'Original body', 'bug', 'Original Title', 'active')
       `, [prId]);
 
+      const editedText = '🐛 **Bug**: User-edited formatted text';
       const response = await request(app)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
-          editedText: 'New description',
-          category: 'improvement',
-          title: 'New Title'
+          editedText
         });
 
       expect(response.status).toBe(200);
-      // Category from request body should be used
-      expect(response.body.formattedBody).toContain('**Improvement**');
-      expect(response.body.formattedBody).not.toContain('**Bug**');
+      // formattedBody should be the verbatim editedText, not re-formatted
+      expect(response.body.formattedBody).toBe(editedText);
     });
 
-    it('should fall back to suggestion type/title when params omitted', async () => {
+    it('should trim whitespace from editedText', async () => {
       const { lastID: suggestionId } = await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, body, type, title, status)
         VALUES (?, 'ai', 'file.js', 10, 'Original body', 'improvement', 'Fallback Title', 'active')
@@ -2200,13 +2196,11 @@ describe('AI Suggestion Endpoints', () => {
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
-          editedText: 'Edited text only'
+          editedText: '  Edited text with whitespace  '
         });
 
       expect(response.status).toBe(200);
-      // Falls back to suggestion.type
-      expect(response.body.formattedBody).toContain('**Improvement**');
-      expect(response.body.formattedBody).toContain('Edited text only');
+      expect(response.body.formattedBody).toBe('Edited text with whitespace');
     });
 
     it('should store comment body matching formattedBody', async () => {
@@ -2215,20 +2209,21 @@ describe('AI Suggestion Endpoints', () => {
         VALUES (?, 'ai', 'file.js', 10, 'Body text', 'bug', 'Title', 'active')
       `, [prId]);
 
+      const editedText = 'Verbatim edited body';
       const response = await request(app)
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
-          editedText: 'Edited body'
+          editedText
         });
 
       expect(response.status).toBe(200);
 
       const userComment = await queryOne(db, 'SELECT body FROM comments WHERE id = ?', [response.body.userCommentId]);
-      expect(userComment.body).toBe(response.body.formattedBody);
+      expect(userComment.body).toBe(editedText);
     });
 
-    it('should preserve suggestion_text in formatted output', async () => {
+    it('should not include suggestion_text since no re-formatting occurs', async () => {
       const { lastID: suggestionId } = await run(db, `
         INSERT INTO comments (review_id, source, file, line_start, body, suggestion_text, type, title, status)
         VALUES (?, 'ai', 'file.js', 10, 'Description', 'Remediation steps here', 'bug', 'Fix needed', 'active')
@@ -2238,13 +2233,12 @@ describe('AI Suggestion Endpoints', () => {
         .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
         .send({
           action: 'adopt_edited',
-          editedText: 'Edited description'
+          editedText: 'Edited description only'
         });
 
       expect(response.status).toBe(200);
-      // suggestion_text from the suggestion record should be included
-      expect(response.body.formattedBody).toContain('Remediation steps here');
-      expect(response.body.formattedBody).toContain('Edited description');
+      // editedText is stored verbatim; suggestion_text is NOT injected by the server
+      expect(response.body.formattedBody).toBe('Edited description only');
     });
   });
 

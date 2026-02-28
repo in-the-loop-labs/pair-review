@@ -20,7 +20,7 @@ const {
   isCheckInProgress
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
-const { isRunningViaNpx } = require('../config');
+const { isRunningViaNpx, saveConfig } = require('../config');
 const { PRESETS } = require('../utils/comment-formatter');
 const logger = require('../utils/logger');
 
@@ -142,7 +142,6 @@ router.patch('/api/config', async (req, res) => {
     }
 
     // Save config to file
-    const { saveConfig } = require('../config');
     await saveConfig(config);
 
     // Update app config

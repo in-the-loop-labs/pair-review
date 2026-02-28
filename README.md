@@ -482,11 +482,11 @@ The markdown includes file paths, line numbers, and your comments - everything t
 
 ### Comment Format
 
-When AI suggestions are adopted as review comments, pair-review formats them with an emoji and category prefix. You can customize this format via the `comment_format` setting in `~/.pair-review/config.json`.
+When AI suggestions are adopted as review comments, pair-review formats them with an emoji and category prefix by default. You can customize this format via the `comment_format` setting in `~/.pair-review/config.json`.
 
 **Presets:**
 
-| Preset | Template | Example Output |
+| Preset | Template | Example Output (without suggestion)|
 |--------|----------|---------------|
 | `legacy` | `{emoji} **{category}**: {description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}` | 🐛 **Bug**: Missing null check |
 | `minimal` | `[{category}] {description}{?suggestion}\n\n{suggestion}{/suggestion}` | [Bug] Missing null check |
@@ -536,9 +536,9 @@ Use `categoryOverrides` to rename categories in the formatted output. This is a 
 - `emojiOverrides` lets you replace the default emoji for specific categories.
 - `categoryOverrides` lets you rename categories (e.g., "bug" to "defect").
 
-The template must contain at least the `{description}` placeholder.
+Templates typically include `{description}` to render the suggestion body.
 
-**Available categories:** bug, improvement, praise, suggestion, design, performance, security, code-style
+**Builtin categories:** bug, improvement, praise, suggestion, design, performance, security, code-style
 
 ### Local Mode
 
