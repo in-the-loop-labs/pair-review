@@ -1778,7 +1778,6 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
         headSha: prMetadata.head_sha,
         logLabel: `PR #${prNumber}`,
         initialStatusExtra: { prNumber, reviewType: 'pr' },
-        extraBroadcastKeys: null,
         onSuccess: async (result) => {
           if (result.summary) {
             await reviewRepo.upsertSummary(prNumber, repository, result.summary);

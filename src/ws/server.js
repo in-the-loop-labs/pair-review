@@ -3,7 +3,6 @@ const { WebSocketServer } = require('ws');
 const logger = require('../utils/logger');
 
 const HEARTBEAT_INTERVAL = 30000;
-const PONG_TIMEOUT = 10000;
 
 let wss = null;
 let heartbeatTimer = null;
@@ -93,7 +92,11 @@ function broadcast(topic, payload) {
 
   wss.clients.forEach((ws) => {
     if (ws.readyState === ws.OPEN && ws._topics && ws._topics.has(topic)) {
-      ws.send(message);
+      try {
+        ws.send(message);
+      } catch (err) {
+        logger.debug(`WS: failed to send to client: ${err.message}`);
+      }
     }
   });
 }

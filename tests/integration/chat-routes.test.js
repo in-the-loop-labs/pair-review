@@ -15,7 +15,7 @@ vi.mock('../../src/utils/logger', () => ({
 }));
 
 const chatRouter = require('../../src/routes/chat');
-const { _sseUnsubscribers, _buildPairReviewApiRe } = require('../../src/routes/chat');
+const { _broadcastUnsubscribers, _buildPairReviewApiRe } = require('../../src/routes/chat');
 const ws = require('../../src/ws');
 
 /**
@@ -78,7 +78,7 @@ describe('Chat Routes', () => {
 
   afterEach(() => {
     // Clean up any unsubscribers registered during tests
-    _sseUnsubscribers.clear();
+    _broadcastUnsubscribers.clear();
     broadcastSpy.mockRestore();
     closeTestDatabase(db);
   });
@@ -220,7 +220,7 @@ describe('Chat Routes', () => {
       expect(res.body.data.context).toBeUndefined();
     });
 
-    it('should register SSE broadcast listeners on session creation', async () => {
+    it('should register broadcast listeners on session creation', async () => {
       const res = await request(app)
         .post('/api/chat/session')
         .send({
@@ -673,7 +673,7 @@ describe('Chat Routes', () => {
   describe('Hidden pair-review API tool calls', () => {
     /**
      * Helper: starts the app on an ephemeral port, creates a session
-     * (which triggers registerSSEBroadcast with that port), captures
+     * (which triggers registerChatBroadcast with that port), captures
      * the onToolUse callback, and returns it along with a list that
      * collects broadcast events via the mocked ws broadcast function.
      */
@@ -691,7 +691,7 @@ describe('Chat Routes', () => {
       const port = server.address().port;
 
       try {
-        // Create a session to trigger registerSSEBroadcast
+        // Create a session to trigger registerChatBroadcast
         await request(server)
           .post('/api/chat/session')
           .send({ provider: 'pi', reviewId: 1, systemPrompt: 'test' });
@@ -1043,6 +1043,127 @@ describe('Chat Routes', () => {
       expect(res.body.data.suggestionCount).toBe(0);
       expect(res.body.data.run).toBeNull();
       expect(res.body.data.text).toBeNull();
+    });
+  });
+
+  describe('WebSocket broadcast flow', () => {
+    /**
+     * Helper: creates a session and captures the registered event callbacks
+     * so we can invoke them and verify ws.broadcast is called correctly.
+     */
+    async function setupBroadcastCapture() {
+      const callbacks = {};
+      mockManager.onDelta.mockImplementation((_sid, cb) => { callbacks.delta = cb; return () => {}; });
+      mockManager.onComplete.mockImplementation((_sid, cb) => { callbacks.complete = cb; return () => {}; });
+      mockManager.onError.mockImplementation((_sid, cb) => { callbacks.error = cb; return () => {}; });
+      mockManager.onStatus.mockImplementation((_sid, cb) => { callbacks.status = cb; return () => {}; });
+      mockManager.onToolUse.mockImplementation((_sid, cb) => { callbacks.toolUse = cb; return () => {}; });
+
+      const res = await request(app)
+        .post('/api/chat/session')
+        .send({ provider: 'pi', reviewId: 1, systemPrompt: 'test' });
+
+      expect(res.status).toBe(200);
+      broadcastSpy.mockClear();
+      return { callbacks, sessionId: res.body.data.id };
+    }
+
+    it('should broadcast delta events with correct topic and payload', async () => {
+      const { callbacks, sessionId } = await setupBroadcastCapture();
+
+      callbacks.delta({ text: 'Hello world' });
+
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
+      const [topic, payload] = broadcastSpy.mock.calls[0];
+      expect(topic).toBe(`chat:${sessionId}`);
+      expect(payload).toEqual({
+        type: 'delta',
+        text: 'Hello world',
+        sessionId
+      });
+    });
+
+    it('should broadcast complete events with messageId', async () => {
+      const { callbacks, sessionId } = await setupBroadcastCapture();
+
+      callbacks.complete({ messageId: 42 });
+
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
+      const [topic, payload] = broadcastSpy.mock.calls[0];
+      expect(topic).toBe(`chat:${sessionId}`);
+      expect(payload).toEqual({
+        type: 'complete',
+        messageId: 42,
+        sessionId
+      });
+    });
+
+    it('should broadcast error events with message', async () => {
+      const { callbacks, sessionId } = await setupBroadcastCapture();
+
+      callbacks.error({ message: 'Something went wrong' });
+
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
+      const [topic, payload] = broadcastSpy.mock.calls[0];
+      expect(topic).toBe(`chat:${sessionId}`);
+      expect(payload).toEqual({
+        type: 'error',
+        message: 'Something went wrong',
+        sessionId
+      });
+    });
+
+    it('should broadcast status events with status field', async () => {
+      const { callbacks, sessionId } = await setupBroadcastCapture();
+
+      callbacks.status({ status: 'thinking' });
+
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
+      const [topic, payload] = broadcastSpy.mock.calls[0];
+      expect(topic).toBe(`chat:${sessionId}`);
+      expect(payload).toEqual({
+        type: 'status',
+        status: 'thinking',
+        sessionId
+      });
+    });
+
+    it('should broadcast tool_use events for non-suppressed tools', async () => {
+      const { callbacks, sessionId } = await setupBroadcastCapture();
+
+      callbacks.toolUse({
+        toolName: 'Read',
+        status: 'start',
+        toolCallId: 'tc-1',
+        args: { path: '/tmp/file.js' }
+      });
+
+      expect(broadcastSpy).toHaveBeenCalledTimes(1);
+      const [topic, payload] = broadcastSpy.mock.calls[0];
+      expect(topic).toBe(`chat:${sessionId}`);
+      expect(payload).toMatchObject({
+        type: 'tool_use',
+        toolName: 'Read',
+        status: 'start',
+        sessionId
+      });
+    });
+
+    it('should broadcast multiple events in sequence on the same topic', async () => {
+      const { callbacks, sessionId } = await setupBroadcastCapture();
+
+      callbacks.delta({ text: 'chunk1' });
+      callbacks.delta({ text: 'chunk2' });
+      callbacks.complete({ messageId: 99 });
+
+      expect(broadcastSpy).toHaveBeenCalledTimes(3);
+      // All should target the same topic
+      for (const [topic] of broadcastSpy.mock.calls) {
+        expect(topic).toBe(`chat:${sessionId}`);
+      }
+      expect(broadcastSpy.mock.calls[0][1].type).toBe('delta');
+      expect(broadcastSpy.mock.calls[1][1].type).toBe('delta');
+      expect(broadcastSpy.mock.calls[2][1].type).toBe('complete');
     });
   });
 

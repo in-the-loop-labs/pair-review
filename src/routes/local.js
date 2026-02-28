@@ -1226,7 +1226,6 @@ router.post('/api/local/:reviewId/analyses/council', async (req, res) => {
         headSha: review.local_head_sha,
         logLabel: `local review #${reviewId}`,
         initialStatusExtra: { reviewId, reviewType: 'local' },
-        extraBroadcastKeys: [`review-${reviewId}`],
         runUpdateExtra: { filesAnalyzed: changedFiles.length }
       },
       councilConfig,

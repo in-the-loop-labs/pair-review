@@ -1452,12 +1452,12 @@ describe('ChatPanel', () => {
   });
 
   // -----------------------------------------------------------------------
-  // _ensureGlobalSSE / _closeGlobalSSE
+  // _ensureSubscriptions / _closeSubscriptions
   // -----------------------------------------------------------------------
-  describe('_ensureGlobalSSE', () => {
+  describe('_ensureSubscriptions', () => {
     it('should call wsClient.connect()', () => {
       window.wsClient.connect.mockClear();
-      chatPanel._ensureGlobalSSE();
+      chatPanel._ensureSubscriptions();
 
       expect(window.wsClient.connect).toHaveBeenCalled();
     });
@@ -1467,7 +1467,7 @@ describe('ChatPanel', () => {
       chatPanel.reviewId = 'review-42';
       chatPanel._reviewUnsub = null;
 
-      chatPanel._ensureGlobalSSE();
+      chatPanel._ensureSubscriptions();
 
       expect(window.wsClient.subscribe).toHaveBeenCalledWith('review:review-42', expect.any(Function));
       expect(chatPanel._reviewUnsub).not.toBeNull();
@@ -1478,7 +1478,7 @@ describe('ChatPanel', () => {
       chatPanel.currentSessionId = 'sess-99';
       chatPanel._chatUnsub = null;
 
-      chatPanel._ensureGlobalSSE();
+      chatPanel._ensureSubscriptions();
 
       expect(window.wsClient.subscribe).toHaveBeenCalledWith('chat:sess-99', expect.any(Function));
       expect(chatPanel._chatUnsub).not.toBeNull();
@@ -1492,20 +1492,20 @@ describe('ChatPanel', () => {
       chatPanel.currentSessionId = 'sess-99';
       chatPanel.reviewId = 'review-42';
 
-      chatPanel._ensureGlobalSSE();
+      chatPanel._ensureSubscriptions();
 
       expect(window.wsClient.subscribe).not.toHaveBeenCalled();
     });
   });
 
-  describe('_closeGlobalSSE', () => {
+  describe('_closeSubscriptions', () => {
     it('should call chat and review unsubscribe functions', () => {
       const chatUnsub = vi.fn();
       const reviewUnsub = vi.fn();
       chatPanel._chatUnsub = chatUnsub;
       chatPanel._reviewUnsub = reviewUnsub;
 
-      chatPanel._closeGlobalSSE();
+      chatPanel._closeSubscriptions();
 
       expect(chatUnsub).toHaveBeenCalled();
       expect(reviewUnsub).toHaveBeenCalled();
@@ -1517,7 +1517,7 @@ describe('ChatPanel', () => {
       chatPanel._chatUnsub = null;
       chatPanel._reviewUnsub = null;
 
-      expect(() => chatPanel._closeGlobalSSE()).not.toThrow();
+      expect(() => chatPanel._closeSubscriptions()).not.toThrow();
     });
   });
 
@@ -1610,8 +1610,8 @@ describe('ChatPanel', () => {
   // destroy
   // -----------------------------------------------------------------------
   describe('destroy', () => {
-    it('should close global SSE', () => {
-      const spy = vi.spyOn(chatPanel, '_closeGlobalSSE');
+    it('should close subscriptions', () => {
+      const spy = vi.spyOn(chatPanel, '_closeSubscriptions');
       chatPanel.destroy();
       expect(spy).toHaveBeenCalled();
     });

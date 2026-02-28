@@ -639,9 +639,9 @@ describe('POST /api/analyses/results', () => {
     expect(first.body.runId).not.toBe(second.body.runId);
   });
 
-  // --- SSE broadcast on review-level key ---
+  // --- Review event broadcast ---
 
-  it('should broadcast on analysis:review-${reviewId} topic for local mode', async () => {
+  it('should broadcast review:analysis_completed event for local mode', async () => {
     broadcastSpy.mockClear();
 
     const response = await request(app)
@@ -658,16 +658,14 @@ describe('POST /api/analyses/results', () => {
     expect(response.status).toBe(201);
     const reviewId = response.body.reviewId;
 
-    // Find broadcast calls to the review-level key
-    const reviewBroadcasts = broadcastSpy.mock.calls.filter(
-      ([topic, payload]) => topic === `analysis:review-${reviewId}` && payload.source === 'external'
+    // Verify broadcastReviewEvent fires on the review:{reviewId} topic
+    const reviewEventBroadcasts = broadcastSpy.mock.calls.filter(
+      ([topic, payload]) => topic === `review:${reviewId}` && payload.type === 'review:analysis_completed'
     );
-    expect(reviewBroadcasts.length).toBeGreaterThanOrEqual(1);
-    expect(reviewBroadcasts[0][1].status).toBe('completed');
-    expect(reviewBroadcasts[0][1].source).toBe('external');
+    expect(reviewEventBroadcasts.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('should broadcast on analysis:review-${reviewId} topic for PR mode', async () => {
+  it('should broadcast review:analysis_completed event for PR mode', async () => {
     broadcastSpy.mockClear();
 
     const response = await request(app)
@@ -684,12 +682,10 @@ describe('POST /api/analyses/results', () => {
     expect(response.status).toBe(201);
     const reviewId = response.body.reviewId;
 
-    // Find broadcast calls to the review-level key
-    const reviewBroadcasts = broadcastSpy.mock.calls.filter(
-      ([topic, payload]) => topic === `analysis:review-${reviewId}` && payload.source === 'external'
+    // Verify broadcastReviewEvent fires on the review:{reviewId} topic
+    const reviewEventBroadcasts = broadcastSpy.mock.calls.filter(
+      ([topic, payload]) => topic === `review:${reviewId}` && payload.type === 'review:analysis_completed'
     );
-    expect(reviewBroadcasts.length).toBeGreaterThanOrEqual(1);
-    expect(reviewBroadcasts[0][1].status).toBe('completed');
-    expect(reviewBroadcasts[0][1].source).toBe('external');
+    expect(reviewEventBroadcasts.length).toBeGreaterThanOrEqual(1);
   });
 });

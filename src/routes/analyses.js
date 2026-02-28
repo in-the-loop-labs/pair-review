@@ -273,7 +273,7 @@ router.post('/api/analyses/results', async (req, res) => {
       });
     });
 
-    // --- Broadcast SSE completion event (after transaction completes) ---
+    // --- Broadcast completion event via WebSocket (after transaction completes) ---
     const completionEvent = {
       id: runId,
       status: 'completed',
@@ -289,9 +289,6 @@ router.post('/api/analyses/results', async (req, res) => {
       }
     };
     broadcastProgress(runId, completionEvent);
-
-    // Broadcast on the review-level key so the frontend auto-refreshes.
-    broadcastProgress(`review-${reviewId}`, { ...completionEvent, source: 'external' });
 
     broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
 
@@ -411,7 +408,7 @@ router.post('/api/analyses/:id/cancel', async (req, res) => {
 
     activeAnalyses.set(id, cancelledStatus);
 
-    // Broadcast cancelled status to SSE clients
+    // Broadcast cancelled status to WebSocket clients
     broadcastProgress(id, cancelledStatus);
 
     // Clean up review to analysis ID mapping
@@ -471,7 +468,6 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
     headSha,
     logLabel,
     initialStatusExtra,
-    extraBroadcastKeys,
     onSuccess,
     runUpdateExtra
   } = modeContext;
@@ -608,12 +604,6 @@ async function launchCouncilAnalysis(db, modeContext, councilConfig, councilId, 
       activeAnalyses.set(analysisId, completedStatus);
       broadcastProgress(analysisId, completedStatus);
       broadcastReviewEvent(initialStatus.reviewId, { type: 'review:analysis_completed' });
-
-      if (extraBroadcastKeys) {
-        for (const key of extraBroadcastKeys) {
-          broadcastProgress(key, { ...completedStatus, source: 'council' });
-        }
-      }
     })
     .catch(error => {
       if (error.isCancellation) {

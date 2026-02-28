@@ -53,8 +53,17 @@ class MockWebSocket {
   }
 }
 
+// Minimal CustomEvent polyfill for Node environment
+class MockCustomEvent {
+  constructor(type, options = {}) {
+    this.type = type;
+    this.detail = options.detail || null;
+  }
+}
+
 // Set up global mocks before loading the module
-global.window = {};
+global.window = { dispatchEvent: vi.fn() };
+global.CustomEvent = MockCustomEvent;
 global.location = { protocol: 'http:', host: 'localhost:7247' };
 global.WebSocket = MockWebSocket;
 
@@ -74,6 +83,7 @@ describe('WSClient', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     MockWebSocket.instances = [];
+    global.window.dispatchEvent.mockClear();
     client = new WSClient();
   });
 
@@ -145,12 +155,12 @@ describe('WSClient', () => {
       // Now connect
       client.connect();
       lastWs().simulateOpen();
-      // The queued subscribe and the re-subscribe on open should both have fired
+      // Only one subscribe should be sent (from _subscriptions, not the stale queue)
       const sent = lastWs().sent.map((s) => JSON.parse(s));
       const subscribes = sent.filter(
         (m) => m.action === 'subscribe' && m.topic === 'analysis:456'
       );
-      expect(subscribes.length).toBeGreaterThanOrEqual(1);
+      expect(subscribes).toHaveLength(1);
     });
 
     it('should track subscription locally even when disconnected', () => {
@@ -354,6 +364,53 @@ describe('WSClient', () => {
       const countBefore = MockWebSocket.instances.length;
       vi.advanceTimersByTime(1);
       expect(MockWebSocket.instances).toHaveLength(countBefore + 1);
+    });
+  });
+
+  describe('wsReconnected event', () => {
+    it('should NOT dispatch wsReconnected on initial connect', () => {
+      client.connect();
+      lastWs().simulateOpen();
+
+      expect(global.window.dispatchEvent).not.toHaveBeenCalled();
+    });
+
+    it('should dispatch wsReconnected on reconnect after disconnect', () => {
+      client.connect();
+      lastWs().simulateOpen();
+      lastWs().simulateClose();
+
+      vi.advanceTimersByTime(1000);
+      lastWs().simulateOpen(); // this is a reconnect
+
+      expect(global.window.dispatchEvent).toHaveBeenCalledTimes(1);
+      const event = global.window.dispatchEvent.mock.calls[0][0];
+      expect(event).toBeInstanceOf(MockCustomEvent);
+      expect(event.type).toBe('wsReconnected');
+    });
+
+    it('should dispatch wsReconnected on each subsequent reconnect', () => {
+      client.connect();
+      lastWs().simulateOpen(); // initial — no event
+
+      // First reconnect
+      lastWs().simulateClose();
+      vi.advanceTimersByTime(1000);
+      lastWs().simulateOpen();
+      expect(global.window.dispatchEvent).toHaveBeenCalledTimes(1);
+
+      // Second reconnect
+      lastWs().simulateClose();
+      vi.advanceTimersByTime(1000);
+      lastWs().simulateOpen();
+      expect(global.window.dispatchEvent).toHaveBeenCalledTimes(2);
+    });
+
+    it('should set _hasConnected flag after first connect', () => {
+      expect(client._hasConnected).toBe(false);
+      client.connect();
+      lastWs().simulateOpen();
+      expect(client._hasConnected).toBe(true);
     });
   });
 

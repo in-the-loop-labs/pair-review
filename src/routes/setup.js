@@ -25,14 +25,14 @@ const router = express.Router();
 /**
  * Send a setup progress event via WebSocket.
  *
- * Converts the named SSE event pattern to a WebSocket message with a `type`
+ * Converts the named event pattern to a WebSocket message with a `type`
  * field so the client can dispatch on `msg.type` (e.g. 'step', 'complete', 'error').
  *
  * @param {string} setupId - Setup operation ID
  * @param {string} eventType - Event type (e.g. 'step', 'complete', 'error')
  * @param {Object} data - JSON-serialisable payload
  */
-function sendSetupSSE(setupId, eventType, data) {
+function sendSetupEvent(setupId, eventType, data) {
   broadcastSetupProgress(setupId, { type: eventType, ...data });
 }
 
@@ -44,7 +44,7 @@ function sendSetupSSE(setupId, eventType, data) {
  * Initiate an asynchronous PR review setup.
  *
  * Returns immediately with a { setupId } that the client uses to subscribe
- * to SSE progress events. If setup is already in-flight for this PR, the
+ * to WebSocket progress events. If setup is already in-flight for this PR, the
  * existing setupId is returned. If the PR already exists in the database the
  * response includes `{ existing: true, reviewUrl }` so the client can
  * navigate directly.
@@ -109,14 +109,14 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           githubToken,
           config,
           onProgress: (progress) => {
-            sendSetupSSE(setupId, 'step', progress);
+            sendSetupEvent(setupId, 'step', progress);
           }
         });
 
-        sendSetupSSE(setupId, 'complete', { reviewUrl: result.reviewUrl, title: result.title });
+        sendSetupEvent(setupId, 'complete', { reviewUrl: result.reviewUrl, title: result.title });
       } catch (err) {
         logger.error(`PR setup failed for ${setupKey}:`, err);
-        sendSetupSSE(setupId, 'error', { message: err.message });
+        sendSetupEvent(setupId, 'error', { message: err.message });
       } finally {
         activeSetups.delete(setupKey);
       }
@@ -139,7 +139,7 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
  * Initiate an asynchronous local review setup.
  *
  * Expects JSON body `{ path }` with the local directory to review. Returns
- * `{ setupId }` for the client to subscribe to SSE progress events.
+ * `{ setupId }` for the client to subscribe to WebSocket progress events.
  */
 router.post('/api/setup/local', async (req, res) => {
   try {
@@ -166,11 +166,11 @@ router.post('/api/setup/local', async (req, res) => {
           db,
           targetPath,
           onProgress: (progress) => {
-            sendSetupSSE(setupId, 'step', progress);
+            sendSetupEvent(setupId, 'step', progress);
           }
         });
 
-        sendSetupSSE(setupId, 'complete', {
+        sendSetupEvent(setupId, 'complete', {
           reviewUrl: result.reviewUrl,
           reviewId: result.reviewId,
           existing: result.existing,
@@ -179,7 +179,7 @@ router.post('/api/setup/local', async (req, res) => {
         });
       } catch (err) {
         logger.error(`Local setup failed for ${setupKey}:`, err);
-        sendSetupSSE(setupId, 'error', { message: err.message });
+        sendSetupEvent(setupId, 'error', { message: err.message });
       } finally {
         activeSetups.delete(setupKey);
       }

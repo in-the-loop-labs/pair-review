@@ -481,8 +481,8 @@ class PRManager {
     if (this._reviewEventsBound) return;
     this._reviewEventsBound = true;
 
-    // Eagerly connect chat SSE so review events flow even before chat opens
-    window.chatPanel?._ensureGlobalSSE();
+    // Eagerly connect WebSocket subscriptions so review events flow even before chat opens
+    window.chatPanel?._ensureSubscriptions();
 
     // Late-bind reviewId to ChatPanel if it was auto-opened by PanelGroup
     // before prManager was ready (DOMContentLoaded race condition)

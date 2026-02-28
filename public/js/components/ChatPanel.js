@@ -434,8 +434,8 @@ class ChatPanel {
     this.panel.classList.remove('chat-panel--closed');
     this.panel.classList.add('chat-panel--open');
 
-    // Ensure SSE is connected (but don't create a session yet — lazy creation)
-    this._ensureGlobalSSE();
+    // Ensure WebSocket subscriptions are active (but don't create a session yet — lazy creation)
+    this._ensureSubscriptions();
 
     // Load MRU session with message history (if any previous sessions exist).
     // Skip when opening with explicit context (suggestion/comment/file) — the
@@ -495,7 +495,7 @@ class ChatPanel {
   close() {
     this._hideSessionDropdown();
     // Reset UI streaming state (buttons) but keep isStreaming and _streamingContent
-    // intact so the background SSE handler can continue accumulating events.
+    // intact so the background WebSocket handler can continue accumulating events.
     this.sendBtn.style.display = '';
     this.stopBtn.style.display = 'none';
     this.sendBtn.disabled = !this.inputEl?.value?.trim();
@@ -871,12 +871,12 @@ class ChatPanel {
   }
 
   /**
-   * Ensure the global SSE connection is active.
+   * Ensure WebSocket subscriptions are established for review and chat topics.
    * No longer creates sessions — that happens lazily on first message.
    * @returns {{sessionData: null}}
    */
   _ensureConnected() {
-    this._ensureGlobalSSE();
+    this._ensureSubscriptions();
     return { sessionData: null };
   }
 
@@ -894,6 +894,12 @@ class ChatPanel {
     if (this.reviewId) return; // already bound
     this.reviewId = reviewId;
     console.debug('[ChatPanel] Late-bound reviewId:', reviewId);
+
+    // Subscribe to review topic now that reviewId is available.
+    // _ensureSubscriptions() skips this when reviewId is null at panel open time,
+    // so we must subscribe here. The chat subscription is a benign no-op when
+    // currentSessionId is null.
+    this._ensureSubscriptions();
 
     // Re-enable input now that reviewId is available
     if (this.inputEl.disabled) {
@@ -978,7 +984,7 @@ class ChatPanel {
 
     // Lazy session creation: create on first message, not on panel open
     if (!this.currentSessionId) {
-      this._ensureGlobalSSE();
+      this._ensureSubscriptions();
       const sessionData = await this.createSession();
       if (!sessionData) {
         // Restore the user's message text into the input
@@ -1048,7 +1054,7 @@ class ChatPanel {
         console.debug('[ChatPanel] Session not resumable (410), creating new session and retrying');
         this.currentSessionId = null;
         this._resubscribeChat();
-        this._ensureGlobalSSE();
+        this._ensureSubscriptions();
         const sessionData = await this.createSession();
         if (!sessionData) {
           throw new Error('Failed to create replacement session');
@@ -1065,7 +1071,7 @@ class ChatPanel {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to send message');
       }
-      console.debug('[ChatPanel] Message accepted, waiting for SSE events');
+      console.debug('[ChatPanel] Message accepted, waiting for WebSocket events');
     } catch (error) {
       // Restore pending context so it's not lost
       this._pendingContext = savedContext;
@@ -1922,7 +1928,7 @@ class ChatPanel {
    * Subscribes to review events (stable for page lifetime) and chat events
    * (changes when session changes). Subsequent calls are no-ops if already subscribed.
    */
-  _ensureGlobalSSE() {
+  _ensureSubscriptions() {
     window.wsClient.connect();
 
     // Subscribe to review events (stable for page lifetime)
@@ -1958,8 +1964,7 @@ class ChatPanel {
   }
 
   /**
-   * Handle an incoming chat message from the WebSocket.
-   * Extracted from the former SSE onmessage handler.
+   * Handles incoming WebSocket messages for the active chat session.
    * @param {Object} data - Parsed message object
    */
   _handleChatMessage(data) {
@@ -2026,7 +2031,7 @@ class ChatPanel {
   /**
    * Close all WebSocket subscriptions (chat and review).
    */
-  _closeGlobalSSE() {
+  _closeSubscriptions() {
     if (this._chatUnsub) { this._chatUnsub(); this._chatUnsub = null; }
     if (this._reviewUnsub) { this._reviewUnsub(); this._reviewUnsub = null; }
   }
@@ -2928,7 +2933,7 @@ class ChatPanel {
    */
   destroy() {
     document.removeEventListener('keydown', this._onKeydown);
-    this._closeGlobalSSE();
+    this._closeSubscriptions();
     this.messages = [];
 
     // Clean up context tooltip

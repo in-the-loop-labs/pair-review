@@ -766,7 +766,7 @@
                         throw new Error('No setup ID returned from server');
                     }
 
-                    connectSSE(data.setupId);
+                    connectWS(data.setupId);
 
                 } catch (err) {
                     showError(err.message || 'Failed to start setup. Please try again.');
@@ -778,10 +778,10 @@
             }
 
             /* ── WebSocket Connection ── */
-            function connectSSE(setupId) {
+            function connectWS(setupId) {
                 window.wsClient.connect();
 
-                window.wsClient.subscribe('setup:' + setupId, function(msg) {
+                var unsub = window.wsClient.subscribe('setup:' + setupId, function(msg) {
                     switch (msg.type) {
                         case 'step': {
                             var stepId = msg.step || msg.id;
@@ -795,6 +795,7 @@
                         }
 
                         case 'complete': {
+                            unsub();
                             // Mark all steps as completed
                             for (var i = 0; i < steps.length; i++) {
                                 if (!stepStates[steps[i].id] || stepStates[steps[i].id].status !== 'completed') {
@@ -818,6 +819,7 @@
                         }
 
                         case 'error': {
+                            unsub();
                             var failedStep = msg.step;
                             var errorMsg = msg.message || 'An unexpected error occurred';
 

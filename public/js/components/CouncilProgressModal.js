@@ -15,6 +15,7 @@ class CouncilProgressModal {
     this.isVisible = false;
     this.currentAnalysisId = null;
     this._wsUnsub = null;
+    this._onReconnect = null;
     this.statusCheckInterval = null;
     this.isRunningInBackground = false;
     this.councilConfig = null;
@@ -182,20 +183,13 @@ class CouncilProgressModal {
       }
     });
 
-    // Fetch initial state via HTTP
-    fetch('/api/analyses/' + this.currentAnalysisId + '/status')
-      .then(r => r.ok ? r.json() : null)
-      .then(status => {
-        if (status) {
-          this.updateProgress(status);
-          if (['completed', 'failed', 'cancelled'].includes(status.status)) {
-            this.stopProgressMonitoring();
-          }
-        }
-      })
-      .catch(err => {
-        console.warn('Failed to fetch initial analysis status:', err);
-      });
+    // Fetch initial state via HTTP (covers startup race)
+    this._fetchAndApplyStatus();
+
+    // Listen for WebSocket reconnects — any events broadcast during the
+    // reconnect gap are lost, so we re-fetch via HTTP to catch up.
+    this._onReconnect = () => { this._fetchAndApplyStatus(); };
+    window.addEventListener('wsReconnected', this._onReconnect);
   }
 
   stopProgressMonitoring() {
@@ -207,31 +201,32 @@ class CouncilProgressModal {
       this._wsUnsub();
       this._wsUnsub = null;
     }
+    if (this._onReconnect) {
+      window.removeEventListener('wsReconnected', this._onReconnect);
+      this._onReconnect = null;
+    }
   }
 
-  _fallbackToPolling() {
-    if (this._wsUnsub) {
-      this._wsUnsub();
-      this._wsUnsub = null;
-    }
-    if (this.statusCheckInterval) {
-      clearInterval(this.statusCheckInterval);
-    }
-
-    this.statusCheckInterval = setInterval(async () => {
-      if (!this.currentAnalysisId) return;
-      try {
-        const response = await fetch(`/api/analyses/${this.currentAnalysisId}/status`);
-        if (!response.ok) throw new Error('Failed to fetch status');
-        const status = await response.json();
-        this.updateProgress(status);
-        if (['completed', 'failed', 'cancelled'].includes(status.status)) {
-          this.stopProgressMonitoring();
+  /**
+   * Fetch the current analysis status via HTTP and apply it to the UI.
+   * Used both on initial monitoring start and after WebSocket reconnects
+   * to catch up on any events missed during connection gaps.
+   */
+  _fetchAndApplyStatus() {
+    if (!this.currentAnalysisId) return;
+    fetch('/api/analyses/' + this.currentAnalysisId + '/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(status => {
+        if (status) {
+          this.updateProgress(status);
+          if (['completed', 'failed', 'cancelled'].includes(status.status)) {
+            this.stopProgressMonitoring();
+          }
         }
-      } catch (error) {
-        console.error('Error polling council analysis status:', error);
-      }
-    }, 1000);
+      })
+      .catch(err => {
+        console.warn('Failed to fetch analysis status:', err);
+      });
   }
 
   // ---------------------------------------------------------------------------

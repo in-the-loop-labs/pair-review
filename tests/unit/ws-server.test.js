@@ -13,9 +13,13 @@ function waitForOpen(ws) {
   });
 }
 
-function waitForMessage(ws) {
-  return new Promise((resolve) => {
-    ws.once('message', (data) => resolve(JSON.parse(data)));
+function waitForMessage(ws, timeoutMs = 2000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('waitForMessage timed out')), timeoutMs);
+    ws.once('message', (data) => {
+      clearTimeout(timer);
+      resolve(JSON.parse(data));
+    });
   });
 }
 

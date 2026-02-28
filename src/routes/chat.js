@@ -5,7 +5,7 @@
  * Handles chat session endpoints:
  * - Creating chat sessions
  * - Sending messages
- * - SSE streaming for real-time responses
+ * - WebSocket streaming for real-time responses
  * - Message history
  * - Closing sessions
  * - Listing sessions for a review
@@ -75,12 +75,12 @@ async function fetchPrData(db, review) {
 }
 
 /**
- * Unsubscribe functions for SSE broadcast listeners, keyed by session ID.
+ * Unsubscribe functions for broadcast listeners, keyed by session ID.
  * Each value is an array of unsubscribe functions returned by the on* methods.
  * Used to clean up listeners when a session is closed.
  * @type {Map<number, function[]>}
  */
-const sseUnsubscribers = new Map();
+const broadcastUnsubscribers = new Map();
 
 /**
  * Build a regex that matches bash commands curling the pair-review
@@ -98,21 +98,21 @@ function buildPairReviewApiRe(port) {
  * @param {number} sessionId - Chat session ID to include in the event
  * @param {Object} payload - Event data (will be merged with sessionId)
  */
-function broadcastSSE(sessionId, payload) {
+function broadcastChat(sessionId, payload) {
   ws.broadcast('chat:' + sessionId, { ...payload, sessionId });
 }
 
 /**
- * Register SSE broadcast listeners on a chat session so that all events
- * (delta, tool_use, complete, status, error) are forwarded to connected SSE clients.
+ * Register broadcast listeners on a chat session so that all events
+ * (delta, tool_use, complete, status, error) are forwarded to connected WebSocket clients.
  * @param {Object} chatSessionManager
  * @param {number} sessionId
  * @param {number} port - The server's listening port (used to scope API-call suppression)
  */
-function registerSSEBroadcast(chatSessionManager, sessionId, port) {
+function registerChatBroadcast(chatSessionManager, sessionId, port) {
   // Guard against double-registration
-  if (sseUnsubscribers.has(sessionId)) {
-    logger.debug(`[ChatRoute] SSE broadcast already registered for session ${sessionId}, skipping`);
+  if (broadcastUnsubscribers.has(sessionId)) {
+    logger.debug(`[ChatRoute] Broadcast already registered for session ${sessionId}, skipping`);
     return;
   }
 
@@ -120,7 +120,7 @@ function registerSSEBroadcast(chatSessionManager, sessionId, port) {
     const unsubs = [];
 
     unsubs.push(chatSessionManager.onDelta(sessionId, (data) => {
-      broadcastSSE(sessionId, { type: 'delta', text: data.text });
+      broadcastChat(sessionId, { type: 'delta', text: data.text });
     }));
 
     const hiddenToolCallIds = new Set();
@@ -158,42 +158,42 @@ function registerSSEBroadcast(chatSessionManager, sessionId, port) {
       if (data.args) {
         event.toolInput = data.args;
       }
-      broadcastSSE(sessionId, event);
+      broadcastChat(sessionId, event);
     }));
 
     unsubs.push(chatSessionManager.onComplete(sessionId, (data) => {
-      logger.debug(`[ChatRoute] SSE broadcast complete for session ${sessionId}, messageId=${data.messageId}`);
-      broadcastSSE(sessionId, { type: 'complete', messageId: data.messageId });
+      logger.debug(`[ChatRoute] Broadcast complete for session ${sessionId}, messageId=${data.messageId}`);
+      broadcastChat(sessionId, { type: 'complete', messageId: data.messageId });
     }));
 
     unsubs.push(chatSessionManager.onStatus(sessionId, (data) => {
-      broadcastSSE(sessionId, { type: 'status', status: data.status });
+      broadcastChat(sessionId, { type: 'status', status: data.status });
     }));
 
     unsubs.push(chatSessionManager.onError(sessionId, (data) => {
-      logger.debug(`[ChatRoute] SSE broadcast error for session ${sessionId}: ${data.message}`);
-      broadcastSSE(sessionId, { type: 'error', message: data.message });
+      logger.debug(`[ChatRoute] Broadcast error for session ${sessionId}: ${data.message}`);
+      broadcastChat(sessionId, { type: 'error', message: data.message });
     }));
 
-    sseUnsubscribers.set(sessionId, unsubs);
-    logger.debug(`[ChatRoute] SSE broadcast listeners registered for session ${sessionId}`);
+    broadcastUnsubscribers.set(sessionId, unsubs);
+    logger.debug(`[ChatRoute] Broadcast listeners registered for session ${sessionId}`);
   } catch (err) {
-    logger.warn(`[ChatRoute] Failed to register SSE broadcast for session ${sessionId}: ${err.message}`);
+    logger.warn(`[ChatRoute] Failed to register broadcast for session ${sessionId}: ${err.message}`);
   }
 }
 
 /**
- * Unsubscribe all SSE broadcast listeners for a session.
+ * Unsubscribe all broadcast listeners for a session.
  * @param {number} sessionId
  */
-function unregisterSSEBroadcast(sessionId) {
-  const unsubs = sseUnsubscribers.get(sessionId);
+function unregisterChatBroadcast(sessionId) {
+  const unsubs = broadcastUnsubscribers.get(sessionId);
   if (unsubs) {
     for (const unsub of unsubs) {
       try { unsub(); } catch { /* session may already be closed */ }
     }
-    sseUnsubscribers.delete(sessionId);
-    logger.debug(`[ChatRoute] SSE broadcast listeners unregistered for session ${sessionId}`);
+    broadcastUnsubscribers.delete(sessionId);
+    logger.debug(`[ChatRoute] Broadcast listeners unregistered for session ${sessionId}`);
   }
 }
 
@@ -309,8 +309,8 @@ router.post('/api/chat/session', async (req, res) => {
 
     logger.info(`Chat session created: ${session.id} (provider=${provider}, model=${model})`);
 
-    // Register SSE broadcast listeners so events reach all connected clients
-    registerSSEBroadcast(chatSessionManager, session.id, serverPort);
+    // Register broadcast listeners so events reach all connected clients
+    registerChatBroadcast(chatSessionManager, session.id, serverPort);
 
     const responseData = { id: session.id, status: session.status };
 
@@ -377,8 +377,8 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
 
       try {
         await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
-        unregisterSSEBroadcast(sessionId);
-        registerSSEBroadcast(chatSessionManager, sessionId, req.socket.localPort);
+        unregisterChatBroadcast(sessionId);
+        registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
         logger.info(`[ChatRoute] Auto-resumed session ${sessionId} for message delivery`);
       } catch (err) {
         logger.error(`[ChatRoute] Failed to auto-resume session ${sessionId}: ${err.message}`);
@@ -388,7 +388,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
 
     logger.debug(`[ChatRoute] Forwarding message to session ${sessionId} (${content.length} chars)`);
     const result = await chatSessionManager.sendMessage(sessionId, content, { context, contextData, actionContext });
-    logger.debug(`[ChatRoute] Message stored as ID ${result.id}, awaiting agent response via SSE`);
+    logger.debug(`[ChatRoute] Message stored as ID ${result.id}, awaiting agent response via WebSocket`);
     res.json({ data: { messageId: result.id } });
   } catch (error) {
     logger.error(`Error sending chat message: ${error.message}`);
@@ -500,8 +500,8 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     const cwd = await resolveReviewCwd(db, review);
 
     await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
-    unregisterSSEBroadcast(sessionId);
-    registerSSEBroadcast(chatSessionManager, sessionId, req.socket.localPort);
+    unregisterChatBroadcast(sessionId);
+    registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
 
     logger.info(`[ChatRoute] Explicitly resumed session ${sessionId}`);
     res.json({ data: { id: sessionId, status: 'active' } });
@@ -519,8 +519,8 @@ router.delete('/api/chat/session/:id', async (req, res) => {
     const sessionId = parseInt(req.params.id, 10);
     const chatSessionManager = req.app.chatSessionManager;
 
-    // Unregister SSE broadcast listeners before closing the session
-    unregisterSSEBroadcast(sessionId);
+    // Unregister broadcast listeners before closing the session
+    unregisterChatBroadcast(sessionId);
 
     await chatSessionManager.closeSession(sessionId);
     logger.info(`Chat session closed: ${sessionId}`);
@@ -614,5 +614,5 @@ router.get('/api/chat/analysis-context/:runId', async (req, res) => {
 module.exports = router;
 
 // Expose internals for testing
-module.exports._sseUnsubscribers = sseUnsubscribers;
+module.exports._broadcastUnsubscribers = broadcastUnsubscribers;
 module.exports._buildPairReviewApiRe = buildPairReviewApiRe;

@@ -26,6 +26,8 @@
       this._queue = [];
       /** @type {number|null} reconnect timer id */
       this._reconnectTimer = null;
+      /** @type {boolean} whether at least one connection has been established */
+      this._hasConnected = false;
     }
 
     /**
@@ -43,15 +45,16 @@
       this._ws.onopen = () => {
         this.connected = true;
         this._backoff = 1000;
-        // Flush queued messages
-        for (const msg of this._queue) {
-          this._ws.send(JSON.stringify(msg));
-        }
-        this._queue = [];
-        // Re-subscribe to all active topics
+        this._queue = []; // discard stale queued subscribes
+        // Re-subscribe to all active topics (_subscriptions is authoritative)
         for (const topic of this._subscriptions.keys()) {
           this._ws.send(JSON.stringify({ action: 'subscribe', topic }));
         }
+        // Emit reconnected event on subsequent opens (not the initial connect)
+        if (this._hasConnected) {
+          window.dispatchEvent(new CustomEvent('wsReconnected'));
+        }
+        this._hasConnected = true;
       };
 
       this._ws.onmessage = (event) => {
@@ -64,7 +67,11 @@
         const callbacks = this._subscriptions.get(msg.topic);
         if (callbacks) {
           for (const cb of callbacks) {
-            cb(msg);
+            try {
+              cb(msg);
+            } catch (e) {
+              console.error('[WSClient] Subscriber error:', e);
+            }
           }
         }
       };
