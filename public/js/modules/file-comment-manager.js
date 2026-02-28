@@ -71,25 +71,6 @@ class FileCommentManager {
   }
 
   /**
-   * Format adopted comment text with emoji and category prefix
-   * @param {string} text - Comment text
-   * @param {string} category - Category name
-   * @returns {string} Formatted text
-   */
-  formatAdoptedComment(text, category) {
-    if (!category) {
-      return text;
-    }
-    const emoji = this.getCategoryEmoji(category);
-    // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
-    const capitalizedCategory = category
-      .split('-')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-    return `${emoji} **${capitalizedCategory}**: ${text}`;
-  }
-
-  /**
    * Get the appropriate API endpoint and request body for file-level comments
    * @private
    * @param {string} operation - Operation type: 'create', 'update', 'delete'
@@ -482,9 +463,10 @@ class FileCommentManager {
     // Get category label for display (same as line-level)
     const categoryLabel = suggestion.type || suggestion.category || '';
 
+    const displayBody = suggestion.formattedBody || suggestion.body || '';
     const renderedBody = window.renderMarkdown
-      ? window.renderMarkdown(suggestion.body)
-      : this.escapeHtml(suggestion.body);
+      ? window.renderMarkdown(displayBody)
+      : this.escapeHtml(displayBody);
 
     // Use exact same HTML structure as line-level suggestions (suggestion-manager.js)
     card.innerHTML = `
@@ -605,8 +587,8 @@ class FileCommentManager {
         }
       }
 
-      // Format the comment body with category prefix for display (matches server-side formatting)
-      const formattedBody = this.formatAdoptedComment(suggestion.body, suggestion.type);
+      // Use the server-formatted body — server is the single source of truth
+      const formattedBody = adoptResult.formattedBody;
 
       // Display as user comment with formatted body
       const commentData = {
@@ -760,7 +742,7 @@ class FileCommentManager {
         class="file-comment-textarea"
         placeholder="Edit the suggestion..."
         data-file="${window.escapeHtmlAttribute(suggestion.file)}"
-      >${this.escapeHtml(suggestion.body)}</textarea>
+      >${this.escapeHtml(suggestion.formattedBody || suggestion.body)}</textarea>
       <div class="file-comment-form-footer">
         <button class="file-comment-form-btn submit submit-btn">Adopt</button>
         <button class="file-comment-form-btn cancel cancel-btn">Cancel</button>
@@ -821,11 +803,7 @@ class FileCommentManager {
    */
   async adoptWithEdit(zone, suggestion, editedBody) {
     try {
-      // Format the edited body with category prefix (matches line-level behavior)
-      const formattedBody = this.formatAdoptedComment(editedBody, suggestion.type);
-
-      // Use the /edit endpoint which atomically creates a user comment with the edited
-      // body and sets the suggestion status to 'adopted' with parent_id linkage
+      // Send raw edited text plus metadata to the server for formatting
       const reviewId = this.prManager?.currentPR?.id;
       const editEndpoint = `/api/reviews/${reviewId}/suggestions/${suggestion.id}/edit`;
 
@@ -834,7 +812,7 @@ class FileCommentManager {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'adopt_edited',
-          editedText: formattedBody
+          editedText: editedBody
         })
       });
 
@@ -852,6 +830,9 @@ class FileCommentManager {
           collapsedText.textContent = 'Suggestion adopted';
         }
       }
+
+      // Use the server-formatted body — server is the single source of truth
+      const formattedBody = editResult.formattedBody;
 
       // Display as user comment with formatted body
       const commentData = {

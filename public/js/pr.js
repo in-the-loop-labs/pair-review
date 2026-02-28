@@ -2595,10 +2595,6 @@ class PRManager {
     return this.suggestionManager.getCategoryEmoji(category);
   }
 
-  formatAdoptedComment(text, category) {
-    return this.suggestionManager.formatAdoptedComment(text, category);
-  }
-
   getTypeDescription(type) {
     return this.suggestionManager.getTypeDescription(type);
   }
@@ -2656,8 +2652,8 @@ class PRManager {
     // Collapse the suggestion in the UI
     this.collapseSuggestionForAdoption(suggestionRow, suggestionId);
 
-    // Build comment data from the adopt response and suggestion metadata
-    const formattedText = this.formatAdoptedComment(suggestionText, suggestionType);
+    // Use the server-formatted body — server is the single source of truth
+    const formattedText = adoptResult.formattedBody;
     const newComment = {
       id: adoptResult.userCommentId,
       file: fileName,

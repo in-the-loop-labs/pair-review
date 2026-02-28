@@ -160,25 +160,6 @@ class SuggestionManager {
   }
 
   /**
-   * Format adopted comment text with emoji and category prefix
-   * @param {string} text - Comment text
-   * @param {string} category - Category name
-   * @returns {string} Formatted text
-   */
-  formatAdoptedComment(text, category) {
-    if (!category) {
-      return text;
-    }
-    const emoji = this.getCategoryEmoji(category);
-    // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
-    const capitalizedCategory = category
-      .split('-')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-    return `${emoji} **${capitalizedCategory}**: ${text}`;
-  }
-
-  /**
    * Find suggestions that target lines currently hidden in gaps
    * @param {Array} suggestions - Array of suggestions
    * @returns {Array} Suggestions targeting hidden lines
@@ -536,10 +517,8 @@ class SuggestionManager {
         </div>
         <div class="ai-suggestion-body">
           ${(() => {
-            const body = suggestion.body || '';
-            // Debug: Log what we're rendering
-            console.log('Rendering AI suggestion body:', body.substring(0, 200));
-            return window.renderMarkdown ? window.renderMarkdown(body) : escapeHtml(body);
+            const displayBody = suggestion.formattedBody || suggestion.body || '';
+            return window.renderMarkdown ? window.renderMarkdown(displayBody) : escapeHtml(displayBody);
           })()}
         </div>
         <div class="ai-suggestion-actions">

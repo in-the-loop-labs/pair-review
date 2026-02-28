@@ -31,6 +31,7 @@
   - [Customization](#customization)
   - [Review Feedback Export](#review-feedback-export)
   - [Inline Comments](#inline-comments)
+  - [Comment Format](#comment-format)
   - [Local Mode](#local-mode)
 - [Claude Code Plugins](#claude-code-plugins)
 - [MCP Integration](#mcp-integration)
@@ -483,6 +484,66 @@ The markdown includes file paths, line numbers, and your comments - everything t
 - See all comments in context with the diff
 - Edit or discard AI suggestions before finalizing
 - Comments include file and line number for precision
+
+### Comment Format
+
+When AI suggestions are adopted as review comments, pair-review formats them with an emoji and category prefix by default. You can customize this format via the `comment_format` setting in `~/.pair-review/config.json`.
+
+**Presets:**
+
+| Preset | Template | Example Output (without suggestion)|
+|--------|----------|---------------|
+| `legacy` | `{emoji} **{category}**: {description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}` | 🐛 **Bug**: Missing null check |
+| `minimal` | `[{category}] {description}{?suggestion}\n\n{suggestion}{/suggestion}` | [Bug] Missing null check |
+| `plain` | `{description}{?suggestion}\n\n{suggestion}{/suggestion}` | Missing null check |
+| `emoji-only` | `{emoji} {description}{?suggestion}\n\n{suggestion}{/suggestion}` | 🐛 Missing null check |
+| `maximal` | `{emoji} **{category}**{?title}: {title}{/title}\n\n{description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}` | 🐛 **Bug**: Null Safety Issue (includes title) |
+
+To use a preset:
+
+```json
+{
+  "comment_format": "minimal"
+}
+```
+
+**Custom templates:**
+
+You can provide a custom template using these placeholders: `{emoji}`, `{category}`, `{title}`, `{description}`, `{suggestion}`.
+
+**Conditional sections:** Use `{?field}...{/field}` to conditionally include content. When the field value is truthy, the delimiters are stripped and the content is kept. When the field is empty/null/undefined, the entire block (including surrounding text within the delimiters) is removed. For example, `{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}` will omit the entire suggestion line when there is no remediation text.
+
+```json
+{
+  "comment_format": {
+    "template": "{emoji} **{category}**: {description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}",
+    "emojiOverrides": {
+      "bug": "🔴"
+    }
+  }
+}
+```
+
+**Category overrides:**
+
+Use `categoryOverrides` to rename categories in the formatted output. This is a string-to-string mapping where keys are the original category names (lowercase) and values are the replacement names.
+
+```json
+{
+  "comment_format": {
+    "template": "{emoji} **{category}**: {description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}",
+    "categoryOverrides": { "bug": "defect", "performance": "perf" }
+  }
+}
+```
+
+- `{title}` uses the suggestion's title field if available.
+- `emojiOverrides` lets you replace the default emoji for specific categories.
+- `categoryOverrides` lets you rename categories (e.g., "bug" to "defect").
+
+Templates typically include `{description}` to render the suggestion body.
+
+**Builtin categories:** bug, improvement, praise, suggestion, design, performance, security, code-style
 
 ### Local Mode
 

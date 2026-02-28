@@ -19,29 +19,9 @@ const fs = require('fs').promises;
 const simpleGit = require('simple-git');
 const { GitWorktreeManager } = require('../git/worktree');
 const { normalizeRepository } = require('../utils/paths');
-const { getEmoji: getCategoryEmoji } = require('../utils/category-emoji');
+const { resolveFormat, formatAdoptedComment: formatComment } = require('../utils/comment-formatter');
 
 const router = express.Router();
-
-/**
- * Format adopted comment text with emoji and category prefix.
- * Mirrors the frontend formatAdoptedComment() in SuggestionManager / FileCommentManager.
- * @param {string} text - Comment text
- * @param {string} category - Category name (e.g., 'bug', 'code-style')
- * @returns {string} Formatted text with emoji prefix
- */
-function formatAdoptedComment(text, category) {
-  if (!category) {
-    return text;
-  }
-  const emoji = getCategoryEmoji(category);
-  // Properly capitalize hyphenated categories (e.g., "code-style" -> "Code Style")
-  const capitalizedCategory = category
-    .split('-')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-  return `${emoji} **${capitalizedCategory}**: ${text}`;
-}
 
 /**
  * Middleware: validate that :reviewId exists in the reviews table.
@@ -548,6 +528,7 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
         type,
         title,
         body,
+        suggestion_text,
         reasoning,
         status,
         is_file_level,
@@ -573,10 +554,24 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
         line_start
     `, queryParams);
 
-    const suggestions = rows.map(row => ({
-      ...row,
-      reasoning: row.reasoning ? JSON.parse(row.reasoning) : null
-    }));
+    // Resolve format config once for all suggestions
+    const config = req.app.get('config') || {};
+    const formatConfig = resolveFormat(config.comment_format);
+
+    const suggestions = rows.map(row => {
+      const formattedBody = formatComment({
+        body: row.body,
+        suggestionText: row.suggestion_text,
+        category: row.type,
+        title: row.title
+      }, formatConfig);
+
+      return {
+        ...row,
+        reasoning: row.reasoning ? JSON.parse(row.reasoning) : null,
+        formattedBody
+      };
+    });
 
     res.json({ suggestions });
 
@@ -691,8 +686,15 @@ router.post('/api/reviews/:reviewId/suggestions/:id/adopt', validateReviewId, as
       });
     }
 
-    // Format the body with category prefix (mirrors frontend formatAdoptedComment)
-    const formattedBody = formatAdoptedComment(suggestion.body, suggestion.type);
+    // Format the body with category prefix using configurable formatter
+    const config = req.app.get('config') || {};
+    const formatConfig = resolveFormat(config.comment_format);
+    const formattedBody = formatComment({
+      body: suggestion.body,
+      suggestionText: suggestion.suggestion_text,
+      category: suggestion.type,
+      title: suggestion.title
+    }, formatConfig);
 
     // Atomically adopt: create user comment and update suggestion status in one transaction
     const userCommentId = await withTransaction(db, async () => {
@@ -704,6 +706,7 @@ router.post('/api/reviews/:reviewId/suggestions/:id/adopt', validateReviewId, as
     res.json({
       success: true,
       userCommentId,
+      formattedBody,
       message: 'Suggestion adopted as user comment'
     });
     broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });
@@ -757,9 +760,12 @@ router.post('/api/reviews/:reviewId/suggestions/:id/edit', validateReviewId, asy
       });
     }
 
+    // The user already edited the fully formatted text, so store it verbatim
+    const formattedBody = editedText.trim();
+
     // Atomically adopt: create user comment and update suggestion status in one transaction
     const userCommentId = await withTransaction(db, async () => {
-      const ucId = await commentRepo.adoptSuggestion(id, editedText);
+      const ucId = await commentRepo.adoptSuggestion(id, formattedBody);
       await commentRepo.updateSuggestionStatus(id, 'adopted', ucId);
       return ucId;
     });
@@ -767,6 +773,7 @@ router.post('/api/reviews/:reviewId/suggestions/:id/edit', validateReviewId, asy
     res.json({
       success: true,
       userCommentId,
+      formattedBody,
       message: 'Suggestion edited and adopted as user comment'
     });
     broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });

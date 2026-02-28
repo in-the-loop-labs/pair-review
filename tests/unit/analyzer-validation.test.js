@@ -1070,9 +1070,9 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
     expect(runCalls).toHaveLength(1);
     // Parameter indices:
     // 0:review_id, 1:source, 2:author, 3:ai_run_id, 4:ai_level, 5:ai_confidence,
-    // 6:file, 7:line_start, 8:line_end, 9:side, 10:type, 11:title, 12:body, 13:reasoning, 14:status, 15:is_file_level
+    // 6:file, 7:line_start, 8:line_end, 9:side, 10:type, 11:title, 12:body, 13:suggestion_text, 14:reasoning, 15:status, 16:is_file_level
     const params = runCalls[0].params;
-    expect(params[15]).toBe(1); // is_file_level should be 1
+    expect(params[16]).toBe(1); // is_file_level should be 1
     expect(params[7]).toBeNull(); // line_start should be null
     expect(params[8]).toBeNull(); // line_end should be null
     expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT for file-level (null old_or_new)
@@ -1095,7 +1095,7 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     expect(runCalls).toHaveLength(1);
     const params = runCalls[0].params;
-    expect(params[15]).toBe(0); // is_file_level should be 0
+    expect(params[16]).toBe(0); // is_file_level should be 0
     expect(params[7]).toBe(10); // line_start should be 10
     expect(params[9]).toBe('RIGHT'); // side defaults to RIGHT (NEW is default)
   });
@@ -1127,9 +1127,9 @@ describe('Analyzer.storeSuggestions with file-level suggestions', () => {
 
     expect(runCalls).toHaveLength(2);
     // First call (line-level)
-    expect(runCalls[0].params[15]).toBe(0);
+    expect(runCalls[0].params[16]).toBe(0);
     // Second call (file-level)
-    expect(runCalls[1].params[15]).toBe(1);
+    expect(runCalls[1].params[16]).toBe(1);
   });
 
   it('should map old_or_new=OLD to side=LEFT', async () => {
