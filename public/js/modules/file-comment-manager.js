@@ -812,9 +812,7 @@ class FileCommentManager {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'adopt_edited',
-          editedText: editedBody,
-          category: suggestion.type,
-          title: suggestion.title
+          editedText: editedBody
         })
       });
 
