@@ -173,3 +173,10 @@ Test structure:
 
 ### Import Conventions
 - Always import dependencies at the top of the file. Never use inline `require()` calls inside functions or route handlers when the module is already imported at the top level. This keeps the dependency list visible and consistent across the codebase.
+
+### Dependency Injection for OS/External Interactions
+- For modules with heavy OS-level or external dependencies (child_process, fs, etc.), use the `defaults` object + `_deps` override pattern established in `src/protocol-handler.js`.
+- Define a module-level `defaults` object containing real dependencies.
+- Accept an optional `_deps` parameter that merges over defaults: `const deps = { ...defaults, ..._deps }`.
+- In tests, use a `createMockDeps()` helper to provide explicit mocks.
+- This avoids brittle `jest.mock()` / `vi.mock()` patterns and makes test setup self-documenting.

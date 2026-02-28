@@ -154,7 +154,9 @@ class PRArgumentParser {
     if (isNaN(number) || number <= 0) {
       const exampleUrl = source === 'GitHub'
         ? 'https://github.com/owner/repo/pull/number'
-        : 'https://app.graphite.com/github/pr/owner/repo/number';
+        : source === 'pair-review://'
+          ? 'pair-review://pr/owner/repo/number'
+          : 'https://app.graphite.com/github/pr/owner/repo/number';
       throw new Error(`Invalid ${source} URL format. Expected: ${exampleUrl}`);
     }
 

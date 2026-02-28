@@ -124,6 +124,35 @@ describe('protocol-handler', () => {
       );
       expect(osacompileCall[1].input).toContain('/bin/bash');
     });
+
+    it('escapes special characters in command for AppleScript', () => {
+      registerProtocolHandler({ command: 'node "/path with spaces/pr.js"', _deps: deps });
+
+      const osacompileCall = deps.execSync.mock.calls.find(
+        ([cmd]) => typeof cmd === 'string' && cmd.includes('osacompile')
+      );
+      expect(osacompileCall).toBeDefined();
+
+      const scriptSource = osacompileCall[1].input;
+
+      // Double quotes in the command should be escaped for AppleScript
+      expect(scriptSource).toContain('node \\"');
+      expect(scriptSource).toContain('/path with spaces/pr.js\\"');
+    });
+
+    it('escapes backslashes in command for AppleScript', () => {
+      registerProtocolHandler({ command: 'node C:\\Users\\dev\\pr.js', _deps: deps });
+
+      const osacompileCall = deps.execSync.mock.calls.find(
+        ([cmd]) => typeof cmd === 'string' && cmd.includes('osacompile')
+      );
+      expect(osacompileCall).toBeDefined();
+
+      const scriptSource = osacompileCall[1].input;
+
+      // Backslashes should be doubled for AppleScript
+      expect(scriptSource).toContain('C:\\\\Users\\\\dev\\\\pr.js');
+    });
   });
 
   describe('unregisterProtocolHandler', () => {
@@ -142,7 +171,7 @@ describe('protocol-handler', () => {
       unregisterProtocolHandler({ _deps: deps });
 
       expect(deps.execSync).toHaveBeenCalledWith(
-        expect.stringContaining('lsregister -u')
+        expect.stringContaining('lsregister" -u')
       );
       expect(deps.fs.rmSync).toHaveBeenCalledWith(
         '/mock/config/PairReview.app',

@@ -363,7 +363,14 @@ AI PROVIDERS:
     // Handle protocol handler registration
     if (args.includes('--register')) {
       const cmdIdx = args.indexOf('--command');
-      const command = cmdIdx !== -1 ? args[cmdIdx + 1] : undefined;
+      let command;
+      if (cmdIdx !== -1) {
+        if (cmdIdx + 1 < args.length && !args[cmdIdx + 1].startsWith('-')) {
+          command = args[cmdIdx + 1];
+        } else {
+          throw new Error('--command flag requires a command string');
+        }
+      }
       await registerProtocolHandler({ command });
       process.exit(0);
     }
