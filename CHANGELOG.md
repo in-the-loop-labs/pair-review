@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.0
+
+### Minor Changes
+
+- ad8a8c0: Add "Review assisted by pair-review" footer toggle to Submit Review dialog
+- d36d325: Add `pair-review://` protocol handler registration for macOS (`--register` / `--unregister` CLI flags)
+
 ## 2.1.1
 
 ### Patch Changes
