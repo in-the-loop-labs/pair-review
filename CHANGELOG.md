@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.1
+
+### Patch Changes
+
+- e33141a: Improve chat agent behavior: prevent overeager adoption/dismissal of suggestions (only act when user explicitly asks) and guide the agent to add context files when users ask to see code
+- 345c7f5: Open the browser immediately to a setup page with visual progress indicators when running `npx pair-review <PR>`, instead of waiting for all setup steps (GitHub API calls, worktree creation, diff generation) to complete in the terminal first.
+- f7ced55: Instruct AI reviewers to use GitHub suggestion block syntax for literal code/content changes, making suggestions directly adoptable in GitHub PRs
+
 ## 2.1.0
 
 ### Minor Changes
