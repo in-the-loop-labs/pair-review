@@ -463,10 +463,7 @@ class FileCommentManager {
     // Get category label for display (same as line-level)
     const categoryLabel = suggestion.type || suggestion.category || '';
 
-    let displayBody = suggestion.body || '';
-    if (suggestion.suggestion_text) {
-      displayBody += '\n\n**Suggestion:** ' + suggestion.suggestion_text;
-    }
+    const displayBody = suggestion.formattedBody || suggestion.body || '';
     const renderedBody = window.renderMarkdown
       ? window.renderMarkdown(displayBody)
       : this.escapeHtml(displayBody);

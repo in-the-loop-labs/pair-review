@@ -517,10 +517,7 @@ class SuggestionManager {
         </div>
         <div class="ai-suggestion-body">
           ${(() => {
-            let displayBody = suggestion.body || '';
-            if (suggestion.suggestion_text) {
-              displayBody += '\n\n**Suggestion:** ' + suggestion.suggestion_text;
-            }
+            const displayBody = suggestion.formattedBody || suggestion.body || '';
             return window.renderMarkdown ? window.renderMarkdown(displayBody) : escapeHtml(displayBody);
           })()}
         </div>

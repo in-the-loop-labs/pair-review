@@ -87,11 +87,6 @@ router.patch('/api/config', async (req, res) => {
             error: 'Custom comment_format must have a "template" string'
           });
         }
-        if (!comment_format.template.includes('{description}')) {
-          return res.status(400).json({
-            error: 'Custom comment_format template must contain {description} placeholder'
-          });
-        }
         // Validate categoryOverrides if provided (must be a string->string mapping)
         if (comment_format.categoryOverrides !== undefined) {
           if (typeof comment_format.categoryOverrides !== 'object' || comment_format.categoryOverrides === null || Array.isArray(comment_format.categoryOverrides)) {
@@ -103,6 +98,21 @@ router.patch('/api/config', async (req, res) => {
             if (typeof value !== 'string') {
               return res.status(400).json({
                 error: 'categoryOverrides must be a string-to-string mapping'
+              });
+            }
+          }
+        }
+        // Validate emojiOverrides if provided (must be a string->string mapping)
+        if (comment_format.emojiOverrides !== undefined) {
+          if (typeof comment_format.emojiOverrides !== 'object' || comment_format.emojiOverrides === null || Array.isArray(comment_format.emojiOverrides)) {
+            return res.status(400).json({
+              error: 'emojiOverrides must be an object mapping category names to emoji strings'
+            });
+          }
+          for (const [, value] of Object.entries(comment_format.emojiOverrides)) {
+            if (typeof value !== 'string') {
+              return res.status(400).json({
+                error: 'emojiOverrides must be a string-to-string mapping'
               });
             }
           }

@@ -3096,6 +3096,75 @@ describe('Config Endpoints', () => {
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('string-to-string');
     });
+
+    it('should reject emojiOverrides that is not an object', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({
+          comment_format: {
+            template: '{description}',
+            emojiOverrides: 'not-an-object'
+          }
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('emojiOverrides must be an object');
+    });
+
+    it('should reject emojiOverrides that is an array', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({
+          comment_format: {
+            template: '{description}',
+            emojiOverrides: ['bug']
+          }
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('emojiOverrides must be an object');
+    });
+
+    it('should reject emojiOverrides with non-string values', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({
+          comment_format: {
+            template: '{description}',
+            emojiOverrides: { bug: 123 }
+          }
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('string-to-string');
+    });
+
+    it('should accept valid emojiOverrides', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({
+          comment_format: {
+            template: '{emoji} {description}',
+            emojiOverrides: { bug: '🔴', praise: '👏' }
+          }
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+    });
+
+    it('should accept a template without {description} placeholder', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({
+          comment_format: {
+            template: '{emoji} {category}: {suggestion}'
+          }
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+    });
   });
 });
 

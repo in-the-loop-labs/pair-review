@@ -88,6 +88,8 @@ function formatAdoptedComment(fields, formatConfig) {
     return body || '';
   }
 
+  category = category.toLowerCase();
+
   // Legacy handling: if no separate suggestionText, try to split from body
   let description = body || '';
   if (!suggestionText && description.includes('\n\n**Suggestion:** ')) {
@@ -103,8 +105,8 @@ function formatAdoptedComment(fields, formatConfig) {
   const emoji = config.emojiOverrides?.[category] || getEmoji(category);
 
   // Apply category overrides (e.g., "bug" -> "defect")
-  if (config.categoryOverrides && config.categoryOverrides[category.toLowerCase()]) {
-    category = config.categoryOverrides[category.toLowerCase()];
+  if (config.categoryOverrides && config.categoryOverrides[category]) {
+    category = config.categoryOverrides[category];
   }
   const capitalizedCategory = capitalizeCategory(category);
 
