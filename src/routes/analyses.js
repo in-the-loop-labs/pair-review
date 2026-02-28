@@ -288,8 +288,6 @@ router.post('/api/analyses/results', async (req, res) => {
         4: { status: 'completed', progress: 'Complete' }
       }
     };
-    broadcastProgress(runId, completionEvent);
-
     broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
 
     logger.success(`Imported ${totalSuggestions} external analysis suggestions (run ${runId})`);

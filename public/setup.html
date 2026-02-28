@@ -778,6 +778,9 @@
             }
 
             /* ── WebSocket Connection ── */
+            // Note: No wsReconnected recovery here. Setup is a short-lived,
+            // one-time flow — if the WS drops mid-setup, the user can simply
+            // reload the page. Not worth the complexity of state recovery.
             function connectWS(setupId) {
                 window.wsClient.connect();
 

@@ -1985,8 +1985,14 @@ class ChatPanel {
 
       if (lastAssistant && lastAssistant.content) {
         this._streamingContent = lastAssistant.content;
+        // The message is already persisted in the DB, so the stream is
+        // definitively complete. Finalize rather than continuing the
+        // streaming UI (which would leave the Stop button visible, etc.).
         if (this.isOpen) {
-          this.updateStreamingMessage(this._streamingContent);
+          this.finalizeStreamingMessage(lastAssistant.id);
+        } else {
+          this.messages.push({ role: 'assistant', content: lastAssistant.content, id: lastAssistant.id });
+          this._finalizeStreaming();
         }
       }
     } catch (err) {

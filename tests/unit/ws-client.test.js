@@ -233,6 +233,24 @@ describe('WSClient', () => {
       lastWs().onmessage({ data: 'not-json{{{' });
       // Should not throw
     });
+
+    it('should not skip subsequent callbacks when a callback unsubscribes itself', () => {
+      client.connect();
+      lastWs().simulateOpen();
+
+      const afterCb = vi.fn();
+      let selfUnsub;
+      const selfUnsubCb = vi.fn(() => { selfUnsub(); });
+
+      selfUnsub = client.subscribe('self-unsub-topic', selfUnsubCb);
+      client.subscribe('self-unsub-topic', afterCb);
+
+      lastWs().simulateMessage({ topic: 'self-unsub-topic', value: 1 });
+
+      expect(selfUnsubCb).toHaveBeenCalledTimes(1);
+      expect(afterCb).toHaveBeenCalledTimes(1);
+      expect(afterCb).toHaveBeenCalledWith({ topic: 'self-unsub-topic', value: 1 });
+    });
   });
 
   describe('unsubscribe', () => {

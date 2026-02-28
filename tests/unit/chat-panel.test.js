@@ -1595,11 +1595,13 @@ describe('ChatPanel', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it('should fetch messages and replace _streamingContent with last assistant message', async () => {
+    it('should fetch messages and finalize streaming when panel is closed', async () => {
       chatPanel.isStreaming = true;
       chatPanel.isOpen = false;
       chatPanel.currentSessionId = 'sess-1';
       chatPanel._streamingContent = 'partial respo';
+
+      const finalizeSpy = vi.spyOn(chatPanel, '_finalizeStreaming');
 
       global.fetch.mockResolvedValueOnce({
         ok: true,
@@ -1615,16 +1617,20 @@ describe('ChatPanel', () => {
 
       await chatPanel._recoverAfterReconnect();
 
-      expect(chatPanel._streamingContent).toBe('Full response text here');
+      // Stream is finalized (isStreaming reset, content cleared)
+      expect(finalizeSpy).toHaveBeenCalled();
+      expect(chatPanel.isStreaming).toBe(false);
+      // Message pushed to history
+      expect(chatPanel.messages).toContainEqual({ role: 'assistant', content: 'Full response text here', id: 2 });
     });
 
-    it('should update the visible streaming message when panel is open', async () => {
+    it('should call finalizeStreamingMessage when panel is open', async () => {
       chatPanel.isStreaming = true;
       chatPanel.isOpen = true;
       chatPanel.currentSessionId = 'sess-1';
       chatPanel._streamingContent = 'partial';
 
-      const updateSpy = vi.spyOn(chatPanel, 'updateStreamingMessage');
+      const finalizeMsgSpy = vi.spyOn(chatPanel, 'finalizeStreamingMessage');
 
       global.fetch.mockResolvedValueOnce({
         ok: true,
@@ -1639,17 +1645,19 @@ describe('ChatPanel', () => {
 
       await chatPanel._recoverAfterReconnect();
 
-      expect(chatPanel._streamingContent).toBe('Recovered content');
-      expect(updateSpy).toHaveBeenCalledWith('Recovered content');
+      // finalizeStreamingMessage clears _streamingContent via _finalizeStreaming
+      expect(finalizeMsgSpy).toHaveBeenCalledWith(5);
+      expect(chatPanel.isStreaming).toBe(false);
     });
 
-    it('should not update visible message when panel is closed', async () => {
+    it('should call _finalizeStreaming (not finalizeStreamingMessage) when panel is closed', async () => {
       chatPanel.isStreaming = true;
       chatPanel.isOpen = false;
       chatPanel.currentSessionId = 'sess-1';
       chatPanel._streamingContent = 'partial';
 
-      const updateSpy = vi.spyOn(chatPanel, 'updateStreamingMessage');
+      const finalizeMsgSpy = vi.spyOn(chatPanel, 'finalizeStreamingMessage');
+      const finalizeSpy = vi.spyOn(chatPanel, '_finalizeStreaming');
 
       global.fetch.mockResolvedValueOnce({
         ok: true,
@@ -1664,8 +1672,10 @@ describe('ChatPanel', () => {
 
       await chatPanel._recoverAfterReconnect();
 
-      expect(chatPanel._streamingContent).toBe('Recovered');
-      expect(updateSpy).not.toHaveBeenCalled();
+      expect(finalizeMsgSpy).not.toHaveBeenCalled();
+      expect(finalizeSpy).toHaveBeenCalled();
+      expect(chatPanel.isStreaming).toBe(false);
+      expect(chatPanel.messages).toContainEqual({ role: 'assistant', content: 'Recovered', id: 5 });
     });
 
     it('should handle empty message history gracefully', async () => {
@@ -1733,7 +1743,9 @@ describe('ChatPanel', () => {
 
       await chatPanel._recoverAfterReconnect();
 
-      expect(chatPanel._streamingContent).toBe('Latest answer');
+      // Finalized — message pushed to history with correct content and id
+      expect(chatPanel.isStreaming).toBe(false);
+      expect(chatPanel.messages).toContainEqual({ role: 'assistant', content: 'Latest answer', id: 4 });
     });
 
     it('should skip context messages when looking for last assistant message', async () => {
@@ -1756,7 +1768,9 @@ describe('ChatPanel', () => {
 
       await chatPanel._recoverAfterReconnect();
 
-      expect(chatPanel._streamingContent).toBe('Answer');
+      // Finalized — message pushed to history
+      expect(chatPanel.isStreaming).toBe(false);
+      expect(chatPanel.messages).toContainEqual({ role: 'assistant', content: 'Answer', id: 2 });
     });
 
     it('should not replace content when no assistant messages exist', async () => {

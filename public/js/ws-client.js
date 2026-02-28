@@ -63,7 +63,7 @@
         }
         const callbacks = this._subscriptions.get(msg.topic);
         if (callbacks) {
-          for (const cb of callbacks) {
+          for (const cb of [...callbacks]) {
             try {
               cb(msg);
             } catch (e) {
