@@ -41,6 +41,7 @@ router.get('/api/config', (req, res) => {
     // Include npx detection for frontend command examples
     is_running_via_npx: isRunningViaNpx(),
     enable_chat: config.enable_chat !== false,
+    chat_provider: config.chat_provider || 'pi',
     chat_enable_shortcuts: config.chat?.enable_shortcuts !== false,
     pi_available: getCachedAvailability('pi')?.available || false,
     assisted_by_url: config.assisted_by_url || 'https://github.com/in-the-loop-labs/pair-review'
