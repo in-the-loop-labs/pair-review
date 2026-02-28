@@ -16,6 +16,7 @@ const simpleGit = require('simple-git');
 const { getGeneratedFilePatterns } = require('./git/gitattributes');
 const { getEmoji: getCategoryEmoji } = require('./utils/category-emoji');
 const open = (...args) => import('open').then(({default: open}) => open(...args));
+const { registerProtocolHandler, unregisterProtocolHandler } = require('./protocol-handler');
 
 let db = null;
 
@@ -117,6 +118,9 @@ OPTIONS:
                             (automatic in GitHub Actions)
     --yolo                  Allow AI providers full system access (skip read-only
                             restrictions). Analogous to --dangerously-skip-permissions
+    --register [--command <cmd>]  Register pair-review:// URL scheme handler (macOS)
+                                Default command: npx @in-the-loop-labs/pair-review
+    --unregister                Unregister pair-review:// URL scheme handler (macOS)
     -v, --version           Show version number and exit
 
 EXAMPLES:
@@ -125,6 +129,8 @@ EXAMPLES:
     pair-review --local                # Review uncommitted local changes
     pair-review 123 --ai               # Auto-run AI analysis
     pair-review --ai-review            # CI mode: auto-detect PR, submit review
+    pair-review --register                     # Register URL scheme handler
+    pair-review --register --command "node bin/pair-review.js"  # Custom command
 
 ENVIRONMENT VARIABLES:
     GITHUB_TOKEN            GitHub Personal Access Token (takes precedence over config file)
@@ -188,6 +194,9 @@ const KNOWN_FLAGS = new Set([
   '-l', '--local',
   '--mcp',
   '--model',
+  '--register',
+  '--unregister',
+  '--command',
   '--use-checkout',
   '--yolo',
   '-v', '--version'
@@ -243,9 +252,14 @@ function parseArgs(args) {
         i++; // Skip next argument since we consumed it
       }
       // localPath will be resolved to cwd if not provided
-    } else if (arg === '--configure' || arg === '-h' || arg === '--help' || arg === '--mcp' || arg === '-v' || arg === '--version') {
+    } else if (arg === '--configure' || arg === '-h' || arg === '--help' || arg === '--mcp' || arg === '-v' || arg === '--version' || arg === '--register' || arg === '--unregister') {
       // Skip flags that are handled earlier in main()
       continue;
+    } else if (arg === '--command') {
+      // --command flag consumed by --register handler, skip it and its value
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
+        i++; // Skip the next argument (the command value)
+      }
     } else if (arg.startsWith('-')) {
       // Unknown flag - collect for error reporting
       unknownFlags.push(arg);
@@ -343,6 +357,19 @@ AI PROVIDERS:
 
     Select provider per-repository in the web UI settings.
 `);
+      process.exit(0);
+    }
+
+    // Handle protocol handler registration
+    if (args.includes('--register')) {
+      const cmdIdx = args.indexOf('--command');
+      const command = cmdIdx !== -1 ? args[cmdIdx + 1] : undefined;
+      await registerProtocolHandler({ command });
+      process.exit(0);
+    }
+
+    if (args.includes('--unregister')) {
+      await unregisterProtocolHandler();
       process.exit(0);
     }
 
