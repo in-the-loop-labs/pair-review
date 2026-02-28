@@ -274,20 +274,6 @@ router.post('/api/analyses/results', async (req, res) => {
     });
 
     // --- Broadcast completion event via WebSocket (after transaction completes) ---
-    const completionEvent = {
-      id: runId,
-      status: 'completed',
-      completedAt: new Date().toISOString(),
-      progress: `Analysis complete — ${totalSuggestions} suggestion${totalSuggestions !== 1 ? 's' : ''}`,
-      suggestionsCount: totalSuggestions,
-      filesAnalyzed,
-      levels: {
-        1: { status: 'completed', progress: 'Complete' },
-        2: { status: 'completed', progress: 'Complete' },
-        3: { status: 'completed', progress: 'Complete' },
-        4: { status: 'completed', progress: 'Complete' }
-      }
-    };
     broadcastReviewEvent(reviewId, { type: 'review:analysis_completed' });
 
     logger.success(`Imported ${totalSuggestions} external analysis suggestions (run ${runId})`);
