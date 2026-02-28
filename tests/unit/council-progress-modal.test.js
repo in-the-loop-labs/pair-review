@@ -37,18 +37,28 @@ beforeEach(() => {
     localManager: null,
     aiPanel: null,
     statusIndicator: null,
-    EventSource: vi.fn().mockImplementation(() => ({
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    wsClient: {
+      connect: vi.fn(),
+      subscribe: vi.fn().mockReturnValue(vi.fn()),
       close: vi.fn(),
-      addEventListener: vi.fn()
-    }))
+      connected: true
+    }
   };
+
+  // Global fetch mock
+  global.fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve({ levels: {}, status: 'running' })
+  });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   delete global.document;
   delete global.window;
-  delete global.EventSource;
+  delete global.fetch;
 });
 
 /**
@@ -101,7 +111,8 @@ function createTestCouncilProgressModal() {
   modal.modal = modalContainer;
   modal.isVisible = false;
   modal.currentAnalysisId = null;
-  modal.eventSource = null;
+  modal._wsUnsub = null;
+  modal._onReconnect = null;
   modal.statusCheckInterval = null;
   modal.isRunningInBackground = false;
   modal.councilConfig = null;
@@ -1091,6 +1102,164 @@ describe('CouncilProgressModal', () => {
       });
 
       expect(snippetEl.style.display).toBe('none');
+    });
+  });
+
+  describe('startProgressMonitoring — reconnect catch-up', () => {
+    it('should register wsReconnected listener on window', () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal.currentAnalysisId = 'analysis-123';
+
+      modal.startProgressMonitoring();
+
+      expect(window.addEventListener).toHaveBeenCalledWith('wsReconnected', expect.any(Function));
+      expect(modal._onReconnect).toBeInstanceOf(Function);
+    });
+
+    it('should fetch status via HTTP on reconnect event', async () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal.currentAnalysisId = 'analysis-456';
+
+      const updateSpy = vi.spyOn(modal, 'updateProgress').mockImplementation(() => {});
+
+      const statusData = { levels: { 1: { status: 'running' } }, status: 'running' };
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(statusData)
+      });
+
+      modal.startProgressMonitoring();
+
+      // Clear the initial fetch call
+      await vi.waitFor(() => expect(global.fetch).toHaveBeenCalled());
+      global.fetch.mockClear();
+      updateSpy.mockClear();
+
+      // Simulate reconnect by calling the stored handler
+      modal._onReconnect();
+
+      await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+      expect(global.fetch).toHaveBeenCalledWith('/api/analyses/analysis-456/status');
+      await vi.waitFor(() => expect(updateSpy).toHaveBeenCalledWith(statusData));
+    });
+
+    it('should stop monitoring if reconnect fetch returns terminal status', async () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal.currentAnalysisId = 'analysis-789';
+
+      vi.spyOn(modal, 'updateProgress').mockImplementation(() => {});
+      const stopSpy = vi.spyOn(modal, 'stopProgressMonitoring').mockImplementation(() => {});
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ levels: {}, status: 'completed' })
+      });
+
+      modal.startProgressMonitoring();
+
+      // Wait for the initial fetch to trigger stopProgressMonitoring
+      await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled());
+      stopSpy.mockClear();
+      global.fetch.mockClear();
+
+      // Simulate reconnect (re-create the handler since stop cleared it in the mock)
+      // In real code, stop would have been called, but we mocked it
+      modal._onReconnect();
+
+      await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled());
+    });
+  });
+
+  describe('stopProgressMonitoring — reconnect cleanup', () => {
+    it('should remove wsReconnected listener from window', () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal.currentAnalysisId = 'analysis-abc';
+
+      modal.startProgressMonitoring();
+
+      const handler = modal._onReconnect;
+      expect(handler).toBeInstanceOf(Function);
+
+      modal.stopProgressMonitoring();
+
+      expect(window.removeEventListener).toHaveBeenCalledWith('wsReconnected', handler);
+      expect(modal._onReconnect).toBeNull();
+    });
+
+    it('should be safe to call when no reconnect listener exists', () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal._onReconnect = null;
+
+      // Should not throw
+      modal.stopProgressMonitoring();
+
+      expect(window.removeEventListener).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('_fetchAndApplyStatus', () => {
+    it('should no-op when currentAnalysisId is null', () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal.currentAnalysisId = null;
+
+      modal._fetchAndApplyStatus();
+
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('should fetch and apply status when analysis is active', async () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal.currentAnalysisId = 'analysis-xyz';
+
+      const statusData = { levels: { 1: { status: 'completed' } }, status: 'running' };
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(statusData)
+      });
+
+      const updateSpy = vi.spyOn(modal, 'updateProgress').mockImplementation(() => {});
+
+      modal._fetchAndApplyStatus();
+
+      await vi.waitFor(() => expect(updateSpy).toHaveBeenCalledWith(statusData));
+    });
+
+    it('should handle fetch failure gracefully', async () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal.currentAnalysisId = 'analysis-err';
+
+      global.fetch = vi.fn().mockRejectedValue(new Error('network error'));
+
+      const updateSpy = vi.spyOn(modal, 'updateProgress').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      modal._fetchAndApplyStatus();
+
+      await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledWith(
+        'Failed to fetch analysis status:',
+        expect.any(Error)
+      ));
+      expect(updateSpy).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+
+    it('should not apply status when response is not ok', async () => {
+      const { modal } = createTestCouncilProgressModal();
+      modal.currentAnalysisId = 'analysis-404';
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404
+      });
+
+      const updateSpy = vi.spyOn(modal, 'updateProgress').mockImplementation(() => {});
+
+      modal._fetchAndApplyStatus();
+
+      await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+      expect(updateSpy).not.toHaveBeenCalled();
     });
   });
 });

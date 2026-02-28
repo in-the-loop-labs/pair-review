@@ -9,6 +9,7 @@ vi.mock('../../src/ai/analyzer', () => ({
   default: vi.fn().mockImplementation(() => ({}))
 }));
 
+
 vi.mock('../../src/git/gitattributes', () => ({
   getGeneratedFilePatterns: vi.fn().mockResolvedValue({
     isGenerated: vi.fn().mockReturnValue(false)
@@ -29,6 +30,7 @@ vi.spyOn(configModule, 'loadConfig').mockResolvedValue({
 vi.spyOn(configModule, 'getConfigDir').mockReturnValue('/tmp/.pair-review-test');
 
 const { query, queryOne, run } = require('../../src/database');
+const ws = require('../../src/ws');
 
 const analysisRoutes = require('../../src/routes/analyses');
 
@@ -50,13 +52,16 @@ function createTestApp(db) {
 describe('POST /api/analyses/results', () => {
   let db;
   let app;
+  let broadcastSpy;
 
   beforeEach(() => {
+    broadcastSpy = vi.spyOn(ws, 'broadcast').mockImplementation(() => {});
     db = createTestDatabase();
     app = createTestApp(db);
   });
 
   afterEach(() => {
+    broadcastSpy.mockRestore();
     if (db) {
       closeTestDatabase(db);
     }
@@ -659,13 +664,11 @@ describe('POST /api/analyses/results', () => {
     expect(first.body.runId).not.toBe(second.body.runId);
   });
 
-  // --- SSE broadcast on review-level key ---
+  // --- Review event broadcast ---
 
-  it('should broadcast on review-${reviewId} key for local mode', async () => {
-    const { progressClients } = require('../../src/routes/shared');
+  it('should broadcast review:analysis_completed event for local mode', async () => {
+    broadcastSpy.mockClear();
 
-    // We'll capture messages by registering a fake SSE client before the request
-    // First, make the request to discover the reviewId
     const response = await request(app)
       .post('/api/analyses/results')
       .send({
@@ -680,39 +683,21 @@ describe('POST /api/analyses/results', () => {
     expect(response.status).toBe(201);
     const reviewId = response.body.reviewId;
 
-    // Now register a fake client and make a second request to verify broadcast
-    const messages = [];
-    const fakeClient = { write: (msg) => messages.push(msg) };
-    const key = `review-${reviewId}`;
-    progressClients.set(key, new Set([fakeClient]));
+    // Verify broadcastReviewEvent fires on the review:{reviewId} topic
+    const reviewEventBroadcasts = broadcastSpy.mock.calls.filter(
+      ([topic, payload]) => topic === `review:${reviewId}` && payload.type === 'review:analysis_completed'
+    );
+    expect(reviewEventBroadcasts.length).toBeGreaterThanOrEqual(1);
 
-    const response2 = await request(app)
-      .post('/api/analyses/results')
-      .send({
-        path: '/tmp/sse-project',
-        headSha: 'ssesha1',
-        suggestions: [{
-          file: 'a.js', line_start: 1, line_end: 1,
-          type: 'bug', title: 'Bug2', description: 'desc2'
-        }]
-      });
-
-    expect(response2.status).toBe(201);
-    // The fake client should have received a message with source: 'external'
-    const externalMessages = messages.filter(m => m.includes('"source":"external"'));
-    expect(externalMessages.length).toBeGreaterThanOrEqual(1);
-    const parsed = JSON.parse(externalMessages[0].replace('data: ', '').trim());
-    expect(parsed.status).toBe('completed');
-    expect(parsed.source).toBe('external');
-
-    // Clean up
-    progressClients.delete(key);
+    // Verify broadcast payload contains expected fields
+    const localPayload = reviewEventBroadcasts[0][1];
+    expect(localPayload.reviewId).toBe(reviewId);
+    expect(localPayload.type).toBe('review:analysis_completed');
   });
 
-  it('should broadcast on review-${reviewId} key for PR mode', async () => {
-    const { progressClients } = require('../../src/routes/shared');
+  it('should broadcast review:analysis_completed event for PR mode', async () => {
+    broadcastSpy.mockClear();
 
-    // First request to discover reviewId
     const response = await request(app)
       .post('/api/analyses/results')
       .send({
@@ -727,31 +712,15 @@ describe('POST /api/analyses/results', () => {
     expect(response.status).toBe(201);
     const reviewId = response.body.reviewId;
 
-    // Register fake client on the review-level key
-    const messages = [];
-    const fakeClient = { write: (msg) => messages.push(msg) };
-    const key = `review-${reviewId}`;
-    progressClients.set(key, new Set([fakeClient]));
+    // Verify broadcastReviewEvent fires on the review:{reviewId} topic
+    const reviewEventBroadcasts = broadcastSpy.mock.calls.filter(
+      ([topic, payload]) => topic === `review:${reviewId}` && payload.type === 'review:analysis_completed'
+    );
+    expect(reviewEventBroadcasts.length).toBeGreaterThanOrEqual(1);
 
-    const response2 = await request(app)
-      .post('/api/analyses/results')
-      .send({
-        repo: 'owner/repo',
-        prNumber: 77,
-        suggestions: [{
-          file: 'b.js', line_start: 1, line_end: 1,
-          type: 'bug', title: 'Bug2', description: 'desc2'
-        }]
-      });
-
-    expect(response2.status).toBe(201);
-    const externalMessages = messages.filter(m => m.includes('"source":"external"'));
-    expect(externalMessages.length).toBeGreaterThanOrEqual(1);
-    const parsed = JSON.parse(externalMessages[0].replace('data: ', '').trim());
-    expect(parsed.status).toBe('completed');
-    expect(parsed.source).toBe('external');
-
-    // Clean up
-    progressClients.delete(key);
+    // Verify broadcast payload contains expected fields
+    const prPayload = reviewEventBroadcasts[0][1];
+    expect(prPayload.reviewId).toBe(reviewId);
+    expect(prPayload.type).toBe('review:analysis_completed');
   });
 });

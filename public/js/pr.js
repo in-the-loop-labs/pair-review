@@ -136,9 +136,9 @@ class PRManager {
     this.hideWhitespace = false;
     // Diff options dropdown (gear icon popover)
     this.diffOptionsDropdown = null;
-    // Unique client ID for self-echo suppression on SSE review events.
+    // Unique client ID for self-echo suppression on WebSocket review events.
     // Sent as X-Client-Id header on mutation requests; the server echoes
-    // it back in the SSE broadcast so this tab can skip its own events.
+    // it back in the WebSocket broadcast so this tab can skip its own events.
     this._clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
     this._installFetchInterceptor();
 
@@ -203,7 +203,7 @@ class PRManager {
    * fetch call site should manually set this header.
    * This ensures that even direct fetch() calls (e.g. from page.evaluate
    * in tests, or any code that bypasses PRManager methods) carry the
-   * client ID so the server can tag the SSE broadcast for self-echo
+   * client ID so the server can tag the WebSocket broadcast for self-echo
    * suppression.
    */
   _installFetchInterceptor() {
@@ -462,7 +462,7 @@ class PRManager {
       // Check if AI analysis is currently running
       await this.checkRunningAnalysis();
 
-      // Listen for review mutation events via multiplexed SSE
+      // Listen for review mutation events via WebSocket pub/sub
       this._initReviewEventListeners();
 
     } catch (error) {
@@ -475,14 +475,14 @@ class PRManager {
 
   /**
    * Listen for review-scoped CustomEvents dispatched by ChatPanel's
-   * multiplexed SSE connection. Replaces the old per-review EventSource.
+   * WebSocket pub/sub connection.
    */
   _initReviewEventListeners() {
     if (this._reviewEventsBound) return;
     this._reviewEventsBound = true;
 
-    // Eagerly connect chat SSE so review events flow even before chat opens
-    window.chatPanel?._ensureGlobalSSE();
+    // Eagerly connect WebSocket subscriptions so review events flow even before chat opens
+    window.chatPanel?._ensureSubscriptions();
 
     // Late-bind reviewId to ChatPanel if it was auto-opened by PanelGroup
     // before prManager was ready (DOMContentLoaded race condition)
@@ -4165,7 +4165,7 @@ class PRManager {
 
   /**
    * Load context files for the current review and render them in the diff panel.
-   * Called after renderDiff() and on SSE context_files_changed events.
+   * Called after renderDiff() and on WebSocket context_files_changed events.
    */
   async loadContextFiles() {
     const reviewId = this.currentPR?.id;
@@ -4589,7 +4589,7 @@ class PRManager {
         console.error('Failed to remove context file:', resp.status);
         return;
       }
-      // Refresh immediately — SSE self-echo is suppressed by the client ID filter
+      // Refresh immediately — WebSocket self-echo is suppressed by the client ID filter
       await this.loadContextFiles();
     } catch (error) {
       console.error('Error removing context file:', error);

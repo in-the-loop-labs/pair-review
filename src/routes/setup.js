@@ -2,19 +2,17 @@
 /**
  * Setup Routes
  *
- * Provides API endpoints for the auto-create review flow with SSE progress
- * updates. Supports both PR-based and local review setup.
+ * Provides API endpoints for the auto-create review flow with WebSocket
+ * progress updates. Supports both PR-based and local review setup.
  *
  * Endpoints:
  * - POST /api/setup/pr/:owner/:repo/:number  - Start PR review setup
- * - GET  /api/setup/pr/:owner/:repo/:number/progress - SSE progress for PR setup
  * - POST /api/setup/local                     - Start local review setup
- * - GET  /api/setup/local/:setupId/progress   - SSE progress for local setup
  */
 
 const express = require('express');
 const crypto = require('crypto');
-const { activeSetups, setupProgressClients, broadcastSetupProgress } = require('./shared');
+const { activeSetups, broadcastSetupProgress } = require('./shared');
 const { setupPRReview } = require('../setup/pr-setup');
 const { setupLocalReview } = require('../setup/local-setup');
 const { getGitHubToken } = require('../config');
@@ -25,31 +23,17 @@ const logger = require('../utils/logger');
 const router = express.Router();
 
 /**
- * Send a named SSE event to all clients listening for a given setupId.
+ * Send a setup progress event via WebSocket.
  *
- * Unlike broadcastSetupProgress (which sends unnamed `data:` lines), this
- * helper emits SSE named events (`event: <type>\n`) so the frontend
- * EventSource `addEventListener(type, ...)` listeners fire correctly.
+ * Converts the named event pattern to a WebSocket message with a `type`
+ * field so the client can dispatch on `msg.type` (e.g. 'step', 'complete', 'error').
  *
  * @param {string} setupId - Setup operation ID
- * @param {string} eventType - SSE event name (e.g. 'step', 'complete', 'error')
+ * @param {string} eventType - Event type (e.g. 'step', 'complete', 'error')
  * @param {Object} data - JSON-serialisable payload
  */
-function sendSetupSSE(setupId, eventType, data) {
-  const clients = setupProgressClients.get(setupId);
-  if (clients && clients.size > 0) {
-    const message = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
-    clients.forEach(client => {
-      try {
-        client.write(message);
-      } catch (e) {
-        clients.delete(client);
-      }
-    });
-    if (clients.size === 0) {
-      setupProgressClients.delete(setupId);
-    }
-  }
+function sendSetupEvent(setupId, eventType, data) {
+  broadcastSetupProgress(setupId, { type: eventType, ...data });
 }
 
 // ---------------------------------------------------------------------------
@@ -60,7 +44,7 @@ function sendSetupSSE(setupId, eventType, data) {
  * Initiate an asynchronous PR review setup.
  *
  * Returns immediately with a { setupId } that the client uses to subscribe
- * to SSE progress events. If setup is already in-flight for this PR, the
+ * to WebSocket progress events. If setup is already in-flight for this PR, the
  * existing setupId is returned. If the PR already exists in the database the
  * response includes `{ existing: true, reviewUrl }` so the client can
  * navigate directly.
@@ -125,14 +109,14 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
           githubToken,
           config,
           onProgress: (progress) => {
-            sendSetupSSE(setupId, 'step', progress);
+            sendSetupEvent(setupId, 'step', progress);
           }
         });
 
-        sendSetupSSE(setupId, 'complete', { reviewUrl: result.reviewUrl, title: result.title });
+        sendSetupEvent(setupId, 'complete', { reviewUrl: result.reviewUrl, title: result.title });
       } catch (err) {
         logger.error(`PR setup failed for ${setupKey}:`, err);
-        sendSetupSSE(setupId, 'error', { message: err.message });
+        sendSetupEvent(setupId, 'error', { message: err.message });
       } finally {
         activeSetups.delete(setupKey);
       }
@@ -148,48 +132,6 @@ router.post('/api/setup/pr/:owner/:repo/:number', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/setup/pr/:owner/:repo/:number/progress
-// ---------------------------------------------------------------------------
-
-/**
- * SSE endpoint for streaming PR setup progress to the client.
- *
- * The client must pass `?setupId=<id>` as a query parameter (returned from
- * the POST endpoint above).
- */
-router.get('/api/setup/pr/:owner/:repo/:number/progress', (req, res) => {
-  const { setupId } = req.query;
-
-  if (!setupId) {
-    return res.status(400).json({ error: 'Missing setupId query parameter' });
-  }
-
-  // SSE headers
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive'
-  });
-
-  // Register this client
-  if (!setupProgressClients.has(setupId)) {
-    setupProgressClients.set(setupId, new Set());
-  }
-  setupProgressClients.get(setupId).add(res);
-
-  // Clean up on disconnect
-  req.on('close', () => {
-    const clients = setupProgressClients.get(setupId);
-    if (clients) {
-      clients.delete(res);
-      if (clients.size === 0) {
-        setupProgressClients.delete(setupId);
-      }
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
 // POST /api/setup/local
 // ---------------------------------------------------------------------------
 
@@ -197,7 +139,7 @@ router.get('/api/setup/pr/:owner/:repo/:number/progress', (req, res) => {
  * Initiate an asynchronous local review setup.
  *
  * Expects JSON body `{ path }` with the local directory to review. Returns
- * `{ setupId }` for the client to subscribe to SSE progress events.
+ * `{ setupId }` for the client to subscribe to WebSocket progress events.
  */
 router.post('/api/setup/local', async (req, res) => {
   try {
@@ -224,11 +166,11 @@ router.post('/api/setup/local', async (req, res) => {
           db,
           targetPath,
           onProgress: (progress) => {
-            sendSetupSSE(setupId, 'step', progress);
+            sendSetupEvent(setupId, 'step', progress);
           }
         });
 
-        sendSetupSSE(setupId, 'complete', {
+        sendSetupEvent(setupId, 'complete', {
           reviewUrl: result.reviewUrl,
           reviewId: result.reviewId,
           existing: result.existing,
@@ -237,7 +179,7 @@ router.post('/api/setup/local', async (req, res) => {
         });
       } catch (err) {
         logger.error(`Local setup failed for ${setupKey}:`, err);
-        sendSetupSSE(setupId, 'error', { message: err.message });
+        sendSetupEvent(setupId, 'error', { message: err.message });
       } finally {
         activeSetups.delete(setupKey);
       }
@@ -250,45 +192,6 @@ router.post('/api/setup/local', async (req, res) => {
     logger.error('Error in POST /api/setup/local:', err);
     return res.status(500).json({ error: err.message });
   }
-});
-
-// ---------------------------------------------------------------------------
-// GET /api/setup/local/:setupId/progress
-// ---------------------------------------------------------------------------
-
-/**
- * SSE endpoint for streaming local review setup progress to the client.
- */
-router.get('/api/setup/local/:setupId/progress', (req, res) => {
-  const { setupId } = req.params;
-
-  if (!setupId) {
-    return res.status(400).json({ error: 'Missing setupId parameter' });
-  }
-
-  // SSE headers
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive'
-  });
-
-  // Register this client
-  if (!setupProgressClients.has(setupId)) {
-    setupProgressClients.set(setupId, new Set());
-  }
-  setupProgressClients.get(setupId).add(res);
-
-  // Clean up on disconnect
-  req.on('close', () => {
-    const clients = setupProgressClients.get(setupId);
-    if (clients) {
-      clients.delete(res);
-      if (clients.size === 0) {
-        setupProgressClients.delete(setupId);
-      }
-    }
-  });
 });
 
 module.exports = router;

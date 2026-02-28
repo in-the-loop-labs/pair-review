@@ -14,7 +14,8 @@ class CouncilProgressModal {
     this.modal = null;
     this.isVisible = false;
     this.currentAnalysisId = null;
-    this.eventSource = null;
+    this._wsUnsub = null;
+    this._onReconnect = null;
     this.statusCheckInterval = null;
     this.isRunningInBackground = false;
     this.councilConfig = null;
@@ -146,59 +147,49 @@ class CouncilProgressModal {
 
   /**
    * Configure for local mode.
-   * Retained as a public method since callers invoke it, but the SSE endpoint
-   * is now unified so no per-mode state is needed.
+   * Retained as a public method since callers invoke it, but the WebSocket
+   * topic subscription is now unified so no per-mode state is needed.
    */
   setLocalMode(_reviewId) {
-    // no-op: SSE endpoint is unified
+    // no-op: WebSocket topic subscription is unified
   }
 
   /**
    * Configure for PR mode (default).
-   * Retained as a public method since callers invoke it, but the SSE endpoint
-   * is now unified so no per-mode state is needed.
+   * Retained as a public method since callers invoke it, but the WebSocket
+   * topic subscription is now unified so no per-mode state is needed.
    */
   setPRMode() {
-    // no-op: SSE endpoint is unified
+    // no-op: WebSocket topic subscription is unified
   }
 
   // ---------------------------------------------------------------------------
-  // SSE / Polling
+  // WebSocket / Polling
   // ---------------------------------------------------------------------------
 
   startProgressMonitoring() {
-    if (this.eventSource) {
-      this.eventSource.close();
-    }
+    this.stopProgressMonitoring();
     if (!this.currentAnalysisId) return;
 
-    const sseUrl = `/api/analyses/${this.currentAnalysisId}/progress`;
+    window.wsClient.connect();
 
-    this.eventSource = new EventSource(sseUrl);
-
-    this.eventSource.onopen = () => {
-      console.log('Council progress: connected to SSE stream');
-    };
-
-    this.eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'connected') return;
-        if (data.type === 'progress') {
-          this.updateProgress(data);
-          if (['completed', 'failed', 'cancelled'].includes(data.status)) {
-            this.stopProgressMonitoring();
-          }
+    // Subscribe to analysis progress via WebSocket
+    this._wsUnsub = window.wsClient.subscribe('analysis:' + this.currentAnalysisId, (msg) => {
+      if (msg.type === 'progress') {
+        this.updateProgress(msg);
+        if (['completed', 'failed', 'cancelled'].includes(msg.status)) {
+          this.stopProgressMonitoring();
         }
-      } catch (error) {
-        console.error('Error parsing council SSE data:', error);
       }
-    };
+    });
 
-    this.eventSource.onerror = () => {
-      console.error('Council SSE connection error, falling back to polling');
-      this._fallbackToPolling();
-    };
+    // Fetch initial state via HTTP (covers startup race)
+    this._fetchAndApplyStatus();
+
+    // Listen for WebSocket reconnects — any events broadcast during the
+    // reconnect gap are lost, so we re-fetch via HTTP to catch up.
+    this._onReconnect = () => { this._fetchAndApplyStatus(); };
+    window.addEventListener('wsReconnected', this._onReconnect);
   }
 
   stopProgressMonitoring() {
@@ -206,35 +197,36 @@ class CouncilProgressModal {
       clearInterval(this.statusCheckInterval);
       this.statusCheckInterval = null;
     }
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
+    if (this._wsUnsub) {
+      this._wsUnsub();
+      this._wsUnsub = null;
+    }
+    if (this._onReconnect) {
+      window.removeEventListener('wsReconnected', this._onReconnect);
+      this._onReconnect = null;
     }
   }
 
-  _fallbackToPolling() {
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
-    if (this.statusCheckInterval) {
-      clearInterval(this.statusCheckInterval);
-    }
-
-    this.statusCheckInterval = setInterval(async () => {
-      if (!this.currentAnalysisId) return;
-      try {
-        const response = await fetch(`/api/analyses/${this.currentAnalysisId}/status`);
-        if (!response.ok) throw new Error('Failed to fetch status');
-        const status = await response.json();
-        this.updateProgress(status);
-        if (['completed', 'failed', 'cancelled'].includes(status.status)) {
-          this.stopProgressMonitoring();
+  /**
+   * Fetch the current analysis status via HTTP and apply it to the UI.
+   * Used both on initial monitoring start and after WebSocket reconnects
+   * to catch up on any events missed during connection gaps.
+   */
+  _fetchAndApplyStatus() {
+    if (!this.currentAnalysisId) return;
+    fetch('/api/analyses/' + this.currentAnalysisId + '/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(status => {
+        if (status) {
+          this.updateProgress(status);
+          if (['completed', 'failed', 'cancelled'].includes(status.status)) {
+            this.stopProgressMonitoring();
+          }
         }
-      } catch (error) {
-        console.error('Error polling council analysis status:', error);
-      }
-    }, 1000);
+      })
+      .catch(err => {
+        console.warn('Failed to fetch analysis status:', err);
+      });
   }
 
   // ---------------------------------------------------------------------------
@@ -264,7 +256,7 @@ class CouncilProgressModal {
         this._updateConsolidation(level4);
       }
     } else if (this._renderMode === 'council') {
-      // Voice-centric council: transpose level-first SSE data to voice-first DOM
+      // Voice-centric council: transpose level-first WebSocket data to voice-first DOM
       this._updateVoiceCentric(status);
     } else {
       // Advanced (level-centric): update voices within levels
@@ -503,10 +495,10 @@ class CouncilProgressModal {
   // ---------------------------------------------------------------------------
 
   /**
-   * Update voice-centric DOM from level-first SSE data.
-   * Transposes levels -> voices: for each level in SSE data, update the
+   * Update voice-centric DOM from level-first WebSocket data.
+   * Transposes levels -> voices: for each level in WebSocket data, update the
    * corresponding level-child under each voice parent.
-   * @param {Object} status - SSE status object with levels map
+   * @param {Object} status - WebSocket status object with levels map
    */
   _updateVoiceCentric(status) {
     for (let level = 1; level <= 3; level++) {
@@ -1045,7 +1037,7 @@ class CouncilProgressModal {
     // approach as the backend (runReviewerCentricCouncil in analyzer.js).
     // The backend deduplicates by provider|model|tier|customInstructions, then
     // generates keys from the index into the global deduplicated array.
-    // We must mirror this exactly so voice keys match SSE progress events.
+    // We must mirror this exactly so voice keys match WebSocket progress events.
     //
     // Voice-centric format: levels are booleans (e.g. { '1': true }), voices
     // are a top-level array (config.voices). Advanced format: levels are objects

@@ -7,6 +7,7 @@
  */
 
 const logger = require('../utils/logger');
+const ws = require('../ws');
 
 /**
  * Custom error class for analysis cancellation
@@ -27,9 +28,6 @@ const activeAnalyses = new Map();
 // Unified map: replaces the previous separate prToAnalysisId and localReviewToAnalysisId maps.
 const reviewToAnalysisId = new Map();
 
-// Store SSE clients for real-time progress updates
-const progressClients = new Map();
-
 // Store local review diff data keyed by reviewId
 // Using a Map avoids process.env size limits and security concerns
 const localReviewDiffs = new Map();
@@ -41,10 +39,6 @@ const activeProcesses = new Map();
 // Store active review setup operations (concurrency guard)
 // Maps setupKey (e.g., "pr:owner/repo/123" or "local:/path") -> { setupId, promise }
 const activeSetups = new Map();
-
-// Store SSE clients for setup progress updates
-// Maps setupId -> Set of response objects
-const setupProgressClients = new Map();
 
 /**
  * Get the model to use for AI analysis
@@ -115,33 +109,12 @@ function determineCompletionInfo(result) {
 }
 
 /**
- * Broadcast progress update to all connected SSE clients
+ * Broadcast progress update to all WebSocket clients subscribed to `analysis:{analysisId}`.
  * @param {string} analysisId - Analysis ID
  * @param {Object} progressData - Progress data to broadcast
  */
 function broadcastProgress(analysisId, progressData) {
-  const clients = progressClients.get(analysisId);
-  if (clients && clients.size > 0) {
-    const message = `data: ${JSON.stringify({
-      type: 'progress',
-      ...progressData
-    })}\n\n`;
-
-    // Send to all connected clients
-    clients.forEach(client => {
-      try {
-        client.write(message);
-      } catch (error) {
-        // Remove dead clients
-        clients.delete(client);
-      }
-    });
-
-    // Clean up if no clients left
-    if (clients.size === 0) {
-      progressClients.delete(analysisId);
-    }
-  }
+  ws.broadcast('analysis:' + analysisId, { type: 'progress', ...progressData });
 }
 
 /**
@@ -206,27 +179,12 @@ function isAnalysisCancelled(analysisId) {
 }
 
 /**
- * Broadcast setup progress to all connected SSE clients for a given setupId
+ * Broadcast setup progress to all WebSocket clients subscribed to `setup:{setupId}`.
  * @param {string} setupId - Setup operation ID
  * @param {Object} data - Progress data to broadcast
  */
 function broadcastSetupProgress(setupId, data) {
-  const clients = setupProgressClients.get(setupId);
-  if (clients && clients.size > 0) {
-    const message = `data: ${JSON.stringify(data)}\n\n`;
-
-    clients.forEach(client => {
-      try {
-        client.write(message);
-      } catch (error) {
-        clients.delete(client);
-      }
-    });
-
-    if (clients.size === 0) {
-      setupProgressClients.delete(setupId);
-    }
-  }
+  ws.broadcast('setup:' + setupId, data);
 }
 
 /**
@@ -426,11 +384,9 @@ module.exports = {
   CancellationError,
   activeAnalyses,
   reviewToAnalysisId,
-  progressClients,
   localReviewDiffs,
   activeProcesses,
   activeSetups,
-  setupProgressClients,
   getModel,
   determineCompletionInfo,
   broadcastProgress,

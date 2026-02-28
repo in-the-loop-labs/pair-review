@@ -6,6 +6,7 @@ const { initializeDatabase, getDatabaseStatus, queryOne, run } = require('./data
 const { normalizeRepository } = require('./utils/paths');
 const { applyConfigOverrides, checkAllProviders } = require('./ai');
 const logger = require('./utils/logger');
+const { attachWebSocket, closeAll: closeAllWS } = require('./ws');
 
 let db = null;
 let server = null;
@@ -305,6 +306,7 @@ async function startServer(sharedDb = null) {
 
     server = app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);
+      attachWebSocket(server);
     });
 
     server.on('error', (error) => {
@@ -342,6 +344,8 @@ async function gracefulShutdown(signal) {
       console.error('Error closing chat sessions:', error.message);
     }
   }
+
+  closeAllWS();
 
   if (server) {
     server.close(() => {

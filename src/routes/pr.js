@@ -26,7 +26,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const logger = require('../utils/logger');
 const { buildDiffLineSet } = require('../utils/diff-annotator');
-const { broadcastReviewEvent } = require('../sse/review-events');
+const { broadcastReviewEvent } = require('../events/review-events');
 const simpleGit = require('simple-git');
 const {
   activeAnalyses,
@@ -1778,7 +1778,6 @@ router.post('/api/pr/:owner/:repo/:number/analyses/council', async (req, res) =>
         headSha: prMetadata.head_sha,
         logLabel: `PR #${prNumber}`,
         initialStatusExtra: { prNumber, reviewType: 'pr' },
-        extraBroadcastKeys: null,
         onSuccess: async (result) => {
           if (result.summary) {
             await reviewRepo.upsertSummary(prNumber, repository, result.summary);

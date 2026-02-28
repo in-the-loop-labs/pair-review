@@ -13,7 +13,7 @@ const path = require('path');
 const express = require('express');
 const { ReviewRepository, ContextFileRepository, WorktreeRepository } = require('../database');
 const logger = require('../utils/logger');
-const { broadcastReviewEvent } = require('../sse/review-events');
+const { broadcastReviewEvent } = require('../events/review-events');
 const { getDiffFileList } = require('../utils/diff-file-list');
 
 const router = express.Router();

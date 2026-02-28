@@ -18,8 +18,8 @@ class ChatPanel {
     this.reviewId = null;
     this.isOpen = false;
     this.isStreaming = false;
-    this.eventSource = null;
-    this._sseReconnectTimer = null;
+    this._chatUnsub = null;
+    this._reviewUnsub = null;
     this.messages = [];
     this._streamingContent = '';
     this._pendingContext = [];
@@ -434,8 +434,8 @@ class ChatPanel {
     this.panel.classList.remove('chat-panel--closed');
     this.panel.classList.add('chat-panel--open');
 
-    // Ensure SSE is connected (but don't create a session yet — lazy creation)
-    this._ensureGlobalSSE();
+    // Ensure WebSocket subscriptions are active (but don't create a session yet — lazy creation)
+    this._ensureSubscriptions();
 
     // Load MRU session with message history (if any previous sessions exist).
     // Skip when opening with explicit context (suggestion/comment/file) — the
@@ -495,7 +495,7 @@ class ChatPanel {
   close() {
     this._hideSessionDropdown();
     // Reset UI streaming state (buttons) but keep isStreaming and _streamingContent
-    // intact so the background SSE handler can continue accumulating events.
+    // intact so the background WebSocket handler can continue accumulating events.
     this.sendBtn.style.display = '';
     this.stopBtn.style.display = 'none';
     this.sendBtn.disabled = !this.inputEl?.value?.trim();
@@ -544,6 +544,7 @@ class ChatPanel {
     // 2. Clear everything as normal
     this._finalizeStreaming();
     this.currentSessionId = null;
+    this._resubscribeChat(); // Unsubscribe old chat topic
     this.messages = [];
     this._streamingContent = '';
     this._pendingContext = [];
@@ -556,7 +557,6 @@ class ChatPanel {
     this._clearMessages();
     this._updateActionButtons();
     this._updateTitle(); // Reset title for new conversation
-    // SSE stays connected — it's multiplexed and will filter by sessionId
 
     // 3. Re-add analysis context (appears first, handled separately from pending arrays)
     this._ensureAnalysisContext();
@@ -626,6 +626,7 @@ class ChatPanel {
 
       const mru = sessions[0];
       this.currentSessionId = mru.id;
+      this._resubscribeChat();
       console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
 
       if (mru.provider) {
@@ -786,6 +787,7 @@ class ChatPanel {
 
     // 2. Reset state
     this.currentSessionId = sessionId;
+    this._resubscribeChat();
     this.messages = [];
     this._streamingContent = '';
     this._pendingContext = [];
@@ -869,12 +871,12 @@ class ChatPanel {
   }
 
   /**
-   * Ensure the global SSE connection is active.
+   * Ensure WebSocket subscriptions are established for review and chat topics.
    * No longer creates sessions — that happens lazily on first message.
    * @returns {{sessionData: null}}
    */
   _ensureConnected() {
-    this._ensureGlobalSSE();
+    this._ensureSubscriptions();
     return { sessionData: null };
   }
 
@@ -892,6 +894,12 @@ class ChatPanel {
     if (this.reviewId) return; // already bound
     this.reviewId = reviewId;
     console.debug('[ChatPanel] Late-bound reviewId:', reviewId);
+
+    // Subscribe to review topic now that reviewId is available.
+    // _ensureSubscriptions() skips this when reviewId is null at panel open time,
+    // so we must subscribe here. The chat subscription is a benign no-op when
+    // currentSessionId is null.
+    this._ensureSubscriptions();
 
     // Re-enable input now that reviewId is available
     if (this.inputEl.disabled) {
@@ -942,6 +950,7 @@ class ChatPanel {
 
       const result = await response.json();
       this.currentSessionId = result.data.id;
+      this._resubscribeChat();
       console.debug('[ChatPanel] Session created:', this.currentSessionId);
       return result.data;
     } catch (error) {
@@ -975,7 +984,7 @@ class ChatPanel {
 
     // Lazy session creation: create on first message, not on panel open
     if (!this.currentSessionId) {
-      this._ensureGlobalSSE();
+      this._ensureSubscriptions();
       const sessionData = await this.createSession();
       if (!sessionData) {
         // Restore the user's message text into the input
@@ -1044,7 +1053,8 @@ class ChatPanel {
       if (response.status === 410) {
         console.debug('[ChatPanel] Session not resumable (410), creating new session and retrying');
         this.currentSessionId = null;
-        this._ensureGlobalSSE();
+        this._resubscribeChat();
+        this._ensureSubscriptions();
         const sessionData = await this.createSession();
         if (!sessionData) {
           throw new Error('Failed to create replacement session');
@@ -1061,7 +1071,7 @@ class ChatPanel {
         const err = await response.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to send message');
       }
-      console.debug('[ChatPanel] Message accepted, waiting for SSE events');
+      console.debug('[ChatPanel] Message accepted, waiting for WebSocket events');
     } catch (error) {
       // Restore pending context so it's not lost
       this._pendingContext = savedContext;
@@ -1914,122 +1924,173 @@ class ChatPanel {
   }
 
   /**
-   * Ensure the global multiplexed SSE connection is established.
-   * Creates the EventSource once; subsequent calls are no-ops if already connected.
-   * Events are filtered by sessionId to dispatch only to the active session.
+   * Ensure WebSocket subscriptions are established for review and chat topics.
+   * Subscribes to review events (stable for page lifetime) and chat events
+   * (changes when session changes). Subsequent calls are no-ops if already subscribed.
    */
-  _ensureGlobalSSE() {
-    // Already connected or connecting — nothing to do
-    if (this.eventSource &&
-        this.eventSource.readyState !== EventSource.CLOSED) {
-      return;
+  _ensureSubscriptions() {
+    window.wsClient.connect();
+
+    // Subscribe to review events (stable for page lifetime)
+    if (this.reviewId && !this._reviewUnsub) {
+      this._reviewUnsub = window.wsClient.subscribe('review:' + this.reviewId, (msg) => {
+        if (msg.type?.startsWith('review:')) {
+          document.dispatchEvent(new CustomEvent(msg.type, {
+            detail: { ...msg }
+          }));
+        }
+      });
     }
 
-    // Clear any pending reconnect timer
-    clearTimeout(this._sseReconnectTimer);
-    this._sseReconnectTimer = null;
+    // Subscribe to chat session
+    if (this.currentSessionId && !this._chatUnsub) {
+      this._chatUnsub = window.wsClient.subscribe('chat:' + this.currentSessionId, (msg) => {
+        this._handleChatMessage(msg);
+      });
+    }
 
-    const url = '/api/chat/stream';
-    console.debug('[ChatPanel] Connecting multiplexed SSE:', url);
-    this.eventSource = new EventSource(url);
-
-    this.eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        // Initial connection acknowledgement — no sessionId, just log
-        if (data.type === 'connected' && !data.sessionId) {
-          console.debug('[ChatPanel] Multiplexed SSE connected');
-          return;
-        }
-
-        // Route review-scoped events to document as CustomEvents
-        if (data.reviewId && data.type?.startsWith('review:')) {
-          document.dispatchEvent(new CustomEvent(data.type, {
-            detail: { ...data }
-          }));
-          return;
-        }
-
-        // Filter: only process events for the active session
-        if (data.sessionId !== this.currentSessionId) return;
-
-        if (data.type !== 'delta') {
-          console.debug('[ChatPanel] SSE event:', data.type, 'session:', data.sessionId);
-        }
-
-        // When the panel is closed, still accumulate internal state
-        // so messages are available when the panel reopens.
-        if (!this.isOpen) {
-          switch (data.type) {
-            case 'delta':
-              this._streamingContent += data.text;
-              break;
-            case 'complete':
-              if (this._streamingContent) {
-                this.messages.push({ role: 'assistant', content: this._streamingContent, id: data.messageId });
-              }
-              this._streamingContent = '';
-              this.isStreaming = false;
-              break;
-            case 'error':
-              this._streamingContent = '';
-              this.isStreaming = false;
-              break;
-            // tool_use, status: purely visual, skip when closed
-          }
-          return;
-        }
-
-        switch (data.type) {
-          case 'delta':
-            this._hideThinkingIndicator();
-            this._streamingContent += data.text;
-            this.updateStreamingMessage(this._streamingContent);
-            break;
-
-          case 'tool_use':
-            this._showToolUse(data.toolName, data.status, data.toolInput);
-            break;
-
-          case 'status':
-            this._handleAgentStatus(data.status);
-            break;
-
-          case 'complete':
-            this.finalizeStreamingMessage(data.messageId);
-            break;
-
-          case 'error':
-            this._showError(data.message || 'An error occurred');
-            this._finalizeStreaming();
-            break;
-        }
-      } catch (e) {
-        console.error('[ChatPanel] SSE parse error:', e);
-      }
-    };
-
-    this.eventSource.onerror = () => {
-      if (this.eventSource?.readyState === EventSource.CLOSED) {
-        console.warn('[ChatPanel] Multiplexed SSE connection closed, reconnecting in 2s');
-        this.eventSource = null;
-        this._sseReconnectTimer = setTimeout(() => {
-          this._ensureGlobalSSE();
-        }, 2000);
-      }
-    };
+    // Listen for WebSocket reconnects — any deltas broadcast during the
+    // reconnect gap are lost, so we re-fetch via HTTP to recover the stream.
+    if (!this._onReconnect) {
+      this._onReconnect = () => { this._recoverAfterReconnect(); };
+      window.addEventListener('wsReconnected', this._onReconnect);
+    }
   }
 
   /**
-   * Close the global SSE connection and cancel any reconnect timer.
+   * Recover streaming state after a WebSocket reconnect.
+   * If a stream was in progress when the connection dropped, deltas broadcast
+   * during the gap are lost. Re-fetch the full message history via HTTP and
+   * replace the partial `_streamingContent` with the complete last assistant
+   * message. When not streaming, no action is needed.
    */
-  _closeGlobalSSE() {
-    clearTimeout(this._sseReconnectTimer);
-    this._sseReconnectTimer = null;
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
+  async _recoverAfterReconnect() {
+    if (!this.isStreaming || !this.currentSessionId) return;
+
+    try {
+      const response = await fetch(`/api/chat/session/${this.currentSessionId}/messages`);
+      if (!response.ok) return;
+
+      const result = await response.json();
+      const messages = result.data?.messages || [];
+
+      // Find the last assistant message — this is the one being streamed
+      let lastAssistant = null;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].type === 'message' && messages[i].role === 'assistant') {
+          lastAssistant = messages[i];
+          break;
+        }
+      }
+
+      if (lastAssistant && lastAssistant.content) {
+        this._streamingContent = lastAssistant.content;
+        // The message is already persisted in the DB, so the stream is
+        // definitively complete. Finalize rather than continuing the
+        // streaming UI (which would leave the Stop button visible, etc.).
+        if (this.isOpen) {
+          this.finalizeStreamingMessage(lastAssistant.id);
+        } else {
+          this.messages.push({ role: 'assistant', content: lastAssistant.content, id: lastAssistant.id });
+          this._finalizeStreaming();
+        }
+      }
+    } catch (err) {
+      console.warn('[ChatPanel] Failed to recover stream after reconnect:', err);
+    }
+  }
+
+  /**
+   * Unsubscribe from the current chat topic and re-subscribe to the new one.
+   * Called whenever `this.currentSessionId` changes.
+   */
+  _resubscribeChat() {
+    if (this._chatUnsub) { this._chatUnsub(); this._chatUnsub = null; }
+    if (this.currentSessionId) {
+      this._chatUnsub = window.wsClient.subscribe('chat:' + this.currentSessionId, (msg) => {
+        this._handleChatMessage(msg);
+      });
+    }
+  }
+
+  /**
+   * Handles incoming WebSocket messages for the active chat session.
+   * @param {Object} data - Parsed message object
+   */
+  _handleChatMessage(data) {
+    try {
+      // Assertion: WebSocket topic scoping guarantees sessionId match.
+      // This warn is a safety net — if it fires, something is wrong upstream.
+      if (data.sessionId !== this.currentSessionId) {
+        console.warn(`[ChatPanel] Unexpected sessionId mismatch: got ${data.sessionId}, expected ${this.currentSessionId}`);
+        return;
+      }
+
+      if (data.type !== 'delta') {
+        console.debug('[ChatPanel] WS event:', data.type, 'session:', data.sessionId);
+      }
+
+      // When the panel is closed, still accumulate internal state
+      // so messages are available when the panel reopens.
+      if (!this.isOpen) {
+        switch (data.type) {
+          case 'delta':
+            this._streamingContent += data.text;
+            break;
+          case 'complete':
+            if (this._streamingContent) {
+              this.messages.push({ role: 'assistant', content: this._streamingContent, id: data.messageId });
+            }
+            this._streamingContent = '';
+            this.isStreaming = false;
+            break;
+          case 'error':
+            this._streamingContent = '';
+            this.isStreaming = false;
+            break;
+          // tool_use, status: purely visual, skip when closed
+        }
+        return;
+      }
+
+      switch (data.type) {
+        case 'delta':
+          this._hideThinkingIndicator();
+          this._streamingContent += data.text;
+          this.updateStreamingMessage(this._streamingContent);
+          break;
+
+        case 'tool_use':
+          this._showToolUse(data.toolName, data.status, data.toolInput);
+          break;
+
+        case 'status':
+          this._handleAgentStatus(data.status);
+          break;
+
+        case 'complete':
+          this.finalizeStreamingMessage(data.messageId);
+          break;
+
+        case 'error':
+          this._showError(data.message || 'An error occurred');
+          this._finalizeStreaming();
+          break;
+      }
+    } catch (e) {
+      console.error('[ChatPanel] WS parse error:', e);
+    }
+  }
+
+  /**
+   * Close all WebSocket subscriptions (chat and review).
+   */
+  _closeSubscriptions() {
+    if (this._chatUnsub) { this._chatUnsub(); this._chatUnsub = null; }
+    if (this._reviewUnsub) { this._reviewUnsub(); this._reviewUnsub = null; }
+    if (this._onReconnect) {
+      window.removeEventListener('wsReconnected', this._onReconnect);
+      this._onReconnect = null;
     }
   }
 
@@ -2930,7 +2991,7 @@ class ChatPanel {
    */
   destroy() {
     document.removeEventListener('keydown', this._onKeydown);
-    this._closeGlobalSSE();
+    this._closeSubscriptions();
     this.messages = [];
 
     // Clean up context tooltip
