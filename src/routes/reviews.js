@@ -528,6 +528,7 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
         type,
         title,
         body,
+        suggestion_text,
         reasoning,
         status,
         is_file_level,
@@ -553,10 +554,24 @@ router.get('/api/reviews/:reviewId/suggestions', validateReviewId, async (req, r
         line_start
     `, queryParams);
 
-    const suggestions = rows.map(row => ({
-      ...row,
-      reasoning: row.reasoning ? JSON.parse(row.reasoning) : null
-    }));
+    // Resolve format config once for all suggestions
+    const config = req.app.get('config') || {};
+    const formatConfig = resolveFormat(config.comment_format);
+
+    const suggestions = rows.map(row => {
+      const formattedBody = formatComment({
+        body: row.body,
+        suggestionText: row.suggestion_text,
+        category: row.type,
+        title: row.title
+      }, formatConfig);
+
+      return {
+        ...row,
+        reasoning: row.reasoning ? JSON.parse(row.reasoning) : null,
+        formattedBody
+      };
+    });
 
     res.json({ suggestions });
 
@@ -691,6 +706,7 @@ router.post('/api/reviews/:reviewId/suggestions/:id/adopt', validateReviewId, as
     res.json({
       success: true,
       userCommentId,
+      formattedBody,
       message: 'Suggestion adopted as user comment'
     });
     broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });
@@ -711,7 +727,7 @@ router.post('/api/reviews/:reviewId/suggestions/:id/adopt', validateReviewId, as
 router.post('/api/reviews/:reviewId/suggestions/:id/edit', validateReviewId, async (req, res) => {
   try {
     const { id } = req.params;
-    const { editedText, action } = req.body;
+    const { editedText, action, category, title } = req.body;
 
     if (action !== 'adopt_edited') {
       return res.status(400).json({
@@ -744,9 +760,20 @@ router.post('/api/reviews/:reviewId/suggestions/:id/edit', validateReviewId, asy
       });
     }
 
+    // Apply server-side formatting when the action is adopt_edited
+    // Use category/title from request body, falling back to suggestion metadata
+    const config = req.app.get('config') || {};
+    const formatConfig = resolveFormat(config.comment_format);
+    const formattedBody = formatComment({
+      body: editedText.trim(),
+      suggestionText: suggestion.suggestion_text,
+      category: category || suggestion.type,
+      title: title || suggestion.title
+    }, formatConfig);
+
     // Atomically adopt: create user comment and update suggestion status in one transaction
     const userCommentId = await withTransaction(db, async () => {
-      const ucId = await commentRepo.adoptSuggestion(id, editedText);
+      const ucId = await commentRepo.adoptSuggestion(id, formattedBody);
       await commentRepo.updateSuggestionStatus(id, 'adopted', ucId);
       return ucId;
     });
@@ -754,6 +781,7 @@ router.post('/api/reviews/:reviewId/suggestions/:id/edit', validateReviewId, asy
     res.json({
       success: true,
       userCommentId,
+      formattedBody,
       message: 'Suggestion edited and adopted as user comment'
     });
     broadcastReviewEvent(req.reviewId, { type: 'review:suggestions_changed' }, { sourceClientId: req.get('X-Client-Id') });

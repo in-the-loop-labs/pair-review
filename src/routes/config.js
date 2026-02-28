@@ -21,6 +21,7 @@ const {
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
 const { isRunningViaNpx } = require('../config');
+const { PRESETS } = require('../utils/comment-formatter');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -36,7 +37,7 @@ router.get('/api/config', (req, res) => {
   res.json({
     theme: config.theme || 'light',
     comment_button_action: config.comment_button_action || 'submit',
-    comment_format: config.comment_format || 'default',
+    comment_format: config.comment_format || 'legacy',
     // Include npx detection for frontend command examples
     is_running_via_npx: isRunningViaNpx(),
     enable_chat: config.enable_chat !== false,
@@ -73,7 +74,7 @@ router.patch('/api/config', async (req, res) => {
 
     // Validate comment_format if provided
     if (comment_format !== undefined) {
-      const validPresets = ['default', 'minimal', 'plain', 'emoji-only'];
+      const validPresets = Object.keys(PRESETS);
       if (typeof comment_format === 'string') {
         if (!validPresets.includes(comment_format)) {
           return res.status(400).json({
@@ -90,6 +91,21 @@ router.patch('/api/config', async (req, res) => {
           return res.status(400).json({
             error: 'Custom comment_format template must contain {description} placeholder'
           });
+        }
+        // Validate categoryOverrides if provided (must be a string->string mapping)
+        if (comment_format.categoryOverrides !== undefined) {
+          if (typeof comment_format.categoryOverrides !== 'object' || comment_format.categoryOverrides === null || Array.isArray(comment_format.categoryOverrides)) {
+            return res.status(400).json({
+              error: 'categoryOverrides must be an object mapping category names to replacement strings'
+            });
+          }
+          for (const [, value] of Object.entries(comment_format.categoryOverrides)) {
+            if (typeof value !== 'string') {
+              return res.status(400).json({
+                error: 'categoryOverrides must be a string-to-string mapping'
+              });
+            }
+          }
         }
       } else {
         return res.status(400).json({
@@ -128,7 +144,7 @@ router.patch('/api/config', async (req, res) => {
         theme: config.theme || 'light',
         comment_button_action: config.comment_button_action || 'submit',
         chat_enable_shortcuts: config.chat?.enable_shortcuts !== false,
-        comment_format: config.comment_format || 'default'
+        comment_format: config.comment_format || 'legacy'
       }
     });
 

@@ -1714,6 +1714,25 @@ describe('AI Suggestion Endpoints', () => {
       expect(response.body.suggestions[0].type).toBe('improvement');
     });
 
+    it('should return formattedBody for each suggestion', async () => {
+      await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, type, title, body, suggestion_text, status, ai_run_id)
+        VALUES (?, 'ai', 'file.js', 10, 'bug', 'Null check', 'Missing null check', 'Add guard clause', 'active', 'test-run-fmt')
+      `, [prId]);
+
+      const response = await request(app)
+        .get(`/api/reviews/${prId}/suggestions`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.suggestions.length).toBe(1);
+      const suggestion = response.body.suggestions[0];
+      expect(suggestion.formattedBody).toBeDefined();
+      // Default legacy format: emoji **Category**: description\n\n**Suggestion:** suggestion_text
+      expect(suggestion.formattedBody).toContain('**Bug**');
+      expect(suggestion.formattedBody).toContain('Missing null check');
+      expect(suggestion.formattedBody).toContain('**Suggestion:** Add guard clause');
+    });
+
     it('should filter by levels query parameter', async () => {
       // Insert suggestions with different levels (all with same ai_run_id to simulate one analysis run)
       const runId = 'test-run-levels';
@@ -2100,6 +2119,132 @@ describe('AI Suggestion Endpoints', () => {
       // Should have emoji + category prefix
       expect(userComment.body).toContain('**Improvement**');
       expect(userComment.body).toContain('Use const instead of let');
+    });
+
+    it('should return formattedBody and format both body and suggestion_text with legacy template', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, suggestion_text, type, title, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Description text', 'Fix it this way', 'bug', 'Null check needed', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.formattedBody).toBeDefined();
+
+      // Verify formattedBody contains both description and suggestion text
+      // formatted according to the legacy template: {emoji} **{category}**: {description}\n\n**Suggestion:** {suggestion}
+      expect(response.body.formattedBody).toContain('**Bug**');
+      expect(response.body.formattedBody).toContain('Description text');
+      expect(response.body.formattedBody).toContain('**Suggestion:** Fix it this way');
+
+      // Verify the stored comment body matches formattedBody
+      const userComment = await queryOne(db, 'SELECT body FROM comments WHERE id = ?', [response.body.userCommentId]);
+      expect(userComment.body).toBe(response.body.formattedBody);
+    });
+  });
+
+  describe('POST /api/reviews/:reviewId/suggestions/:id/edit', () => {
+    it('should edit and adopt a suggestion with formattedBody', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, suggestion_text, type, title, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Original body', 'Original suggestion', 'bug', 'Original title', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
+        .send({
+          action: 'adopt_edited',
+          editedText: 'Edited body text',
+          category: 'bug',
+          title: 'Edited title'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.userCommentId).toBeDefined();
+      expect(response.body.formattedBody).toBeDefined();
+      expect(response.body.formattedBody).toContain('Edited body text');
+    });
+
+    it('should use category and title from request body in formatting', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, title, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Original body', 'bug', 'Original Title', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
+        .send({
+          action: 'adopt_edited',
+          editedText: 'New description',
+          category: 'improvement',
+          title: 'New Title'
+        });
+
+      expect(response.status).toBe(200);
+      // Category from request body should be used
+      expect(response.body.formattedBody).toContain('**Improvement**');
+      expect(response.body.formattedBody).not.toContain('**Bug**');
+    });
+
+    it('should fall back to suggestion type/title when params omitted', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, title, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Original body', 'improvement', 'Fallback Title', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
+        .send({
+          action: 'adopt_edited',
+          editedText: 'Edited text only'
+        });
+
+      expect(response.status).toBe(200);
+      // Falls back to suggestion.type
+      expect(response.body.formattedBody).toContain('**Improvement**');
+      expect(response.body.formattedBody).toContain('Edited text only');
+    });
+
+    it('should store comment body matching formattedBody', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, type, title, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Body text', 'bug', 'Title', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
+        .send({
+          action: 'adopt_edited',
+          editedText: 'Edited body'
+        });
+
+      expect(response.status).toBe(200);
+
+      const userComment = await queryOne(db, 'SELECT body FROM comments WHERE id = ?', [response.body.userCommentId]);
+      expect(userComment.body).toBe(response.body.formattedBody);
+    });
+
+    it('should preserve suggestion_text in formatted output', async () => {
+      const { lastID: suggestionId } = await run(db, `
+        INSERT INTO comments (review_id, source, file, line_start, body, suggestion_text, type, title, status)
+        VALUES (?, 'ai', 'file.js', 10, 'Description', 'Remediation steps here', 'bug', 'Fix needed', 'active')
+      `, [prId]);
+
+      const response = await request(app)
+        .post(`/api/reviews/${prId}/suggestions/${suggestionId}/edit`)
+        .send({
+          action: 'adopt_edited',
+          editedText: 'Edited description'
+        });
+
+      expect(response.status).toBe(200);
+      // suggestion_text from the suggestion record should be included
+      expect(response.body.formattedBody).toContain('Remediation steps here');
+      expect(response.body.formattedBody).toContain('Edited description');
     });
   });
 
@@ -2881,6 +3026,123 @@ describe('Config Endpoints', () => {
       expect(response.status).toBe(200);
       expect(response.body.config.comment_button_action).toBe('submit');
     });
+
+    it('should return comment_format in GET /api/config', async () => {
+      app.set('config', { ...app.get('config'), comment_format: 'minimal' });
+
+      const response = await request(app)
+        .get('/api/config');
+
+      expect(response.status).toBe(200);
+      expect(response.body.comment_format).toBe('minimal');
+    });
+
+    it('should accept a valid preset string for comment_format', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({ comment_format: 'minimal' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.config.comment_format).toBe('minimal');
+    });
+
+    it('should accept a valid object config for comment_format', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({
+          comment_format: {
+            template: '{emoji} [{category}] {description}',
+            categoryOverrides: { bug: 'defect' }
+          }
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.config.comment_format).toEqual({
+        template: '{emoji} [{category}] {description}',
+        categoryOverrides: { bug: 'defect' }
+      });
+    });
+
+    it('should reject an invalid preset string for comment_format', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({ comment_format: 'nonexistent_preset' });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid comment_format preset');
+    });
+
+    it('should reject an object config missing template', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({ comment_format: { categoryOverrides: { bug: 'defect' } } });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('template');
+    });
+
+    it('should reject categoryOverrides with non-string values', async () => {
+      const response = await request(app)
+        .patch('/api/config')
+        .send({
+          comment_format: {
+            template: '{description}',
+            categoryOverrides: { bug: 123 }
+          }
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('string-to-string');
+    });
+  });
+});
+
+// ============================================================================
+// Adoption with Non-Legacy Preset Tests
+// ============================================================================
+
+describe('Adoption with non-legacy preset', () => {
+  let db;
+  let app;
+  let prId;
+
+  beforeEach(async () => {
+    db = await createTestDatabase();
+    app = createTestApp(db);
+    prId = await insertTestPR(db, 1, 'owner/repo');
+    await insertTestWorktree(db, 1, 'owner/repo');
+  });
+
+  afterEach(async () => {
+    if (db) {
+      await closeTestDatabase(db);
+    }
+    vi.clearAllMocks();
+  });
+
+  it('should format adopted suggestion using minimal preset', async () => {
+    // Set config to minimal preset
+    app.set('config', { ...app.get('config'), comment_format: 'minimal' });
+
+    const { lastID: suggestionId } = await run(db, `
+      INSERT INTO comments (review_id, source, file, line_start, body, suggestion_text, type, title, status)
+      VALUES (?, 'ai', 'file.js', 10, 'Null check missing', 'Add if (!x) return;', 'bug', 'Null Safety', 'active')
+    `, [prId]);
+
+    const response = await request(app)
+      .post(`/api/reviews/${prId}/suggestions/${suggestionId}/adopt`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.formattedBody).toBeDefined();
+    // Minimal format: [Category] description\n\nsuggestion
+    expect(response.body.formattedBody).toContain('[Bug]');
+    expect(response.body.formattedBody).toContain('Null check missing');
+    expect(response.body.formattedBody).toContain('Add if (!x) return;');
+    // Minimal should NOT have emoji
+    expect(response.body.formattedBody).not.toContain('\u{1F41B}');
   });
 });
 

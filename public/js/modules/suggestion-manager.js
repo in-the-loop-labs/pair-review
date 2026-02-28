@@ -160,24 +160,6 @@ class SuggestionManager {
   }
 
   /**
-   * Format adopted comment text using configurable shared formatter
-   * @param {string} text - Comment text (body/description)
-   * @param {string} category - Category name
-   * @param {string} [suggestionText] - Separate suggestion text (from suggestion_text column)
-   * @returns {string} Formatted text
-   */
-  formatAdoptedComment(text, category, suggestionText) {
-    const formatConfig = window.CommentFormatter?.resolveFormat(
-      this.prManager?.commentFormat
-    );
-    return window.CommentFormatter?.formatAdoptedComment({
-      body: text,
-      suggestionText: suggestionText || null,
-      category
-    }, formatConfig) || text;
-  }
-
-  /**
    * Find suggestions that target lines currently hidden in gaps
    * @param {Array} suggestions - Array of suggestions
    * @returns {Array} Suggestions targeting hidden lines
@@ -535,10 +517,11 @@ class SuggestionManager {
         </div>
         <div class="ai-suggestion-body">
           ${(() => {
-            const body = suggestion.body || '';
-            // Debug: Log what we're rendering
-            console.log('Rendering AI suggestion body:', body.substring(0, 200));
-            return window.renderMarkdown ? window.renderMarkdown(body) : escapeHtml(body);
+            let displayBody = suggestion.body || '';
+            if (suggestion.suggestion_text) {
+              displayBody += '\n\n**Suggestion:** ' + suggestion.suggestion_text;
+            }
+            return window.renderMarkdown ? window.renderMarkdown(displayBody) : escapeHtml(displayBody);
           })()}
         </div>
         <div class="ai-suggestion-actions">

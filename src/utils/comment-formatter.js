@@ -9,31 +9,33 @@ const { getEmoji } = require('./category-emoji');
 /**
  * Preset format templates for adopted comments.
  * Template placeholders: {emoji}, {category}, {title}, {description}, {suggestion}
+ * Conditional sections: {?field}...{/field} — content is kept when field is truthy, stripped when falsy.
  */
 const PRESETS = {
-  default: '{emoji} **{category}**: {description}\n\n**Suggestion:** {suggestion}',
-  minimal: '[{category}] {description}\n\n{suggestion}',
-  plain: '{description}\n\n{suggestion}',
-  'emoji-only': '{emoji} {description}\n\n{suggestion}'
+  legacy: '{emoji} **{category}**: {description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}',
+  minimal: '[{category}] {description}{?suggestion}\n\n{suggestion}{/suggestion}',
+  plain: '{description}{?suggestion}\n\n{suggestion}{/suggestion}',
+  'emoji-only': '{emoji} {description}{?suggestion}\n\n{suggestion}{/suggestion}',
+  maximal: '{emoji} **{category}**{?title}: {title}{/title}\n\n{description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}'
 };
 
 /**
  * Resolve a config value into a format configuration object.
  * @param {string|Object|undefined} config - Preset name string, custom config object, or undefined
- * @returns {{ template: string, showEmoji: boolean, emojiOverrides: Object }}
+ * @returns {{ template: string, emojiOverrides: Object, categoryOverrides: Object }}
  */
 function resolveFormat(config) {
   if (!config || typeof config === 'string') {
-    const presetName = config || 'default';
-    const template = PRESETS[presetName] || PRESETS.default;
-    return { template, showEmoji: true, emojiOverrides: {} };
+    const presetName = config || 'legacy';
+    const template = PRESETS[presetName] || PRESETS.legacy;
+    return { template, emojiOverrides: {}, categoryOverrides: {} };
   }
 
   // Custom object config
   return {
-    template: config.template || PRESETS.default,
-    showEmoji: config.showEmoji !== false,
-    emojiOverrides: config.emojiOverrides || {}
+    template: config.template || PRESETS.legacy,
+    emojiOverrides: config.emojiOverrides || {},
+    categoryOverrides: config.categoryOverrides || {}
   };
 }
 
@@ -51,16 +53,36 @@ function capitalizeCategory(category) {
 }
 
 /**
+ * Process conditional sections in a template.
+ * Syntax: {?fieldName}content{/fieldName}
+ * When the field value is truthy, the delimiters are stripped and content is kept.
+ * When the field value is falsy/empty/undefined, the entire block is removed.
+ *
+ * @param {string} template - Template with conditional sections
+ * @param {Object} values - Map of field names to their values
+ * @returns {string} Template with conditional sections resolved
+ */
+function processConditionalSections(template, values) {
+  return template.replace(/\{\?(\w+)\}([\s\S]*?)\{\/\1\}/g, (match, fieldName, content) => {
+    const value = values[fieldName];
+    if (value !== undefined && value !== null && value !== '') {
+      return content;
+    }
+    return '';
+  });
+}
+
+/**
  * Format an adopted comment using the given format configuration.
  * Handles legacy data where suggestion_text was concatenated into body.
  *
  * @param {{ body: string, suggestionText?: string, category?: string, title?: string }} fields
- * @param {{ template: string, showEmoji: boolean, emojiOverrides: Object }} formatConfig
+ * @param {{ template: string, emojiOverrides: Object, categoryOverrides: Object }} formatConfig
  * @returns {string} Formatted comment text
  */
 function formatAdoptedComment(fields, formatConfig) {
-  const { body, category, title } = fields;
-  let { suggestionText } = fields;
+  const { body, title } = fields;
+  let { category, suggestionText } = fields;
 
   if (!category) {
     return body || '';
@@ -75,26 +97,39 @@ function formatAdoptedComment(fields, formatConfig) {
   }
 
   const config = formatConfig || resolveFormat();
+
+  // Resolve emoji from original category BEFORE applying overrides,
+  // so overridden categories keep the original category's emoji
   const emoji = config.emojiOverrides?.[category] || getEmoji(category);
+
+  // Apply category overrides (e.g., "bug" -> "defect")
+  if (config.categoryOverrides && config.categoryOverrides[category.toLowerCase()]) {
+    category = config.categoryOverrides[category.toLowerCase()];
+  }
   const capitalizedCategory = capitalizeCategory(category);
 
-  let result = config.template;
+  // Process conditional sections first, then replace individual placeholders
+  const fieldValues = {
+    suggestion: suggestionText || '',
+    title: title || '',
+    emoji,
+    category: capitalizedCategory,
+    description
+  };
+
+  let result = processConditionalSections(config.template, fieldValues);
 
   // Replace placeholders
   result = result.replace(/\{emoji\}/g, emoji);
   result = result.replace(/\{category\}/g, capitalizedCategory);
   result = result.replace(/\{title\}/g, title || '');
   result = result.replace(/\{description\}/g, description);
+  result = result.replace(/\{suggestion\}/g, suggestionText || '');
 
-  // Handle {suggestion} - if no suggestion text, remove lines containing it
-  if (suggestionText) {
-    result = result.replace(/\{suggestion\}/g, suggestionText);
-  } else {
-    // Remove lines that contain the {suggestion} placeholder
-    result = result.split('\n').filter(line => !line.includes('{suggestion}')).join('\n');
-  }
+  // Ensure code fences start on their own line
+  result = result.replace(/([^\n])(```)/g, '$1\n$2');
 
   return result.trimEnd();
 }
 
-module.exports = { PRESETS, resolveFormat, formatAdoptedComment, capitalizeCategory };
+module.exports = { PRESETS, resolveFormat, formatAdoptedComment, capitalizeCategory, processConditionalSections };

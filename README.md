@@ -486,12 +486,13 @@ When AI suggestions are adopted as review comments, pair-review formats them wit
 
 **Presets:**
 
-| Preset | Example Output |
-|--------|---------------|
-| `default` | 🐛 **Bug**: Missing null check |
-| `minimal` | [Bug] Missing null check |
-| `plain` | Missing null check |
-| `emoji-only` | 🐛 Missing null check |
+| Preset | Template | Example Output |
+|--------|----------|---------------|
+| `legacy` | `{emoji} **{category}**: {description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}` | 🐛 **Bug**: Missing null check |
+| `minimal` | `[{category}] {description}{?suggestion}\n\n{suggestion}{/suggestion}` | [Bug] Missing null check |
+| `plain` | `{description}{?suggestion}\n\n{suggestion}{/suggestion}` | Missing null check |
+| `emoji-only` | `{emoji} {description}{?suggestion}\n\n{suggestion}{/suggestion}` | 🐛 Missing null check |
+| `maximal` | `{emoji} **{category}**{?title}: {title}{/title}\n\n{description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}` | 🐛 **Bug**: Null Safety Issue (includes title) |
 
 To use a preset:
 
@@ -503,13 +504,14 @@ To use a preset:
 
 **Custom templates:**
 
-You can also provide a custom template using these placeholders: `{emoji}`, `{category}`, `{title}`, `{description}`, `{suggestion}`.
+You can provide a custom template using these placeholders: `{emoji}`, `{category}`, `{title}`, `{description}`, `{suggestion}`.
+
+**Conditional sections:** Use `{?field}...{/field}` to conditionally include content. When the field value is truthy, the delimiters are stripped and the content is kept. When the field is empty/null/undefined, the entire block (including surrounding text within the delimiters) is removed. For example, `{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}` will omit the entire suggestion line when there is no remediation text.
 
 ```json
 {
   "comment_format": {
-    "template": "{emoji} **{category}**: {description}\n\n**Suggestion:** {suggestion}",
-    "showEmoji": true,
+    "template": "{emoji} **{category}**: {description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}",
     "emojiOverrides": {
       "bug": "🔴"
     }
@@ -517,9 +519,22 @@ You can also provide a custom template using these placeholders: `{emoji}`, `{ca
 }
 ```
 
-- The `{suggestion}` block (and any surrounding text on the same line) is automatically omitted when a suggestion has no remediation text (e.g., praise comments).
+**Category overrides:**
+
+Use `categoryOverrides` to rename categories in the formatted output. This is a string-to-string mapping where keys are the original category names (lowercase) and values are the replacement names.
+
+```json
+{
+  "comment_format": {
+    "template": "{emoji} **{category}**: {description}{?suggestion}\n\n**Suggestion:** {suggestion}{/suggestion}",
+    "categoryOverrides": { "bug": "defect", "performance": "perf" }
+  }
+}
+```
+
 - `{title}` uses the suggestion's title field if available.
 - `emojiOverrides` lets you replace the default emoji for specific categories.
+- `categoryOverrides` lets you rename categories (e.g., "bug" to "defect").
 
 The template must contain at least the `{description}` placeholder.
 
