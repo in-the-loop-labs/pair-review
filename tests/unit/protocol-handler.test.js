@@ -85,9 +85,9 @@ describe('protocol-handler', () => {
         expect.stringContaining('pair-review')
       );
 
-      // Should have called open -g -j to register
+      // Should have called lsregister -R -f to register
       expect(deps.execSync).toHaveBeenCalledWith(
-        expect.stringContaining('open -g -j')
+        expect.stringContaining('lsregister')
       );
     });
 

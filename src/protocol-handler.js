@@ -33,6 +33,10 @@ function registerProtocolHandler({ command, _deps } = {}) {
   const resolvedCommand = command || 'npx @in-the-loop-labs/pair-review';
 
   const appleScriptSource = [
+    'on run',
+    '\t-- No-op: launched directly without a URL',
+    'end run',
+    '',
     'on open location theURL',
     `\tdo shell script "${shell} -l -c '${resolvedCommand} " & quoted form of theURL & "' &> /dev/null &"`,
     'end open location',
@@ -70,8 +74,8 @@ function registerProtocolHandler({ command, _deps } = {}) {
   plist = plist.replace('</dict>\n</plist>', `${urlSchemeEntries}\n</dict>\n</plist>`);
   deps.fs.writeFileSync(plistPath, plist);
 
-  // Register with Launch Services
-  deps.execSync(`open -g -j "${appPath}"`);
+  const lsregister = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
+  deps.execSync(`"${lsregister}" -R -f "${appPath}"`);
 
   console.log('Registered pair-review:// URL scheme handler');
   console.log(`Command: ${shell} -l -c '${resolvedCommand} <url>'`);
