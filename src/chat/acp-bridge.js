@@ -13,6 +13,7 @@ const { EventEmitter } = require('events');
 const { spawn } = require('child_process');
 const { Writable, Readable } = require('stream');
 const logger = require('../utils/logger');
+const { version: pkgVersion } = require('../../package.json');
 
 // Default dependencies (overridable for testing)
 const defaults = {
@@ -170,7 +171,7 @@ class AcpBridge extends EventEmitter {
     await this._connection.initialize({
       protocolVersion: deps.acp.PROTOCOL_VERSION,
       clientCapabilities: {},
-      clientInfo: { name: 'pair-review' },
+      clientInfo: { name: 'pair-review', version: pkgVersion },
     });
 
     if (this.resumeSessionId) {

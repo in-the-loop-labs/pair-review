@@ -237,7 +237,7 @@ describe('AcpBridge', () => {
       expect(mockConnection.initialize).toHaveBeenCalledWith({
         protocolVersion: 1,
         clientCapabilities: {},
-        clientInfo: { name: 'pair-review' },
+        clientInfo: { name: 'pair-review', version: expect.any(String) },
       });
     });
 
