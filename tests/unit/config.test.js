@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { getGitHubToken, expandPath, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate, getMonorepoCheckoutTimeout, resolveMonorepoOptions, resolveDbName, warnIfDevModeWithoutDbName, loadConfig } = require('../../src/config');
+const { deepMerge, getGitHubToken, expandPath, getMonorepoPath, getMonorepoCheckoutScript, getMonorepoWorktreeDirectory, getMonorepoWorktreeNameTemplate, getMonorepoCheckoutTimeout, resolveMonorepoOptions, resolveDbName, warnIfDevModeWithoutDbName, loadConfig } = require('../../src/config');
 
 describe('config.js', () => {
   describe('getGitHubToken', () => {
@@ -637,9 +637,73 @@ describe('config.js', () => {
     });
   });
 
+  describe('deepMerge', () => {
+    it('should override scalar values', () => {
+      const result = deepMerge({ a: 1 }, { a: 2 });
+      expect(result).toEqual({ a: 2 });
+    });
+
+    it('should add new keys from source', () => {
+      const result = deepMerge({ a: 1 }, { b: 2 });
+      expect(result).toEqual({ a: 1, b: 2 });
+    });
+
+    it('should recursively merge nested objects', () => {
+      const result = deepMerge(
+        { nested: { a: 1, b: 2 } },
+        { nested: { b: 3, c: 4 } }
+      );
+      expect(result).toEqual({ nested: { a: 1, b: 3, c: 4 } });
+    });
+
+    it('should merge 3 levels deep', () => {
+      const result = deepMerge(
+        { l1: { l2: { l3: 'old', keep: true } } },
+        { l1: { l2: { l3: 'new' } } }
+      );
+      expect(result).toEqual({ l1: { l2: { l3: 'new', keep: true } } });
+    });
+
+    it('should replace arrays instead of concatenating', () => {
+      const result = deepMerge(
+        { arr: [1, 2, 3] },
+        { arr: [4, 5] }
+      );
+      expect(result).toEqual({ arr: [4, 5] });
+    });
+
+    it('should allow null in source to overwrite target', () => {
+      const result = deepMerge({ a: { nested: true } }, { a: null });
+      expect(result).toEqual({ a: null });
+    });
+
+    it('should return target unchanged when source is undefined', () => {
+      const target = { a: 1 };
+      const result = deepMerge(target, undefined);
+      expect(result).toEqual({ a: 1 });
+    });
+
+    it('should return target unchanged when source is empty object', () => {
+      const target = { a: 1, b: { c: 2 } };
+      const result = deepMerge(target, {});
+      expect(result).toEqual({ a: 1, b: { c: 2 } });
+    });
+
+    it('should not mutate either input', () => {
+      const target = { a: { b: 1 } };
+      const source = { a: { c: 2 } };
+      const result = deepMerge(target, source);
+      expect(target).toEqual({ a: { b: 1 } });
+      expect(source).toEqual({ a: { c: 2 } });
+      expect(result).toEqual({ a: { b: 1, c: 2 } });
+    });
+  });
+
   describe('loadConfig', () => {
     const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.pair-review', 'config.json');
-    const LOCAL_CONFIG_PATH = path.join(process.cwd(), '.pair-review', 'config.json');
+    const GLOBAL_LOCAL_CONFIG_PATH = path.join(os.homedir(), '.pair-review', 'config.local.json');
+    const PROJECT_CONFIG_PATH = path.join(process.cwd(), '.pair-review', 'config.json');
+    const PROJECT_LOCAL_CONFIG_PATH = path.join(process.cwd(), '.pair-review', 'config.local.json');
 
     let readFileSpy;
     let accessSpy;
@@ -660,23 +724,29 @@ describe('config.js', () => {
       vi.restoreAllMocks();
     });
 
-    function mockReadFile(globalJson, localJson) {
+    /**
+     * @param {Object} opts
+     * @param {Object|null} opts.global - Global config.json content (null = ENOENT)
+     * @param {Object|null} [opts.globalLocal] - Global config.local.json content (null = ENOENT)
+     * @param {Object|null} [opts.project] - Project config.json content (null = ENOENT)
+     * @param {Object|null} [opts.projectLocal] - Project config.local.json content (null = ENOENT)
+     */
+    function mockReadFile({ global: globalJson, globalLocal = null, project = null, projectLocal = null }) {
+      const fileMap = {
+        [GLOBAL_CONFIG_PATH]: globalJson,
+        [GLOBAL_LOCAL_CONFIG_PATH]: globalLocal,
+        [PROJECT_CONFIG_PATH]: project,
+        [PROJECT_LOCAL_CONFIG_PATH]: projectLocal,
+      };
       readFileSpy.mockImplementation(async (filePath) => {
-        if (filePath === GLOBAL_CONFIG_PATH) {
-          if (globalJson === null) {
+        if (filePath in fileMap) {
+          const content = fileMap[filePath];
+          if (content === null) {
             const err = new Error('ENOENT');
             err.code = 'ENOENT';
             throw err;
           }
-          return JSON.stringify(globalJson);
-        }
-        if (filePath === LOCAL_CONFIG_PATH) {
-          if (localJson === null) {
-            const err = new Error('ENOENT');
-            err.code = 'ENOENT';
-            throw err;
-          }
-          return JSON.stringify(localJson);
+          return JSON.stringify(content);
         }
         const err = new Error('ENOENT');
         err.code = 'ENOENT';
@@ -685,32 +755,31 @@ describe('config.js', () => {
     }
 
     it('should deep-merge global config partial chat object with defaults', async () => {
-      mockReadFile(
-        { port: 7247, chat: { enable_shortcuts: false } },
-        null  // no local config
-      );
+      mockReadFile({
+        global: { port: 7247, chat: { enable_shortcuts: false } },
+      });
 
       const { config } = await loadConfig();
 
       expect(config.chat).toEqual({ enable_shortcuts: false });
     });
 
-    it('should three-way merge defaults, global, and local for nested objects', async () => {
-      mockReadFile(
-        { port: 7247, chat: { enable_shortcuts: false } },
-        { chat: { some_future_key: true } }
-      );
+    it('should three-way merge defaults, global, and project for nested objects', async () => {
+      mockReadFile({
+        global: { port: 7247, chat: { enable_shortcuts: false } },
+        project: { chat: { some_future_key: true } },
+      });
 
       const { config } = await loadConfig();
 
       expect(config.chat).toEqual({ enable_shortcuts: false, some_future_key: true });
     });
 
-    it('should let local config override global for the same nested key', async () => {
-      mockReadFile(
-        { chat: { enable_shortcuts: false } },
-        { chat: { enable_shortcuts: true } }
-      );
+    it('should let project config override global for the same nested key', async () => {
+      mockReadFile({
+        global: { chat: { enable_shortcuts: false } },
+        project: { chat: { enable_shortcuts: true } },
+      });
 
       const { config } = await loadConfig();
 
@@ -718,10 +787,9 @@ describe('config.js', () => {
     });
 
     it('should include assisted_by_url in default config', async () => {
-      mockReadFile(
-        { port: 7247 },
-        null  // no local config
-      );
+      mockReadFile({
+        global: { port: 7247 },
+      });
 
       const { config } = await loadConfig();
 
@@ -729,14 +797,105 @@ describe('config.js', () => {
     });
 
     it('should preserve object defaults when config only has scalar keys', async () => {
-      mockReadFile(
-        { port: 8080, theme: 'dark' },
-        null  // no local config
-      );
+      mockReadFile({
+        global: { port: 8080, theme: 'dark' },
+      });
 
       const { config } = await loadConfig();
 
       expect(config.chat).toEqual({ enable_shortcuts: true });
+    });
+
+    // --- config.local.json tests ---
+
+    it('should let global local config override global config', async () => {
+      mockReadFile({
+        global: { port: 7247, theme: 'light' },
+        globalLocal: { theme: 'dark', yolo: true },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.theme).toBe('dark');
+      expect(config.yolo).toBe(true);
+      expect(config.port).toBe(7247);
+    });
+
+    it('should let project local config override project config', async () => {
+      mockReadFile({
+        global: { port: 7247 },
+        project: { default_provider: 'gemini' },
+        projectLocal: { default_provider: 'claude' },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.default_provider).toBe('claude');
+    });
+
+    it('should apply full 4-layer precedence (project local wins over all)', async () => {
+      mockReadFile({
+        global: { theme: 'global', port: 1111 },
+        globalLocal: { theme: 'global-local', port: 2222 },
+        project: { theme: 'project', port: 3333 },
+        projectLocal: { theme: 'project-local' },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.theme).toBe('project-local');
+      expect(config.port).toBe(3333);  // project wins over global-local, projectLocal didn't set port
+    });
+
+    it('should deep-merge nested objects across all 4 layers', async () => {
+      mockReadFile({
+        global: { chat: { a: 'global' }, providers: { x: { model: 'g' } } },
+        globalLocal: { chat: { b: 'global-local' } },
+        project: { chat: { c: 'project' }, providers: { x: { timeout: 5 } } },
+        projectLocal: { chat: { d: 'project-local' } },
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.chat).toEqual({
+        enable_shortcuts: true,  // from DEFAULT_CONFIG
+        a: 'global',
+        b: 'global-local',
+        c: 'project',
+        d: 'project-local',
+      });
+      expect(config.providers.x).toEqual({ model: 'g', timeout: 5 });
+    });
+
+    it('should skip missing local config files silently', async () => {
+      mockReadFile({
+        global: { port: 7247 },
+        // globalLocal, project, projectLocal all default to null (ENOENT)
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.port).toBe(7247);
+    });
+
+    it('should warn and skip malformed local config files', async () => {
+      const logger = require('../../src/utils/logger');
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+      // Set up a custom mock that returns bad JSON for globalLocal
+      readFileSpy.mockImplementation(async (filePath) => {
+        if (filePath === GLOBAL_CONFIG_PATH) return JSON.stringify({ port: 7247 });
+        if (filePath === GLOBAL_LOCAL_CONFIG_PATH) return '{ bad json';
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      });
+
+      const { config } = await loadConfig();
+
+      expect(config.port).toBe(7247);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Malformed config'));
+      warnSpy.mockRestore();
     });
   });
 });

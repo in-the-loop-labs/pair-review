@@ -7,6 +7,7 @@ const logger = require('./utils/logger');
 const CONFIG_DIR = path.join(os.homedir(), '.pair-review');
 const DEFAULT_CHECKOUT_TIMEOUT_MS = 300000;
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+const CONFIG_LOCAL_FILE = path.join(CONFIG_DIR, 'config.local.json');
 const CONFIG_EXAMPLE_FILE = path.join(CONFIG_DIR, 'config.example.json');
 const PACKAGE_ROOT = path.join(__dirname, '..');
 
@@ -37,6 +38,36 @@ const DEFAULT_CONFIG = {
  */
 function validatePort(port) {
   return Number.isInteger(port) && port >= 1024 && port <= 65535;
+}
+
+/**
+ * Recursively merges source into target for plain objects.
+ * Arrays and scalars in source replace the corresponding value in target.
+ * Null in source overwrites target. Returns a new object; inputs are not mutated.
+ * @param {Object} target - Base object
+ * @param {Object} source - Object to merge on top
+ * @returns {Object} - Merged result
+ */
+function deepMerge(target, source) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return target;
+  if (!target || typeof target !== 'object' || Array.isArray(target)) return { ...source };
+
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    const srcVal = source[key];
+    const tgtVal = target[key];
+    if (
+      srcVal !== null &&
+      typeof srcVal === 'object' && !Array.isArray(srcVal) &&
+      tgtVal !== null &&
+      typeof tgtVal === 'object' && !Array.isArray(tgtVal)
+    ) {
+      result[key] = deepMerge(tgtVal, srcVal);
+    } else {
+      result[key] = srcVal;
+    }
+  }
+  return result;
 }
 
 /**
@@ -137,63 +168,51 @@ async function ensureConfigDir() {
 async function loadConfig() {
   await ensureConfigDir();
 
-  try {
-    const configData = await fs.readFile(CONFIG_FILE, 'utf8');
-    const config = JSON.parse(configData);
+  const localDir = path.join(process.cwd(), '.pair-review');
+  const sources = [
+    { path: CONFIG_FILE,                                label: 'global config',        required: true  },
+    { path: CONFIG_LOCAL_FILE,                           label: 'global local config',  required: false },
+    { path: path.join(localDir, 'config.json'),         label: 'project config',       required: false },
+    { path: path.join(localDir, 'config.local.json'),   label: 'project local config', required: false },
+  ];
 
-    // Merge with defaults to ensure all keys exist
-    // Legacy keys ('provider', 'model') are handled lazily via getDefaultProvider/getDefaultModel
-    const mergedConfig = { ...DEFAULT_CONFIG, ...config };
-    // Deep-merge one level for object-valued defaults (e.g. chat, providers, monorepos)
-    for (const key of Object.keys(DEFAULT_CONFIG)) {
-      if (typeof DEFAULT_CONFIG[key] === 'object' && DEFAULT_CONFIG[key] !== null && !Array.isArray(DEFAULT_CONFIG[key])) {
-        mergedConfig[key] = { ...DEFAULT_CONFIG[key], ...config[key] };
-      }
-    }
+  let mergedConfig = { ...DEFAULT_CONFIG };
+  let isFirstRun = false;
 
-    // Merge local config (CWD/.pair-review/config.json) on top of global config
+  for (const source of sources) {
     try {
-      const localConfigPath = path.join(process.cwd(), '.pair-review', 'config.json');
-      const localConfigData = await fs.readFile(localConfigPath, 'utf8');
-      const localConfig = JSON.parse(localConfigData);
-      Object.assign(mergedConfig, localConfig);
-      // Deep-merge one level for object-valued local config overrides
-      for (const key of Object.keys(DEFAULT_CONFIG)) {
-        if (typeof DEFAULT_CONFIG[key] === 'object' && DEFAULT_CONFIG[key] !== null && !Array.isArray(DEFAULT_CONFIG[key])) {
-          mergedConfig[key] = { ...DEFAULT_CONFIG[key], ...config[key], ...localConfig[key] };
+      const data = await fs.readFile(source.path, 'utf8');
+      const parsed = JSON.parse(data);
+      mergedConfig = deepMerge(mergedConfig, parsed);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        if (source.required) {
+          // Global config doesn't exist — create it with defaults
+          const config = { ...DEFAULT_CONFIG };
+          await saveConfig(config);
+          logger.debug(`Created default config file: ${CONFIG_FILE}`);
+          isFirstRun = true;
         }
-      }
-    } catch (localError) {
-      if (localError.code !== 'ENOENT') {
-        if (localError instanceof SyntaxError) {
-          logger.warn('Malformed local config at .pair-review/config.json, skipping');
-        } else {
-          throw localError;
+        // Optional files: skip silently
+      } else if (error instanceof SyntaxError) {
+        if (source.required) {
+          console.error(`Invalid configuration file at ~/.pair-review/config.json`);
+          process.exit(1);
         }
+        logger.warn(`Malformed config at ${source.label}, skipping`);
+      } else {
+        throw error;
       }
-    }
-
-    // Validate port
-    if (!validatePort(mergedConfig.port)) {
-      console.error(`Invalid port number ${mergedConfig.port}`);
-      process.exit(1);
-    }
-
-    return { config: mergedConfig, isFirstRun: false };
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      // Config file doesn't exist, create it with defaults
-      const config = { ...DEFAULT_CONFIG };
-      await saveConfig(config);
-      logger.debug(`Created default config file: ${CONFIG_FILE}`);
-      return { config, isFirstRun: true };
-    } else if (error instanceof SyntaxError) {
-      console.error(`Invalid configuration file at ~/.pair-review/config.json`);
-      process.exit(1);
-    } else {
-      throw error;
     }
   }
+
+  // Validate port
+  if (!validatePort(mergedConfig.port)) {
+    console.error(`Invalid port number ${mergedConfig.port}`);
+    process.exit(1);
+  }
+
+  return { config: mergedConfig, isFirstRun };
 }
 
 /**
@@ -426,6 +445,7 @@ function warnIfDevModeWithoutDbName(config) {
 }
 
 module.exports = {
+  deepMerge,
   loadConfig,
   saveConfig,
   getConfigDir,
