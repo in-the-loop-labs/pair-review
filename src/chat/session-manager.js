@@ -11,7 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const PiBridge = require('./pi-bridge');
 const AcpBridge = require('./acp-bridge');
-const { getChatProvider, isAcpProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
+const ClaudeCodeBridge = require('./claude-code-bridge');
+const { getChatProvider, isAcpProvider, isClaudeCodeProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
 const logger = require('../utils/logger');
 
 const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
@@ -399,8 +400,9 @@ class ChatSessionManager {
     }
 
     const isAcp = isAcpProvider(row.provider);
+    const isClaudeCode = isClaudeCodeProvider(row.provider);
 
-    if (!isAcp) {
+    if (!isAcp && !isClaudeCode) {
       // Pi sessions require a session file on disk
       if (!row.agent_session_id) {
         throw new Error(`Session ${sessionId} has no session file — cannot resume`);
@@ -411,14 +413,14 @@ class ChatSessionManager {
       }
     }
 
-    logger.info(`[ChatSession] Resuming session ${sessionId}${isAcp ? ` (ACP session ${row.agent_session_id || 'new'})` : ` from ${row.agent_session_id}`}`);
+    logger.info(`[ChatSession] Resuming session ${sessionId}${(isAcp || isClaudeCode) ? ` (session ${row.agent_session_id || 'new'})` : ` from ${row.agent_session_id}`}`);
 
     const bridge = this._createBridge(row.provider, {
       provider: row.provider,
       model: row.model,
       cwd,
       systemPrompt,
-      ...(isAcp
+      ...((isAcp || isClaudeCode)
         ? (row.agent_session_id ? { resumeSessionId: row.agent_session_id } : {})
         : { sessionPath: row.agent_session_id }),
     });
@@ -506,6 +508,14 @@ class ChatSessionManager {
         ...options,
         acpCommand: providerDef?.command,
         acpArgs: providerDef?.args,
+        env: providerDef?.env,
+      });
+    }
+    if (isClaudeCodeProvider(provider)) {
+      const providerDef = getChatProvider(provider);
+      return new ClaudeCodeBridge({
+        ...options,
+        claudeCommand: providerDef?.command,
         env: providerDef?.env,
       });
     }
