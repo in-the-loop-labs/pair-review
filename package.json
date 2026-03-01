@@ -59,6 +59,7 @@
   },
   "homepage": "https://github.com/in-the-loop-labs/pair-review#readme",
   "dependencies": {
+    "@agentclientprotocol/sdk": "^0.14.1",
     "@modelcontextprotocol/sdk": "^1.25.3",
     "@octokit/rest": "^19.0.11",
     "better-sqlite3": "^11.8.1",

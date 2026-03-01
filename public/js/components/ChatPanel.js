@@ -926,7 +926,7 @@ class ChatPanel {
 
     try {
       const body = {
-        provider: 'pi',
+        provider: window.__pairReview?.chatProvider || 'pi',
         reviewId: this.reviewId
       };
       if (contextCommentId) {

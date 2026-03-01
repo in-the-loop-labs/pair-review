@@ -13,15 +13,18 @@ vi.mock('../../../src/utils/logger', () => ({
   section: vi.fn()
 }));
 
-// --- Patch PiBridge via require.cache (CJS pattern) ---
+// --- Patch PiBridge and AcpBridge via require.cache (CJS pattern) ---
 // session-manager.js does: const PiBridge = require('./pi-bridge')
 // We replace the cached module export before session-manager is loaded.
 const piBridgePath = require.resolve('../../../src/chat/pi-bridge');
-const originalExport = require(piBridgePath);
+const acpBridgePath = require.resolve('../../../src/chat/acp-bridge');
+const originalPiBridgeExport = require(piBridgePath);
+const originalAcpBridgeExport = require(acpBridgePath);
 
 // Shared state for controlling mock behavior per-test
 let _nextStartFail = false;
 const _createdBridges = [];
+const _createdAcpBridges = [];
 
 function MockPiBridge() {
   const bridge = new EventEmitter();
@@ -37,14 +40,37 @@ function MockPiBridge() {
   bridge.isReady = vi.fn().mockReturnValue(true);
   bridge.isBusy = vi.fn().mockReturnValue(false);
   bridge.abort = vi.fn();
+  bridge._bridgeType = 'pi';
   _createdBridges.push(bridge);
   return bridge;
 }
 
-// Replace the cached export
-require.cache[piBridgePath].exports = MockPiBridge;
+function MockAcpBridge(options) {
+  const bridge = new EventEmitter();
+  bridge.start = vi.fn().mockImplementation(() => {
+    if (_nextStartFail) {
+      _nextStartFail = false;
+      return Promise.reject(new Error('spawn failed'));
+    }
+    return Promise.resolve();
+  });
+  bridge.close = vi.fn().mockResolvedValue(undefined);
+  bridge.sendMessage = vi.fn().mockResolvedValue(undefined);
+  bridge.isReady = vi.fn().mockReturnValue(true);
+  bridge.isBusy = vi.fn().mockReturnValue(false);
+  bridge.abort = vi.fn();
+  bridge._bridgeType = 'acp';
+  bridge._constructorOptions = options || {};
+  _createdAcpBridges.push(bridge);
+  _createdBridges.push(bridge);
+  return bridge;
+}
 
-// Now import session-manager (it will use our mock PiBridge)
+// Replace the cached exports
+require.cache[piBridgePath].exports = MockPiBridge;
+require.cache[acpBridgePath].exports = MockAcpBridge;
+
+// Now import session-manager (it will use our mocks)
 const ChatSessionManager = require('../../../src/chat/session-manager');
 
 describe('ChatSessionManager', () => {
@@ -52,13 +78,15 @@ describe('ChatSessionManager', () => {
   let manager;
 
   afterAll(() => {
-    // Restore original module
-    require.cache[piBridgePath].exports = originalExport;
+    // Restore original modules
+    require.cache[piBridgePath].exports = originalPiBridgeExport;
+    require.cache[acpBridgePath].exports = originalAcpBridgeExport;
   });
 
   beforeEach(() => {
     vi.clearAllMocks();
     _createdBridges.length = 0;
+    _createdAcpBridges.length = 0;
     _nextStartFail = false;
     db = createTestDatabase();
     // Insert a review to satisfy foreign key constraints
@@ -768,6 +796,87 @@ describe('ChatSessionManager', () => {
       expect(sessions).toHaveLength(1);
       // Context messages are NOT counted (only type='message' rows)
       expect(sessions[0].message_count).toBe(0);
+    });
+  });
+
+  describe('_createBridge', () => {
+    it('should return AcpBridge for acp provider', async () => {
+      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+      const bridge = _createdAcpBridges[0];
+      expect(bridge).toBeDefined();
+      expect(bridge._bridgeType).toBe('acp');
+    });
+
+    it('should return PiBridge for pi provider', async () => {
+      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      const bridge = _createdBridges[0];
+      expect(bridge._bridgeType).toBe('pi');
+    });
+  });
+
+  describe('ACP provider sessions', () => {
+    it('should create a session with acp provider', async () => {
+      const result = await manager.createSession({
+        provider: 'acp',
+        reviewId: 1,
+      });
+
+      expect(result).toHaveProperty('id');
+      expect(result.status).toBe('active');
+
+      const row = db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(result.id);
+      expect(row.provider).toBe('acp');
+      expect(row.status).toBe('active');
+    });
+
+    it('should send messages through ACP bridge', async () => {
+      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+      const bridge = _createdAcpBridges[0];
+
+      await manager.sendMessage(session.id, 'Hello ACP');
+      expect(bridge.sendMessage).toHaveBeenCalledWith('Hello ACP');
+    });
+
+    it('should store sessionId from ACP bridge session event', async () => {
+      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+      const bridge = _createdAcpBridges[0];
+
+      // ACP bridges emit session events with sessionId (not sessionFile)
+      bridge.emit('session', { sessionId: 'acp-session-abc-123' });
+
+      const row = db.prepare('SELECT agent_session_id FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.agent_session_id).toBe('acp-session-abc-123');
+    });
+
+    it('should resume ACP session via loadSession with stored sessionId', async () => {
+      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+      const bridge = _createdAcpBridges[0];
+
+      // Store an opaque ACP session ID
+      bridge.emit('session', { sessionId: 'acp-session-xyz' });
+      await manager.closeSession(session.id);
+
+      // Resume should succeed without fs.existsSync check
+      const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
+      expect(result).toEqual({ id: session.id, status: 'active' });
+      expect(manager.isSessionActive(session.id)).toBe(true);
+
+      // Should pass resumeSessionId to bridge constructor
+      const resumedBridge = _createdAcpBridges[_createdAcpBridges.length - 1];
+      expect(resumedBridge._constructorOptions.resumeSessionId).toBe('acp-session-xyz');
+    });
+
+    it('should resume ACP session without agent_session_id (fresh session)', async () => {
+      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+      await manager.closeSession(session.id);
+
+      // ACP sessions without stored sessionId create a fresh session
+      const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
+      expect(result).toEqual({ id: session.id, status: 'active' });
+
+      // Should NOT have resumeSessionId
+      const resumedBridge = _createdAcpBridges[_createdAcpBridges.length - 1];
+      expect(resumedBridge._constructorOptions.resumeSessionId).toBeUndefined();
     });
   });
 });

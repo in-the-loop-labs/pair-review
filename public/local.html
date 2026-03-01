@@ -11,7 +11,13 @@
         fetch('/api/config').then(r => r.ok ? r.json() : null).then(config => {
             if (!config) return;
             let state = 'disabled';
-            if (config.enable_chat) state = config.pi_available ? 'available' : 'unavailable';
+            if (config.enable_chat) {
+                const chatProvider = config.chat_provider || 'pi';
+                const providerAvailable = chatProvider === 'pi' ? config.pi_available : true;
+                state = providerAvailable ? 'available' : 'unavailable';
+            }
+            window.__pairReview = window.__pairReview || {};
+            window.__pairReview.chatProvider = config.chat_provider || 'pi';
             document.documentElement.setAttribute('data-chat', state);
             const shortcutsState = config.chat_enable_shortcuts === false ? 'disabled' : 'enabled';
             document.documentElement.setAttribute('data-chat-shortcuts', shortcutsState);
