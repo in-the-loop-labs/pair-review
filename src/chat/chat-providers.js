@@ -20,12 +20,12 @@ const defaults = { spawn };
 const CHAT_PROVIDERS = {
   pi: {
     id: 'pi',
-    name: 'Pi',
+    name: 'Pi (RPC)',
     type: 'pi',
   },
   'copilot-acp': {
     id: 'copilot-acp',
-    name: 'Copilot',
+    name: 'Copilot (ACP)',
     type: 'acp',
     command: 'copilot',
     args: ['--acp', '--stdio'],
@@ -33,7 +33,7 @@ const CHAT_PROVIDERS = {
   },
   'gemini-acp': {
     id: 'gemini-acp',
-    name: 'Gemini',
+    name: 'Gemini (ACP)',
     type: 'acp',
     command: 'gemini',
     args: ['--experimental-acp'],
@@ -41,7 +41,7 @@ const CHAT_PROVIDERS = {
   },
   'opencode-acp': {
     id: 'opencode-acp',
-    name: 'OpenCode',
+    name: 'OpenCode (ACP)',
     type: 'acp',
     command: 'opencode',
     args: ['acp'],

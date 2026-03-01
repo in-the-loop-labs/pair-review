@@ -38,6 +38,7 @@ class ChatPanel {
     this._render();
     this._bindEvents();
     this._initContextTooltip();
+    this._updateTitle();
   }
 
   /**
@@ -882,12 +883,15 @@ class ChatPanel {
         ? this._truncate(s.first_message, 60)
         : 'New conversation';
       const timeAgo = this._formatRelativeTime(s.updated_at);
+      const providerLabel = s.provider
+        ? `<span class="chat-panel__session-provider">${this._escapeHtml(this._getProviderDisplayName(s.provider))}</span>`
+        : '';
 
       return `
         <button class="chat-panel__session-item${isActive ? ' chat-panel__session-item--active' : ''}"
                 data-session-id="${s.id}">
           <span class="chat-panel__session-preview">${this._escapeHtml(preview)}</span>
-          <span class="chat-panel__session-meta">${this._escapeHtml(timeAgo)}</span>
+          <span class="chat-panel__session-meta">${providerLabel}${this._escapeHtml(timeAgo)}</span>
         </button>
       `;
     }).join('');

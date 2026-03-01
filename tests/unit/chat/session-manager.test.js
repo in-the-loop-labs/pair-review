@@ -72,10 +72,10 @@ function MockAcpBridge(options) {
 const mockChatProviders = {
   getChatProvider: vi.fn((id) => {
     const providers = {
-      pi: { id: 'pi', name: 'Pi', type: 'pi' },
-      'copilot-acp': { id: 'copilot-acp', name: 'Copilot', type: 'acp', command: 'copilot', args: ['--acp', '--stdio'], env: {} },
-      'gemini-acp': { id: 'gemini-acp', name: 'Gemini', type: 'acp', command: 'gemini', args: ['--experimental-acp'], env: {} },
-      'opencode-acp': { id: 'opencode-acp', name: 'OpenCode', type: 'acp', command: 'opencode', args: ['acp'], env: {} },
+      pi: { id: 'pi', name: 'Pi (RPC)', type: 'pi' },
+      'copilot-acp': { id: 'copilot-acp', name: 'Copilot (ACP)', type: 'acp', command: 'copilot', args: ['--acp', '--stdio'], env: {} },
+      'gemini-acp': { id: 'gemini-acp', name: 'Gemini (ACP)', type: 'acp', command: 'gemini', args: ['--experimental-acp'], env: {} },
+      'opencode-acp': { id: 'opencode-acp', name: 'OpenCode (ACP)', type: 'acp', command: 'opencode', args: ['acp'], env: {} },
     };
     return providers[id] || null;
   }),

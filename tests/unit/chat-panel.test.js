@@ -4433,6 +4433,46 @@ describe('ChatPanel', () => {
         expect(html).not.toContain(longMsg);
         expect(html).toContain('a'.repeat(60));
       });
+
+      it('should show provider display name when session has a provider', () => {
+        chatPanel.sessionDropdown.querySelectorAll = vi.fn(() => []);
+        chatPanel._chatProviders = [
+          { id: 'copilot-acp', name: 'Copilot' },
+          { id: 'pi', name: 'Pi' },
+        ];
+
+        chatPanel._renderSessionDropdown([
+          { id: 1, first_message: 'Fix the bug', updated_at: new Date().toISOString(), provider: 'copilot-acp' },
+        ]);
+
+        const html = chatPanel.sessionDropdown.innerHTML;
+        expect(html).toContain('chat-panel__session-provider');
+        expect(html).toContain('Copilot');
+      });
+
+      it('should fall back to capitalized provider ID when provider is not in _chatProviders', () => {
+        chatPanel.sessionDropdown.querySelectorAll = vi.fn(() => []);
+        chatPanel._chatProviders = [];
+
+        chatPanel._renderSessionDropdown([
+          { id: 1, first_message: 'Hello', updated_at: new Date().toISOString(), provider: 'gemini' },
+        ]);
+
+        const html = chatPanel.sessionDropdown.innerHTML;
+        expect(html).toContain('chat-panel__session-provider');
+        expect(html).toContain('Gemini');
+      });
+
+      it('should not show provider badge when session has no provider', () => {
+        chatPanel.sessionDropdown.querySelectorAll = vi.fn(() => []);
+
+        chatPanel._renderSessionDropdown([
+          { id: 1, first_message: 'Hello', updated_at: new Date().toISOString(), provider: null },
+        ]);
+
+        const html = chatPanel.sessionDropdown.innerHTML;
+        expect(html).not.toContain('chat-panel__session-provider');
+      });
     });
 
     describe('dropdown visibility', () => {
@@ -4553,6 +4593,77 @@ describe('ChatPanel', () => {
         handlers.forEach(h => h({ key: 'Escape' }));
 
         expect(hideSpy).toHaveBeenCalled();
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Provider picker dropdown
+  // ---------------------------------------------------------------------------
+  describe('provider picker dropdown', () => {
+    describe('dropdown visibility', () => {
+      it('_isProviderDropdownOpen returns false when hidden', () => {
+        chatPanel.providerDropdown.style.display = 'none';
+        expect(chatPanel._isProviderDropdownOpen()).toBe(false);
+      });
+
+      it('_isProviderDropdownOpen returns true when visible', () => {
+        chatPanel.providerDropdown.style.display = '';
+        expect(chatPanel._isProviderDropdownOpen()).toBe(true);
+      });
+
+      it('_hideProviderDropdown sets display to none and removes open class', () => {
+        chatPanel.providerDropdown.style.display = '';
+        chatPanel._hideProviderDropdown();
+        expect(chatPanel.providerDropdown.style.display).toBe('none');
+        expect(chatPanel.providerPickerBtn.classList.remove).toHaveBeenCalledWith('chat-panel__provider-picker-btn--open');
+      });
+    });
+
+    describe('_selectProvider', () => {
+      it('should update _activeProvider and call _startNewConversation when provider changes', () => {
+        chatPanel._activeProvider = 'pi';
+        chatPanel._startNewConversation = vi.fn();
+        chatPanel._updateTitle = vi.fn();
+
+        chatPanel._selectProvider('copilot-acp');
+
+        expect(chatPanel._activeProvider).toBe('copilot-acp');
+        expect(chatPanel._updateTitle).toHaveBeenCalled();
+        expect(chatPanel._startNewConversation).toHaveBeenCalled();
+      });
+
+      it('should be a no-op when the same provider is selected', () => {
+        chatPanel._activeProvider = 'pi';
+        chatPanel._startNewConversation = vi.fn();
+        chatPanel._updateTitle = vi.fn();
+
+        chatPanel._selectProvider('pi');
+
+        expect(chatPanel._updateTitle).not.toHaveBeenCalled();
+        expect(chatPanel._startNewConversation).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('close hides dropdown', () => {
+      it('should call _hideProviderDropdown on close', () => {
+        const spy = vi.spyOn(chatPanel, '_hideProviderDropdown');
+        chatPanel.isOpen = true;
+        chatPanel.close();
+        expect(spy).toHaveBeenCalled();
+      });
+    });
+
+    describe('_startNewConversation hides dropdown', () => {
+      it('should call _hideProviderDropdown on new conversation', async () => {
+        const spy = vi.spyOn(chatPanel, '_hideProviderDropdown');
+        chatPanel._finalizeStreaming = vi.fn();
+        chatPanel._clearMessages = vi.fn();
+        chatPanel._updateActionButtons = vi.fn();
+        chatPanel._updateTitle = vi.fn();
+        chatPanel._ensureAnalysisContext = vi.fn();
+        await chatPanel._startNewConversation();
+        expect(spy).toHaveBeenCalled();
       });
     });
   });

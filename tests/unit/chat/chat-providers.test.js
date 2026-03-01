@@ -48,14 +48,14 @@ describe('chat-providers', () => {
   describe('getChatProvider', () => {
     it('should return pi provider', () => {
       const pi = getChatProvider('pi');
-      expect(pi).toEqual({ id: 'pi', name: 'Pi', type: 'pi' });
+      expect(pi).toEqual({ id: 'pi', name: 'Pi (RPC)', type: 'pi' });
     });
 
     it('should return copilot-acp provider with correct defaults', () => {
       const copilot = getChatProvider('copilot-acp');
       expect(copilot).toEqual({
         id: 'copilot-acp',
-        name: 'Copilot',
+        name: 'Copilot (ACP)',
         type: 'acp',
         command: 'copilot',
         args: ['--acp', '--stdio'],
@@ -67,7 +67,7 @@ describe('chat-providers', () => {
       const gemini = getChatProvider('gemini-acp');
       expect(gemini).toEqual({
         id: 'gemini-acp',
-        name: 'Gemini',
+        name: 'Gemini (ACP)',
         type: 'acp',
         command: 'gemini',
         args: ['--experimental-acp'],
@@ -79,7 +79,7 @@ describe('chat-providers', () => {
       const opencode = getChatProvider('opencode-acp');
       expect(opencode).toEqual({
         id: 'opencode-acp',
-        name: 'OpenCode',
+        name: 'OpenCode (ACP)',
         type: 'acp',
         command: 'opencode',
         args: ['acp'],

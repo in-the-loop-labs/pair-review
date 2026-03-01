@@ -11086,6 +11086,24 @@ body.resizing * {
   color: var(--color-text-tertiary, #656d76);
 }
 
+.chat-panel__session-provider {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--color-text-secondary, #59636e);
+  background: var(--color-bg-tertiary, rgba(128, 128, 128, 0.08));
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-right: 6px;
+  line-height: 16px;
+  vertical-align: baseline;
+}
+
+[data-theme="dark"] .chat-panel__session-provider {
+  color: var(--color-text-secondary, #8b949e);
+  background: rgba(128, 128, 128, 0.15);
+}
+
 /* Dark theme overrides */
 [data-theme="dark"] .chat-panel__session-dropdown {
   background: var(--color-bg-primary, #0d1117);
