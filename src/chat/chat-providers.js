@@ -134,7 +134,7 @@ async function checkChatProviderAvailability(id, _deps) {
     try {
       const proc = deps.spawn(command, ['--version'], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 5000,
+        timeout: 10000,
       });
 
       proc.on('error', (err) => {
