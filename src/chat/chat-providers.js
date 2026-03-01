@@ -49,7 +49,7 @@ const CHAT_PROVIDERS = {
   },
   codex: {
     id: 'codex',
-    name: 'Codex',
+    name: 'Codex (JSON-RPC)',
     type: 'codex',
     command: 'codex',
     args: ['app-server'],

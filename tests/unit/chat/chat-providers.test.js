@@ -292,6 +292,7 @@ describe('chat-providers', () => {
       expect(cache['copilot-acp']).toEqual({ available: true });
       expect(cache['gemini-acp']).toEqual({ available: true });
       expect(cache['opencode-acp']).toEqual({ available: true });
+      expect(cache.codex).toEqual({ available: true });
     });
   });
 
