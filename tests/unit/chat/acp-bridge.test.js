@@ -363,9 +363,9 @@ describe('AcpBridge', () => {
   });
 
   describe('sendMessage()', () => {
-    it('should throw if not ready', () => {
+    it('should throw if not ready', async () => {
       const bridge = new AcpBridge();
-      expect(() => bridge.sendMessage('hello')).toThrow('AcpBridge is not ready');
+      await expect(bridge.sendMessage('hello')).rejects.toThrow('AcpBridge is not ready');
     });
 
     it('should call connection.prompt with the message', async () => {
@@ -580,6 +580,8 @@ describe('AcpBridge', () => {
       // Simulate process close
       fakeProc.emit('close', 0, null);
       await closePromise;
+
+      expect(bridge.listenerCount('delta')).toBe(0);
     });
 
     it('should cancel in-flight prompt before tearing down', async () => {

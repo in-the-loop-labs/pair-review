@@ -53,7 +53,7 @@ class AcpBridge extends EventEmitter {
     this._closing = false;
     this._accumulatedText = '';
     this._inMessage = false;
-    this._firstMessage = true;
+    this._firstMessage = !options.resumeSessionId;
   }
 
   /**
@@ -201,7 +201,7 @@ class AcpBridge extends EventEmitter {
    * Fire-and-forget: returns immediately, emits events as the agent responds.
    * @param {string} content - The message text
    */
-  sendMessage(content) {
+  async sendMessage(content) {
     if (!this.isReady()) {
       throw new Error('AcpBridge is not ready');
     }

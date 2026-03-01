@@ -2,7 +2,7 @@
 /**
  * Chat Session Manager
  *
- * Manages active chat sessions, each backed by a Pi RPC bridge process.
+ * Manages active chat sessions, each backed by a provider-specific bridge process.
  * Handles session lifecycle (create, message, close), persistence to SQLite,
  * and event dispatch (delta, complete, tool_use) to registered listeners.
  */
@@ -32,7 +32,7 @@ class ChatSessionManager {
   /**
    * Create a new chat session and spawn the agent process.
    * @param {Object} options
-   * @param {string} options.provider - 'pi' (and later 'claude')
+   * @param {string} options.provider - any configured chat provider
    * @param {string} [options.model] - Model ID
    * @param {number} options.reviewId - Review ID
    * @param {number} [options.contextCommentId] - Optional suggestion ID that triggered chat
@@ -377,7 +377,7 @@ class ChatSessionManager {
   }
 
   /**
-   * Resume a previously closed chat session by re-spawning the Pi bridge
+   * Resume a previously closed chat session by re-spawning the chat bridge
    * with the stored session file path.
    * @param {number} sessionId
    * @param {Object} options
@@ -514,7 +514,7 @@ class ChatSessionManager {
    * Wire up bridge event handlers that dispatch to the session's listener sets
    * and handle DB persistence (e.g., storing assistant messages on completion).
    * @param {number} sessionId
-   * @param {PiBridge} bridge
+   * @param {PiBridge|AcpBridge} bridge
    * @param {Object} listeners - Listener sets keyed by event type
    */
   _wireBridgeEvents(sessionId, bridge, listeners) {
