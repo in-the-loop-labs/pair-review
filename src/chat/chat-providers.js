@@ -47,6 +47,14 @@ const CHAT_PROVIDERS = {
     args: ['acp'],
     env: {},
   },
+  codex: {
+    id: 'codex',
+    name: 'Codex (JSON-RPC)',
+    type: 'codex',
+    command: 'codex',
+    args: ['app-server'],
+    env: {},
+  },
 };
 
 /** Stored config overrides from `config.providers` */
@@ -108,6 +116,16 @@ function isAcpProvider(id) {
 }
 
 /**
+ * Check if a provider ID corresponds to a Codex provider.
+ * @param {string} id
+ * @returns {boolean}
+ */
+function isCodexProvider(id) {
+  const provider = CHAT_PROVIDERS[id];
+  return provider?.type === 'codex';
+}
+
+/**
  * Check availability of a single chat provider.
  * For Pi, delegates to the existing AI provider availability cache.
  * For ACP providers, spawns `<command> --version` to verify the binary exists.
@@ -126,6 +144,9 @@ async function checkChatProviderAvailability(id, _deps) {
     const cached = getCachedAvailability('pi');
     return { available: cached?.available || false, error: cached?.error };
   }
+
+  // Codex uses the same binary-check pattern as ACP providers
+  // (falls through to the spawn check below)
 
   const deps = { ...defaults, ..._deps };
   const command = provider.command;
@@ -215,6 +236,7 @@ module.exports = {
   getChatProvider,
   getAllChatProviders,
   isAcpProvider,
+  isCodexProvider,
   checkChatProviderAvailability,
   checkAllChatProviders,
   getCachedChatAvailability,
