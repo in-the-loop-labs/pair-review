@@ -32,6 +32,8 @@ class ChatPanel {
     this._analysisContextRemoved = false;
     this._sessionAnalysisRunId = null; // tracks which AI run ID's context is loaded in the current session
     this._openPromise = null; // concurrency guard for open()
+    this._activeProvider = window.__pairReview?.chatProvider || 'pi';
+    this._chatProviders = window.__pairReview?.chatProviders || [];
 
     this._render();
     this._bindEvents();
@@ -48,20 +50,27 @@ class ChatPanel {
       <div id="chat-panel" class="chat-panel chat-panel--closed">
         <div class="chat-panel__resize-handle" title="Drag to resize"></div>
         <div class="chat-panel__header">
-          <div class="chat-panel__session-picker">
-            <button class="chat-panel__session-picker-btn" title="Switch conversation">
+          <div class="chat-panel__provider-picker">
+            <button class="chat-panel__provider-picker-btn" title="Switch provider">
               <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
                 <path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"/>
               </svg>
               <span class="chat-panel__title-text">Chat &middot; Pi</span>
-              <span class="chat-panel__chevron-sep">&middot;</span>
-              <svg class="chat-panel__chevron" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                <path d="m.427 1.927 1.215 1.215a8.002 8.002 0 1 1-1.6 5.685.75.75 0 1 1 1.493-.154 6.5 6.5 0 1 0 1.18-4.458l1.358 1.358A.25.25 0 0 1 3.896 6H.25A.25.25 0 0 1 0 5.75V2.104a.25.25 0 0 1 .427-.177ZM7.75 4a.75.75 0 0 1 .75.75v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.751.751 0 0 1 7 8.25v-3.5A.75.75 0 0 1 7.75 4Z"/>
+              <svg class="chat-panel__provider-chevron" viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
+                <path d="M4.427 7.427l3.396 3.396a.25.25 0 0 0 .354 0l3.396-3.396A.25.25 0 0 0 11.396 7H4.604a.25.25 0 0 0-.177.427Z"/>
               </svg>
             </button>
+            <div class="chat-panel__provider-dropdown" style="display: none;"></div>
+          </div>
+          <div class="chat-panel__session-picker">
             <div class="chat-panel__session-dropdown" style="display: none;"></div>
           </div>
           <div class="chat-panel__actions">
+            <button class="chat-panel__history-btn" title="Session history">
+              <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+                <path d="m.427 1.927 1.215 1.215a8.002 8.002 0 1 1-1.6 5.685.75.75 0 1 1 1.493-.154 6.5 6.5 0 1 0 1.18-4.458l1.358 1.358A.25.25 0 0 1 3.896 6H.25A.25.25 0 0 1 0 5.75V2.104a.25.25 0 0 1 .427-.177ZM7.75 4a.75.75 0 0 1 .75.75v2.992l2.028.812a.75.75 0 0 1-.557 1.392l-2.5-1A.751.751 0 0 1 7 8.25v-3.5A.75.75 0 0 1 7.75 4Z"/>
+              </svg>
+            </button>
             <button class="chat-panel__new-btn" title="New conversation">
               <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
                 <path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"/>
@@ -152,9 +161,12 @@ class ChatPanel {
     this.dismissCommentBtn = this.container.querySelector('.chat-panel__action-btn--dismiss-comment');
     this.createCommentBtn = this.container.querySelector('.chat-panel__action-btn--create-comment');
     this.actionBarDismissBtn = this.container.querySelector('.chat-panel__action-bar-dismiss');
+    this.providerPickerEl = this.container.querySelector('.chat-panel__provider-picker');
+    this.providerPickerBtn = this.container.querySelector('.chat-panel__provider-picker-btn');
+    this.providerDropdown = this.container.querySelector('.chat-panel__provider-dropdown');
     this.sessionPickerEl = this.container.querySelector('.chat-panel__session-picker');
-    this.sessionPickerBtn = this.container.querySelector('.chat-panel__session-picker-btn');
     this.sessionDropdown = this.container.querySelector('.chat-panel__session-dropdown');
+    this.historyBtn = this.container.querySelector('.chat-panel__history-btn');
     this.titleTextEl = this.container.querySelector('.chat-panel__title-text');
     this.newContentPill = this.container.querySelector('.chat-panel__new-content-pill');
   }
@@ -171,8 +183,11 @@ class ChatPanel {
     // New conversation button
     this.newBtn.addEventListener('click', () => this._startNewConversation());
 
-    // Session picker button
-    this.sessionPickerBtn.addEventListener('click', () => this._toggleSessionDropdown());
+    // Provider picker button
+    this.providerPickerBtn.addEventListener('click', () => this._toggleProviderDropdown());
+
+    // Session history button
+    this.historyBtn.addEventListener('click', () => this._toggleSessionDropdown());
 
     // Send button
     this.sendBtn.addEventListener('click', () => this.sendMessage());
@@ -232,7 +247,9 @@ class ChatPanel {
     // Escape: close dropdown if open, stop agent if streaming, blur textarea if focused, otherwise close panel
     this._onKeydown = (e) => {
       if (e.key === 'Escape' && this.isOpen) {
-        if (this._isSessionDropdownOpen()) {
+        if (this._isProviderDropdownOpen()) {
+          this._hideProviderDropdown();
+        } else if (this._isSessionDropdownOpen()) {
           this._hideSessionDropdown();
         } else if (this.isStreaming) {
           this._stopAgent();
@@ -356,17 +373,30 @@ class ChatPanel {
 
   /**
    * Update the chat panel title with provider and model info.
-   * @param {string} [provider='Pi'] - Provider display name
+   * @param {string} [providerId] - Provider ID (looked up in _chatProviders for display name)
    * @param {string} [model] - Model ID or display name (e.g. 'default', 'multi-model')
    */
-  _updateTitle(provider = 'Pi', model) {
+  _updateTitle(providerId, model) {
     if (!this.titleTextEl) return;
+    const providerName = this._getProviderDisplayName(providerId || this._activeProvider);
     const modelDisplay = model
       ? model.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
       : null;
-    const parts = ['Chat', provider];
+    const parts = ['Chat', providerName];
     if (modelDisplay) parts.push(modelDisplay);
     this.titleTextEl.textContent = parts.join(' \u00b7 ');
+  }
+
+  /**
+   * Get display name for a provider ID from the _chatProviders array.
+   * Falls back to capitalized provider ID if not found.
+   * @param {string} providerId
+   * @returns {string}
+   */
+  _getProviderDisplayName(providerId) {
+    const entry = this._chatProviders.find(p => p.id === providerId);
+    if (entry) return entry.name;
+    return providerId.charAt(0).toUpperCase() + providerId.slice(1);
   }
 
   /**
@@ -493,6 +523,7 @@ class ChatPanel {
    * Close the chat panel
    */
   close() {
+    this._hideProviderDropdown();
     this._hideSessionDropdown();
     // Reset UI streaming state (buttons) but keep isStreaming and _streamingContent
     // intact so the background WebSocket handler can continue accumulating events.
@@ -533,6 +564,7 @@ class ChatPanel {
    * Preserves any unsent pending context cards and re-adds them to the new conversation.
    */
   async _startNewConversation() {
+    this._hideProviderDropdown();
     this._hideSessionDropdown();
     // 1. Snapshot pending context before clearing (these are unsent context cards)
     const savedContext = this._pendingContext.slice();
@@ -630,8 +662,7 @@ class ChatPanel {
       console.debug('[ChatPanel] Loaded MRU session:', mru.id, 'messages:', mru.message_count);
 
       if (mru.provider) {
-        const providerName = mru.provider.charAt(0).toUpperCase() + mru.provider.slice(1);
-        this._updateTitle(providerName, mru.model);
+        this._updateTitle(mru.provider, mru.model);
       }
 
       if (mru.message_count > 0) {
@@ -688,6 +719,104 @@ class ChatPanel {
     }
   }
 
+  // ── Provider picker dropdown ──────────────────────────────────────────
+
+  _isProviderDropdownOpen() {
+    return this.providerDropdown && this.providerDropdown.style.display !== 'none';
+  }
+
+  _toggleProviderDropdown() {
+    if (this._isProviderDropdownOpen()) {
+      this._hideProviderDropdown();
+    } else {
+      this._showProviderDropdown();
+    }
+  }
+
+  _showProviderDropdown() {
+    if (!this.providerDropdown) return;
+    // Close session dropdown if open
+    this._hideSessionDropdown();
+
+    this._renderProviderDropdown();
+    this.providerDropdown.style.display = '';
+    this.providerPickerBtn.classList.add('chat-panel__provider-picker-btn--open');
+
+    // Bind outside-click-to-close (one-shot)
+    this._providerOutsideClickHandler = (e) => {
+      if (!this.providerPickerEl.contains(e.target)) {
+        this._hideProviderDropdown();
+      }
+    };
+    setTimeout(() => {
+      document.addEventListener('click', this._providerOutsideClickHandler);
+    }, 0);
+  }
+
+  _hideProviderDropdown() {
+    if (!this.providerDropdown) return;
+    this.providerDropdown.style.display = 'none';
+    this.providerPickerBtn.classList.remove('chat-panel__provider-picker-btn--open');
+    if (this._providerOutsideClickHandler) {
+      document.removeEventListener('click', this._providerOutsideClickHandler);
+      this._providerOutsideClickHandler = null;
+    }
+  }
+
+  _renderProviderDropdown() {
+    if (!this.providerDropdown) return;
+    const providers = this._chatProviders;
+
+    if (providers.length === 0) {
+      this.providerDropdown.innerHTML = `
+        <div class="chat-panel__provider-empty">No providers configured</div>
+      `;
+      return;
+    }
+
+    const items = providers.map(p => {
+      const isActive = p.id === this._activeProvider;
+      const isUnavailable = !p.available;
+      const classes = ['chat-panel__provider-item'];
+      if (isActive) classes.push('chat-panel__provider-item--active');
+      if (isUnavailable) classes.push('chat-panel__provider-item--unavailable');
+
+      const checkmark = isActive
+        ? `<svg class="chat-panel__provider-check" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
+             <path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/>
+           </svg>`
+        : '';
+
+      return `
+        <button class="${classes.join(' ')}"
+                data-provider-id="${this._escapeHtml(p.id)}"
+                ${isUnavailable ? 'disabled' : ''}>
+          <span class="chat-panel__provider-name">${this._escapeHtml(p.name)}</span>
+          ${checkmark}
+        </button>
+      `;
+    }).join('');
+
+    this.providerDropdown.innerHTML = items;
+
+    // Bind click handlers
+    this.providerDropdown.querySelectorAll('.chat-panel__provider-item:not([disabled])').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._selectProvider(btn.dataset.providerId);
+        this._hideProviderDropdown();
+      });
+    });
+  }
+
+  /**
+   * Select a provider. Updates active provider and title. Only affects new sessions.
+   * @param {string} id - Provider ID to activate
+   */
+  _selectProvider(id) {
+    this._activeProvider = id;
+    this._updateTitle();
+  }
+
   // ── Session picker dropdown ────────────────────────────────────────────
 
   _isSessionDropdownOpen() {
@@ -704,31 +833,33 @@ class ChatPanel {
 
   async _showSessionDropdown() {
     if (!this.sessionDropdown) return;
+    // Close provider dropdown if open
+    this._hideProviderDropdown();
 
     const sessions = await this._fetchSessions();
     this._renderSessionDropdown(sessions);
     this.sessionDropdown.style.display = '';
-    this.sessionPickerBtn.classList.add('chat-panel__session-picker-btn--open');
+    this.historyBtn.classList.add('chat-panel__history-btn--open');
 
     // Bind outside-click-to-close (one-shot)
-    this._outsideClickHandler = (e) => {
-      if (!this.sessionPickerEl.contains(e.target)) {
+    this._sessionOutsideClickHandler = (e) => {
+      if (!this.sessionPickerEl.contains(e.target) && !this.historyBtn.contains(e.target)) {
         this._hideSessionDropdown();
       }
     };
     // Use setTimeout so the current click event doesn't immediately trigger close
     setTimeout(() => {
-      document.addEventListener('click', this._outsideClickHandler);
+      document.addEventListener('click', this._sessionOutsideClickHandler);
     }, 0);
   }
 
   _hideSessionDropdown() {
     if (!this.sessionDropdown) return;
     this.sessionDropdown.style.display = 'none';
-    this.sessionPickerBtn.classList.remove('chat-panel__session-picker-btn--open');
-    if (this._outsideClickHandler) {
-      document.removeEventListener('click', this._outsideClickHandler);
-      this._outsideClickHandler = null;
+    this.historyBtn.classList.remove('chat-panel__history-btn--open');
+    if (this._sessionOutsideClickHandler) {
+      document.removeEventListener('click', this._sessionOutsideClickHandler);
+      this._sessionOutsideClickHandler = null;
     }
   }
 
@@ -805,8 +936,7 @@ class ChatPanel {
 
     // 4. Update title
     if (sessionData.provider) {
-      const providerName = sessionData.provider.charAt(0).toUpperCase() + sessionData.provider.slice(1);
-      this._updateTitle(providerName, sessionData.model);
+      this._updateTitle(sessionData.provider, sessionData.model);
     } else {
       this._updateTitle();
     }
@@ -926,7 +1056,7 @@ class ChatPanel {
 
     try {
       const body = {
-        provider: window.__pairReview?.chatProvider || 'pi',
+        provider: this._activeProvider,
         reviewId: this.reviewId
       };
       if (contextCommentId) {

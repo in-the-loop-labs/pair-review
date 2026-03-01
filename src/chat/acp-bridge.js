@@ -29,7 +29,7 @@ class AcpBridge extends EventEmitter {
    * @param {string} [options.model] - Model ID
    * @param {string} [options.cwd] - Working directory for agent process
    * @param {string} [options.systemPrompt] - System prompt text
-   * @param {string} [options.acpCommand] - Agent binary (default: env PAIR_REVIEW_ACP_CMD or 'copilot')
+   * @param {string} [options.acpCommand] - Agent binary (default: 'copilot')
    * @param {string[]} [options.acpArgs] - Extra CLI args (default: ['--acp', '--stdio'])
    * @param {Object} [options.env] - Extra env vars for subprocess
    * @param {string} [options.resumeSessionId] - ACP session ID to resume via loadSession
@@ -40,7 +40,7 @@ class AcpBridge extends EventEmitter {
     this.model = options.model || null;
     this.cwd = options.cwd || process.cwd();
     this.systemPrompt = options.systemPrompt || null;
-    this.acpCommand = options.acpCommand || process.env.PAIR_REVIEW_ACP_CMD || 'copilot';
+    this.acpCommand = options.acpCommand || 'copilot';
     this.acpArgs = options.acpArgs || ['--acp', '--stdio'];
     this.env = options.env || {};
     this.resumeSessionId = options.resumeSessionId || null;

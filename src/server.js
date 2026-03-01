@@ -5,6 +5,7 @@ const { loadConfig, getGitHubToken, resolveDbName, warnIfDevModeWithoutDbName } 
 const { initializeDatabase, getDatabaseStatus, queryOne, run } = require('./database');
 const { normalizeRepository } = require('./utils/paths');
 const { applyConfigOverrides, checkAllProviders } = require('./ai');
+const { checkAllChatProviders } = require('./chat/chat-providers');
 const logger = require('./utils/logger');
 const { attachWebSocket, closeAll: closeAllWS } = require('./ws');
 
@@ -264,7 +265,7 @@ async function startServer(sharedDb = null) {
 
     // Initialize chat session manager
     const ChatSessionManager = require('./chat/session-manager');
-    chatSessionManager = new ChatSessionManager(db);
+    chatSessionManager = new ChatSessionManager(db, config.providers || {});
     app.chatSessionManager = chatSessionManager;
 
     // Mount specific routes first to ensure they match before general PR routes
@@ -299,7 +300,10 @@ async function startServer(sharedDb = null) {
     // condition where the frontend fetches config before the cache is populated)
     const defaultProvider = config.default_provider || 'claude';
     try {
-      await checkAllProviders(defaultProvider);
+      await Promise.all([
+        checkAllProviders(defaultProvider),
+        checkAllChatProviders(),
+      ]);
     } catch (err) {
       console.warn('Provider availability check failed:', err.message);
     }

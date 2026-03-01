@@ -151,9 +151,12 @@ function buildElementRegistry() {
     'chat-action-bar-dismiss': createMockElement('button'),
     'chat-resize-handle': createMockElement('div'),
     'chat-empty': createMockElement('div'),
+    'chat-provider-picker': createMockElement('div'),
+    'chat-provider-picker-btn': createMockElement('button'),
+    'chat-provider-dropdown': createMockElement('div'),
     'chat-session-picker': createMockElement('div'),
-    'chat-session-picker-btn': createMockElement('button'),
     'chat-session-dropdown': createMockElement('div'),
+    'chat-history-btn': createMockElement('button'),
     'chat-title-text': createMockElement('span'),
     'chat-new-content-pill': createMockElement('button'),
   };
@@ -171,6 +174,7 @@ function buildElementRegistry() {
   elementRegistry['chat-dismiss-suggestion-btn'].style = { display: 'none' };
   elementRegistry['chat-dismiss-comment-btn'].style = { display: 'none' };
   elementRegistry['chat-create-comment-btn'].style = { display: 'none' };
+  elementRegistry['chat-provider-dropdown'].style = { display: 'none' };
   elementRegistry['chat-session-dropdown'].style = { display: 'none' };
   elementRegistry['chat-new-content-pill'].style = { display: 'none' };
 
@@ -284,9 +288,12 @@ function createChatPanel() {
       '.chat-panel__action-btn--create-comment': reg['chat-create-comment-btn'],
       '.chat-panel__action-bar-dismiss': reg['chat-action-bar-dismiss'],
       '.chat-panel__resize-handle': reg['chat-resize-handle'],
+      '.chat-panel__provider-picker': reg['chat-provider-picker'],
+      '.chat-panel__provider-picker-btn': reg['chat-provider-picker-btn'],
+      '.chat-panel__provider-dropdown': reg['chat-provider-dropdown'],
       '.chat-panel__session-picker': reg['chat-session-picker'],
-      '.chat-panel__session-picker-btn': reg['chat-session-picker-btn'],
       '.chat-panel__session-dropdown': reg['chat-session-dropdown'],
+      '.chat-panel__history-btn': reg['chat-history-btn'],
       '.chat-panel__title-text': reg['chat-title-text'],
       '.chat-panel__new-content-pill': reg['chat-new-content-pill'],
     };
@@ -3433,7 +3440,7 @@ describe('ChatPanel', () => {
   // _loadMRUSession — provider name (dead code removal)
   // -----------------------------------------------------------------------
   describe('_loadMRUSession — provider name', () => {
-    it('should capitalize provider name without dead fallback', async () => {
+    it('should pass raw provider ID to _updateTitle', async () => {
       chatPanel.reviewId = 1;
       const updateTitleSpy = vi.spyOn(chatPanel, '_updateTitle');
 
@@ -3453,7 +3460,7 @@ describe('ChatPanel', () => {
 
       await chatPanel._loadMRUSession();
 
-      expect(updateTitleSpy).toHaveBeenCalledWith('Claude', 'sonnet');
+      expect(updateTitleSpy).toHaveBeenCalledWith('claude', 'sonnet');
     });
   });
 
@@ -4443,7 +4450,7 @@ describe('ChatPanel', () => {
         chatPanel.sessionDropdown.style.display = '';
         chatPanel._hideSessionDropdown();
         expect(chatPanel.sessionDropdown.style.display).toBe('none');
-        expect(chatPanel.sessionPickerBtn.classList.remove).toHaveBeenCalledWith('chat-panel__session-picker-btn--open');
+        expect(chatPanel.historyBtn.classList.remove).toHaveBeenCalledWith('chat-panel__history-btn--open');
       });
     });
 

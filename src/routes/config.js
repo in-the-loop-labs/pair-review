@@ -21,6 +21,7 @@ const {
 } = require('../ai');
 const { normalizeRepository } = require('../utils/paths');
 const { isRunningViaNpx, saveConfig } = require('../config');
+const { getAllChatProviders, getAllCachedChatAvailability } = require('../chat/chat-providers');
 const { PRESETS } = require('../utils/comment-formatter');
 const logger = require('../utils/logger');
 
@@ -33,6 +34,12 @@ const router = express.Router();
 router.get('/api/config', (req, res) => {
   const config = req.app.get('config') || {};
 
+  // Build chat_providers array with availability
+  const chatAvailability = getAllCachedChatAvailability();
+  const chatProviders = getAllChatProviders().map(p => ({
+    id: p.id, name: p.name, available: chatAvailability[p.id]?.available || false
+  }));
+
   // Only return safe configuration values (not secrets like github_token)
   res.json({
     theme: config.theme || 'light',
@@ -42,6 +49,7 @@ router.get('/api/config', (req, res) => {
     is_running_via_npx: isRunningViaNpx(),
     enable_chat: config.enable_chat !== false,
     chat_provider: config.chat_provider || 'pi',
+    chat_providers: chatProviders,
     chat_enable_shortcuts: config.chat?.enable_shortcuts !== false,
     pi_available: getCachedAvailability('pi')?.available || false,
     assisted_by_url: config.assisted_by_url || 'https://github.com/in-the-loop-labs/pair-review'

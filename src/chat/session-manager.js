@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const PiBridge = require('./pi-bridge');
 const AcpBridge = require('./acp-bridge');
+const { getChatProvider, isAcpProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
 const logger = require('../utils/logger');
 
 const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
@@ -18,15 +19,15 @@ const taskExtensionDir = path.resolve(__dirname, '../../.pi/extensions/task');
 
 const CHAT_TOOLS = 'read,bash,grep,find,ls';
 
-const ACP_PROVIDERS = new Set(['acp']);
-
 class ChatSessionManager {
   /**
    * @param {Database} db - better-sqlite3 database instance
+   * @param {Object} [configOverrides] - Provider config overrides from config.providers
    */
-  constructor(db) {
+  constructor(db, configOverrides = {}) {
     this._db = db;
     this._sessions = new Map(); // sessionId -> { bridge, listeners }
+    applyChatConfigOverrides(configOverrides);
   }
 
   /**
@@ -397,7 +398,7 @@ class ChatSessionManager {
       throw new Error(`Session ${sessionId} not found`);
     }
 
-    const isAcp = ACP_PROVIDERS.has(row.provider);
+    const isAcp = isAcpProvider(row.provider);
 
     if (!isAcp) {
       // Pi sessions require a session file on disk
@@ -499,8 +500,14 @@ class ChatSessionManager {
    * @returns {PiBridge|AcpBridge}
    */
   _createBridge(provider, options) {
-    if (ACP_PROVIDERS.has(provider)) {
-      return new AcpBridge(options);
+    if (isAcpProvider(provider)) {
+      const providerDef = getChatProvider(provider);
+      return new AcpBridge({
+        ...options,
+        acpCommand: providerDef?.command,
+        acpArgs: providerDef?.args,
+        env: providerDef?.env,
+      });
     }
     return new PiBridge({
       ...options,
