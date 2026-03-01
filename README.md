@@ -236,6 +236,22 @@ On first run, pair-review creates `~/.pair-review/config.example.json` with comp
 
 For advanced configuration with custom providers and models, see [AI Provider Configuration](#ai-provider-configuration) below.
 
+### Configuration Files
+
+pair-review loads configuration from multiple files, merged in order of increasing precedence:
+
+| Priority | File | Purpose |
+|----------|------|---------|
+| 1 (lowest) | Built-in defaults | Sensible defaults for all settings |
+| 2 | `~/.pair-review/config.json` | Global user configuration |
+| 3 | `~/.pair-review/config.local.json` | Personal overrides (gitignored) |
+| 4 | `.pair-review/config.json` | Project-specific configuration (can be checked in) |
+| 5 (highest) | `.pair-review/config.local.json` | Personal project overrides (gitignored) |
+
+Nested objects (like `chat`, `providers`, `monorepos`) are deep-merged across layers — you only need to specify the keys you want to override.
+
+**`config.local.json`** files are intended for personal overrides that should not be committed to version control. Add `config.local.json` to your `.gitignore`.
+
 ### Environment Variables
 
 pair-review supports several environment variables for customizing behavior:
