@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0
+
+### Minor Changes
+
+- 5400f3d: Add configurable comment format for adopted AI suggestions. Supports preset templates (legacy, minimal, plain, emoji-only, maximal) and custom templates via `comment_format` in config. Splits suggestion text into its own database column for structured formatting.
+- a036ee6: Add layered config with `config.local.json` support for personal overrides at both global and project levels
+- 9b2bb30: Replace SSE connections with a single WebSocket per tab, fixing browser connection limits that caused hangs when 6+ review tabs were open simultaneously
+
 ## 2.2.0
 
 ### Minor Changes
