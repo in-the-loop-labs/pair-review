@@ -59,12 +59,15 @@ function simulateLine(rlEmitter, obj) {
 }
 
 /**
- * Start a bridge and simulate the system/init message so it becomes ready.
+ * Start a bridge. With --input-format stream-json, the CLI doesn't emit
+ * system/init until the first user message, so start() resolves immediately
+ * after spawning. Optionally simulate system/init to set the session ID.
  */
-async function startBridge(bridge, rlEmitter) {
-  const startPromise = bridge.start();
-  simulateLine(rlEmitter, { type: 'system', subtype: 'init', session_id: 'session-abc-123' });
-  await startPromise;
+async function startBridge(bridge, rlEmitter, { withInit = false } = {}) {
+  await bridge.start();
+  if (withInit) {
+    simulateLine(rlEmitter, { type: 'system', subtype: 'init', session_id: 'session-abc-123' });
+  }
 }
 
 describe('ClaudeCodeBridge', () => {
@@ -106,6 +109,8 @@ describe('ClaudeCodeBridge', () => {
       expect(bridge._inMessage).toBe(false);
       expect(bridge._firstMessage).toBe(true);
       expect(bridge._sessionId).toBeNull();
+      expect(bridge._activeTools).toBeInstanceOf(Map);
+      expect(bridge._activeTools.size).toBe(0);
     });
 
     it('should respect PAIR_REVIEW_CLAUDE_CMD env var override', () => {
@@ -190,13 +195,13 @@ describe('ClaudeCodeBridge', () => {
       expect(mockSpawn).toHaveBeenCalledWith(
         'my-claude',
         expect.arrayContaining([
-          '--print',
+          '-p', '',
           '--output-format', 'stream-json',
           '--input-format', 'stream-json',
           '--verbose',
           '--include-partial-messages',
           '--allowedTools',
-          '-p', '',
+          '--settings', '{"disableAllHooks":true}',
         ]),
         expect.objectContaining({
           cwd: '/my/repo',
@@ -219,7 +224,7 @@ describe('ClaudeCodeBridge', () => {
       );
     });
 
-    it('should emit ready on system/init message', async () => {
+    it('should emit ready immediately on start', async () => {
       const { mockDeps, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
       const readyHandler = vi.fn();
@@ -230,7 +235,7 @@ describe('ClaudeCodeBridge', () => {
       expect(readyHandler).toHaveBeenCalledTimes(1);
     });
 
-    it('should emit session event with sessionId on system/init', async () => {
+    it('should emit session event with sessionId when system/init arrives', async () => {
       const { mockDeps, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
       const sessionHandler = vi.fn();
@@ -238,16 +243,24 @@ describe('ClaudeCodeBridge', () => {
 
       await startBridge(bridge, rlEmitter);
 
+      // Session ID is null before init
+      expect(bridge._sessionId).toBeNull();
+
+      // Simulate init arriving with first response
+      simulateLine(rlEmitter, { type: 'system', subtype: 'init', session_id: 'session-abc-123' });
+
       expect(sessionHandler).toHaveBeenCalledTimes(1);
       expect(sessionHandler).toHaveBeenCalledWith({ sessionId: 'session-abc-123' });
+      expect(bridge._sessionId).toBe('session-abc-123');
     });
 
-    it('should store session_id', async () => {
-      const { mockDeps, rlEmitter } = createMockDeps();
+    it('should not have CLAUDECODE in spawned env', async () => {
+      const { mockDeps, mockSpawn, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
       await startBridge(bridge, rlEmitter);
 
-      expect(bridge._sessionId).toBe('session-abc-123');
+      const spawnOpts = mockSpawn.mock.calls[0][2];
+      expect(spawnOpts.env.CLAUDECODE).toBeUndefined();
     });
 
     it('should include --resume <id> in args when resuming', async () => {
@@ -284,25 +297,37 @@ describe('ClaudeCodeBridge', () => {
       await expect(bridge.start()).rejects.toThrow('ClaudeCodeBridge already started');
     });
 
-    it('should reject on spawn error before ready', async () => {
-      const { mockDeps, fakeProc } = createMockDeps();
+    it('should emit error on spawn failure (e.g., ENOENT)', async () => {
+      const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
-      const startPromise = bridge.start();
+      await startBridge(bridge, rlEmitter);
+
+      const errorHandler = vi.fn();
+      bridge.on('error', errorHandler);
 
       fakeProc.emit('error', new Error('ENOENT'));
 
-      await expect(startPromise).rejects.toThrow('Failed to start Claude CLI');
+      expect(errorHandler).toHaveBeenCalledWith({
+        error: expect.any(Error),
+      });
     });
 
-    it('should reject on process exit before ready', async () => {
-      const { mockDeps, fakeProc } = createMockDeps();
+    it('should emit error on unexpected process exit after start', async () => {
+      const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
-      bridge.on('error', () => {}); // Prevent unhandled error
-      const startPromise = bridge.start();
+      await startBridge(bridge, rlEmitter);
+
+      const errorHandler = vi.fn();
+      bridge.on('error', errorHandler);
 
       fakeProc.emit('close', 1, null);
 
-      await expect(startPromise).rejects.toThrow('Claude CLI exited before ready');
+      expect(errorHandler).toHaveBeenCalledWith({
+        error: expect.objectContaining({
+          message: expect.stringContaining('Claude CLI exited'),
+        }),
+      });
+      expect(bridge.isReady()).toBe(false);
     });
   });
 
@@ -372,6 +397,9 @@ describe('ClaudeCodeBridge', () => {
         toolName: 'Read',
         status: 'start',
       });
+
+      // Should also track the tool in _activeTools
+      expect(bridge._activeTools.get('tc-1')).toBe('Read');
     });
 
     it('should emit tool_use update on tool_progress', async () => {
@@ -441,7 +469,21 @@ describe('ClaudeCodeBridge', () => {
       expect(bridge._accumulatedText).toBe('');
     });
 
-    it('should emit complete then error on result error', async () => {
+    it('should clear _activeTools on result message', async () => {
+      const { mockDeps, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      // Populate _activeTools as if a tool_use started but never got a result
+      bridge._activeTools.set('orphan-tool', 'Grep');
+      bridge._inMessage = true;
+
+      simulateLine(rlEmitter, { type: 'result', subtype: 'success' });
+
+      expect(bridge._activeTools.size).toBe(0);
+    });
+
+    it('should emit error (not complete) on result error with errors array', async () => {
       const { mockDeps, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
       await startBridge(bridge, rlEmitter);
@@ -454,13 +496,120 @@ describe('ClaudeCodeBridge', () => {
       bridge._inMessage = true;
       bridge._accumulatedText = 'partial';
 
-      simulateLine(rlEmitter, { type: 'result', subtype: 'error_max_turns', error: 'Max turns reached' });
+      simulateLine(rlEmitter, { type: 'result', subtype: 'error_max_turns', errors: ['Max turns reached'] });
 
-      expect(completeHandler).toHaveBeenCalledWith({ fullText: 'partial' });
+      expect(completeHandler).not.toHaveBeenCalled();
       expect(errorHandler).toHaveBeenCalledWith({
-        error: expect.any(Error),
+        error: expect.objectContaining({ message: 'Max turns reached' }),
       });
       expect(bridge._inMessage).toBe(false);
+    });
+
+    it('should fall back to subtype when errors array is empty on result error', async () => {
+      const { mockDeps, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      const completeHandler = vi.fn();
+      const errorHandler = vi.fn();
+      bridge.on('complete', completeHandler);
+      bridge.on('error', errorHandler);
+
+      bridge._inMessage = true;
+
+      simulateLine(rlEmitter, { type: 'result', subtype: 'error_unknown' });
+
+      expect(completeHandler).not.toHaveBeenCalled();
+      expect(errorHandler).toHaveBeenCalledWith({
+        error: expect.objectContaining({ message: 'error_unknown' }),
+      });
+    });
+
+    it('should emit tool_use end with resolved toolName from _activeTools map', async () => {
+      const { mockDeps, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      const toolHandler = vi.fn();
+      bridge.on('tool_use', toolHandler);
+
+      // Simulate tool starts so the map is populated
+      simulateLine(rlEmitter, {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'tool123', name: 'Read' },
+        },
+      });
+      simulateLine(rlEmitter, {
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: 'tool456', name: 'Bash' },
+        },
+      });
+
+      toolHandler.mockClear();
+
+      // Now simulate tool results
+      simulateLine(rlEmitter, {
+        type: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'tool123' },
+          { type: 'tool_result', tool_use_id: 'tool456' },
+        ],
+      });
+
+      expect(toolHandler).toHaveBeenCalledTimes(2);
+      expect(toolHandler).toHaveBeenCalledWith({
+        toolCallId: 'tool123',
+        toolName: 'Read',
+        status: 'end',
+      });
+      expect(toolHandler).toHaveBeenCalledWith({
+        toolCallId: 'tool456',
+        toolName: 'Bash',
+        status: 'end',
+      });
+
+      // Map entries should be cleaned up
+      expect(bridge._activeTools.size).toBe(0);
+    });
+
+    it('should emit tool_use end with null toolName when tool_use_id is unknown', async () => {
+      const { mockDeps, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      const toolHandler = vi.fn();
+      bridge.on('tool_use', toolHandler);
+
+      // No prior content_block_start, so the map has no entry
+      simulateLine(rlEmitter, {
+        type: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'unknown-id' },
+        ],
+      });
+
+      expect(toolHandler).toHaveBeenCalledWith({
+        toolCallId: 'unknown-id',
+        toolName: null,
+        status: 'end',
+      });
+    });
+
+    it('should ignore user messages without content array', async () => {
+      const { mockDeps, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      const toolHandler = vi.fn();
+      bridge.on('tool_use', toolHandler);
+
+      simulateLine(rlEmitter, { type: 'user', content: 'plain text' });
+
+      expect(toolHandler).not.toHaveBeenCalled();
     });
   });
 
@@ -482,7 +631,7 @@ describe('ClaudeCodeBridge', () => {
     it('should write correct NDJSON to stdin', async () => {
       const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
-      await startBridge(bridge, rlEmitter);
+      await startBridge(bridge, rlEmitter, { withInit: true });
 
       const chunks = [];
       fakeProc.stdin.on('data', (chunk) => chunks.push(chunk.toString()));
@@ -496,6 +645,20 @@ describe('ClaudeCodeBridge', () => {
         session_id: 'session-abc-123',
         parent_tool_use_id: null,
       });
+    });
+
+    it('should use empty session_id before init arrives', async () => {
+      const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      const chunks = [];
+      fakeProc.stdin.on('data', (chunk) => chunks.push(chunk.toString()));
+
+      await bridge.sendMessage('First message');
+
+      const written = JSON.parse(chunks[0].trim());
+      expect(written.session_id).toBe('');
     });
 
     it('should reset accumulated text', async () => {
@@ -563,7 +726,7 @@ describe('ClaudeCodeBridge', () => {
     it('should write interrupt control_request to stdin', async () => {
       const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
-      await startBridge(bridge, rlEmitter);
+      await startBridge(bridge, rlEmitter, { withInit: true });
 
       const chunks = [];
       fakeProc.stdin.on('data', (chunk) => chunks.push(chunk.toString()));
@@ -704,27 +867,6 @@ describe('ClaudeCodeBridge', () => {
       expect(errorHandler).toHaveBeenCalledWith({
         error: expect.any(Error),
       });
-    });
-
-    it('should emit error and close on unexpected process exit after ready', async () => {
-      const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
-      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
-      await startBridge(bridge, rlEmitter);
-
-      const errorHandler = vi.fn();
-      const closeHandler = vi.fn();
-      bridge.on('error', errorHandler);
-      bridge.on('close', closeHandler);
-
-      fakeProc.emit('close', 1, null);
-
-      expect(errorHandler).toHaveBeenCalledWith({
-        error: expect.objectContaining({
-          message: expect.stringContaining('Claude CLI exited'),
-        }),
-      });
-      expect(closeHandler).toHaveBeenCalled();
-      expect(bridge.isReady()).toBe(false);
     });
 
     it('should not emit error on expected close (closing flag)', async () => {

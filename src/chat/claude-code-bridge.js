@@ -19,7 +19,7 @@ const { createInterface } = require('readline');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
 
-const CLAUDE_CHAT_TOOLS = 'Read,Bash,Grep,Glob,Edit,Write';
+const CLAUDE_CHAT_TOOLS = 'Read,Bash,Grep,Glob,Edit,Write,Agent';
 
 // Default dependencies (overridable for testing)
 const defaults = {
@@ -56,11 +56,17 @@ class ClaudeCodeBridge extends EventEmitter {
     this._accumulatedText = '';
     this._inMessage = false;
     this._firstMessage = !options.resumeSessionId;
+    this._activeTools = new Map();
   }
 
   /**
-   * Spawn the Claude CLI subprocess in stream-json mode and wait for the
-   * system/init message indicating readiness.
+   * Spawn the Claude CLI subprocess in stream-json mode.
+   *
+   * With --input-format stream-json, the CLI does NOT emit system/init until
+   * the first user message is sent on stdin. So start() spawns the process,
+   * wires up I/O, and marks the bridge as ready immediately. The session ID
+   * is captured later when system/init arrives with the first response.
+   *
    * @returns {Promise<void>}
    */
   async start() {
@@ -75,18 +81,22 @@ class ClaudeCodeBridge extends EventEmitter {
     logger.info(`[ClaudeCodeBridge] Starting: ${command} ${args.join(' ')}`);
 
     return new Promise((resolve, reject) => {
+      // Remove CLAUDECODE env var to avoid "nested session" error
+      const env = { ...process.env, ...this.env };
+      delete env.CLAUDECODE;
+
       const proc = deps.spawn(command, args, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...this.env },
+        env,
       });
 
       this._process = proc;
+      let spawned = false;
 
       // Handle spawn error (e.g., ENOENT)
       proc.on('error', (err) => {
-        if (!this._ready) {
-          this._ready = false;
+        if (!spawned) {
           reject(new Error(`Failed to start Claude CLI: ${err.message}`));
         } else {
           logger.error(`[ClaudeCodeBridge] Process error: ${err.message}`);
@@ -96,13 +106,8 @@ class ClaudeCodeBridge extends EventEmitter {
 
       // Handle process exit
       proc.on('close', (code, signal) => {
-        const wasReady = this._ready;
         this._ready = false;
         this._process = null;
-
-        if (!wasReady && !this._closing) {
-          reject(new Error(`Claude CLI exited before ready (code=${code}, signal=${signal})`));
-        }
 
         if (!this._closing) {
           logger.warn(`[ClaudeCodeBridge] Process exited unexpectedly (code=${code}, signal=${signal})`);
@@ -147,9 +152,14 @@ class ClaudeCodeBridge extends EventEmitter {
         this._handleMessage(msg);
       });
 
-      // Store resolve/reject so _onReady can call them
-      this._startResolve = resolve;
-      this._startReject = reject;
+      // The CLI with --input-format stream-json doesn't emit anything until
+      // the first user message is sent. Mark ready immediately after spawn
+      // succeeds — the session ID will arrive with system/init on first response.
+      spawned = true;
+      this._ready = true;
+      logger.info(`[ClaudeCodeBridge] Spawned (PID ${proc.pid}), ready for messages`);
+      this.emit('ready');
+      resolve();
     });
   }
 
@@ -206,6 +216,7 @@ class ClaudeCodeBridge extends EventEmitter {
     if (!this._process) return;
 
     this._closing = true;
+    this._activeTools.clear();
     this.removeAllListeners();
 
     // Close readline if it exists
@@ -272,13 +283,13 @@ class ClaudeCodeBridge extends EventEmitter {
    */
   _buildArgs() {
     const args = [
-      '--print',
+      '-p', '',
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
       '--verbose',
       '--include-partial-messages',
       '--allowedTools', CLAUDE_CHAT_TOOLS,
-      '-p', '',
+      '--settings', '{"disableAllHooks":true}',
     ];
 
     if (this.resumeSessionId) {
@@ -304,20 +315,6 @@ class ClaudeCodeBridge extends EventEmitter {
   }
 
   /**
-   * Called when the system/init message is received.
-   */
-  _onReady() {
-    this._ready = true;
-    logger.info(`[ClaudeCodeBridge] Ready (PID ${this._process.pid}, session ${this._sessionId})`);
-    this.emit('ready');
-    if (this._startResolve) {
-      this._startResolve();
-      this._startResolve = null;
-      this._startReject = null;
-    }
-  }
-
-  /**
    * Route an incoming NDJSON message to the appropriate handler.
    * @param {Object} msg - Parsed JSON message from Claude CLI stdout
    */
@@ -336,6 +333,23 @@ class ClaudeCodeBridge extends EventEmitter {
 
       case 'stream_event':
         this._handleStreamEvent(msg);
+        break;
+
+      case 'user':
+        // tool_result content blocks signal tool execution completed
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === 'tool_result' && block.tool_use_id) {
+              const toolName = this._activeTools.get(block.tool_use_id) || null;
+              this._activeTools.delete(block.tool_use_id);
+              this.emit('tool_use', {
+                toolCallId: block.tool_use_id,
+                toolName,
+                status: 'end',
+              });
+            }
+          }
+        }
         break;
 
       case 'tool_progress':
@@ -367,10 +381,13 @@ class ClaudeCodeBridge extends EventEmitter {
   _handleSystemMessage(msg, subtype) {
     switch (subtype) {
       case 'init':
-        this._sessionId = msg.session_id || null;
-        logger.info(`[ClaudeCodeBridge] System init, session: ${this._sessionId}`);
-        this.emit('session', { sessionId: this._sessionId });
-        this._onReady();
+        // The CLI emits system/init at the start of every response turn.
+        // Only capture and emit on the first one.
+        if (!this._sessionId) {
+          this._sessionId = msg.session_id || null;
+          logger.info(`[ClaudeCodeBridge] Session initialized (session ${this._sessionId})`);
+          this.emit('session', { sessionId: this._sessionId });
+        }
         break;
 
       case 'status':
@@ -403,9 +420,11 @@ class ClaudeCodeBridge extends EventEmitter {
 
       case 'content_block_start':
         if (event.content_block && event.content_block.type === 'tool_use') {
+          const { id, name } = event.content_block;
+          this._activeTools.set(id, name);
           this.emit('tool_use', {
-            toolCallId: event.content_block.id,
-            toolName: event.content_block.name,
+            toolCallId: id,
+            toolName: name,
             status: 'start',
           });
         }
@@ -425,13 +444,16 @@ class ClaudeCodeBridge extends EventEmitter {
     this._inMessage = false;
     const fullText = this._accumulatedText;
     this._accumulatedText = '';
-
-    this.emit('complete', { fullText });
+    this._activeTools.clear();
 
     if (subtype && subtype !== 'success') {
-      const errorMessage = msg.error || subtype;
+      const errorMessage = (Array.isArray(msg.errors) && msg.errors.length)
+        ? msg.errors.join('\n')
+        : subtype;
       logger.error(`[ClaudeCodeBridge] Result error: ${errorMessage}`);
       this.emit('error', { error: new Error(errorMessage) });
+    } else {
+      this.emit('complete', { fullText });
     }
   }
 }

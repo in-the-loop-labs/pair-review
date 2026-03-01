@@ -2424,10 +2424,11 @@ class ChatPanel {
    * @param {Object} [toolInput] - Tool input/arguments (optional)
    */
   _showToolUse(toolName, status, toolInput) {
+    if (!toolName) return;
     const streamingMsg = document.getElementById('chat-streaming-msg');
     if (!streamingMsg) return;
 
-    const isTask = toolName.toLowerCase() === 'task';
+    const isTask = toolName.toLowerCase() === 'task' || toolName.toLowerCase() === 'agent';
 
     if (status === 'start') {
       this._hideThinkingIndicator();
@@ -2464,7 +2465,7 @@ class ChatPanel {
     } else {
       if (isTask) {
         // Remove spinner from completed Task badge
-        const badges = streamingMsg.querySelectorAll('.chat-panel__tool-badge[data-tool="Task"]:not(.chat-panel__tool-badge--transient)');
+        const badges = streamingMsg.querySelectorAll('.chat-panel__tool-badge[data-tool="Task"]:not(.chat-panel__tool-badge--transient), .chat-panel__tool-badge[data-tool="Agent"]:not(.chat-panel__tool-badge--transient)');
         badges.forEach(b => {
           const spinner = b.querySelector('.chat-panel__tool-spinner');
           if (spinner) spinner.remove();
