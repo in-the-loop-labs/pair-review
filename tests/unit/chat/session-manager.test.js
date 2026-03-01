@@ -13,16 +13,18 @@ vi.mock('../../../src/utils/logger', () => ({
   section: vi.fn()
 }));
 
-// --- Patch PiBridge, AcpBridge, ClaudeCodeBridge, and chat-providers via require.cache (CJS pattern) ---
+// --- Patch PiBridge, AcpBridge, ClaudeCodeBridge, CodexBridge, and chat-providers via require.cache (CJS pattern) ---
 // session-manager.js does: const PiBridge = require('./pi-bridge')
 // We replace the cached module export before session-manager is loaded.
 const piBridgePath = require.resolve('../../../src/chat/pi-bridge');
 const acpBridgePath = require.resolve('../../../src/chat/acp-bridge');
 const claudeCodeBridgePath = require.resolve('../../../src/chat/claude-code-bridge');
+const codexBridgePath = require.resolve('../../../src/chat/codex-bridge');
 const chatProvidersPath = require.resolve('../../../src/chat/chat-providers');
 const originalPiBridgeExport = require(piBridgePath);
 const originalAcpBridgeExport = require(acpBridgePath);
 const originalClaudeCodeBridgeExport = require(claudeCodeBridgePath);
+const originalCodexBridgeExport = require(codexBridgePath);
 const originalChatProvidersExport = require(chatProvidersPath);
 
 // Shared state for controlling mock behavior per-test
@@ -30,6 +32,7 @@ let _nextStartFail = false;
 const _createdBridges = [];
 const _createdAcpBridges = [];
 const _createdClaudeCodeBridges = [];
+const _createdCodexBridges = [];
 
 function MockPiBridge() {
   const bridge = new EventEmitter();
@@ -92,6 +95,27 @@ function MockClaudeCodeBridge(options) {
   return bridge;
 }
 
+function MockCodexBridge(options) {
+  const bridge = new EventEmitter();
+  bridge.start = vi.fn().mockImplementation(() => {
+    if (_nextStartFail) {
+      _nextStartFail = false;
+      return Promise.reject(new Error('spawn failed'));
+    }
+    return Promise.resolve();
+  });
+  bridge.close = vi.fn().mockResolvedValue(undefined);
+  bridge.sendMessage = vi.fn().mockResolvedValue(undefined);
+  bridge.isReady = vi.fn().mockReturnValue(true);
+  bridge.isBusy = vi.fn().mockReturnValue(false);
+  bridge.abort = vi.fn();
+  bridge._bridgeType = 'codex';
+  bridge._constructorOptions = options || {};
+  _createdCodexBridges.push(bridge);
+  _createdBridges.push(bridge);
+  return bridge;
+}
+
 // Mock chat-providers module
 const mockChatProviders = {
   getChatProvider: vi.fn((id) => {
@@ -101,6 +125,7 @@ const mockChatProviders = {
       'gemini-acp': { id: 'gemini-acp', name: 'Gemini (ACP)', type: 'acp', command: 'gemini', args: ['--experimental-acp'], env: {} },
       'opencode-acp': { id: 'opencode-acp', name: 'OpenCode (ACP)', type: 'acp', command: 'opencode', args: ['acp'], env: {} },
       claude: { id: 'claude', name: 'Claude (NDJSON)', type: 'claude', command: 'claude', args: [], env: {} },
+      codex: { id: 'codex', name: 'Codex', type: 'codex', command: 'codex', args: ['app-server'], env: {} },
     };
     return providers[id] || null;
   }),
@@ -108,6 +133,9 @@ const mockChatProviders = {
     return ['copilot-acp', 'gemini-acp', 'opencode-acp'].includes(id);
   }),
   isClaudeCodeProvider: vi.fn((id) => id === 'claude'),
+  isCodexProvider: vi.fn((id) => {
+    return id === 'codex';
+  }),
   applyConfigOverrides: vi.fn(),
 };
 
@@ -115,6 +143,7 @@ const mockChatProviders = {
 require.cache[piBridgePath].exports = MockPiBridge;
 require.cache[acpBridgePath].exports = MockAcpBridge;
 require.cache[claudeCodeBridgePath].exports = MockClaudeCodeBridge;
+require.cache[codexBridgePath].exports = MockCodexBridge;
 require.cache[chatProvidersPath].exports = mockChatProviders;
 
 // Now import session-manager (it will use our mocks)
@@ -129,6 +158,7 @@ describe('ChatSessionManager', () => {
     require.cache[piBridgePath].exports = originalPiBridgeExport;
     require.cache[acpBridgePath].exports = originalAcpBridgeExport;
     require.cache[claudeCodeBridgePath].exports = originalClaudeCodeBridgeExport;
+    require.cache[codexBridgePath].exports = originalCodexBridgeExport;
     require.cache[chatProvidersPath].exports = originalChatProvidersExport;
   });
 
@@ -137,6 +167,7 @@ describe('ChatSessionManager', () => {
     _createdBridges.length = 0;
     _createdAcpBridges.length = 0;
     _createdClaudeCodeBridges.length = 0;
+    _createdCodexBridges.length = 0;
     _nextStartFail = false;
     db = createTestDatabase();
     // Insert a review to satisfy foreign key constraints
@@ -1040,6 +1071,85 @@ describe('ChatSessionManager', () => {
       // Should NOT have resumeSessionId
       const resumedBridge = _createdClaudeCodeBridges[_createdClaudeCodeBridges.length - 1];
       expect(resumedBridge._constructorOptions.resumeSessionId).toBeUndefined();
+    });
+  });
+
+  describe('Codex provider sessions', () => {
+    it('should create a session with codex provider', async () => {
+      const result = await manager.createSession({
+        provider: 'codex',
+        reviewId: 1,
+      });
+
+      expect(result).toHaveProperty('id');
+      expect(result.status).toBe('active');
+
+      const row = db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(result.id);
+      expect(row.provider).toBe('codex');
+      expect(row.status).toBe('active');
+    });
+
+    it('should return CodexBridge for codex provider', async () => {
+      await manager.createSession({ provider: 'codex', reviewId: 1 });
+      const bridge = _createdCodexBridges[0];
+      expect(bridge).toBeDefined();
+      expect(bridge._bridgeType).toBe('codex');
+    });
+
+    it('should pass codex command to CodexBridge', async () => {
+      await manager.createSession({ provider: 'codex', reviewId: 1 });
+      const bridge = _createdCodexBridges[0];
+      expect(bridge._constructorOptions.codexCommand).toBe('codex');
+    });
+
+    it('should send messages through Codex bridge', async () => {
+      const session = await manager.createSession({ provider: 'codex', reviewId: 1 });
+      const bridge = _createdCodexBridges[0];
+
+      await manager.sendMessage(session.id, 'Hello Codex');
+      expect(bridge.sendMessage).toHaveBeenCalledWith('Hello Codex');
+    });
+
+    it('should store threadId from Codex bridge session event', async () => {
+      const session = await manager.createSession({ provider: 'codex', reviewId: 1 });
+      const bridge = _createdCodexBridges[0];
+
+      // Codex bridges emit session events with threadId
+      bridge.emit('session', { threadId: 'codex-thread-abc-123' });
+
+      const row = db.prepare('SELECT agent_session_id FROM chat_sessions WHERE id = ?').get(session.id);
+      expect(row.agent_session_id).toBe('codex-thread-abc-123');
+    });
+
+    it('should resume Codex session via resumeThreadId with stored threadId', async () => {
+      const session = await manager.createSession({ provider: 'codex', reviewId: 1 });
+      const bridge = _createdCodexBridges[0];
+
+      // Store a thread ID
+      bridge.emit('session', { threadId: 'codex-thread-xyz' });
+      await manager.closeSession(session.id);
+
+      // Resume should succeed without fs.existsSync check
+      const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
+      expect(result).toEqual({ id: session.id, status: 'active' });
+      expect(manager.isSessionActive(session.id)).toBe(true);
+
+      // Should pass resumeThreadId to bridge constructor
+      const resumedBridge = _createdCodexBridges[_createdCodexBridges.length - 1];
+      expect(resumedBridge._constructorOptions.resumeThreadId).toBe('codex-thread-xyz');
+    });
+
+    it('should resume Codex session without agent_session_id (fresh thread)', async () => {
+      const session = await manager.createSession({ provider: 'codex', reviewId: 1 });
+      await manager.closeSession(session.id);
+
+      // Codex sessions without stored threadId create a fresh thread
+      const result = await manager.resumeSession(session.id, { cwd: '/tmp' });
+      expect(result).toEqual({ id: session.id, status: 'active' });
+
+      // Should NOT have resumeThreadId
+      const resumedBridge = _createdCodexBridges[_createdCodexBridges.length - 1];
+      expect(resumedBridge._constructorOptions.resumeThreadId).toBeUndefined();
     });
   });
 });

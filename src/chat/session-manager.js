@@ -12,7 +12,8 @@ const path = require('path');
 const PiBridge = require('./pi-bridge');
 const AcpBridge = require('./acp-bridge');
 const ClaudeCodeBridge = require('./claude-code-bridge');
-const { getChatProvider, isAcpProvider, isClaudeCodeProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
+const CodexBridge = require('./codex-bridge');
+const { getChatProvider, isAcpProvider, isClaudeCodeProvider, isCodexProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
 const logger = require('../utils/logger');
 
 const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
@@ -401,9 +402,10 @@ class ChatSessionManager {
 
     const isAcp = isAcpProvider(row.provider);
     const isClaudeCode = isClaudeCodeProvider(row.provider);
+    const isCodex = isCodexProvider(row.provider);
     const usesOpaqueSessionId = isAcp || isClaudeCode;
 
-    if (!usesOpaqueSessionId) {
+    if (!usesOpaqueSessionId && !isCodex) {
       // Pi sessions require a session file on disk
       if (!row.agent_session_id) {
         throw new Error(`Session ${sessionId} has no session file — cannot resume`);
@@ -414,16 +416,23 @@ class ChatSessionManager {
       }
     }
 
-    logger.info(`[ChatSession] Resuming session ${sessionId}${usesOpaqueSessionId ? ` (session ${row.agent_session_id || 'new'})` : ` from ${row.agent_session_id}`}`);
+    logger.info(`[ChatSession] Resuming session ${sessionId}${usesOpaqueSessionId ? ` (session ${row.agent_session_id || 'new'})` : isCodex ? ` (Codex thread ${row.agent_session_id || 'new'})` : ` from ${row.agent_session_id}`}`);
+
+    let resumeOptions = {};
+    if (isCodex) {
+      resumeOptions = row.agent_session_id ? { resumeThreadId: row.agent_session_id } : {};
+    } else if (usesOpaqueSessionId) {
+      resumeOptions = row.agent_session_id ? { resumeSessionId: row.agent_session_id } : {};
+    } else {
+      resumeOptions = { sessionPath: row.agent_session_id };
+    }
 
     const bridge = this._createBridge(row.provider, {
       provider: row.provider,
       model: row.model,
       cwd,
       systemPrompt,
-      ...(usesOpaqueSessionId
-        ? (row.agent_session_id ? { resumeSessionId: row.agent_session_id } : {})
-        : { sessionPath: row.agent_session_id }),
+      ...resumeOptions,
     });
 
     const listeners = {
@@ -517,6 +526,14 @@ class ChatSessionManager {
       return new ClaudeCodeBridge({
         ...options,
         claudeCommand: providerDef?.command,
+        env: providerDef?.env,
+      });
+    }
+    if (isCodexProvider(provider)) {
+      const providerDef = getChatProvider(provider);
+      return new CodexBridge({
+        ...options,
+        codexCommand: providerDef?.command,
         env: providerDef?.env,
       });
     }
@@ -628,7 +645,7 @@ class ChatSessionManager {
     });
 
     bridge.on('session', (event) => {
-      const sessionRef = event.sessionFile || event.sessionId;
+      const sessionRef = event.sessionFile || event.sessionId || event.threadId;
       if (sessionRef) {
         try {
           this._db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?')
