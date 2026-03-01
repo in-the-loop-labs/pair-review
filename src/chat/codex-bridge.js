@@ -29,6 +29,7 @@ class CodexBridge extends EventEmitter {
    * @param {string} [options.cwd] - Working directory for agent process
    * @param {string} [options.systemPrompt] - System prompt text
    * @param {string} [options.codexCommand] - Codex binary (default: 'codex')
+   * @param {string[]} [options.codexArgs] - Args for Codex binary (default: ['app-server'])
    * @param {Object} [options.env] - Extra env vars for subprocess
    * @param {string} [options.resumeThreadId] - Thread ID to resume
    * @param {Object} [options._deps] - Dependency injection for testing
@@ -41,11 +42,11 @@ class CodexBridge extends EventEmitter {
     this.env = options.env || {};
     this.resumeThreadId = options.resumeThreadId || null;
 
-    // Command resolution: env var → constructor option → config → default
-    this.codexCommand = process.env.PAIR_REVIEW_CODEX_CMD
-      || options.codexCommand
+    // Command resolution: constructor option → env var → default
+    this.codexCommand = options.codexCommand
+      || process.env.PAIR_REVIEW_CODEX_CMD
       || 'codex';
-    this.codexArgs = ['app-server'];
+    this.codexArgs = options.codexArgs || ['app-server'];
 
     this._deps = { ...defaults, ...options._deps };
     this._process = null;
@@ -175,11 +176,14 @@ class CodexBridge extends EventEmitter {
       const result = await this._sendRequest('thread/resume', {
         threadId: this.resumeThreadId,
       });
-      this._threadId = result.threadId || this.resumeThreadId;
+      this._threadId = result.thread?.id || result.threadId || this.resumeThreadId;
       logger.info(`[CodexBridge] Thread resumed: ${this._threadId}`);
     } else {
       const result = await this._sendRequest('thread/start', {});
-      this._threadId = result.threadId;
+      this._threadId = result.thread?.id || result.threadId;
+      if (!this._threadId) {
+        throw new Error('thread/start response missing thread ID');
+      }
       logger.info(`[CodexBridge] Thread created: ${this._threadId}`);
     }
 
@@ -211,10 +215,12 @@ class CodexBridge extends EventEmitter {
 
     // Send turn/start — completion is driven by turn/completed notification,
     // not by this response. Store turnId for abort support.
+    // Codex app-server expects `input` as an array of typed objects, not a
+    // plain string.  See https://developers.openai.com/codex/app-server/
     this._sendRequest('turn/start', {
       threadId: this._threadId,
-      input: messageContent,
-      approvalPolicy: 'auto-edit',
+      input: [{ type: 'text', text: messageContent }],
+      approvalPolicy: 'never',
     })
       .then((result) => {
         if (result && result.turnId) {
@@ -333,7 +339,10 @@ class CodexBridge extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       this._pendingRequests.set(id, { resolve, reject });
-      this._writeLine(message);
+      if (!this._writeLine(message)) {
+        this._pendingRequests.delete(id);
+        reject(new Error('Cannot write to Codex process — stdin not writable'));
+      }
     });
   }
 
@@ -357,10 +366,11 @@ class CodexBridge extends EventEmitter {
   _writeLine(obj) {
     if (!this._process || !this._process.stdin.writable) {
       logger.warn('[CodexBridge] Cannot write — stdin not writable');
-      return;
+      return false;
     }
     const line = JSON.stringify(obj) + '\n';
     this._process.stdin.write(line);
+    return true;
   }
 
   /**
@@ -530,6 +540,8 @@ class CodexBridge extends EventEmitter {
     const { method, id, params } = msg;
 
     if (method === 'requestApproval') {
+      // Safety net — approvalPolicy 'never' should prevent these, but auto-accept
+      // in case the server sends one anyway.
       logger.debug(`[CodexBridge] Auto-approving requestApproval (id=${id})`);
       this._sendResponse(id, { decision: 'accept' });
       return;

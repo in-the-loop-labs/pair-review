@@ -77,8 +77,9 @@ function setupHandshake(fakeProc, options = {}) {
         capabilities: {},
       });
     } else if (msg.method === 'thread/start') {
-      sendResponse(fakeProc, msg.id, { threadId });
+      sendResponse(fakeProc, msg.id, { thread: { id: threadId } });
     } else if (msg.method === 'thread/resume') {
+      // thread/resume returns flat { threadId } per Codex protocol (unlike thread/start's nested shape)
       sendResponse(fakeProc, msg.id, { threadId: msg.params?.threadId || threadId });
     } else if (msg.method === 'turn/start') {
       // Return turnId so the bridge can track the active turn
@@ -201,12 +202,12 @@ describe('CodexBridge', () => {
       }
     });
 
-    it('should prefer env var over explicit codexCommand', () => {
+    it('should prefer explicit codexCommand over env var', () => {
       const origEnv = process.env.PAIR_REVIEW_CODEX_CMD;
       try {
         process.env.PAIR_REVIEW_CODEX_CMD = '/env/codex';
         const bridge = new CodexBridge({ codexCommand: '/explicit/codex' });
-        expect(bridge.codexCommand).toBe('/env/codex');
+        expect(bridge.codexCommand).toBe('/explicit/codex');
       } finally {
         if (origEnv === undefined) {
           delete process.env.PAIR_REVIEW_CODEX_CMD;
@@ -214,6 +215,16 @@ describe('CodexBridge', () => {
           process.env.PAIR_REVIEW_CODEX_CMD = origEnv;
         }
       }
+    });
+
+    it('should accept custom codexArgs option', () => {
+      const bridge = new CodexBridge({ codexArgs: ['app-server', '--verbose'] });
+      expect(bridge.codexArgs).toEqual(['app-server', '--verbose']);
+    });
+
+    it('should default codexArgs to [app-server]', () => {
+      const bridge = new CodexBridge();
+      expect(bridge.codexArgs).toEqual(['app-server']);
     });
 
     it('should initialize internal state', () => {
@@ -488,11 +499,11 @@ describe('CodexBridge', () => {
       await tick();
 
       const firstTurn = messages.find(
-        (m) => m.method === 'turn/start' && m.params?.input?.includes('First message')
+        (m) => m.method === 'turn/start' && m.params?.input?.[0]?.text?.includes('First message')
       );
       expect(firstTurn).toBeDefined();
-      expect(firstTurn.params.input).toContain('You are a reviewer');
-      expect(firstTurn.params.input).toContain('First message');
+      expect(firstTurn.params.input).toEqual([{ type: 'text', text: expect.stringContaining('You are a reviewer') }]);
+      expect(firstTurn.params.input[0].text).toContain('First message');
 
       // Second message should NOT include system prompt
       bridge.sendMessage('Second message');
@@ -500,10 +511,10 @@ describe('CodexBridge', () => {
 
       rl.close();
       const secondTurn = messages.find(
-        (m) => m.method === 'turn/start' && m.params?.input?.includes('Second message')
+        (m) => m.method === 'turn/start' && m.params?.input?.[0]?.text?.includes('Second message')
       );
       expect(secondTurn).toBeDefined();
-      expect(secondTurn.params.input).not.toContain('You are a reviewer');
+      expect(secondTurn.params.input).toEqual([{ type: 'text', text: 'Second message' }]);
     });
 
     it('should not prepend system prompt when none is set', async () => {
@@ -519,10 +530,10 @@ describe('CodexBridge', () => {
 
       rl.close();
       const turnReq = messages.find(
-        (m) => m.method === 'turn/start' && m.params?.input?.includes('Hello')
+        (m) => m.method === 'turn/start' && m.params?.input?.[0]?.text?.includes('Hello')
       );
       expect(turnReq).toBeDefined();
-      expect(turnReq.params.input).toBe('Hello');
+      expect(turnReq.params.input).toEqual([{ type: 'text', text: 'Hello' }]);
     });
 
     it('should send turn/start with threadId, input, and approvalPolicy', async () => {
@@ -540,8 +551,8 @@ describe('CodexBridge', () => {
       const turnReq = messages.find((m) => m.method === 'turn/start');
       expect(turnReq).toBeDefined();
       expect(turnReq.params.threadId).toBe('test-thread-123');
-      expect(turnReq.params.input).toBe('Review this code');
-      expect(turnReq.params.approvalPolicy).toBe('auto-edit');
+      expect(turnReq.params.input).toEqual([{ type: 'text', text: 'Review this code' }]);
+      expect(turnReq.params.approvalPolicy).toBe('never');
     });
 
     it('should reset accumulated text on new message', async () => {
@@ -685,6 +696,82 @@ describe('CodexBridge', () => {
       expect(handler).toHaveBeenCalledWith(expect.objectContaining({
         status: 'end',
       }));
+    });
+
+    it('should emit tool_use with start on item/started (tool_call type)', async () => {
+      const { bridge, fakeProc } = await startedBridge();
+      const handler = vi.fn();
+      bridge.on('tool_use', handler);
+
+      sendNotification(fakeProc, 'item/started', {
+        type: 'tool_call',
+        id: 'tc-1',
+        name: 'read_file',
+      });
+      await tick();
+
+      expect(handler).toHaveBeenCalledWith({
+        toolCallId: 'tc-1',
+        toolName: 'read_file',
+        status: 'start',
+      });
+    });
+
+    it('should emit tool_use with end on item/completed (tool_call type)', async () => {
+      const { bridge, fakeProc } = await startedBridge();
+      const handler = vi.fn();
+      bridge.on('tool_use', handler);
+
+      sendNotification(fakeProc, 'item/completed', {
+        type: 'tool_call',
+        id: 'tc-1',
+        name: 'read_file',
+      });
+      await tick();
+
+      expect(handler).toHaveBeenCalledWith({
+        toolCallId: 'tc-1',
+        toolName: 'read_file',
+        status: 'end',
+      });
+    });
+
+    it('should emit tool_use with start on item/started (function_call type)', async () => {
+      const { bridge, fakeProc } = await startedBridge();
+      const handler = vi.fn();
+      bridge.on('tool_use', handler);
+
+      sendNotification(fakeProc, 'item/started', {
+        type: 'function_call',
+        id: 'fc-1',
+        name: 'search_code',
+      });
+      await tick();
+
+      expect(handler).toHaveBeenCalledWith({
+        toolCallId: 'fc-1',
+        toolName: 'search_code',
+        status: 'start',
+      });
+    });
+
+    it('should emit tool_use with end on item/completed (function_call type)', async () => {
+      const { bridge, fakeProc } = await startedBridge();
+      const handler = vi.fn();
+      bridge.on('tool_use', handler);
+
+      sendNotification(fakeProc, 'item/completed', {
+        type: 'function_call',
+        id: 'fc-1',
+        name: 'search_code',
+      });
+      await tick();
+
+      expect(handler).toHaveBeenCalledWith({
+        toolCallId: 'fc-1',
+        toolName: 'search_code',
+        status: 'end',
+      });
     });
 
     it('should not throw on unknown notification methods', async () => {
@@ -838,13 +925,14 @@ describe('CodexBridge', () => {
       const bridge = new CodexBridge({ _deps: mockDeps });
       await bridge.start();
 
-      // Start a turn but don't respond to it — it stays pending
-      // We need a request that won't be auto-responded by handshake
-      // The pending map should be cleared during close
-      const closePromise = bridge.close();
+      // Send a request that handshake won't auto-respond to
+      const pendingPromise = bridge._sendRequest('custom/method', {});
 
+      const closePromise = bridge.close();
       fakeProc.emit('close', 0, null);
       await closePromise;
+
+      await expect(pendingPromise).rejects.toThrow(/closing/);
     });
 
     it('should send SIGTERM to the process', async () => {

@@ -534,6 +534,7 @@ class ChatSessionManager {
       return new CodexBridge({
         ...options,
         codexCommand: providerDef?.command,
+        codexArgs: providerDef?.args,
         env: providerDef?.env,
       });
     }
