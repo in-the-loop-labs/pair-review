@@ -25,6 +25,7 @@ const {
   getChatProvider,
   getAllChatProviders,
   isAcpProvider,
+  isCodexProvider,
   checkChatProviderAvailability,
   checkAllChatProviders,
   getCachedChatAvailability,
@@ -134,14 +135,15 @@ describe('chat-providers', () => {
   });
 
   describe('getAllChatProviders', () => {
-    it('should return all four providers', () => {
+    it('should return all five providers', () => {
       const providers = getAllChatProviders();
-      expect(providers).toHaveLength(4);
+      expect(providers).toHaveLength(5);
       const ids = providers.map(p => p.id);
       expect(ids).toContain('pi');
       expect(ids).toContain('copilot-acp');
       expect(ids).toContain('gemini-acp');
       expect(ids).toContain('opencode-acp');
+      expect(ids).toContain('codex');
     });
 
     it('should return copies with overrides applied', () => {
@@ -173,6 +175,28 @@ describe('chat-providers', () => {
 
     it('should return false for unknown provider', () => {
       expect(isAcpProvider('unknown')).toBe(false);
+    });
+
+    it('should return false for codex', () => {
+      expect(isAcpProvider('codex')).toBe(false);
+    });
+  });
+
+  describe('isCodexProvider', () => {
+    it('should return true for codex', () => {
+      expect(isCodexProvider('codex')).toBe(true);
+    });
+
+    it('should return false for pi', () => {
+      expect(isCodexProvider('pi')).toBe(false);
+    });
+
+    it('should return false for ACP providers', () => {
+      expect(isCodexProvider('copilot-acp')).toBe(false);
+    });
+
+    it('should return false for unknown provider', () => {
+      expect(isCodexProvider('unknown')).toBe(false);
     });
   });
 

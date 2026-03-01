@@ -11,7 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const PiBridge = require('./pi-bridge');
 const AcpBridge = require('./acp-bridge');
-const { getChatProvider, isAcpProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
+const CodexBridge = require('./codex-bridge');
+const { getChatProvider, isAcpProvider, isCodexProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
 const logger = require('../utils/logger');
 
 const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
@@ -399,8 +400,9 @@ class ChatSessionManager {
     }
 
     const isAcp = isAcpProvider(row.provider);
+    const isCodex = isCodexProvider(row.provider);
 
-    if (!isAcp) {
+    if (!isAcp && !isCodex) {
       // Pi sessions require a session file on disk
       if (!row.agent_session_id) {
         throw new Error(`Session ${sessionId} has no session file — cannot resume`);
@@ -411,16 +413,23 @@ class ChatSessionManager {
       }
     }
 
-    logger.info(`[ChatSession] Resuming session ${sessionId}${isAcp ? ` (ACP session ${row.agent_session_id || 'new'})` : ` from ${row.agent_session_id}`}`);
+    logger.info(`[ChatSession] Resuming session ${sessionId}${isAcp ? ` (ACP session ${row.agent_session_id || 'new'})` : isCodex ? ` (Codex thread ${row.agent_session_id || 'new'})` : ` from ${row.agent_session_id}`}`);
+
+    let resumeOptions = {};
+    if (isCodex) {
+      resumeOptions = row.agent_session_id ? { resumeThreadId: row.agent_session_id } : {};
+    } else if (isAcp) {
+      resumeOptions = row.agent_session_id ? { resumeSessionId: row.agent_session_id } : {};
+    } else {
+      resumeOptions = { sessionPath: row.agent_session_id };
+    }
 
     const bridge = this._createBridge(row.provider, {
       provider: row.provider,
       model: row.model,
       cwd,
       systemPrompt,
-      ...(isAcp
-        ? (row.agent_session_id ? { resumeSessionId: row.agent_session_id } : {})
-        : { sessionPath: row.agent_session_id }),
+      ...resumeOptions,
     });
 
     const listeners = {
@@ -506,6 +515,14 @@ class ChatSessionManager {
         ...options,
         acpCommand: providerDef?.command,
         acpArgs: providerDef?.args,
+        env: providerDef?.env,
+      });
+    }
+    if (isCodexProvider(provider)) {
+      const providerDef = getChatProvider(provider);
+      return new CodexBridge({
+        ...options,
+        codexCommand: providerDef?.command,
         env: providerDef?.env,
       });
     }
@@ -617,7 +634,7 @@ class ChatSessionManager {
     });
 
     bridge.on('session', (event) => {
-      const sessionRef = event.sessionFile || event.sessionId;
+      const sessionRef = event.sessionFile || event.sessionId || event.threadId;
       if (sessionRef) {
         try {
           this._db.prepare('UPDATE chat_sessions SET agent_session_id = ? WHERE id = ?')
