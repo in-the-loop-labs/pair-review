@@ -22,7 +22,7 @@ const DEFAULT_CONFIG = {
   db_name: "",  // Custom database filename (default: database.db). Useful for per-worktree isolation.
   yolo: false,  // When true, skips fine-grained AI provider permission setup (equivalent to --yolo CLI flag)
   enable_chat: true,  // When true, enables the chat panel feature (uses chat_provider)
-  chat_provider: "pi",  // Chat provider: 'pi' (local Pi AI) or 'acp' (Agent Client Protocol)
+  chat_provider: "pi",  // Chat provider: 'pi', 'copilot-acp', 'gemini-acp', 'opencode-acp'
   comment_format: "legacy",  // Comment format preset or custom template for adopted suggestions
   chat: { enable_shortcuts: true },  // Chat panel settings (enable_shortcuts: show action shortcut buttons)
   providers: {},  // Custom provider configurations (overrides built-in defaults)

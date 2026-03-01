@@ -13,13 +13,15 @@ vi.mock('../../../src/utils/logger', () => ({
   section: vi.fn()
 }));
 
-// --- Patch PiBridge and AcpBridge via require.cache (CJS pattern) ---
+// --- Patch PiBridge, AcpBridge, and chat-providers via require.cache (CJS pattern) ---
 // session-manager.js does: const PiBridge = require('./pi-bridge')
 // We replace the cached module export before session-manager is loaded.
 const piBridgePath = require.resolve('../../../src/chat/pi-bridge');
 const acpBridgePath = require.resolve('../../../src/chat/acp-bridge');
+const chatProvidersPath = require.resolve('../../../src/chat/chat-providers');
 const originalPiBridgeExport = require(piBridgePath);
 const originalAcpBridgeExport = require(acpBridgePath);
+const originalChatProvidersExport = require(chatProvidersPath);
 
 // Shared state for controlling mock behavior per-test
 let _nextStartFail = false;
@@ -66,9 +68,27 @@ function MockAcpBridge(options) {
   return bridge;
 }
 
+// Mock chat-providers module
+const mockChatProviders = {
+  getChatProvider: vi.fn((id) => {
+    const providers = {
+      pi: { id: 'pi', name: 'Pi (RPC)', type: 'pi' },
+      'copilot-acp': { id: 'copilot-acp', name: 'Copilot (ACP)', type: 'acp', command: 'copilot', args: ['--acp', '--stdio'], env: {} },
+      'gemini-acp': { id: 'gemini-acp', name: 'Gemini (ACP)', type: 'acp', command: 'gemini', args: ['--experimental-acp'], env: {} },
+      'opencode-acp': { id: 'opencode-acp', name: 'OpenCode (ACP)', type: 'acp', command: 'opencode', args: ['acp'], env: {} },
+    };
+    return providers[id] || null;
+  }),
+  isAcpProvider: vi.fn((id) => {
+    return ['copilot-acp', 'gemini-acp', 'opencode-acp'].includes(id);
+  }),
+  applyConfigOverrides: vi.fn(),
+};
+
 // Replace the cached exports
 require.cache[piBridgePath].exports = MockPiBridge;
 require.cache[acpBridgePath].exports = MockAcpBridge;
+require.cache[chatProvidersPath].exports = mockChatProviders;
 
 // Now import session-manager (it will use our mocks)
 const ChatSessionManager = require('../../../src/chat/session-manager');
@@ -81,6 +101,7 @@ describe('ChatSessionManager', () => {
     // Restore original modules
     require.cache[piBridgePath].exports = originalPiBridgeExport;
     require.cache[acpBridgePath].exports = originalAcpBridgeExport;
+    require.cache[chatProvidersPath].exports = originalChatProvidersExport;
   });
 
   beforeEach(() => {
@@ -800,24 +821,58 @@ describe('ChatSessionManager', () => {
   });
 
   describe('_createBridge', () => {
-    it('should return AcpBridge for acp provider', async () => {
-      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+    it('should return AcpBridge for copilot-acp provider', async () => {
+      await manager.createSession({ provider: 'copilot-acp', reviewId: 1 });
       const bridge = _createdAcpBridges[0];
       expect(bridge).toBeDefined();
       expect(bridge._bridgeType).toBe('acp');
     });
 
     it('should return PiBridge for pi provider', async () => {
-      const session = await manager.createSession({ provider: 'pi', reviewId: 1 });
+      await manager.createSession({ provider: 'pi', reviewId: 1 });
       const bridge = _createdBridges[0];
       expect(bridge._bridgeType).toBe('pi');
+    });
+
+    it('should pass copilot-acp command and args to AcpBridge', async () => {
+      await manager.createSession({ provider: 'copilot-acp', reviewId: 1 });
+      const bridge = _createdAcpBridges[0];
+      expect(bridge._constructorOptions.acpCommand).toBe('copilot');
+      expect(bridge._constructorOptions.acpArgs).toEqual(['--acp', '--stdio']);
+    });
+
+    it('should pass gemini-acp command and args to AcpBridge', async () => {
+      await manager.createSession({ provider: 'gemini-acp', reviewId: 1 });
+      const bridge = _createdAcpBridges[0];
+      expect(bridge._constructorOptions.acpCommand).toBe('gemini');
+      expect(bridge._constructorOptions.acpArgs).toEqual(['--experimental-acp']);
+    });
+
+    it('should pass opencode-acp command and args to AcpBridge', async () => {
+      await manager.createSession({ provider: 'opencode-acp', reviewId: 1 });
+      const bridge = _createdAcpBridges[0];
+      expect(bridge._constructorOptions.acpCommand).toBe('opencode');
+      expect(bridge._constructorOptions.acpArgs).toEqual(['acp']);
+    });
+  });
+
+  describe('constructor', () => {
+    it('should accept configOverrides parameter', () => {
+      const mgr = new ChatSessionManager(db, { 'copilot-acp': { command: '/custom' } });
+      expect(mockChatProviders.applyConfigOverrides).toHaveBeenCalledWith({ 'copilot-acp': { command: '/custom' } });
+    });
+
+    it('should call applyConfigOverrides with empty object by default', () => {
+      mockChatProviders.applyConfigOverrides.mockClear();
+      const mgr = new ChatSessionManager(db);
+      expect(mockChatProviders.applyConfigOverrides).toHaveBeenCalledWith({});
     });
   });
 
   describe('ACP provider sessions', () => {
-    it('should create a session with acp provider', async () => {
+    it('should create a session with copilot-acp provider', async () => {
       const result = await manager.createSession({
-        provider: 'acp',
+        provider: 'copilot-acp',
         reviewId: 1,
       });
 
@@ -825,12 +880,12 @@ describe('ChatSessionManager', () => {
       expect(result.status).toBe('active');
 
       const row = db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(result.id);
-      expect(row.provider).toBe('acp');
+      expect(row.provider).toBe('copilot-acp');
       expect(row.status).toBe('active');
     });
 
     it('should send messages through ACP bridge', async () => {
-      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+      const session = await manager.createSession({ provider: 'copilot-acp', reviewId: 1 });
       const bridge = _createdAcpBridges[0];
 
       await manager.sendMessage(session.id, 'Hello ACP');
@@ -838,7 +893,7 @@ describe('ChatSessionManager', () => {
     });
 
     it('should store sessionId from ACP bridge session event', async () => {
-      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+      const session = await manager.createSession({ provider: 'copilot-acp', reviewId: 1 });
       const bridge = _createdAcpBridges[0];
 
       // ACP bridges emit session events with sessionId (not sessionFile)
@@ -849,7 +904,7 @@ describe('ChatSessionManager', () => {
     });
 
     it('should resume ACP session via loadSession with stored sessionId', async () => {
-      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+      const session = await manager.createSession({ provider: 'copilot-acp', reviewId: 1 });
       const bridge = _createdAcpBridges[0];
 
       // Store an opaque ACP session ID
@@ -867,7 +922,7 @@ describe('ChatSessionManager', () => {
     });
 
     it('should resume ACP session without agent_session_id (fresh session)', async () => {
-      const session = await manager.createSession({ provider: 'acp', reviewId: 1 });
+      const session = await manager.createSession({ provider: 'copilot-acp', reviewId: 1 });
       await manager.closeSession(session.id);
 
       // ACP sessions without stored sessionId create a fresh session

@@ -106,21 +106,6 @@ describe('AcpBridge', () => {
       expect(bridge.env).toEqual({ CUSTOM_VAR: '1' });
     });
 
-    it('should use PAIR_REVIEW_ACP_CMD env var when set', () => {
-      const orig = process.env.PAIR_REVIEW_ACP_CMD;
-      process.env.PAIR_REVIEW_ACP_CMD = '/custom/agent';
-      try {
-        const bridge = new AcpBridge();
-        expect(bridge.acpCommand).toBe('/custom/agent');
-      } finally {
-        if (orig === undefined) {
-          delete process.env.PAIR_REVIEW_ACP_CMD;
-        } else {
-          process.env.PAIR_REVIEW_ACP_CMD = orig;
-        }
-      }
-    });
-
     it('should initialize internal state', () => {
       const bridge = new AcpBridge();
       expect(bridge._process).toBeNull();

@@ -59,6 +59,38 @@ async function triggerAnalysisAndWait(page) {
   await progressModal.waitFor({ state: 'hidden', timeout: 10000 });
 }
 
+// Helper to wait for the progress modal to be fully ready (visible + body populated)
+async function waitForProgressModalReady(page, timeout = 5000) {
+  const progressModal = page.locator('#council-progress-modal');
+  await progressModal.waitFor({ state: 'visible', timeout });
+  // Wait for the modal body to be populated with at least one level header
+  await progressModal.locator('.council-level-header').first().waitFor({ state: 'attached', timeout });
+  return progressModal;
+}
+
+// Helper to dismiss the progress modal if it's currently blocking interactions.
+// This can happen when a previous test triggered an analysis that is still running
+// (or completed but the modal wasn't closed), causing the page to auto-show it.
+async function dismissProgressModalIfVisible(page) {
+  const progressModal = page.locator('#council-progress-modal');
+  const isVisible = await progressModal.isVisible();
+  if (isVisible) {
+    // Click the "Run in Background" button to hide the modal without cancelling
+    const bgBtn = progressModal.locator('.council-bg-btn, button:has-text("Background")').first();
+    const bgBtnVisible = await bgBtn.isVisible().catch(() => false);
+    if (bgBtnVisible) {
+      await bgBtn.click();
+    } else {
+      // Fallback: directly hide via JS
+      await page.evaluate(() => {
+        const modal = document.getElementById('council-progress-modal');
+        if (modal) modal.style.display = 'none';
+      });
+    }
+    await progressModal.waitFor({ state: 'hidden', timeout: 3000 });
+  }
+}
+
 // Helper to pre-seed AI suggestions by calling the analyze endpoint directly
 async function seedAISuggestions(page) {
   // Make a direct POST request to trigger analysis and verify success
@@ -164,6 +196,9 @@ test.describe('Progress Modal', () => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
 
+    // Dismiss any progress modal left over from a previous test's analysis
+    await dismissProgressModalIfVisible(page);
+
     // Click analyze button
     const analyzeBtn = page.locator('#analyze-btn, button:has-text("Analyze")').first();
     await analyzeBtn.click();
@@ -184,14 +219,16 @@ test.describe('Progress Modal', () => {
       }
     }
 
-    // Progress modal should appear (unified council-progress-modal is used for all analysis types)
-    const progressModal = page.locator('#council-progress-modal');
-    await expect(progressModal).toBeVisible({ timeout: 5000 });
+    // Progress modal should appear with body populated
+    await waitForProgressModalReady(page);
   });
 
   test('should show level progress indicators in modal', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Dismiss any progress modal left over from a previous test's analysis
+    await dismissProgressModalIfVisible(page);
 
     // Click analyze button
     const analyzeBtn = page.locator('#analyze-btn, button:has-text("Analyze")').first();
@@ -211,9 +248,8 @@ test.describe('Progress Modal', () => {
       }
     }
 
-    // Wait for unified progress modal
-    const progressModal = page.locator('#council-progress-modal');
-    await progressModal.waitFor({ state: 'visible', timeout: 5000 });
+    // Wait for progress modal with body fully populated
+    const progressModal = await waitForProgressModalReady(page);
 
     // Should show level indicators (Level 1, Level 2, Level 3)
     const progressContent = await progressModal.textContent();
@@ -225,6 +261,9 @@ test.describe('Progress Modal', () => {
   test('should have cancel and background buttons', async ({ page }) => {
     await page.goto('/pr/test-owner/test-repo/1');
     await waitForDiffToRender(page);
+
+    // Dismiss any progress modal left over from a previous test's analysis
+    await dismissProgressModalIfVisible(page);
 
     // Click analyze button
     await page.locator('#analyze-btn, button:has-text("Analyze")').first().click();
@@ -243,9 +282,8 @@ test.describe('Progress Modal', () => {
       }
     }
 
-    // Wait for unified progress modal
-    const progressModal = page.locator('#council-progress-modal');
-    await progressModal.waitFor({ state: 'visible', timeout: 5000 });
+    // Wait for progress modal with body fully populated
+    const progressModal = await waitForProgressModalReady(page);
 
     // Should have Run in Background button
     const backgroundBtn = progressModal.locator('.council-bg-btn, button:has-text("Background")');
@@ -723,6 +761,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
     // Seed AI suggestions
     await seedAISuggestions(page);
 
+    // Dismiss the progress modal that may have appeared from the seeded analysis
+    await dismissProgressModalIfVisible(page);
+
     // Wait for findings to appear in the panel
     await page.waitForSelector('.finding-item', { timeout: 5000 });
 
@@ -730,15 +771,16 @@ test.describe('Quick Action Buttons in Review Panel', () => {
     const activeFinding = page.locator('.finding-item-wrapper:has(.finding-active)').first();
     await expect(activeFinding).toBeVisible();
 
-    // Quick actions should be hidden initially
+    // Wait for quick-actions element to be attached before interacting
     const quickActions = activeFinding.locator('.finding-quick-actions');
+    await quickActions.waitFor({ state: 'attached', timeout: 5000 });
     await expect(quickActions).toHaveCSS('opacity', '0');
 
     // Hover over the finding
     await activeFinding.hover();
 
-    // Quick actions should now be visible
-    await expect(quickActions).toHaveCSS('opacity', '1');
+    // Quick actions should now be visible (allow time for 150ms CSS transition)
+    await expect(quickActions).toHaveCSS('opacity', '1', { timeout: 3000 });
 
     // Should have adopt button
     const adoptBtn = quickActions.locator('.quick-action-adopt');
@@ -856,6 +898,9 @@ test.describe('Quick Action Buttons in Review Panel', () => {
 
     // Seed AI suggestions
     await seedAISuggestions(page);
+
+    // Dismiss the progress modal that may have appeared from the seeded analysis
+    await dismissProgressModalIfVisible(page);
 
     // Wait for findings to appear
     await page.waitForSelector('.finding-item', { timeout: 5000 });

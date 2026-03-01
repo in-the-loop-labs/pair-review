@@ -896,17 +896,17 @@
         const config = await response.json();
         updateCommandExamples(config.is_running_via_npx);
 
-        // Expose chat provider to components (ChatPanel reads this)
+        // Expose chat provider config to components (ChatPanel reads these)
         window.__pairReview = window.__pairReview || {};
         window.__pairReview.chatProvider = config.chat_provider || 'pi';
+        const chatProviders = config.chat_providers || [];
+        window.__pairReview.chatProviders = chatProviders;
 
         // Set chat feature state based on config and provider availability
-        // ACP provider is always considered available (connects to external server)
         let chatState = 'disabled';
         if (config.enable_chat) {
-          const chatProvider = config.chat_provider || 'pi';
-          const providerAvailable = chatProvider === 'pi' ? config.pi_available : true;
-          chatState = providerAvailable ? 'available' : 'unavailable';
+          const anyAvailable = chatProviders.some(p => p.available);
+          chatState = anyAvailable ? 'available' : 'unavailable';
         }
         document.documentElement.setAttribute('data-chat', chatState);
         window.dispatchEvent(new CustomEvent('chat-state-changed', { detail: { state: chatState } }));

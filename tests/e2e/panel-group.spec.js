@@ -230,7 +230,8 @@ test.describe('Panel Group - PR Mode', () => {
           comment_button_action: 'submit',
           is_running_via_npx: false,
           enable_chat: false,
-          pi_available: false
+          pi_available: false,
+          chat_providers: []
         })
       });
     });
@@ -286,7 +287,7 @@ test.describe('Panel Group - PR Mode', () => {
   });
 
   test('chat panel visibility persists on reload', async ({ page }) => {
-    // Mock /api/config to report Pi as available (persists across reload)
+    // Mock /api/config to report a chat provider as available (persists across reload)
     await page.route('**/api/config', async (route) => {
       await route.fulfill({
         contentType: 'application/json',
@@ -295,7 +296,10 @@ test.describe('Panel Group - PR Mode', () => {
           comment_button_action: 'submit',
           is_running_via_npx: false,
           enable_chat: true,
-          pi_available: true
+          pi_available: true,
+          chat_providers: [
+            { id: 'pi', name: 'Pi (RPC)', available: true }
+          ]
         })
       });
     });
