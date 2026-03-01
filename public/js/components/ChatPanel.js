@@ -663,6 +663,7 @@ class ChatPanel {
 
       if (mru.provider) {
         this._updateTitle(mru.provider, mru.model);
+        this._activeProvider = mru.provider;
       }
 
       if (mru.message_count > 0) {
@@ -813,8 +814,10 @@ class ChatPanel {
    * @param {string} id - Provider ID to activate
    */
   _selectProvider(id) {
+    if (id === this._activeProvider) return;
     this._activeProvider = id;
     this._updateTitle();
+    this._startNewConversation();
   }
 
   // ── Session picker dropdown ────────────────────────────────────────────
@@ -937,6 +940,7 @@ class ChatPanel {
     // 4. Update title
     if (sessionData.provider) {
       this._updateTitle(sessionData.provider, sessionData.model);
+      this._activeProvider = sessionData.provider;
     } else {
       this._updateTitle();
     }

@@ -300,10 +300,11 @@ async function startServer(sharedDb = null) {
     // condition where the frontend fetches config before the cache is populated)
     const defaultProvider = config.default_provider || 'claude';
     try {
-      await Promise.all([
-        checkAllProviders(defaultProvider),
-        checkAllChatProviders(),
-      ]);
+      // Sequential: checkAllProviders must finish first because it populates
+      // the AI provider availability cache that checkAllChatProviders reads
+      // (e.g. the pi chat provider calls getCachedAvailability('pi')).
+      await checkAllProviders(defaultProvider);
+      await checkAllChatProviders();
     } catch (err) {
       console.warn('Provider availability check failed:', err.message);
     }

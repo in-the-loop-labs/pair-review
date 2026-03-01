@@ -11018,8 +11018,9 @@ body.resizing * {
 .chat-panel__session-dropdown {
   position: absolute;
   top: calc(100% + 4px);
-  left: 0;
+  left: auto;
   right: 0;
+  width: 320px;
   background: var(--color-bg-primary, #fff);
   border: 1px solid var(--color-border-primary, #d0d7de);
   border-radius: 8px;
