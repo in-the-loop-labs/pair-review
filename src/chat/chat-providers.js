@@ -2,7 +2,7 @@
 /**
  * Chat Provider Registry
  *
- * Defines named chat providers (Pi, Copilot, Gemini, OpenCode) with their
+ * Defines named chat providers (Pi, Copilot, Gemini, OpenCode, Claude, Codex) with their
  * default commands/args, config overrides, and availability checks.
  */
 
@@ -53,6 +53,14 @@ const CHAT_PROVIDERS = {
     type: 'claude',
     command: 'claude',
     args: [],
+    env: {},
+  },
+  codex: {
+    id: 'codex',
+    name: 'Codex (JSON-RPC)',
+    type: 'codex',
+    command: 'codex',
+    args: ['app-server'],
     env: {},
   },
 };
@@ -126,6 +134,16 @@ function isClaudeCodeProvider(id) {
 }
 
 /**
+ * Check if a provider ID corresponds to a Codex provider.
+ * @param {string} id
+ * @returns {boolean}
+ */
+function isCodexProvider(id) {
+  const provider = CHAT_PROVIDERS[id];
+  return provider?.type === 'codex';
+}
+
+/**
  * Check availability of a single chat provider.
  * For Pi, delegates to the existing AI provider availability cache.
  * For ACP providers, spawns `<command> --version` to verify the binary exists.
@@ -144,6 +162,9 @@ async function checkChatProviderAvailability(id, _deps) {
     const cached = getCachedAvailability('pi');
     return { available: cached?.available || false, error: cached?.error };
   }
+
+  // Codex uses the same binary-check pattern as ACP providers
+  // (falls through to the spawn check below)
 
   const deps = { ...defaults, ..._deps };
   const command = provider.command;
@@ -234,6 +255,7 @@ module.exports = {
   getAllChatProviders,
   isAcpProvider,
   isClaudeCodeProvider,
+  isCodexProvider,
   checkChatProviderAvailability,
   checkAllChatProviders,
   getCachedChatAvailability,

@@ -26,6 +26,7 @@ const {
   getAllChatProviders,
   isAcpProvider,
   isClaudeCodeProvider,
+  isCodexProvider,
   checkChatProviderAvailability,
   checkAllChatProviders,
   getCachedChatAvailability,
@@ -135,15 +136,16 @@ describe('chat-providers', () => {
   });
 
   describe('getAllChatProviders', () => {
-    it('should return all five providers', () => {
+    it('should return all six providers', () => {
       const providers = getAllChatProviders();
-      expect(providers).toHaveLength(5);
+      expect(providers).toHaveLength(6);
       const ids = providers.map(p => p.id);
       expect(ids).toContain('pi');
       expect(ids).toContain('copilot-acp');
       expect(ids).toContain('gemini-acp');
       expect(ids).toContain('opencode-acp');
       expect(ids).toContain('claude');
+      expect(ids).toContain('codex');
     });
 
     it('should return copies with overrides applied', () => {
@@ -180,6 +182,10 @@ describe('chat-providers', () => {
     it('should return false for claude', () => {
       expect(isAcpProvider('claude')).toBe(false);
     });
+
+    it('should return false for codex', () => {
+      expect(isAcpProvider('codex')).toBe(false);
+    });
   });
 
   describe('isClaudeCodeProvider', () => {
@@ -198,6 +204,24 @@ describe('chat-providers', () => {
 
     it('should return false for unknown provider', () => {
       expect(isClaudeCodeProvider('unknown')).toBe(false);
+    });
+  });
+
+  describe('isCodexProvider', () => {
+    it('should return true for codex', () => {
+      expect(isCodexProvider('codex')).toBe(true);
+    });
+
+    it('should return false for pi', () => {
+      expect(isCodexProvider('pi')).toBe(false);
+    });
+
+    it('should return false for ACP providers', () => {
+      expect(isCodexProvider('copilot-acp')).toBe(false);
+    });
+
+    it('should return false for unknown provider', () => {
+      expect(isCodexProvider('unknown')).toBe(false);
     });
   });
 
@@ -294,6 +318,7 @@ describe('chat-providers', () => {
       expect(cache['gemini-acp']).toEqual({ available: true });
       expect(cache['opencode-acp']).toEqual({ available: true });
       expect(cache['claude']).toEqual({ available: true });
+      expect(cache.codex).toEqual({ available: true });
     });
   });
 
