@@ -3879,6 +3879,26 @@ describe('ChatPanel', () => {
       expect(firstBadge.dataset.tool).toBe('Grep');
       expect(firstBadge.innerHTML).toContain('Grep');
     });
+
+    it('should create a persistent badge for Agent tools (same as Task)', () => {
+      chatPanel._showToolUse('Agent', 'start', { description: 'research stuff' });
+
+      expect(streamingMsg.insertBefore).toHaveBeenCalled();
+      const badge = streamingMsg.insertBefore.mock.calls[0][0];
+      expect(badge.className).toBe('chat-panel__tool-badge');
+      expect(badge.className).not.toContain('transient');
+      expect(badge.dataset.tool).toBe('Agent');
+    });
+
+    it('should return early without crashing when toolName is null', () => {
+      expect(() => chatPanel._showToolUse(null, 'start')).not.toThrow();
+      expect(streamingMsg.insertBefore).not.toHaveBeenCalled();
+    });
+
+    it('should return early without crashing when toolName is undefined', () => {
+      expect(() => chatPanel._showToolUse(undefined, 'start')).not.toThrow();
+      expect(streamingMsg.insertBefore).not.toHaveBeenCalled();
+    });
   });
 
   // -----------------------------------------------------------------------

@@ -25,6 +25,7 @@ const {
   getChatProvider,
   getAllChatProviders,
   isAcpProvider,
+  isClaudeCodeProvider,
   checkChatProviderAvailability,
   checkAllChatProviders,
   getCachedChatAvailability,
@@ -134,14 +135,15 @@ describe('chat-providers', () => {
   });
 
   describe('getAllChatProviders', () => {
-    it('should return all four providers', () => {
+    it('should return all five providers', () => {
       const providers = getAllChatProviders();
-      expect(providers).toHaveLength(4);
+      expect(providers).toHaveLength(5);
       const ids = providers.map(p => p.id);
       expect(ids).toContain('pi');
       expect(ids).toContain('copilot-acp');
       expect(ids).toContain('gemini-acp');
       expect(ids).toContain('opencode-acp');
+      expect(ids).toContain('claude');
     });
 
     it('should return copies with overrides applied', () => {
@@ -173,6 +175,29 @@ describe('chat-providers', () => {
 
     it('should return false for unknown provider', () => {
       expect(isAcpProvider('unknown')).toBe(false);
+    });
+
+    it('should return false for claude', () => {
+      expect(isAcpProvider('claude')).toBe(false);
+    });
+  });
+
+  describe('isClaudeCodeProvider', () => {
+    it('should return true for claude', () => {
+      expect(isClaudeCodeProvider('claude')).toBe(true);
+    });
+
+    it('should return false for pi', () => {
+      expect(isClaudeCodeProvider('pi')).toBe(false);
+    });
+
+    it('should return false for ACP providers', () => {
+      expect(isClaudeCodeProvider('copilot-acp')).toBe(false);
+      expect(isClaudeCodeProvider('gemini-acp')).toBe(false);
+    });
+
+    it('should return false for unknown provider', () => {
+      expect(isClaudeCodeProvider('unknown')).toBe(false);
     });
   });
 
@@ -268,6 +293,7 @@ describe('chat-providers', () => {
       expect(cache['copilot-acp']).toEqual({ available: true });
       expect(cache['gemini-acp']).toEqual({ available: true });
       expect(cache['opencode-acp']).toEqual({ available: true });
+      expect(cache['claude']).toEqual({ available: true });
     });
   });
 

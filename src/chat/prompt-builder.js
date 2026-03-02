@@ -82,7 +82,7 @@ function buildChatPrompt({ review, prData, skillPath, chatInstructions }) {
     '## Tool usage\n\n' +
     'Prefer answering from context you already have (the diff, suggestions, and prior conversation). ' +
     'For simple lookups — reading a file, searching for a symbol, running a git command — use the basic tools directly. ' +
-    'Only use the Task tool for genuinely large, multi-step operations that would consume significant context ' +
+    'Only use the Task/Agent tool for genuinely large, multi-step operations that would consume significant context ' +
     '(e.g., tracing a complex call chain across many files, or broad codebase exploration). ' +
     'Most chat questions should not require a Task.'
   );

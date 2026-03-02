@@ -47,6 +47,14 @@ const CHAT_PROVIDERS = {
     args: ['acp'],
     env: {},
   },
+  claude: {
+    id: 'claude',
+    name: 'Claude (NDJSON)',
+    type: 'claude',
+    command: 'claude',
+    args: [],
+    env: {},
+  },
 };
 
 /** Stored config overrides from `config.providers` */
@@ -105,6 +113,16 @@ function getAllChatProviders() {
 function isAcpProvider(id) {
   const provider = CHAT_PROVIDERS[id];
   return provider?.type === 'acp';
+}
+
+/**
+ * Check if a provider ID corresponds to a Claude Code provider.
+ * @param {string} id
+ * @returns {boolean}
+ */
+function isClaudeCodeProvider(id) {
+  const provider = CHAT_PROVIDERS[id];
+  return provider?.type === 'claude';
 }
 
 /**
@@ -215,6 +233,7 @@ module.exports = {
   getChatProvider,
   getAllChatProviders,
   isAcpProvider,
+  isClaudeCodeProvider,
   checkChatProviderAvailability,
   checkAllChatProviders,
   getCachedChatAvailability,
