@@ -24,7 +24,8 @@ claude --print \
        --input-format stream-json \
        --verbose \
        --include-partial-messages \
-       --allowedTools "Read,Bash,Grep,Glob,Edit,Write" \
+       --no-hooks \
+       --allowedTools "Read,Bash,Grep,Glob,Edit,Write,Agent" \
        -p ""
 ```
 
@@ -36,6 +37,7 @@ The `-p ""` is required for headless mode. The empty prompt is ignored when `--i
 - `Read`, `Grep`, `Glob` — code exploration (mirrors PiBridge's `read,grep,find`)
 - `Bash` — shell commands (mirrors PiBridge's `bash,ls`)
 - `Edit`, `Write` — code modifications (chat assistant may help with code changes)
+- `Agent` — task delegation (enables Claude to spawn subagents for complex work)
 
 This follows the same `--allowedTools` pattern as `src/ai/claude-provider.js:157-175`.
 
@@ -80,7 +82,7 @@ const defaults = {
 ```
 
 **`start()` lifecycle:**
-1. Build args array: `['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--verbose', '--include-partial-messages', '--allowedTools', CLAUDE_CHAT_TOOLS, '-p', '']` where `CLAUDE_CHAT_TOOLS = 'Read,Bash,Grep,Glob,Edit,Write'`
+1. Build args array: `['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--verbose', '--include-partial-messages', '--allowedTools', CLAUDE_CHAT_TOOLS, '-p', '']` where `CLAUDE_CHAT_TOOLS = 'Read,Bash,Grep,Glob,Edit,Write,Agent'`
 2. If `resumeSessionId`, prepend `['--resume', resumeSessionId]`
 3. If `model`, add `['--model', model]`
 4. Spawn: `deps.spawn(claudeCommand, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'], env })`
