@@ -27,6 +27,8 @@ function createFakeProcess() {
   proc.stderr = new PassThrough();
   proc.kill = vi.fn();
   proc.pid = 99999;
+  proc.exitCode = null;
+  proc.signalCode = null;
   return proc;
 }
 
@@ -297,7 +299,26 @@ describe('ClaudeCodeBridge', () => {
       await expect(bridge.start()).rejects.toThrow('ClaudeCodeBridge already started');
     });
 
-    it('should emit error on spawn failure (e.g., ENOENT)', async () => {
+    it('should reject start() on spawn failure (e.g., ENOENT) and clear _process', async () => {
+      const fakeProc = createFakeProcess();
+      const rlEmitter = new EventEmitter();
+      rlEmitter.close = vi.fn();
+
+      // Spawn mock that emits an error synchronously (before setImmediate fires)
+      const mockSpawn = vi.fn().mockImplementation(() => {
+        setImmediate(() => fakeProc.emit('error', new Error('ENOENT')));
+        return fakeProc;
+      });
+      const mockCreateInterface = vi.fn().mockReturnValue(rlEmitter);
+      const mockDeps = { spawn: mockSpawn, createInterface: mockCreateInterface };
+
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+
+      await expect(bridge.start()).rejects.toThrow('Failed to start Claude CLI: ENOENT');
+      expect(bridge._process).toBeNull();
+    });
+
+    it('should emit error on process error after start', async () => {
       const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
       await startBridge(bridge, rlEmitter);
@@ -681,6 +702,16 @@ describe('ClaudeCodeBridge', () => {
       expect(bridge._inMessage).toBe(true);
     });
 
+    it('should reset _inMessage if _write throws', async () => {
+      const { mockDeps, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      bridge._write = () => { throw new Error('EPIPE'); };
+      await expect(bridge.sendMessage('test')).rejects.toThrow('EPIPE');
+      expect(bridge.isBusy()).toBe(false);
+    });
+
     it('should prepend system prompt to first message only', async () => {
       const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({
@@ -745,13 +776,14 @@ describe('ClaudeCodeBridge', () => {
       expect(() => bridge.abort()).not.toThrow();
     });
 
-    it('should do nothing when no sessionId', async () => {
-      const { mockDeps, rlEmitter } = createMockDeps();
+    it('should send SIGTERM when no session ID', async () => {
+      const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
       const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
       await startBridge(bridge, rlEmitter);
       bridge._sessionId = null;
 
-      expect(() => bridge.abort()).not.toThrow();
+      bridge.abort();
+      expect(fakeProc.kill).toHaveBeenCalledWith('SIGTERM');
     });
   });
 
@@ -850,6 +882,35 @@ describe('ClaudeCodeBridge', () => {
       fakeProc.emit('close', 0, 'SIGTERM');
 
       await expect(closePromise).resolves.toBeUndefined();
+    });
+
+    it('should resolve immediately if process already exited', async () => {
+      const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      // Simulate the process having already exited
+      fakeProc.exitCode = 0;
+      fakeProc.signalCode = null;
+
+      await bridge.close();
+      expect(bridge._process).toBeNull();
+    });
+
+    it('should null _process in onClose handler', async () => {
+      const { mockDeps, fakeProc, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({ _deps: mockDeps });
+      await startBridge(bridge, rlEmitter);
+
+      // exitCode/signalCode are null (not exited yet) — default for our fake process
+      fakeProc.exitCode = null;
+      fakeProc.signalCode = null;
+
+      const closePromise = bridge.close();
+      fakeProc.emit('close', 0, 'SIGTERM');
+      await closePromise;
+
+      expect(bridge._process).toBeNull();
     });
   });
 

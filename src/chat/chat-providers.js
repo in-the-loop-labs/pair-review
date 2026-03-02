@@ -47,10 +47,10 @@ const CHAT_PROVIDERS = {
     args: ['acp'],
     env: {},
   },
-  'claude-code': {
-    id: 'claude-code',
-    name: 'Claude Code',
-    type: 'claude-code',
+  claude: {
+    id: 'claude',
+    name: 'Claude (NDJSON)',
+    type: 'claude',
     command: 'claude',
     args: [],
     env: {},
@@ -122,7 +122,7 @@ function isAcpProvider(id) {
  */
 function isClaudeCodeProvider(id) {
   const provider = CHAT_PROVIDERS[id];
-  return provider?.type === 'claude-code';
+  return provider?.type === 'claude';
 }
 
 /**

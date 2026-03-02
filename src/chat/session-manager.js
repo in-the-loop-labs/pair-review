@@ -401,8 +401,9 @@ class ChatSessionManager {
 
     const isAcp = isAcpProvider(row.provider);
     const isClaudeCode = isClaudeCodeProvider(row.provider);
+    const usesOpaqueSessionId = isAcp || isClaudeCode;
 
-    if (!isAcp && !isClaudeCode) {
+    if (!usesOpaqueSessionId) {
       // Pi sessions require a session file on disk
       if (!row.agent_session_id) {
         throw new Error(`Session ${sessionId} has no session file — cannot resume`);
@@ -413,14 +414,14 @@ class ChatSessionManager {
       }
     }
 
-    logger.info(`[ChatSession] Resuming session ${sessionId}${(isAcp || isClaudeCode) ? ` (session ${row.agent_session_id || 'new'})` : ` from ${row.agent_session_id}`}`);
+    logger.info(`[ChatSession] Resuming session ${sessionId}${usesOpaqueSessionId ? ` (session ${row.agent_session_id || 'new'})` : ` from ${row.agent_session_id}`}`);
 
     const bridge = this._createBridge(row.provider, {
       provider: row.provider,
       model: row.model,
       cwd,
       systemPrompt,
-      ...((isAcp || isClaudeCode)
+      ...(usesOpaqueSessionId
         ? (row.agent_session_id ? { resumeSessionId: row.agent_session_id } : {})
         : { sessionPath: row.agent_session_id }),
     });

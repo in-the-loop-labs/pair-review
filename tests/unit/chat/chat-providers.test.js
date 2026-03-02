@@ -143,7 +143,7 @@ describe('chat-providers', () => {
       expect(ids).toContain('copilot-acp');
       expect(ids).toContain('gemini-acp');
       expect(ids).toContain('opencode-acp');
-      expect(ids).toContain('claude-code');
+      expect(ids).toContain('claude');
     });
 
     it('should return copies with overrides applied', () => {
@@ -177,14 +177,14 @@ describe('chat-providers', () => {
       expect(isAcpProvider('unknown')).toBe(false);
     });
 
-    it('should return false for claude-code', () => {
-      expect(isAcpProvider('claude-code')).toBe(false);
+    it('should return false for claude', () => {
+      expect(isAcpProvider('claude')).toBe(false);
     });
   });
 
   describe('isClaudeCodeProvider', () => {
-    it('should return true for claude-code', () => {
-      expect(isClaudeCodeProvider('claude-code')).toBe(true);
+    it('should return true for claude', () => {
+      expect(isClaudeCodeProvider('claude')).toBe(true);
     });
 
     it('should return false for pi', () => {
@@ -293,6 +293,7 @@ describe('chat-providers', () => {
       expect(cache['copilot-acp']).toEqual({ available: true });
       expect(cache['gemini-acp']).toEqual({ available: true });
       expect(cache['opencode-acp']).toEqual({ available: true });
+      expect(cache['claude']).toEqual({ available: true });
     });
   });
 

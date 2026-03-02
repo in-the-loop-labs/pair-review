@@ -85,7 +85,7 @@ function MockClaudeCodeBridge(options) {
   bridge.isReady = vi.fn().mockReturnValue(true);
   bridge.isBusy = vi.fn().mockReturnValue(false);
   bridge.abort = vi.fn();
-  bridge._bridgeType = 'claude-code';
+  bridge._bridgeType = 'claude';
   bridge._constructorOptions = options || {};
   _createdClaudeCodeBridges.push(bridge);
   _createdBridges.push(bridge);
@@ -100,14 +100,14 @@ const mockChatProviders = {
       'copilot-acp': { id: 'copilot-acp', name: 'Copilot (ACP)', type: 'acp', command: 'copilot', args: ['--acp', '--stdio'], env: {} },
       'gemini-acp': { id: 'gemini-acp', name: 'Gemini (ACP)', type: 'acp', command: 'gemini', args: ['--experimental-acp'], env: {} },
       'opencode-acp': { id: 'opencode-acp', name: 'OpenCode (ACP)', type: 'acp', command: 'opencode', args: ['acp'], env: {} },
-      'claude-code': { id: 'claude-code', name: 'Claude Code', type: 'claude-code', command: 'claude', args: [], env: {} },
+      claude: { id: 'claude', name: 'Claude (NDJSON)', type: 'claude', command: 'claude', args: [], env: {} },
     };
     return providers[id] || null;
   }),
   isAcpProvider: vi.fn((id) => {
     return ['copilot-acp', 'gemini-acp', 'opencode-acp'].includes(id);
   }),
-  isClaudeCodeProvider: vi.fn((id) => id === 'claude-code'),
+  isClaudeCodeProvider: vi.fn((id) => id === 'claude'),
   applyConfigOverrides: vi.fn(),
 };
 
@@ -884,15 +884,15 @@ describe('ChatSessionManager', () => {
       expect(bridge._constructorOptions.acpArgs).toEqual(['acp']);
     });
 
-    it('should return ClaudeCodeBridge for claude-code provider', async () => {
-      await manager.createSession({ provider: 'claude-code', reviewId: 1 });
+    it('should return ClaudeCodeBridge for claude provider', async () => {
+      await manager.createSession({ provider: 'claude', reviewId: 1 });
       const bridge = _createdClaudeCodeBridges[0];
       expect(bridge).toBeDefined();
-      expect(bridge._bridgeType).toBe('claude-code');
+      expect(bridge._bridgeType).toBe('claude');
     });
 
     it('should pass command from provider def to ClaudeCodeBridge', async () => {
-      await manager.createSession({ provider: 'claude-code', reviewId: 1 });
+      await manager.createSession({ provider: 'claude', reviewId: 1 });
       const bridge = _createdClaudeCodeBridges[0];
       expect(bridge._constructorOptions.claudeCommand).toBe('claude');
     });
@@ -978,9 +978,9 @@ describe('ChatSessionManager', () => {
   });
 
   describe('Claude Code provider sessions', () => {
-    it('should create a session with claude-code provider', async () => {
+    it('should create a session with claude provider', async () => {
       const result = await manager.createSession({
-        provider: 'claude-code',
+        provider: 'claude',
         reviewId: 1,
       });
 
@@ -988,12 +988,12 @@ describe('ChatSessionManager', () => {
       expect(result.status).toBe('active');
 
       const row = db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(result.id);
-      expect(row.provider).toBe('claude-code');
+      expect(row.provider).toBe('claude');
       expect(row.status).toBe('active');
     });
 
     it('should send messages through ClaudeCode bridge', async () => {
-      const session = await manager.createSession({ provider: 'claude-code', reviewId: 1 });
+      const session = await manager.createSession({ provider: 'claude', reviewId: 1 });
       const bridge = _createdClaudeCodeBridges[0];
 
       await manager.sendMessage(session.id, 'Hello Claude Code');
@@ -1001,7 +1001,7 @@ describe('ChatSessionManager', () => {
     });
 
     it('should store sessionId from ClaudeCode bridge session event', async () => {
-      const session = await manager.createSession({ provider: 'claude-code', reviewId: 1 });
+      const session = await manager.createSession({ provider: 'claude', reviewId: 1 });
       const bridge = _createdClaudeCodeBridges[0];
 
       // Claude Code bridges emit session events with sessionId
@@ -1012,7 +1012,7 @@ describe('ChatSessionManager', () => {
     });
 
     it('should resume session with stored sessionId and pass resumeSessionId', async () => {
-      const session = await manager.createSession({ provider: 'claude-code', reviewId: 1 });
+      const session = await manager.createSession({ provider: 'claude', reviewId: 1 });
       const bridge = _createdClaudeCodeBridges[0];
 
       // Store a Claude Code session ID
@@ -1030,7 +1030,7 @@ describe('ChatSessionManager', () => {
     });
 
     it('should resume without agent_session_id (creates fresh session)', async () => {
-      const session = await manager.createSession({ provider: 'claude-code', reviewId: 1 });
+      const session = await manager.createSession({ provider: 'claude', reviewId: 1 });
       await manager.closeSession(session.id);
 
       // Claude Code sessions without stored sessionId create a fresh session

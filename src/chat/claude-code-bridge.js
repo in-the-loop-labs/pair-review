@@ -19,7 +19,7 @@ const { createInterface } = require('readline');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
 
-const CLAUDE_CHAT_TOOLS = 'Read,Bash,Grep,Glob,Edit,Write,Agent';
+const CLAUDE_CHAT_TOOLS = 'Read,Bash,Grep,Glob,Agent';
 
 // Default dependencies (overridable for testing)
 const defaults = {
@@ -97,6 +97,7 @@ class ClaudeCodeBridge extends EventEmitter {
       // Handle spawn error (e.g., ENOENT)
       proc.on('error', (err) => {
         if (!spawned) {
+          this._process = null;
           reject(new Error(`Failed to start Claude CLI: ${err.message}`));
         } else {
           logger.error(`[ClaudeCodeBridge] Process error: ${err.message}`);
@@ -153,13 +154,16 @@ class ClaudeCodeBridge extends EventEmitter {
       });
 
       // The CLI with --input-format stream-json doesn't emit anything until
-      // the first user message is sent. Mark ready immediately after spawn
-      // succeeds — the session ID will arrive with system/init on first response.
-      spawned = true;
-      this._ready = true;
-      logger.info(`[ClaudeCodeBridge] Spawned (PID ${proc.pid}), ready for messages`);
-      this.emit('ready');
-      resolve();
+      // the first user message is sent. Mark ready after a tick so that
+      // synchronous spawn errors (ENOENT) can reject the promise first.
+      setImmediate(() => {
+        if (!this._process) return; // error already fired and cleaned up
+        spawned = true;
+        this._ready = true;
+        logger.info(`[ClaudeCodeBridge] Spawned (PID ${proc.pid}), ready for messages`);
+        this.emit('ready');
+        resolve();
+      });
     });
   }
 
@@ -186,26 +190,36 @@ class ClaudeCodeBridge extends EventEmitter {
 
     logger.debug(`[ClaudeCodeBridge] Sending prompt (${messageContent.length} chars): ${messageContent.substring(0, 100)}${messageContent.length > 100 ? '...' : ''}`);
 
-    this._write({
-      type: 'user',
-      message: { role: 'user', content: messageContent },
-      session_id: this._sessionId || '',
-      parent_tool_use_id: null,
-    });
+    try {
+      this._write({
+        type: 'user',
+        message: { role: 'user', content: messageContent },
+        session_id: this._sessionId || '',
+        parent_tool_use_id: null,
+      });
+    } catch (err) {
+      this._inMessage = false;
+      throw err;
+    }
   }
 
   /**
    * Abort the current operation by sending an interrupt control request.
    */
   abort() {
-    if (!this.isReady() || !this._sessionId) return;
+    if (!this.isReady()) return;
 
-    logger.debug('[ClaudeCodeBridge] Sending interrupt');
-    this._write({
-      type: 'control_request',
-      request: { subtype: 'interrupt' },
-      request_id: crypto.randomUUID(),
-    });
+    if (this._sessionId) {
+      logger.debug('[ClaudeCodeBridge] Sending interrupt');
+      this._write({
+        type: 'control_request',
+        request: { subtype: 'interrupt' },
+        request_id: crypto.randomUUID(),
+      });
+    } else if (this._process) {
+      logger.debug('[ClaudeCodeBridge] No session ID yet, sending SIGTERM');
+      this._process.kill('SIGTERM');
+    }
   }
 
   /**
@@ -232,6 +246,13 @@ class ClaudeCodeBridge extends EventEmitter {
         return;
       }
 
+      // If process already exited, 'close' won't fire again — resolve immediately
+      if (proc.exitCode !== null || proc.signalCode !== null) {
+        this._process = null;
+        resolve();
+        return;
+      }
+
       // Give the process a moment to exit gracefully, then force kill
       const killTimeout = setTimeout(() => {
         if (this._process) {
@@ -242,6 +263,7 @@ class ClaudeCodeBridge extends EventEmitter {
 
       const onClose = () => {
         clearTimeout(killTimeout);
+        this._process = null;
         resolve();
       };
 
