@@ -110,6 +110,11 @@ class ClaudeCodeBridge extends EventEmitter {
         this._ready = false;
         this._process = null;
 
+        if (!spawned) {
+          reject(new Error(`Claude CLI exited before ready (code=${code}, signal=${signal})`));
+          return;
+        }
+
         if (!this._closing) {
           logger.warn(`[ClaudeCodeBridge] Process exited unexpectedly (code=${code}, signal=${signal})`);
           this.emit('error', { error: new Error(`Claude CLI exited (code=${code}, signal=${signal})`) });
@@ -183,9 +188,9 @@ class ClaudeCodeBridge extends EventEmitter {
     this._inMessage = true;
 
     let messageContent = content;
-    if (this.systemPrompt && this._firstMessage) {
+    const isFirst = this.systemPrompt && this._firstMessage;
+    if (isFirst) {
       messageContent = this.systemPrompt + '\n\n' + content;
-      this._firstMessage = false;
     }
 
     logger.debug(`[ClaudeCodeBridge] Sending prompt (${messageContent.length} chars): ${messageContent.substring(0, 100)}${messageContent.length > 100 ? '...' : ''}`);
@@ -197,6 +202,7 @@ class ClaudeCodeBridge extends EventEmitter {
         session_id: this._sessionId || '',
         parent_tool_use_id: null,
       });
+      if (isFirst) this._firstMessage = false;
     } catch (err) {
       this._inMessage = false;
       throw err;

@@ -299,6 +299,21 @@ describe('ClaudeCodeBridge', () => {
       await expect(bridge.start()).rejects.toThrow('ClaudeCodeBridge already started');
     });
 
+    it('should reject if process exits before ready', async () => {
+      const { mockDeps, fakeProc } = createMockDeps();
+      const customDeps = {
+        ...mockDeps,
+        spawn: vi.fn(() => {
+          // Emit close on next tick (before bridge's setImmediate)
+          process.nextTick(() => fakeProc.emit('close', 1, null));
+          return fakeProc;
+        }),
+      };
+      const b = new ClaudeCodeBridge({ cwd: '/tmp', _deps: customDeps });
+      await expect(b.start()).rejects.toThrow('exited before ready');
+      expect(b._process).toBeNull();
+    });
+
     it('should reject start() on spawn failure (e.g., ENOENT) and clear _process', async () => {
       const fakeProc = createFakeProcess();
       const rlEmitter = new EventEmitter();
@@ -700,6 +715,23 @@ describe('ClaudeCodeBridge', () => {
 
       await bridge.sendMessage('hello');
       expect(bridge._inMessage).toBe(true);
+    });
+
+    it('should preserve _firstMessage flag if _write throws', async () => {
+      const { mockDeps, rlEmitter } = createMockDeps();
+      const bridge = new ClaudeCodeBridge({
+        systemPrompt: 'You are a reviewer',
+        _deps: mockDeps,
+      });
+      await startBridge(bridge, rlEmitter);
+
+      expect(bridge._firstMessage).toBe(true);
+
+      bridge._write = () => { throw new Error('EPIPE'); };
+      await expect(bridge.sendMessage('test')).rejects.toThrow('EPIPE');
+
+      // _firstMessage should still be true so the system prompt is retried
+      expect(bridge._firstMessage).toBe(true);
     });
 
     it('should reset _inMessage if _write throws', async () => {
