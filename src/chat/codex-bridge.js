@@ -60,7 +60,8 @@ class CodexBridge extends EventEmitter {
 
     // JSON-RPC state
     this._nextId = 1;
-    this._pendingRequests = new Map(); // id -> { resolve, reject }
+    this._pendingRequests = new Map(); // id -> { resolve, reject, timeout }
+    this._requestTimeoutMs = 30_000;
   }
 
   /**
@@ -105,8 +106,9 @@ class CodexBridge extends EventEmitter {
         this._ready = false;
         this._process = null;
 
-        // Reject all pending requests
+        // Reject all pending requests and clear their timeouts
         for (const [id, pending] of this._pendingRequests) {
+          if (pending.timeout) clearTimeout(pending.timeout);
           pending.reject(new Error(`Process exited while awaiting response for request ${id}`));
         }
         this._pendingRequests.clear();
@@ -257,8 +259,9 @@ class CodexBridge extends EventEmitter {
 
     this._closing = true;
 
-    // Reject all pending requests
+    // Reject all pending requests and clear their timeouts
     for (const [id, pending] of this._pendingRequests) {
+      if (pending.timeout) clearTimeout(pending.timeout);
       pending.reject(new Error(`Bridge closing, rejecting pending request ${id}`));
     }
     this._pendingRequests.clear();
@@ -338,9 +341,19 @@ class CodexBridge extends EventEmitter {
     }
 
     return new Promise((resolve, reject) => {
-      this._pendingRequests.set(id, { resolve, reject });
+      const timeout = setTimeout(() => {
+        this._pendingRequests.delete(id);
+        reject(new Error(`Request ${method} (id=${id}) timed out after ${this._requestTimeoutMs}ms`));
+      }, this._requestTimeoutMs);
+
+      // Wrap resolve/reject to clear the timeout on normal completion
+      const wrappedResolve = (value) => { clearTimeout(timeout); resolve(value); };
+      const wrappedReject = (err) => { clearTimeout(timeout); reject(err); };
+
+      this._pendingRequests.set(id, { resolve: wrappedResolve, reject: wrappedReject, timeout });
       if (!this._writeLine(message)) {
         this._pendingRequests.delete(id);
+        clearTimeout(timeout);
         reject(new Error('Cannot write to Codex process — stdin not writable'));
       }
     });
@@ -506,7 +519,7 @@ class CodexBridge extends EventEmitter {
     if (type === 'command' || type === 'tool_call' || type === 'function_call') {
       this.emit('tool_use', {
         toolCallId: params.itemId || params.id,
-        toolName: params.name || params.title || type,
+        toolName: params.name || params.title || params.command || type,
         status: 'start',
       });
     }
@@ -522,7 +535,7 @@ class CodexBridge extends EventEmitter {
     if (type === 'command' || type === 'tool_call' || type === 'function_call') {
       this.emit('tool_use', {
         toolCallId: params.itemId || params.id,
-        toolName: params.name || params.title || type,
+        toolName: params.name || params.title || params.command || type,
         status: 'end',
       });
     }

@@ -676,9 +676,11 @@ describe('CodexBridge', () => {
       });
       await tick();
 
-      expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+      expect(handler).toHaveBeenCalledWith({
+        toolCallId: 'item-1',
+        toolName: 'cat src/main.js',
         status: 'start',
-      }));
+      });
     });
 
     it('should emit tool_use with end on item/completed (command type)', async () => {
@@ -693,9 +695,11 @@ describe('CodexBridge', () => {
       });
       await tick();
 
-      expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+      expect(handler).toHaveBeenCalledWith({
+        toolCallId: 'item-1',
+        toolName: 'cat src/main.js',
         status: 'end',
-      }));
+      });
     });
 
     it('should emit tool_use with start on item/started (tool_call type)', async () => {
@@ -776,12 +780,14 @@ describe('CodexBridge', () => {
 
     it('should not throw on unknown notification methods', async () => {
       const { bridge, fakeProc } = await startedBridge();
+      const errorHandler = vi.fn();
+      bridge.on('error', errorHandler);
 
-      expect(() => {
-        sendNotification(fakeProc, 'unknown/event', { data: 'whatever' });
-      }).not.toThrow();
-
+      sendNotification(fakeProc, 'unknown/event', { data: 'whatever' });
       await tick();
+
+      expect(errorHandler).not.toHaveBeenCalled();
+      expect(bridge.isReady()).toBe(true);
     });
   });
 
@@ -1005,6 +1011,32 @@ describe('CodexBridge', () => {
 
       expect(bridge.listenerCount('delta')).toBe(0);
       expect(bridge.listenerCount('complete')).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // _sendRequest timeout
+  // -------------------------------------------------------------------------
+  describe('_sendRequest timeout', () => {
+    it('should timeout pending requests after 30s', async () => {
+      vi.useFakeTimers();
+      try {
+        const { mockDeps, fakeProc } = createMockDeps();
+        handshakeRl = setupHandshake(fakeProc);
+
+        const bridge = new CodexBridge({ _deps: mockDeps });
+        await bridge.start();
+
+        // Send a request that won't get a response
+        const pendingPromise = bridge._sendRequest('custom/no-reply', {});
+
+        // Advance past timeout
+        vi.advanceTimersByTime(30000);
+
+        await expect(pendingPromise).rejects.toThrow(/timed out/i);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
