@@ -190,6 +190,20 @@
       ]
     }
   },
+
+  "chat_providers": {
+    "_comment": "Chat provider command overrides. Separate from 'providers' (AI analysis). Chat providers are: pi, claude, codex, copilot-acp, gemini-acp, opencode-acp. Supports 'command', 'args' (replaces defaults), 'extra_args' (appends), and 'env' overrides.",
+    "claude": {
+      "_comment": "Example: use a wrapper script for Claude chat",
+      "command": "claude"
+    },
+    "codex": {
+      "_comment": "Example: use a wrapper script for Codex chat",
+      "command": "codex",
+      "args": ["app-server"]
+    }
+  },
+
   "monorepos": {
     "_comment": "Monorepo configuration. 'path' points to an existing local clone. 'checkout_script' runs in the new worktree with env vars: BASE_BRANCH, HEAD_BRANCH, BASE_SHA, HEAD_SHA, PR_NUMBER, WORKTREE_PATH. The script is spawned with shell: true, so $ENV_VAR expansion works. The worktree is created with --no-checkout (empty directory), so relative paths in the script won't work—use WORKTREE_PATH or absolute paths. Prefer BASE_SHA over BASE_BRANCH for sparse-checkout calculations—BASE_BRANCH is the branch name (moving target) while BASE_SHA is the exact PR base commit (stable). Process is killed after 'checkout_timeout_seconds' (default: 300 = 5 minutes). 'worktree_directory' overrides where worktrees are created. 'worktree_name_template' controls naming with vars: {id} (includes 'pair-review--' prefix, e.g. 'pair-review--abc'), {pr_number}, {repo}, {owner}.",
     "owner/repo": {

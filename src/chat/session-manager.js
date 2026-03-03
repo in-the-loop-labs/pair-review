@@ -24,7 +24,7 @@ const CHAT_TOOLS = 'read,bash,grep,find,ls';
 class ChatSessionManager {
   /**
    * @param {Database} db - better-sqlite3 database instance
-   * @param {Object} [configOverrides] - Provider config overrides from config.providers
+   * @param {Object} [configOverrides] - Provider config overrides from config.chat_providers
    */
   constructor(db, configOverrides = {}) {
     this._db = db;
@@ -519,6 +519,7 @@ class ChatSessionManager {
         acpCommand: providerDef?.command,
         acpArgs: providerDef?.args,
         env: providerDef?.env,
+        useShell: providerDef?.useShell,
       });
     }
     if (isClaudeCodeProvider(provider)) {
@@ -527,6 +528,7 @@ class ChatSessionManager {
         ...options,
         claudeCommand: providerDef?.command,
         env: providerDef?.env,
+        useShell: providerDef?.useShell,
       });
     }
     if (isCodexProvider(provider)) {
@@ -536,6 +538,7 @@ class ChatSessionManager {
         codexCommand: providerDef?.command,
         codexArgs: providerDef?.args,
         env: providerDef?.env,
+        useShell: providerDef?.useShell,
       });
     }
     return new PiBridge({

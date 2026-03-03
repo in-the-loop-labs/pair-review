@@ -65,7 +65,7 @@ const CHAT_PROVIDERS = {
   },
 };
 
-/** Stored config overrides from `config.providers` */
+/** Stored config overrides from `config.chat_providers` */
 let _configOverrides = {};
 
 /** Availability cache: { [providerId]: { available: boolean, error?: string } } */
@@ -73,7 +73,7 @@ const _availabilityCache = {};
 
 /**
  * Store config overrides that will be merged into provider definitions.
- * Call once at startup with `config.providers || {}`.
+ * Call once at startup with `config.chat_providers || {}`.
  * @param {Object} providersConfig - e.g. { 'copilot-acp': { command: '/usr/local/bin/copilot' } }
  */
 function applyConfigOverrides(providersConfig) {
@@ -101,6 +101,10 @@ function getChatProvider(id) {
   // extra_args appends to the default/overridden args
   if (overrides.extra_args && Array.isArray(overrides.extra_args)) {
     merged.args = [...(merged.args || []), ...overrides.extra_args];
+  }
+  // For multi-word commands (e.g. "devx claude"), use shell mode
+  if (merged.command && merged.command.includes(' ')) {
+    merged.useShell = true;
   }
   return merged;
 }
@@ -168,12 +172,17 @@ async function checkChatProviderAvailability(id, _deps) {
 
   const deps = { ...defaults, ..._deps };
   const command = provider.command;
+  const useShell = provider.useShell || false;
 
   return new Promise((resolve) => {
     try {
-      const proc = deps.spawn(command, ['--version'], {
+      // For multi-word commands, use shell mode
+      const spawnCmd = useShell ? `${command} --version` : command;
+      const spawnArgs = useShell ? [] : ['--version'];
+      const proc = deps.spawn(spawnCmd, spawnArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 10000,
+        shell: useShell,
       });
 
       proc.on('error', (err) => {
