@@ -260,6 +260,9 @@ class PRManager {
       refreshBtn.addEventListener('click', () => this.refreshPR());
     }
 
+    // PR description popover
+    this.setupPRDescriptionPopover();
+
     // Setup comment form keyboard shortcut delegation
     this.setupCommentFormDelegation();
 
@@ -753,6 +756,17 @@ class PRManager {
       titleElement.textContent = pr.title;
     }
 
+    // Show/hide PR description info button
+    const descToggle = document.getElementById('pr-description-toggle');
+    if (descToggle) {
+      if (pr.body) {
+        descToggle.style.display = '';
+        descToggle.dataset.prBody = pr.body;
+      } else {
+        descToggle.style.display = 'none';
+      }
+    }
+
     // Update meta info - show only head branch, full info in tooltip
     const branchName = document.getElementById('pr-branch-name');
     const branchContainer = document.getElementById('pr-branch');
@@ -852,6 +866,62 @@ class PRManager {
 
     // Update pending draft indicator in toolbar
     this.updatePendingDraftIndicator(pr.pendingDraft);
+  }
+
+  /**
+   * Set up the PR description popover toggle (called once during init).
+   */
+  setupPRDescriptionPopover() {
+    const toggle = document.getElementById('pr-description-toggle');
+    if (!toggle) return;
+
+    const wrapper = toggle.closest('.pr-title-wrapper');
+    if (!wrapper) return;
+
+    const closePopover = () => {
+      const existing = wrapper.querySelector('.pr-description-popover');
+      if (existing) existing.remove();
+      toggle.classList.remove('active');
+    };
+
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const existing = wrapper.querySelector('.pr-description-popover');
+      if (existing) {
+        closePopover();
+        return;
+      }
+
+      const body = toggle.dataset.prBody || '';
+      const rendered = window.renderMarkdown ? window.renderMarkdown(body) : this.escapeHtml(body);
+
+      const popover = document.createElement('div');
+      popover.className = 'pr-description-popover';
+      popover.innerHTML = `
+        <div class="pr-description-popover-arrow"></div>
+        <div class="pr-description-popover-header">
+          <span class="pr-description-popover-title">PR Description</span>
+          <button class="pr-description-popover-close" title="Close">&times;</button>
+        </div>
+        <div class="pr-description-popover-content">${rendered}</div>
+      `;
+
+      wrapper.appendChild(popover);
+      toggle.classList.add('active');
+
+      popover.querySelector('.pr-description-popover-close').addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closePopover();
+      });
+
+      popover.addEventListener('click', (ev) => ev.stopPropagation());
+    });
+
+    document.addEventListener('click', () => closePopover());
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closePopover();
+    });
   }
 
   /**
