@@ -248,7 +248,7 @@ pair-review loads configuration from multiple files, merged in order of increasi
 | 4 | `.pair-review/config.json` | Project-specific configuration (can be checked in) |
 | 5 (highest) | `.pair-review/config.local.json` | Personal project overrides (gitignored) |
 
-Nested objects (like `chat`, `providers`, `monorepos`) are deep-merged across layers — you only need to specify the keys you want to override.
+Nested objects (like `chat`, `providers`, `chat_providers`, `monorepos`) are deep-merged across layers — you only need to specify the keys you want to override.
 
 **`config.local.json`** files are intended for personal overrides that should not be committed to version control. Add `config.local.json` to your `.gitignore`.
 
@@ -470,6 +470,20 @@ npm install -g @mariozechner/pi-coding-agent
 ```
 
 Configure your preferred models in `providers.pi.models` — see [AI Provider Configuration](#ai-provider-configuration) for details. Everything else in pair-review works without Pi installed.
+
+**Chat provider command overrides:** To customize CLI commands for chat providers (e.g., to use a wrapper script), use the `chat_providers` config key:
+
+```json
+{
+  "chat_providers": {
+    "claude": { "command": "devx", "args": ["claude", "--"] },
+    "codex": { "command": "devx", "args": ["codex", "--", "app-server"] },
+    "opencode-acp": { "command": "devx", "args": ["opencode", "acp"] }
+  }
+}
+```
+
+Available chat provider IDs: `pi`, `claude`, `codex`, `copilot-acp`, `gemini-acp`, `opencode-acp`. Each supports `command`, `args` (replaces defaults), `extra_args` (appends), and `env` overrides.
 
 **Keyboard shortcut:** Press `p` then `c` to toggle the chat panel.
 

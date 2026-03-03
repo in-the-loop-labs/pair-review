@@ -24,7 +24,7 @@ const CHAT_TOOLS = 'read,bash,grep,find,ls';
 class ChatSessionManager {
   /**
    * @param {Database} db - better-sqlite3 database instance
-   * @param {Object} [configOverrides] - Provider config overrides from config.providers
+   * @param {Object} [configOverrides] - Provider config overrides from config.chat_providers
    */
   constructor(db, configOverrides = {}) {
     this._db = db;

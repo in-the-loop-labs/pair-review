@@ -26,7 +26,8 @@ const DEFAULT_CONFIG = {
   chat_provider: "pi",  // Chat provider: 'pi', 'copilot-acp', 'gemini-acp', 'opencode-acp', 'codex'
   comment_format: "legacy",  // Comment format preset or custom template for adopted suggestions
   chat: { enable_shortcuts: true },  // Chat panel settings (enable_shortcuts: show action shortcut buttons)
-  providers: {},  // Custom provider configurations (overrides built-in defaults)
+  providers: {},  // Custom AI analysis provider configurations (overrides built-in defaults)
+  chat_providers: {},  // Custom chat provider configurations (overrides built-in defaults)
   monorepos: {},  // Monorepo configurations: { "owner/repo": { path: "~/path/to/clone" } }
   assisted_by_url: "https://github.com/in-the-loop-labs/pair-review"  // URL for "Review assisted by" footer link
 };

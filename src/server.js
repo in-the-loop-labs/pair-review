@@ -265,7 +265,7 @@ async function startServer(sharedDb = null) {
 
     // Initialize chat session manager
     const ChatSessionManager = require('./chat/session-manager');
-    chatSessionManager = new ChatSessionManager(db, config.providers || {});
+    chatSessionManager = new ChatSessionManager(db, config.chat_providers || {});
     app.chatSessionManager = chatSessionManager;
 
     // Mount specific routes first to ensure they match before general PR routes
