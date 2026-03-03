@@ -12,14 +12,12 @@
  */
 
 const express = require('express');
-const path = require('path');
 const { queryOne, query, AnalysisRunRepository, RepoSettingsRepository } = require('../database');
 const { buildChatPrompt, buildInitialContext } = require('../chat/prompt-builder');
+const { renderApiDocs, buildApiCheatSheet } = require('../chat/api-reference');
 const { GitWorktreeManager } = require('../git/worktree');
 const logger = require('../utils/logger');
 const ws = require('../ws');
-
-const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
 
 const router = express.Router();
 
@@ -90,7 +88,7 @@ const broadcastUnsubscribers = new Map();
  * @returns {RegExp}
  */
 function buildPairReviewApiRe(port) {
-  return new RegExp(`\\bcurl\\b.*\\bhttps?://(?:localhost|127\\.0\\.0\\.1):${port}/api/`);
+  return new RegExp(`\\bcurl\\b.*\\bhttps?://(?:localhost|127\\.0\\.0\\.1):${port}/api`);
 }
 
 /**
@@ -135,15 +133,6 @@ function registerChatBroadcast(chatSessionManager, sessionId, port) {
         }
         if (hiddenToolCallIds.has(data.toolCallId)) {
           if (data.status === 'end') hiddenToolCallIds.delete(data.toolCallId);
-          return;
-        }
-      }
-
-      // Suppress tool badges for reading the API skill file
-      if (data.toolName?.toLowerCase() === 'read') {
-        const readPath = data.args?.path || data.args?.file_path || '';
-        if (readPath.endsWith('pair-review-api/SKILL.md')) {
-          hiddenToolCallIds.add(data.toolCallId);
           return;
         }
       }
@@ -245,7 +234,7 @@ router.post('/api/chat/session', async (req, res) => {
       const chatInstructions = await getChatInstructions(db, review);
       const prData = await fetchPrData(db, review);
 
-      finalSystemPrompt = buildChatPrompt({ review, prData, skillPath: pairReviewSkillPath, chatInstructions });
+      finalSystemPrompt = buildChatPrompt({ review, prData, chatInstructions });
 
       if (!skipAnalysisContext) {
         // Fetch all AI suggestions from the latest analysis run
@@ -287,15 +276,16 @@ router.post('/api/chat/session', async (req, res) => {
     // Resolve cwd: explicit from request body, or the review's code directory
     const resolvedCwd = cwd || await resolveReviewCwd(db, review);
 
-    // Inject the server port into the initial context so the agent learns it
-    // once at session start. This avoids wasting tokens by repeating the port
-    // with every user message.  If the server restarts on a new port, the next
-    // session will pick up the new value automatically.
+    // Inject the server port and API cheat-sheet into the initial context so
+    // the agent learns it once at session start.  If the server restarts on a
+    // new port, the next session will pick up the new value automatically.
     const serverPort = req.socket.localPort;
     const portContext = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`;
+    const cheatSheet = buildApiCheatSheet({ port: serverPort, reviewId: review.id });
+    const sessionPreamble = portContext + '\n\n' + cheatSheet;
     const initialContextWithPort = initialContext
-      ? portContext + '\n\n' + initialContext
-      : portContext;
+      ? sessionPreamble + '\n\n' + initialContext
+      : sessionPreamble;
 
     const session = await chatSessionManager.createSession({
       provider,
@@ -372,7 +362,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
       const chatInstructions = await getChatInstructions(db, review);
       const prData = await fetchPrData(db, review);
 
-      const systemPrompt = buildChatPrompt({ review, prData, skillPath: pairReviewSkillPath, chatInstructions });
+      const systemPrompt = buildChatPrompt({ review, prData, chatInstructions });
       const cwd = await resolveReviewCwd(db, review);
 
       try {
@@ -496,7 +486,7 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
     const chatInstructions = await getChatInstructions(db, review);
     const prData = await fetchPrData(db, review);
 
-    const systemPrompt = buildChatPrompt({ review, prData, skillPath: pairReviewSkillPath, chatInstructions });
+    const systemPrompt = buildChatPrompt({ review, prData, chatInstructions });
     const cwd = await resolveReviewCwd(db, review);
 
     await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
@@ -609,6 +599,20 @@ router.get('/api/chat/analysis-context/:runId', async (req, res) => {
     logger.error(`Error fetching analysis context: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch analysis context' });
   }
+});
+
+/**
+ * Serve the full API reference as rendered markdown with real values baked in.
+ * Requires ?reviewId=N so the docs contain the correct review ID.
+ */
+router.get('/api.md', (req, res) => {
+  const reviewId = parseInt(req.query.reviewId, 10);
+  if (!reviewId || isNaN(reviewId)) {
+    return res.status(400).json({ error: 'Missing required query parameter: reviewId' });
+  }
+  const port = req.socket.localPort;
+  const md = renderApiDocs({ port, reviewId });
+  res.type('text/markdown').send(md);
 });
 
 module.exports = router;

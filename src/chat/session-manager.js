@@ -16,7 +16,6 @@ const CodexBridge = require('./codex-bridge');
 const { getChatProvider, isAcpProvider, isClaudeCodeProvider, isCodexProvider, applyConfigOverrides: applyChatConfigOverrides } = require('./chat-providers');
 const logger = require('../utils/logger');
 
-const pairReviewSkillPath = path.resolve(__dirname, '../../.pi/skills/pair-review-api/SKILL.md');
 const taskExtensionDir = path.resolve(__dirname, '../../.pi/extensions/task');
 
 const CHAT_TOOLS = 'read,bash,grep,find,ls';
@@ -544,7 +543,6 @@ class ChatSessionManager {
     return new PiBridge({
       ...options,
       tools: CHAT_TOOLS,
-      skills: [pairReviewSkillPath],
       extensions: [taskExtensionDir],
     });
   }

@@ -910,7 +910,11 @@ describe('Chat Routes', () => {
       expect(re.test('curl https://api.github.com/repos')).toBe(false);
     });
 
-    it('should not match curl to localhost without /api/', () => {
+    it('should match curl to /api.md (full API docs endpoint)', () => {
+      expect(re.test('curl http://localhost:7247/api.md?reviewId=1')).toBe(true);
+    });
+
+    it('should not match curl to localhost without /api path prefix', () => {
       expect(re.test('curl http://localhost:7247/health')).toBe(false);
     });
 
@@ -1043,6 +1047,35 @@ describe('Chat Routes', () => {
       expect(res.body.data.suggestionCount).toBe(0);
       expect(res.body.data.run).toBeNull();
       expect(res.body.data.text).toBeNull();
+    });
+  });
+
+  describe('GET /api.md', () => {
+    it('should return rendered markdown with real values for valid reviewId', async () => {
+      const res = await request(app)
+        .get('/api.md?reviewId=1');
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/text\/markdown/);
+      expect(res.text).toContain('## Comments');
+      expect(res.text).toContain('## Suggestions');
+      expect(res.text).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    });
+
+    it('should return 400 when reviewId is missing', async () => {
+      const res = await request(app)
+        .get('/api.md');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('reviewId');
+    });
+
+    it('should return 400 when reviewId is not a number', async () => {
+      const res = await request(app)
+        .get('/api.md?reviewId=abc');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('reviewId');
     });
   });
 
