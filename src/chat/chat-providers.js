@@ -65,7 +65,7 @@ const CHAT_PROVIDERS = {
   },
 };
 
-/** Stored config overrides from `config.providers` */
+/** Stored config overrides from `config.chat_providers` */
 let _configOverrides = {};
 
 /** Availability cache: { [providerId]: { available: boolean, error?: string } } */
@@ -73,7 +73,7 @@ const _availabilityCache = {};
 
 /**
  * Store config overrides that will be merged into provider definitions.
- * Call once at startup with `config.providers || {}`.
+ * Call once at startup with `config.chat_providers || {}`.
  * @param {Object} providersConfig - e.g. { 'copilot-acp': { command: '/usr/local/bin/copilot' } }
  */
 function applyConfigOverrides(providersConfig) {
