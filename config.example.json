@@ -195,13 +195,12 @@
     "_comment": "Chat provider command overrides. Separate from 'providers' (AI analysis). Chat providers are: pi, claude, codex, copilot-acp, gemini-acp, opencode-acp. Supports 'command', 'args' (replaces defaults), 'extra_args' (appends), and 'env' overrides.",
     "claude": {
       "_comment": "Example: use a wrapper script for Claude chat",
-      "command": "devx",
-      "args": ["claude", "--"]
+      "command": "claude"
     },
     "codex": {
       "_comment": "Example: use a wrapper script for Codex chat",
-      "command": "devx",
-      "args": ["codex", "--", "app-server"]
+      "command": "codex",
+      "args": ["app-server"]
     }
   },
 
