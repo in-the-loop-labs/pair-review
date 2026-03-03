@@ -102,6 +102,10 @@ function getChatProvider(id) {
   if (overrides.extra_args && Array.isArray(overrides.extra_args)) {
     merged.args = [...(merged.args || []), ...overrides.extra_args];
   }
+  // For multi-word commands (e.g. "devx claude"), use shell mode
+  if (merged.command && merged.command.includes(' ')) {
+    merged.useShell = true;
+  }
   return merged;
 }
 
@@ -168,12 +172,17 @@ async function checkChatProviderAvailability(id, _deps) {
 
   const deps = { ...defaults, ..._deps };
   const command = provider.command;
+  const useShell = provider.useShell || false;
 
   return new Promise((resolve) => {
     try {
-      const proc = deps.spawn(command, ['--version'], {
+      // For multi-word commands, use shell mode
+      const spawnCmd = useShell ? `${command} --version` : command;
+      const spawnArgs = useShell ? [] : ['--version'];
+      const proc = deps.spawn(spawnCmd, spawnArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 10000,
+        shell: useShell,
       });
 
       proc.on('error', (err) => {

@@ -133,6 +133,23 @@ describe('chat-providers', () => {
       const gemini = getChatProvider('gemini-acp');
       expect(gemini.command).toBe('gemini');
     });
+
+    it('should set useShell true for multi-word commands', () => {
+      applyConfigOverrides({
+        'claude': { command: 'devx claude' },
+      });
+      const provider = getChatProvider('claude');
+      expect(provider.command).toBe('devx claude');
+      expect(provider.useShell).toBe(true);
+    });
+
+    it('should not set useShell for single-word commands', () => {
+      applyConfigOverrides({
+        'claude': { command: '/usr/local/bin/claude' },
+      });
+      const provider = getChatProvider('claude');
+      expect(provider.useShell).toBeUndefined();
+    });
   });
 
   describe('getAllChatProviders', () => {
@@ -296,6 +313,23 @@ describe('chat-providers', () => {
       await promise;
 
       expect(mockSpawn).toHaveBeenCalledWith('/custom/copilot', ['--version'], expect.any(Object));
+    });
+
+    it('should use shell mode for multi-word commands', async () => {
+      applyConfigOverrides({
+        'claude': { command: 'devx claude' },
+      });
+
+      const { EventEmitter } = require('events');
+      const fakeProc = new EventEmitter();
+      const mockSpawn = vi.fn().mockReturnValue(fakeProc);
+
+      const promise = checkChatProviderAvailability('claude', { spawn: mockSpawn });
+      fakeProc.emit('close', 0);
+      await promise;
+
+      // With shell mode, command is joined with args
+      expect(mockSpawn).toHaveBeenCalledWith('devx claude --version', [], expect.objectContaining({ shell: true }));
     });
   });
 

@@ -32,6 +32,7 @@ class AcpBridge extends EventEmitter {
    * @param {string} [options.acpCommand] - Agent binary (default: 'copilot')
    * @param {string[]} [options.acpArgs] - Extra CLI args (default: ['--acp', '--stdio'])
    * @param {Object} [options.env] - Extra env vars for subprocess
+   * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
    * @param {string} [options.resumeSessionId] - ACP session ID to resume via loadSession
    * @param {Object} [options._deps] - Dependency injection for testing
    */
@@ -43,6 +44,7 @@ class AcpBridge extends EventEmitter {
     this.acpCommand = options.acpCommand || 'copilot';
     this.acpArgs = options.acpArgs || ['--acp', '--stdio'];
     this.env = options.env || {};
+    this.useShell = options.useShell || false;
     this.resumeSessionId = options.resumeSessionId || null;
 
     this._deps = { ...defaults, ...options._deps };
@@ -69,14 +71,20 @@ class AcpBridge extends EventEmitter {
     const deps = this._deps;
     const command = this.acpCommand;
     const args = this.acpArgs;
+    const useShell = this.useShell;
+
+    // For multi-word commands (e.g. "devx gemini"), use shell mode
+    const spawnCmd = useShell ? `${command} ${args.join(' ')}` : command;
+    const spawnArgs = useShell ? [] : args;
 
     logger.info(`[AcpBridge] Starting ACP agent: ${command} ${args.join(' ')}`);
 
     return new Promise((resolve, reject) => {
-      const proc = deps.spawn(command, args, {
+      const proc = deps.spawn(spawnCmd, spawnArgs, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, ...this.env },
+        shell: useShell,
       });
 
       this._process = proc;

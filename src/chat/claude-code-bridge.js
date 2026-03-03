@@ -35,6 +35,7 @@ class ClaudeCodeBridge extends EventEmitter {
    * @param {string} [options.systemPrompt] - System prompt text (prepended to first message)
    * @param {string} [options.claudeCommand] - Override binary (default: env PAIR_REVIEW_CLAUDE_CMD or 'claude')
    * @param {Object} [options.env] - Extra env vars for subprocess
+   * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
    * @param {string} [options.resumeSessionId] - Session ID for resumption
    * @param {Object} [options._deps] - { spawn, createInterface } for testing
    */
@@ -45,6 +46,7 @@ class ClaudeCodeBridge extends EventEmitter {
     this.systemPrompt = options.systemPrompt || null;
     this.claudeCommand = options.claudeCommand || process.env.PAIR_REVIEW_CLAUDE_CMD || 'claude';
     this.env = options.env || {};
+    this.useShell = options.useShell || false;
     this.resumeSessionId = options.resumeSessionId || null;
 
     this._deps = { ...defaults, ...options._deps };
@@ -77,6 +79,11 @@ class ClaudeCodeBridge extends EventEmitter {
     const deps = this._deps;
     const command = this.claudeCommand;
     const args = this._buildArgs();
+    const useShell = this.useShell;
+
+    // For multi-word commands (e.g. "devx claude"), use shell mode
+    const spawnCmd = useShell ? `${command} ${args.join(' ')}` : command;
+    const spawnArgs = useShell ? [] : args;
 
     logger.info(`[ClaudeCodeBridge] Starting: ${command} ${args.join(' ')}`);
 
@@ -85,10 +92,11 @@ class ClaudeCodeBridge extends EventEmitter {
       const env = { ...process.env, ...this.env };
       delete env.CLAUDECODE;
 
-      const proc = deps.spawn(command, args, {
+      const proc = deps.spawn(spawnCmd, spawnArgs, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env,
+        shell: useShell,
       });
 
       this._process = proc;

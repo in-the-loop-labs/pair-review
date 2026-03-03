@@ -31,6 +31,7 @@ class CodexBridge extends EventEmitter {
    * @param {string} [options.codexCommand] - Codex binary (default: 'codex')
    * @param {string[]} [options.codexArgs] - Args for Codex binary (default: ['app-server'])
    * @param {Object} [options.env] - Extra env vars for subprocess
+   * @param {boolean} [options.useShell] - Use shell mode for multi-word commands
    * @param {string} [options.resumeThreadId] - Thread ID to resume
    * @param {Object} [options._deps] - Dependency injection for testing
    */
@@ -40,6 +41,7 @@ class CodexBridge extends EventEmitter {
     this.cwd = options.cwd || process.cwd();
     this.systemPrompt = options.systemPrompt || null;
     this.env = options.env || {};
+    this.useShell = options.useShell || false;
     this.resumeThreadId = options.resumeThreadId || null;
 
     // Command resolution: constructor option → env var → default
@@ -77,14 +79,20 @@ class CodexBridge extends EventEmitter {
     const deps = this._deps;
     const command = this.codexCommand;
     const args = this.codexArgs;
+    const useShell = this.useShell;
+
+    // For multi-word commands (e.g. "devx codex"), use shell mode
+    const spawnCmd = useShell ? `${command} ${args.join(' ')}` : command;
+    const spawnArgs = useShell ? [] : args;
 
     logger.info(`[CodexBridge] Starting Codex agent: ${command} ${args.join(' ')}`);
 
     return new Promise((resolve, reject) => {
-      const proc = deps.spawn(command, args, {
+      const proc = deps.spawn(spawnCmd, spawnArgs, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, ...this.env },
+        shell: useShell,
       });
 
       this._process = proc;
