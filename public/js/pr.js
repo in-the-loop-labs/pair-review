@@ -371,6 +371,7 @@ class PRManager {
 
   /**
    * Auto-trigger analysis if ?analyze=true is present in the URL.
+   * Always refreshes PR data first to ensure we analyze the latest code.
    * Cleans up the query parameter afterwards regardless of success or failure.
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
@@ -381,6 +382,11 @@ class PRManager {
     if (autoAnalyze === 'true' && !this.isAnalyzing) {
       this._autoAnalyzeRequested = true;
       try {
+        // Always refresh before auto-analyzing to ensure we have the latest PR data.
+        // This handles the case where the worktree already existed but the PR has
+        // new commits since the last time it was loaded.
+        await this.refreshPR();
+
         await this.startAnalysis(owner, repo, prNumber, null, {});
       } finally {
         this._autoAnalyzeRequested = false;
