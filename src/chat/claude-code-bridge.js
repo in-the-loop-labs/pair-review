@@ -18,6 +18,7 @@ const { spawn } = require('child_process');
 const { createInterface } = require('readline');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
+const { quoteShellArgs } = require('../ai/provider');
 
 const CLAUDE_CHAT_TOOLS = 'Read,Bash,Grep,Glob,Agent';
 
@@ -81,8 +82,9 @@ class ClaudeCodeBridge extends EventEmitter {
     const args = this._buildArgs();
     const useShell = this.useShell;
 
-    // For multi-word commands (e.g. "devx claude"), use shell mode
-    const spawnCmd = useShell ? `${command} ${args.join(' ')}` : command;
+    // For multi-word commands (e.g. "devx claude"), use shell mode.
+    // quoteShellArgs handles args containing shell-sensitive chars like {}.
+    const spawnCmd = useShell ? `${command} ${quoteShellArgs(args).join(' ')}` : command;
     const spawnArgs = useShell ? [] : args;
 
     logger.info(`[ClaudeCodeBridge] Starting: ${command} ${args.join(' ')}`);
@@ -318,12 +320,6 @@ class ClaudeCodeBridge extends EventEmitter {
    * @returns {string[]}
    */
   _buildArgs() {
-    // When useShell is true, JSON must be single-quoted to prevent shell
-    // brace expansion from mangling the curly braces
-    const settingsJson = this.useShell
-      ? `'{"disableAllHooks":true}'`
-      : '{"disableAllHooks":true}';
-
     const args = [
       '-p', '',
       '--output-format', 'stream-json',
@@ -331,7 +327,7 @@ class ClaudeCodeBridge extends EventEmitter {
       '--verbose',
       '--include-partial-messages',
       '--allowedTools', CLAUDE_CHAT_TOOLS,
-      '--settings', settingsJson,
+      '--settings', '{"disableAllHooks":true}',
     ];
 
     if (this.resumeSessionId) {
