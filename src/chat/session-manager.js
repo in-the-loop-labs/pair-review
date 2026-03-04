@@ -136,6 +136,12 @@ class ChatSessionManager {
       messageForAgent = context + '\n\n---\n\n' + messageForAgent;
     }
 
+    // Then prepend resume context (port correction after session resume — middle layer)
+    if (session.resumeContext) {
+      messageForAgent = session.resumeContext + '\n\n---\n\n' + messageForAgent;
+      session.resumeContext = null; // Only prepend once
+    }
+
     // Then prepend initial session context (all suggestions — outermost)
     if (session.initialContext) {
       messageForAgent = session.initialContext + '\n\n---\n\n' + messageForAgent;
@@ -308,6 +314,22 @@ class ChatSessionManager {
     `).run(sessionId);
 
     logger.info(`[ChatSession] Session ${sessionId} closed`);
+  }
+
+  /**
+   * Set context to prepend on the next sendMessage call for a resumed session.
+   * Similar to initialContext but set after resume rather than at creation.
+   * The context is consumed (prepended to the agent message, then cleared) on
+   * the next sendMessage call.
+   * @param {number} sessionId
+   * @param {string} context - Context string to prepend on next message
+   */
+  setResumeContext(sessionId, context) {
+    const session = this._sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found or not active`);
+    }
+    session.resumeContext = context || null;
   }
 
   /**

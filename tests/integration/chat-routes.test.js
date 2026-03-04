@@ -45,7 +45,8 @@ function createMockSessionManager(db) {
     onToolUse: vi.fn().mockReturnValue(() => {}),
     onStatus: vi.fn().mockReturnValue(() => {}),
     onError: vi.fn().mockReturnValue(() => {}),
-    saveContextMessage: vi.fn().mockReturnValue({ id: 999 })
+    saveContextMessage: vi.fn().mockReturnValue({ id: 999 }),
+    setResumeContext: vi.fn()
   };
 }
 
@@ -480,7 +481,14 @@ describe('Chat Routes', () => {
       expect(mockManager.resumeSession).toHaveBeenCalledWith(5, expect.objectContaining({
         systemPrompt: expect.any(String),
       }));
-      expect(mockManager.sendMessage).toHaveBeenCalled();
+      // Port correction should be passed via context option, not prepended to content
+      expect(mockManager.sendMessage).toHaveBeenCalledWith(
+        5,
+        'hello after restart',
+        expect.objectContaining({
+          context: expect.stringContaining('Server port:')
+        })
+      );
     });
 
     it('should return 404 when review is not found during auto-resume', async () => {
@@ -557,7 +565,7 @@ describe('Chat Routes', () => {
       expect(mockManager.resumeSession).not.toHaveBeenCalled();
     });
 
-    it('should resume a resumable session', async () => {
+    it('should resume a resumable session and set resume context for port correction', async () => {
       mockManager.isSessionActive.mockReturnValue(false);
       mockManager.getSession.mockReturnValue({
         id: 1,
@@ -572,6 +580,12 @@ describe('Chat Routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.data).toEqual({ id: 1, status: 'active' });
       expect(mockManager.resumeSession).toHaveBeenCalledWith(1, expect.any(Object));
+      // Port correction should use setResumeContext (consumed on next sendMessage),
+      // NOT saveContextMessage (which only writes to DB and never reaches the agent).
+      expect(mockManager.setResumeContext).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('Server port:')
+      );
     });
 
     it('should return 404 for unknown session', async () => {

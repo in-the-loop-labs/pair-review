@@ -32,7 +32,7 @@ function renderApiDocs({ port, reviewId }) {
 
 /**
  * Compact cheat sheet with endpoint signatures and key params.
- * Under 2KB total, with real port/reviewId baked in.
+ * Under 2.5KB total, with real port/reviewId baked in.
  * @param {Object} options
  * @param {number|string} options.port - Server port
  * @param {number|string} options.reviewId - Current review ID

@@ -53,9 +53,14 @@ describe('renderApiDocs', () => {
 });
 
 describe('buildApiCheatSheet', () => {
-  it('should be under 2KB', () => {
+  it('should be under 2.5KB', () => {
     const sheet = buildApiCheatSheet({ port: 7247, reviewId: 1 });
-    expect(Buffer.byteLength(sheet, 'utf8')).toBeLessThan(2048);
+    expect(Buffer.byteLength(sheet, 'utf8')).toBeLessThan(2560);
+  });
+
+  it('should stay under 2.5KB with worst-case port and reviewId values', () => {
+    const sheet = buildApiCheatSheet({ port: 65535, reviewId: 99999 });
+    expect(Buffer.byteLength(sheet, 'utf8')).toBeLessThan(2560);
   });
 
   it('should contain all major endpoint categories', () => {

@@ -334,7 +334,7 @@ router.post('/api/chat/session', async (req, res) => {
 router.post('/api/chat/session/:id/message', async (req, res) => {
   try {
     const sessionId = parseInt(req.params.id, 10);
-    let { content, context, contextData, actionContext } = req.body || {};
+    const { content, context, contextData, actionContext } = req.body || {};
 
     if (!content) {
       return res.status(400).json({ error: 'Missing required field: content' });
@@ -344,6 +344,7 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
     const db = req.app.get('db');
 
     // Auto-resume: if session is not active in memory, try to resume it
+    let portCorrectionContext = null;
     if (!chatSessionManager.isSessionActive(sessionId)) {
       const session = chatSessionManager.getSession(sessionId);
       if (!session) {
@@ -374,15 +375,20 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
         // Inject port correction so the agent knows the current server address,
         // even if the conversational history has a stale port from session creation.
         const serverPort = req.socket.localPort;
-        content = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}\n\n` + content;
+        portCorrectionContext = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`;
       } catch (err) {
         logger.error(`[ChatRoute] Failed to auto-resume session ${sessionId}: ${err.message}`);
         return res.status(410).json({ error: 'Failed to resume session: ' + err.message });
       }
     }
 
+    // Merge port correction context (from auto-resume) with any request-body context
+    const mergedContext = portCorrectionContext
+      ? (context ? portCorrectionContext + '\n\n' + context : portCorrectionContext)
+      : context;
+
     logger.debug(`[ChatRoute] Forwarding message to session ${sessionId} (${content.length} chars)`);
-    const result = await chatSessionManager.sendMessage(sessionId, content, { context, contextData, actionContext });
+    const result = await chatSessionManager.sendMessage(sessionId, content, { context: mergedContext, contextData, actionContext });
     logger.debug(`[ChatRoute] Message stored as ID ${result.id}, awaiting agent response via WebSocket`);
     res.json({ data: { messageId: result.id } });
   } catch (error) {
@@ -501,10 +507,11 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
 
     // Inject port correction so the agent knows the current server address,
     // even if the conversational history has a stale port from session creation.
-    chatSessionManager.saveContextMessage(sessionId, {
-      type: 'port_correction',
-      text: `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`
-    });
+    // Uses resumeContext (consumed on next sendMessage) instead of saveContextMessage
+    // (which only writes to DB and never reaches the agent process).
+    chatSessionManager.setResumeContext(sessionId,
+      `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`
+    );
 
     logger.info(`[ChatRoute] Explicitly resumed session ${sessionId}`);
     res.json({ data: { id: sessionId, status: 'active' } });
