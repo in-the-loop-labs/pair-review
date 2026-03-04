@@ -10,15 +10,17 @@ import { test, expect } from '@playwright/test';
 import { waitForDiffToRender } from './helpers.js';
 
 test.describe('Auto-Analyze Query Parameter', () => {
-  test('should refresh PR then auto-trigger analysis when ?analyze=true is present', async ({ page }) => {
-    // Intercept the refresh POST request to verify it fires first
-    const refreshRequest = page.waitForRequest(
-      request => request.url().includes('/api/pr/test-owner/test-repo/1/refresh') &&
-                 request.method() === 'POST',
-      { timeout: 10000 }
-    );
+  test('should skip refresh and auto-trigger analysis when ?analyze=true is present after fresh load', async ({ page }) => {
+    // Track whether refresh was called (it should NOT be on first load since data is fresh)
+    let refreshCalled = false;
+    page.on('request', request => {
+      if (request.url().includes('/api/pr/test-owner/test-repo/1/refresh') &&
+          request.method() === 'POST') {
+        refreshCalled = true;
+      }
+    });
 
-    // Intercept the analyze POST request to verify it fires after refresh
+    // Intercept the analyze POST request to verify it fires
     const analyzeRequest = page.waitForRequest(
       request => request.url().includes('/api/pr/test-owner/test-repo/1/analyses') &&
                  request.method() === 'POST',
@@ -28,13 +30,12 @@ test.describe('Auto-Analyze Query Parameter', () => {
     await page.goto('/pr/test-owner/test-repo/1?analyze=true');
     await waitForDiffToRender(page);
 
-    // Verify refresh was triggered first
-    const refresh = await refreshRequest;
-    expect(refresh.method()).toBe('POST');
-
-    // Verify the analysis POST was triggered after refresh
+    // Verify the analysis POST was triggered
     const analyze = await analyzeRequest;
     expect(analyze.method()).toBe('POST');
+
+    // Refresh should NOT be called because loadPR just loaded fresh data
+    expect(refreshCalled).toBe(false);
   });
 
   test('should strip ?analyze=true from URL after successful analysis', async ({ page }) => {

@@ -371,7 +371,9 @@ class PRManager {
 
   /**
    * Auto-trigger analysis if ?analyze=true is present in the URL.
-   * Always refreshes PR data first to ensure we analyze the latest code.
+   * Skips refresh if data was just loaded fresh by loadPR (to avoid redundant fetches).
+   * Otherwise, refreshes PR data first to ensure we analyze the latest code.
+   * If refresh fails, proceeds with existing data rather than failing entirely.
    * Cleans up the query parameter afterwards regardless of success or failure.
    * @param {string} owner - Repository owner
    * @param {string} repo - Repository name
@@ -382,10 +384,20 @@ class PRManager {
     if (autoAnalyze === 'true' && !this.isAnalyzing) {
       this._autoAnalyzeRequested = true;
       try {
-        // Always refresh before auto-analyzing to ensure we have the latest PR data.
-        // This handles the case where the worktree already existed but the PR has
-        // new commits since the last time it was loaded.
-        await this.refreshPR();
+        // Skip refresh if we just loaded fresh data (loadPR sets _justLoaded = true).
+        // Otherwise, refresh to ensure we have the latest PR data in case the worktree
+        // already existed but the PR has new commits since last load.
+        if (this._justLoaded) {
+          this._justLoaded = false;
+        } else {
+          try {
+            await this.refreshPR();
+          } catch (e) {
+            // If refresh fails, proceed with existing data - this is intentional.
+            // We'd rather analyze stale data than fail entirely.
+            console.warn('Pre-analysis refresh failed, proceeding with existing data', e);
+          }
+        }
 
         await this.startAnalysis(owner, repo, prNumber, null, {});
       } finally {
@@ -479,6 +491,8 @@ class PRManager {
       this.showError(error.message);
     } finally {
       this.setLoading(false);
+      // Mark that we just loaded fresh data - used by _maybeAutoAnalyze to skip redundant refresh
+      this._justLoaded = true;
     }
   }
 
