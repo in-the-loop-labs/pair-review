@@ -60,11 +60,13 @@ class PanelGroup {
     window.chatPanel = this.chatPanel;
 
     // Create a full-height group resize handle for vertical layouts.
-    // Uses data-panel="ai-panel" so the existing PanelResizer picks it up automatically.
+    // Uses data-panel="panel-group" so PanelResizer updates both --ai-panel-width
+    // and --chat-panel-width in tandem (needed because the group CSS uses
+    // `width: max(--ai-panel-width, --chat-panel-width)`).
     if (this.groupEl) {
       this._groupResizeHandle = document.createElement('div');
       this._groupResizeHandle.className = 'panel-group-resize-handle resize-handle resize-handle-left';
-      this._groupResizeHandle.dataset.panel = 'ai-panel';
+      this._groupResizeHandle.dataset.panel = 'panel-group';
       this.groupEl.insertBefore(this._groupResizeHandle, this.groupEl.firstChild);
     }
 
