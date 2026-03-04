@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.1
+
+### Patch Changes
+
+- e5fcc55: Fix vertical layout group resize handle not responding when chat panel is wider than review panel. The group resize handle now updates both --ai-panel-width and --chat-panel-width in tandem so the CSS max() expression always reflects the user's drag intent.
+- 07a2829: Re-expand collapsed file when unchecking the Viewed checkbox to match GitHub behavior
+
 ## 2.3.0
 
 ### Minor Changes
