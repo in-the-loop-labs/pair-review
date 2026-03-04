@@ -5894,8 +5894,6 @@ body::before {
   transform: translateX(-50%);
   z-index: 1000;
   width: min(500px, 90vw);
-  max-height: 60vh;
-  overflow-y: auto;
   background: var(--color-bg-primary, #0d1117);
   border: 1px solid var(--color-border-primary, rgba(255, 255, 255, 0.1));
   border-radius: 8px;
@@ -5957,6 +5955,8 @@ body::before {
   font-size: 0.8125rem;
   line-height: 1.6;
   color: var(--color-text-secondary, #8b949e);
+  max-height: calc(60vh - 40px);
+  overflow-y: auto;
 }
 
 .pr-description-popover-content p {
