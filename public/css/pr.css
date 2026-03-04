@@ -5862,12 +5862,15 @@ body::before {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 2px;
   position: relative;
 }
 
-.pr-description-toggle {
+.header .pr-description-toggle,
+[data-theme="dark"] .header .pr-description-toggle {
   flex-shrink: 0;
+  background: transparent;
+  border: none;
   color: var(--color-text-tertiary, #6e7681);
   opacity: 0.7;
   transition: opacity 0.15s ease, color 0.15s ease;

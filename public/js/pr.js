@@ -882,6 +882,7 @@ class PRManager {
       const existing = wrapper.querySelector('.pr-description-popover');
       if (existing) existing.remove();
       toggle.classList.remove('active');
+      toggle.setAttribute('aria-expanded', 'false');
     };
 
     toggle.addEventListener('click', (e) => {
@@ -908,6 +909,7 @@ class PRManager {
 
       wrapper.appendChild(popover);
       toggle.classList.add('active');
+      toggle.setAttribute('aria-expanded', 'true');
 
       popover.querySelector('.pr-description-popover-close').addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -917,10 +919,12 @@ class PRManager {
       popover.addEventListener('click', (ev) => ev.stopPropagation());
     });
 
-    document.addEventListener('click', () => closePopover());
+    document.addEventListener('click', () => {
+      if (toggle.classList.contains('active')) closePopover();
+    });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') closePopover();
+      if (e.key === 'Escape' && toggle.classList.contains('active')) closePopover();
     });
   }
 
