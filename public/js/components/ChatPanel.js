@@ -845,6 +845,9 @@ class ChatPanel {
     this.sessionDropdown.style.display = '';
     this.historyBtn.classList.add('chat-panel__history-btn--open');
 
+    // Position the fixed dropdown relative to the history button
+    this._positionSessionDropdown();
+
     // Bind outside-click-to-close (one-shot)
     this._sessionOutsideClickHandler = (e) => {
       if (!this.sessionPickerEl.contains(e.target) && !this.historyBtn.contains(e.target)) {
@@ -855,6 +858,13 @@ class ChatPanel {
     setTimeout(() => {
       document.addEventListener('click', this._sessionOutsideClickHandler);
     }, 0);
+  }
+
+  _positionSessionDropdown() {
+    if (!this.sessionDropdown || !this.historyBtn) return;
+    const rect = this.historyBtn.getBoundingClientRect();
+    this.sessionDropdown.style.top = `${rect.bottom + 4}px`;
+    this.sessionDropdown.style.right = `${window.innerWidth - rect.right}px`;
   }
 
   _hideSessionDropdown() {

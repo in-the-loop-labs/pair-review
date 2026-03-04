@@ -11153,12 +11153,9 @@ body.resizing * {
   position: relative;
 }
 
-/* Session dropdown flyout */
+/* Session dropdown flyout — uses position:fixed to escape chat-panel overflow:hidden */
 .chat-panel__session-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: auto;
-  right: 0;
+  position: fixed;
   width: 320px;
   background: var(--color-bg-primary, #fff);
   border: 1px solid var(--color-border-primary, #d0d7de);
@@ -11166,7 +11163,7 @@ body.resizing * {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   max-height: 300px;
   overflow-y: auto;
-  z-index: 100;
+  z-index: 1000;
   padding: 4px;
 }
 
