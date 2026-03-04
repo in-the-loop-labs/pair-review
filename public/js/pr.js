@@ -761,9 +761,10 @@ class PRManager {
     if (descToggle) {
       if (pr.body) {
         descToggle.style.display = '';
-        descToggle.dataset.prBody = pr.body;
+        this._prBody = pr.body;
       } else {
         descToggle.style.display = 'none';
+        this._prBody = null;
       }
     }
 
@@ -893,7 +894,7 @@ class PRManager {
         return;
       }
 
-      const body = toggle.dataset.prBody || '';
+      const body = this._prBody || '';
       const rendered = window.renderMarkdown ? window.renderMarkdown(body) : this.escapeHtml(body);
 
       const popover = document.createElement('div');
