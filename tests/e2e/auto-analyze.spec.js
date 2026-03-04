@@ -3,14 +3,23 @@
  * E2E Tests: Auto-Analyze Query Parameter
  *
  * Tests that navigating to a PR page with ?analyze=true
- * automatically triggers AI analysis without user interaction.
+ * automatically refreshes PR data and triggers AI analysis without user interaction.
  */
 
 import { test, expect } from '@playwright/test';
 import { waitForDiffToRender } from './helpers.js';
 
 test.describe('Auto-Analyze Query Parameter', () => {
-  test('should auto-trigger analysis when ?analyze=true is present', async ({ page }) => {
+  test('should skip refresh and auto-trigger analysis when ?analyze=true is present after fresh load', async ({ page }) => {
+    // Track whether refresh was called (it should NOT be on first load since data is fresh)
+    let refreshCalled = false;
+    page.on('request', request => {
+      if (request.url().includes('/api/pr/test-owner/test-repo/1/refresh') &&
+          request.method() === 'POST') {
+        refreshCalled = true;
+      }
+    });
+
     // Intercept the analyze POST request to verify it fires
     const analyzeRequest = page.waitForRequest(
       request => request.url().includes('/api/pr/test-owner/test-repo/1/analyses') &&
@@ -21,9 +30,12 @@ test.describe('Auto-Analyze Query Parameter', () => {
     await page.goto('/pr/test-owner/test-repo/1?analyze=true');
     await waitForDiffToRender(page);
 
-    // Verify the analysis POST was triggered automatically
-    const request = await analyzeRequest;
-    expect(request.method()).toBe('POST');
+    // Verify the analysis POST was triggered
+    const analyze = await analyzeRequest;
+    expect(analyze.method()).toBe('POST');
+
+    // Refresh should NOT be called because loadPR just loaded fresh data
+    expect(refreshCalled).toBe(false);
   });
 
   test('should strip ?analyze=true from URL after successful analysis', async ({ page }) => {
@@ -40,7 +52,7 @@ test.describe('Auto-Analyze Query Parameter', () => {
       });
     });
 
-    // Intercept the analyze POST to confirm it fires
+    // Intercept the analyze POST to confirm it fires (after the refresh)
     const analyzeRequest = page.waitForRequest(
       request => request.url().includes('/api/pr/test-owner/test-repo/1/analyses') &&
                  request.method() === 'POST',
