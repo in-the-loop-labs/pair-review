@@ -318,6 +318,12 @@ class ClaudeCodeBridge extends EventEmitter {
    * @returns {string[]}
    */
   _buildArgs() {
+    // When useShell is true, JSON must be single-quoted to prevent shell
+    // brace expansion from mangling the curly braces
+    const settingsJson = this.useShell
+      ? `'{"disableAllHooks":true}'`
+      : '{"disableAllHooks":true}';
+
     const args = [
       '-p', '',
       '--output-format', 'stream-json',
@@ -325,7 +331,7 @@ class ClaudeCodeBridge extends EventEmitter {
       '--verbose',
       '--include-partial-messages',
       '--allowedTools', CLAUDE_CHAT_TOOLS,
-      '--settings', '{"disableAllHooks":true}',
+      '--settings', settingsJson,
     ];
 
     if (this.resumeSessionId) {
