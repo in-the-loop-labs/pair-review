@@ -28,7 +28,7 @@ class ChatPanel {
     this._contextItemId = null;   // suggestion ID or comment ID from context
     this._contextLineMeta = null;  // { file, line_start, line_end } — set when opened with line context
     this._pendingActionContext = null;  // { type, itemId } — set by action button handlers, consumed by sendMessage
-    this._resizeConfig = { min: 300, default: 400, storageKey: 'chat-panel-width' };
+    this._resizeConfig = ChatPanel.RESIZE_CONFIG;
     this._analysisContextRemoved = false;
     this._sessionAnalysisRunId = null; // tracks which AI run ID's context is loaded in the current session
     this._openPromise = null; // concurrency guard for open()
@@ -3155,6 +3155,9 @@ class ChatPanel {
     }
   }
 }
+
+/** Resize configuration for the chat panel, exposed as a static for cross-module use. */
+ChatPanel.RESIZE_CONFIG = { min: 300, default: 400, cssVar: '--chat-panel-width', storageKey: 'chat-panel-width' };
 
 // Make ChatPanel available globally
 window.ChatPanel = ChatPanel;

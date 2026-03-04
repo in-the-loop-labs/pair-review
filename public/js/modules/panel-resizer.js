@@ -26,6 +26,30 @@ window.PanelResizer = (function() {
     // Note: chat-panel resize is handled by ChatPanel itself (see ChatPanel._bindResizeEvents)
   };
 
+  // panel-group is a virtual panel used by the vertical-layout group resize handle.
+  // In vertical mode the group width is `max(--ai-panel-width, --chat-panel-width)`,
+  // so dragging the group handle must update BOTH CSS vars in tandem.
+  //
+  // Built lazily because ChatPanel.RESIZE_CONFIG is defined after this IIFE runs.
+  let _panelGroupConfig = null;
+  function getPanelGroupConfig() {
+    if (!_panelGroupConfig) {
+      const aiCfg = CONFIG['ai-panel'];
+      // ChatPanel.RESIZE_CONFIG is the canonical source for chat-panel sizing.
+      const chatCfg = window.ChatPanel?.RESIZE_CONFIG
+        ?? { cssVar: '--chat-panel-width', storageKey: 'chat-panel-width', default: 400, min: 300 };
+      const panels = [
+        { cssVar: aiCfg.cssVar, storageKey: aiCfg.storageKey, default: aiCfg.default },
+        { cssVar: chatCfg.cssVar, storageKey: chatCfg.storageKey, default: chatCfg.default }
+      ];
+      _panelGroupConfig = {
+        min: Math.max(aiCfg.min, chatCfg.min),
+        panels
+      };
+    }
+    return _panelGroupConfig;
+  }
+
   /**
    * Compute the effective max width for a panel.
    * For panels with a static max, returns that value.
@@ -37,6 +61,39 @@ window.PanelResizer = (function() {
     if (config.max != null) return config.max;
     const sidebarWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'), 10) || 260;
     return window.innerWidth - sidebarWidth - 100;
+  }
+
+  /**
+   * Get the current panel-group width (the max of its sub-panel CSS vars).
+   * This matches the CSS `max()` expression used in vertical layouts.
+   * @returns {number} Current group width in pixels
+   */
+  function getPanelGroupWidth() {
+    let maxWidth = 0;
+    for (const p of getPanelGroupConfig().panels) {
+      const val = parseInt(
+        getComputedStyle(document.documentElement).getPropertyValue(p.cssVar), 10
+      ) || p.default;
+      if (val > maxWidth) maxWidth = val;
+    }
+    return maxWidth;
+  }
+
+  /**
+   * Set the panel-group width by updating ALL sub-panel CSS vars in tandem.
+   * @param {number} width - Desired width in pixels
+   * @param {boolean} save - Whether to persist to localStorage
+   */
+  function setPanelGroupWidth(width, save = true) {
+    const effectiveMax = getEffectiveMax('ai-panel'); // same viewport constraint
+    const clamped = Math.max(getPanelGroupConfig().min, Math.min(effectiveMax, width));
+
+    for (const p of getPanelGroupConfig().panels) {
+      document.documentElement.style.setProperty(p.cssVar, `${clamped}px`);
+      if (save) {
+        localStorage.setItem(p.storageKey, clamped.toString());
+      }
+    }
   }
 
   // State
@@ -127,6 +184,20 @@ window.PanelResizer = (function() {
     if (!handle) return;
 
     const panelName = handle.dataset.panel;
+
+    // panel-group: virtual panel — start width is the max of the sub-panels
+    if (panelName === 'panel-group') {
+      isDragging = true;
+      currentPanel = panelName;
+      startX = e.clientX;
+      startWidth = getPanelGroupWidth();
+
+      handle.classList.add('dragging');
+      document.body.classList.add('resizing');
+      e.preventDefault();
+      return;
+    }
+
     const panelEl = panelName === 'sidebar'
       ? document.getElementById('files-sidebar')
       : panelName === 'chat-panel'
@@ -157,6 +228,14 @@ window.PanelResizer = (function() {
   function onMouseMove(e) {
     if (!isDragging || !currentPanel) return;
 
+    // panel-group: update both sub-panel CSS vars in tandem
+    if (currentPanel === 'panel-group') {
+      const delta = startX - e.clientX; // right-side panel: left = wider
+      const newWidth = startWidth + delta;
+      setPanelGroupWidth(newWidth, false);
+      return;
+    }
+
     const config = CONFIG[currentPanel];
     if (!config) return;
 
@@ -182,7 +261,11 @@ window.PanelResizer = (function() {
     if (!isDragging) return;
 
     // Save final width
-    if (currentPanel) {
+    if (currentPanel === 'panel-group') {
+      // Persist both sub-panel widths
+      const finalWidth = getPanelGroupWidth();
+      setPanelGroupWidth(finalWidth, true);
+    } else if (currentPanel) {
       const finalWidth = getPanelWidth(currentPanel);
       const config = CONFIG[currentPanel];
       if (config) {
