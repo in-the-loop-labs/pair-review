@@ -899,20 +899,35 @@ class PRManager {
 
       const popover = document.createElement('div');
       popover.className = 'pr-description-popover';
-      popover.innerHTML = `
-        <div class="pr-description-popover-arrow"></div>
-        <div class="pr-description-popover-header">
-          <span class="pr-description-popover-title">PR Description</span>
-          <button class="pr-description-popover-close" title="Close">&times;</button>
-        </div>
-        <div class="pr-description-popover-content">${rendered}</div>
-      `;
+
+      const arrow = document.createElement('div');
+      arrow.className = 'pr-description-popover-arrow';
+
+      const header = document.createElement('div');
+      header.className = 'pr-description-popover-header';
+
+      const title = document.createElement('span');
+      title.className = 'pr-description-popover-title';
+      title.textContent = 'PR Description';
+
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'pr-description-popover-close';
+      closeBtn.title = 'Close';
+      closeBtn.innerHTML = '&times;';
+
+      header.append(title, closeBtn);
+
+      const content = document.createElement('div');
+      content.className = 'pr-description-popover-content';
+      content.innerHTML = rendered;
+
+      popover.append(arrow, header, content);
 
       wrapper.appendChild(popover);
       toggle.classList.add('active');
       toggle.setAttribute('aria-expanded', 'true');
 
-      popover.querySelector('.pr-description-popover-close').addEventListener('click', (ev) => {
+      closeBtn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         closePopover();
       });
