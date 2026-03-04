@@ -586,6 +586,7 @@ describe('Chat Routes', () => {
         1,
         expect.stringContaining('Server port:')
       );
+      expect(mockManager.saveContextMessage).not.toHaveBeenCalled();
     });
 
     it('should return 404 for unknown session', async () => {

@@ -4,7 +4,7 @@
  *
  * Provides two views of the pair-review HTTP API:
  * 1. renderApiDocs  — full markdown reference with curl examples
- * 2. buildApiCheatSheet — compact endpoint-only cheat sheet (~1.5KB)
+ * 2. buildApiCheatSheet — compact endpoint-only cheat sheet (~2KB, budget < 2.5KB)
  *
  * Both substitute real port and reviewId values into the output.
  */

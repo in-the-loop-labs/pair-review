@@ -376,6 +376,9 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
         // even if the conversational history has a stale port from session creation.
         const serverPort = req.socket.localPort;
         portCorrectionContext = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`;
+        // Note: we intentionally do NOT re-inject the API cheat sheet on resume.
+        // The agent already has the endpoint shapes from the original session context —
+        // it only needs the updated port to adjust its curl calls.
       } catch (err) {
         logger.error(`[ChatRoute] Failed to auto-resume session ${sessionId}: ${err.message}`);
         return res.status(410).json({ error: 'Failed to resume session: ' + err.message });
