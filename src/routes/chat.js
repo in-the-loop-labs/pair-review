@@ -334,7 +334,7 @@ router.post('/api/chat/session', async (req, res) => {
 router.post('/api/chat/session/:id/message', async (req, res) => {
   try {
     const sessionId = parseInt(req.params.id, 10);
-    const { content, context, contextData, actionContext } = req.body || {};
+    let { content, context, contextData, actionContext } = req.body || {};
 
     if (!content) {
       return res.status(400).json({ error: 'Missing required field: content' });
@@ -370,6 +370,11 @@ router.post('/api/chat/session/:id/message', async (req, res) => {
         unregisterChatBroadcast(sessionId);
         registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
         logger.info(`[ChatRoute] Auto-resumed session ${sessionId} for message delivery`);
+
+        // Inject port correction so the agent knows the current server address,
+        // even if the conversational history has a stale port from session creation.
+        const serverPort = req.socket.localPort;
+        content = `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}\n\n` + content;
       } catch (err) {
         logger.error(`[ChatRoute] Failed to auto-resume session ${sessionId}: ${err.message}`);
         return res.status(410).json({ error: 'Failed to resume session: ' + err.message });
@@ -491,7 +496,15 @@ router.post('/api/chat/session/:id/resume', async (req, res) => {
 
     await chatSessionManager.resumeSession(sessionId, { systemPrompt, cwd });
     unregisterChatBroadcast(sessionId);
-    registerChatBroadcast(chatSessionManager, sessionId, req.socket.localPort);
+    const serverPort = req.socket.localPort;
+    registerChatBroadcast(chatSessionManager, sessionId, serverPort);
+
+    // Inject port correction so the agent knows the current server address,
+    // even if the conversational history has a stale port from session creation.
+    chatSessionManager.saveContextMessage(sessionId, {
+      type: 'port_correction',
+      text: `[Server port: ${serverPort}] The pair-review API is at http://localhost:${serverPort}`
+    });
 
     logger.info(`[ChatRoute] Explicitly resumed session ${sessionId}`);
     res.json({ data: { id: sessionId, status: 'active' } });
@@ -606,13 +619,18 @@ router.get('/api/chat/analysis-context/:runId', async (req, res) => {
  * Requires ?reviewId=N so the docs contain the correct review ID.
  */
 router.get('/api.md', (req, res) => {
-  const reviewId = parseInt(req.query.reviewId, 10);
-  if (!reviewId || isNaN(reviewId)) {
-    return res.status(400).json({ error: 'Missing required query parameter: reviewId' });
+  try {
+    const reviewId = parseInt(req.query.reviewId, 10);
+    if (!reviewId || !Number.isInteger(reviewId)) {
+      return res.status(400).json({ error: 'Missing required query parameter: reviewId' });
+    }
+    const port = req.socket.localPort;
+    const md = renderApiDocs({ port, reviewId });
+    res.type('text/markdown').send(md);
+  } catch (error) {
+    logger.error(`Error serving API docs: ${error.message}`);
+    res.status(500).json({ error: 'Failed to render API docs' });
   }
-  const port = req.socket.localPort;
-  const md = renderApiDocs({ port, reviewId });
-  res.type('text/markdown').send(md);
 });
 
 module.exports = router;

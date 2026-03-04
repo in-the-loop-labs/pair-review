@@ -319,15 +319,15 @@ curl -s -X POST http://localhost:{{PORT}}/api/analyses/ANALYSIS_ID/cancel
 
 **Response:** \`{ "success": true, "message": "Analysis cancelled", "processesKilled": 2, "status": "cancelled" }\`
 
-### SSE progress stream
+### Real-time progress (WebSocket)
 
-Connect to receive real-time progress events for a running analysis:
+Analysis progress is delivered via WebSocket, not HTTP polling.
 
-\`\`\`bash
-curl -s -N http://localhost:{{PORT}}/api/analyses/ANALYSIS_ID/progress
-\`\`\`
+1. Connect to \`ws://localhost:{{PORT}}/ws\`
+2. Subscribe: \`{ "action": "subscribe", "topic": "analysis:ANALYSIS_ID" }\`
+3. Receive progress events: \`{ "type": "progress", "topic": "analysis:ANALYSIS_ID", ... }\`
 
-This is a Server-Sent Events (SSE) stream. Events are JSON objects with \`type\`, \`status\`, \`levels\`, \`progress\`, etc.
+For simple polling, use \`GET /api/analyses/ANALYSIS_ID/status\` instead.
 
 ### List analysis runs for a review
 
@@ -493,7 +493,7 @@ Base: \`http://localhost:{{PORT}}\` | Review: \`{{REVIEW_ID}}\`
 
 ## Comments — /api/reviews/{{REVIEW_ID}}/comments
 - \`GET\` — List all (?includeDismissed=true)
-- \`POST\` — Create {file, body, ?line_start, ?line_end, ?side, ?type, ?title}
+- \`POST\` — Create {file, body, ?line_start, ?line_end, ?side, ?type, ?title} (no line_start=file-level)
 - \`GET /:id\` — Get one
 - \`PUT /:id\` — Update {body}
 - \`DELETE /:id\` — Dismiss (soft-delete)
@@ -503,7 +503,7 @@ Base: \`http://localhost:{{PORT}}\` | Review: \`{{REVIEW_ID}}\`
 ## Suggestions — /api/reviews/{{REVIEW_ID}}/suggestions
 - \`GET\` — List (?levels=final,1,2,3 &runId=UUID)
 - \`GET /check\` — Exists? (?runId=UUID)
-- \`POST /:id/status\` — {status: "dismissed"|"active"}
+- \`POST /:id/status\` — Dismiss/restore {status}
 - \`POST /:id/adopt\` — Adopt as-is (no body)
 - \`POST /:id/edit\` — Adopt edited {action:"adopt_edited", editedText:"..."}
 
@@ -518,7 +518,7 @@ Base: \`http://localhost:{{PORT}}\` | Review: \`{{REVIEW_ID}}\`
 - \`GET /api/reviews/{{REVIEW_ID}}/analyses/status\` — Running?
 - \`GET /api/analyses/:id/status\` — Status by analysis ID
 - \`POST /api/analyses/:id/cancel\` — Cancel
-- \`GET /api/analyses/:id/progress\` — SSE stream
+- WebSocket /ws: subscribe "analysis:{id}" for progress
 - \`GET /api/analyses/runs?reviewId={{REVIEW_ID}}\` — List runs
 - \`GET /api/analyses/runs/latest?reviewId={{REVIEW_ID}}\` — Latest run
 - \`GET /api/analyses/runs/:id\` — Specific run

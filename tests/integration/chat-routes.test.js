@@ -44,7 +44,8 @@ function createMockSessionManager(db) {
     onComplete: vi.fn().mockReturnValue(() => {}),
     onToolUse: vi.fn().mockReturnValue(() => {}),
     onStatus: vi.fn().mockReturnValue(() => {}),
-    onError: vi.fn().mockReturnValue(() => {})
+    onError: vi.fn().mockReturnValue(() => {}),
+    saveContextMessage: vi.fn().mockReturnValue({ id: 999 })
   };
 }
 

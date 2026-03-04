@@ -77,4 +77,12 @@ describe('buildApiCheatSheet', () => {
     const sheet = buildApiCheatSheet({ port: 7247, reviewId: 10 });
     expect(sheet).toContain('http://localhost:7247/api.md?reviewId=10');
   });
+
+  it('should throw when reviewId is null', () => {
+    expect(() => buildApiCheatSheet({ port: 7247, reviewId: null })).toThrow();
+  });
+
+  it('should throw when port is null', () => {
+    expect(() => buildApiCheatSheet({ port: null, reviewId: 1 })).toThrow();
+  });
 });

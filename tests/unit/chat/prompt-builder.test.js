@@ -191,7 +191,7 @@ describe('buildChatPrompt', () => {
       });
 
       expect(prompt).toContain('## API Access');
-      expect(prompt).toContain('read-only access to the filesystem');
+      expect(prompt).toContain('read-only access to the code');
       expect(prompt).not.toContain('pair-review-api skill');
     });
   });

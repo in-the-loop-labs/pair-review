@@ -55,10 +55,10 @@ function buildChatPrompt({ review, prData, chatInstructions }) {
   // API Access — cheat-sheet is injected into initial context; full docs available via GET /api.md
   sections.push(
     '## API Access\n\n' +
-    'You have **read-only access to the filesystem**. To modify the review (create comments, adopt suggestions, trigger analysis) or interact with the pair-review app, you MUST use the pair-review API via `curl`. ' +
+    'You have **read-only access to the code**. To modify the review (create comments, adopt suggestions, trigger analysis) or interact with the pair-review app, you MUST use the pair-review API via `curl`. ' +
     'All endpoints accept and return JSON.\n\n' +
     'A compact API reference and the server URL are provided in the initial context of each session. ' +
-    'For the full API reference, fetch it with `curl http://localhost:<port>/api.md?reviewId=<id>` (use the real port and reviewId from your context).\n\n' +
+    `For the full API reference, fetch it with \`curl http://localhost:<port>/api.md?reviewId=${review?.id || '<id>'}\` (use the real port from your context).\n\n` +
     'IMPORTANT: Do NOT mention that you are reading API documentation or consulting reference material. Just use the API naturally as if you already know it.'
   );
 
